@@ -3,7 +3,7 @@ import { expect, describe, test } from "@jest/globals"
 import { TreeNodeTypeDTO } from "api/files/Files"
 import { getFilesTree } from "store/slice/FilesTree/FilesTreeAction"
 import reducer, { initialState } from "store/slice/FilesTree/FilesTreeSlice"
-import { FilesTree } from "store/slice/FilesTree/FilesTreeType"
+import { FilesTree, FilesTreeState } from "store/slice/FilesTree/FilesTreeType"
 
 describe("FilesTree", () => {
   const mockPayload: TreeNodeTypeDTO[] = [
@@ -37,41 +37,48 @@ describe("FilesTree", () => {
     },
   ]
 
-  const expectState: FilesTree = {
-    image: {
-      isLoading: false,
-      isLatest: true,
-      tree: [
-        {
-          path: "/tmp/optinist/input/hoge",
-          name: "hoge",
-          isDir: true,
-          shape: [],
-          nodes: [
-            {
-              path: "/tmp/optinist/input/hoge/hoge.tif",
-              name: "hoge.tif",
-              isDir: false,
-              shape: [],
-            },
-          ],
-        },
-        {
-          path: "/tmp/optinist/input/copy_image1",
-          name: "copy_image1",
-          isDir: true,
-          shape: [],
-          nodes: [
-            {
-              path: "/tmp/optinist/input/copy_image1/copy_image1.tif",
-              name: "copy_image1.tif",
-              isDir: false,
-              shape: [],
-            },
-          ],
-        },
-      ],
+  const expectState: FilesTreeState = {
+    files: {
+      ALL: { isLoading: false, isLatest: true, tree: [] },
+      CSV: { isLoading: false, isLatest: true, tree: [] },
+      HDF5: { isLoading: false, isLatest: true, tree: [] },
+      IMAGE: { isLoading: false, isLatest: true, tree: [] },
+      image: {
+        isLoading: false,
+        isLatest: true,
+        tree: [
+          {
+            path: "/tmp/optinist/input/hoge",
+            name: "hoge",
+            isDir: true,
+            shape: [],
+            nodes: [
+              {
+                path: "/tmp/optinist/input/hoge/hoge.tif",
+                name: "hoge.tif",
+                isDir: false,
+                shape: [],
+              },
+            ],
+          },
+          {
+            path: "/tmp/optinist/input/copy_image1",
+            name: "copy_image1",
+            isDir: true,
+            shape: [],
+            nodes: [
+              {
+                path: "/tmp/optinist/input/copy_image1/copy_image1.tif",
+                name: "copy_image1.tif",
+                isDir: false,
+                shape: [],
+              },
+            ],
+          },
+        ],
+      },
     },
+    importSampleDataLoading: false,
   }
 
   test(getFilesTree.fulfilled.type, () => {

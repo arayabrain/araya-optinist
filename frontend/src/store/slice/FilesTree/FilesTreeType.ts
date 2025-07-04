@@ -25,3 +25,8 @@ export interface FilesTree {
     tree: TreeNodeType[]
   }
 }
+
+export interface FilesTreeState {
+  files: FilesTree
+  importSampleDataLoading: boolean
+}
