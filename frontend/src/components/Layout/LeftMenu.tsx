@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom"
 import AnalyticsIcon from "@mui/icons-material/Analytics"
 import DashboardIcon from "@mui/icons-material/Dashboard"
 import ManageAccountsIcon from "@mui/icons-material/ManageAccounts"
+import ViewListIcon from "@mui/icons-material/ViewList"
 import { Box } from "@mui/material"
 import Drawer from "@mui/material/Drawer"
 import List from "@mui/material/List"
@@ -28,6 +29,11 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
     navigate("/console")
   }
 
+  const onClickDataview = () => {
+    handleDrawerClose()
+    navigate("/console/dataview")
+  }
+
   const onClickWorkspaces = () => {
     handleDrawerClose()
     navigate("/console/workspaces")
@@ -49,6 +55,14 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
                   <DashboardIcon />
                 </ListItemIcon>
                 <ListItemText primary="Dashboard" />
+              </ListItemButton>
+            </ListItem>
+            <ListItem key="dataview" disablePadding>
+              <ListItemButton onClick={onClickDataview}>
+                <ListItemIcon>
+                  <ViewListIcon />
+                </ListItemIcon>
+                <ListItemText primary="Dataview" />
               </ListItemButton>
             </ListItem>
             <ListItem key="workspaces" disablePadding>
