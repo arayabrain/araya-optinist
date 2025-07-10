@@ -14,6 +14,7 @@ import Account from "pages/Account"
 import AccountDelete from "pages/AccountDelete"
 import AccountManager from "pages/AccountManager"
 import Dashboard from "pages/Dashboard"
+import Dataview from "pages/Dataview"
 import Login from "pages/Login"
 import ResetPassword from "pages/ResetPassword"
 import Workspaces from "pages/Workspace"
@@ -72,6 +73,7 @@ const App: FC = () => {
                 path="/console/account-manager"
                 element={<AccountManager />}
               />
+              <Route path="/console/dataview" element={<Dataview />} />
               <Route path="/console/workspaces">
                 <Route path="" element={<Workspaces />} />
                 <Route path=":workspaceId" element={<Workspace />} />
