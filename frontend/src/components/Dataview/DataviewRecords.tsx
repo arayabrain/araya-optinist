@@ -1,0 +1,937 @@
+import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react"
+import { useDispatch, useSelector } from "react-redux"
+import { useSearchParams } from "react-router-dom"
+
+import { enqueueSnackbar, VariantType } from "notistack"
+
+import AssignmentOutlinedIcon from "@mui/icons-material/AssignmentOutlined"
+import CheckCircleIcon from "@mui/icons-material/CheckCircle"
+import PublicIcon from "@mui/icons-material/Public"
+import PublicOffIcon from "@mui/icons-material/PublicOff"
+import {
+  Box,
+  Checkbox,
+  IconButton,
+  Input,
+  styled,
+  Tooltip,
+} from "@mui/material"
+import Button from "@mui/material/Button"
+import Dialog from "@mui/material/Dialog"
+import DialogActions from "@mui/material/DialogActions"
+import DialogContent from "@mui/material/DialogContent"
+import DialogContentText from "@mui/material/DialogContentText"
+import {
+  DataGrid,
+  GridColDef,
+  GridEventListener,
+  GridFilterInputValueProps,
+  GridFilterItem,
+  GridFilterModel,
+  GridSortDirection,
+  GridSortItem,
+  GridSortModel,
+} from "@mui/x-data-grid"
+
+import { UserDTO } from "api/users/UsersApiDTO"
+import { ConfirmDialog } from "components/common/ConfirmDialog"
+// import DialogImage from "components/common/DialogImage" // TODO: Implemented later
+import Loading from "components/common/Loading"
+import PaginationCustom from "components/common/PaginationCustom"
+import SwitchCustom from "components/common/SwitchCustom"
+import { DELAY_TIME_INPUT_CONFIRMED } from "const/Form"
+import {
+  getExperimentsDatabase,
+  getExperimentsPublicDatabase,
+  postPublish,
+  postPublishAll,
+  putAttributes,
+} from "store/slice/Dataview/DataviewActions"
+import { TypeData } from "store/slice/Dataview/DataviewSlice"
+import {
+  DATAVIEW_SLICE_NAME as DATAVIEW_SLICE_NAME,
+  DataviewType,
+} from "store/slice/Dataview/DataviewType"
+import { AppDispatch, RootState } from "store/store"
+
+export type Data = {
+  id: number
+  uid: string
+  attributes: string
+  graph_urls: string[]
+  publish_status: number
+  created_time: string
+  updated_time: string
+}
+
+type PopupAttributesProps = {
+  data?: string | string[]
+  open: boolean
+  handleClose: () => void
+  role?: boolean
+  handleChangeAttributes: (e: ChangeEvent<HTMLTextAreaElement>) => void
+  exp_id?: string
+  onSubmit: () => void
+  readonly?: boolean
+}
+
+type DataviewProps = {
+  user?: UserDTO
+  cellPath: string
+  handleRowClick?: GridEventListener<"rowClick">
+  readonly?: boolean
+  metadataEditable?: boolean
+}
+
+let timeout: NodeJS.Timeout | undefined = undefined
+
+const LIST_FILTER_IS = [
+  "publish_status",
+  "brain_area",
+  "promoter",
+  "indicator",
+  "imaging_depth",
+]
+
+const columns = (
+  listIdData: number[],
+  setListCheck: (value: number[]) => void,
+  listCheck: number[],
+  dataExperiments: DataviewType[],
+  checkBoxAll: boolean,
+  setCheckBoxAll: (value: boolean) => void,
+  handleOpenAttributes: (value: string, id: number) => void,
+  user: boolean,
+  readonly?: boolean,
+  loading: boolean = false,
+) => [
+  user &&
+    !readonly && {
+      field: "checkbox",
+      renderHeader: () => (
+        <Checkbox
+          checked={checkBoxAll}
+          onChange={(e: ChangeEvent) => {
+            const target = e.target as HTMLInputElement
+            setCheckBoxAll(target.checked)
+            if (!target.checked) {
+              const newListId: number[] = listCheck.filter(
+                (item) => !listIdData.includes(item),
+              )
+              setListCheck([...newListId])
+            } else {
+              const newList = dataExperiments.map((item) => item.id)
+              setListCheck([
+                ...listCheck,
+                ...newList.filter((item) => !listCheck.includes(item)),
+              ])
+            }
+          }}
+        />
+      ),
+      sortable: false,
+      filterable: false,
+      width: 70,
+      type: "string",
+      renderCell: (params: { row: DataviewType }) => (
+        <Checkbox
+          checked={listCheck.includes(params.row.id)}
+          onChange={(e: ChangeEvent) => {
+            const newData = listCheck.filter((id) => id !== params.row.id)
+            const target = e.target as HTMLInputElement
+            if (!target.checked) {
+              setCheckBoxAll(false)
+              setListCheck(newData)
+            } else setListCheck([...listCheck, params.row.id])
+          }}
+        />
+      ),
+    },
+  {
+    field: "uid",
+    headerName: "ID",
+    width: 160,
+    filterOperators: [
+      {
+        label: "Contains",
+        value: "contains",
+        InputComponent: ({ applyValue, item }: GridFilterInputValueProps) => {
+          return (
+            <Input
+              autoFocus={!loading}
+              sx={{ paddingTop: "16px" }}
+              defaultValue={item.value || ""}
+              onChange={(e) => {
+                if (timeout) clearTimeout(timeout)
+                timeout = setTimeout(() => {
+                  applyValue({ ...item, value: e.target.value })
+                }, DELAY_TIME_INPUT_CONFIRMED)
+              }}
+            />
+          )
+        },
+      },
+    ],
+    type: "string",
+    renderCell: (params: { row: DataviewType }) => (
+      <Tooltip title={params.row?.uid}>
+        <SpanCustom>{params.row?.uid}</SpanCustom>
+      </Tooltip>
+    ),
+  },
+  user && {
+    field: "published",
+    headerName: "Published",
+    renderCell: (params: { row: DataviewType }) =>
+      params.row.publish_status ? <CheckCircleIcon color={"success"} /> : null,
+    valueOptions: ["Published", "No_Published"],
+    type: "singleSelect",
+    width: 120,
+  },
+  {
+    field: "attributes",
+    headerName: "Attributes",
+    width: 120,
+    filterable: false,
+    sortable: false,
+    renderCell: (params: { row: DataviewType }) => {
+      const inputValue = JSON.stringify(params?.row?.attributes).trim()
+      const parsedJSON = JSON.parse(inputValue)
+      const formattedJSON = JSON.stringify(parsedJSON, null, 2)
+      const value = formattedJSON
+      return (
+        <Box
+          sx={{ cursor: "pointer" }}
+          onClick={() => handleOpenAttributes(value, params?.row?.id)}
+        >
+          <AssignmentOutlinedIcon color={"primary"} />
+        </Box>
+      )
+    },
+  },
+]
+
+const PopupAttributes = ({
+  data,
+  open,
+  handleClose,
+  role = false,
+  handleChangeAttributes,
+  onSubmit,
+  readonly,
+}: PopupAttributesProps) => {
+  const [error, setError] = useState("")
+  const isValidJSON = (str: string) => {
+    try {
+      JSON.parse(str)
+      setError("")
+    } catch {
+      setError("format JSON invalid")
+    }
+  }
+
+  const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    isValidJSON(e.target.value)
+    handleChangeAttributes(e)
+  }
+
+  useEffect(() => {
+    const handleClosePopup = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        handleClose()
+        return
+      }
+    }
+
+    document.addEventListener("keydown", handleClosePopup)
+    return () => {
+      document.removeEventListener("keydown", handleClosePopup)
+    }
+    //eslint-disable-next-line
+  }, [])
+
+  return (
+    <Box>
+      <Dialog
+        open={open}
+        onClose={handleClose}
+        aria-labelledby="draggable-dialog-title"
+      >
+        <DialogContent sx={{ minWidth: 400 }}>
+          <DialogContentText>
+            <Content
+              readOnly={!role || readonly}
+              value={data}
+              onChange={handleChange}
+            />
+            <span style={{ color: "red", display: "block" }}>{error}</span>
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            variant={"outlined"}
+            autoFocus
+            onClick={() => {
+              handleClose()
+              setError("")
+            }}
+          >
+            Close
+          </Button>
+          {role && !readonly && (
+            <Button variant={"contained"} disabled={!!error} onClick={onSubmit}>
+              Save
+            </Button>
+          )}
+        </DialogActions>
+      </Dialog>
+    </Box>
+  )
+}
+const DataviewRecords = ({
+  user,
+  handleRowClick,
+  readonly,
+  metadataEditable,
+}: DataviewProps) => {
+  const type: keyof TypeData = user ? "private" : "public"
+
+  const { data: dataExperiments, loading } = useSelector(
+    (state: RootState) => ({
+      data: state[DATAVIEW_SLICE_NAME].data[type],
+      loading: state[DATAVIEW_SLICE_NAME].loading,
+    }),
+  )
+
+  const [openPublishAll, setOpenPublishAll] = useState<{
+    title: string
+    open: boolean
+    type: "on" | "off"
+    content: string
+  }>({
+    content: "",
+    title: "",
+    open: false,
+    type: "on",
+  })
+  const [newParams, setNewParams] = useState(
+    window.location.search.replace("?", ""),
+  )
+
+  const [listCheck, setListCheck] = useState<number[]>([])
+  const [checkBoxAll, setCheckBoxAll] = useState(false)
+  const [dataDialog, setDataDialog] = useState<{
+    id?: number
+    type?: string
+    data?: string | string[]
+    expId?: string
+    nameCol?: string
+  }>({
+    type: "",
+    data: undefined,
+  })
+  const [fieldFilter, setFieldFilter] = useState("")
+  const [valueFilter, setValueFilter] = useState<string | string[]>("")
+
+  const [searchParams, setParams] = useSearchParams()
+  const dispatch = useDispatch<AppDispatch>()
+
+  const offset = searchParams.get("offset") || 0
+  const limit = searchParams.get("limit") || 50
+  const sort = searchParams.getAll("sort")
+
+  const handleClickVariant = (variant: VariantType, mess: string) => {
+    enqueueSnackbar(mess, { variant })
+  }
+
+  const pagiFilter = useCallback(
+    (page?: number) => {
+      return `limit=${limit}&offset=${
+        page ? Number(limit) * (page - 1) : offset || dataExperiments.offset
+      }`
+    },
+    //eslint-disable-next-line
+    [limit, offset, JSON.stringify(dataExperiments), dataExperiments.offset],
+  )
+
+  const dataParams = useMemo(() => {
+    return {
+      offset: Number(offset) || 0,
+      limit: Number(limit) || 50,
+      sort:
+        sort.length > 0
+          ? [sort[0]?.replace("published", "publish_status"), sort[1]]
+          : [],
+    }
+    //eslint-disable-next-line
+  }, [offset, limit, JSON.stringify(sort)])
+
+  const dataParamsFilter = useMemo(
+    () => ({
+      uid: searchParams.get("uid") || undefined,
+      publish_status: searchParams.get("published") || undefined,
+      brain_area: searchParams.getAll("brain_area") || undefined,
+      promoter: searchParams.getAll("promoter") || undefined,
+      indicator: searchParams.getAll("indicator") || undefined,
+      imaging_depth: searchParams.getAll("imaging_depth") || undefined,
+    }),
+    [searchParams],
+  )
+
+  const [model, setModel] = useState<{
+    filter: GridFilterModel
+    sort: GridSortModel
+  }>({
+    filter: {
+      items: [
+        {
+          field:
+            Object.keys(dataParamsFilter)
+              .find(
+                (key) => dataParamsFilter[key as keyof typeof dataParamsFilter],
+              )
+              ?.replace("publish_status", "published") || "",
+          operator: LIST_FILTER_IS.includes(
+            Object.keys(dataParamsFilter).find(
+              (key) => dataParamsFilter[key as keyof typeof dataParamsFilter],
+            ) || "publish_status",
+          )
+            ? "isAnyOf"
+            : "contains",
+          value: Object.values(dataParamsFilter).find((value) => value) || null,
+        },
+      ],
+    },
+    sort: [
+      {
+        field: dataParams.sort[0]?.replace("publish_status", "published") || "",
+        sort: dataParams.sort[1] as GridSortDirection,
+      },
+    ],
+  })
+
+  const fetchApi = () => {
+    const api = !user ? getExperimentsPublicDatabase : getExperimentsDatabase
+    let newPublish: number | undefined
+    if (!dataParamsFilter.publish_status) newPublish = undefined
+    else {
+      if (dataParamsFilter.publish_status === "Published") newPublish = 1
+      else newPublish = 0
+    }
+    dispatch(
+      api({ ...dataParamsFilter, publish_status: newPublish, ...dataParams }),
+    )
+  }
+
+  useEffect(() => {
+    const key = Object.keys(dataParamsFilter).find((key) => {
+      const value = dataParamsFilter[key as keyof typeof dataParamsFilter]
+      return (
+        (!Array.isArray(value) && value) ||
+        (Array.isArray(value) && value.length)
+      )
+    }) as keyof typeof dataParamsFilter
+    if (key) {
+      setFieldFilter(key)
+      setValueFilter(dataParamsFilter[key] as string[])
+    }
+    //eslint-disable-next-line
+  }, [])
+
+  useEffect(() => {
+    if (
+      Object.keys(dataParamsFilter).every(
+        (key) => !dataParamsFilter[key as keyof typeof dataParamsFilter],
+      )
+    ) {
+      return
+    }
+    if (!fieldFilter?.trim()?.length) return
+    setModel({
+      filter: {
+        items: [
+          {
+            field: fieldFilter?.replace("publish_status", "published") || "",
+            operator: LIST_FILTER_IS.includes(fieldFilter || "publish_status")
+              ? "isAnyOf"
+              : "contains",
+            value: valueFilter || null,
+          },
+        ],
+      },
+      sort: [
+        {
+          field:
+            dataParams.sort[0]?.replace("publish_status", "published") || "",
+          sort: dataParams.sort[1] as GridSortDirection,
+        },
+      ],
+    })
+    //eslint-disable-next-line
+  }, [dataParams, dataParamsFilter, fieldFilter, valueFilter])
+
+  useEffect(() => {
+    if (dataExperiments.items.length === 0) {
+      setCheckBoxAll(false)
+      return
+    }
+    const newListId = dataExperiments.items.map((item) => item.id)
+    const isCheck = newListId.every((id) => listCheck.includes(id))
+    setCheckBoxAll(isCheck)
+  }, [dataExperiments, listCheck])
+
+  useEffect(() => {
+    if (newParams && newParams !== window.location.search.replace("?", "")) {
+      setNewParams(window.location.search.replace("?", ""))
+    }
+    //eslint-disable-next-line
+  }, [searchParams])
+
+  useEffect(() => {
+    let param = newParams
+    if (newParams[0] === "&") param = newParams.slice(1, param.length)
+    if (param === window.location.search.replace("?", "")) return
+    setParams(param.replaceAll("+", "%2B"))
+    //eslint-disable-next-line
+  }, [newParams])
+
+  useEffect(() => {
+    fetchApi()
+    //eslint-disable-next-line
+  }, [JSON.stringify(dataParams), user, JSON.stringify(dataParamsFilter)])
+
+  useEffect(() => {
+    setCheckBoxAll(false)
+    //eslint-disable-next-line
+  }, [offset, limit, JSON.stringify(dataParamsFilter)])
+
+  const handleCloseDialog = () => {
+    setDataDialog({ type: "", data: undefined })
+  }
+
+  const handleOpenAttributes = (data: string, id: number) => {
+    setDataDialog({ id: id, type: "attribute", data })
+  }
+
+  const handleChangeAttributes = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    setDataDialog((pre) => ({ ...pre, data: event.target.value }))
+  }
+
+  const onSubmitAttributes = async () => {
+    const { id, data } = dataDialog
+    if (!id || !data) return
+    const res = await dispatch(
+      putAttributes({
+        id: id,
+        attributes: data as string,
+        params: { ...dataParamsFilter, ...dataParams },
+      }),
+    )
+    if ((res as { payload: boolean }).payload === true) {
+      handleClickVariant("success", "Successfully updated attributes!")
+      setDataDialog({ ...dataDialog, id: undefined, type: "" })
+      return
+    }
+    handleClickVariant("error", "Update attributes failed!")
+  }
+
+  const getParamsData = () => {
+    const dataFilter = Object.keys(dataParamsFilter)
+      .filter((key) => {
+        const value = dataParamsFilter[key as keyof typeof dataParamsFilter]
+        if (Array.isArray(value)) {
+          return !!value[0]
+        }
+        return value
+      })
+      .map((key) => {
+        const value = dataParamsFilter[key as keyof typeof dataParamsFilter]
+        if (Array.isArray(value)) {
+          return value.map((item) => `${key}=${item}`).join("&")
+        }
+        return `${key}=${
+          dataParamsFilter[key as keyof typeof dataParamsFilter]
+        }`
+      })
+      .join("&")
+      .replaceAll("publish_status", "published")
+    return dataFilter
+  }
+
+  const handlePage = (e: ChangeEvent<unknown>, page: number) => {
+    const filter = getParamsData()
+    const param = `${filter}${
+      dataParams.sort[0]
+        ? `${filter ? "&" : ""}sort=${dataParams.sort[0]}&sort=${
+            dataParams.sort[1]
+          }`
+        : ""
+    }&${pagiFilter(page)}`
+    setNewParams(param)
+  }
+
+  const handlePublish = async (id: number, status: "on" | "off") => {
+    let newPublish: number | undefined
+    if (!dataParamsFilter.publish_status) newPublish = undefined
+    else {
+      if (dataParamsFilter.publish_status === "Published") newPublish = 1
+      else newPublish = 0
+    }
+    await dispatch(
+      postPublish({
+        id,
+        status,
+        params: {
+          ...dataParamsFilter,
+          publish_status: newPublish,
+          ...dataParams,
+        },
+      }),
+    )
+  }
+
+  const handleSort = useCallback(
+    (rowSelectionModel: GridSortModel) => {
+      setModel({
+        ...model,
+        sort: rowSelectionModel,
+      })
+      let param
+      const filter = getParamsData()
+      if (!rowSelectionModel[0]) {
+        param =
+          filter || dataParams.sort[0] || offset
+            ? `${filter ? `${filter}&` : ""}${pagiFilter()}`
+            : ""
+      } else {
+        param = `${filter}${
+          rowSelectionModel[0]
+            ? `${filter ? "&" : ""}sort=${rowSelectionModel[0].field?.replace(
+                "publish_status",
+                "published",
+              )}&sort=${rowSelectionModel[0].sort}`
+            : ""
+        }&${pagiFilter()}`
+      }
+      setNewParams(param.replace("publish_status", "published"))
+      setCheckBoxAll(false)
+    },
+    //eslint-disable-next-line
+    [pagiFilter, model],
+  )
+
+  const handleFilter = (modelFilter: GridFilterModel) => {
+    if (modelFilter.items.length === 0) {
+      const data = Object.keys(dataParamsFilter).filter((key) => {
+        const value = dataParamsFilter[key as keyof typeof dataParamsFilter]
+        if (Array.isArray(value) && value.length === 0) {
+          return false
+        }
+        return !!value
+      })
+      setModel({
+        ...model,
+        filter: {
+          items: [
+            {
+              field: data[0],
+              operator: "isAnyOf",
+              value:
+                dataParamsFilter[data[0] as keyof typeof dataParamsFilter] ||
+                "",
+            },
+          ],
+        },
+      })
+      return
+    }
+
+    setModel({
+      ...model,
+      filter: modelFilter,
+    })
+    setFieldFilter(modelFilter.items[0]?.field)
+    setValueFilter(modelFilter.items[0]?.value)
+    let filter = ""
+    if (modelFilter.items[0]?.value) {
+      filter = modelFilter.items
+        .filter((item) => item.value)
+        .map((item: GridFilterItem) => {
+          if (Array.isArray(item.value)) {
+            return item.value.map((value) => `${item.field}=${value}`).join("&")
+          }
+          return `${item.field}=${item?.value}`
+        })[0]
+        .replace("publish_status", "published")
+    }
+    const { sort } = dataParams
+    const param =
+      sort[0] || filter || offset
+        ? `${filter}${
+            sort[0] ? `${filter ? "&" : ""}sort=${sort[0]}&sort=${sort[1]}` : ""
+          }&${pagiFilter()}`
+        : ""
+    setNewParams(param.replace("publish_status", "published"))
+    setCheckBoxAll(false)
+  }
+
+  const handleLimit = (event: ChangeEvent<HTMLSelectElement>) => {
+    let filter = ""
+    filter = Object.keys(dataParamsFilter)
+      .filter((key) => dataParamsFilter[key as keyof typeof dataParamsFilter])
+      .map((key) => {
+        const value = dataParamsFilter[key as keyof typeof dataParamsFilter]
+        if (Array.isArray(value)) {
+          return value.map((item) => `${key}=${item}`).join("&")
+        }
+        return `${key}=${
+          dataParamsFilter[key as keyof typeof dataParamsFilter]
+        }`
+      })
+      .join("&")
+      .replace("publish_status", "published")
+    const { sort } = dataParams
+    const param = `${filter}${
+      sort[0] ? `${filter ? "&" : ""}sort=${sort[0]}&sort=${sort[1]}` : ""
+    }&limit=${Number(event.target.value)}&offset=0`
+    setNewParams(param)
+  }
+
+  const handlePublishCancel = () => {
+    setOpenPublishAll({
+      ...openPublishAll,
+      open: false,
+    })
+  }
+
+  const handleOpenPublishAll = (
+    title: string,
+    content: string,
+    type: "on" | "off",
+  ) => {
+    setOpenPublishAll({
+      title: title,
+      content: content,
+      open: true,
+      type: type,
+    })
+  }
+
+  const handlePublishOk = () => {
+    setOpenPublishAll({
+      ...openPublishAll,
+      open: false,
+    })
+    dispatch(
+      postPublishAll({
+        status: openPublishAll.type,
+        params: {
+          ...dataParamsFilter,
+          ...dataParams,
+        },
+        listCheck,
+      }),
+    )
+  }
+
+  const ColumnPrivate = () => {
+    return [
+      {
+        field: "publish_status",
+        headerName: "Publish",
+        width: 120,
+        sortable: false,
+        filterable: false,
+        renderCell: (params: { row: DataviewType }) => (
+          <Box
+            sx={{ cursor: "pointer" }}
+            onClick={() =>
+              handlePublish(
+                params.row.id,
+                params.row.publish_status ? "off" : "on",
+              )
+            }
+          >
+            <SwitchCustom value={!!params.row.publish_status} />
+          </Box>
+        ),
+      },
+    ]
+  }
+
+  const columnsTable = [
+    ...columns(
+      dataExperiments.items.map((item) => item.id),
+      setListCheck,
+      listCheck,
+      dataExperiments?.items,
+      checkBoxAll,
+      setCheckBoxAll,
+      handleOpenAttributes,
+      !!user,
+      readonly,
+      loading,
+    ),
+  ].filter(Boolean) as GridColDef[]
+
+  return (
+    <DatabaseExperimentsWrapper>
+      {user ? (
+        <Box sx={{ height: 40, margin: "0 0 0.5rem 0" }}>
+          {!readonly ? (
+            <WrapperIcons check={!!(listCheck.length > 0)}>
+              <Tooltip title={"bulk publish"} placement={"top"}>
+                <span>
+                  <IconButton
+                    size={"large"}
+                    onClick={() =>
+                      listCheck.length !== 0 &&
+                      handleOpenPublishAll(
+                        "Bulk Publish",
+                        `Publish "${listCheck.length} records" at once. Is this OK?`,
+                        "on",
+                      )
+                    }
+                    sx={{
+                      cursor: listCheck.length > 0 ? "pointer" : "default",
+                      color: (theme) =>
+                        listCheck.length > 0
+                          ? theme.palette.primary.main
+                          : "#d0d0d0",
+                    }}
+                    disabled={!!(listCheck.length === 0)}
+                  >
+                    <PublicIcon />
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Tooltip title={"bulk unpublish"} placement={"top"}>
+                <span>
+                  <IconButton
+                    size={"medium"}
+                    onClick={() =>
+                      listCheck.length !== 0 &&
+                      handleOpenPublishAll(
+                        "Bulk UnPublish",
+                        `Unpublish "${listCheck.length} records" at once. Is this OK?`,
+                        "off",
+                      )
+                    }
+                    sx={{
+                      cursor: listCheck.length > 0 ? "pointer" : "default",
+                      color: (theme) =>
+                        listCheck.length > 0
+                          ? theme.palette.primary.main
+                          : "#d0d0d0",
+                    }}
+                    disabled={!!(listCheck.length === 0)}
+                  >
+                    <PublicOffIcon />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            </WrapperIcons>
+          ) : null}
+        </Box>
+      ) : null}
+      <DataGrid
+        columns={
+          user && !readonly
+            ? ([...columnsTable, ...ColumnPrivate()] as GridColDef[])
+            : (columnsTable as GridColDef[])
+        }
+        sortModel={model.sort as GridSortItem[]}
+        rows={dataExperiments?.items || []}
+        rowHeight={128}
+        hideFooter={true}
+        filterMode={"server"}
+        sortingMode={"server"}
+        onSortModelChange={handleSort}
+        filterModel={model.filter}
+        onFilterModelChange={handleFilter}
+        onRowClick={handleRowClick}
+        sx={{ flex: 1, minHeight: 0 }}
+      />
+      {dataExperiments?.items.length > 0 ? (
+        <Box sx={{ mt: 2 }}>
+          <PaginationCustom
+            data={dataExperiments}
+            handlePage={handlePage}
+            handleLimit={handleLimit}
+            limit={Number(limit)}
+          />
+        </Box>
+      ) : null}
+
+      {/* // TODO: Implemented later
+      <DialogImage
+        open={dataDialog.type === "image"}
+        data={dataDialog.data}
+        expId={dataDialog.expId}
+        nameCol={dataDialog.nameCol}
+        handleCloseDialog={handleCloseDialog}
+      />
+      */}
+
+      <PopupAttributes
+        handleChangeAttributes={handleChangeAttributes}
+        data={dataDialog.data}
+        open={dataDialog.type === "attribute"}
+        handleClose={handleCloseDialog}
+        onSubmit={onSubmitAttributes}
+        role={!!user}
+        readonly={!metadataEditable}
+      />
+      <Loading loading={loading} />
+
+      <ConfirmDialog
+        open={openPublishAll.open}
+        title={openPublishAll.title}
+        content={openPublishAll.content}
+        onCancel={handlePublishCancel}
+        onConfirm={handlePublishOk}
+      />
+    </DatabaseExperimentsWrapper>
+  )
+}
+
+const DatabaseExperimentsWrapper = styled(Box)(() => ({
+  width: "100%",
+  height: "calc(100vh - 220px)",
+  display: "flex",
+  flexDirection: "column",
+}))
+
+const Content = styled("textarea")(() => ({
+  width: 400,
+  height: 300,
+  whiteSpace: "pre-wrap",
+}))
+
+const WrapperIcons = styled(Box, {
+  shouldForwardProp: (props) => props !== "check",
+})<{ check: boolean }>(() => ({
+  display: "flex",
+  justifyContent: "end",
+  gap: 10,
+  height: 50,
+  svg: {
+    width: 35,
+    height: 35,
+  },
+  button: {
+    height: 50,
+    width: 50,
+  },
+  "button: hover": {
+    backgroundColor: "#1976d257",
+  },
+}))
+
+export const SpanCustom = styled("span")(() => ({
+  display: "inline-block",
+  textOverflow: "ellipsis",
+  overflow: "hidden",
+}))
+
+export default DataviewRecords

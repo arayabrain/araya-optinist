@@ -9,10 +9,11 @@ import {
 } from "@mui/material"
 
 import { UserListDTO } from "api/users/UsersApiDTO"
+import { DataviewDTO } from "store/slice/Dataview/DataviewType"
 import { WorkspaceDataDTO } from "store/slice/Workspace/WorkspaceType"
 
 type PagiProps = {
-  data: WorkspaceDataDTO | UserListDTO
+  data: WorkspaceDataDTO | UserListDTO | DataviewDTO
   handlePage: (e: ChangeEvent<unknown>, page: number) => void
   handleLimit: (e: ChangeEvent<HTMLSelectElement>) => void
   limit: number | null
