@@ -1,4 +1,11 @@
-import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react"
+import {
+  ChangeEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { useDispatch, useSelector } from "react-redux"
 import { useSearchParams } from "react-router-dom"
 
@@ -84,9 +91,61 @@ type DataviewProps = {
   metadataEditable?: boolean
 }
 
-let timeout: NodeJS.Timeout | undefined = undefined
-
 const LIST_FILTER_IS = ["publish_status"]
+
+const useDebounce = () => {
+  const timeoutRef = useRef<NodeJS.Timeout | undefined>()
+
+  return useCallback((callback: () => void, delay: number) => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    timeoutRef.current = setTimeout(callback, delay)
+  }, [])
+}
+
+const getPublishStatusValue = (publishStatus?: string) => {
+  if (!publishStatus) return undefined
+  return publishStatus === "Published" ? 1 : 0
+}
+
+const buildFilterParams = (
+  dataParamsFilter: Record<string, string | string[] | undefined>,
+) => {
+  return Object.keys(dataParamsFilter)
+    .filter((key) => {
+      const value = dataParamsFilter[key]
+      return Array.isArray(value) ? value.length > 0 : Boolean(value)
+    })
+    .map((key) => {
+      const value = dataParamsFilter[key]
+      if (Array.isArray(value)) {
+        return value.map((item) => `${key}=${item}`).join("&")
+      }
+      return `${key}=${value}`
+    })
+    .join("&")
+    .replaceAll("publish_status", "published")
+}
+
+const FilterInput = ({
+  applyValue,
+  item,
+  loading,
+}: GridFilterInputValueProps & { loading: boolean }) => {
+  const debounce = useDebounce()
+
+  return (
+    <Input
+      autoFocus={!loading}
+      sx={{ paddingTop: "16px" }}
+      defaultValue={item.value || ""}
+      onChange={(e) => {
+        debounce(() => {
+          applyValue({ ...item, value: e.target.value })
+        }, DELAY_TIME_INPUT_CONFIRMED)
+      }}
+    />
+  )
+}
 
 const columns = (
   listIdData: number[],
@@ -159,21 +218,9 @@ const columns = (
       {
         label: "Contains",
         value: "contains",
-        InputComponent: ({ applyValue, item }: GridFilterInputValueProps) => {
-          return (
-            <Input
-              autoFocus={!loading}
-              sx={{ paddingTop: "16px" }}
-              defaultValue={item.value || ""}
-              onChange={(e) => {
-                if (timeout) clearTimeout(timeout)
-                timeout = setTimeout(() => {
-                  applyValue({ ...item, value: e.target.value })
-                }, DELAY_TIME_INPUT_CONFIRMED)
-              }}
-            />
-          )
-        },
+        InputComponent: (props: GridFilterInputValueProps) => (
+          <FilterInput {...props} loading={loading} />
+        ),
       },
     ],
     type: "string",
@@ -191,21 +238,9 @@ const columns = (
       {
         label: "Contains",
         value: "contains",
-        InputComponent: ({ applyValue, item }: GridFilterInputValueProps) => {
-          return (
-            <Input
-              autoFocus={!loading}
-              sx={{ paddingTop: "16px" }}
-              defaultValue={item.value || ""}
-              onChange={(e) => {
-                if (timeout) clearTimeout(timeout)
-                timeout = setTimeout(() => {
-                  applyValue({ ...item, value: e.target.value })
-                }, DELAY_TIME_INPUT_CONFIRMED)
-              }}
-            />
-          )
-        },
+        InputComponent: (props: GridFilterInputValueProps) => (
+          <FilterInput {...props} loading={loading} />
+        ),
       },
     ],
     type: "string",
@@ -223,21 +258,9 @@ const columns = (
       {
         label: "Contains",
         value: "contains",
-        InputComponent: ({ applyValue, item }: GridFilterInputValueProps) => {
-          return (
-            <Input
-              autoFocus={!loading}
-              sx={{ paddingTop: "16px" }}
-              defaultValue={item.value || ""}
-              onChange={(e) => {
-                if (timeout) clearTimeout(timeout)
-                timeout = setTimeout(() => {
-                  applyValue({ ...item, value: e.target.value })
-                }, DELAY_TIME_INPUT_CONFIRMED)
-              }}
-            />
-          )
-        },
+        InputComponent: (props: GridFilterInputValueProps) => (
+          <FilterInput {...props} loading={loading} />
+        ),
       },
     ],
     type: "string",
@@ -285,7 +308,7 @@ const columns = (
     renderCell: () => <SpanCustom>(N/A)</SpanCustom>,
   },
   {
-    field: "datails",
+    field: "details",
     headerName: "Details",
     width: 160,
     filterable: false,
@@ -486,12 +509,7 @@ const DataviewRecords = ({
 
   const fetchApi = () => {
     const api = !user ? getExperimentsPublicDatabase : getDataviewRecords
-    let newPublish: number | undefined
-    if (!dataParamsFilter.publish_status) newPublish = undefined
-    else {
-      if (dataParamsFilter.publish_status === "Published") newPublish = 1
-      else newPublish = 0
-    }
+    const newPublish = getPublishStatusValue(dataParamsFilter.publish_status)
     dispatch(
       api({ ...dataParamsFilter, publish_status: newPublish, ...dataParams }),
     )
@@ -572,12 +590,11 @@ const DataviewRecords = ({
   useEffect(() => {
     fetchApi()
     //eslint-disable-next-line
-  }, [JSON.stringify(dataParams), user, JSON.stringify(dataParamsFilter)])
+  }, [dataParams, user, dataParamsFilter])
 
   useEffect(() => {
     setCheckBoxAll(false)
-    //eslint-disable-next-line
-  }, [offset, limit, JSON.stringify(dataParamsFilter)])
+  }, [offset, limit, dataParamsFilter])
 
   const handleCloseDialog = () => {
     setDataDialog({ type: "", data: undefined })
@@ -609,28 +626,7 @@ const DataviewRecords = ({
     handleClickVariant("error", "Update attributes failed!")
   }
 
-  const getParamsData = () => {
-    const dataFilter = Object.keys(dataParamsFilter)
-      .filter((key) => {
-        const value = dataParamsFilter[key as keyof typeof dataParamsFilter]
-        if (Array.isArray(value)) {
-          return !!value[0]
-        }
-        return value
-      })
-      .map((key) => {
-        const value = dataParamsFilter[key as keyof typeof dataParamsFilter]
-        if (Array.isArray(value)) {
-          return value.map((item) => `${key}=${item}`).join("&")
-        }
-        return `${key}=${
-          dataParamsFilter[key as keyof typeof dataParamsFilter]
-        }`
-      })
-      .join("&")
-      .replaceAll("publish_status", "published")
-    return dataFilter
-  }
+  const getParamsData = () => buildFilterParams(dataParamsFilter)
 
   const handlePage = (e: ChangeEvent<unknown>, page: number) => {
     const filter = getParamsData()
@@ -645,12 +641,7 @@ const DataviewRecords = ({
   }
 
   const handlePublish = async (id: number, status: "on" | "off") => {
-    let newPublish: number | undefined
-    if (!dataParamsFilter.publish_status) newPublish = undefined
-    else {
-      if (dataParamsFilter.publish_status === "Published") newPublish = 1
-      else newPublish = 0
-    }
+    const newPublish = getPublishStatusValue(dataParamsFilter.publish_status)
     await dispatch(
       postPublish({
         id,
@@ -750,20 +741,7 @@ const DataviewRecords = ({
   }
 
   const handleLimit = (event: ChangeEvent<HTMLSelectElement>) => {
-    let filter = ""
-    filter = Object.keys(dataParamsFilter)
-      .filter((key) => dataParamsFilter[key as keyof typeof dataParamsFilter])
-      .map((key) => {
-        const value = dataParamsFilter[key as keyof typeof dataParamsFilter]
-        if (Array.isArray(value)) {
-          return value.map((item) => `${key}=${item}`).join("&")
-        }
-        return `${key}=${
-          dataParamsFilter[key as keyof typeof dataParamsFilter]
-        }`
-      })
-      .join("&")
-      .replace("publish_status", "published")
+    const filter = buildFilterParams(dataParamsFilter)
     const { sort } = dataParams
     const param = `${filter}${
       sort[0] ? `${filter ? "&" : ""}sort=${sort[0]}&sort=${sort[1]}` : ""
