@@ -1,7 +1,7 @@
 import { createAsyncThunk } from "@reduxjs/toolkit"
 
 import {
-  getExperimentsApi,
+  getDataviewRecordsApi,
   getExperimentsPublicApi,
   postPublishAllApi,
   postPublishApi,
@@ -13,18 +13,18 @@ import {
   DataviewParams,
 } from "store/slice/Dataview/DataviewType"
 
-export const getExperimentsDatabase = createAsyncThunk<
-  DataviewDTO,
-  DataviewParams
->(`${DATAVIEW_SLICE_NAME}/getExperimentsList`, async (params, thunkAPI) => {
-  const { rejectWithValue } = thunkAPI
-  try {
-    const response = await getExperimentsApi(params)
-    return response
-  } catch (e) {
-    return rejectWithValue(e)
-  }
-})
+export const getDataviewRecords = createAsyncThunk<DataviewDTO, DataviewParams>(
+  `${DATAVIEW_SLICE_NAME}/getDataviewRecords`,
+  async (params, thunkAPI) => {
+    const { rejectWithValue } = thunkAPI
+    try {
+      const response = await getDataviewRecordsApi(params)
+      return response
+    } catch (e) {
+      return rejectWithValue(e)
+    }
+  },
+)
 
 export const getExperimentsPublicDatabase = createAsyncThunk<
   DataviewDTO,
@@ -49,7 +49,7 @@ export const postPublish = createAsyncThunk<
   const { rejectWithValue, dispatch } = thunkAPI
   try {
     const response = await postPublishApi(params.id, params.status)
-    await dispatch(getExperimentsDatabase(params.params))
+    await dispatch(getDataviewRecords(params.params))
     return response
   } catch (e) {
     return rejectWithValue(e)
@@ -64,7 +64,7 @@ export const postPublishAll = createAsyncThunk<
   const { status, listCheck, params } = data
   try {
     const response = await postPublishAllApi(status, listCheck)
-    await dispatch(getExperimentsDatabase(params))
+    await dispatch(getDataviewRecords(params))
     return response
   } catch (e) {
     return rejectWithValue(e)
@@ -79,7 +79,7 @@ export const putAttributes = createAsyncThunk<
   try {
     const { id, attributes, params } = data
     const response = await putAttributesApi(id, attributes)
-    await dispatch(getExperimentsDatabase(params))
+    await dispatch(getDataviewRecords(params))
     return response
   } catch (e) {
     return rejectWithValue(e)

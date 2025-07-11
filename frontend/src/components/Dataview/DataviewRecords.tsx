@@ -2,6 +2,7 @@ import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react"
 import { useDispatch, useSelector } from "react-redux"
 import { useSearchParams } from "react-router-dom"
 
+import moment from "moment"
 import { enqueueSnackbar, VariantType } from "notistack"
 
 import AssignmentOutlinedIcon from "@mui/icons-material/AssignmentOutlined"
@@ -41,7 +42,7 @@ import PaginationCustom from "components/common/PaginationCustom"
 import SwitchCustom from "components/common/SwitchCustom"
 import { DELAY_TIME_INPUT_CONFIRMED } from "const/Form"
 import {
-  getExperimentsDatabase,
+  getDataviewRecords,
   getExperimentsPublicDatabase,
   postPublish,
   postPublishAll,
@@ -85,19 +86,13 @@ type DataviewProps = {
 
 let timeout: NodeJS.Timeout | undefined = undefined
 
-const LIST_FILTER_IS = [
-  "publish_status",
-  "brain_area",
-  "promoter",
-  "indicator",
-  "imaging_depth",
-]
+const LIST_FILTER_IS = ["publish_status"]
 
 const columns = (
   listIdData: number[],
   setListCheck: (value: number[]) => void,
   listCheck: number[],
-  dataExperiments: DataviewType[],
+  dataviewRecords: DataviewType[],
   checkBoxAll: boolean,
   setCheckBoxAll: (value: boolean) => void,
   handleOpenAttributes: (value: string, id: number) => void,
@@ -120,7 +115,7 @@ const columns = (
               )
               setListCheck([...newListId])
             } else {
-              const newList = dataExperiments.map((item) => item.id)
+              const newList = dataviewRecords.map((item) => item.id)
               setListCheck([
                 ...listCheck,
                 ...newList.filter((item) => !listCheck.includes(item)),
@@ -147,6 +142,15 @@ const columns = (
         />
       ),
     },
+  user && {
+    field: "published",
+    headerName: "Published",
+    renderCell: (params: { row: DataviewType }) =>
+      params.row.publish_status ? <CheckCircleIcon color={"success"} /> : null,
+    valueOptions: ["Published", "No_Published"],
+    type: "singleSelect",
+    width: 120,
+  },
   {
     field: "uid",
     headerName: "ID",
@@ -179,14 +183,69 @@ const columns = (
       </Tooltip>
     ),
   },
-  user && {
-    field: "published",
-    headerName: "Published",
-    renderCell: (params: { row: DataviewType }) =>
-      params.row.publish_status ? <CheckCircleIcon color={"success"} /> : null,
-    valueOptions: ["Published", "No_Published"],
-    type: "singleSelect",
-    width: 120,
+  {
+    field: "user_name",
+    headerName: "Owner",
+    width: 160,
+    filterOperators: [
+      {
+        label: "Contains",
+        value: "contains",
+        InputComponent: ({ applyValue, item }: GridFilterInputValueProps) => {
+          return (
+            <Input
+              autoFocus={!loading}
+              sx={{ paddingTop: "16px" }}
+              defaultValue={item.value || ""}
+              onChange={(e) => {
+                if (timeout) clearTimeout(timeout)
+                timeout = setTimeout(() => {
+                  applyValue({ ...item, value: e.target.value })
+                }, DELAY_TIME_INPUT_CONFIRMED)
+              }}
+            />
+          )
+        },
+      },
+    ],
+    type: "string",
+    renderCell: (params: { row: DataviewType }) => (
+      <Tooltip title={params.row?.owner?.name}>
+        <SpanCustom>{params.row?.owner?.name}</SpanCustom>
+      </Tooltip>
+    ),
+  },
+  {
+    field: "workspace_name",
+    headerName: "Workspace",
+    width: 160,
+    filterOperators: [
+      {
+        label: "Contains",
+        value: "contains",
+        InputComponent: ({ applyValue, item }: GridFilterInputValueProps) => {
+          return (
+            <Input
+              autoFocus={!loading}
+              sx={{ paddingTop: "16px" }}
+              defaultValue={item.value || ""}
+              onChange={(e) => {
+                if (timeout) clearTimeout(timeout)
+                timeout = setTimeout(() => {
+                  applyValue({ ...item, value: e.target.value })
+                }, DELAY_TIME_INPUT_CONFIRMED)
+              }}
+            />
+          )
+        },
+      },
+    ],
+    type: "string",
+    renderCell: (params: { row: DataviewType }) => (
+      <Tooltip title={params.row?.workspace?.name}>
+        <SpanCustom>{params.row?.workspace?.name}</SpanCustom>
+      </Tooltip>
+    ),
   },
   {
     field: "attributes",
@@ -208,6 +267,45 @@ const columns = (
         </Box>
       )
     },
+  },
+  {
+    field: "input_data",
+    headerName: "Inputs",
+    width: 160,
+    filterable: false,
+    sortable: false,
+    renderCell: () => <SpanCustom>(N/A)</SpanCustom>,
+  },
+  {
+    field: "output_data",
+    headerName: "Outputs",
+    width: 160,
+    filterable: false,
+    sortable: false,
+    renderCell: () => <SpanCustom>(N/A)</SpanCustom>,
+  },
+  {
+    field: "datails",
+    headerName: "Details",
+    width: 160,
+    filterable: false,
+    sortable: false,
+    renderCell: () => <SpanCustom>(N/A)</SpanCustom>,
+  },
+  {
+    field: "last_modified",
+    headerName: "Last modified",
+    width: 160,
+    type: "string",
+    filterable: false,
+    sortable: true,
+    renderCell: (params: { row: DataviewType }) => (
+      <Tooltip title={params.row?.updated_at}>
+        <SpanCustom>
+          {moment(params.row?.updated_at).format("YYYY/MM/DD hh:mm")}
+        </SpanCustom>
+      </Tooltip>
+    ),
   },
 ]
 
@@ -296,7 +394,7 @@ const DataviewRecords = ({
 }: DataviewProps) => {
   const type: keyof TypeData = user ? "private" : "public"
 
-  const { data: dataExperiments, loading } = useSelector(
+  const { data: dataviewRecords, loading } = useSelector(
     (state: RootState) => ({
       data: state[DATAVIEW_SLICE_NAME].data[type],
       loading: state[DATAVIEW_SLICE_NAME].loading,
@@ -347,11 +445,11 @@ const DataviewRecords = ({
   const pagiFilter = useCallback(
     (page?: number) => {
       return `limit=${limit}&offset=${
-        page ? Number(limit) * (page - 1) : offset || dataExperiments.offset
+        page ? Number(limit) * (page - 1) : offset || dataviewRecords.offset
       }`
     },
     //eslint-disable-next-line
-    [limit, offset, JSON.stringify(dataExperiments), dataExperiments.offset],
+    [limit, offset, JSON.stringify(dataviewRecords), dataviewRecords.offset],
   )
 
   const dataParams = useMemo(() => {
@@ -370,10 +468,8 @@ const DataviewRecords = ({
     () => ({
       uid: searchParams.get("uid") || undefined,
       publish_status: searchParams.get("published") || undefined,
-      brain_area: searchParams.getAll("brain_area") || undefined,
-      promoter: searchParams.getAll("promoter") || undefined,
-      indicator: searchParams.getAll("indicator") || undefined,
-      imaging_depth: searchParams.getAll("imaging_depth") || undefined,
+      user_name: searchParams.get("user_name") || undefined,
+      workspace_name: searchParams.get("workspace_name") || undefined,
     }),
     [searchParams],
   )
@@ -411,7 +507,7 @@ const DataviewRecords = ({
   })
 
   const fetchApi = () => {
-    const api = !user ? getExperimentsPublicDatabase : getExperimentsDatabase
+    const api = !user ? getExperimentsPublicDatabase : getDataviewRecords
     let newPublish: number | undefined
     if (!dataParamsFilter.publish_status) newPublish = undefined
     else {
@@ -433,7 +529,7 @@ const DataviewRecords = ({
     }) as keyof typeof dataParamsFilter
     if (key) {
       setFieldFilter(key)
-      setValueFilter(dataParamsFilter[key] as string[])
+      setValueFilter(dataParamsFilter[key] as string)
     }
     //eslint-disable-next-line
   }, [])
@@ -471,14 +567,14 @@ const DataviewRecords = ({
   }, [dataParams, dataParamsFilter, fieldFilter, valueFilter])
 
   useEffect(() => {
-    if (dataExperiments.items.length === 0) {
+    if (dataviewRecords.items.length === 0) {
       setCheckBoxAll(false)
       return
     }
-    const newListId = dataExperiments.items.map((item) => item.id)
+    const newListId = dataviewRecords.items.map((item) => item.id)
     const isCheck = newListId.every((id) => listCheck.includes(id))
     setCheckBoxAll(isCheck)
-  }, [dataExperiments, listCheck])
+  }, [dataviewRecords, listCheck])
 
   useEffect(() => {
     if (newParams && newParams !== window.location.search.replace("?", "")) {
@@ -761,10 +857,10 @@ const DataviewRecords = ({
 
   const columnsTable = [
     ...columns(
-      dataExperiments.items.map((item) => item.id),
+      dataviewRecords.items.map((item) => item.id),
       setListCheck,
       listCheck,
-      dataExperiments?.items,
+      dataviewRecords?.items,
       checkBoxAll,
       setCheckBoxAll,
       handleOpenAttributes,
@@ -775,7 +871,7 @@ const DataviewRecords = ({
   ].filter(Boolean) as GridColDef[]
 
   return (
-    <DatabaseExperimentsWrapper>
+    <DataviewRecordsWrapper>
       {user ? (
         <Box sx={{ height: 40, margin: "0 0 0.5rem 0" }}>
           {!readonly ? (
@@ -841,7 +937,7 @@ const DataviewRecords = ({
             : (columnsTable as GridColDef[])
         }
         sortModel={model.sort as GridSortItem[]}
-        rows={dataExperiments?.items || []}
+        rows={dataviewRecords?.items || []}
         rowHeight={128}
         hideFooter={true}
         filterMode={"server"}
@@ -852,10 +948,10 @@ const DataviewRecords = ({
         onRowClick={handleRowClick}
         sx={{ flex: 1, minHeight: 0 }}
       />
-      {dataExperiments?.items.length > 0 ? (
+      {dataviewRecords?.items.length > 0 ? (
         <Box sx={{ mt: 2 }}>
           <PaginationCustom
-            data={dataExperiments}
+            data={dataviewRecords}
             handlePage={handlePage}
             handleLimit={handleLimit}
             limit={Number(limit)}
@@ -891,11 +987,11 @@ const DataviewRecords = ({
         onCancel={handlePublishCancel}
         onConfirm={handlePublishOk}
       />
-    </DatabaseExperimentsWrapper>
+    </DataviewRecordsWrapper>
   )
 }
 
-const DatabaseExperimentsWrapper = styled(Box)(() => ({
+const DataviewRecordsWrapper = styled(Box)(() => ({
   width: "100%",
   height: "calc(100vh - 220px)",
   display: "flex",

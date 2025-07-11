@@ -11,11 +11,11 @@ export const getExperimentsPublicApi = async (
   return response.data
 }
 
-export const getExperimentsApi = async (
+export const getDataviewRecordsApi = async (
   params: DataviewParams,
 ): Promise<DataviewDTO> => {
   const paramsNew = stringify(params, { indices: false })
-  const response = await axios.get(`/expdb/experiments?${paramsNew}`)
+  const response = await axios.get(`/dataview?${paramsNew}`)
   return response.data
 }
 

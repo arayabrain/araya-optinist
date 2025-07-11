@@ -4,13 +4,14 @@ export type OrderBy = "ASC" | "DESC" | ""
 
 export type DataviewType = {
   id: number
-  fields: {
-    brain_area?: string
-    promoter?: string
-    indicator?: string
-    imaging_depth?: number
-  }
   uid?: string
+  owner: {
+    name?: string
+  }
+  workspace: {
+    id?: number
+    name?: string
+  }
   attributes?: object
   publish_status?: number
   created_at: string
