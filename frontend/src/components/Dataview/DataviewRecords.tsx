@@ -394,11 +394,11 @@ const DataviewRecords = ({
 }: DataviewProps) => {
   const type: keyof TypeData = user ? "private" : "public"
 
-  const { data: dataviewRecords, loading } = useSelector(
-    (state: RootState) => ({
-      data: state[DATAVIEW_SLICE_NAME].data[type],
-      loading: state[DATAVIEW_SLICE_NAME].loading,
-    }),
+  const dataviewRecords = useSelector(
+    (state: RootState) => state[DATAVIEW_SLICE_NAME].data[type],
+  )
+  const loading = useSelector(
+    (state: RootState) => state[DATAVIEW_SLICE_NAME].loading,
   )
 
   const [openPublishAll, setOpenPublishAll] = useState<{
@@ -479,31 +479,9 @@ const DataviewRecords = ({
     sort: GridSortModel
   }>({
     filter: {
-      items: [
-        {
-          field:
-            Object.keys(dataParamsFilter)
-              .find(
-                (key) => dataParamsFilter[key as keyof typeof dataParamsFilter],
-              )
-              ?.replace("publish_status", "published") || "",
-          operator: LIST_FILTER_IS.includes(
-            Object.keys(dataParamsFilter).find(
-              (key) => dataParamsFilter[key as keyof typeof dataParamsFilter],
-            ) || "publish_status",
-          )
-            ? "isAnyOf"
-            : "contains",
-          value: Object.values(dataParamsFilter).find((value) => value) || null,
-        },
-      ],
+      items: [],
     },
-    sort: [
-      {
-        field: dataParams.sort[0]?.replace("publish_status", "published") || "",
-        sort: dataParams.sort[1] as GridSortDirection,
-      },
-    ],
+    sort: [],
   })
 
   const fetchApi = () => {
