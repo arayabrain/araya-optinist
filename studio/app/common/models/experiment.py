@@ -1,5 +1,7 @@
+from typing import Optional
+
 from sqlalchemy.dialects.mysql import BIGINT
-from sqlmodel import Column, Field, ForeignKey, String
+from sqlmodel import Column, Field, ForeignKey, Relationship, String
 
 from studio.app.common.models.base import Base, TimestampMixin
 
@@ -18,4 +20,8 @@ class ExperimentRecord(Base, TimestampMixin, table=True):
             BIGINT(unsigned=True), nullable=False, comment="data usage in bytes"
         ),
         default=0,
+    )
+
+    workspace: Optional["Workspace"] = Relationship(  # noqa: F821
+        back_populates="experiments"
     )

@@ -42,9 +42,27 @@ class ImageInfo(BaseModel):
             self.thumb_urls = [url.replace(".png", ".thumb.png") for url in urls]
 
 
+class DataviewOwner(BaseModel):
+    name: str = None
+
+    class Config:
+        orm_mode = True
+
+
+class DataviewWorkspace(BaseModel):
+    id: int
+    name: str = None
+    user: Optional[DataviewOwner]
+
+    class Config:
+        orm_mode = True
+
+
 class DataviewRecord(BaseModel):
     id: int
     uid: str = None
+    owner: Optional[DataviewOwner]
+    workspace: Optional[DataviewWorkspace]
     attributes: Optional[dict] = {}
     publish_status: int = 0
     created_at: Optional[datetime]
@@ -57,4 +75,10 @@ class DataviewRecord(BaseModel):
 class DataviewRecordSearchOptions(BaseModel):
     uid: Optional[str] = Field(
         Query(default="", description="partial match (experiment_records.uid)")
+    )
+    user_name: Optional[str] = Field(
+        Query(default="", description="partial match (user.name)")
+    )
+    workspace_name: Optional[str] = Field(
+        Query(default="", description="partial match (workspace.name)")
     )
