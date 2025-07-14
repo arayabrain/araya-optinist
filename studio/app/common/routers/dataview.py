@@ -1,6 +1,6 @@
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
 from sqlalchemy.sql import Select
 from sqlmodel import Session, select
@@ -14,6 +14,7 @@ from studio.app.common.schemas.dataview import (
     DataviewRecord,
     DataviewRecordSearchOptions,
     PageWithHeader,
+    PublishFlags,
 )
 from studio.app.common.schemas.users import User
 
@@ -99,9 +100,8 @@ async def search_dataview_records(
 
     query = get_search_db_experiment_query(query, options)
 
-    # TODO: Planned to implement
-    # if publish_status is not None:
-    #    query = query.filter(models.ExperimentRecord.publish_status == publish_status)
+    if publish_status is not None:
+        query = query.filter(models.ExperimentRecord.publish_status == publish_status)
 
     query = query.group_by(models.ExperimentRecord.id).order_by(*sa_sort_list)
 
@@ -112,3 +112,72 @@ async def search_dataview_records(
     )
 
     return data
+
+
+@router.post(
+    "/dataview/publish/{id}/{flag}",
+    response_model=bool,
+    description="""
+- Publishing Dataview records
+""",
+)
+async def publish_dataview_records(
+    id: int,
+    flag: PublishFlags,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    record = (
+        db.query(models.ExperimentRecord)
+        .join(
+            models.Workspace,
+            models.Workspace.id == models.ExperimentRecord.workspace_id,
+        )
+        .join(
+            models.User,
+            models.User.id == models.Workspace.user_id,
+        )
+        .filter(
+            models.ExperimentRecord.id == id,
+            models.User.id == current_user.id,
+            models.User.active.is_(True),
+        )
+        .first()
+    )
+
+    if not record:
+        raise HTTPException(status_code=404)
+
+    record.publish_status = int(flag == PublishFlags.on)
+    db.commit()
+
+    return True
+
+
+@router.post(
+    "/dataview/multiple/publish/{flag}",
+    response_model=bool,
+    description="""
+- Publishing Dataview records in bulk
+""",
+)
+def multiple_publish_dataview_records(
+    ids: List[int],
+    flag: PublishFlags,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    db.query(models.ExperimentRecord).filter(
+        models.Workspace.id == models.ExperimentRecord.workspace_id,
+        models.User.id == models.Workspace.user_id,
+        models.User.id == current_user.id,
+        models.User.active.is_(True),
+        models.ExperimentRecord.id.in_(ids),
+    ).update(
+        {models.ExperimentRecord.publish_status: int(flag == PublishFlags.on)},
+        synchronize_session=False,
+    )
+
+    db.commit()
+
+    return True

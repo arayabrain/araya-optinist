@@ -23,7 +23,7 @@ export const postPublishApi = async (
   id: number,
   status: "on" | "off",
 ): Promise<boolean> => {
-  const response = await axios.post(`/expdb/experiment/publish/${id}/${status}`)
+  const response = await axios.post(`/dataview/publish/${id}/${status}`)
   return response.data
 }
 
@@ -32,7 +32,7 @@ export const postPublishAllApi = async (
   data: number[],
 ): Promise<boolean> => {
   const response = await axios.post(
-    `expdb/experiment/multiple/publish/${status}`,
+    `/dataview/multiple/publish/${status}`,
     data,
   )
   return response.data
@@ -42,7 +42,7 @@ export const putAttributesApi = async (
   id: number,
   data: string,
 ): Promise<boolean> => {
-  const response = await axios.put(`expdb/experiment/metadata/${id}`, data, {
+  const response = await axios.put(`/dataview/metadata/${id}`, data, {
     headers: {
       "Content-Type": "application/json",
     },
