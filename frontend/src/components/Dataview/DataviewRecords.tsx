@@ -560,7 +560,7 @@ const DataviewRecords = ({
           {
             field:
               fieldFilterName?.replace("publish_status", "published") || "",
-            operator: fieldFilter.operator || "contains",
+            operator: fieldFilter.operator || "",
             value: valueFilter || null,
           },
         ],
