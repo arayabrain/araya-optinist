@@ -92,8 +92,6 @@ type DataviewProps = {
   metadataEditable?: boolean
 }
 
-const LIST_FILTER_IS = ["publish_status"]
-
 const useDebounce = () => {
   const timeoutRef = useRef<NodeJS.Timeout | undefined>()
 
@@ -455,7 +453,11 @@ const DataviewRecords = ({
     type: "",
     data: undefined,
   })
-  const [fieldFilter, setFieldFilter] = useState("")
+  const [fieldFilter, setFieldFilter] = useState<{
+    id?: number | string
+    field?: string
+    operator?: string
+  }>({})
   const [valueFilter, setValueFilter] = useState<string | string[]>("")
 
   const [searchParams, setParams] = useSearchParams()
@@ -527,8 +529,16 @@ const DataviewRecords = ({
         (Array.isArray(value) && value.length)
       )
     }) as keyof typeof dataParamsFilter
+
     if (key) {
-      setFieldFilter(key)
+      // Find for the initially filtered column
+      const filteredColumn = columnsInstance.find(
+        (col) => typeof col === "object" && col.field === key,
+      )
+      const filteredOperators = (filteredColumn &&
+        filteredColumn.filterOperators?.[0]) || { value: "" }
+
+      setFieldFilter({ field: key, operator: filteredOperators?.value })
       setValueFilter(dataParamsFilter[key] as string)
     }
     //eslint-disable-next-line
@@ -542,18 +552,15 @@ const DataviewRecords = ({
     ) {
       return
     }
-    if (!fieldFilter?.trim()?.length) return
+    const fieldFilterName = fieldFilter?.field
+    if (!fieldFilterName?.trim()?.length) return
     setModel({
       filter: {
         items: [
           {
-            field: fieldFilter?.replace("publish_status", "published") || "",
-            operator:
-              fieldFilter === "published"
-                ? "is"
-                : LIST_FILTER_IS.includes(fieldFilter)
-                  ? "isAnyOf"
-                  : "contains",
+            field:
+              fieldFilterName?.replace("publish_status", "published") || "",
+            operator: fieldFilter.operator || "contains",
             value: valueFilter || null,
           },
         ],
@@ -722,7 +729,7 @@ const DataviewRecords = ({
       ...model,
       filter: modelFilter,
     })
-    setFieldFilter(modelFilter.items[0]?.field)
+    setFieldFilter(modelFilter.items[0])
     setValueFilter(modelFilter.items[0]?.value)
     let filter = ""
     if (modelFilter.items[0]?.value) {
@@ -818,20 +825,20 @@ const DataviewRecords = ({
     ]
   }
 
-  const columnsTable = [
-    ...columns(
-      dataviewRecords.items.map((item) => item.id),
-      setListCheck,
-      listCheck,
-      dataviewRecords?.items,
-      checkBoxAll,
-      setCheckBoxAll,
-      handleOpenAttributes,
-      !!user,
-      readonly,
-      loading,
-    ),
-  ].filter(Boolean) as GridColDef[]
+  const columnsInstance = columns(
+    dataviewRecords.items.map((item) => item.id),
+    setListCheck,
+    listCheck,
+    dataviewRecords?.items,
+    checkBoxAll,
+    setCheckBoxAll,
+    handleOpenAttributes,
+    !!user,
+    readonly,
+    loading,
+  )
+
+  const columnsTable = [...columnsInstance].filter(Boolean) as GridColDef[]
 
   return (
     <DataviewRecordsWrapper>
