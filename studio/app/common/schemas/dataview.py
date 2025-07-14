@@ -74,11 +74,12 @@ class DataviewRecord(BaseModel):
 
 class DataviewRecordSearchOptions(BaseModel):
     uid: Optional[str] = Field(
-        Query(default="", description="partial match (experiment_records.uid)")
+        default="", description="partial match (experiment_records.uid)"
     )
     user_name: Optional[str] = Field(
-        Query(default="", description="partial match (user.name)")
+        default="", description="partial match (user.name)"
     )
+    workspace_id: Optional[str] = Field(default="", description="workspace.id")
     workspace_name: Optional[str] = Field(
-        Query(default="", description="partial match (workspace.name)")
+        default="", description="partial match (workspace.name)"
     )

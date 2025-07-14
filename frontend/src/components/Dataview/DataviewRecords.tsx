@@ -86,10 +86,10 @@ type PopupAttributesProps = {
 
 type DataviewProps = {
   user?: UserDTO
-  cellPath: string
   handleRowClick?: GridEventListener<"rowClick">
   readonly?: boolean
   metadataEditable?: boolean
+  workspaceId?: string
 }
 
 const useDebounce = () => {
@@ -207,7 +207,7 @@ const columns = (
       params.row.publish_status ? <CheckCircleIcon color={"success"} /> : null,
     valueOptions: ["Published", "No_Published"],
     type: "singleSelect",
-    width: 120,
+    width: 140,
     filterOperators: getGridSingleSelectOperators().filter(
       (operator) => operator.value === "is",
     ),
@@ -215,7 +215,7 @@ const columns = (
   {
     field: "uid",
     headerName: "ID",
-    width: 160,
+    width: 100,
     filterOperators: [
       {
         label: "Contains",
@@ -249,6 +249,26 @@ const columns = (
     renderCell: (params: { row: DataviewType }) => (
       <Tooltip title={params.row?.owner?.name}>
         <SpanCustom>{params.row?.owner?.name}</SpanCustom>
+      </Tooltip>
+    ),
+  },
+  {
+    field: "workspace_id",
+    headerName: "Ws ID",
+    width: 110,
+    filterOperators: [
+      {
+        label: "Equals",
+        value: "equals",
+        InputComponent: (props: GridFilterInputValueProps) => (
+          <FilterInput {...props} loading={loading} />
+        ),
+      },
+    ],
+    type: "string",
+    renderCell: (params: { row: DataviewType }) => (
+      <Tooltip title={params.row?.workspace?.id}>
+        <SpanCustom>{params.row?.workspace?.id}</SpanCustom>
       </Tooltip>
     ),
   },
@@ -416,6 +436,7 @@ const DataviewRecords = ({
   handleRowClick,
   readonly,
   metadataEditable,
+  workspaceId,
 }: DataviewProps) => {
   const type: keyof TypeData = user ? "private" : "public"
 
@@ -498,9 +519,13 @@ const DataviewRecords = ({
       uid: searchParams.get("uid") || undefined,
       publish_status: searchParams.get("published") || undefined,
       user_name: searchParams.get("user_name") || undefined,
+      workspace_id:
+        searchParams.get("workspace_id") ||
+        (searchParams.size === 0 && workspaceId) ||
+        undefined,
       workspace_name: searchParams.get("workspace_name") || undefined,
     }),
-    [searchParams],
+    [searchParams, workspaceId],
   )
 
   const [model, setModel] = useState<{
