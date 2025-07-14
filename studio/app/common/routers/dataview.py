@@ -50,6 +50,9 @@ def get_search_db_experiment_query(
     if options.user_name:
         query = query.filter(models.User.name.like("%{0}%".format(options.user_name)))
 
+    if options.workspace_id:
+        query = query.filter(models.Workspace.id == int(options.workspace_id))
+
     if options.workspace_name:
         query = query.filter(
             models.Workspace.name.like("%{0}%".format(options.workspace_name))
