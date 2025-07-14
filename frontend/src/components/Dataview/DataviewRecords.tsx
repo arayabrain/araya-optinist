@@ -39,6 +39,7 @@ import {
   GridSortDirection,
   GridSortItem,
   GridSortModel,
+  getGridSingleSelectOperators,
 } from "@mui/x-data-grid"
 
 import { UserDTO } from "api/users/UsersApiDTO"
@@ -209,6 +210,9 @@ const columns = (
     valueOptions: ["Published", "No_Published"],
     type: "singleSelect",
     width: 120,
+    filterOperators: getGridSingleSelectOperators().filter(
+      (operator) => operator.value === "is",
+    ),
   },
   {
     field: "uid",
@@ -544,9 +548,12 @@ const DataviewRecords = ({
         items: [
           {
             field: fieldFilter?.replace("publish_status", "published") || "",
-            operator: LIST_FILTER_IS.includes(fieldFilter || "publish_status")
-              ? "isAnyOf"
-              : "contains",
+            operator:
+              fieldFilter === "published"
+                ? "is"
+                : LIST_FILTER_IS.includes(fieldFilter)
+                  ? "isAnyOf"
+                  : "contains",
             value: valueFilter || null,
           },
         ],
