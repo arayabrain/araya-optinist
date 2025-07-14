@@ -18,7 +18,6 @@ import {
   DialogActions,
   Input,
   Tooltip,
-  Typography,
   IconButton,
 } from "@mui/material"
 import {
@@ -33,7 +32,6 @@ import {
 import { isRejectedWithValue } from "@reduxjs/toolkit"
 
 import { UserDTO } from "api/users/UsersApiDTO"
-import { ConfirmDialog } from "components/common/ConfirmDialog"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
 import PaginationCustom from "components/common/PaginationCustom"
@@ -74,6 +72,7 @@ const columns = (
   handleOpenPopupDel: (id: number, nameWorkspace: string) => void,
   handleNavWorkflow: (id: number) => void,
   handleNavRecords: (id: number) => void,
+  handleNavDataview: (id: number) => void,
   user?: UserDTO,
   onEdit?: (id: number) => void,
 ) => [
@@ -179,7 +178,7 @@ const columns = (
     field: "workflow",
     headerName: "",
     flex: 1,
-    minWidth: 160,
+    minWidth: 120,
     filterable: false, // todo enable when api complete
     sortable: false, // todo enable when api complete
     renderCell: (params: GridRenderCellParams<GridValidRowModel>) => (
@@ -209,6 +208,26 @@ const columns = (
           onClick={() => handleNavRecords(params.row.id)}
         >
           Records
+        </Button>
+      )
+    },
+  },
+  {
+    field: "dataview",
+    headerName: "",
+    flex: 1,
+    minWidth: 100,
+    filterable: false, // todo enable when api complete
+    sortable: false, // todo enable when api complete
+    renderCell: (params: GridRenderCellParams<GridValidRowModel>) => {
+      return (
+        <Button
+          variant="contained"
+          color="primary"
+          size="small"
+          onClick={() => handleNavDataview(params.row.id)}
+        >
+          Dataview
         </Button>
       )
     },
@@ -411,6 +430,11 @@ const Workspaces = () => {
     navigate(`/console/workspaces/${id}`, { state: { tab: 2 } })
   }
 
+  const handleNavDataview = (id: number) => {
+    dispatch(resetVisualizeLayout())
+    navigate(`/console/dataview/${id}`)
+  }
+
   const onEditName = (id: number) => {
     setRowModesModel((pre: GridRowModesModel) => ({
       ...pre,
@@ -540,6 +564,7 @@ const Workspaces = () => {
               handleOpenPopupDel,
               handleNavWorkflow,
               handleNavRecords,
+              handleNavDataview,
               user,
               onEditName,
             ).filter(Boolean)}

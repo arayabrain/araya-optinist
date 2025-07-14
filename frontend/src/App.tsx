@@ -63,7 +63,7 @@ const App: FC = () => {
             </Routes>
           ) : (
             <Routes>
-              <Route path="/" element={<Navigate replace to="/console" />} />
+              <Route path="/" element={<Navigate replace to="/dataview" />} />
               <Route path="/account-deleted" element={<AccountDelete />} />
               <Route path="/login" element={<Login />} />
               <Route path="/reset-password" element={<ResetPassword />} />
@@ -73,7 +73,11 @@ const App: FC = () => {
                 path="/console/account-manager"
                 element={<AccountManager />}
               />
-              <Route path="/console/dataview" element={<Dataview />} />
+              <Route path="/console/dataview" element={<Dataview />}>
+                <Route path="" element={<Dataview />} />
+                <Route path=":workspaceId" element={<Dataview />} />
+              </Route>
+
               <Route path="/console/workspaces">
                 <Route path="" element={<Workspaces />} />
                 <Route path=":workspaceId" element={<Workspace />} />
