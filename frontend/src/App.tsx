@@ -16,6 +16,7 @@ import AccountManager from "pages/AccountManager"
 import Dashboard from "pages/Dashboard"
 import Dataview from "pages/Dataview"
 import Login from "pages/Login"
+import PublicDataview from "pages/PublicDataview"
 import ResetPassword from "pages/ResetPassword"
 import Workspaces from "pages/Workspace"
 import Workspace from "pages/Workspace/Workspace"
@@ -64,6 +65,7 @@ const App: FC = () => {
           ) : (
             <Routes>
               <Route path="/" element={<Navigate replace to="/dataview" />} />
+              <Route path="/dataview" element={<PublicDataview />} />
               <Route path="/account-deleted" element={<AccountDelete />} />
               <Route path="/login" element={<Login />} />
               <Route path="/reset-password" element={<ResetPassword />} />

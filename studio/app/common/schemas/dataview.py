@@ -2,7 +2,6 @@ from datetime import datetime
 from enum import Enum
 from typing import Generic, List, Optional, TypeVar
 
-from fastapi import Query
 from fastapi_pagination import LimitOffsetPage
 from pydantic import BaseModel, Field
 
@@ -79,7 +78,8 @@ class DataviewRecordSearchOptions(BaseModel):
     user_name: Optional[str] = Field(
         default="", description="partial match (user.name)"
     )
-    workspace_id: Optional[str] = Field(default="", description="workspace.id")
+    workspace_id: Optional[int] = Field(default=None, description="workspace.id")
     workspace_name: Optional[str] = Field(
         default="", description="partial match (workspace.name)"
     )
+    publish_status: Optional[int] = Field(default=None, description="")
