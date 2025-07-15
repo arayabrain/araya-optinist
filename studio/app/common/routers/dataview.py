@@ -1,4 +1,4 @@
-from typing import List, Optional, Sequence
+from typing import List, Sequence
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
@@ -15,6 +15,7 @@ from studio.app.common.schemas.dataview import (
     DataviewRecordSearchOptions,
     PageWithHeader,
     PublishFlags,
+    PublishStatus,
 )
 from studio.app.common.schemas.users import User
 
@@ -22,6 +23,13 @@ router = APIRouter(tags=["Dataview"])
 public_router = APIRouter(tags=["Dataview"])
 
 logger = AppLogger.get_logger()
+
+
+RECORDS_SORT_MAPPING = {
+    "user_name": models.User.name,
+    "workspace_name": models.Workspace.name,
+    "last_modified": models.ExperimentRecord.updated_at,
+}
 
 
 def records_pagenate_transformer(items: Sequence) -> Sequence:
@@ -58,7 +66,58 @@ def get_search_db_experiment_query(
             models.Workspace.name.like("%{0}%".format(options.workspace_name))
         )
 
+    if options.publish_status is not None:
+        query = query.filter(
+            models.ExperimentRecord.publish_status == options.publish_status
+        )
+
     return query
+
+
+@public_router.get(
+    "/public/dataview",
+    response_model=PageWithHeader[DataviewRecord],
+    description="""
+- Search and respond to data for display in Public Dataview
+""",
+)
+async def search_public_dataview_records(
+    db: Session = Depends(get_db),
+    options: DataviewRecordSearchOptions = Depends(),
+    sortOptions: SortOptions = Depends(),
+):
+    sa_sort_list = sortOptions.get_sa_sort_list(
+        sa_table=models.ExperimentRecord,
+        mapping=RECORDS_SORT_MAPPING,
+    )
+
+    query = (
+        select(models.ExperimentRecord)
+        .join(
+            models.Workspace,
+            models.Workspace.id == models.ExperimentRecord.workspace_id,
+        )
+        .join(
+            models.User,
+            models.User.id == models.Workspace.user_id,
+        )
+        .filter(
+            models.Workspace.deleted.is_(False),
+            models.User.active.is_(True),
+            models.ExperimentRecord.publish_status == PublishStatus.on.value,
+        )
+    )
+
+    query = get_search_db_experiment_query(query, options)
+    query = query.group_by(models.ExperimentRecord.id).order_by(*sa_sort_list)
+
+    data: PageWithHeader = paginate(
+        session=db,
+        query=query,
+        transformer=records_pagenate_transformer,
+    )
+
+    return data
 
 
 @router.get(
@@ -70,18 +129,13 @@ def get_search_db_experiment_query(
 )
 async def search_dataview_records(
     db: Session = Depends(get_db),
-    publish_status: Optional[bool] = None,
     options: DataviewRecordSearchOptions = Depends(),
     sortOptions: SortOptions = Depends(),
     current_user: User = Depends(get_current_user),
 ):
     sa_sort_list = sortOptions.get_sa_sort_list(
         sa_table=models.ExperimentRecord,
-        mapping={
-            "user_name": models.User.name,
-            "workspace_name": models.Workspace.name,
-            "last_modified": models.ExperimentRecord.updated_at,
-        },
+        mapping=RECORDS_SORT_MAPPING,
     )
 
     query = (
@@ -102,10 +156,6 @@ async def search_dataview_records(
     )
 
     query = get_search_db_experiment_query(query, options)
-
-    if publish_status is not None:
-        query = query.filter(models.ExperimentRecord.publish_status == publish_status)
-
     query = query.group_by(models.ExperimentRecord.id).order_by(*sa_sort_list)
 
     data: PageWithHeader = paginate(
