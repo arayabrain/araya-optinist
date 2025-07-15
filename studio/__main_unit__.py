@@ -103,6 +103,7 @@ app.include_router(users_me.router, dependencies=[Depends(get_current_user)])
 app.include_router(users_search.router, dependencies=[Depends(get_current_user)])
 app.include_router(workflow.router, dependencies=[Depends(get_current_user)])
 app.include_router(workspace.router, dependencies=[Depends(get_current_user)])
+app.include_router(dataview.public_router)
 app.include_router(dataview.router, dependencies=[Depends(get_current_user)])
 
 # optinist routers

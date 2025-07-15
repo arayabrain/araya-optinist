@@ -79,7 +79,7 @@ type PopupAttributesProps = {
   handleClose: () => void
   role?: boolean
   handleChangeAttributes: (e: ChangeEvent<HTMLTextAreaElement>) => void
-  exp_id?: string
+  uid?: string
   onSubmit: () => void
   readonly?: boolean
 }
@@ -232,7 +232,7 @@ const columns = (
       </Tooltip>
     ),
   },
-  {
+  !user && {
     field: "user_name",
     headerName: "Owner",
     width: 160,
@@ -252,7 +252,7 @@ const columns = (
       </Tooltip>
     ),
   },
-  {
+  user && {
     field: "workspace_id",
     headerName: "Ws ID",
     width: 110,
@@ -874,7 +874,6 @@ const DataviewRecords = ({
               <Tooltip title={"bulk publish"} placement={"top"}>
                 <span>
                   <IconButton
-                    size={"large"}
                     onClick={() =>
                       listCheck.length !== 0 &&
                       handleOpenPublishAll(
@@ -899,7 +898,6 @@ const DataviewRecords = ({
               <Tooltip title={"bulk unpublish"} placement={"top"}>
                 <span>
                   <IconButton
-                    size={"medium"}
                     onClick={() =>
                       listCheck.length !== 0 &&
                       handleOpenPublishAll(
@@ -1004,11 +1002,11 @@ const WrapperIcons = styled(Box, {
 })<{ check: boolean }>(() => ({
   display: "flex",
   justifyContent: "end",
-  gap: 10,
+  gap: 0,
   height: 50,
   svg: {
-    width: 35,
-    height: 35,
+    width: 30,
+    height: 30,
   },
   button: {
     height: 50,

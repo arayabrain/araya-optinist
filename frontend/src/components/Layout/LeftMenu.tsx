@@ -6,6 +6,7 @@ import AnalyticsIcon from "@mui/icons-material/Analytics"
 import DashboardIcon from "@mui/icons-material/Dashboard"
 import ManageAccountsIcon from "@mui/icons-material/ManageAccounts"
 import ViewListIcon from "@mui/icons-material/ViewList"
+import WebIcon from "@mui/icons-material/Web"
 import { Box } from "@mui/material"
 import Drawer from "@mui/material/Drawer"
 import List from "@mui/material/List"
@@ -42,6 +43,11 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
   const onClickAccountManager = () => {
     handleDrawerClose()
     navigate("/console/account-manager")
+  }
+
+  const onClickOpenSite = () => {
+    handleDrawerClose()
+    navigate("/")
   }
 
   return (
@@ -83,6 +89,14 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
                 </ListItemButton>
               </ListItem>
             ) : null}
+            <ListItem key="site" disablePadding>
+              <ListItemButton onClick={onClickOpenSite}>
+                <ListItemIcon>
+                  <WebIcon />
+                </ListItemIcon>
+                <ListItemText primary="Open Site" />
+              </ListItemButton>
+            </ListItem>
           </List>
         </Box>
       </Drawer>

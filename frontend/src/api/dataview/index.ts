@@ -7,7 +7,7 @@ export const getExperimentsPublicApi = async (
   params: DataviewParams,
 ): Promise<DataviewDTO> => {
   const paramsNew = stringify(params, { indices: false })
-  const response = await axios.get(`/public/experiments?${paramsNew}`)
+  const response = await axios.get(`/public/dataview?${paramsNew}`)
   return response.data
 }
 
