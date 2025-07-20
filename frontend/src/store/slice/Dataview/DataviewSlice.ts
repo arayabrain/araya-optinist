@@ -2,7 +2,7 @@ import { createSlice, isAnyOf } from "@reduxjs/toolkit"
 
 import {
   getDataviewRecords,
-  getExperimentsPublicDatabase,
+  getPublicDataviewRecords,
   postPublish,
   postPublishAll,
   putAttributes,
@@ -48,7 +48,7 @@ export const databaseSlice = createSlice({
         state.data.private = initData
         state.loading = true
       })
-      .addCase(getExperimentsPublicDatabase.pending, (state) => {
+      .addCase(getPublicDataviewRecords.pending, (state) => {
         state.data.public = initData
         state.loading = true
       })
@@ -67,7 +67,7 @@ export const databaseSlice = createSlice({
         state.loading = false
       })
       .addMatcher(
-        isAnyOf(getExperimentsPublicDatabase.fulfilled),
+        isAnyOf(getPublicDataviewRecords.fulfilled),
         (state, action) => {
           state.data.public = action.payload
           state.loading = false
@@ -76,7 +76,7 @@ export const databaseSlice = createSlice({
       .addMatcher(
         isAnyOf(
           getDataviewRecords.rejected,
-          getExperimentsPublicDatabase.rejected,
+          getPublicDataviewRecords.rejected,
 
           postPublish.fulfilled,
           postPublish.rejected,
