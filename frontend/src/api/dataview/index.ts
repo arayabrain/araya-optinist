@@ -3,7 +3,7 @@ import { stringify } from "qs"
 import { DataviewDTO, DataviewParams } from "store/slice/Dataview/DataviewType"
 import axios from "utils/axios"
 
-export const getExperimentsPublicApi = async (
+export const getPublicDataviewRecordsApi = async (
   params: DataviewParams,
 ): Promise<DataviewDTO> => {
   const paramsNew = stringify(params, { indices: false })

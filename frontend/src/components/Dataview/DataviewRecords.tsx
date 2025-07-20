@@ -51,7 +51,7 @@ import SwitchCustom from "components/common/SwitchCustom"
 import { DELAY_TIME_INPUT_CONFIRMED } from "const/Form"
 import {
   getDataviewRecords,
-  getExperimentsPublicDatabase,
+  getPublicDataviewRecords,
   postPublish,
   postPublishAll,
   putAttributes,
@@ -539,7 +539,7 @@ const DataviewRecords = ({
   })
 
   const fetchApi = () => {
-    const api = !user ? getExperimentsPublicDatabase : getDataviewRecords
+    const api = !user ? getPublicDataviewRecords : getDataviewRecords
     const newPublish = getPublishStatusValue(dataParamsFilter.publish_status)
     dispatch(
       api({ ...dataParamsFilter, publish_status: newPublish, ...dataParams }),
