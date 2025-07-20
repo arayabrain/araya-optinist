@@ -2,7 +2,7 @@ import { createAsyncThunk } from "@reduxjs/toolkit"
 
 import {
   getDataviewRecordsApi,
-  getExperimentsPublicApi,
+  getPublicDataviewRecordsApi,
   postPublishAllApi,
   postPublishApi,
   putAttributesApi,
@@ -26,15 +26,15 @@ export const getDataviewRecords = createAsyncThunk<DataviewDTO, DataviewParams>(
   },
 )
 
-export const getExperimentsPublicDatabase = createAsyncThunk<
+export const getPublicDataviewRecords = createAsyncThunk<
   DataviewDTO,
   DataviewParams
 >(
-  `${DATAVIEW_SLICE_NAME}/getExperimentsPublicList`,
+  `${DATAVIEW_SLICE_NAME}/getPublicDataviewRecords`,
   async (params, thunkAPI) => {
     const { rejectWithValue } = thunkAPI
     try {
-      const response = await getExperimentsPublicApi(params)
+      const response = await getPublicDataviewRecordsApi(params)
       return response
     } catch (e) {
       return rejectWithValue(e)
