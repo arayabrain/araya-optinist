@@ -4,12 +4,12 @@ export type OrderBy = "ASC" | "DESC" | ""
 
 export type DataviewType = {
   id: number
-  uid?: string
+  uid: string
   owner: {
     name?: string
   }
   workspace: {
-    id?: number
+    id: number
     name?: string
   }
   attributes?: object

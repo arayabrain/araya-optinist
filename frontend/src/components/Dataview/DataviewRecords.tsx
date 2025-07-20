@@ -14,6 +14,8 @@ import { enqueueSnackbar, VariantType } from "notistack"
 
 import AssignmentOutlinedIcon from "@mui/icons-material/AssignmentOutlined"
 import CheckCircleIcon from "@mui/icons-material/CheckCircle"
+import ImageIcon from "@mui/icons-material/Image"
+import InsightsIcon from "@mui/icons-material/Insights"
 import PublicIcon from "@mui/icons-material/Public"
 import PublicOffIcon from "@mui/icons-material/PublicOff"
 import {
@@ -44,10 +46,10 @@ import {
 
 import { UserDTO } from "api/users/UsersApiDTO"
 import { ConfirmDialog } from "components/common/ConfirmDialog"
-// import DialogImage from "components/common/DialogImage" // TODO: Implemented later
 import Loading from "components/common/Loading"
 import PaginationCustom from "components/common/PaginationCustom"
 import SwitchCustom from "components/common/SwitchCustom"
+import OutputsView from "components/Dataview/OutputsView"
 import { DELAY_TIME_INPUT_CONFIRMED } from "const/Form"
 import {
   getDataviewRecords,
@@ -146,7 +148,7 @@ const FilterInput = ({
   )
 }
 
-const columns = (
+const defineColumns = (
   listIdData: number[],
   setListCheck: (value: number[]) => void,
   listCheck: number[],
@@ -154,6 +156,7 @@ const columns = (
   checkBoxAll: boolean,
   setCheckBoxAll: (value: boolean) => void,
   handleOpenAttributes: (value: string, id: number) => void,
+  handleOpenOutputsView: (uid: string) => void,
   user: boolean,
   readonly?: boolean,
   loading: boolean = false,
@@ -319,7 +322,11 @@ const columns = (
     width: 160,
     filterable: false,
     sortable: false,
-    renderCell: () => <SpanCustom>(N/A)</SpanCustom>,
+    renderCell: () => (
+      <SpanCustom>
+        <ImageIcon color={"primary"} />
+      </SpanCustom>
+    ),
   },
   {
     field: "output_data",
@@ -327,7 +334,19 @@ const columns = (
     width: 160,
     filterable: false,
     sortable: false,
-    renderCell: () => <SpanCustom>(N/A)</SpanCustom>,
+    renderCell: (params: { row: DataviewType }) => {
+      return (
+        <Box
+          sx={{
+            cursor: "pointer",
+            display: "flex",
+          }}
+          onClick={() => handleOpenOutputsView(params?.row?.uid)}
+        >
+          <InsightsIcon color={"primary"} />
+        </Box>
+      )
+    },
   },
   {
     field: "details",
@@ -466,11 +485,12 @@ const DataviewRecords = ({
   const [checkBoxAll, setCheckBoxAll] = useState(false)
   const [dataDialog, setDataDialog] = useState<{
     id?: number
+    uid?: string
     type?: string
     data?: string | string[]
-    expId?: string
-    nameCol?: string
   }>({
+    id: undefined,
+    uid: undefined,
     type: "",
     data: undefined,
   })
@@ -635,8 +655,15 @@ const DataviewRecords = ({
     setCheckBoxAll(false)
   }, [offset, limit, dataParamsFilter])
 
+  const handleOpenOutputsView = (uid?: string | undefined) => {
+    setDataDialog({
+      uid: uid,
+      type: "outputs",
+    })
+  }
+
   const handleCloseDialog = () => {
-    setDataDialog({ type: "", data: undefined })
+    setDataDialog({})
   }
 
   const handleOpenAttributes = (data: string, id: number) => {
@@ -850,7 +877,7 @@ const DataviewRecords = ({
     ]
   }
 
-  const columnsInstance = columns(
+  const columnsInstance = defineColumns(
     dataviewRecords.items.map((item) => item.id),
     setListCheck,
     listCheck,
@@ -858,6 +885,7 @@ const DataviewRecords = ({
     checkBoxAll,
     setCheckBoxAll,
     handleOpenAttributes,
+    handleOpenOutputsView,
     !!user,
     readonly,
     loading,
@@ -952,15 +980,11 @@ const DataviewRecords = ({
         </Box>
       ) : null}
 
-      {/* // TODO: Implemented later
-      <DialogImage
-        open={dataDialog.type === "image"}
-        data={dataDialog.data}
-        expId={dataDialog.expId}
-        nameCol={dataDialog.nameCol}
-        handleCloseDialog={handleCloseDialog}
+      <OutputsView
+        open={dataDialog.type === "outputs"}
+        uid={dataDialog.uid || ""}
+        handleClose={handleCloseDialog}
       />
-      */}
 
       <PopupAttributes
         handleChangeAttributes={handleChangeAttributes}
