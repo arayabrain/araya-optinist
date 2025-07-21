@@ -49,6 +49,7 @@ import { ConfirmDialog } from "components/common/ConfirmDialog"
 import Loading from "components/common/Loading"
 import PaginationCustom from "components/common/PaginationCustom"
 import SwitchCustom from "components/common/SwitchCustom"
+import InputsView from "components/Dataview/InputsView"
 import OutputsView from "components/Dataview/OutputsView"
 import { DELAY_TIME_INPUT_CONFIRMED } from "const/Form"
 import {
@@ -156,7 +157,8 @@ const defineColumns = (
   checkBoxAll: boolean,
   setCheckBoxAll: (value: boolean) => void,
   handleOpenAttributes: (value: string, id: number) => void,
-  handleOpenOutputsView: (uid: string) => void,
+  handleOpenInputsView: (workspaceId: number, uid: string) => void,
+  handleOpenOutputsView: (workspaceId: number, uid: string) => void,
   user: boolean,
   readonly?: boolean,
   loading: boolean = false,
@@ -322,11 +324,21 @@ const defineColumns = (
     width: 160,
     filterable: false,
     sortable: false,
-    renderCell: () => (
-      <SpanCustom>
-        <ImageIcon color={"primary"} />
-      </SpanCustom>
-    ),
+    renderCell: (params: { row: DataviewType }) => {
+      return (
+        <Box
+          sx={{
+            cursor: "pointer",
+            display: "flex",
+          }}
+          onClick={() =>
+            handleOpenInputsView(params?.row?.workspace.id, params?.row?.uid)
+          }
+        >
+          <ImageIcon color={"primary"} />
+        </Box>
+      )
+    },
   },
   {
     field: "output_data",
@@ -341,7 +353,9 @@ const defineColumns = (
             cursor: "pointer",
             display: "flex",
           }}
-          onClick={() => handleOpenOutputsView(params?.row?.uid)}
+          onClick={() =>
+            handleOpenOutputsView(params?.row?.workspace.id, params?.row?.uid)
+          }
         >
           <InsightsIcon color={"primary"} />
         </Box>
@@ -485,6 +499,7 @@ const DataviewRecords = ({
   const [checkBoxAll, setCheckBoxAll] = useState(false)
   const [dataDialog, setDataDialog] = useState<{
     id?: number
+    workspaceId?: number
     uid?: string
     type?: string
     data?: string | string[]
@@ -655,10 +670,25 @@ const DataviewRecords = ({
     setCheckBoxAll(false)
   }, [offset, limit, dataParamsFilter])
 
-  const handleOpenOutputsView = (uid?: string | undefined) => {
+  const handleOpenInputsView = (
+    workspaceId: number | undefined,
+    uid: string | undefined,
+  ) => {
     setDataDialog({
+      workspaceId: workspaceId,
       uid: uid,
-      type: "outputs",
+      type: "inputs_view",
+    })
+  }
+
+  const handleOpenOutputsView = (
+    workspaceId: number | undefined,
+    uid: string | undefined,
+  ) => {
+    setDataDialog({
+      workspaceId: workspaceId,
+      uid: uid,
+      type: "outputs_view",
     })
   }
 
@@ -885,6 +915,7 @@ const DataviewRecords = ({
     checkBoxAll,
     setCheckBoxAll,
     handleOpenAttributes,
+    handleOpenInputsView,
     handleOpenOutputsView,
     !!user,
     readonly,
@@ -980,9 +1011,17 @@ const DataviewRecords = ({
         </Box>
       ) : null}
 
+      <InputsView
+        open={dataDialog.type === "inputs_view"}
+        workspaceId={dataDialog.workspaceId}
+        uid={dataDialog.uid}
+        handleClose={handleCloseDialog}
+      />
+
       <OutputsView
-        open={dataDialog.type === "outputs"}
-        uid={dataDialog.uid || ""}
+        open={dataDialog.type === "outputs_view"}
+        workspaceId={dataDialog.workspaceId}
+        uid={dataDialog.uid}
         handleClose={handleCloseDialog}
       />
 

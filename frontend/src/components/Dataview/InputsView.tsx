@@ -13,46 +13,37 @@ import {
 } from "@mui/material"
 
 import { selectNodeLabelById } from "store/slice/FlowElement/FlowElementSelectors"
-import { selectPipelineNodeResultSuccessList } from "store/slice/Pipeline/PipelineSelectors"
+import { getFileName } from "store/slice/FlowElement/FlowElementUtils"
+import { selectInputNode } from "store/slice/InputNode/InputNodeSelectors"
 import { reproduceWorkflow } from "store/slice/Workflow/WorkflowActions"
 import { RootState, AppDispatch } from "store/store"
 
-type OutputsViewProps = {
+type InputsViewProps = {
   open: boolean
   workspaceId: number | undefined
   uid: string | undefined
   handleClose: () => void
 }
 
-const OutputsView = ({
+const InputsView = ({
   open,
   workspaceId,
   uid,
   handleClose,
-}: OutputsViewProps) => {
+}: InputsViewProps) => {
   const dispatch = useDispatch<AppDispatch>()
 
-  const algorithmNodeOutputPathInfoList = useSelector((state: RootState) => {
-    if (uid != null) {
-      const runResult = selectPipelineNodeResultSuccessList(state)
-      return runResult.map(({ nodeId, nodeResult }) => {
-        return {
-          nodeId,
-          nodeName: selectNodeLabelById(nodeId)(state) || nodeId,
-          paths: Object.entries(nodeResult.outputPaths).map(
-            ([outputKey, value]) => {
-              return {
-                outputKey,
-                filePath: value.path,
-                type: value.type,
-              }
-            },
-          ),
-        }
-      })
-    } else {
-      return []
-    }
+  const inputNodeData = useSelector((state: RootState) => {
+    const inputNodes = selectInputNode(state)
+    const filteredInputNodes = Object.entries(inputNodes)
+      .map(([nodeId, inputNode]) => ({
+        nodeId,
+        filePath: inputNode.selectedFilePath,
+        fileType: inputNode.fileType,
+        nodeName: selectNodeLabelById(nodeId)(state) || nodeId,
+      }))
+      .filter(({ filePath }) => filePath != null)
+    return filteredInputNodes
   })
 
   useEffect(() => {
@@ -83,26 +74,36 @@ const OutputsView = ({
     return
   }
 
-  const renderAlgorithmNodeOutputList = (): ReactElement[] => {
+  const renderInputNodeList = (): ReactElement[] => {
     const menuItemList: ReactElement[] = []
-
-    // Render Algorithm Node Output Data
-    algorithmNodeOutputPathInfoList.forEach((pathInfo) => {
-      menuItemList.push(
-        <ListSubheader key={`algo-header-${pathInfo.nodeId}`}>
-          <Divider textAlign="center">{pathInfo.nodeName}</Divider>
-        </ListSubheader>,
-      )
-      pathInfo.paths.forEach((outputPath) => {
+    inputNodeData.forEach((nodeData) => {
+      const filePath = nodeData.filePath
+      if (Array.isArray(filePath)) {
         menuItemList.push(
-          <ListItem key={`${pathInfo.nodeId}-${outputPath.outputKey}`}>
+          <ListSubheader key={`header-${nodeData.nodeId}`}>
+            <Divider textAlign="center">{nodeData.nodeName}</Divider>
+          </ListSubheader>,
+        )
+        filePath.forEach((pathElm, index) => {
+          menuItemList.push(
+            <ListItem key={`${nodeData.nodeId}-${index}`}>
+              <ListItemText
+                primary={getFileName(pathElm)}
+                secondary={pathElm}
+              />
+            </ListItem>,
+          )
+        })
+      } else {
+        menuItemList.push(
+          <ListItem key={nodeData.nodeId}>
             <ListItemText
-              primary={`${outputPath.outputKey} (${outputPath.type})`}
-              secondary={outputPath.filePath}
+              primary={nodeData.nodeName}
+              secondary={filePath || "No file path"}
             />
           </ListItem>,
         )
-      })
+      }
     })
 
     return menuItemList
@@ -111,11 +112,11 @@ const OutputsView = ({
   return (
     <Box>
       {open ? (
-        <OutputsViewWrapper
+        <InputsViewWrapper
           sx={{ position: "absolute", zIndex: 1 }}
           onClick={handleCloseWrapper}
         >
-          <OutputsViewContentWrapper
+          <InputsViewContentWrapper
             sx={{ position: "absolute", zIndex: 10000 }}
           >
             <Box
@@ -127,27 +128,27 @@ const OutputsView = ({
               }}
             >
               <Box sx={{ marginBottom: 2, fontWeight: "bold" }}>
-                Algorithm Node Outputs [uid: {uid}]
+                Input Node Data [uid: {uid}]
               </Box>
-              {algorithmNodeOutputPathInfoList.length > 0 ? (
-                <List>{renderAlgorithmNodeOutputList()}</List>
+              {inputNodeData.length > 0 ? (
+                <List>{renderInputNodeList()}</List>
               ) : (
                 <Box sx={{ textAlign: "center", color: "gray" }}>
-                  No output data available
+                  No input node data available
                 </Box>
               )}
             </Box>
             <ButtonClose onClick={handleClose}>
               <CloseIcon />
             </ButtonClose>
-          </OutputsViewContentWrapper>
-        </OutputsViewWrapper>
+          </InputsViewContentWrapper>
+        </InputsViewWrapper>
       ) : null}
     </Box>
   )
 }
 
-const OutputsViewWrapper = styled(Box)(() => ({
+const InputsViewWrapper = styled(Box)(() => ({
   position: "fixed",
   top: 0,
   left: 0,
@@ -159,7 +160,7 @@ const OutputsViewWrapper = styled(Box)(() => ({
   alignItems: "center",
 }))
 
-const OutputsViewContentWrapper = styled(Box)(() => ({
+const InputsViewContentWrapper = styled(Box)(() => ({
   position: "relative",
   display: "flex",
   background: "#FFF",
@@ -186,4 +187,4 @@ const ButtonClose = styled("button")(() => ({
   },
 }))
 
-export default OutputsView
+export default InputsView
