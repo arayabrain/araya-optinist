@@ -179,6 +179,7 @@ export const inputNodeSlice = createSlice({
         }
       })
       .addCase(fetchWorkflow.rejected, () => initialState)
+      .addCase(reproduceWorkflow.rejected, () => initialState)
       .addCase(importWorkflowConfig.fulfilled, (_, action) => {
         const newState: InputNode = {}
         Object.values(action.payload.nodeDict)

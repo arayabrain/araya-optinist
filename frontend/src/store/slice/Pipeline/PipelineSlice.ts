@@ -146,7 +146,11 @@ export const pipelineSlice = createSlice({
         }
       })
       .addMatcher(
-        isAnyOf(fetchWorkflow.rejected, clearFlowElements),
+        isAnyOf(
+          fetchWorkflow.rejected,
+          reproduceWorkflow.rejected,
+          clearFlowElements,
+        ),
         () => initialState,
       )
   },
