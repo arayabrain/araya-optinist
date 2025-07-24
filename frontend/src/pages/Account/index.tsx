@@ -137,6 +137,10 @@ const Account = () => {
     setIsEditName(false)
   }
 
+  const onClickUpgrade = () => {
+    navigate("/console/subscription")
+  }
+
   const getRole = (role?: number) => {
     if (!role) return
     let newRole = ""
@@ -220,6 +224,29 @@ const Account = () => {
       <BoxFlex>
         <TitleData>Bucket name</TitleData>
         <BoxData>{user?.attributes?.remote_bucket_name || "-"}</BoxData>
+      </BoxFlex>
+      <BoxFlex>
+        <TitleData>Membership</TitleData>
+        {/* TODO: Fix this to depends on user subscription */}
+        <BoxData>FREE</BoxData>
+        <Button
+          variant="contained"
+          color="primary"
+          sx={{ ml: 2 }}
+          onClick={onClickUpgrade}
+        >
+          Upgrade
+        </Button>
+      </BoxFlex>
+      {/* TODO: Fix to be dynamic code */}
+      <BoxFlex>
+        <TitleData>Payment Method</TitleData>
+        <>
+          <Box>Credit Card</Box>
+          <IconButton sx={{ ml: 1 }}>
+            <Edit />
+          </IconButton>
+        </>
       </BoxFlex>
       <BoxFlex sx={{ justifyContent: "space-between", mt: 10, maxWidth: 600 }}>
         <Button variant="contained" color="primary" onClick={onChangePwClick}>
