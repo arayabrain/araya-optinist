@@ -85,13 +85,15 @@ pymatreader = "^0.0.32"
 xmltodict = "*"
 boto3 = "^1.38.27"
 pytest-asyncio = "^0.24.0"
-aioboto3 = "7.0.0"
+aioboto3 = "^15.0.0"
 matplotlib = "3.7.*"
 concurrent-log-handler = "^0.9.25"
 numpydoc = "*"
 yapf = "*"
 setuptools = "<70"
 snakemake-executor-plugin-aws-batch = "^0.2.1"
+snakemake-storage-plugin-fs = "^1.1.2"
+snakemake-storage-plugin-s3 = "*"
 
 [tool.poetry.group.dev]
 optional = true
@@ -139,6 +141,9 @@ testpaths = "/app/studio/tests"
 env = [
   "OPTINIST_DIR=/app/studio/test_data",
   "IS_TEST=True",
+  "REMOTE_STORAGE_TYPE=1",  # See .env
+  "MOCK_STORAGE_DIR=/tmp/studio/mock_storage",  # See .env
+
 ]
 filterwarnings = [
     "ignore:pkg_resources is deprecated as an API:DeprecationWarning",
