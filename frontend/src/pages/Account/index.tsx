@@ -26,6 +26,7 @@ import { ROLE } from "@types"
 import ChangePasswordModal from "components/Account/ChangePasswordModal"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
+import { getUserSubscription } from "store/slice/Subscriptions/SubscriptionActions"
 import {
   deleteMe,
   getMe,
@@ -35,6 +36,17 @@ import {
 import { selectCurrentUser, selectLoading } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
+
+interface UserSubscription {
+  id: number
+  plan_id: number
+  user_id: number
+  expiration: string
+  plan_name: string
+  plan_price: number
+  created_at: string
+  updated_at: string
+}
 
 const Account = () => {
   const user = useSelector(selectCurrentUser)
@@ -46,6 +58,14 @@ const Account = () => {
   const [isChangePwModalOpen, setIsChangePwModalOpen] = useState(false)
   const [isEditName, setIsEditName] = useState(false)
   const [isName, setIsName] = useState<string>()
+
+  // Add subscription state
+  const [userSubscription, setUserSubscription] =
+    useState<UserSubscription | null>(null)
+  const [subscriptionLoading, setSubscriptionLoading] = useState(false)
+  const [subscriptionError, setSubscriptionError] = useState<string | null>(
+    null,
+  )
 
   const ref = useRef<HTMLInputElement>(null)
 
@@ -62,8 +82,40 @@ const Account = () => {
   useEffect(() => {
     if (!user) return
     setIsName(user.name)
+
+    // Fetch user subscription when user is loaded
+    if (user.id) {
+      loadUserSubscription()
+    }
     //eslint-disable-next-line
-  }, [])
+  }, [user])
+
+  const loadUserSubscription = async () => {
+    if (!user?.id) return
+
+    setSubscriptionLoading(true)
+    setSubscriptionError(null)
+
+    try {
+      const response = await dispatch(getUserSubscription(user.id))
+
+      if (isRejectedWithValue(response)) {
+        // Handle error case
+        console.error("Failed to fetch subscription:", response.payload)
+        setSubscriptionError("Failed to load subscription data")
+        setUserSubscription(null)
+      } else {
+        // Handle success case
+        setUserSubscription(response.payload || null)
+      }
+    } catch (error) {
+      console.error("Error fetching subscription:", error)
+      setSubscriptionError("Failed to load subscription data")
+      setUserSubscription(null)
+    } finally {
+      setSubscriptionLoading(false)
+    }
+  }
 
   const handleCloseDeleteComfirmModal = () => {
     setIsDeleteConfirmModalOpen(false)
@@ -167,6 +219,74 @@ const Account = () => {
     }
   }
 
+  // Helper function to get membership status
+  const getMembershipStatus = () => {
+    if (subscriptionLoading) {
+      return "Loading..."
+    }
+
+    if (subscriptionError) {
+      return "Error loading subscription"
+    }
+
+    if (!userSubscription) {
+      return "FREE"
+    }
+
+    // Check if subscription is expired
+    const now = new Date()
+    const expirationDate = new Date(userSubscription.expiration)
+
+    if (expirationDate <= now) {
+      return "EXPIRED"
+    }
+
+    return userSubscription.plan_name.toUpperCase()
+  }
+
+  // Helper function to get membership button text and action
+  const getMembershipButton = () => {
+    const status = getMembershipStatus()
+
+    if (status === "FREE" || status === "EXPIRED") {
+      return {
+        text: "Upgrade",
+        action: onClickUpgrade,
+        color: "primary" as const,
+      }
+    }
+
+    return {
+      text: "Manage",
+      action: onClickUpgrade,
+      color: "secondary" as const,
+    }
+  }
+
+  // Helper function to format expiration date
+  const getExpirationInfo = () => {
+    if (!userSubscription) return null
+
+    const expirationDate = new Date(userSubscription.expiration)
+    const now = new Date()
+
+    if (expirationDate <= now) {
+      return (
+        <Typography variant="caption" color="error" sx={{ ml: 1 }}>
+          (Expired on {expirationDate.toLocaleDateString()})
+        </Typography>
+      )
+    }
+
+    return (
+      <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+        (Expires on {expirationDate.toLocaleDateString()})
+      </Typography>
+    )
+  }
+
+  const membershipButton = getMembershipButton()
+
   return (
     <AccountWrapper>
       <DeleteConfirmModal
@@ -227,15 +347,23 @@ const Account = () => {
       </BoxFlex>
       <BoxFlex>
         <TitleData>Membership</TitleData>
-        {/* TODO: Fix this to depends on user subscription */}
-        <BoxData>FREE</BoxData>
+        <Box
+          sx={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-start",
+          }}
+        >
+          <BoxData>{getMembershipStatus()}</BoxData>
+          {getExpirationInfo()}
+        </Box>
         <Button
           variant="contained"
-          color="primary"
+          color={membershipButton.color}
           sx={{ ml: 2 }}
-          onClick={onClickUpgrade}
+          onClick={membershipButton.action}
         >
-          Upgrade
+          {membershipButton.text}
         </Button>
       </BoxFlex>
       {/* TODO: Fix to be dynamic code */}

@@ -5,6 +5,10 @@ export const getSubscriptionPlansApi = async (): Promise<
   SubscriptionPlanDTO[]
 > => {
   const response = await axios.get("/subscriptions/plans")
-  console.log("getSubscriptionPlansApi response:", response.data)
+  return response.data
+}
+
+export const getUserSubscriptionApi = async (user_id: number) => {
+  const response = await axios.get(`/subscriptions/user/${user_id}`)
   return response.data
 }

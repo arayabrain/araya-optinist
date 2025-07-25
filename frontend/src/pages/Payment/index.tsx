@@ -206,7 +206,8 @@ const PremiumCheckout = () => {
     if (selectedPlan?.formatted_price && formData.planType === "monthly") {
       return selectedPlan.formatted_price
     }
-    return `$${price.toFixed(2)}`
+    // Format price assuming it's stored in cents (divide by 100)
+    return `$${(price / 100).toFixed(2)}`
   }
 
   const calculateNextRenewalDate = () => {

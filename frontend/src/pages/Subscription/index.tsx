@@ -11,7 +11,10 @@ import {
   CircularProgress,
 } from "@mui/material"
 
-import { getSubscriptionPlan } from "store/slice/Subscriptions/SubscriptionActions"
+import {
+  getSubscriptionPlan,
+  getUserSubscription,
+} from "store/slice/Subscriptions/SubscriptionActions"
 import { selectCurrentUser, selectLoading } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 
@@ -30,15 +33,6 @@ interface UserSubscription {
   expiration: string
   plan_name: string
   plan_price: number
-}
-
-// API functions (you'll need to implement these based on your backend)
-const fetchSubscriptionPlans = async (): Promise<SubscriptionPlan[]> => {
-  const response = await fetch("/api/subscription-plans")
-  if (!response.ok) {
-    throw new Error("Failed to fetch subscription plans")
-  }
-  return response.json()
 }
 
 const MembershipPlans = () => {
@@ -66,10 +60,10 @@ const MembershipPlans = () => {
         setPlans(plansData.payload as SubscriptionPlan[])
 
         // Fetch user's current subscription if user exists
-        // if (user?.id) {
-        //   const userSub = await fetchUserSubscription(user.id)
-        //   setUserSubscription(userSub)
-        // }
+        if (user?.id) {
+          const userSub = await dispatch(getUserSubscription(user.id))
+          setUserSubscription(userSub.payload as UserSubscription)
+        }
       } catch (err) {
         console.error("Error loading subscription data:", err)
         setError(

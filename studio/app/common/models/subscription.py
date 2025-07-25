@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import BIGINT, String, UniqueConstraint
+from sqlalchemy import BIGINT, DateTime, String, UniqueConstraint
 from sqlalchemy.sql import func
 from sqlmodel import Column, Field, SQLModel
 
@@ -23,3 +23,23 @@ class SubscriptionPlans(SQLModel, table=True):
     @property
     def formatted_price(self) -> str:
         return f"${self.price:.2f}" if self.price else "Free"
+
+
+class UserSubscription(SQLModel, table=True):
+    __tablename__ = "subscription_users"
+    __table_args__ = (UniqueConstraint("id", name="idx_id"),)
+
+    id: Optional[int] = Field(
+        sa_column=Column(BIGINT, primary_key=True, nullable=False), default=None
+    )
+    plan_id: int = Field(sa_column=Column(BIGINT, nullable=False))
+    user_id: int = Field(sa_column=Column(BIGINT, nullable=False))
+    expiration: datetime = Field(sa_column=Column(DateTime, nullable=False))
+    created_at: Optional[datetime] = Field(
+        default_factory=datetime.utcnow,
+        sa_column_kwargs={"server_default": func.current_timestamp()},
+    )
+    updated_at: Optional[datetime] = Field(
+        default_factory=datetime.utcnow,
+        sa_column_kwargs={"server_default": func.current_timestamp()},
+    )
