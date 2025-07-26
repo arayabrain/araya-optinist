@@ -1,5 +1,5 @@
-import { useEffect, MouseEvent, ReactElement } from "react"
-import { useDispatch } from "react-redux"
+import { useEffect, MouseEvent, ReactElement, memo } from "react"
+import { useDispatch, useSelector } from "react-redux"
 
 import CloseIcon from "@mui/icons-material/Close"
 import {
@@ -10,8 +10,18 @@ import {
   List,
   ListItem,
   ListItemText,
+  Grid,
+  Paper,
+  Typography,
 } from "@mui/material"
 
+import { DisplayDataItem } from "components/Workspace/Visualize/DisplayDataItem"
+import { DATA_TYPE } from "store/slice/DisplayData/DisplayDataType"
+import { selectVisualizeItemIdForWorkflowDialog } from "store/slice/VisualizeItem/VisualizeItemSelectors"
+import {
+  addItemForWorkflowDialog,
+  deleteAllItemForWorkflowDialog,
+} from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { reproduceWorkflow } from "store/slice/Workflow/WorkflowActions"
 import { AppDispatch } from "store/store"
 
@@ -24,6 +34,104 @@ export type NodesViewProps = {
   data: unknown[]
   renderData: () => ReactElement[]
   emptyMessage: string
+}
+
+export interface VisualizationItemData {
+  nodeId: string
+  filePath: string
+  dataType: DATA_TYPE
+  title: string
+  subtitle?: string
+  itemKey: string
+}
+
+interface BaseDisplayDataViewProps {
+  nodeId: string
+  filePath: string
+  dataType: DATA_TYPE
+}
+
+export const BaseDisplayDataView = memo(function BaseDisplayDataView({
+  nodeId,
+  filePath,
+  dataType,
+}: BaseDisplayDataViewProps) {
+  const dispatch = useDispatch<AppDispatch>()
+  const itemId = useSelector(
+    selectVisualizeItemIdForWorkflowDialog(nodeId, filePath, dataType),
+  )
+
+  useEffect(() => {
+    if (itemId === null) {
+      dispatch(addItemForWorkflowDialog({ nodeId, filePath, dataType }))
+    }
+  }, [dispatch, nodeId, filePath, dataType, itemId])
+
+  if (itemId != null) {
+    return <DisplayDataItem itemId={itemId} />
+  } else {
+    return (
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "100%",
+        }}
+      >
+        <Typography color="textSecondary">Loading...</Typography>
+      </Box>
+    )
+  }
+})
+
+export const renderVisualizationItems = (
+  items: VisualizationItemData[],
+): ReactElement[] => {
+  return items.map((item) => (
+    <Grid item xs={12} md={6} lg={4} key={item.itemKey}>
+      <Paper
+        elevation={2}
+        sx={{
+          p: 2,
+          height: 400,
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        <Typography variant="h6" gutterBottom>
+          {item.title}
+        </Typography>
+        {item.subtitle && (
+          <Typography variant="body2" color="textSecondary" gutterBottom>
+            {item.subtitle}
+          </Typography>
+        )}
+        <Typography variant="body2" color="textSecondary" gutterBottom noWrap>
+          {item.filePath}
+        </Typography>
+        <Box sx={{ flexGrow: 1, minHeight: 280 }}>
+          <BaseDisplayDataView
+            nodeId={item.nodeId}
+            filePath={item.filePath}
+            dataType={item.dataType}
+          />
+        </Box>
+      </Paper>
+    </Grid>
+  ))
+}
+
+export const useVisualizationCleanup = (open: boolean) => {
+  const dispatch = useDispatch<AppDispatch>()
+
+  useEffect(() => {
+    return () => {
+      if (!open) {
+        dispatch(deleteAllItemForWorkflowDialog())
+      }
+    }
+  }, [dispatch, open])
 }
 
 const BaseNodesView = ({

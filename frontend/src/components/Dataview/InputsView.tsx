@@ -1,22 +1,17 @@
-import { ReactElement, memo, useEffect } from "react"
-import { useSelector, useDispatch } from "react-redux"
+import { ReactElement } from "react"
+import { useSelector } from "react-redux"
 
-import { Box, Grid, Paper, Typography } from "@mui/material"
+import { Grid } from "@mui/material"
 
-import BaseNodesView from "components/Dataview/BaseNodesView"
-import { DisplayDataItem } from "components/Workspace/Visualize/DisplayDataItem"
+import BaseNodesView, {
+  renderVisualizationItems,
+  useVisualizationCleanup,
+  VisualizationItemData,
+} from "components/Dataview/BaseNodesView"
 import { selectNodeLabelById } from "store/slice/FlowElement/FlowElementSelectors"
 import { getFileName } from "store/slice/FlowElement/FlowElementUtils"
-import {
-  selectInputNode,
-  selectInputNodeFileType,
-} from "store/slice/InputNode/InputNodeSelectors"
-import { selectVisualizeItemIdForWorkflowDialog } from "store/slice/VisualizeItem/VisualizeItemSelectors"
-import {
-  addItemForWorkflowDialog,
-  deleteAllItemForWorkflowDialog,
-} from "store/slice/VisualizeItem/VisualizeItemSlice"
-import { RootState, AppDispatch } from "store/store"
+import { selectInputNode } from "store/slice/InputNode/InputNodeSelectors"
+import { RootState } from "store/store"
 import { toDataTypeFromFileType } from "utils/DataTypeUtils"
 
 type InputsViewProps = {
@@ -32,116 +27,54 @@ const InputsView = ({
   uid,
   handleClose,
 }: InputsViewProps) => {
-  const dispatch = useDispatch<AppDispatch>()
+  useVisualizationCleanup(open)
 
-  useEffect(() => {
-    return () => {
-      if (!open) {
-        dispatch(deleteAllItemForWorkflowDialog())
-      }
-    }
-  }, [dispatch, open])
+  const visualizationItems = useSelector(
+    (state: RootState): VisualizationItemData[] => {
+      const inputNodes = selectInputNode(state)
+      const items: VisualizationItemData[] = []
 
-  const inputNodeData = useSelector((state: RootState) => {
-    const inputNodes = selectInputNode(state)
-    const filteredInputNodes = Object.entries(inputNodes)
-      .map(([nodeId, inputNode]) => ({
-        nodeId,
-        filePath: inputNode.selectedFilePath,
-        fileType: inputNode.fileType,
-        nodeName: selectNodeLabelById(nodeId)(state) || nodeId,
-      }))
-      .filter(({ filePath }) => filePath != null)
-    return filteredInputNodes
-  })
+      Object.entries(inputNodes)
+        .filter(([, inputNode]) => inputNode.selectedFilePath != null)
+        .forEach(([nodeId, inputNode]) => {
+          const nodeName = selectNodeLabelById(nodeId)(state) || nodeId
+          const dataType = toDataTypeFromFileType(inputNode.fileType)
 
-  const renderInputNodeList = (): ReactElement[] => {
-    const visualizationItems: ReactElement[] = []
-
-    inputNodeData.forEach((nodeData) => {
-      const filePath = nodeData.filePath
-
-      if (Array.isArray(filePath)) {
-        filePath.forEach((pathElm, index) => {
-          visualizationItems.push(
-            <Grid
-              item
-              xs={12}
-              md={6}
-              lg={4}
-              key={`${nodeData.nodeId}-${index}`}
-            >
-              <Paper
-                elevation={2}
-                sx={{
-                  p: 2,
-                  height: 400,
-                  display: "flex",
-                  flexDirection: "column",
-                }}
-              >
-                <Typography variant="h6" gutterBottom>
-                  {getFileName(pathElm)}
-                </Typography>
-                <Typography variant="body2" color="textSecondary" gutterBottom>
-                  {pathElm}
-                </Typography>
-                <Box sx={{ flexGrow: 1, minHeight: 300 }}>
-                  <DisplayInputDataView
-                    nodeId={nodeData.nodeId}
-                    filePath={pathElm}
-                  />
-                </Box>
-              </Paper>
-            </Grid>,
-          )
+          if (Array.isArray(inputNode.selectedFilePath)) {
+            inputNode.selectedFilePath.forEach((filePath, index) => {
+              items.push({
+                nodeId,
+                filePath,
+                dataType,
+                title: getFileName(filePath),
+                itemKey: `${nodeId}-${index}`,
+              })
+            })
+          } else if (inputNode.selectedFilePath) {
+            items.push({
+              nodeId,
+              filePath: inputNode.selectedFilePath,
+              dataType,
+              title: nodeName,
+              itemKey: nodeId,
+            })
+          }
         })
-      } else if (filePath) {
-        visualizationItems.push(
-          <Grid item xs={12} md={6} lg={4} key={nodeData.nodeId}>
-            <Paper
-              elevation={2}
-              sx={{
-                p: 2,
-                height: 400,
-                display: "flex",
-                flexDirection: "column",
-              }}
-            >
-              <Typography variant="h6" gutterBottom>
-                {nodeData.nodeName}
-              </Typography>
-              <Typography variant="body2" color="textSecondary" gutterBottom>
-                {filePath}
-              </Typography>
-              <Box sx={{ flexGrow: 1, minHeight: 300 }}>
-                <DisplayInputDataView
-                  nodeId={nodeData.nodeId}
-                  filePath={filePath}
-                />
-              </Box>
-            </Paper>
-          </Grid>,
-        )
-      }
-    })
 
-    return visualizationItems
-  }
+      return items
+    },
+  )
 
-  if (inputNodeData.length === 0) {
-    return (
-      <BaseNodesView
-        open={open}
-        workspaceId={workspaceId}
-        uid={uid}
-        handleClose={handleClose}
-        title="Input Node Data"
-        data={inputNodeData}
-        renderData={() => []}
-        emptyMessage="No input node data available"
-      />
-    )
+  const renderData = (): ReactElement[] => {
+    if (visualizationItems.length === 0) {
+      return []
+    }
+
+    return [
+      <Grid container spacing={2} key="visualization-grid">
+        {renderVisualizationItems(visualizationItems)}
+      </Grid>,
+    ]
   }
 
   return (
@@ -151,55 +84,11 @@ const InputsView = ({
       uid={uid}
       handleClose={handleClose}
       title="Input Node Data"
-      data={inputNodeData}
-      renderData={() => [
-        <Grid container spacing={2} key="visualization-grid">
-          {renderInputNodeList()}
-        </Grid>,
-      ]}
+      data={visualizationItems}
+      renderData={renderData}
       emptyMessage="No input node data available"
     />
   )
 }
-
-interface DisplayInputDataViewProps {
-  nodeId: string
-  filePath: string
-}
-
-const DisplayInputDataView = memo(function DisplayInputDataView({
-  nodeId,
-  filePath,
-}: DisplayInputDataViewProps) {
-  const dispatch = useDispatch<AppDispatch>()
-  const fileType = useSelector(selectInputNodeFileType(nodeId))
-  const dataType = toDataTypeFromFileType(fileType)
-  const itemId = useSelector(
-    selectVisualizeItemIdForWorkflowDialog(nodeId, filePath, dataType),
-  )
-
-  useEffect(() => {
-    if (itemId === null) {
-      dispatch(addItemForWorkflowDialog({ nodeId, filePath, dataType }))
-    }
-  }, [dispatch, nodeId, filePath, dataType, itemId])
-
-  if (itemId != null) {
-    return <DisplayDataItem itemId={itemId} />
-  } else {
-    return (
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          height: "100%",
-        }}
-      >
-        <Typography color="textSecondary">Loading...</Typography>
-      </Box>
-    )
-  }
-})
 
 export default InputsView
