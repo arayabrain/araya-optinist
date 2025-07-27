@@ -1,7 +1,13 @@
 import { ReactElement, useEffect } from "react"
 import { useSelector, useDispatch } from "react-redux"
 
-import { Box, Grid, Typography, Divider as MuiDivider } from "@mui/material"
+import {
+  Box,
+  Grid,
+  Typography,
+  Divider as MuiDivider,
+  Chip,
+} from "@mui/material"
 
 import BaseNodesView, {
   renderVisualizationItems,
@@ -91,6 +97,12 @@ const OutputsView = ({
           <Box key={`node-section-${pathInfo.nodeId}`} sx={{ mb: 4 }}>
             <Typography variant="h5" gutterBottom sx={{ mb: 2 }}>
               {pathInfo.nodeName}
+              <Chip
+                label={pathInfo.nodeId}
+                color="info"
+                variant="outlined"
+                sx={{ ml: 2 }}
+              />
             </Typography>
             <MuiDivider sx={{ mb: 3 }} />
             <Grid container spacing={2}>
@@ -114,7 +126,7 @@ const OutputsView = ({
       workspaceId={workspaceId}
       uid={uid}
       handleClose={handleClose}
-      title="Algorithm Node Outputs"
+      title="Algorithm Outputs"
       data={algorithmNodeOutputPathInfoList}
       renderData={renderData}
       emptyMessage={

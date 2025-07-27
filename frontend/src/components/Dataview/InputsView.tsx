@@ -47,6 +47,7 @@ const InputsView = ({
                 filePath,
                 dataType,
                 title: getFileName(filePath),
+                subtitle: `Type: ${dataType}`,
                 itemKey: `${nodeId}-${index}`,
               })
             })
@@ -56,6 +57,7 @@ const InputsView = ({
               filePath: inputNode.selectedFilePath,
               dataType,
               title: nodeName,
+              subtitle: `Type: ${dataType}`,
               itemKey: nodeId,
             })
           }
@@ -83,10 +85,10 @@ const InputsView = ({
       workspaceId={workspaceId}
       uid={uid}
       handleClose={handleClose}
-      title="Input Node Data"
+      title="Input Data"
       data={visualizationItems}
       renderData={renderData}
-      emptyMessage="No input node data available"
+      emptyMessage="No input data available"
     />
   )
 }

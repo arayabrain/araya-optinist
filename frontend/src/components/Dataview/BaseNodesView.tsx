@@ -13,6 +13,7 @@ import {
   Grid,
   Paper,
   Typography,
+  Chip,
 } from "@mui/material"
 
 import { DisplayDataItem } from "components/Workspace/Visualize/DisplayDataItem"
@@ -71,16 +72,9 @@ export const BaseDisplayDataView = memo(function BaseDisplayDataView({
     return <DisplayDataItem itemId={itemId} />
   } else {
     return (
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          height: "100%",
-        }}
-      >
+      <LoadingContainer>
         <Typography color="textSecondary">Loading...</Typography>
-      </Box>
+      </LoadingContainer>
     )
   }
 })
@@ -89,36 +83,27 @@ export const renderVisualizationItems = (
   items: VisualizationItemData[],
 ): ReactElement[] => {
   return items.map((item) => (
-    <Grid item xs={12} md={6} lg={4} key={item.itemKey}>
-      <Paper
-        elevation={2}
-        sx={{
-          p: 2,
-          height: 400,
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
+    <VisualizationGrid item xs={12} md={6} lg={5} xl={4} key={item.itemKey}>
+      <VisualizationPaper elevation={2}>
         <Typography variant="h6" gutterBottom>
           {item.title}
         </Typography>
         {item.subtitle && (
           <Typography variant="body2" color="textSecondary" gutterBottom>
-            {item.subtitle}
+            <Chip label={item.subtitle} />
           </Typography>
         )}
-        <Typography variant="body2" color="textSecondary" gutterBottom noWrap>
-          {item.filePath}
-        </Typography>
-        <Box sx={{ flexGrow: 1, minHeight: 280 }}>
-          <BaseDisplayDataView
-            nodeId={item.nodeId}
-            filePath={item.filePath}
-            dataType={item.dataType}
-          />
-        </Box>
-      </Paper>
-    </Grid>
+        <DisplayDataContainer>
+          <DisplayDataWrapper>
+            <BaseDisplayDataView
+              nodeId={item.nodeId}
+              filePath={item.filePath}
+              dataType={item.dataType}
+            />
+          </DisplayDataWrapper>
+        </DisplayDataContainer>
+      </VisualizationPaper>
+    </VisualizationGrid>
   ))
 }
 
@@ -177,30 +162,33 @@ const BaseNodesView = ({
   return (
     <Box>
       {open ? (
-        <NodesViewWrapper
-          sx={{ position: "absolute", zIndex: 1 }}
-          onClick={handleCloseWrapper}
-        >
-          <NodesViewContentWrapper sx={{ position: "absolute", zIndex: 10000 }}>
-            <Box
-              sx={{
-                padding: 2,
-                width: "100%",
-                height: "100%",
-                overflow: "auto",
-              }}
-            >
-              <Box sx={{ marginBottom: 2, fontWeight: "bold" }}>
-                {title} [uid: {uid}]
-              </Box>
+        <NodesViewWrapper onClick={handleCloseWrapper}>
+          <NodesViewContentWrapper>
+            <ContentArea>
+              <TitleHeader>
+                <Typography
+                  variant="h5"
+                  gutterBottom
+                  sx={{ mb: 2, fontWeight: "bold" }}
+                >
+                  {title}
+                </Typography>
+                {uid && (
+                  <Chip
+                    label={`ID: ${uid}`}
+                    color="primary"
+                    variant="outlined"
+                    size="medium"
+                    sx={{ fontSize: "0.9rem" }}
+                  />
+                )}
+              </TitleHeader>
               {data.length > 0 ? (
                 <List>{renderData()}</List>
               ) : (
-                <Box sx={{ textAlign: "center", color: "gray" }}>
-                  {emptyMessage}
-                </Box>
+                <EmptyMessage>{emptyMessage}</EmptyMessage>
               )}
-            </Box>
+            </ContentArea>
             <ButtonClose onClick={handleClose}>
               <CloseIcon />
             </ButtonClose>
@@ -211,6 +199,9 @@ const BaseNodesView = ({
   )
 }
 
+// Styled Components
+
+// Modal Container Components
 const NodesViewWrapper = styled(Box)(() => ({
   position: "fixed",
   top: 0,
@@ -221,6 +212,7 @@ const NodesViewWrapper = styled(Box)(() => ({
   display: "flex",
   justifyContent: "center",
   alignItems: "center",
+  zIndex: 1,
 }))
 
 const NodesViewContentWrapper = styled(Box)(() => ({
@@ -229,25 +221,92 @@ const NodesViewContentWrapper = styled(Box)(() => ({
   background: "#FFF",
   justifyContent: "center",
   alignItems: "center",
-  width: "80%",
+  width: "95%",
   height: "80%",
+  maxHeight: "85vh",
   border: "1px solid #000",
   color: "#333333",
+  margin: "2.5vh 0",
+  zIndex: 10000,
+}))
+
+const ContentArea = styled(Box)(() => ({
+  padding: "60px 24px 24px 24px",
+  width: "100%",
+  height: "100%",
+  overflow: "auto",
+  minWidth: "800px",
+  boxSizing: "border-box",
 }))
 
 const ButtonClose = styled("button")(() => ({
   border: "1px solid #000",
   position: "absolute",
   display: "block",
-  top: -20,
-  right: -20,
+  top: 10,
+  right: 10,
   width: 40,
   height: 40,
   cursor: "pointer",
   borderRadius: 50,
+  zIndex: 10001,
+  background: "#FFF",
   "&:hover": {
     background: "#8f8a8a",
   },
+}))
+
+// Content Components
+const TitleHeader = styled(Box)(() => ({
+  marginBottom: 16,
+  display: "flex",
+  alignItems: "baseline",
+  gap: 16,
+}))
+
+const EmptyMessage = styled(Box)(() => ({
+  textAlign: "center",
+  color: "gray",
+}))
+
+const LoadingContainer = styled(Box)(() => ({
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  height: "100%",
+}))
+
+// Visualization Item Components
+const VisualizationGrid = styled(Grid)(() => ({
+  minWidth: 580,
+  margin: "12px",
+  maxWidth: "calc(50% - 24px)",
+}))
+
+const VisualizationPaper = styled(Paper)(() => ({
+  padding: 24,
+  minHeight: 400,
+  minWidth: 580,
+  display: "flex",
+  flexDirection: "column",
+  margin: "8px",
+  boxSizing: "border-box",
+}))
+
+const DisplayDataContainer = styled(Box)(() => ({
+  flexGrow: 1,
+  display: "flex",
+  flexDirection: "column",
+  overflow: "auto",
+  maxHeight: "500px",
+  padding: "8px",
+  minWidth: 0,
+}))
+
+const DisplayDataWrapper = styled(Box)(() => ({
+  width: "100%",
+  overflow: "auto",
+  padding: "20px",
 }))
 
 export default BaseNodesView
