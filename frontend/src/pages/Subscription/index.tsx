@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect } from "react"
 import { useDispatch, useSelector } from "react-redux"
 import { useNavigate } from "react-router-dom"
 
@@ -15,69 +15,47 @@ import {
   getSubscriptionPlan,
   getUserSubscription,
 } from "store/slice/Subscriptions/SubscriptionActions"
-import { selectCurrentUser, selectLoading } from "store/slice/User/UserSelector"
+import {
+  selectSubscriptionPlans,
+  selectUserSubscription,
+  selectSubscriptionLoading,
+  selectSubscriptionError,
+  selectIsSubscriptionExpired,
+  selectCurrentPlanId,
+} from "store/slice/Subscriptions/SubscriptionSelector"
+import { clearError } from "store/slice/Subscriptions/SubscriptionSlice"
+import { selectCurrentUser } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
-
-// Types for your data
-interface SubscriptionPlan {
-  id: number
-  name: string
-  price: number // Price in cents
-  created_at: string
-}
-
-interface UserSubscription {
-  id: number
-  plan_id: number
-  user_id: number
-  expiration: string
-  plan_name: string
-  plan_price: number
-}
 
 const MembershipPlans = () => {
   const user = useSelector(selectCurrentUser)
-  const loading = useSelector(selectLoading)
+  const plans = useSelector(selectSubscriptionPlans)
+  const userSubscription = useSelector(selectUserSubscription)
+  const loading = useSelector(selectSubscriptionLoading)
+  const error = useSelector(selectSubscriptionError)
+  const isSubscriptionExpired = useSelector(selectIsSubscriptionExpired)
+  const currentPlanId = useSelector(selectCurrentPlanId)
+
   const dispatch = useDispatch<AppDispatch>()
   const navigate = useNavigate()
-
-  // State for dynamic data
-  const [plans, setPlans] = useState<SubscriptionPlan[]>([])
-  const [userSubscription, setUserSubscription] =
-    useState<UserSubscription | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
 
   // Fetch data on component mount
   useEffect(() => {
     const loadData = async () => {
-      try {
-        setIsLoading(true)
-        setError(null)
+      // Clear any previous errors
+      dispatch(clearError())
 
-        // Fetch subscription plans
-        const plansData = await dispatch(getSubscriptionPlan())
-        setPlans(plansData.payload as SubscriptionPlan[])
+      // Fetch subscription plans
+      dispatch(getSubscriptionPlan())
 
-        // Fetch user's current subscription if user exists
-        if (user?.id) {
-          const userSub = await dispatch(getUserSubscription(user.id))
-          setUserSubscription(userSub.payload as UserSubscription)
-        }
-      } catch (err) {
-        console.error("Error loading subscription data:", err)
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Failed to load subscription data",
-        )
-      } finally {
-        setIsLoading(false)
+      // Fetch user's current subscription if user exists
+      if (user?.id) {
+        dispatch(getUserSubscription(user.id))
       }
     }
 
     loadData()
-  }, [user?.id])
+  }, [dispatch, user?.id])
 
   // Plan features configuration
   const getPlanFeatures = (planName: string) => {
@@ -106,26 +84,19 @@ const MembershipPlans = () => {
 
   // Check if user has a specific plan
   const isCurrentPlan = (planId: number) => {
-    if (!userSubscription)
-      return planId === plans.find((p) => p.name === "Free")?.id
-
-    // Check if subscription is active
-    const now = new Date()
-    const expirationDate = new Date(userSubscription.expiration)
-
-    return userSubscription.plan_id === planId && expirationDate > now
-  }
-
-  // Check if subscription is expired
-  const isSubscriptionExpired = () => {
-    if (!userSubscription) return false
-    const now = new Date()
-    const expirationDate = new Date(userSubscription.expiration)
-    return expirationDate <= now
+    return currentPlanId === planId
   }
 
   const handleUpgradeClick = (planId: number) => {
     navigate(`/console/premium-checkout?planId=${planId}`)
+  }
+
+  const handleRetry = () => {
+    dispatch(clearError())
+    dispatch(getSubscriptionPlan())
+    if (user?.id) {
+      dispatch(getUserSubscription(user.id))
+    }
   }
 
   const formatPrice = (priceInCents: number) => {
@@ -133,7 +104,7 @@ const MembershipPlans = () => {
   }
 
   // Loading state
-  if (isLoading || loading) {
+  if (loading) {
     return (
       <BoxWrapper>
         <CircularProgress />
@@ -154,11 +125,7 @@ const MembershipPlans = () => {
         <Typography variant="body2" color="text.secondary">
           {error}
         </Typography>
-        <Button
-          variant="outlined"
-          onClick={() => window.location.reload()}
-          sx={{ mt: 2 }}
-        >
+        <Button variant="outlined" onClick={handleRetry} sx={{ mt: 2 }}>
           Retry
         </Button>
       </BoxWrapper>
@@ -176,7 +143,7 @@ const MembershipPlans = () => {
             Current Plan: <strong>{userSubscription.plan_name}</strong>
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            {isSubscriptionExpired() ? (
+            {isSubscriptionExpired ? (
               <span style={{ color: "#dc2626" }}>
                 Expired on{" "}
                 {new Date(userSubscription.expiration).toLocaleDateString()}
@@ -223,9 +190,7 @@ const MembershipPlans = () => {
                 <ButtonWrapper>
                   {isCurrent ? (
                     <CurrentPlanButton disabled>
-                      {isSubscriptionExpired()
-                        ? "Expired Plan"
-                        : "Current Plan"}
+                      {isSubscriptionExpired ? "Expired Plan" : "Current Plan"}
                     </CurrentPlanButton>
                   ) : (
                     <UpgradeButton
@@ -246,7 +211,6 @@ const MembershipPlans = () => {
   )
 }
 
-// Styled Components
 const BoxWrapper = styled(Box)({
   display: "flex",
   flexDirection: "column",
