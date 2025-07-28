@@ -2,15 +2,26 @@ import { useState, useEffect } from "react"
 import { useDispatch, useSelector } from "react-redux"
 import { useSearchParams, useNavigate } from "react-router-dom"
 
+import {
+  Elements,
+  CardElement,
+  useStripe,
+  useElements,
+} from "@stripe/react-stripe-js"
+import { loadStripe } from "@stripe/stripe-js"
+
 import { getSubscriptionPlan } from "store/slice/Subscriptions/SubscriptionActions"
 import { selectCurrentUser } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 
+// Load Stripe - Replace with your publishable key
+const stripePromise = loadStripe(
+  process.env.REACT_APP_STRIPE_PUBLISHABLE_KEY ||
+    "pk_test_51RgYIgP7o6DukA7c9NOwUVyA2ObwzHmWX6y7xydeu7TkFicO0y8TWTGoGlI8b4U68JO4aG2ZgsixXuWYpRyNSd9J00jJT0H26x",
+)
+
 interface FormData {
   fullName: string
-  cardNumber: string
-  expirationDate: string
-  securityCode: string
   planType: "monthly" // | "yearly" - Yearly commented out for now
 }
 
@@ -26,24 +37,51 @@ interface PaymentData {
   planId: number
   planType: "monthly" // | "yearly" - Yearly commented out for now
   fullName: string
-  cardNumber: string
-  expirationDate: string
-  securityCode: string
   userId: number | undefined
   amount: number
+  paymentMethodId: string
 }
 
-const PremiumCheckout = () => {
+// Stripe card element change event type
+interface StripeCardElementChangeEvent {
+  error?: {
+    message: string
+    type: string
+    code?: string
+  }
+  complete: boolean
+  empty: boolean
+  brand?: string
+}
+
+// Stripe card element options
+const cardElementOptions = {
+  style: {
+    base: {
+      fontSize: "14px",
+      color: "#424770",
+      "::placeholder": {
+        color: "#aab7c4",
+      },
+      padding: "12px",
+    },
+    invalid: {
+      color: "#9e2146",
+    },
+  },
+  hidePostalCode: true, // Hide postal code field
+}
+
+const CheckoutForm = () => {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const dispatch = useDispatch<AppDispatch>()
   const user = useSelector(selectCurrentUser)
+  const stripe = useStripe()
+  const elements = useElements()
 
   const [formData, setFormData] = useState<FormData>({
     fullName: "",
-    cardNumber: "",
-    expirationDate: "",
-    securityCode: "",
     planType: "monthly",
   })
 
@@ -54,6 +92,7 @@ const PremiumCheckout = () => {
   const [isLoading, setIsLoading] = useState(true)
   const [isProcessing, setIsProcessing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [cardError, setCardError] = useState<string | null>(null)
 
   // Get planId from URL params
   const planId = searchParams.get("planId")
@@ -105,47 +144,10 @@ const PremiumCheckout = () => {
   }
 
   const handleInputChange =
-    (field: keyof FormData) =>
-    (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-      let value = event.target.value
-
-      // Handle expiration date formatting (MM/YY)
-      if (field === "expirationDate") {
-        value = value.replace(/\D/g, "")
-        if (value.length > 4) {
-          value = value.slice(0, 4)
-        }
-        if (value.length >= 2) {
-          const month = value.slice(0, 2)
-          const year = value.slice(2)
-          const monthNum = parseInt(month)
-          if (monthNum > 12) {
-            return
-          }
-          value = month + (year ? "/" + year : "")
-        }
-      }
-
-      // Handle security code (3-4 digits only)
-      if (field === "securityCode") {
-        value = value.replace(/\D/g, "")
-        if (value.length > 4) {
-          value = value.slice(0, 4)
-        }
-      }
-
-      // Handle card number formatting (spaces every 4 digits)
-      if (field === "cardNumber") {
-        value = value.replace(/\D/g, "")
-        if (value.length > 16) {
-          value = value.slice(0, 16)
-        }
-        value = value.replace(/(\d{4})(?=\d)/g, "$1 ")
-      }
-
+    (field: keyof FormData) => (event: React.ChangeEvent<HTMLInputElement>) => {
       setFormData({
         ...formData,
-        [field]: value,
+        [field]: event.target.value,
       })
     }
 
@@ -155,36 +157,14 @@ const PremiumCheckout = () => {
       return false
     }
 
-    const cardNumberDigits = formData.cardNumber.replace(/\s/g, "")
-    if (cardNumberDigits.length !== 16) {
-      setError("Please enter a valid 16-digit card number")
+    if (!stripe || !elements) {
+      setError("Stripe is not loaded")
       return false
     }
 
-    if (!formData.expirationDate.match(/^\d{2}\/\d{2}$/)) {
-      setError("Please enter expiration date in MM/YY format")
-      return false
-    }
-
-    // Validate expiration date is not in the past
-    const [month, year] = formData.expirationDate.split("/")
-    const currentDate = new Date()
-    const currentYear = currentDate.getFullYear() % 100
-    const currentMonth = currentDate.getMonth() + 1
-
-    const expYear = parseInt(year)
-    const expMonth = parseInt(month)
-
-    if (
-      expYear < currentYear ||
-      (expYear === currentYear && expMonth < currentMonth)
-    ) {
-      setError("Card has expired")
-      return false
-    }
-
-    if (formData.securityCode.length < 3) {
-      setError("Please enter a valid security code")
+    const cardElement = elements.getElement(CardElement)
+    if (!cardElement) {
+      setError("Card information is required")
       return false
     }
 
@@ -193,12 +173,6 @@ const PremiumCheckout = () => {
 
   const calculatePrice = () => {
     if (!selectedPlan) return 0
-
-    // Monthly pricing only for now
-    // if (formData.planType === "yearly") {
-    //   return selectedPlan.price * 12 * 0.8 // 20% discount for yearly
-    // }
-
     return selectedPlan.price
   }
 
@@ -212,39 +186,60 @@ const PremiumCheckout = () => {
 
   const calculateNextRenewalDate = () => {
     const now = new Date()
-    // Only monthly for now
-    // if (formData.planType === "yearly") {
-    //   now.setFullYear(now.getFullYear() + 1)
-    // } else {
     now.setMonth(now.getMonth() + 1)
-    // }
     return now.toLocaleDateString()
   }
 
   const handleSubscribe = async () => {
-    if (!validateForm() || !selectedPlan || !user) return
+    if (!validateForm() || !selectedPlan || !user || !stripe || !elements)
+      return
 
     setIsProcessing(true)
     setError(null)
+    setCardError(null)
 
     try {
+      const cardElement = elements.getElement(CardElement)
+      if (!cardElement) {
+        throw new Error("Card element not found")
+      }
+
+      // Create payment method with Stripe
+      const { error: stripeError, paymentMethod } =
+        await stripe.createPaymentMethod({
+          type: "card",
+          card: cardElement,
+          billing_details: {
+            name: formData.fullName,
+            email: user.email,
+          },
+        })
+
+      if (stripeError) {
+        setCardError(stripeError.message || "Card validation failed")
+        return
+      }
+
+      if (!paymentMethod) {
+        throw new Error("Failed to create payment method")
+      }
+
+      // Prepare payment data for your backend
       const paymentData: PaymentData = {
         planId: selectedPlan.id,
         planType: formData.planType,
         fullName: formData.fullName,
-        cardNumber: formData.cardNumber.replace(/\s/g, ""), // Remove spaces
-        expirationDate: formData.expirationDate,
-        securityCode: formData.securityCode,
         userId: user.id,
         amount: calculatePrice(),
+        paymentMethodId: paymentMethod.id,
       }
 
-      // TODO: Replace with your actual payment processing endpoint
+      // Send to your backend for processing
       const response = await fetch("/api/subscriptions/subscribe", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          // Add auth headers if needed
+          // Authorization: `Bearer ${user.token}`, // Add auth if needed
         },
         body: JSON.stringify(paymentData),
       })
@@ -256,7 +251,19 @@ const PremiumCheckout = () => {
 
       const result = await response.json()
 
-      // Redirect to success page or dashboard
+      // Handle different response types from Stripe
+      if (result.client_secret) {
+        // Payment requires additional authentication (3D Secure)
+        const { error: confirmError } = await stripe.confirmCardPayment(
+          result.client_secret,
+        )
+
+        if (confirmError) {
+          throw new Error(confirmError.message || "Payment confirmation failed")
+        }
+      }
+
+      // Redirect to success page
       navigate("/console/subscription-success", {
         state: { subscription: result },
       })
@@ -266,6 +273,11 @@ const PremiumCheckout = () => {
     } finally {
       setIsProcessing(false)
     }
+  }
+
+  // Handle card element changes with proper typing
+  const handleCardChange = (event: StripeCardElementChangeEvent) => {
+    setCardError(event.error ? event.error.message : null)
   }
 
   if (!selectedPlan) return null
@@ -408,13 +420,11 @@ const PremiumCheckout = () => {
     fontFamily: "inherit",
   }
 
-  const halfWidthContainerStyle: React.CSSProperties = {
-    display: "flex",
-    gap: "1rem",
-  }
-
-  const fullWidthInputStyle: React.CSSProperties = {
-    ...inputStyle,
+  const cardElementContainerStyle: React.CSSProperties = {
+    padding: "0.75rem",
+    border: "1px solid #d1d5db",
+    borderRadius: "0.375rem",
+    backgroundColor: "white",
   }
 
   const disclaimerStyle: React.CSSProperties = {
@@ -443,6 +453,12 @@ const PremiumCheckout = () => {
     fontSize: "0.875rem",
     textAlign: "center",
     marginBottom: "1rem",
+  }
+
+  const cardErrorStyle: React.CSSProperties = {
+    color: "#dc2626",
+    fontSize: "0.75rem",
+    marginTop: "0.5rem",
   }
 
   // Loading state
@@ -511,33 +527,6 @@ const PremiumCheckout = () => {
                 </p>
               </div>
             </div>
-
-            {/* Yearly option commented out for now */}
-            {/* <div style={planOptionStyle}>
-              <input
-                type="radio"
-                checked={formData.planType === "yearly"}
-                onChange={() =>
-                  setFormData({ ...formData, planType: "yearly" })
-                }
-                style={{ accentColor: "#3b82f6" }}
-              />
-              <div style={planDetailsStyle}>
-                <h3 style={planTitleStyle}>Yearly</h3>
-                <p style={planPriceStyle}>
-                  {formatPrice(selectedPlan.price * 12 * 0.8)}/year + tax
-                  <span
-                    style={{
-                      color: "#16a34a",
-                      fontWeight: "bold",
-                      marginLeft: "0.5rem",
-                    }}
-                  >
-                    (Save 20%)
-                  </span>
-                </p>
-              </div>
-            </div> */}
           </div>
 
           {/* Order Details */}
@@ -547,10 +536,7 @@ const PremiumCheckout = () => {
             <div style={orderRowStyle}>
               <div>
                 <p style={orderItemTitleStyle}>{selectedPlan.name} plan</p>
-                <p style={orderItemSubtitleStyle}>
-                  {/* {formData.planType === "yearly" ? "Yearly" : "Monthly"} */}
-                  Monthly
-                </p>
+                <p style={orderItemSubtitleStyle}>Monthly</p>
               </div>
               <p style={orderPriceStyle}>{formatPrice(totalPrice)}</p>
             </div>
@@ -585,7 +571,7 @@ const PremiumCheckout = () => {
           {/* Error Display */}
           {error && <div style={errorStyle}>{error}</div>}
 
-          {/* Payment Method */}
+          {/* Payment Method with Stripe */}
           <div style={sectionStyle}>
             <h3 style={sectionTitleStyle}>Payment Method</h3>
 
@@ -599,34 +585,14 @@ const PremiumCheckout = () => {
                 disabled={isProcessing}
               />
 
-              <input
-                type="text"
-                placeholder="Card Number"
-                value={formData.cardNumber}
-                onChange={handleInputChange("cardNumber")}
-                style={fullWidthInputStyle}
-                disabled={isProcessing}
-              />
-
-              <div style={halfWidthContainerStyle}>
-                <input
-                  type="text"
-                  placeholder="MM/YY"
-                  value={formData.expirationDate}
-                  onChange={handleInputChange("expirationDate")}
-                  style={inputStyle}
-                  disabled={isProcessing}
-                />
-
-                <input
-                  type="text"
-                  placeholder="Security Code"
-                  value={formData.securityCode}
-                  onChange={handleInputChange("securityCode")}
-                  style={inputStyle}
-                  disabled={isProcessing}
+              {/* Stripe Card Element */}
+              <div style={cardElementContainerStyle}>
+                <CardElement
+                  options={cardElementOptions}
+                  onChange={handleCardChange}
                 />
               </div>
+              {cardError && <div style={cardErrorStyle}>{cardError}</div>}
             </div>
 
             <p style={disclaimerStyle}>
@@ -641,25 +607,38 @@ const PremiumCheckout = () => {
           <button
             style={subscribeButtonStyle}
             onClick={handleSubscribe}
-            disabled={isProcessing}
+            disabled={isProcessing || !stripe}
             onMouseEnter={(e) => {
-              if (!isProcessing) {
+              if (!isProcessing && stripe) {
                 ;(e.target as HTMLButtonElement).style.backgroundColor =
                   "#2563eb"
               }
             }}
             onMouseLeave={(e) => {
-              if (!isProcessing) {
+              if (!isProcessing && stripe) {
                 ;(e.target as HTMLButtonElement).style.backgroundColor =
                   "#3b82f6"
               }
             }}
           >
-            {isProcessing ? "Processing..." : "Subscribe"}
+            {isProcessing
+              ? "Processing..."
+              : !stripe
+                ? "Loading..."
+                : "Subscribe"}
           </button>
         </div>
       </div>
     </div>
+  )
+}
+
+// Main component that wraps CheckoutForm with Stripe Elements
+const PremiumCheckout = () => {
+  return (
+    <Elements stripe={stripePromise}>
+      <CheckoutForm />
+    </Elements>
   )
 }
 
