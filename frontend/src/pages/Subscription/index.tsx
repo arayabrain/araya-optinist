@@ -61,22 +61,41 @@ const MembershipPlans = () => {
   const getPlanFeatures = (planName: string) => {
     const planFeatures = {
       Free: [
-        { text: "Access to basic workflows", isPremium: false },
-        { text: "Community support", isPremium: false },
-        { text: "Basic data storage (1GB)", isPremium: false },
+        {
+          text: "Basic compute access with fair-use limitations",
+          isPremium: false,
+        },
+        {
+          text: "Standard support through documentation and community",
+          isPremium: false,
+        },
+        { text: "Basic data storage (5GB)", isPremium: false },
         { text: "Standard processing speed", isPremium: false },
       ],
       Premium: [
-        { text: "Access to basic workflows", isPremium: false },
-        { text: "Community support", isPremium: false },
-        { text: "Basic data storage (1GB)", isPremium: false },
+        {
+          text: "Basic compute access with fair-use limitations",
+          isPremium: false,
+        },
+        {
+          text: "Standard support through documentation and community",
+          isPremium: false,
+        },
+        { text: "Basic data storage (5GB)", isPremium: false },
         { text: "Standard processing speed", isPremium: false },
-        { text: "Advanced workflows & algorithms", isPremium: true },
-        { text: "Priority support", isPremium: true },
-        { text: "Extended data storage (10GB)", isPremium: true },
-        { text: "High-speed processing", isPremium: true },
-        { text: "Collaboration tools", isPremium: true },
-        { text: "Custom integrations", isPremium: true },
+        {
+          text: "Priority compute access with guaranteed resource allocation",
+          isPremium: true,
+        },
+        { text: "Extended data storage (200GB)", isPremium: true },
+        {
+          text: "Enhanced support including direct assistance",
+          isPremium: true,
+        },
+        {
+          text: "Possible advanced features like extended job history and analytics",
+          isPremium: true,
+        },
       ],
     }
     return planFeatures[planName as keyof typeof planFeatures] || []
