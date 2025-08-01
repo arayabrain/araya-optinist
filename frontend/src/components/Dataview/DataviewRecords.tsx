@@ -51,6 +51,8 @@ import PaginationCustom from "components/common/PaginationCustom"
 import SwitchCustom from "components/common/SwitchCustom"
 import InputsView from "components/Dataview/InputsView"
 import OutputsView from "components/Dataview/OutputsView"
+import { ImagePlotSimple } from "components/Workspace/Visualize/Plot/ImagePlotSimple"
+import { RoiPlotSimple } from "components/Workspace/Visualize/Plot/RoiPlotSimple"
 import { DELAY_TIME_INPUT_CONFIRMED } from "const/Form"
 import {
   getDataviewRecords,
@@ -65,16 +67,6 @@ import {
   DataviewType,
 } from "store/slice/Dataview/DataviewType"
 import { AppDispatch, RootState } from "store/store"
-
-export type Data = {
-  id: number
-  uid: string
-  attributes: string
-  graph_urls: string[]
-  publish_status: number
-  created_time: string
-  updated_time: string
-}
 
 type PopupAttributesProps = {
   data?: string | string[]
@@ -325,17 +317,53 @@ const defineColumns = (
     filterable: false,
     sortable: false,
     renderCell: (params: { row: DataviewType }) => {
+      const workspaceId = params?.row?.workspace.id
+      const thumbnailPath = params?.row?.thumbnails?.image_url
+      // Add workspace_id as query parameter to make the path unique per workspace
+      const filePath = thumbnailPath
+        ? `${thumbnailPath}?workspace_id=${workspaceId}&start_index=1&end_index=1`
+        : null
+
       return (
         <Box
           sx={{
-            cursor: "pointer",
+            width: "100%",
+            height: "100%",
             display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            overflow: "hidden",
+            gap: 1,
           }}
-          onClick={() =>
-            handleOpenInputsView(params?.row?.workspace.id, params?.row?.uid)
-          }
         >
-          <ImageIcon color={"primary"} />
+          <Box sx={{ width: 100, height: 80 }}>
+            {filePath ? (
+              <ImagePlotSimple
+                filePath={filePath}
+                workspaceId={workspaceId}
+                onClick={() =>
+                  handleOpenInputsView(workspaceId, params?.row?.uid)
+                }
+              />
+            ) : (
+              <Box
+                sx={{
+                  width: "100%",
+                  height: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                }}
+                onClick={() =>
+                  handleOpenInputsView(workspaceId, params?.row?.uid)
+                }
+              >
+                <ImageIcon color={"primary"} fontSize="large" />
+              </Box>
+            )}
+          </Box>
         </Box>
       )
     },
@@ -347,17 +375,53 @@ const defineColumns = (
     filterable: false,
     sortable: false,
     renderCell: (params: { row: DataviewType }) => {
+      const workspaceId = params?.row?.workspace.id
+      const thumbnailPath = params?.row?.thumbnails?.roi_url
+      // Add workspace_id as query parameter to make the path unique per workspace
+      const filePath = thumbnailPath
+        ? `${thumbnailPath}?workspace_id=${workspaceId}`
+        : null
+
       return (
         <Box
           sx={{
-            cursor: "pointer",
+            width: "100%",
+            height: "100%",
             display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            overflow: "hidden",
+            gap: 1,
           }}
-          onClick={() =>
-            handleOpenOutputsView(params?.row?.workspace.id, params?.row?.uid)
-          }
         >
-          <InsightsIcon color={"primary"} />
+          <Box sx={{ width: 100, height: 80 }}>
+            {filePath ? (
+              <RoiPlotSimple
+                filePath={filePath}
+                workspaceId={workspaceId}
+                onClick={() =>
+                  handleOpenOutputsView(workspaceId, params?.row?.uid)
+                }
+              />
+            ) : (
+              <Box
+                sx={{
+                  width: "100%",
+                  height: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                }}
+                onClick={() =>
+                  handleOpenOutputsView(workspaceId, params?.row?.uid)
+                }
+              >
+                <InsightsIcon color={"primary"} fontSize="large" />
+              </Box>
+            )}
+          </Box>
         </Box>
       )
     },
@@ -724,7 +788,7 @@ const DataviewRecords = ({
 
   const getParamsData = () => buildFilterParams(dataParamsFilter)
 
-  const handlePage = (e: ChangeEvent<unknown>, page: number) => {
+  const handlePage = (_e: ChangeEvent<unknown>, page: number) => {
     const filter = getParamsData()
     const param = `${filter}${
       dataParams.sort[0]

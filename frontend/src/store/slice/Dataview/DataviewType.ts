@@ -12,6 +12,10 @@ export type DataviewType = {
     id: number
     name?: string
   }
+  thumbnails: {
+    image_url?: string
+    roi_url?: string
+  }
   attributes?: object
   publish_status?: number
   created_at: string
