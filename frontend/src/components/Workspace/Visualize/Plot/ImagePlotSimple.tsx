@@ -5,7 +5,13 @@ import { useSelector, useDispatch } from "react-redux"
 import { LinearProgress, Typography, Box } from "@mui/material"
 
 import { getImageData } from "store/slice/DisplayData/DisplayDataActions"
-import { AppDispatch, RootState } from "store/store"
+import {
+  selectImageData,
+  selectImageDataIsPending,
+  selectImageDataIsInitialized,
+  selectImageDataError,
+} from "store/slice/DisplayData/DisplayDataSelectors"
+import { AppDispatch } from "store/store"
 
 interface ImagePlotSimpleProps {
   filePath: string
@@ -18,13 +24,11 @@ export const ImagePlotSimple = memo(function ImagePlotSimple({
   workspaceId,
   onClick,
 }: ImagePlotSimpleProps) {
-  // Safe selectors with fallbacks
-  const imageState = useSelector(
-    (state: RootState) => state.displayData?.image?.[filePath],
-  )
-  const isPending = imageState?.pending || false
-  const isInitialized = imageState !== undefined
-  const error = imageState?.error || null
+  // Use selectors instead of direct state access
+  const imageState = useSelector(selectImageData(filePath))
+  const isPending = useSelector(selectImageDataIsPending(filePath))
+  const isInitialized = useSelector(selectImageDataIsInitialized(filePath))
+  const error = useSelector(selectImageDataError(filePath))
   const imageData = imageState?.data?.[0]
 
   const dispatch = useDispatch<AppDispatch>()

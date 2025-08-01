@@ -8,7 +8,12 @@ import { max, uniq } from "lodash"
 import { LinearProgress, Typography, Box } from "@mui/material"
 
 import { getRoiData } from "store/slice/DisplayData/DisplayDataActions"
-import { AppDispatch, RootState } from "store/store"
+import {
+  selectRoiData,
+  selectRoiDataIsPending,
+  selectRoiDataError,
+} from "store/slice/DisplayData/DisplayDataSelectors"
+import { AppDispatch } from "store/store"
 
 interface RoiPlotSimpleProps {
   filePath: string
@@ -21,14 +26,15 @@ export const RoiPlotSimple = memo(function RoiPlotSimple({
   workspaceId,
   onClick,
 }: RoiPlotSimpleProps) {
-  // Safe selectors with fallbacks
-  const roiState = useSelector(
-    (state: RootState) => state.displayData?.roi?.[filePath],
-  )
-  const isPending = roiState?.pending || false
-  const error = roiState?.error || null
+  // Use selectors instead of direct state access
+  const roiDataFromSelector = useSelector(selectRoiData(filePath))
+  const isPending = useSelector(selectRoiDataIsPending(filePath))
+  const error = useSelector(selectRoiDataError(filePath))
 
-  const roiData = useMemo(() => roiState?.data || [], [roiState?.data])
+  const roiData = useMemo(
+    () => (roiDataFromSelector ? [roiDataFromSelector] : []),
+    [roiDataFromSelector],
+  )
 
   const dispatch = useDispatch<AppDispatch>()
 

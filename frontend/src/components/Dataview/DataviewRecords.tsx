@@ -61,12 +61,13 @@ import {
   postPublishAll,
   putAttributes,
 } from "store/slice/Dataview/DataviewActions"
-import { TypeData } from "store/slice/Dataview/DataviewSlice"
 import {
-  DATAVIEW_SLICE_NAME as DATAVIEW_SLICE_NAME,
-  DataviewType,
-} from "store/slice/Dataview/DataviewType"
-import { AppDispatch, RootState } from "store/store"
+  selectDataviewPrivateData,
+  selectDataviewPublicData,
+  selectDataviewLoading,
+} from "store/slice/Dataview/DataviewSelectors"
+import { DataviewType } from "store/slice/Dataview/DataviewType"
+import { AppDispatch } from "store/store"
 
 type PopupAttributesProps = {
   data?: string | string[]
@@ -535,14 +536,10 @@ const DataviewRecords = ({
   metadataEditable,
   workspaceId,
 }: DataviewProps) => {
-  const type: keyof TypeData = user ? "private" : "public"
-
   const dataviewRecords = useSelector(
-    (state: RootState) => state[DATAVIEW_SLICE_NAME].data[type],
+    user ? selectDataviewPrivateData : selectDataviewPublicData,
   )
-  const loading = useSelector(
-    (state: RootState) => state[DATAVIEW_SLICE_NAME].loading,
-  )
+  const loading = useSelector(selectDataviewLoading)
 
   const [openPublishAll, setOpenPublishAll] = useState<{
     title: string
