@@ -15,6 +15,7 @@ class Rule:
     hdf5Path: str = None
     matPath: str = None
     path: str = None
+    priority: int = 0
 
 
 @dataclass
@@ -22,6 +23,7 @@ class FlowConfig:
     rules: Dict[str, Rule]
     last_output: list
     nwb_template: dict
+    snakemake_priority: int = 1
 
 
 class NormalRun(BaseModel):
