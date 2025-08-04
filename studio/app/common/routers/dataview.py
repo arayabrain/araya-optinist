@@ -7,12 +7,16 @@ from sqlmodel import Session, select
 
 from studio.app.common import models
 from studio.app.common.core.auth.auth_dependencies import get_current_user
+from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.workflow.workflow import NodeType
+from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.db.database import get_db
 from studio.app.common.schemas.base import SortOptions
 from studio.app.common.schemas.dataview import (
     DataviewRecord,
     DataviewRecordSearchOptions,
+    DataviewThumbnails,
     PageWithHeader,
     PublishFlags,
     PublishStatus,
@@ -35,12 +39,52 @@ RECORDS_SORT_MAPPING = {
 def records_pagenate_transformer(items: Sequence) -> Sequence:
     records = []
 
-    for item in items:
+    for idx, item in enumerate(items):
         record = DataviewRecord.from_orm(item)
 
         # Adjusting response fields
         record.owner = record.workspace.user
         record.workspace.user = None
+
+        image_url = None
+        roi_url = None
+
+        # TODO: As a temporary implementation, data is retrieved from experiment.yaml.
+        #   The data content is correct, but there are performance issues,
+        #   so improvements are needed, such as retrieving information from a database.
+        try:
+            # TODO: Temporarily read data from the file each time
+            experiment_config = ExptConfigReader.read(
+                str(record.workspace.id), record.uid
+            )
+
+            # TODO: Temporarily read data from the file each time
+            workflow_config = WorkflowConfigReader.read(
+                str(record.workspace.id), record.uid
+            )
+
+            # TODO: mage input data (image) thumbnails path
+            for _, node in workflow_config.nodeDict.items():
+                if node.type == NodeType.IMAGE:
+                    image_url = node.data.path[0]
+                    break
+
+            # TODO: mage output data (roi) thumbnails path
+            for _, function in experiment_config.function.items():
+                if function.outputPaths and ("cell_roi" in function.outputPaths):
+                    roi_url = function.outputPaths["cell_roi"].path
+                    break
+
+        except Exception as e:
+            experiment_config = None
+            logger.error(e, exc_info=True)
+
+        thumbnails = DataviewThumbnails(
+            image_url=image_url,
+            roi_url=roi_url,
+        )
+
+        record.thumbnails = thumbnails
 
         records.append(record)
 
