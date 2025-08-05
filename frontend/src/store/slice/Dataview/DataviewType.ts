@@ -5,6 +5,7 @@ export type OrderBy = "ASC" | "DESC" | ""
 export type DataviewType = {
   id: number
   uid: string
+  name: string
   owner: {
     name?: string
   }

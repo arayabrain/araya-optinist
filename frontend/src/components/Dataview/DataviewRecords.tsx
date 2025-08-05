@@ -12,7 +12,6 @@ import { useSearchParams } from "react-router-dom"
 import moment from "moment"
 import { enqueueSnackbar, VariantType } from "notistack"
 
-import AssignmentOutlinedIcon from "@mui/icons-material/AssignmentOutlined"
 import CheckCircleIcon from "@mui/icons-material/CheckCircle"
 import ImageIcon from "@mui/icons-material/Image"
 import InsightsIcon from "@mui/icons-material/Insights"
@@ -230,6 +229,26 @@ const defineColumns = (
       </Tooltip>
     ),
   },
+  {
+    field: "name",
+    headerName: "Name",
+    width: 200,
+    filterOperators: [
+      {
+        label: "Contains",
+        value: "contains",
+        InputComponent: (props: GridFilterInputValueProps) => (
+          <FilterInput {...props} loading={loading} />
+        ),
+      },
+    ],
+    type: "string",
+    renderCell: (params: { row: DataviewType }) => (
+      <Tooltip title={params.row?.name}>
+        <SpanCustom>{params.row?.name}</SpanCustom>
+      </Tooltip>
+    ),
+  },
   !user && {
     field: "user_name",
     headerName: "Owner",
@@ -290,6 +309,7 @@ const defineColumns = (
       </Tooltip>
     ),
   },
+  /** Currently, attribute is hidden
   {
     field: "attributes",
     headerName: "Attributes",
@@ -311,6 +331,7 @@ const defineColumns = (
       )
     },
   },
+  */
   {
     field: "input_data",
     headerName: "Inputs",
@@ -445,7 +466,7 @@ const defineColumns = (
     renderCell: (params: { row: DataviewType }) => (
       <Tooltip title={params.row?.updated_at}>
         <SpanCustom>
-          {moment(params.row?.updated_at).format("YYYY/MM/DD hh:mm")}
+          {moment(params.row?.updated_at).format("YYYY/MM/DD HH:mm")}
         </SpanCustom>
       </Tooltip>
     ),
@@ -613,6 +634,7 @@ const DataviewRecords = ({
   const dataParamsFilter = useMemo(
     () => ({
       uid: searchParams.get("uid") || undefined,
+      name: searchParams.get("name") || undefined,
       publish_status: searchParams.get("published") || undefined,
       user_name: searchParams.get("user_name") || undefined,
       workspace_id:

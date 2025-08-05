@@ -51,6 +51,7 @@ class DataviewThumbnails(BaseModel):
 class DataviewRecord(BaseModel):
     id: int
     uid: Optional[str]
+    name: Optional[str]
     owner: Optional[DataviewOwner]
     workspace: Optional[DataviewWorkspace]
     attributes: Optional[dict] = {}
@@ -66,6 +67,9 @@ class DataviewRecord(BaseModel):
 class DataviewRecordSearchOptions(BaseModel):
     uid: Optional[str] = Field(
         default="", description="partial match (experiment_records.uid)"
+    )
+    name: Optional[str] = Field(
+        default="", description="partial match (experiment_records.name)"
     )
     user_name: Optional[str] = Field(
         default="", description="partial match (user.name)"

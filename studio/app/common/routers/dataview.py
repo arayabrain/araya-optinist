@@ -7,16 +7,12 @@ from sqlmodel import Session, select
 
 from studio.app.common import models
 from studio.app.common.core.auth.auth_dependencies import get_current_user
-from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.workflow.workflow import NodeType
-from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.db.database import get_db
-from studio.app.common.schemas.base import SortOptions
+from studio.app.common.schemas.base import SortDirection, SortOptions
 from studio.app.common.schemas.dataview import (
     DataviewRecord,
     DataviewRecordSearchOptions,
-    DataviewThumbnails,
     PageWithHeader,
     PublishFlags,
     PublishStatus,
@@ -44,59 +40,52 @@ def records_pagenate_transformer(items: Sequence) -> Sequence:
 
         # Adjusting response fields
         record.owner = record.workspace.user
-        record.workspace.user = None
-
-        image_url = None
-        roi_url = None
-
-        # TODO: As a temporary implementation, data is retrieved from experiment.yaml.
-        #   The data content is correct, but there are performance issues,
-        #   so improvements are needed, such as retrieving information from a database.
-        try:
-            # TODO: Temporarily read data from the file each time
-            experiment_config = ExptConfigReader.read(
-                str(record.workspace.id), record.uid
-            )
-
-            # TODO: Temporarily read data from the file each time
-            workflow_config = WorkflowConfigReader.read(
-                str(record.workspace.id), record.uid
-            )
-
-            # TODO: mage input data (image) thumbnails path
-            for _, node in workflow_config.nodeDict.items():
-                if node.type == NodeType.IMAGE:
-                    image_url = node.data.path[0]
-                    break
-
-            # TODO: mage output data (roi) thumbnails path
-            for _, function in experiment_config.function.items():
-                if function.outputPaths and ("cell_roi" in function.outputPaths):
-                    roi_url = function.outputPaths["cell_roi"].path
-                    break
-
-        except Exception as e:
-            experiment_config = None
-            logger.error(e, exc_info=True)
-
-        thumbnails = DataviewThumbnails(
-            image_url=image_url,
-            roi_url=roi_url,
-        )
-
-        record.thumbnails = thumbnails
+        record.workspace.user = None  # Not used
 
         records.append(record)
 
     return records
 
 
-def get_search_db_experiment_query(
+def get_records_common_query(sortOptions: SortOptions) -> Select:
+    query = (
+        select(models.ExperimentRecord)
+        .join(
+            models.Workspace,
+            models.Workspace.id == models.ExperimentRecord.workspace_id,
+        )
+        .join(
+            models.User,
+            models.User.id == models.Workspace.user_id,
+        )
+        .filter(
+            models.Workspace.deleted.is_(False),
+            models.User.active.is_(True),
+            models.ExperimentRecord.success.is_(True),
+        )
+    )
+
+    sa_sort_list = sortOptions.get_sa_sort_list(
+        sa_table=models.ExperimentRecord,
+        mapping=RECORDS_SORT_MAPPING,
+        default=["id", SortDirection.desc],
+    )
+    query = query.group_by(models.ExperimentRecord.id).order_by(*sa_sort_list)
+
+    return query
+
+
+def get_records_filtered_query(
     query: Select, options: DataviewRecordSearchOptions
 ) -> Select:
     if options.uid:
         query = query.filter(
             models.ExperimentRecord.uid.like("%{0}%".format(options.uid))
+        )
+
+    if options.name:
+        query = query.filter(
+            models.ExperimentRecord.name.like("%{0}%".format(options.name))
         )
 
     if options.user_name:
@@ -130,30 +119,10 @@ async def search_public_dataview_records(
     options: DataviewRecordSearchOptions = Depends(),
     sortOptions: SortOptions = Depends(),
 ):
-    sa_sort_list = sortOptions.get_sa_sort_list(
-        sa_table=models.ExperimentRecord,
-        mapping=RECORDS_SORT_MAPPING,
+    query = get_records_common_query(sortOptions).filter(
+        models.ExperimentRecord.publish_status == PublishStatus.on.value,
     )
-
-    query = (
-        select(models.ExperimentRecord)
-        .join(
-            models.Workspace,
-            models.Workspace.id == models.ExperimentRecord.workspace_id,
-        )
-        .join(
-            models.User,
-            models.User.id == models.Workspace.user_id,
-        )
-        .filter(
-            models.Workspace.deleted.is_(False),
-            models.User.active.is_(True),
-            models.ExperimentRecord.publish_status == PublishStatus.on.value,
-        )
-    )
-
-    query = get_search_db_experiment_query(query, options)
-    query = query.group_by(models.ExperimentRecord.id).order_by(*sa_sort_list)
+    query = get_records_filtered_query(query, options)
 
     data: PageWithHeader = paginate(
         session=db,
@@ -177,30 +146,10 @@ async def search_dataview_records(
     sortOptions: SortOptions = Depends(),
     current_user: User = Depends(get_current_user),
 ):
-    sa_sort_list = sortOptions.get_sa_sort_list(
-        sa_table=models.ExperimentRecord,
-        mapping=RECORDS_SORT_MAPPING,
+    query = get_records_common_query(sortOptions).filter(
+        models.User.id == current_user.id,
     )
-
-    query = (
-        select(models.ExperimentRecord)
-        .join(
-            models.Workspace,
-            models.Workspace.id == models.ExperimentRecord.workspace_id,
-        )
-        .join(
-            models.User,
-            models.User.id == models.Workspace.user_id,
-        )
-        .filter(
-            models.Workspace.deleted.is_(False),
-            models.User.id == current_user.id,
-            models.User.active.is_(True),
-        )
-    )
-
-    query = get_search_db_experiment_query(query, options)
-    query = query.group_by(models.ExperimentRecord.id).order_by(*sa_sort_list)
+    query = get_records_filtered_query(query, options)
 
     data: PageWithHeader = paginate(
         session=db,
