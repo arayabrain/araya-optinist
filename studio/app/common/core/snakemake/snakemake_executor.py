@@ -134,17 +134,22 @@ def _snakemake_execute_process(
     # Snakemake execution post process
     # ------------------------------------------------------------
 
-    # Update workflow processing results
-    asyncio.run(WorkflowResult(workspace_id, unique_id).observe_overall())
+    try:
+        # Update workflow processing results
+        asyncio.run(WorkflowResult(workspace_id, unique_id).observe_overall())
 
-    # Update experiment database record
-    if ExperimentRecordService.is_available():
-        ExperimentRecordService.regist_record_on_workflow_completed(
+        # Update experiment database record
+        if ExperimentRecordService.is_available():
+            ExperimentRecordService.regist_record_on_workflow_completed(
+                workspace_id, unique_id
+            )
+
+        # Data usage calculation
+        WorkspaceDataCapacityService.update_experiment_data_usage(
             workspace_id, unique_id
         )
-
-    # Data usage calculation
-    WorkspaceDataCapacityService.update_experiment_data_usage(workspace_id, unique_id)
+    except Exception as e:
+        logger.error(f"snakemake_execute post process failed: {e}", exc_info=True)
 
     # result error handling
     if not snakemake_result:
