@@ -1,3 +1,4 @@
+// pages/Subscription/MembershipPlans.tsx
 import { useEffect } from "react"
 import { useDispatch, useSelector } from "react-redux"
 import { useNavigate } from "react-router-dom"
@@ -9,6 +10,7 @@ import {
   styled,
   Typography,
   CircularProgress,
+  Chip,
 } from "@mui/material"
 
 import {
@@ -24,8 +26,17 @@ import {
   selectCurrentPlanId,
 } from "store/slice/Subscriptions/SubscriptionSelector"
 import { clearError } from "store/slice/Subscriptions/SubscriptionSlice"
+import type {
+  SubscriptionPlan,
+  PlanFeature,
+} from "store/slice/Subscriptions/SubscriptionType"
 import { selectCurrentUser } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
+import {
+  getBillingCycleText,
+  getCurrencySymbol,
+  getPlanFeatures,
+} from "utils/subscriptions/SubscriptionUtils"
 
 const MembershipPlans = () => {
   const user = useSelector(selectCurrentUser)
@@ -57,50 +68,6 @@ const MembershipPlans = () => {
     loadData()
   }, [dispatch, user?.id])
 
-  // Plan features configuration
-  const getPlanFeatures = (planName: string) => {
-    const planFeatures = {
-      Free: [
-        {
-          text: "Basic compute access with fair-use limitations",
-          isPremium: false,
-        },
-        {
-          text: "Standard support through documentation and community",
-          isPremium: false,
-        },
-        { text: "Basic data storage (5GB)", isPremium: false },
-        { text: "Standard processing speed", isPremium: false },
-      ],
-      Premium: [
-        {
-          text: "Basic compute access with fair-use limitations",
-          isPremium: false,
-        },
-        {
-          text: "Standard support through documentation and community",
-          isPremium: false,
-        },
-        { text: "Basic data storage (5GB)", isPremium: false },
-        { text: "Standard processing speed", isPremium: false },
-        {
-          text: "Priority compute access with guaranteed resource allocation",
-          isPremium: true,
-        },
-        { text: "Extended data storage (200GB)", isPremium: true },
-        {
-          text: "Enhanced support including direct assistance",
-          isPremium: true,
-        },
-        {
-          text: "Possible advanced features like extended job history and analytics",
-          isPremium: true,
-        },
-      ],
-    }
-    return planFeatures[planName as keyof typeof planFeatures] || []
-  }
-
   // Check if user has a specific plan
   const isCurrentPlan = (planId: number) => {
     return currentPlanId === planId
@@ -118,9 +85,8 @@ const MembershipPlans = () => {
     }
   }
 
-  const formatPrice = (priceInCents: number) => {
-    return `$${(priceInCents / 100).toFixed(2)}`
-  }
+  // Filter only active plans
+  const activePlans = plans.filter((plan) => plan.status === true)
 
   // Loading state
   if (loading) {
@@ -142,7 +108,24 @@ const MembershipPlans = () => {
           Error loading subscription plans
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          {error}
+          {typeof error === "string" ? error : "An unexpected error occurred"}
+        </Typography>
+        <Button variant="outlined" onClick={handleRetry} sx={{ mt: 2 }}>
+          Retry
+        </Button>
+      </BoxWrapper>
+    )
+  }
+
+  // No plans state
+  if (activePlans.length === 0) {
+    return (
+      <BoxWrapper>
+        <Typography variant="h6" color="text.secondary" sx={{ mb: 2 }}>
+          No subscription plans available
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          Please try again later or contact support.
         </Typography>
         <Button variant="outlined" onClick={handleRetry} sx={{ mt: 2 }}>
           Retry
@@ -156,7 +139,7 @@ const MembershipPlans = () => {
       <MembershipTitle variant="h3">Membership Plans</MembershipTitle>
 
       {/* Show current subscription status */}
-      {userSubscription && (
+      {userSubscription && userSubscription.plan_name !== "Free" && (
         <SubscriptionStatus>
           <Typography variant="body1">
             Current Plan: <strong>{userSubscription.plan_name}</strong>
@@ -176,34 +159,54 @@ const MembershipPlans = () => {
 
       <MembershipWrapper>
         <MembershipContent>
-          {plans.map((plan) => {
-            const features = getPlanFeatures(plan.name)
+          {activePlans.map((plan) => {
+            const features = getPlanFeatures(plan)
             const isCurrent = isCurrentPlan(plan.id)
             const isFree = plan.price === 0
+            const currencySymbol = getCurrencySymbol(plan.currency)
+            const billingCycle = getBillingCycleText(plan.billing_cycle)
+
+            console.log(`Plan ${plan.id} features:`, features)
 
             return (
               <PlanCard key={plan.id} isHighlighted={plan.name === "Premium"}>
                 <PlanHeader>
                   <PlanTitle variant="h4">{plan.name}</PlanTitle>
                   <PlanPrice variant="h5">
-                    {isFree ? "Free" : `${formatPrice(plan.price)}/month`}
+                    {isFree
+                      ? "Free"
+                      : `${currencySymbol}${(plan.price / 100).toFixed(2)}/${billingCycle}`}
                   </PlanPrice>
+                  {plan.billing_cycle === 2 && (
+                    <Chip
+                      label="Best Value"
+                      color="primary"
+                      size="small"
+                      sx={{ mt: 1 }}
+                    />
+                  )}
                 </PlanHeader>
 
                 <FeaturesList>
-                  {features.map((feature, index) => (
-                    <FeatureItem key={index}>
-                      <CheckIcon
-                        sx={{
-                          color: feature.isPremium ? "#16a34a" : "#6b7280",
-                          fontSize: "1.25rem",
-                        }}
-                      />
-                      <FeatureText isPremium={feature.isPremium}>
-                        {feature.text}
-                      </FeatureText>
-                    </FeatureItem>
-                  ))}
+                  {features.length > 0 ? (
+                    features.map((feature: PlanFeature, index: number) => (
+                      <FeatureItem key={index}>
+                        <CheckIcon
+                          sx={{
+                            color: feature.isPremium ? "#16a34a" : "#6b7280",
+                            fontSize: "1.25rem",
+                          }}
+                        />
+                        <FeatureText isPremium={feature.isPremium}>
+                          {feature.text}
+                        </FeatureText>
+                      </FeatureItem>
+                    ))
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">
+                      No features available for this plan
+                    </Typography>
+                  )}
                 </FeaturesList>
 
                 <ButtonWrapper>
@@ -230,6 +233,7 @@ const MembershipPlans = () => {
   )
 }
 
+// Styled Components
 const BoxWrapper = styled(Box)({
   display: "flex",
   flexDirection: "column",

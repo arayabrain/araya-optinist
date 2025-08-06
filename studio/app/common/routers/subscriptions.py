@@ -11,6 +11,7 @@ from studio.app.common import models as common_model
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.db.database import get_db
+from studio.app.common.models.subscription import SubscriptionPlans
 from studio.app.common.schemas.subscriptions import (
     SubscriptionPlanResponse,
     UserSubscriptionResponse,
@@ -21,30 +22,58 @@ router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
 logger = AppLogger.get_logger()
 
 
-@router.get(
-    "/plans",
-    response_model=List[SubscriptionPlanResponse],
-    description="""Get all available subscription plans""",
-)
-async def get_subscription_plans(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Get all available subscription plans
-    """
+@router.get("/plans", response_model=List[SubscriptionPlanResponse])
+def get_subscription_plans(db: Session = Depends(get_db)):
     try:
+        # Query active plans
         plans = (
-            db.query(common_model.SubscriptionPlans)
-            .order_by(common_model.SubscriptionPlans.price)
-            .all()
+            db.query(SubscriptionPlans).filter(SubscriptionPlans.status == "1").all()
         )
-        return plans
+
+        if not plans:
+            logger.info("No subscription plans found")
+            return []
+
+        # Debug logging
+        logger.info(f"Found {len(plans)} subscription plans")
+
+        result = []
+        for plan in plans:
+            try:
+                # Debug each plan
+                logger.debug(f"Processing plan {plan.id}: {plan.name}")
+                logger.debug(
+                    f"Features type: {type(plan.features)}, value: {plan.features}"
+                )
+
+                # Create response object - let Pydantic validators handle conversion
+                plan_response = SubscriptionPlanResponse(
+                    id=plan.id,
+                    name=plan.name,
+                    price=plan.price,
+                    billing_cycle=plan.billing_cycle,
+                    features=plan.features,
+                    currency=plan.currency,
+                    status=plan.status,
+                    created_at=plan.created_at,
+                )
+                result.append(plan_response)
+
+            except Exception as plan_error:
+                logger.error(f"Error processing plan {plan.id}: {plan_error}")
+                # Skip this plan and continue with others
+                continue
+
+        logger.info(f"Successfully processed {len(result)} plans")
+        return result
+
     except Exception as e:
-        logger.error(f"Error fetching subscription plans: {str(e)}")
+        logger.error(f"Error fetching subscription plans: {e}")
+        import traceback
+
+        logger.error(traceback.format_exc())
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch subscription plans: {str(e)}",
+            status_code=500, detail=f"Failed to fetch subscription plans: {str(e)}"
         )
 
 
