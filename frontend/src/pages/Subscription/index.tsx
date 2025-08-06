@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react"
+// pages/Subscription/MembershipPlans.tsx
+import { useEffect } from "react"
 import { useDispatch, useSelector } from "react-redux"
 import { useNavigate } from "react-router-dom"
 
@@ -9,131 +10,86 @@ import {
   styled,
   Typography,
   CircularProgress,
+  Chip,
 } from "@mui/material"
 
 import {
   getSubscriptionPlan,
   getUserSubscription,
 } from "store/slice/Subscriptions/SubscriptionActions"
-import { selectCurrentUser, selectLoading } from "store/slice/User/UserSelector"
+import {
+  selectSubscriptionPlans,
+  selectUserSubscription,
+  selectSubscriptionLoading,
+  selectSubscriptionError,
+  selectIsSubscriptionExpired,
+  selectCurrentPlanId,
+} from "store/slice/Subscriptions/SubscriptionSelector"
+import { clearError } from "store/slice/Subscriptions/SubscriptionSlice"
+import type {
+  SubscriptionPlan,
+  PlanFeature,
+} from "store/slice/Subscriptions/SubscriptionType"
+import { selectCurrentUser } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
-
-// Types for your data
-interface SubscriptionPlan {
-  id: number
-  name: string
-  price: number // Price in cents
-  created_at: string
-}
-
-interface UserSubscription {
-  id: number
-  plan_id: number
-  user_id: number
-  expiration: string
-  plan_name: string
-  plan_price: number
-}
+import {
+  getBillingCycleText,
+  getCurrencySymbol,
+  getPlanFeatures,
+} from "utils/subscriptions/SubscriptionUtils"
 
 const MembershipPlans = () => {
   const user = useSelector(selectCurrentUser)
-  const loading = useSelector(selectLoading)
+  const plans = useSelector(selectSubscriptionPlans)
+  const userSubscription = useSelector(selectUserSubscription)
+  const loading = useSelector(selectSubscriptionLoading)
+  const error = useSelector(selectSubscriptionError)
+  const isSubscriptionExpired = useSelector(selectIsSubscriptionExpired)
+  const currentPlanId = useSelector(selectCurrentPlanId)
+
   const dispatch = useDispatch<AppDispatch>()
   const navigate = useNavigate()
-
-  // State for dynamic data
-  const [plans, setPlans] = useState<SubscriptionPlan[]>([])
-  const [userSubscription, setUserSubscription] =
-    useState<UserSubscription | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
 
   // Fetch data on component mount
   useEffect(() => {
     const loadData = async () => {
-      try {
-        setIsLoading(true)
-        setError(null)
+      // Clear any previous errors
+      dispatch(clearError())
 
-        // Fetch subscription plans
-        const plansData = await dispatch(getSubscriptionPlan())
-        setPlans(plansData.payload as SubscriptionPlan[])
+      // Fetch subscription plans
+      dispatch(getSubscriptionPlan())
 
-        // Fetch user's current subscription if user exists
-        if (user?.id) {
-          const userSub = await dispatch(getUserSubscription(user.id))
-          setUserSubscription(userSub.payload as UserSubscription)
-        }
-      } catch (err) {
-        console.error("Error loading subscription data:", err)
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Failed to load subscription data",
-        )
-      } finally {
-        setIsLoading(false)
+      // Fetch user's current subscription if user exists
+      if (user?.id) {
+        dispatch(getUserSubscription(user.id))
       }
     }
 
     loadData()
-  }, [user?.id])
-
-  // Plan features configuration
-  const getPlanFeatures = (planName: string) => {
-    const planFeatures = {
-      Free: [
-        { text: "Access to basic workflows", isPremium: false },
-        { text: "Community support", isPremium: false },
-        { text: "Basic data storage (1GB)", isPremium: false },
-        { text: "Standard processing speed", isPremium: false },
-      ],
-      Premium: [
-        { text: "Access to basic workflows", isPremium: false },
-        { text: "Community support", isPremium: false },
-        { text: "Basic data storage (1GB)", isPremium: false },
-        { text: "Standard processing speed", isPremium: false },
-        { text: "Advanced workflows & algorithms", isPremium: true },
-        { text: "Priority support", isPremium: true },
-        { text: "Extended data storage (10GB)", isPremium: true },
-        { text: "High-speed processing", isPremium: true },
-        { text: "Collaboration tools", isPremium: true },
-        { text: "Custom integrations", isPremium: true },
-      ],
-    }
-    return planFeatures[planName as keyof typeof planFeatures] || []
-  }
+  }, [dispatch, user?.id])
 
   // Check if user has a specific plan
   const isCurrentPlan = (planId: number) => {
-    if (!userSubscription)
-      return planId === plans.find((p) => p.name === "Free")?.id
-
-    // Check if subscription is active
-    const now = new Date()
-    const expirationDate = new Date(userSubscription.expiration)
-
-    return userSubscription.plan_id === planId && expirationDate > now
-  }
-
-  // Check if subscription is expired
-  const isSubscriptionExpired = () => {
-    if (!userSubscription) return false
-    const now = new Date()
-    const expirationDate = new Date(userSubscription.expiration)
-    return expirationDate <= now
+    return currentPlanId === planId
   }
 
   const handleUpgradeClick = (planId: number) => {
     navigate(`/console/premium-checkout?planId=${planId}`)
   }
 
-  const formatPrice = (priceInCents: number) => {
-    return `$${(priceInCents / 100).toFixed(2)}`
+  const handleRetry = () => {
+    dispatch(clearError())
+    dispatch(getSubscriptionPlan())
+    if (user?.id) {
+      dispatch(getUserSubscription(user.id))
+    }
   }
 
+  // Filter only active plans
+  const activePlans = plans.filter((plan) => plan.status === true)
+
   // Loading state
-  if (isLoading || loading) {
+  if (loading) {
     return (
       <BoxWrapper>
         <CircularProgress />
@@ -152,13 +108,26 @@ const MembershipPlans = () => {
           Error loading subscription plans
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          {error}
+          {typeof error === "string" ? error : "An unexpected error occurred"}
         </Typography>
-        <Button
-          variant="outlined"
-          onClick={() => window.location.reload()}
-          sx={{ mt: 2 }}
-        >
+        <Button variant="outlined" onClick={handleRetry} sx={{ mt: 2 }}>
+          Retry
+        </Button>
+      </BoxWrapper>
+    )
+  }
+
+  // No plans state
+  if (activePlans.length === 0) {
+    return (
+      <BoxWrapper>
+        <Typography variant="h6" color="text.secondary" sx={{ mb: 2 }}>
+          No subscription plans available
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          Please try again later or contact support.
+        </Typography>
+        <Button variant="outlined" onClick={handleRetry} sx={{ mt: 2 }}>
           Retry
         </Button>
       </BoxWrapper>
@@ -170,13 +139,13 @@ const MembershipPlans = () => {
       <MembershipTitle variant="h3">Membership Plans</MembershipTitle>
 
       {/* Show current subscription status */}
-      {userSubscription && (
+      {userSubscription && userSubscription.plan_name !== "Free" && (
         <SubscriptionStatus>
           <Typography variant="body1">
             Current Plan: <strong>{userSubscription.plan_name}</strong>
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            {isSubscriptionExpired() ? (
+            {isSubscriptionExpired ? (
               <span style={{ color: "#dc2626" }}>
                 Expired on{" "}
                 {new Date(userSubscription.expiration).toLocaleDateString()}
@@ -190,42 +159,60 @@ const MembershipPlans = () => {
 
       <MembershipWrapper>
         <MembershipContent>
-          {plans.map((plan) => {
-            const features = getPlanFeatures(plan.name)
+          {activePlans.map((plan) => {
+            const features = getPlanFeatures(plan)
             const isCurrent = isCurrentPlan(plan.id)
             const isFree = plan.price === 0
+            const currencySymbol = getCurrencySymbol(plan.currency)
+            const billingCycle = getBillingCycleText(plan.billing_cycle)
+
+            console.log(`Plan ${plan.id} features:`, features)
 
             return (
               <PlanCard key={plan.id} isHighlighted={plan.name === "Premium"}>
                 <PlanHeader>
                   <PlanTitle variant="h4">{plan.name}</PlanTitle>
                   <PlanPrice variant="h5">
-                    {isFree ? "Free" : `${formatPrice(plan.price)}/month`}
+                    {isFree
+                      ? "Free"
+                      : `${currencySymbol}${(plan.price / 100).toFixed(2)}/${billingCycle}`}
                   </PlanPrice>
+                  {plan.billing_cycle === 2 && (
+                    <Chip
+                      label="Best Value"
+                      color="primary"
+                      size="small"
+                      sx={{ mt: 1 }}
+                    />
+                  )}
                 </PlanHeader>
 
                 <FeaturesList>
-                  {features.map((feature, index) => (
-                    <FeatureItem key={index}>
-                      <CheckIcon
-                        sx={{
-                          color: feature.isPremium ? "#16a34a" : "#6b7280",
-                          fontSize: "1.25rem",
-                        }}
-                      />
-                      <FeatureText isPremium={feature.isPremium}>
-                        {feature.text}
-                      </FeatureText>
-                    </FeatureItem>
-                  ))}
+                  {features.length > 0 ? (
+                    features.map((feature: PlanFeature, index: number) => (
+                      <FeatureItem key={index}>
+                        <CheckIcon
+                          sx={{
+                            color: feature.isPremium ? "#16a34a" : "#6b7280",
+                            fontSize: "1.25rem",
+                          }}
+                        />
+                        <FeatureText isPremium={feature.isPremium}>
+                          {feature.text}
+                        </FeatureText>
+                      </FeatureItem>
+                    ))
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">
+                      No features available for this plan
+                    </Typography>
+                  )}
                 </FeaturesList>
 
                 <ButtonWrapper>
                   {isCurrent ? (
                     <CurrentPlanButton disabled>
-                      {isSubscriptionExpired()
-                        ? "Expired Plan"
-                        : "Current Plan"}
+                      {isSubscriptionExpired ? "Expired Plan" : "Current Plan"}
                     </CurrentPlanButton>
                   ) : (
                     <UpgradeButton

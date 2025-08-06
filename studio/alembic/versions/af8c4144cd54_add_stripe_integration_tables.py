@@ -21,27 +21,53 @@ def upgrade() -> None:
     # Create subscription_plans table
     op.create_table(
         "subscription_plans",
-        sa.Column("id", mysql.BIGINT(unsigned=True), nullable=False),
-        sa.Column("name", sa.String(length=100), nullable=False),
         sa.Column(
-            "price", mysql.BIGINT(unsigned=True), nullable=False
-        ),  # Price in cents
+            "id",
+            mysql.BIGINT(unsigned=True),
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        sa.Column("name", sa.String(length=100), nullable=False),
+        sa.Column("price", mysql.BIGINT(unsigned=True), nullable=False),
+        sa.Column("billing_cycle", mysql.BIGINT(unsigned=True), nullable=False),
+        sa.Column("features", sa.JSON(), nullable=False),
+        sa.Column("currency", mysql.TINYINT(unsigned=True), nullable=False),
+        sa.Column("status", sa.Boolean(), nullable=False, server_default=sa.text("1")),
         sa.Column(
             "created_at",
-            sa.DateTime(),
+            sa.TIMESTAMP(),
             server_default=sa.text("CURRENT_TIMESTAMP"),
-            nullable=True,
+            nullable=False,
         ),
-        sa.PrimaryKeyConstraint("id"),
         sa.Index("idx_subscription_plans_name", "name"),
     )
 
     # Create subscription_users table
     op.create_table(
         "subscription_users",
-        sa.Column("id", mysql.BIGINT(unsigned=True), nullable=False),
+        sa.Column(
+            "id",
+            mysql.BIGINT(unsigned=True),
+            nullable=False,
+            primary_key=True,
+            autoincrement=True,
+        ),
         sa.Column("plan_id", mysql.BIGINT(unsigned=True), nullable=False),
         sa.Column("user_id", mysql.BIGINT(unsigned=True), nullable=False),
+        sa.Column("expiration", sa.DateTime(), nullable=False),
+        sa.Column(
+            "sync_status",
+            sa.Enum("pending", "synced", "failed", name="sync_status_enum"),
+            nullable=False,
+            server_default=sa.text("'pending'"),
+        ),
+        sa.Column(
+            "last_synced",
+            sa.DateTime(),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
+            nullable=True,
+        ),
         sa.Column(
             "created_at",
             sa.DateTime(),
@@ -54,7 +80,6 @@ def upgrade() -> None:
             server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
             nullable=True,
         ),
-        sa.Column("expiration", sa.DateTime(), nullable=False),
         sa.ForeignKeyConstraint(
             ["plan_id"], ["subscription_plans.id"], name="fk_subscription_users_plan"
         ),
@@ -68,82 +93,265 @@ def upgrade() -> None:
         sa.Index("idx_subscription_users_user_plan", "user_id", "plan_id"),
     )
 
-    # Create payment_customers table
     op.create_table(
-        "payment_customers",
-        sa.Column("id", mysql.BIGINT(unsigned=True), nullable=False),
+        "subscription_providers",
         sa.Column(
-            "customer_id", sa.String(length=255), nullable=False
-        ),  # Stripe Customer ID (cus_...)
-        sa.Column("user_id", mysql.BIGINT(unsigned=True), nullable=False),
+            "id",
+            mysql.BIGINT(unsigned=True),
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        sa.Column(
+            "name", sa.String(length=50), nullable=False
+        ),  # e.g "stripe", "paypal"
         sa.Column(
             "created_at",
-            sa.DateTime(),
+            sa.TIMESTAMP(),
             server_default=sa.text("CURRENT_TIMESTAMP"),
-            nullable=True,
+            nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["user_id"], ["users.id"], name="fk_user_stripe_customer_user"
+        sa.Column(
+            "updated_at",
+            sa.TIMESTAMP(),
+            server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+            nullable=False,
+        ),
+    )
+
+    # Create subscription_user_accounts table
+    op.create_table(
+        "subscription_user_accounts",
+        sa.Column(
+            "id",
+            mysql.BIGINT(unsigned=True),
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        sa.Column("user_id", mysql.BIGINT(unsigned=True), nullable=False),
+        sa.Column(
+            "provider_id", mysql.BIGINT(unsigned=True), nullable=False
+        ),  # FK to subscription_providers.id
+        sa.Column(
+            "provider_customer_id", sa.String(length=255), nullable=False
+        ),  # Provider's customer ID
+        sa.Column(
+            "created_at",
+            sa.TIMESTAMP(),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.TIMESTAMP(),
+            server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+            nullable=False,
         ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("customer_id", name="idx_unique_stripe_customer_id"),
+        sa.ForeignKeyConstraint(
+            ["user_id"], ["users.id"], name="fk_subscription_user_accounts_user"
+        ),
+        sa.ForeignKeyConstraint(
+            ["provider_id"],
+            ["subscription_providers.id"],
+            name="fk_subscription_user_accounts_provider",
+        ),
         sa.UniqueConstraint(
-            "user_id", name="idx_unique_stripe_customer_user"
-        ),  # One-to-one relationship
-        sa.Index("idx_payment_customers", "customer_id"),
+            "provider_customer_id", name="idx_unique_provider_customer_id"
+        ),
+        sa.Index("idx_subscription_user_accounts_user", "user_id"),
+        sa.Index("idx_subscription_user_accounts_provider", "provider_id"),
     )
 
-    # Create subscription_user_payments table
+    # Create subscription_user_purchases table
     op.create_table(
-        "subscription_user_payments",
-        sa.Column("id", mysql.BIGINT(unsigned=True), nullable=False),
+        "subscription_user_purchases",
         sa.Column(
-            "payment_method_id", sa.String(length=255), nullable=False
-        ),  # Stripe Payment Method ID (pm_...)
+            "id",
+            mysql.BIGINT(unsigned=True),
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        sa.Column(
+            "plan_id", mysql.BIGINT(unsigned=True), nullable=False
+        ),  # 1=FREE, 2=Premium
         sa.Column("user_id", mysql.BIGINT(unsigned=True), nullable=False),
         sa.Column(
-            "payment_method_used", sa.String(length=255), nullable=False
-        ),  # Human-readable type like "Credit Card"
-        sa.Column(
             "created_at",
-            sa.DateTime(),
+            sa.TIMESTAMP(),
             server_default=sa.text("CURRENT_TIMESTAMP"),
-            nullable=True,
+            nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["user_id"], ["users.id"], name="fk_subscription_user_payments_user"
+        sa.Column(
+            "updated_at",
+            sa.TIMESTAMP(),
+            server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+            nullable=False,
         ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("payment_method_id", name="idx_unique_payment_method_id"),
-        sa.Index("idx_subscription_user_payments_user_id", "user_id"),
-    )
-
-    # Create subscription_purchase_history table
-    op.create_table(
-        "subscription_purchase_history",
-        sa.Column("id", mysql.BIGINT(unsigned=True), nullable=False),
-        sa.Column("purchased_product", sa.String(length=255), nullable=False),
-        sa.Column("user_id", mysql.BIGINT(unsigned=True), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(),
-            server_default=sa.text("CURRENT_TIMESTAMP"),
-            nullable=True,
+        sa.ForeignKeyConstraint(
+            ["plan_id"],
+            ["subscription_plans.id"],
+            name="fk_subscription_user_purchases_plan",
         ),
         sa.ForeignKeyConstraint(
             ["user_id"], ["users.id"], name="fk_subscription_purchase_history_user"
         ),
-        sa.PrimaryKeyConstraint("id"),
         sa.Index("idx_subscription_purchase_history_user_id", "user_id"),
-        sa.Index("idx_subscription_purchase_history_product", "purchased_product"),
+        sa.Index("idx_subscription_purchase_history_plan", "plan_id"),
         sa.Index("idx_subscription_purchase_history_created", "created_at"),
+    )
+
+    # Create subscription_cancellations table
+    op.create_table(
+        "subscription_cancellations",
+        sa.Column(
+            "id",
+            mysql.BIGINT(unsigned=True),
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        sa.Column("cancelled_by_user_id", mysql.BIGINT(unsigned=True), nullable=False),
+        sa.Column("purchases_id", mysql.BIGINT(unsigned=True), nullable=False),
+        sa.Column(
+            "cancelled_at",
+            sa.TIMESTAMP(),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
+            nullable=False,
+        ),
+        sa.Column(
+            "reason",
+            sa.Enum(
+                "user_request",
+                "payment_failed",
+                "admin_action",
+                "refund",
+                name="cancellation_reason_enum",
+            ),
+            nullable=True,
+        ),  # Reason for cancellation
+        sa.Column(
+            "notes",
+            sa.Text(),
+            nullable=True,
+        ),  # Additional notes or comments
+        sa.PrimaryKeyConstraint("id"),
+        sa.ForeignKeyConstraint(
+            ["cancelled_by_user_id"],
+            ["users.id"],
+            name="fk_subscription_cancellations_cancelled_by_user",
+        ),
+        sa.ForeignKeyConstraint(
+            ["purchases_id"],
+            ["subscription_user_purchases.id"],
+            name="fk_subscription_cancellations_purchase",
+        ),
+        sa.Index("idx_subscription_cancellations_user", "cancelled_by_user_id"),
+        sa.Index("idx_subscription_cancellations_purchase", "purchases_id"),
+        sa.Index("idx_subscription_cancellations_cancelled_at", "cancelled_at"),
+    )
+
+    # Create taxes table for tax rates lookup
+    op.create_table(
+        "setting_taxes",
+        sa.Column(
+            "id",
+            mysql.BIGINT(unsigned=True),
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        sa.Column(
+            "tax_type", sa.String(length=50), nullable=False
+        ),  # sales_tax, vat, gst, consumption_tax
+        sa.Column(
+            "tax_name", sa.String(length=100), nullable=False
+        ),  # "Sales Tax", "Consumption Tax"
+        sa.Column(
+            "tax_rate", sa.DECIMAL(8, 6), nullable=False
+        ),  # e.g., 0.0825 for 8.25%, 0.10 for 10%
+        sa.Column(
+            "status", sa.Boolean(), nullable=False, server_default=sa.text("1")
+        ),  # Active/Inactive
+        sa.Column(
+            "effective_date", sa.DATE(), nullable=False
+        ),  # When this rate becomes effective
+        sa.Column(
+            "end_date", sa.DATE(), nullable=True
+        ),  # When this rate expires (NULL = indefinite)
+        sa.Column(
+            "created_at",
+            sa.TIMESTAMP(),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.TIMESTAMP(),
+            server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+            nullable=False,
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.Index("idx_taxes_active", "status"),
+        sa.Index("idx_taxes_effective", "effective_date"),
+        sa.Index("idx_taxes_type", "tax_type"),
+    )
+
+    # Insert initial data
+    # Insert subscription plans
+    op.execute(
+        """
+INSERT INTO subscription_plans
+(id, name, price, billing_cycle, features, currency, status, created_at)
+VALUES
+(1, 'Free', 0, 1, JSON_OBJECT(
+    'Free', JSON_ARRAY(
+        JSON_OBJECT('text', 'Basic compute access with fair-use limitations',
+                   'isPremium', false),
+        JSON_OBJECT('text', 'Standard support through documentation and community',
+                   'isPremium', false),
+        JSON_OBJECT('text', 'Basic data storage (5GB)', 'isPremium', false),
+        JSON_OBJECT('text', 'Standard processing speed', 'isPremium', false)
+    )
+), 1, 1, NOW()),
+(2, 'Premium', 2000, 1, JSON_OBJECT(
+    'Premium', JSON_ARRAY(
+        JSON_OBJECT('text', 'Basic compute access with fair-use limitations',
+                   'isPremium', false),
+        JSON_OBJECT('text', 'Standard support through documentation and community',
+                   'isPremium', false),
+        JSON_OBJECT('text', 'Basic data storage (5GB)', 'isPremium', false),
+        JSON_OBJECT('text', 'Standard processing speed', 'isPremium', false),
+        JSON_OBJECT('text', 'Priority compute access with guaranteed allocation',
+                   'isPremium', true),
+        JSON_OBJECT('text', 'Extended data storage (200GB)', 'isPremium', true),
+        JSON_OBJECT('text', 'Enhanced support including direct assistance',
+                   'isPremium', true),
+        JSON_OBJECT('text', 'Advanced features like extended job history',
+                   'isPremium', true)
+    )
+), 1, 1, NOW())
+"""
+    )
+
+    # Insert tax rate (10%)
+    op.execute(
+        """
+INSERT INTO setting_taxes (tax_type, tax_name, tax_rate, status,
+                          effective_date, end_date) VALUES
+('sales_tax', 'Sales Tax', 0.10, 1, CURDATE(), NULL)
+"""
     )
 
 
 def downgrade() -> None:
-    # Drop tables in reverse order (due to foreign key constraints)
-    op.drop_table("subscription_purchase_history")
-    op.drop_table("subscription_user_payments")
-    op.drop_table("payment_customers")
+    op.drop_table("subscription_cancellations")
+    op.drop_table("subscription_user_purchases")
+    op.drop_table("subscription_user_accounts")
     op.drop_table("subscription_users")
+    op.drop_table("subscription_providers")
     op.drop_table("subscription_plans")
+    op.drop_table("setting_taxes")
