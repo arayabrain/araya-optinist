@@ -104,9 +104,11 @@ const getPublishStatusValue = (publishStatus?: string) => {
 
 const buildFilterParams = (
   dataParamsFilter: Record<string, string | string[] | undefined>,
+  excludeWorkspaceId: boolean = false,
 ) => {
   return Object.keys(dataParamsFilter)
     .filter((key) => {
+      if (excludeWorkspaceId && key === "workspace_id") return false
       const value = dataParamsFilter[key]
       return Array.isArray(value) ? value.length > 0 : Boolean(value)
     })
@@ -156,6 +158,7 @@ const defineColumns = (
   is_public: boolean,
   readonly?: boolean,
   loading: boolean = false,
+  workspaceId?: string,
 ) => [
   !is_public &&
     !readonly && {
@@ -275,6 +278,8 @@ const defineColumns = (
     field: "workspace_id",
     headerName: "Ws ID",
     width: 110,
+    sortable: !workspaceId,
+    filterable: !workspaceId,
     filterOperators: [
       {
         label: "Equals",
@@ -295,6 +300,8 @@ const defineColumns = (
     field: "workspace_name",
     headerName: "Workspace",
     width: 160,
+    sortable: !workspaceId,
+    filterable: !workspaceId,
     filterOperators: [
       {
         label: "Contains",
@@ -657,9 +664,7 @@ const DataviewRecords = ({
       publish_status: searchParams.get("published") || undefined,
       user_name: searchParams.get("user_name") || undefined,
       workspace_id:
-        searchParams.get("workspace_id") ||
-        (searchParams.size === 0 && workspaceId) ||
-        undefined,
+        searchParams.get("workspace_id") || workspaceId || undefined,
       workspace_name: searchParams.get("workspace_name") || undefined,
     }),
     [searchParams, workspaceId],
@@ -685,6 +690,14 @@ const DataviewRecords = ({
 
   useEffect(() => {
     const key = Object.keys(dataParamsFilter).find((key) => {
+      // Skip workspace_id if it's coming from the URL path
+      if (
+        key === "workspace_id" &&
+        workspaceId &&
+        !searchParams.get("workspace_id")
+      ) {
+        return false
+      }
       const value = dataParamsFilter[key as keyof typeof dataParamsFilter]
       return (
         (!Array.isArray(value) && value) ||
@@ -831,7 +844,7 @@ const DataviewRecords = ({
     handleClickVariant("error", "Update attributes failed!")
   }
 
-  const getParamsData = () => buildFilterParams(dataParamsFilter)
+  const getParamsData = () => buildFilterParams(dataParamsFilter, !!workspaceId)
 
   const handlePage = (_e: ChangeEvent<unknown>, page: number) => {
     const filter = getParamsData()
@@ -946,7 +959,7 @@ const DataviewRecords = ({
   }
 
   const handleLimit = (event: ChangeEvent<HTMLSelectElement>) => {
-    const filter = buildFilterParams(dataParamsFilter)
+    const filter = buildFilterParams(dataParamsFilter, !!workspaceId)
     const { sort } = dataParams
     const param = `${filter}${
       sort[0] ? `${filter ? "&" : ""}sort=${sort[0]}&sort=${sort[1]}` : ""
@@ -1030,6 +1043,7 @@ const DataviewRecords = ({
     is_public,
     readonly,
     loading,
+    workspaceId,
   )
 
   const columnsTable = [...columnsInstance].filter(Boolean) as GridColDef[]

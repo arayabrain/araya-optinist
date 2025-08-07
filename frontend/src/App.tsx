@@ -75,7 +75,7 @@ const App: FC = () => {
                 path="/console/account-manager"
                 element={<AccountManager />}
               />
-              <Route path="/console/dataview" element={<Dataview />}>
+              <Route path="/console/dataview">
                 <Route path="" element={<Dataview />} />
                 <Route path=":workspaceId" element={<Dataview />} />
               </Route>
