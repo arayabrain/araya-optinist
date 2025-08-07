@@ -117,10 +117,10 @@ export const useDataviewVisualizationCleanup = (open: boolean) => {
   useEffect(() => {
     return () => {
       if (!open) {
-        //
+        // Visualize components cleanup
         dispatch(deleteAllItemForWorkflowDialog())
 
-        //
+        // Reproduced workflow store cleanup
         dispatch(clearFlowElements())
         dispatch(clearCurrentPipeline())
       }

@@ -50,6 +50,7 @@ import PaginationCustom from "components/common/PaginationCustom"
 import SwitchCustom from "components/common/SwitchCustom"
 import InputsView from "components/Dataview/InputsView"
 import OutputsView from "components/Dataview/OutputsView"
+import { WorkflowDetailsView } from "components/Dataview/WorkflowDetailsView"
 import { ImagePlotSimple } from "components/Workspace/Visualize/Plot/ImagePlotSimple"
 import { RoiPlotSimple } from "components/Workspace/Visualize/Plot/RoiPlotSimple"
 import { DELAY_TIME_INPUT_CONFIRMED } from "const/Form"
@@ -151,6 +152,7 @@ const defineColumns = (
   handleOpenAttributes: (value: string, id: number) => void,
   handleOpenInputsView: (workspaceId: number, uid: string) => void,
   handleOpenOutputsView: (workspaceId: number, uid: string) => void,
+  handleOpenDetailsView: (dataviewRecord: DataviewType) => void,
   is_public: boolean,
   readonly?: boolean,
   loading: boolean = false,
@@ -440,7 +442,7 @@ const defineColumns = (
                   handleOpenOutputsView(workspaceId, params?.row?.uid)
                 }
               >
-                <InsightsIcon color={"primary"} fontSize="large" />
+                <ImageIcon color={"primary"} fontSize="large" />
               </Box>
             )}
           </Box>
@@ -454,7 +456,21 @@ const defineColumns = (
     width: 160,
     filterable: false,
     sortable: false,
-    renderCell: () => <SpanCustom>(N/A)</SpanCustom>,
+    renderCell: (params: { row: DataviewType }) => (
+      <Box
+        sx={{
+          width: "100%",
+          height: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "pointer",
+        }}
+        onClick={() => handleOpenDetailsView(params?.row)}
+      >
+        <InsightsIcon color="primary" fontSize="large" />
+      </Box>
+    ),
   },
   {
     field: "last_modified",
@@ -586,11 +602,13 @@ const DataviewRecords = ({
     uid?: string
     type?: string
     data?: string | string[]
+    dataviewRecord?: DataviewType
   }>({
     id: undefined,
     uid: undefined,
     type: "",
     data: undefined,
+    dataviewRecord: undefined,
   })
   const [fieldFilter, setFieldFilter] = useState<{
     id?: number | string
@@ -773,6 +791,13 @@ const DataviewRecords = ({
       workspaceId: workspaceId,
       uid: uid,
       type: "outputs_view",
+    })
+  }
+
+  const handleOpenDetailsView = (dataviewRecord: DataviewType) => {
+    setDataDialog({
+      type: "details_view",
+      dataviewRecord: dataviewRecord,
     })
   }
 
@@ -1001,6 +1026,7 @@ const DataviewRecords = ({
     handleOpenAttributes,
     handleOpenInputsView,
     handleOpenOutputsView,
+    handleOpenDetailsView,
     is_public,
     readonly,
     loading,
@@ -1109,6 +1135,13 @@ const DataviewRecords = ({
         workspaceId={dataDialog.workspaceId}
         uid={dataDialog.uid}
         handleClose={handleCloseDialog}
+      />
+
+      <WorkflowDetailsView
+        dataviewRecord={dataDialog.dataviewRecord || null}
+        open={dataDialog.type === "details_view"}
+        onClose={handleCloseDialog}
+        is_public={is_public}
       />
 
       <PopupAttributes
