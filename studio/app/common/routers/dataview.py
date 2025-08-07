@@ -9,6 +9,7 @@ from studio.app.common import models
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.db.database import get_db
+from studio.app.common.routers.workflow import reproduce_experiment
 from studio.app.common.schemas.base import SortDirection, SortOptions
 from studio.app.common.schemas.dataview import (
     DataviewRecord,
@@ -18,9 +19,10 @@ from studio.app.common.schemas.dataview import (
     PublishStatus,
 )
 from studio.app.common.schemas.users import User
+from studio.app.common.schemas.workflow import WorkflowWithResults
 
-router = APIRouter(tags=["Dataview"])
-public_router = APIRouter(tags=["Dataview"])
+router = APIRouter(tags=["Dataview"], prefix="/dataview")
+public_router = APIRouter(tags=["Dataview"], prefix="/public/dataview")
 
 logger = AppLogger.get_logger()
 
@@ -108,13 +110,13 @@ def get_records_filtered_query(
 
 
 @public_router.get(
-    "/public/dataview",
+    "",
     response_model=PageWithHeader[DataviewRecord],
     description="""
 - Search and respond to data for display in Public Dataview
 """,
 )
-async def search_public_dataview_records(
+async def public_search_dataview_records(
     db: Session = Depends(get_db),
     options: DataviewRecordSearchOptions = Depends(),
     sortOptions: SortOptions = Depends(),
@@ -134,7 +136,7 @@ async def search_public_dataview_records(
 
 
 @router.get(
-    "/dataview",
+    "",
     response_model=PageWithHeader[DataviewRecord],
     description="""
 - Search and respond to data for display in Dataview
@@ -160,8 +162,41 @@ async def search_dataview_records(
     return data
 
 
+@public_router.get(
+    "/workflow/reproduce/{workspace_id}/{unique_id}",
+    response_model=WorkflowWithResults,
+    description="""
+- Public access wrapper for `GET /workflow/reproduce`
+""",
+)
+async def public_reproduce_experiment(
+    workspace_id: str,
+    unique_id: str,
+    db: Session = Depends(get_db),
+):
+    # Check target record accessibility
+    record = (
+        db.query(models.ExperimentRecord)
+        .join(
+            models.Workspace,
+            models.Workspace.id == models.ExperimentRecord.workspace_id,
+        )
+        .filter(
+            models.Workspace.deleted.is_(False),
+            models.ExperimentRecord.uid == unique_id,
+            models.ExperimentRecord.publish_status == PublishStatus.on.value,
+        )
+        .first()
+    )
+
+    if not record:
+        raise HTTPException(status_code=404)
+
+    return await reproduce_experiment(workspace_id, unique_id)
+
+
 @router.post(
-    "/dataview/publish/{id}/{flag}",
+    "/publish/{id}/{flag}",
     response_model=bool,
     description="""
 - Publishing Dataview records
@@ -201,7 +236,7 @@ async def publish_dataview_records(
 
 
 @router.post(
-    "/dataview/multiple/publish/{flag}",
+    "/multiple/publish/{flag}",
     response_model=bool,
     description="""
 - Publishing Dataview records in bulk

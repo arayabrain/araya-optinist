@@ -2,6 +2,7 @@ import { createSlice, isAnyOf, PayloadAction } from "@reduxjs/toolkit"
 
 import { isInputNodePostData } from "api/run/RunUtils"
 import { INITIAL_IMAGE_ELEMENT_ID } from "const/flowchart"
+import { publicDataviewReproduceWorkflow } from "store/slice/Dataview/DataviewActions"
 import { uploadFile } from "store/slice/FileUploader/FileUploaderActions"
 import { addInputNode } from "store/slice/FlowElement/FlowElementActions"
 import {
@@ -217,7 +218,11 @@ export const inputNodeSlice = createSlice({
         return newState
       })
       .addMatcher(
-        isAnyOf(fetchWorkflow.fulfilled, reproduceWorkflow.fulfilled),
+        isAnyOf(
+          fetchWorkflow.fulfilled,
+          reproduceWorkflow.fulfilled,
+          publicDataviewReproduceWorkflow.fulfilled,
+        ),
         (_, action) => {
           const newState: InputNode = {}
           Object.values(action.payload.nodeDict)

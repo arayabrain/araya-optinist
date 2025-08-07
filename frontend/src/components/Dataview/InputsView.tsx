@@ -5,7 +5,7 @@ import { Grid } from "@mui/material"
 
 import BaseNodesView, {
   renderVisualizationItems,
-  useVisualizationCleanup,
+  useDataviewVisualizationCleanup,
   VisualizationItemData,
 } from "components/Dataview/BaseNodesView"
 import { selectNodeLabelById } from "store/slice/FlowElement/FlowElementSelectors"
@@ -16,6 +16,7 @@ import { toDataTypeFromFileType } from "utils/DataTypeUtils"
 
 type InputsViewProps = {
   open: boolean
+  is_public: boolean
   workspaceId: number | undefined
   uid: string | undefined
   handleClose: () => void
@@ -23,11 +24,12 @@ type InputsViewProps = {
 
 const InputsView = ({
   open,
+  is_public,
   workspaceId,
   uid,
   handleClose,
 }: InputsViewProps) => {
-  useVisualizationCleanup(open)
+  useDataviewVisualizationCleanup(open)
 
   const visualizationItems = useSelector(
     (state: RootState): VisualizationItemData[] => {
@@ -82,6 +84,7 @@ const InputsView = ({
   return (
     <BaseNodesView
       open={open}
+      is_public={is_public}
       workspaceId={workspaceId}
       uid={uid}
       handleClose={handleClose}

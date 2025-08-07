@@ -17,7 +17,10 @@ import {
 } from "@mui/material"
 
 import { DisplayDataItem } from "components/Workspace/Visualize/DisplayDataItem"
+import { publicDataviewReproduceWorkflow } from "store/slice/Dataview/DataviewActions"
 import { DATA_TYPE } from "store/slice/DisplayData/DisplayDataType"
+import { clearFlowElements } from "store/slice/FlowElement/FlowElementSlice"
+import { clearCurrentPipeline } from "store/slice/Pipeline/PipelineSlice"
 import { selectVisualizeItemIdForWorkflowDialog } from "store/slice/VisualizeItem/VisualizeItemSelectors"
 import {
   addItemForWorkflowDialog,
@@ -28,6 +31,7 @@ import { AppDispatch } from "store/store"
 
 export type NodesViewProps = {
   open: boolean
+  is_public: boolean
   workspaceId: number | undefined
   uid: string | undefined
   handleClose: () => void
@@ -107,13 +111,18 @@ export const renderVisualizationItems = (
   ))
 }
 
-export const useVisualizationCleanup = (open: boolean) => {
+export const useDataviewVisualizationCleanup = (open: boolean) => {
   const dispatch = useDispatch<AppDispatch>()
 
   useEffect(() => {
     return () => {
       if (!open) {
+        //
         dispatch(deleteAllItemForWorkflowDialog())
+
+        //
+        dispatch(clearFlowElements())
+        dispatch(clearCurrentPipeline())
       }
     }
   }, [dispatch, open])
@@ -121,6 +130,7 @@ export const useVisualizationCleanup = (open: boolean) => {
 
 const BaseNodesView = ({
   open,
+  is_public,
   workspaceId,
   uid,
   handleClose,
@@ -133,9 +143,12 @@ const BaseNodesView = ({
 
   useEffect(() => {
     if (open && uid && workspaceId) {
-      dispatch(reproduceWorkflow({ workspaceId, uid }))
+      const api = is_public
+        ? publicDataviewReproduceWorkflow
+        : reproduceWorkflow
+      dispatch(api({ workspaceId, uid }))
     }
-  }, [open, uid, workspaceId, dispatch])
+  }, [open, is_public, uid, workspaceId, dispatch])
 
   useEffect(() => {
     const handleClosePopup = (event: KeyboardEvent) => {

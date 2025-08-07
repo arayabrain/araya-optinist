@@ -1,5 +1,5 @@
-import { ReactElement, useEffect } from "react"
-import { useSelector, useDispatch } from "react-redux"
+import { ReactElement } from "react"
+import { useSelector } from "react-redux"
 
 import {
   Box,
@@ -11,21 +11,16 @@ import {
 
 import BaseNodesView, {
   renderVisualizationItems,
-  useVisualizationCleanup,
+  useDataviewVisualizationCleanup,
   VisualizationItemData,
 } from "components/Dataview/BaseNodesView"
-import { getExperiments } from "store/slice/Experiments/ExperimentsActions"
-import {
-  selectExperimentsStatusIsFulfilled,
-  selectExperimentsStatusIsUninitialized,
-} from "store/slice/Experiments/ExperimentsSelectors"
 import { selectNodeLabelById } from "store/slice/FlowElement/FlowElementSelectors"
 import { selectPipelineNodeResultSuccessList } from "store/slice/Pipeline/PipelineSelectors"
-import { selectCurrentWorkspaceId } from "store/slice/Workspace/WorkspaceSelector"
-import { RootState, AppDispatch } from "store/store"
+import { RootState } from "store/store"
 
 type OutputsViewProps = {
   open: boolean
+  is_public: boolean
   workspaceId: number | undefined
   uid: string | undefined
   handleClose: () => void
@@ -33,28 +28,15 @@ type OutputsViewProps = {
 
 const OutputsView = ({
   open,
+  is_public,
   workspaceId,
   uid,
   handleClose,
 }: OutputsViewProps) => {
-  const dispatch = useDispatch<AppDispatch>()
-  const currentWorkspaceId = useSelector(selectCurrentWorkspaceId)
-
-  useVisualizationCleanup(open)
-
-  const experimentsIsUninitialized = useSelector(
-    selectExperimentsStatusIsUninitialized,
-  )
-  const experimentsIsFulfilled = useSelector(selectExperimentsStatusIsFulfilled)
-
-  useEffect(() => {
-    if (open && experimentsIsUninitialized && currentWorkspaceId) {
-      dispatch(getExperiments())
-    }
-  }, [dispatch, open, experimentsIsUninitialized, currentWorkspaceId])
+  useDataviewVisualizationCleanup(open)
 
   const algorithmNodeOutputPathInfoList = useSelector((state: RootState) => {
-    if (uid != null && experimentsIsFulfilled) {
+    if (uid != null) {
       try {
         const runResult = selectPipelineNodeResultSuccessList(state)
         return runResult.map(({ nodeId, nodeResult }) => {
@@ -123,17 +105,14 @@ const OutputsView = ({
   return (
     <BaseNodesView
       open={open}
+      is_public={is_public}
       workspaceId={workspaceId}
       uid={uid}
       handleClose={handleClose}
       title="Algorithm Outputs"
       data={algorithmNodeOutputPathInfoList}
       renderData={renderData}
-      emptyMessage={
-        !experimentsIsFulfilled
-          ? "Loading experiments data..."
-          : "No output data available"
-      }
+      emptyMessage="No output data available"
     />
   )
 }

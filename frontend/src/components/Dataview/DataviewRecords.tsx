@@ -151,11 +151,11 @@ const defineColumns = (
   handleOpenAttributes: (value: string, id: number) => void,
   handleOpenInputsView: (workspaceId: number, uid: string) => void,
   handleOpenOutputsView: (workspaceId: number, uid: string) => void,
-  user: boolean,
+  is_public: boolean,
   readonly?: boolean,
   loading: boolean = false,
 ) => [
-  user &&
+  !is_public &&
     !readonly && {
       field: "checkbox",
       renderHeader: () => (
@@ -197,7 +197,7 @@ const defineColumns = (
         />
       ),
     },
-  user && {
+  !is_public && {
     field: "published",
     headerName: "Published",
     renderCell: (params: { row: DataviewType }) =>
@@ -249,7 +249,7 @@ const defineColumns = (
       </Tooltip>
     ),
   },
-  !user && {
+  is_public && {
     field: "user_name",
     headerName: "Owner",
     width: 160,
@@ -269,7 +269,7 @@ const defineColumns = (
       </Tooltip>
     ),
   },
-  user && {
+  !is_public && {
     field: "workspace_id",
     headerName: "Ws ID",
     width: 110,
@@ -557,8 +557,9 @@ const DataviewRecords = ({
   metadataEditable,
   workspaceId,
 }: DataviewProps) => {
+  const is_public: boolean = user == null
   const dataviewRecords = useSelector(
-    user ? selectDataviewPrivateData : selectDataviewPublicData,
+    is_public ? selectDataviewPublicData : selectDataviewPrivateData,
   )
   const loading = useSelector(selectDataviewLoading)
 
@@ -657,7 +658,7 @@ const DataviewRecords = ({
   })
 
   const fetchApi = () => {
-    const api = !user ? getPublicDataviewRecords : getDataviewRecords
+    const api = is_public ? getPublicDataviewRecords : getDataviewRecords
     const newPublish = getPublishStatusValue(dataParamsFilter.publish_status)
     dispatch(
       api({ ...dataParamsFilter, publish_status: newPublish, ...dataParams }),
@@ -747,7 +748,7 @@ const DataviewRecords = ({
   useEffect(() => {
     fetchApi()
     //eslint-disable-next-line
-  }, [dataParams, user, dataParamsFilter])
+  }, [dataParams, is_public, dataParamsFilter])
 
   useEffect(() => {
     setCheckBoxAll(false)
@@ -1000,7 +1001,7 @@ const DataviewRecords = ({
     handleOpenAttributes,
     handleOpenInputsView,
     handleOpenOutputsView,
-    !!user,
+    is_public,
     readonly,
     loading,
   )
@@ -1009,7 +1010,7 @@ const DataviewRecords = ({
 
   return (
     <DataviewRecordsWrapper>
-      {user ? (
+      {!is_public ? (
         <Box sx={{ height: 40, margin: "0 0 0.5rem 0" }}>
           {!readonly ? (
             <WrapperIcons check={!!(listCheck.length > 0)}>
@@ -1067,7 +1068,7 @@ const DataviewRecords = ({
       ) : null}
       <DataGrid
         columns={
-          user && !readonly
+          !is_public && !readonly
             ? ([...columnsTable, ...ColumnPrivate()] as GridColDef[])
             : (columnsTable as GridColDef[])
         }
@@ -1096,6 +1097,7 @@ const DataviewRecords = ({
 
       <InputsView
         open={dataDialog.type === "inputs_view"}
+        is_public={is_public}
         workspaceId={dataDialog.workspaceId}
         uid={dataDialog.uid}
         handleClose={handleCloseDialog}
@@ -1103,6 +1105,7 @@ const DataviewRecords = ({
 
       <OutputsView
         open={dataDialog.type === "outputs_view"}
+        is_public={is_public}
         workspaceId={dataDialog.workspaceId}
         uid={dataDialog.uid}
         handleClose={handleCloseDialog}
@@ -1114,7 +1117,7 @@ const DataviewRecords = ({
         open={dataDialog.type === "attribute"}
         handleClose={handleCloseDialog}
         onSubmit={onSubmitAttributes}
-        role={!!user}
+        role={!is_public}
         readonly={!metadataEditable}
       />
       <Loading loading={loading} />

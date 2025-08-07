@@ -1,5 +1,6 @@
 import { createSlice, isAnyOf, PayloadAction } from "@reduxjs/toolkit"
 
+import { publicDataviewReproduceWorkflow } from "store/slice/Dataview/DataviewActions"
 import { convertFunctionsToRunResultDTO } from "store/slice/Experiments/ExperimentsUtils"
 import { clearFlowElements } from "store/slice/FlowElement/FlowElementSlice"
 import {
@@ -87,7 +88,11 @@ export const pipelineSlice = createSlice({
         state.run.status = RUN_STATUS.CANCELED
       })
       .addMatcher(
-        isAnyOf(fetchWorkflow.fulfilled, reproduceWorkflow.fulfilled),
+        isAnyOf(
+          fetchWorkflow.fulfilled,
+          reproduceWorkflow.fulfilled,
+          publicDataviewReproduceWorkflow.fulfilled,
+        ),
         (state, action) => {
           state.currentPipeline = {
             uid: action.payload.unique_id,
@@ -149,6 +154,7 @@ export const pipelineSlice = createSlice({
         isAnyOf(
           fetchWorkflow.rejected,
           reproduceWorkflow.rejected,
+          publicDataviewReproduceWorkflow.rejected,
           clearFlowElements,
         ),
         () => initialState,
