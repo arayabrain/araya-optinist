@@ -1,4 +1,4 @@
-import { useEffect, MouseEvent, ReactElement, memo } from "react"
+import { useEffect, ReactElement, memo } from "react"
 import { useDispatch, useSelector } from "react-redux"
 
 import CloseIcon from "@mui/icons-material/Close"
@@ -14,6 +14,10 @@ import {
   Paper,
   Typography,
   Chip,
+  Dialog,
+  DialogContent,
+  IconButton,
+  Fade,
 } from "@mui/material"
 
 import { DisplayDataItem } from "components/Workspace/Visualize/DisplayDataItem"
@@ -165,83 +169,80 @@ const BaseNodesView = ({
     //eslint-disable-next-line
   }, [])
 
-  const handleCloseWrapper = (event: MouseEvent) => {
-    event.preventDefault()
-    event.stopPropagation()
-    if (event.target === event.currentTarget) handleClose()
-    return
-  }
-
   return (
-    <Box>
-      {open ? (
-        <NodesViewWrapper onClick={handleCloseWrapper}>
-          <NodesViewContentWrapper>
-            <ContentArea>
-              <TitleHeader>
-                <Typography
-                  variant="h5"
-                  gutterBottom
-                  sx={{ mb: 2, fontWeight: "bold" }}
-                >
-                  {title}
-                </Typography>
-                {uid && (
-                  <Chip
-                    label={`ID: ${uid}`}
-                    color="primary"
-                    variant="outlined"
-                    size="medium"
-                    sx={{ fontSize: "0.9rem" }}
-                  />
-                )}
-              </TitleHeader>
-              {data.length > 0 ? (
-                <List>{renderData()}</List>
-              ) : (
-                <EmptyMessage>{emptyMessage}</EmptyMessage>
-              )}
-            </ContentArea>
-            <ButtonClose onClick={handleClose}>
-              <CloseIcon />
-            </ButtonClose>
-          </NodesViewContentWrapper>
-        </NodesViewWrapper>
-      ) : null}
-    </Box>
+    <Dialog
+      open={open}
+      onClose={handleClose}
+      maxWidth={false}
+      fullWidth
+      PaperProps={{
+        sx: {
+          width: "95%",
+          height: "90%",
+          maxHeight: "90vh",
+          maxWidth: "1600px",
+          margin: "2.5vh auto",
+        },
+      }}
+      TransitionComponent={Fade}
+      TransitionProps={{ timeout: 300 }}
+    >
+      <DialogContent
+        sx={{
+          position: "relative",
+          padding: 0,
+          height: "100%",
+          overflow: "hidden",
+        }}
+      >
+        <ContentArea>
+          <TitleHeader>
+            <Typography
+              variant="h5"
+              gutterBottom
+              sx={{ mb: 2, fontWeight: "bold" }}
+            >
+              {title}
+            </Typography>
+            {uid && (
+              <Chip
+                label={`ID: ${uid}`}
+                color="primary"
+                variant="outlined"
+                size="medium"
+                sx={{ fontSize: "0.9rem" }}
+              />
+            )}
+          </TitleHeader>
+          {data.length > 0 ? (
+            <List>{renderData()}</List>
+          ) : (
+            <EmptyMessage>{emptyMessage}</EmptyMessage>
+          )}
+        </ContentArea>
+        <IconButton
+          onClick={handleClose}
+          aria-label="close"
+          sx={{
+            position: "absolute",
+            top: 8,
+            right: 20,
+            border: 1,
+            borderColor: "divider",
+            backgroundColor: "background.paper",
+            "&:hover": {
+              backgroundColor: "action.hover",
+            },
+          }}
+        >
+          <CloseIcon />
+        </IconButton>
+      </DialogContent>
+    </Dialog>
   )
 }
 
 // Styled Components
-
-// Modal Container Components
-const NodesViewWrapper = styled(Box)(() => ({
-  position: "fixed",
-  top: 0,
-  left: 0,
-  right: 0,
-  bottom: 0,
-  background: "rgba(255,255,255,0.7)",
-  display: "flex",
-  justifyContent: "center",
-  alignItems: "center",
-  zIndex: 1,
-}))
-
-const NodesViewContentWrapper = styled(Box)(() => ({
-  position: "relative",
-  display: "flex",
-  background: "#FFF",
-  justifyContent: "center",
-  alignItems: "center",
-  width: "95%",
-  height: "80%",
-  maxHeight: "85vh",
-  border: "1px solid #000",
-  color: "#333333",
-  margin: "2.5vh 0",
-  zIndex: 10000,
-}))
 
 const ContentArea = styled(Box)(() => ({
   padding: "60px 24px 24px 24px",
@@ -250,23 +251,6 @@ const ContentArea = styled(Box)(() => ({
   overflow: "auto",
   minWidth: "800px",
   boxSizing: "border-box",
-}))
-
-const ButtonClose = styled("button")(() => ({
-  border: "1px solid #000",
-  position: "absolute",
-  display: "block",
-  top: 10,
-  right: 10,
-  width: 40,
-  height: 40,
-  cursor: "pointer",
-  borderRadius: 50,
-  zIndex: 10001,
-  background: "#FFF",
-  "&:hover": {
-    background: "#8f8a8a",
-  },
 }))
 
 // Content Components
