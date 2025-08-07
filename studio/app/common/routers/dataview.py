@@ -72,7 +72,7 @@ def get_records_common_query(sortOptions: SortOptions) -> Select:
         mapping=RECORDS_SORT_MAPPING,
         default=["id", SortDirection.desc],
     )
-    query = query.group_by(models.ExperimentRecord.id).order_by(*sa_sort_list)
+    query = query.order_by(*sa_sort_list)
 
     return query
 
