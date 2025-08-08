@@ -22,14 +22,13 @@ class SortOptions:
         self,
         sa_table,
         mapping: Dict[str, Union[str, SQLModelMetaclass]] = None,
-        default: List = None,
+        default_sort: List = None,
     ) -> List:
-        # Use self.sort if it's not the default value,
-        #   otherwise use the provided default
-        if self.sort and self.sort != ("id", SortDirection.asc):
-            sort = self.sort
+        # Use provided default if available, otherwise use self.sort
+        if default_sort and list(self.sort) == ["id", SortDirection.asc]:
+            sort = default_sort
         else:
-            sort = default or self.sort
+            sort = self.sort
 
         sort_list = []
         for i in range(0, len(sort), 2):

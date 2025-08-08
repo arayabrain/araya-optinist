@@ -70,7 +70,7 @@ def get_records_common_query(sortOptions: SortOptions) -> Select:
     sa_sort_list = sortOptions.get_sa_sort_list(
         sa_table=models.ExperimentRecord,
         mapping=RECORDS_SORT_MAPPING,
-        default=["id", SortDirection.desc],
+        default_sort=["id", SortDirection.desc],
     )
     query = query.order_by(*sa_sort_list)
 
