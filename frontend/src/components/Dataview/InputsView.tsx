@@ -6,13 +6,8 @@ import { Grid } from "@mui/material"
 import BaseNodesView, {
   renderVisualizationItems,
   useDataviewVisualizationCleanup,
-  VisualizationItemData,
 } from "components/Dataview/BaseNodesView"
-import { selectNodeLabelById } from "store/slice/FlowElement/FlowElementSelectors"
-import { getFileName } from "store/slice/FlowElement/FlowElementUtils"
-import { selectInputNode } from "store/slice/InputNode/InputNodeSelectors"
-import { RootState } from "store/store"
-import { toDataTypeFromFileType } from "utils/DataTypeUtils"
+import { selectInputVisualizationItems } from "store/slice/Dataview/DataviewSelectors"
 
 type InputsViewProps = {
   open: boolean
@@ -31,52 +26,16 @@ const InputsView = ({
 }: InputsViewProps) => {
   useDataviewVisualizationCleanup(open)
 
-  const visualizationItems = useSelector(
-    (state: RootState): VisualizationItemData[] => {
-      const inputNodes = selectInputNode(state)
-      const items: VisualizationItemData[] = []
-
-      Object.entries(inputNodes)
-        .filter(([, inputNode]) => inputNode.selectedFilePath != null)
-        .forEach(([nodeId, inputNode]) => {
-          const nodeName = selectNodeLabelById(nodeId)(state) || nodeId
-          const dataType = toDataTypeFromFileType(inputNode.fileType)
-
-          if (Array.isArray(inputNode.selectedFilePath)) {
-            inputNode.selectedFilePath.forEach((filePath, index) => {
-              items.push({
-                nodeId,
-                filePath,
-                dataType,
-                title: getFileName(filePath),
-                subtitle: `Type: ${dataType}`,
-                itemKey: `${nodeId}-${index}`,
-              })
-            })
-          } else if (inputNode.selectedFilePath) {
-            items.push({
-              nodeId,
-              filePath: inputNode.selectedFilePath,
-              dataType,
-              title: nodeName,
-              subtitle: `Type: ${dataType}`,
-              itemKey: nodeId,
-            })
-          }
-        })
-
-      return items
-    },
-  )
+  const inputVisualizationItems = useSelector(selectInputVisualizationItems)
 
   const renderData = (): ReactElement[] => {
-    if (visualizationItems.length === 0) {
+    if (inputVisualizationItems.length === 0) {
       return []
     }
 
     return [
       <Grid container spacing={2} key="visualization-grid">
-        {renderVisualizationItems(visualizationItems)}
+        {renderVisualizationItems(inputVisualizationItems)}
       </Grid>,
     ]
   }
@@ -89,7 +48,7 @@ const InputsView = ({
       uid={uid}
       handleClose={handleClose}
       title="Input Data"
-      data={visualizationItems}
+      data={inputVisualizationItems}
       renderData={renderData}
       emptyMessage="No input data available"
     />

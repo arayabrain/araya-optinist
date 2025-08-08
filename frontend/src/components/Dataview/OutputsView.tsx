@@ -12,11 +12,8 @@ import {
 import BaseNodesView, {
   renderVisualizationItems,
   useDataviewVisualizationCleanup,
-  VisualizationItemData,
 } from "components/Dataview/BaseNodesView"
-import { selectNodeLabelById } from "store/slice/FlowElement/FlowElementSelectors"
-import { selectPipelineNodeResultSuccessList } from "store/slice/Pipeline/PipelineSelectors"
-import { RootState } from "store/store"
+import { selectOutputVisualizationItems } from "store/slice/Dataview/DataviewSelectors"
 
 type OutputsViewProps = {
   open: boolean
@@ -35,45 +32,18 @@ const OutputsView = ({
 }: OutputsViewProps) => {
   useDataviewVisualizationCleanup(open)
 
-  const algorithmNodeOutputPathInfoList = useSelector((state: RootState) => {
-    if (uid != null) {
-      try {
-        const runResult = selectPipelineNodeResultSuccessList(state)
-        return runResult.map(({ nodeId, nodeResult }) => {
-          return {
-            nodeId,
-            nodeName: selectNodeLabelById(nodeId)(state) || nodeId,
-            items: Object.entries(nodeResult.outputPaths).map(
-              ([outputKey, value]) =>
-                ({
-                  nodeId,
-                  filePath: value.path,
-                  dataType: value.type,
-                  title: outputKey,
-                  subtitle: `Type: ${value.type}`,
-                  itemKey: `${nodeId}-${outputKey}`,
-                }) as VisualizationItemData,
-            ),
-          }
-        })
-      } catch (error) {
-        // eslint-disable-next-line no-console
-        console.warn("Error loading output data:", error)
-        return []
-      }
-    } else {
-      return []
-    }
-  })
+  const outputVisualizationItems = useSelector(
+    selectOutputVisualizationItems(uid),
+  )
 
   const renderData = (): ReactElement[] => {
-    if (algorithmNodeOutputPathInfoList.length === 0) {
+    if (outputVisualizationItems.length === 0) {
       return []
     }
 
     const visualizationSections: ReactElement[] = []
 
-    algorithmNodeOutputPathInfoList.forEach((pathInfo) => {
+    outputVisualizationItems.forEach((pathInfo) => {
       if (pathInfo.items.length > 0) {
         visualizationSections.push(
           <Box key={`node-section-${pathInfo.nodeId}`} sx={{ mb: 4 }}>
@@ -110,7 +80,7 @@ const OutputsView = ({
       uid={uid}
       handleClose={handleClose}
       title="Algorithm Outputs"
-      data={algorithmNodeOutputPathInfoList}
+      data={outputVisualizationItems}
       renderData={renderData}
       emptyMessage="No output data available"
     />
