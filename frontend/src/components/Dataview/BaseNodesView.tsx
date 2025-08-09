@@ -97,9 +97,9 @@ export const renderVisualizationItems = (
           {item.title}
         </Typography>
         {item.subtitle && (
-          <Typography variant="body2" color="textSecondary" gutterBottom>
-            <Chip label={item.subtitle} />
-          </Typography>
+          <Box mb={1}>
+            <Chip label={item.subtitle} color="default" size="small" />
+          </Box>
         )}
         <DisplayDataContainer>
           <DisplayDataWrapper>
