@@ -7,6 +7,9 @@ from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
 )
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.workspace.workspace_data_capacity_services import (
+    WorkspaceDataCapacityService,
+)
 from studio.app.common.db.database import session_scope
 from studio.app.common.models.workspace import Workspace
 
@@ -19,8 +22,7 @@ def confirm_all_workspaces_processing():
     """
     print(
         "\n" + "=" * 60 + "\n"
-        "WARNING: You are about to process ALL workspaces!\n"
-        + "=" * 60 + "\n"
+        "WARNING: You are about to process ALL workspaces!\n" + "=" * 60 + "\n"
         "This will sync dataview records for all active workspaces in the system.\n"
         "This operation may take a considerable amount of time depending on\n"
         "the number of workspaces and experiments.\n"
@@ -36,7 +38,7 @@ def confirm_all_workspaces_processing():
 
 def main(args):
     """
-    Main function to sync dataview records for all workspaces
+    Main function to sync dataview records and update data usage for all workspaces
     """
     if not ExperimentRecordService.is_available():
         logger.error(
@@ -48,17 +50,13 @@ def main(args):
     total_success = 0
     total_errors = 0
 
+    # Determine workspace list based on arguments
     if args.wsid:
         # Sync specific workspace
+        workspace_list = [args.wsid]
         logger.info(f"Syncing dataview records for workspace: [{args.wsid}]")
         if args.delete_existing:
             logger.warning(f"Deleting existing records for workspace: [{args.wsid}]")
-
-        success, errors = ExperimentRecordService.sync_dataview_records_for_workspace(
-            args.wsid, delete_existing=args.delete_existing
-        )
-        total_success += success
-        total_errors += errors
     else:
         # Sync all workspaces - require confirmation
         if not confirm_all_workspaces_processing():
@@ -68,21 +66,33 @@ def main(args):
         if args.delete_existing:
             logger.warning("Deleting existing records for all workspaces")
 
+        # Get workspace list in separate session to avoid long-running transaction
         with session_scope() as db:
-            workspace_list = db.execute(
-                select(Workspace.id).filter(Workspace.deleted.is_(False))
-            ).scalars()
+            workspace_list = list(
+                db.execute(
+                    select(Workspace.id).filter(Workspace.deleted.is_(False))
+                ).scalars()
+            )
 
-            for workspace_id in workspace_list:
-                logger.info(f"Processing workspace: [{workspace_id}]")
-                (
-                    success,
-                    errors,
-                ) = ExperimentRecordService.sync_dataview_records_for_workspace(
-                    str(workspace_id), delete_existing=args.delete_existing
+    # Process each workspace
+    for workspace_id in workspace_list:
+        workspace_id_str = str(workspace_id)
+        logger.info(f"Processing workspace: [{workspace_id_str}]")
+
+        # Process ExperimentRecord sync (uses its own session scope internally)
+        success, errors = ExperimentRecordService.sync_dataview_records_for_workspace(
+            workspace_id_str, delete_existing=args.delete_existing
+        )
+        total_success += success
+        total_errors += errors
+
+        # Process WorkspaceDataCapacity update (if available, uses its own session)
+        if WorkspaceDataCapacityService.is_available():
+            logger.info(f"Syncing workspace data for workspace: [{workspace_id_str}]")
+            with session_scope() as db:
+                WorkspaceDataCapacityService.sync_workspace_data_capacity(
+                    db, workspace_id_str, delete_existing=False
                 )
-                total_success += success
-                total_errors += errors
 
     logger.info(
         f"Sync dataview records completed. "
