@@ -18,6 +18,7 @@ export type DataviewType = {
     roi_url?: string
   }
   attributes?: object
+  analyzed_at: string
   publish_status?: number
   created_at: string
   updated_at: string

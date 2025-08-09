@@ -30,6 +30,11 @@ def upgrade() -> None:
             "success", sa.Boolean(), server_default=sa.text("false"), nullable=False
         ),
         sa.Column(
+            "analyzed_at",
+            sa.DateTime(),
+            nullable=True,
+        ),
+        sa.Column(
             "publish_status",
             sa.Integer(),
             server_default="0",
@@ -52,6 +57,7 @@ def downgrade() -> None:
         "name",
         "thumbnails",
         "success",
+        "analyzed_at",
         "publish_status",
     ]
 

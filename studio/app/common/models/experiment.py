@@ -1,8 +1,9 @@
+from datetime import datetime
 from typing import Dict, Optional
 
 from sqlalchemy import Integer
 from sqlalchemy.dialects.mysql import BIGINT
-from sqlmodel import JSON, Column, Field, ForeignKey, Relationship, String
+from sqlmodel import JSON, Column, DateTime, Field, ForeignKey, Relationship, String
 
 from studio.app.common.models.base import Base, TimestampMixin
 from studio.app.common.schemas.dataview import PublishStatus
@@ -30,6 +31,8 @@ class ExperimentRecord(Base, TimestampMixin, table=True):
     thumbnails: Optional[Dict] = Field(default={}, sa_column=Column(JSON))
 
     success: bool = Field(nullable=False, default=False)
+
+    analyzed_at: Optional[datetime] = Field(sa_column=Column(DateTime(timezone=True)))
 
     publish_status: int = Field(
         sa_column=Column(

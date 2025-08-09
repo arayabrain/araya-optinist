@@ -41,6 +41,7 @@ class ExperimentRecordService:
             workspace_id, unique_id, experiment_config
         )
         workflow_success = experiment_config.success == NodeRunStatus.SUCCESS.value
+        analyzed_at = experiment_config.finished_at or experiment_config.started_at
 
         # Update ExperimentRecord to database
         with session_scope() as db:
@@ -56,6 +57,7 @@ class ExperimentRecordService:
                 exp.name = experiment_config.name
                 exp.thumbnails = dict(thumbnails)
                 exp.success = workflow_success
+                exp.analyzed_at = analyzed_at
 
             except NoResultFound:
                 exp = ExperimentRecord(
@@ -64,6 +66,7 @@ class ExperimentRecordService:
                     name=experiment_config.name,
                     thumbnails=dict(thumbnails),
                     success=workflow_success,
+                    analyzed_at=analyzed_at,
                 )
                 db.add(exp)
 

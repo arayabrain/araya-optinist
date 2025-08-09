@@ -480,16 +480,16 @@ const defineColumns = (
     ),
   },
   {
-    field: "last_modified",
-    headerName: "Last modified",
+    field: "timestamp",
+    headerName: "Timestamp",
     width: 160,
     type: "string",
     filterable: false,
     sortable: true,
     renderCell: (params: { row: DataviewType }) => (
-      <Tooltip title={params.row?.updated_at}>
+      <Tooltip title={params.row?.analyzed_at}>
         <SpanCustom>
-          {moment(params.row?.updated_at).format("YYYY/MM/DD HH:mm")}
+          {moment(params.row?.analyzed_at).format("YYYY/MM/DD HH:mm")}
         </SpanCustom>
       </Tooltip>
     ),

@@ -30,7 +30,7 @@ logger = AppLogger.get_logger()
 RECORDS_SORT_MAPPING = {
     "user_name": models.User.name,
     "workspace_name": models.Workspace.name,
-    "last_modified": models.ExperimentRecord.updated_at,
+    "timestamp": models.ExperimentRecord.analyzed_at,
 }
 
 
@@ -70,7 +70,7 @@ def get_records_common_query(sortOptions: SortOptions) -> Select:
     sa_sort_list = sortOptions.get_sa_sort_list(
         sa_table=models.ExperimentRecord,
         mapping=RECORDS_SORT_MAPPING,
-        default_sort=["id", SortDirection.desc],
+        default_sort=["analyzed_at", SortDirection.desc],
     )
     query = query.order_by(*sa_sort_list)
 

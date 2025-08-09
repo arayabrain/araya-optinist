@@ -56,6 +56,7 @@ class DataviewRecord(BaseModel):
     workspace: Optional[DataviewWorkspace]
     attributes: Optional[dict] = {}
     thumbnails: Optional[DataviewThumbnails]
+    analyzed_at: Optional[datetime]
     publish_status: int = 0
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
