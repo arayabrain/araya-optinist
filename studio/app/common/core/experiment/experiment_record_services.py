@@ -91,6 +91,7 @@ class ExperimentRecordService:
         workspace_id: str,
         unique_id: str,
         new_unique_id: str,
+        new_name: str,
         auto_commit: bool = False,
     ):
         try:
@@ -102,11 +103,19 @@ class ExperimentRecordService:
                 )
                 .one()
             )
-            new_exp = ExperimentRecord(
-                workspace_id=workspace_id,
-                uid=new_unique_id,
-                data_usage=exp.data_usage,
-            )
+
+            # Create new record by copying all attributes except primary key
+            new_exp_data = {}
+            for column in ExperimentRecord.__table__.columns:
+                if column.name not in ["id"]:
+                    new_exp_data[column.name] = getattr(exp, column.name)
+
+            # Override specific columns
+            new_exp_data["uid"] = new_unique_id
+            new_exp_data["name"] = new_name
+            new_exp_data["publish_status"] = False
+
+            new_exp = ExperimentRecord(**new_exp_data)
             db.add(new_exp)
 
             if auto_commit:
