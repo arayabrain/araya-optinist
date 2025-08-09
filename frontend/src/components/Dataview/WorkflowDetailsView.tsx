@@ -127,8 +127,14 @@ export const WorkflowDetailsView = ({
     <Dialog
       open={paramsDialog.open}
       onClose={handleCloseParamsDialog}
-      maxWidth="md"
+      maxWidth="sm"
       fullWidth
+      sx={{
+        "& .MuiDialog-paper": {
+          width: "90%",
+          maxWidth: "600px",
+        },
+      }}
     >
       <DialogTitle>
         <Box display="flex" alignItems="center" gap={1}>
@@ -249,6 +255,11 @@ export const WorkflowDetailsView = ({
             </Typography>
           )}
         </DialogContent>
+        <DialogActions>
+          <Button onClick={handleClose} variant="outlined">
+            Close
+          </Button>
+        </DialogActions>
       </Dialog>
 
       {NodeParamsDialog}
