@@ -163,6 +163,7 @@ describe("RecordReproduce", () => {
     algorithmNode: {
       dummy_image2image_c8tqfxw0mq: {
         dataFilterParam: undefined,
+        draftDataFilterParam: undefined,
         name: "dummy_image2image",
         functionPath: "dummy/dummy_image2image",
         isUpdate: false,
@@ -177,6 +178,7 @@ describe("RecordReproduce", () => {
       },
       dummy_image2image8time_4mrz8h7hyk: {
         dataFilterParam: undefined,
+        draftDataFilterParam: undefined,
         name: "dummy_image2image8time",
         functionPath: "dummy/dummy_image2image8time",
         isUpdate: false,
@@ -221,7 +223,7 @@ describe("RecordReproduce", () => {
       ],
       flowNodes: [
         {
-          data: { label: "hoge.tif", type: "input" },
+          data: { label: "hoge.tif", type: "input", param: null },
           id: "input_0",
           type: "ImageFileNode",
           position: { x: 51, y: 150 },
@@ -234,7 +236,17 @@ describe("RecordReproduce", () => {
         {
           id: "dummy_image2image_c8tqfxw0mq",
           type: "AlgorithmNode",
-          data: { label: "dummy_image2image", type: "algorithm" },
+          data: {
+            label: "dummy_image2image",
+            type: "algorithm",
+            param: {
+              sample: {
+                path: "sample",
+                type: "child",
+                value: "test",
+              },
+            },
+          },
           position: { x: 350, y: 151.3534781075913 },
           style: {
             border: "1px solid #777",
@@ -247,7 +259,11 @@ describe("RecordReproduce", () => {
         {
           id: "dummy_image2image8time_4mrz8h7hyk",
           type: "AlgorithmNode",
-          data: { label: "dummy_image2image8time", type: "algorithm" },
+          data: {
+            label: "dummy_image2image8time",
+            type: "algorithm",
+            param: {},
+          },
           position: { x: 600, y: 164.03341976235507 },
           style: {
             border: "1px solid #777",
