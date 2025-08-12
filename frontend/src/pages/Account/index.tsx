@@ -68,6 +68,13 @@ const Account = () => {
     enqueueSnackbar(mess, { variant })
   }
 
+  const MEMBERSHIP_STATUS = {
+    LOADING: "Loading...",
+    ERROR: "Error loading subscription",
+    FREE: "FREE",
+    EXPIRED: "EXPIRED",
+  } as const
+
   useEffect(() => {
     dispatch(getMe())
   }, [dispatch])
@@ -184,22 +191,21 @@ const Account = () => {
     }
   }
 
-  // Helper function to get membership status
   const getMembershipStatus = () => {
     if (subscriptionLoading) {
-      return "Loading..."
+      return MEMBERSHIP_STATUS.LOADING
     }
 
     if (subscriptionError) {
-      return "Error loading subscription"
+      return MEMBERSHIP_STATUS.ERROR
     }
 
     if (!userSubscription) {
-      return "FREE"
+      return MEMBERSHIP_STATUS.FREE
     }
 
     if (isSubscriptionExpired) {
-      return "EXPIRED"
+      return MEMBERSHIP_STATUS.EXPIRED
     }
 
     return userSubscription.plan_name.toUpperCase()

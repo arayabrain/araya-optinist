@@ -5,6 +5,15 @@ import { useSearchParams, useNavigate } from "react-router-dom"
 import { getSubscriptionPlan } from "store/slice/Subscriptions/SubscriptionActions"
 import { selectCurrentUser } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
+import {
+  formatExpirationDate,
+  formatCardNumber,
+  formatSecurityCode,
+  validateCardNumber,
+  validateExpirationDate,
+  validateSecurityCode,
+  getCleanCardNumber,
+} from "utils/subscriptions/CreditCardUtils"
 
 interface FormData {
   fullName: string
@@ -104,43 +113,19 @@ const PremiumCheckout = () => {
     }
   }
 
+  // Refactored handleInputChange using utility functions
   const handleInputChange =
     (field: keyof FormData) =>
     (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
       let value = event.target.value
 
-      // Handle expiration date formatting (MM/YY)
+      // Use utility functions for formatting
       if (field === "expirationDate") {
-        value = value.replace(/\D/g, "")
-        if (value.length > 4) {
-          value = value.slice(0, 4)
-        }
-        if (value.length >= 2) {
-          const month = value.slice(0, 2)
-          const year = value.slice(2)
-          const monthNum = parseInt(month)
-          if (monthNum > 12) {
-            return
-          }
-          value = month + (year ? "/" + year : "")
-        }
-      }
-
-      // Handle security code (3-4 digits only)
-      if (field === "securityCode") {
-        value = value.replace(/\D/g, "")
-        if (value.length > 4) {
-          value = value.slice(0, 4)
-        }
-      }
-
-      // Handle card number formatting (spaces every 4 digits)
-      if (field === "cardNumber") {
-        value = value.replace(/\D/g, "")
-        if (value.length > 16) {
-          value = value.slice(0, 16)
-        }
-        value = value.replace(/(\d{4})(?=\d)/g, "$1 ")
+        value = formatExpirationDate(value)
+      } else if (field === "securityCode") {
+        value = formatSecurityCode(value)
+      } else if (field === "cardNumber") {
+        value = formatCardNumber(value)
       }
 
       setFormData({
@@ -149,42 +134,31 @@ const PremiumCheckout = () => {
       })
     }
 
+  // Refactored validateForm using utility functions
   const validateForm = (): boolean => {
     if (!formData.fullName.trim()) {
       setError("Full name is required")
       return false
     }
 
-    const cardNumberDigits = formData.cardNumber.replace(/\s/g, "")
-    if (cardNumberDigits.length !== 16) {
-      setError("Please enter a valid 16-digit card number")
+    // Use utility function for card number validation
+    const cardValidation = validateCardNumber(formData.cardNumber)
+    if (!cardValidation.isValid) {
+      setError(cardValidation.error || "Invalid card number")
       return false
     }
 
-    if (!formData.expirationDate.match(/^\d{2}\/\d{2}$/)) {
-      setError("Please enter expiration date in MM/YY format")
+    // Use utility function for expiration date validation
+    const expirationValidation = validateExpirationDate(formData.expirationDate)
+    if (!expirationValidation.isValid) {
+      setError(expirationValidation.error || "Invalid expiration date")
       return false
     }
 
-    // Validate expiration date is not in the past
-    const [month, year] = formData.expirationDate.split("/")
-    const currentDate = new Date()
-    const currentYear = currentDate.getFullYear() % 100
-    const currentMonth = currentDate.getMonth() + 1
-
-    const expYear = parseInt(year)
-    const expMonth = parseInt(month)
-
-    if (
-      expYear < currentYear ||
-      (expYear === currentYear && expMonth < currentMonth)
-    ) {
-      setError("Card has expired")
-      return false
-    }
-
-    if (formData.securityCode.length < 3) {
-      setError("Please enter a valid security code")
+    // Use utility function for security code validation
+    const securityCodeValidation = validateSecurityCode(formData.securityCode)
+    if (!securityCodeValidation.isValid) {
+      setError(securityCodeValidation.error || "Invalid security code")
       return false
     }
 
@@ -232,7 +206,7 @@ const PremiumCheckout = () => {
         planId: selectedPlan.id,
         planType: formData.planType,
         fullName: formData.fullName,
-        cardNumber: formData.cardNumber.replace(/\s/g, ""), // Remove spaces
+        cardNumber: getCleanCardNumber(formData.cardNumber), // Use utility function
         expirationDate: formData.expirationDate,
         securityCode: formData.securityCode,
         userId: user.id,

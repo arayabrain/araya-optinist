@@ -254,52 +254,6 @@ def upgrade() -> None:
         sa.Index("idx_subscription_cancellations_cancelled_at", "cancelled_at"),
     )
 
-    # Create taxes table for tax rates lookup
-    op.create_table(
-        "setting_taxes",
-        sa.Column(
-            "id",
-            mysql.BIGINT(unsigned=True),
-            primary_key=True,
-            autoincrement=True,
-            nullable=False,
-        ),
-        sa.Column(
-            "tax_type", sa.String(length=50), nullable=False
-        ),  # sales_tax, vat, gst, consumption_tax
-        sa.Column(
-            "tax_name", sa.String(length=100), nullable=False
-        ),  # "Sales Tax", "Consumption Tax"
-        sa.Column(
-            "tax_rate", sa.DECIMAL(8, 6), nullable=False
-        ),  # e.g., 0.0825 for 8.25%, 0.10 for 10%
-        sa.Column(
-            "status", sa.Boolean(), nullable=False, server_default=sa.text("1")
-        ),  # Active/Inactive
-        sa.Column(
-            "effective_date", sa.DATE(), nullable=False
-        ),  # When this rate becomes effective
-        sa.Column(
-            "end_date", sa.DATE(), nullable=True
-        ),  # When this rate expires (NULL = indefinite)
-        sa.Column(
-            "created_at",
-            sa.TIMESTAMP(),
-            server_default=sa.text("CURRENT_TIMESTAMP"),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.TIMESTAMP(),
-            server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
-            nullable=False,
-        ),
-        sa.PrimaryKeyConstraint("id"),
-        sa.Index("idx_taxes_active", "status"),
-        sa.Index("idx_taxes_effective", "effective_date"),
-        sa.Index("idx_taxes_type", "tax_type"),
-    )
-
     # Insert initial data
     # Insert subscription plans
     op.execute(
@@ -337,15 +291,6 @@ VALUES
 """
     )
 
-    # Insert tax rate (10%)
-    op.execute(
-        """
-INSERT INTO setting_taxes (tax_type, tax_name, tax_rate, status,
-                          effective_date, end_date) VALUES
-('sales_tax', 'Sales Tax', 0.10, 1, CURDATE(), NULL)
-"""
-    )
-
 
 def downgrade() -> None:
     op.drop_table("subscription_cancellations")
@@ -354,4 +299,3 @@ def downgrade() -> None:
     op.drop_table("subscription_users")
     op.drop_table("subscription_providers")
     op.drop_table("subscription_plans")
-    op.drop_table("setting_taxes")
