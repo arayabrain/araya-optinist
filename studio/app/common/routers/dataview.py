@@ -9,7 +9,8 @@ from studio.app.common import models
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.db.database import get_db
-from studio.app.common.schemas.base import SortOptions
+from studio.app.common.routers.workflow import reproduce_experiment
+from studio.app.common.schemas.base import SortDirection, SortOptions
 from studio.app.common.schemas.dataview import (
     DataviewRecord,
     DataviewRecordSearchOptions,
@@ -18,9 +19,10 @@ from studio.app.common.schemas.dataview import (
     PublishStatus,
 )
 from studio.app.common.schemas.users import User
+from studio.app.common.schemas.workflow import WorkflowWithResults
 
-router = APIRouter(tags=["Dataview"])
-public_router = APIRouter(tags=["Dataview"])
+router = APIRouter(tags=["Dataview"], prefix="/dataview")
+public_router = APIRouter(tags=["Dataview"], prefix="/public/dataview")
 
 logger = AppLogger.get_logger()
 
@@ -28,31 +30,64 @@ logger = AppLogger.get_logger()
 RECORDS_SORT_MAPPING = {
     "user_name": models.User.name,
     "workspace_name": models.Workspace.name,
-    "last_modified": models.ExperimentRecord.updated_at,
+    "timestamp": models.ExperimentRecord.analyzed_at,
 }
 
 
 def records_pagenate_transformer(items: Sequence) -> Sequence:
     records = []
 
-    for item in items:
+    for idx, item in enumerate(items):
         record = DataviewRecord.from_orm(item)
 
         # Adjusting response fields
         record.owner = record.workspace.user
-        record.workspace.user = None
+        record.workspace.user = None  # Not used
 
         records.append(record)
 
     return records
 
 
-def get_search_db_experiment_query(
+def get_records_common_query(sortOptions: SortOptions) -> Select:
+    query = (
+        select(models.ExperimentRecord)
+        .join(
+            models.Workspace,
+            models.Workspace.id == models.ExperimentRecord.workspace_id,
+        )
+        .join(
+            models.User,
+            models.User.id == models.Workspace.user_id,
+        )
+        .filter(
+            models.Workspace.deleted.is_(False),
+            models.User.active.is_(True),
+            models.ExperimentRecord.success.is_(True),
+        )
+    )
+
+    sa_sort_list = sortOptions.get_sa_sort_list(
+        sa_table=models.ExperimentRecord,
+        mapping=RECORDS_SORT_MAPPING,
+        default_sort=["analyzed_at", SortDirection.desc],
+    )
+    query = query.order_by(*sa_sort_list)
+
+    return query
+
+
+def get_records_filtered_query(
     query: Select, options: DataviewRecordSearchOptions
 ) -> Select:
     if options.uid:
         query = query.filter(
             models.ExperimentRecord.uid.like("%{0}%".format(options.uid))
+        )
+
+    if options.name:
+        query = query.filter(
+            models.ExperimentRecord.name.like("%{0}%".format(options.name))
         )
 
     if options.user_name:
@@ -75,41 +110,21 @@ def get_search_db_experiment_query(
 
 
 @public_router.get(
-    "/public/dataview",
+    "",
     response_model=PageWithHeader[DataviewRecord],
     description="""
 - Search and respond to data for display in Public Dataview
 """,
 )
-async def search_public_dataview_records(
+async def public_search_dataview_records(
     db: Session = Depends(get_db),
     options: DataviewRecordSearchOptions = Depends(),
     sortOptions: SortOptions = Depends(),
 ):
-    sa_sort_list = sortOptions.get_sa_sort_list(
-        sa_table=models.ExperimentRecord,
-        mapping=RECORDS_SORT_MAPPING,
+    query = get_records_common_query(sortOptions).filter(
+        models.ExperimentRecord.publish_status == PublishStatus.on.value,
     )
-
-    query = (
-        select(models.ExperimentRecord)
-        .join(
-            models.Workspace,
-            models.Workspace.id == models.ExperimentRecord.workspace_id,
-        )
-        .join(
-            models.User,
-            models.User.id == models.Workspace.user_id,
-        )
-        .filter(
-            models.Workspace.deleted.is_(False),
-            models.User.active.is_(True),
-            models.ExperimentRecord.publish_status == PublishStatus.on.value,
-        )
-    )
-
-    query = get_search_db_experiment_query(query, options)
-    query = query.group_by(models.ExperimentRecord.id).order_by(*sa_sort_list)
+    query = get_records_filtered_query(query, options)
 
     data: PageWithHeader = paginate(
         session=db,
@@ -121,7 +136,7 @@ async def search_public_dataview_records(
 
 
 @router.get(
-    "/dataview",
+    "",
     response_model=PageWithHeader[DataviewRecord],
     description="""
 - Search and respond to data for display in Dataview
@@ -133,30 +148,10 @@ async def search_dataview_records(
     sortOptions: SortOptions = Depends(),
     current_user: User = Depends(get_current_user),
 ):
-    sa_sort_list = sortOptions.get_sa_sort_list(
-        sa_table=models.ExperimentRecord,
-        mapping=RECORDS_SORT_MAPPING,
+    query = get_records_common_query(sortOptions).filter(
+        models.User.id == current_user.id,
     )
-
-    query = (
-        select(models.ExperimentRecord)
-        .join(
-            models.Workspace,
-            models.Workspace.id == models.ExperimentRecord.workspace_id,
-        )
-        .join(
-            models.User,
-            models.User.id == models.Workspace.user_id,
-        )
-        .filter(
-            models.Workspace.deleted.is_(False),
-            models.User.id == current_user.id,
-            models.User.active.is_(True),
-        )
-    )
-
-    query = get_search_db_experiment_query(query, options)
-    query = query.group_by(models.ExperimentRecord.id).order_by(*sa_sort_list)
+    query = get_records_filtered_query(query, options)
 
     data: PageWithHeader = paginate(
         session=db,
@@ -167,8 +162,41 @@ async def search_dataview_records(
     return data
 
 
+@public_router.get(
+    "/workflow/reproduce/{workspace_id}/{unique_id}",
+    response_model=WorkflowWithResults,
+    description="""
+- Public access wrapper for `GET /workflow/reproduce`
+""",
+)
+async def public_reproduce_experiment(
+    workspace_id: str,
+    unique_id: str,
+    db: Session = Depends(get_db),
+):
+    # Check target record accessibility
+    record = (
+        db.query(models.ExperimentRecord)
+        .join(
+            models.Workspace,
+            models.Workspace.id == models.ExperimentRecord.workspace_id,
+        )
+        .filter(
+            models.Workspace.deleted.is_(False),
+            models.ExperimentRecord.uid == unique_id,
+            models.ExperimentRecord.publish_status == PublishStatus.on.value,
+        )
+        .first()
+    )
+
+    if not record:
+        raise HTTPException(status_code=404)
+
+    return await reproduce_experiment(workspace_id, unique_id)
+
+
 @router.post(
-    "/dataview/publish/{id}/{flag}",
+    "/publish/{id}/{flag}",
     response_model=bool,
     description="""
 - Publishing Dataview records
@@ -208,7 +236,7 @@ async def publish_dataview_records(
 
 
 @router.post(
-    "/dataview/multiple/publish/{flag}",
+    "/multiple/publish/{flag}",
     response_model=bool,
     description="""
 - Publishing Dataview records in bulk

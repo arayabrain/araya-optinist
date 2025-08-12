@@ -1,5 +1,6 @@
 import { stringify } from "qs"
 
+import { WorkflowWithResultDTO } from "api/workflow/Workflow"
 import { DataviewDTO, DataviewParams } from "store/slice/Dataview/DataviewType"
 import axios from "utils/axios"
 
@@ -16,6 +17,16 @@ export const getDataviewRecordsApi = async (
 ): Promise<DataviewDTO> => {
   const paramsNew = stringify(params, { indices: false })
   const response = await axios.get(`/dataview?${paramsNew}`)
+  return response.data
+}
+
+export async function publicDataviewReproduceWorkflowApi(
+  workspaceId: number,
+  uid: string,
+): Promise<WorkflowWithResultDTO> {
+  const response = await axios.get(
+    `/public/dataview/workflow/reproduce/${workspaceId}/${uid}`,
+  )
   return response.data
 }
 

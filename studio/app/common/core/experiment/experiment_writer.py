@@ -13,6 +13,9 @@ from filelock import FileLock
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptFunction
 from studio.app.common.core.experiment.experiment_builder import ExptConfigBuilder
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
+from studio.app.common.core.experiment.experiment_record_services import (
+    ExperimentRecordService,
+)
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
@@ -239,6 +242,12 @@ class ExptDataWriter:
         update_params = {"name": new_name}
         ExptConfigWriter(self.workspace_id, self.unique_id).overwrite(update_params)
 
+        # Update ExperimentRecord
+        if ExperimentRecordService.is_available():
+            ExperimentRecordService.update_name(
+                self.workspace_id, self.unique_id, new_name
+            )
+
         # Operate remote storage data.
         if RemoteStorageController.is_available():
             # upload latest EXPERIMENT_YML
@@ -251,7 +260,7 @@ class ExptDataWriter:
 
         return ExptConfigReader.read(self.workspace_id, self.unique_id)
 
-    async def copy_data(self, new_unique_id: str) -> bool:
+    async def copy_data(self, new_unique_id: str, new_name: str) -> bool:
         logger = AppLogger.get_logger()
 
         try:
@@ -275,7 +284,7 @@ class ExptDataWriter:
 
             # Update experiment configuration and unique IDs
             if not self.__copy_data_update_experiment_config_name(
-                self.workspace_id, new_unique_id
+                self.workspace_id, new_unique_id, new_name
             ):
                 logger.error("Failed to update experiment.yml after copying.")
                 return False
@@ -444,15 +453,13 @@ class ExptDataWriter:
             return obj
 
     def __copy_data_update_experiment_config_name(
-        self, workspace_id: str, unique_id: str
+        self, workspace_id: str, unique_id: str, new_name: str
     ) -> bool:
         logger = AppLogger.get_logger()
 
         try:
-            config = ExptConfigReader.read(workspace_id, unique_id)
-
             # Overwrite experiment config
-            update_params = {"name": f"{config.name}_copy"}
+            update_params = {"name": new_name}
             ExptConfigWriter(workspace_id, unique_id).overwrite(update_params)
 
             logger.info(f"Updated experiment.yml: {workspace_id}/{unique_id}")

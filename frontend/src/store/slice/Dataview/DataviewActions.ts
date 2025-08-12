@@ -5,8 +5,10 @@ import {
   getPublicDataviewRecordsApi,
   postPublishAllApi,
   postPublishApi,
+  publicDataviewReproduceWorkflowApi,
   putAttributesApi,
-} from "api/dataview"
+} from "api/dataview/Dataview"
+import { WorkflowWithResultDTO } from "api/workflow/Workflow"
 import {
   DATAVIEW_SLICE_NAME,
   DataviewDTO,
@@ -38,6 +40,24 @@ export const getPublicDataviewRecords = createAsyncThunk<
       return response
     } catch (e) {
       return rejectWithValue(e)
+    }
+  },
+)
+
+export const publicDataviewReproduceWorkflow = createAsyncThunk<
+  WorkflowWithResultDTO,
+  { workspaceId: number; uid: string }
+>(
+  `${DATAVIEW_SLICE_NAME}/publicDataviewReproduceWorkflow`,
+  async ({ workspaceId, uid }, thunkAPI) => {
+    try {
+      const response = await publicDataviewReproduceWorkflowApi(
+        workspaceId,
+        uid,
+      )
+      return response
+    } catch (e) {
+      return thunkAPI.rejectWithValue(e)
     }
   },
 )

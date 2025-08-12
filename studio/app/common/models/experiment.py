@@ -1,8 +1,9 @@
-from typing import Optional
+from datetime import datetime
+from typing import Dict, Optional
 
 from sqlalchemy import Integer
 from sqlalchemy.dialects.mysql import BIGINT
-from sqlmodel import Column, Field, ForeignKey, Relationship, String
+from sqlmodel import JSON, Column, DateTime, Field, ForeignKey, Relationship, String
 
 from studio.app.common.models.base import Base, TimestampMixin
 from studio.app.common.schemas.dataview import PublishStatus
@@ -18,12 +19,20 @@ class ExperimentRecord(Base, TimestampMixin, table=True):
     )
     uid: str = Field(sa_column=Column(String(100), nullable=False, index=True))
 
+    name: Optional[str] = Field(sa_column=Column(String(100), nullable=True))
+
     data_usage: int = Field(
         sa_column=Column(
             BIGINT(unsigned=True), nullable=False, comment="data usage in bytes"
         ),
         default=0,
     )
+
+    thumbnails: Optional[Dict] = Field(default={}, sa_column=Column(JSON))
+
+    success: bool = Field(nullable=False, default=False)
+
+    analyzed_at: Optional[datetime] = Field(sa_column=Column(DateTime(timezone=True)))
 
     publish_status: int = Field(
         sa_column=Column(

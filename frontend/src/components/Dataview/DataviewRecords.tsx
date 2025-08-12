@@ -12,8 +12,9 @@ import { useSearchParams } from "react-router-dom"
 import moment from "moment"
 import { enqueueSnackbar, VariantType } from "notistack"
 
-import AssignmentOutlinedIcon from "@mui/icons-material/AssignmentOutlined"
 import CheckCircleIcon from "@mui/icons-material/CheckCircle"
+import ImageIcon from "@mui/icons-material/Image"
+import InsightsIcon from "@mui/icons-material/Insights"
 import PublicIcon from "@mui/icons-material/Public"
 import PublicOffIcon from "@mui/icons-material/PublicOff"
 import {
@@ -44,10 +45,14 @@ import {
 
 import { UserDTO } from "api/users/UsersApiDTO"
 import { ConfirmDialog } from "components/common/ConfirmDialog"
-// import DialogImage from "components/common/DialogImage" // TODO: Implemented later
 import Loading from "components/common/Loading"
 import PaginationCustom from "components/common/PaginationCustom"
 import SwitchCustom from "components/common/SwitchCustom"
+import InputsView from "components/Dataview/InputsView"
+import OutputsView from "components/Dataview/OutputsView"
+import { WorkflowDetailsView } from "components/Dataview/WorkflowDetailsView"
+import { ImagePlotSimple } from "components/Workspace/Visualize/Plot/ImagePlotSimple"
+import { RoiPlotSimple } from "components/Workspace/Visualize/Plot/RoiPlotSimple"
 import { DELAY_TIME_INPUT_CONFIRMED } from "const/Form"
 import {
   getDataviewRecords,
@@ -56,22 +61,13 @@ import {
   postPublishAll,
   putAttributes,
 } from "store/slice/Dataview/DataviewActions"
-import { TypeData } from "store/slice/Dataview/DataviewSlice"
 import {
-  DATAVIEW_SLICE_NAME as DATAVIEW_SLICE_NAME,
-  DataviewType,
-} from "store/slice/Dataview/DataviewType"
-import { AppDispatch, RootState } from "store/store"
-
-export type Data = {
-  id: number
-  uid: string
-  attributes: string
-  graph_urls: string[]
-  publish_status: number
-  created_time: string
-  updated_time: string
-}
+  selectDataviewPrivateData,
+  selectDataviewPublicData,
+  selectDataviewLoading,
+} from "store/slice/Dataview/DataviewSelectors"
+import { DataviewType } from "store/slice/Dataview/DataviewType"
+import { AppDispatch } from "store/store"
 
 type PopupAttributesProps = {
   data?: string | string[]
@@ -108,9 +104,11 @@ const getPublishStatusValue = (publishStatus?: string) => {
 
 const buildFilterParams = (
   dataParamsFilter: Record<string, string | string[] | undefined>,
+  excludeWorkspaceId: boolean = false,
 ) => {
   return Object.keys(dataParamsFilter)
     .filter((key) => {
+      if (excludeWorkspaceId && key === "workspace_id") return false
       const value = dataParamsFilter[key]
       return Array.isArray(value) ? value.length > 0 : Boolean(value)
     })
@@ -146,7 +144,7 @@ const FilterInput = ({
   )
 }
 
-const columns = (
+const defineColumns = (
   listIdData: number[],
   setListCheck: (value: number[]) => void,
   listCheck: number[],
@@ -154,11 +152,15 @@ const columns = (
   checkBoxAll: boolean,
   setCheckBoxAll: (value: boolean) => void,
   handleOpenAttributes: (value: string, id: number) => void,
-  user: boolean,
+  handleOpenInputsView: (workspaceId: number, uid: string) => void,
+  handleOpenOutputsView: (workspaceId: number, uid: string) => void,
+  handleOpenDetailsView: (dataviewRecord: DataviewType) => void,
+  is_public: boolean,
   readonly?: boolean,
   loading: boolean = false,
+  workspaceId?: string,
 ) => [
-  user &&
+  !is_public &&
     !readonly && {
       field: "checkbox",
       renderHeader: () => (
@@ -200,7 +202,7 @@ const columns = (
         />
       ),
     },
-  user && {
+  !is_public && {
     field: "published",
     headerName: "Published",
     renderCell: (params: { row: DataviewType }) =>
@@ -232,7 +234,27 @@ const columns = (
       </Tooltip>
     ),
   },
-  !user && {
+  {
+    field: "name",
+    headerName: "Name",
+    width: 200,
+    filterOperators: [
+      {
+        label: "Contains",
+        value: "contains",
+        InputComponent: (props: GridFilterInputValueProps) => (
+          <FilterInput {...props} loading={loading} />
+        ),
+      },
+    ],
+    type: "string",
+    renderCell: (params: { row: DataviewType }) => (
+      <Tooltip title={params.row?.name}>
+        <SpanCustom>{params.row?.name}</SpanCustom>
+      </Tooltip>
+    ),
+  },
+  is_public && {
     field: "user_name",
     headerName: "Owner",
     width: 160,
@@ -252,10 +274,12 @@ const columns = (
       </Tooltip>
     ),
   },
-  user && {
+  !is_public && {
     field: "workspace_id",
     headerName: "Ws ID",
     width: 110,
+    sortable: !workspaceId,
+    filterable: !workspaceId,
     filterOperators: [
       {
         label: "Equals",
@@ -276,6 +300,8 @@ const columns = (
     field: "workspace_name",
     headerName: "Workspace",
     width: 160,
+    sortable: !workspaceId,
+    filterable: !workspaceId,
     filterOperators: [
       {
         label: "Contains",
@@ -292,6 +318,7 @@ const columns = (
       </Tooltip>
     ),
   },
+  /** Currently, attribute is hidden
   {
     field: "attributes",
     headerName: "Attributes",
@@ -313,13 +340,64 @@ const columns = (
       )
     },
   },
+  */
   {
     field: "input_data",
     headerName: "Inputs",
     width: 160,
     filterable: false,
     sortable: false,
-    renderCell: () => <SpanCustom>(N/A)</SpanCustom>,
+    renderCell: (params: { row: DataviewType }) => {
+      const workspaceId = params?.row?.workspace.id
+      const thumbnailPath = params?.row?.thumbnails?.image_url
+      // Add workspace_id as query parameter to make the path unique per workspace
+      const filePath = thumbnailPath
+        ? `${thumbnailPath}?workspace_id=${workspaceId}&start_index=1&end_index=1`
+        : null
+
+      return (
+        <Box
+          sx={{
+            width: "100%",
+            height: "100%",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            overflow: "hidden",
+            gap: 1,
+          }}
+        >
+          <Box sx={{ width: 100, height: 80 }}>
+            {filePath ? (
+              <ImagePlotSimple
+                filePath={filePath}
+                workspaceId={workspaceId}
+                onClick={() =>
+                  handleOpenInputsView(workspaceId, params?.row?.uid)
+                }
+              />
+            ) : (
+              <Box
+                sx={{
+                  width: "100%",
+                  height: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                }}
+                onClick={() =>
+                  handleOpenInputsView(workspaceId, params?.row?.uid)
+                }
+              >
+                <ImageIcon color={"primary"} fontSize="large" />
+              </Box>
+            )}
+          </Box>
+        </Box>
+      )
+    },
   },
   {
     field: "output_data",
@@ -327,7 +405,57 @@ const columns = (
     width: 160,
     filterable: false,
     sortable: false,
-    renderCell: () => <SpanCustom>(N/A)</SpanCustom>,
+    renderCell: (params: { row: DataviewType }) => {
+      const workspaceId = params?.row?.workspace.id
+      const thumbnailPath = params?.row?.thumbnails?.roi_url
+      // Add workspace_id as query parameter to make the path unique per workspace
+      const filePath = thumbnailPath
+        ? `${thumbnailPath}?workspace_id=${workspaceId}`
+        : null
+
+      return (
+        <Box
+          sx={{
+            width: "100%",
+            height: "100%",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            overflow: "hidden",
+            gap: 1,
+          }}
+        >
+          <Box sx={{ width: 100, height: 80 }}>
+            {filePath ? (
+              <RoiPlotSimple
+                filePath={filePath}
+                workspaceId={workspaceId}
+                onClick={() =>
+                  handleOpenOutputsView(workspaceId, params?.row?.uid)
+                }
+              />
+            ) : (
+              <Box
+                sx={{
+                  width: "100%",
+                  height: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                }}
+                onClick={() =>
+                  handleOpenOutputsView(workspaceId, params?.row?.uid)
+                }
+              >
+                <ImageIcon color={"primary"} fontSize="large" />
+              </Box>
+            )}
+          </Box>
+        </Box>
+      )
+    },
   },
   {
     field: "details",
@@ -335,19 +463,33 @@ const columns = (
     width: 160,
     filterable: false,
     sortable: false,
-    renderCell: () => <SpanCustom>(N/A)</SpanCustom>,
+    renderCell: (params: { row: DataviewType }) => (
+      <Box
+        sx={{
+          width: "100%",
+          height: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "pointer",
+        }}
+        onClick={() => handleOpenDetailsView(params?.row)}
+      >
+        <InsightsIcon color="primary" fontSize="large" />
+      </Box>
+    ),
   },
   {
-    field: "last_modified",
-    headerName: "Last modified",
+    field: "timestamp",
+    headerName: "Timestamp",
     width: 160,
     type: "string",
     filterable: false,
     sortable: true,
     renderCell: (params: { row: DataviewType }) => (
-      <Tooltip title={params.row?.updated_at}>
+      <Tooltip title={params.row?.analyzed_at}>
         <SpanCustom>
-          {moment(params.row?.updated_at).format("YYYY/MM/DD hh:mm")}
+          {moment(params.row?.analyzed_at).format("YYYY/MM/DD HH:mm")}
         </SpanCustom>
       </Tooltip>
     ),
@@ -438,14 +580,11 @@ const DataviewRecords = ({
   metadataEditable,
   workspaceId,
 }: DataviewProps) => {
-  const type: keyof TypeData = user ? "private" : "public"
-
+  const is_public: boolean = user == null
   const dataviewRecords = useSelector(
-    (state: RootState) => state[DATAVIEW_SLICE_NAME].data[type],
+    is_public ? selectDataviewPublicData : selectDataviewPrivateData,
   )
-  const loading = useSelector(
-    (state: RootState) => state[DATAVIEW_SLICE_NAME].loading,
-  )
+  const loading = useSelector(selectDataviewLoading)
 
   const [openPublishAll, setOpenPublishAll] = useState<{
     title: string
@@ -466,13 +605,17 @@ const DataviewRecords = ({
   const [checkBoxAll, setCheckBoxAll] = useState(false)
   const [dataDialog, setDataDialog] = useState<{
     id?: number
+    workspaceId?: number
+    uid?: string
     type?: string
     data?: string | string[]
-    expId?: string
-    nameCol?: string
+    dataviewRecord?: DataviewType
   }>({
+    id: undefined,
+    uid: undefined,
     type: "",
     data: undefined,
+    dataviewRecord: undefined,
   })
   const [fieldFilter, setFieldFilter] = useState<{
     id?: number | string
@@ -517,12 +660,11 @@ const DataviewRecords = ({
   const dataParamsFilter = useMemo(
     () => ({
       uid: searchParams.get("uid") || undefined,
+      name: searchParams.get("name") || undefined,
       publish_status: searchParams.get("published") || undefined,
       user_name: searchParams.get("user_name") || undefined,
       workspace_id:
-        searchParams.get("workspace_id") ||
-        (searchParams.size === 0 && workspaceId) ||
-        undefined,
+        searchParams.get("workspace_id") || workspaceId || undefined,
       workspace_name: searchParams.get("workspace_name") || undefined,
     }),
     [searchParams, workspaceId],
@@ -539,7 +681,7 @@ const DataviewRecords = ({
   })
 
   const fetchApi = () => {
-    const api = !user ? getPublicDataviewRecords : getDataviewRecords
+    const api = is_public ? getPublicDataviewRecords : getDataviewRecords
     const newPublish = getPublishStatusValue(dataParamsFilter.publish_status)
     dispatch(
       api({ ...dataParamsFilter, publish_status: newPublish, ...dataParams }),
@@ -548,6 +690,14 @@ const DataviewRecords = ({
 
   useEffect(() => {
     const key = Object.keys(dataParamsFilter).find((key) => {
+      // Skip workspace_id if it's coming from the URL path
+      if (
+        key === "workspace_id" &&
+        workspaceId &&
+        !searchParams.get("workspace_id")
+      ) {
+        return false
+      }
       const value = dataParamsFilter[key as keyof typeof dataParamsFilter]
       return (
         (!Array.isArray(value) && value) ||
@@ -629,14 +779,43 @@ const DataviewRecords = ({
   useEffect(() => {
     fetchApi()
     //eslint-disable-next-line
-  }, [dataParams, user, dataParamsFilter])
+  }, [dataParams, is_public, dataParamsFilter])
 
   useEffect(() => {
     setCheckBoxAll(false)
   }, [offset, limit, dataParamsFilter])
 
+  const handleOpenInputsView = (
+    workspaceId: number | undefined,
+    uid: string | undefined,
+  ) => {
+    setDataDialog({
+      workspaceId: workspaceId,
+      uid: uid,
+      type: "inputs_view",
+    })
+  }
+
+  const handleOpenOutputsView = (
+    workspaceId: number | undefined,
+    uid: string | undefined,
+  ) => {
+    setDataDialog({
+      workspaceId: workspaceId,
+      uid: uid,
+      type: "outputs_view",
+    })
+  }
+
+  const handleOpenDetailsView = (dataviewRecord: DataviewType) => {
+    setDataDialog({
+      type: "details_view",
+      dataviewRecord: dataviewRecord,
+    })
+  }
+
   const handleCloseDialog = () => {
-    setDataDialog({ type: "", data: undefined })
+    setDataDialog({})
   }
 
   const handleOpenAttributes = (data: string, id: number) => {
@@ -665,9 +844,9 @@ const DataviewRecords = ({
     handleClickVariant("error", "Update attributes failed!")
   }
 
-  const getParamsData = () => buildFilterParams(dataParamsFilter)
+  const getParamsData = () => buildFilterParams(dataParamsFilter, !!workspaceId)
 
-  const handlePage = (e: ChangeEvent<unknown>, page: number) => {
+  const handlePage = (_e: ChangeEvent<unknown>, page: number) => {
     const filter = getParamsData()
     const param = `${filter}${
       dataParams.sort[0]
@@ -780,7 +959,7 @@ const DataviewRecords = ({
   }
 
   const handleLimit = (event: ChangeEvent<HTMLSelectElement>) => {
-    const filter = buildFilterParams(dataParamsFilter)
+    const filter = buildFilterParams(dataParamsFilter, !!workspaceId)
     const { sort } = dataParams
     const param = `${filter}${
       sort[0] ? `${filter ? "&" : ""}sort=${sort[0]}&sort=${sort[1]}` : ""
@@ -850,7 +1029,7 @@ const DataviewRecords = ({
     ]
   }
 
-  const columnsInstance = columns(
+  const columnsInstance = defineColumns(
     dataviewRecords.items.map((item) => item.id),
     setListCheck,
     listCheck,
@@ -858,16 +1037,20 @@ const DataviewRecords = ({
     checkBoxAll,
     setCheckBoxAll,
     handleOpenAttributes,
-    !!user,
+    handleOpenInputsView,
+    handleOpenOutputsView,
+    handleOpenDetailsView,
+    is_public,
     readonly,
     loading,
+    workspaceId,
   )
 
   const columnsTable = [...columnsInstance].filter(Boolean) as GridColDef[]
 
   return (
     <DataviewRecordsWrapper>
-      {user ? (
+      {!is_public ? (
         <Box sx={{ height: 40, margin: "0 0 0.5rem 0" }}>
           {!readonly ? (
             <WrapperIcons check={!!(listCheck.length > 0)}>
@@ -925,7 +1108,7 @@ const DataviewRecords = ({
       ) : null}
       <DataGrid
         columns={
-          user && !readonly
+          !is_public && !readonly
             ? ([...columnsTable, ...ColumnPrivate()] as GridColDef[])
             : (columnsTable as GridColDef[])
         }
@@ -952,15 +1135,28 @@ const DataviewRecords = ({
         </Box>
       ) : null}
 
-      {/* // TODO: Implemented later
-      <DialogImage
-        open={dataDialog.type === "image"}
-        data={dataDialog.data}
-        expId={dataDialog.expId}
-        nameCol={dataDialog.nameCol}
-        handleCloseDialog={handleCloseDialog}
+      <InputsView
+        open={dataDialog.type === "inputs_view"}
+        is_public={is_public}
+        workspaceId={dataDialog.workspaceId}
+        uid={dataDialog.uid}
+        handleClose={handleCloseDialog}
       />
-      */}
+
+      <OutputsView
+        open={dataDialog.type === "outputs_view"}
+        is_public={is_public}
+        workspaceId={dataDialog.workspaceId}
+        uid={dataDialog.uid}
+        handleClose={handleCloseDialog}
+      />
+
+      <WorkflowDetailsView
+        dataviewRecord={dataDialog.dataviewRecord || null}
+        open={dataDialog.type === "details_view"}
+        onClose={handleCloseDialog}
+        is_public={is_public}
+      />
 
       <PopupAttributes
         handleChangeAttributes={handleChangeAttributes}
@@ -968,7 +1164,7 @@ const DataviewRecords = ({
         open={dataDialog.type === "attribute"}
         handleClose={handleCloseDialog}
         onSubmit={onSubmitAttributes}
-        role={!!user}
+        role={!is_public}
         readonly={!metadataEditable}
       />
       <Loading loading={loading} />
