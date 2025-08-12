@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo } from "react"
+import { memo, useEffect, useMemo, useState, useRef } from "react"
 import PlotlyChart from "react-plotlyjs-ts"
 import { useSelector, useDispatch } from "react-redux"
 
@@ -30,6 +30,8 @@ export const RoiPlotSimple = memo(function RoiPlotSimple({
   const roiDataFromSelector = useSelector(selectRoiData(filePath))
   const isPending = useSelector(selectRoiDataIsPending(filePath))
   const error = useSelector(selectRoiDataError(filePath))
+  const [isMounted, setIsMounted] = useState(false)
+  const plotRef = useRef<HTMLDivElement>(null)
 
   const roiData = useMemo(
     () => (roiDataFromSelector ? [roiDataFromSelector] : []),
@@ -51,6 +53,13 @@ export const RoiPlotSimple = memo(function RoiPlotSimple({
 
     return typeof maxValue === "number" ? maxValue : 0
   }, [roiData])
+
+  useEffect(() => {
+    setIsMounted(true)
+    return () => {
+      setIsMounted(false)
+    }
+  }, [])
 
   useEffect(() => {
     if (workspaceId && filePath) {
@@ -124,8 +133,19 @@ export const RoiPlotSimple = memo(function RoiPlotSimple({
       staticPlot: true,
     }
 
+    if (!isMounted) {
+      return (
+        <div
+          ref={plotRef}
+          onClick={onClick}
+          style={{ cursor: "pointer", width: "100%", height: "100%" }}
+        />
+      )
+    }
+
     return (
       <div
+        ref={plotRef}
         onClick={onClick}
         style={{ cursor: "pointer", width: "100%", height: "100%" }}
       >
