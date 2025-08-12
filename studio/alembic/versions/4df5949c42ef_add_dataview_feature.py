@@ -1,7 +1,7 @@
 """add dataview feature
 
 Revision ID: 4df5949c42ef
-Revises: 0b3a8e2ca9c1
+Revises: 86201451bfdd
 Create Date: 2025-07-14 10:08:42.263790
 
 """
@@ -11,7 +11,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "4df5949c42ef"
-down_revision = "0b3a8e2ca9c1"
+down_revision = "86201451bfdd"
 branch_labels = None
 depends_on = None
 
