@@ -112,7 +112,7 @@ class ExperimentRecordService:
 
             # Override specific columns
             new_exp_data["uid"] = new_unique_id
-            new_exp_data["name"] = new_name
+            new_exp_data["name"] = _new_name
             new_exp_data["publish_status"] = False
 
             new_exp = ExperimentRecord(**new_exp_data)
