@@ -10,6 +10,7 @@ import boto3
 from botocore.exceptions import ClientError
 from snakemake.api import SharedFSUsage, StorageSettings
 
+from studio.app.common.core.cloud.cloud_utils import get_user_context_by_id
 from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
@@ -311,18 +312,25 @@ class BatchUtils:
             logger.warning("Could not retrieve current user, using default settings")
             return None
 
-    def get_job_queue_for_user(self) -> str:
+    def get_job_queue_for_user(self, user_id: Optional[int] = None) -> str:
         """
         Determine which AWS Batch job queue to use based on user tier.
         Uses the new subscription system to determine user tier.
+
+        Args:
+            user_id: Optional user ID.
+            If not provided, will try to get from request context.
         """
         try:
-            # Get user context from database using new subscription tables
-            from studio.app.common.core.cloud.cloud_utils import (
-                get_current_user_context,
-            )
-
-            current_user = get_current_user_context()
+            if user_id is not None:
+                # Use the provided user_id directly
+                current_user = get_user_context_by_id(user_id)
+            else:
+                # No user_id provided and no way to get current user outside API context
+                logger.warning(
+                    "No user_id provided for queue selection, defaulting to free tier"
+                )
+                current_user = None
 
             if current_user and isinstance(current_user, dict):
                 tier = current_user.get("subscription_tier", "free")

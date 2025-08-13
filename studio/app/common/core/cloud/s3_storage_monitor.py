@@ -153,10 +153,10 @@ class S3StorageMonitor:
                     "checking subscription"
                 )
                 from studio.app.common.core.cloud.cloud_utils import (
-                    get_current_user_context,
+                    get_user_context_by_id,
                 )
 
-                user_context = get_current_user_context()
+                user_context = get_user_context_by_id(user_id)
                 if user_context:
                     tier = user_context.get("subscription_tier", "free")
                     quota_limit = self.TIER_QUOTAS.get(tier, self.TIER_QUOTAS["free"])
@@ -175,10 +175,10 @@ class S3StorageMonitor:
                 if quota_limit <= 0:
                     # Fallback to tier-based quota if database has invalid data
                     from studio.app.common.core.cloud.cloud_utils import (
-                        get_current_user_context,
+                        get_user_context_by_id,
                     )
 
-                    user_context = get_current_user_context()
+                    user_context = get_user_context_by_id(user_id)
                     if user_context:
                         tier = user_context.get("subscription_tier", "free")
                         quota_limit = self.TIER_QUOTAS.get(

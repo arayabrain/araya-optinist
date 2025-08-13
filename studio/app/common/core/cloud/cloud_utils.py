@@ -7,8 +7,6 @@ from typing import Any, Dict, Optional
 
 import pymysql
 
-from studio.app.common.core.auth.auth_dependencies import get_current_user
-
 # from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
 from studio.app.common.core.logger import AppLogger
 
@@ -110,8 +108,8 @@ def _get_fallback_storage_quota(user_id: int) -> Dict[str, Any]:
     """
     try:
         # Try to get user's subscription tier to determine appropriate quota
-        user_context = get_current_user_context()
-        if user_context and user_context.get("id") == user_id:
+        user_context = get_user_context_by_id(user_id)
+        if user_context:
             tier = user_context.get("subscription_tier", "free")
             plan_name = user_context.get("subscription_plan_name", "Free")
 
@@ -150,30 +148,12 @@ def _get_fallback_storage_quota(user_id: int) -> Dict[str, Any]:
     }
 
 
-def get_current_user_context() -> Optional[Dict[str, Any]]:
+def get_user_context_by_id(user_id: int) -> Optional[Dict[str, Any]]:
     """
-    Get current user context including subscription tier from database.
+    Get user context including subscription tier from database by user ID.
     Returns user info with subscription details or None if not found.
     """
     try:
-        # Try to get current user from request context
-        user_id = None
-        try:
-            # This will work in API request context
-            current_user = get_current_user()
-            if hasattr(current_user, "id"):
-                user_id = current_user.id
-            else:
-                logger.debug("Current user object has no 'id' attribute")
-        except Exception as e:
-            # No request context available (e.g., background tasks, CLI)
-            logger.debug(f"No request context for current user: {e}")
-
-        # Fall back to admin user if no current user available
-        if user_id is None:
-            user_id = 1  # Admin user from main.tf startup script
-            logger.debug("Using admin user (id=1) as fallback")
-
         with get_db_connection() as conn:
             cursor = conn.cursor(pymysql.cursors.DictCursor)
 
@@ -218,7 +198,7 @@ def get_current_user_context() -> Optional[Dict[str, Any]]:
                 return None
 
     except Exception as e:
-        logger.error(f"Failed to get user context: {e}")
+        logger.error(f"Failed to get user context for user {user_id}: {e}")
         return None
 
 
@@ -463,7 +443,7 @@ def test_database_connection() -> bool:
         return False
 
 
-def print_admin_user_details():
+def print_user_details(user_id: int = 1) -> None:
     """
     Print details of the admin user for debugging.
     """
@@ -471,7 +451,7 @@ def print_admin_user_details():
         logger.info("=== ADMIN USER DETAILS ===")
 
         # Get user context
-        user_context = get_current_user_context()
+        user_context = get_user_context_by_id(user_id)
         if user_context:
             logger.info(f"User ID: {user_context['id']}")
             logger.info(f"Name: {user_context['name']}")
@@ -485,7 +465,7 @@ def print_admin_user_details():
             logger.error("Failed to retrieve admin user context")
 
         # Get subscription details
-        subscription_details = get_user_subscription_details(1)
+        subscription_details = get_user_subscription_details(user_id)
         if subscription_details:
             logger.info(
                 f"Storage Usage: {subscription_details['current_usage_bytes']} bytes"
@@ -514,10 +494,6 @@ def initialize_cloud_utils():
     # Test database connection
     if test_database_connection():
         logger.info("Database connection test passed")
-
-        # Print admin user details
-        print_admin_user_details()
-
         logger.info("Cloud utilities initialized successfully")
         return True
     else:
