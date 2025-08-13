@@ -79,7 +79,6 @@ class ExperimentService:
                 config = ExptConfigReader.read(workspace_id, unique_id)
                 new_unique_id = WorkflowRunner.create_workflow_unique_id()
                 new_name = f"{config.name}_copy"
-
                 success = await ExptDataWriter(
                     remote_bucket_name,
                     workspace_id,
