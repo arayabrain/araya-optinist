@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import Dict, Union
+from dataclasses import dataclass, field
+from typing import Dict, List, Union
 
 from pydantic import BaseModel
 
