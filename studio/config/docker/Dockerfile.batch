@@ -28,6 +28,10 @@ RUN cd /tmp && \
     sh ./aws/install && \
     rm -rf awscli-exe-linux-x86_64.zip aws
 
+# Download AWS RDS CA certificate for secure database connections
+RUN wget https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem -O /opt/amazon-rds-ca-cert.pem && \
+    chmod 644 /opt/amazon-rds-ca-cert.pem
+
 # Install Python dependencies
 COPY pyproject.toml poetry.lock ./
 RUN pip3 install --no-cache-dir --upgrade pip && \

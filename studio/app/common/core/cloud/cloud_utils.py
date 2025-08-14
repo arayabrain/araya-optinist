@@ -44,6 +44,10 @@ DB_CONFIG = {
     "connect_timeout": 10,
     "read_timeout": 30,
     "write_timeout": 30,
+    # SSL configuration for RDS - use AWS RDS CA bundle
+    "ssl_ca": os.environ.get("MYSQL_SSL_CA", "/opt/amazon-rds-ca-cert.pem"),
+    "ssl_verify_cert": True,
+    "ssl_verify_identity": True,
 }
 
 
