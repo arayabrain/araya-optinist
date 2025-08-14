@@ -6,7 +6,7 @@ from sqlalchemy.dialects.mysql import BIGINT, TINYINT
 from sqlalchemy.sql import func
 from sqlmodel import Column, Field
 
-from studio.app.common.models.base import Base, TimestampMixin
+from studio.app.common.models.base import Base
 
 
 class SubscriptionPlans(Base, table=True):
@@ -44,12 +44,24 @@ class SubscriptionPlans(Base, table=True):
         return f"${self.price/100:.2f}" if self.price else "Free"
 
 
-class UserSubscription(Base, TimestampMixin, table=True):
+class UserSubscription(Base, table=True):
     __tablename__ = "subscription_users"
 
     plan_id: int = Field(sa_column=Column(BIGINT(unsigned=True), nullable=False))
     user_id: int = Field(sa_column=Column(BIGINT(unsigned=True), nullable=False))
     expiration: datetime = Field(sa_column=Column(DateTime, nullable=False))
+    created_at: Optional[datetime] = Field(
+        sa_column=Column(
+            DateTime, nullable=False, server_default=func.current_timestamp()
+        ),
+    )
+    updated_at: Optional[datetime] = Field(
+        sa_column=Column(
+            DateTime,
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+        ),
+    )
 
 
 class UserStorageUsage(Base, table=True):
