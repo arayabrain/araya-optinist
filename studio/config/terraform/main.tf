@@ -473,20 +473,6 @@ resource "aws_db_subnet_group" "main" {
 }
 
 # RDS Instance
-# Custom parameter group to enforce SSL connections
-resource "aws_db_parameter_group" "mysql_ssl" {
-  family = "mysql8.0"
-  name   = "subscr-optinist-mysql-ssl"
-
-  parameter {
-    name  = "require_secure_transport"
-    value = "ON"
-  }
-
-  tags = {
-    Name = "subscr-optinist-mysql-ssl"
-  }
-}
 
 resource "aws_db_instance" "main" {
   identifier              = "subscr-optinist-cloud-rds"
@@ -495,7 +481,6 @@ resource "aws_db_instance" "main" {
   engine                  = "mysql"
   engine_version          = "8.0"
   instance_class          = "db.t4g.micro"
-  parameter_group_name    = aws_db_parameter_group.mysql_ssl.name
   db_name                 = var.mysql_database
   username                = var.mysql_user
   password                = var.mysql_password
@@ -526,7 +511,6 @@ resource "aws_db_instance" "batch" {
   engine                  = "mysql"
   engine_version          = "8.0"
   instance_class          = "db.t4g.micro"
-  parameter_group_name    = aws_db_parameter_group.mysql_ssl.name
   db_name                 = var.mysql_database
   username                = var.mysql_user
   password                = var.mysql_password

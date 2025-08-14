@@ -26,9 +26,6 @@ RUN cd /tmp && \
     unzip awscli-exe-linux-x86_64.zip && \
     sh ./aws/install
 
-# Download AWS RDS CA certificate for secure database connections
-RUN wget https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem -O /opt/amazon-rds-ca-cert.pem && \
-    chmod 644 /opt/amazon-rds-ca-cert.pem
 
 # cleaning apt
 RUN apt-get purge wget -y && \

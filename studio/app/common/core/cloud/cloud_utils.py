@@ -1,101 +1,45 @@
 """
 Cloud utilities for user context and subscription management.
 """
-import os
-from contextlib import contextmanager
+from datetime import datetime
 from typing import Any, Dict, Optional
 
-import pymysql
+from sqlalchemy.orm import Session
+from sqlmodel import select
 
-# from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.db.database import session_scope
+from studio.app.common.models import SubscriptionPlans
+from studio.app.common.models import User as UserModel
+from studio.app.common.models import UserStorageUsage, UserSubscription
 
 logger = AppLogger.get_logger()
 
 
-# Database connection configuration from environment
-def _parse_mysql_server():
-    """Parse MYSQL_SERVER environment variable to extract host and port."""
-    mysql_server = os.environ.get("MYSQL_SERVER", "localhost:3306")
-    if ":" in mysql_server:
-        host, port_str = mysql_server.split(":", 1)
-        try:
-            port = int(port_str)
-        except ValueError:
-            logger.warning(
-                f"Invalid port in MYSQL_SERVER: {port_str}, using default 3306"
-            )
-            port = 3306
-    else:
-        host = mysql_server
-        port = 3306
-    return host, port
-
-
-_db_host, _db_port = _parse_mysql_server()
-
-DB_CONFIG = {
-    "host": _db_host,
-    "port": _db_port,
-    "user": os.environ.get("MYSQL_USER", "studio_db_user"),
-    "password": os.environ.get("MYSQL_PASSWORD", "studio_db_password"),
-    "database": os.environ.get("MYSQL_DATABASE", "studio"),
-    "charset": "utf8mb4",
-    "connect_timeout": 10,
-    "read_timeout": 30,
-    "write_timeout": 30,
-    # SSL configuration for RDS - use AWS RDS CA bundle
-    "ssl_ca": os.environ.get("MYSQL_SSL_CA", "/opt/amazon-rds-ca-cert.pem"),
-    "ssl_verify_cert": True,
-    "ssl_verify_identity": True,
-}
-
-
-@contextmanager
-def get_db_connection():
-    """Get database connection with proper error handling and cleanup."""
-    connection = None
-    try:
-        logger.debug(f"Connecting to database: {DB_CONFIG['host']}:{DB_CONFIG['port']}")
-        connection = pymysql.connect(**DB_CONFIG)
-        yield connection
-    except pymysql.Error as e:
-        logger.error(f"Database connection error: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected database error: {e}")
-        raise
-    finally:
-        if connection:
-            connection.close()
-
-
-def _get_fallback_users(cursor) -> list:
+def _get_fallback_users(db: Session) -> list:
     """
     Get fallback user list (admin user) when subscription tables don't exist.
     """
     try:
-        # Get admin user (ID 1) as fallback
-        query = """
-        SELECT
-            id,
-            name,
-            email,
-            'Free' as plan_name,
-            0 as plan_price,
-            'active' as status,
-            created_at,
-            'free' as tier
-        FROM users
-        WHERE id = 1 AND active = 1
-        """
+        # Get admin user (ID 1) as fallback using ORM
+        admin_user = db.exec(
+            select(UserModel).where(UserModel.id == 1, UserModel.active.is_(True))
+        ).first()
 
-        cursor.execute(query)
-        result = cursor.fetchone()
-
-        if result:
+        if admin_user:
             logger.info("Using admin user as fallback for subscription monitoring")
-            return [result]
+            return [
+                {
+                    "id": admin_user.id,
+                    "name": admin_user.name,
+                    "email": admin_user.email,
+                    "plan_name": "Free",
+                    "plan_price": 0,
+                    "status": "active",
+                    "created_at": admin_user.created_at,
+                    "tier": "free",
+                }
+            ]
         else:
             logger.warning("Admin user (ID 1) not found")
             return []
@@ -158,45 +102,62 @@ def get_user_context_by_id(user_id: int) -> Optional[Dict[str, Any]]:
     Returns user info with subscription details or None if not found.
     """
     try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor(pymysql.cursors.DictCursor)
+        with session_scope() as db:
+            # Query user with subscription information using ORM joins
+            statement = (
+                select(
+                    UserModel,
+                    SubscriptionPlans.name.label("plan_name"),
+                    SubscriptionPlans.price.label("plan_price"),
+                    UserSubscription.expiration,
+                )
+                .outerjoin(
+                    UserSubscription,
+                    (UserModel.id == UserSubscription.user_id)
+                    & (UserSubscription.expiration > datetime.now()),
+                )
+                .outerjoin(
+                    SubscriptionPlans, UserSubscription.plan_id == SubscriptionPlans.id
+                )
+                .where(UserModel.id == user_id, UserModel.active.is_(True))
+            )
 
-            # Query user with subscription information
-            query = """
-            SELECT
-                u.id,
-                u.uid,
-                u.name,
-                u.email,
-                u.active,
-                u.attributes,
-                COALESCE(sp.name, 'Free') as subscription_plan_name,
-                COALESCE(sp.price, 0) as subscription_price,
-                CASE
-                    WHEN su.expiration IS NOT NULL
-                    AND su.expiration > NOW() THEN 'active'
-                    ELSE 'expired'
-                END as subscription_status,
-                CASE
-                    WHEN sp.name = 'Premium' THEN 'paid'
-                    ELSE 'free'
-                END as subscription_tier
-            FROM users u
-            LEFT JOIN subscription_users su ON u.id = su.user_id
-                AND su.expiration > NOW()
-            LEFT JOIN subscription_plans sp ON su.plan_id = sp.id
-            WHERE u.id = %s AND u.active = 1
-            """
-
-            cursor.execute(query, (user_id,))
-            result = cursor.fetchone()
+            result = db.exec(statement).first()
 
             if result:
-                logger.info(
-                    f"Retrieved user context: {result['name']} ({result['email']}) "
-                    f"- Tier: {result['subscription_tier']}"
+                user, plan_name, plan_price, expiration = result
+
+                # Determine subscription status and tier
+                subscription_plan_name = plan_name or "Free"
+                subscription_price = plan_price or 0
+                subscription_status = (
+                    "active"
+                    if expiration and expiration > datetime.now()
+                    else "expired"
                 )
-                return result
+                subscription_tier = (
+                    "paid" if subscription_plan_name == "Premium" else "free"
+                )
+
+                user_context = {
+                    "id": user.id,
+                    "uid": user.uid,
+                    "name": user.name,
+                    "email": user.email,
+                    "active": user.active,
+                    "attributes": user.attributes,
+                    "subscription_plan_name": subscription_plan_name,
+                    "subscription_price": subscription_price,
+                    "subscription_status": subscription_status,
+                    "subscription_tier": subscription_tier,
+                }
+
+                logger.info(
+                    f"Retrieved user context: {user_context['name']} "
+                    f"({user_context['email']}) "
+                    f"- Tier: {user_context['subscription_tier']}"
+                )
+                return user_context
             else:
                 logger.warning(f"User {user_id} not found or inactive")
                 return None
@@ -211,41 +172,59 @@ def get_user_subscription_details(user_id: int) -> Optional[Dict[str, Any]]:
     Get detailed subscription information for a specific user.
     """
     try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor(pymysql.cursors.DictCursor)
+        with session_scope() as db:
+            # Query using ORM joins
+            statement = (
+                select(
+                    UserModel.id.label("user_id"),
+                    UserModel.name,
+                    UserModel.email,
+                    SubscriptionPlans.id.label("plan_id"),
+                    SubscriptionPlans.name.label("plan_name"),
+                    SubscriptionPlans.price.label("plan_price"),
+                    UserSubscription.expiration,
+                    UserSubscription.created_at.label("subscription_start"),
+                    UserSubscription.updated_at.label("subscription_updated"),
+                    UserStorageUsage.current_usage_bytes,
+                    UserStorageUsage.quota_limit_bytes,
+                    UserStorageUsage.last_updated.label("usage_last_updated"),
+                )
+                .outerjoin(
+                    UserSubscription,
+                    (UserModel.id == UserSubscription.user_id)
+                    & (UserSubscription.expiration > datetime.now()),
+                )
+                .outerjoin(
+                    SubscriptionPlans, UserSubscription.plan_id == SubscriptionPlans.id
+                )
+                .outerjoin(UserStorageUsage, UserModel.id == UserStorageUsage.user_id)
+                .where(UserModel.id == user_id, UserModel.active.is_(True))
+            )
 
-            query = """
-            SELECT
-                u.id as user_id,
-                u.name,
-                u.email,
-                sp.id as plan_id,
-                sp.name as plan_name,
-                sp.price as plan_price,
-                su.expiration,
-                CASE
-                    WHEN su.expiration > NOW() THEN 'active'
-                    ELSE 'expired'
-                END as status,
-                su.created_at as subscription_start,
-                su.updated_at as subscription_updated,
-                uas.current_usage_bytes,
-                uas.quota_limit_bytes,
-                uas.last_updated as usage_last_updated
-            FROM users u
-            LEFT JOIN subscription_users su ON u.id = su.user_id
-                AND su.expiration > NOW()
-            LEFT JOIN subscription_plans sp ON su.plan_id = sp.id
-            LEFT JOIN user_storage_usage uas ON u.id = uas.user_id
-            WHERE u.id = %s AND u.active = 1
-            """
-
-            cursor.execute(query, (user_id,))
-            result = cursor.fetchone()
+            result = db.exec(statement).first()
 
             if result:
+                # Convert to dictionary
+                subscription_details = {
+                    "user_id": result.user_id,
+                    "name": result.name,
+                    "email": result.email,
+                    "plan_id": result.plan_id,
+                    "plan_name": result.plan_name,
+                    "plan_price": result.plan_price,
+                    "expiration": result.expiration,
+                    "status": "active"
+                    if result.expiration and result.expiration > datetime.now()
+                    else "expired",
+                    "subscription_start": result.subscription_start,
+                    "subscription_updated": result.subscription_updated,
+                    "current_usage_bytes": result.current_usage_bytes,
+                    "quota_limit_bytes": result.quota_limit_bytes,
+                    "usage_last_updated": result.usage_last_updated,
+                }
+
                 logger.debug(f"Retrieved subscription details for user {user_id}")
-                return result
+                return subscription_details
             else:
                 logger.warning(f"No subscription details found for user {user_id}")
                 return None
@@ -261,59 +240,62 @@ def get_all_active_subscriptions() -> list:
     Falls back to admin user if subscription tables don't exist.
     """
     try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor(pymysql.cursors.DictCursor)
-
-            # First check if subscription tables exist
-            cursor.execute("SHOW TABLES LIKE 'subscription_%'")
-            subscription_tables = cursor.fetchall()
-
-            if (
-                len(subscription_tables) < 2
-            ):  # Need both subscription_users and subscription_plan
-                logger.warning(
-                    "Subscription tables not found, falling back to admin user"
+        with session_scope() as db:
+            # Try to query using ORM models directly
+            try:
+                statement = (
+                    select(
+                        UserModel.id,
+                        UserModel.name,
+                        UserModel.email,
+                        SubscriptionPlans.name.label("plan_name"),
+                        SubscriptionPlans.price.label("plan_price"),
+                        UserSubscription.created_at,
+                    )
+                    .join(UserSubscription, UserModel.id == UserSubscription.user_id)
+                    .join(
+                        SubscriptionPlans,
+                        UserSubscription.plan_id == SubscriptionPlans.id,
+                    )
+                    .where(
+                        UserModel.active.is_(True),
+                        UserSubscription.expiration > datetime.now(),
+                    )
+                    .order_by(SubscriptionPlans.price.desc(), UserModel.name)
                 )
-                return _get_fallback_users(cursor)
 
-            query = """
-            SELECT
-                u.id,
-                u.name,
-                u.email,
-                sp.name as plan_name,
-                sp.price as plan_price,
-                CASE
-                    WHEN su.expiration > NOW() THEN 'active'
-                    ELSE 'expired'
-                END as status,
-                su.created_at,
-                CASE
-                    WHEN sp.name = 'Free' THEN 'free'
-                    WHEN sp.name = 'Premium' THEN 'paid'
-                    ELSE 'free'
-                END as tier
-            FROM users u
-            JOIN subscription_users su ON u.id = su.user_id
-            JOIN subscription_plans sp ON su.plan_id = sp.id
-            WHERE u.active = 1 AND su.expiration > NOW()
-            ORDER BY sp.price DESC, u.name
-            """
+                results = db.exec(statement).all()
 
-            cursor.execute(query)
-            results = cursor.fetchall()
+                results_list = []
+                for result in results:
+                    subscription_data = {
+                        "id": result.id,
+                        "name": result.name,
+                        "email": result.email,
+                        "plan_name": result.plan_name,
+                        "plan_price": result.plan_price,
+                        "status": "active",  # Already filtered for active subscriptions
+                        "created_at": result.created_at,
+                        "tier": "paid" if result.plan_name == "Premium" else "free",
+                    }
+                    results_list.append(subscription_data)
 
-            logger.info(f"Retrieved {len(results)} active subscriptions")
-            return results
+                logger.info(f"Retrieved {len(results_list)} active subscriptions")
+                return results_list
+
+            except Exception as orm_error:
+                logger.warning(
+                    f"ORM query failed: {orm_error}, falling back to admin user"
+                )
+                return _get_fallback_users(db)
 
     except Exception as e:
         logger.warning(
             f"Failed to get active subscriptions: {e}, falling back to admin user"
         )
         try:
-            with get_db_connection() as conn:
-                cursor = conn.cursor(pymysql.cursors.DictCursor)
-                return _get_fallback_users(cursor)
+            with session_scope() as db:
+                return _get_fallback_users(db)
         except Exception as fallback_error:
             logger.error(f"Fallback also failed: {fallback_error}")
             return []
@@ -325,45 +307,40 @@ def get_user_storage_usage(user_id: int) -> Optional[Dict[str, Any]]:
     Falls back to default quota if storage table doesn't exist.
     """
     try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor(pymysql.cursors.DictCursor)
+        with session_scope() as db:
+            # Try to query using ORM model
+            try:
+                storage_usage = db.exec(
+                    select(UserStorageUsage).where(UserStorageUsage.user_id == user_id)
+                ).first()
 
-            # Check if storage usage table exists
-            cursor.execute("SHOW TABLES LIKE 'user_storage_usage'")
-            table_exists = cursor.fetchone()
+                if storage_usage:
+                    result_dict = {
+                        "user_id": storage_usage.user_id,
+                        "current_usage_bytes": storage_usage.current_usage_bytes,
+                        "quota_limit_bytes": storage_usage.quota_limit_bytes,
+                        "usage_percentage": storage_usage.usage_percentage,
+                        "last_updated": storage_usage.last_updated,
+                    }
 
-            if not table_exists:
+                    logger.info(
+                        f"Retrieved storage usage for user {user_id}: "
+                        f"current_usage={result_dict.get('current_usage_bytes')}, "
+                        f"quota_limit={result_dict.get('quota_limit_bytes')}, "
+                        f"usage_percentage={result_dict.get('usage_percentage')}%"
+                    )
+                    return result_dict
+                else:
+                    logger.warning(
+                        f"No storage usage data found for user {user_id}, "
+                        "using defaults"
+                    )
+                    return _get_fallback_storage_quota(user_id)
+
+            except Exception as orm_error:
                 logger.warning(
-                    "user_storage_usage table not found, using default quota"
-                )
-                return _get_fallback_storage_quota(user_id)
-
-            query = """
-            SELECT
-                user_id,
-                current_usage_bytes,
-                quota_limit_bytes,
-                ROUND((current_usage_bytes / quota_limit_bytes) * 100, 2)
-                    as usage_percentage,
-                last_updated
-            FROM user_storage_usage
-            WHERE user_id = %s
-            """
-
-            cursor.execute(query, (user_id,))
-            result = cursor.fetchone()
-
-            if result:
-                logger.info(
-                    f"Retrieved storage usage for user {user_id}: "
-                    f"current_usage={result.get('current_usage_bytes')}, "
-                    f"quota_limit={result.get('quota_limit_bytes')}, "
-                    f"usage_percentage={result.get('usage_percentage')}%"
-                )
-                return result
-            else:
-                logger.warning(
-                    f"No storage usage data found for user {user_id}, using defaults"
+                    f"UserStorageUsage table not accessible: {orm_error}, "
+                    "using default quota"
                 )
                 return _get_fallback_storage_quota(user_id)
 
@@ -380,34 +357,45 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
     Returns True if successful or if table doesn't exist (fallback scenario).
     """
     try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        with session_scope() as db:
+            try:
+                # Try to find existing storage usage record
+                existing_usage = db.exec(
+                    select(UserStorageUsage).where(UserStorageUsage.user_id == user_id)
+                ).first()
 
-            # Check if storage usage table exists
-            cursor.execute("SHOW TABLES LIKE 'user_storage_usage'")
-            table_exists = cursor.fetchone()
+                if existing_usage:
+                    # Update existing record
+                    existing_usage.current_usage_bytes = new_usage_bytes
+                    existing_usage.last_updated = datetime.now()
+                    db.add(existing_usage)
+                else:
+                    # Need to determine quota - try to get from user's subscription
+                    user_context = get_user_context_by_id(user_id)
+                    if user_context and user_context.get("subscription_tier") == "paid":
+                        default_quota = 100 * 1024 * 1024 * 1024  # 100GB for paid
+                    else:
+                        default_quota = 5 * 1024 * 1024 * 1024  # 5GB for free
 
-            if not table_exists:
+                    # Create new record
+                    new_storage_usage = UserStorageUsage(
+                        user_id=user_id,
+                        current_usage_bytes=new_usage_bytes,
+                        quota_limit_bytes=default_quota,
+                    )
+                    db.add(new_storage_usage)
+
+                logger.info(
+                    f"Updated storage usage for user {user_id}: {new_usage_bytes} bytes"
+                )
+                return True
+
+            except Exception as orm_error:
                 logger.warning(
-                    "user_storage_usage table not found, skipping storage update"
+                    f"UserStorageUsage table not accessible: {orm_error}, "
+                    "skipping storage update"
                 )
                 return True  # Return True since we're in fallback mode
-
-            query = """
-            INSERT INTO user_storage_usage (user_id, current_usage_bytes)
-            VALUES (%s, %s)
-            ON DUPLICATE KEY UPDATE
-                current_usage_bytes = VALUES(current_usage_bytes),
-                last_updated = CURRENT_TIMESTAMP
-            """
-
-            cursor.execute(query, (user_id, new_usage_bytes))
-            conn.commit()
-
-            logger.info(
-                f"Updated storage usage for user {user_id}: {new_usage_bytes} bytes"
-            )
-            return True
 
     except Exception as e:
         logger.warning(f"Failed to update storage usage for user {user_id}: {e}")
@@ -416,29 +404,45 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
 
 def test_database_connection() -> bool:
     """
-    Test database connectivity and print connection details.
+    Test database connectivity and test ORM models.
     """
     try:
-        logger.info("Testing database connection...")
-        logger.info(
-            f"Database config: {DB_CONFIG['host']}:{DB_CONFIG['port']} "
-            f"/ {DB_CONFIG['database']}"
-        )
+        logger.info("Testing database connection with ORM...")
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT VERSION(), DATABASE(), USER()")
-            result = cursor.fetchone()
+        with session_scope() as db:
+            # Test basic connection
+            admin_user = db.exec(select(UserModel).where(UserModel.id == 1)).first()
 
-            logger.info("Database connection successful!")
-            logger.info(f"MySQL Version: {result[0]}")
-            logger.info(f"Current Database: {result[1]}")
-            logger.info(f"Current User: {result[2]}")
+            if admin_user:
+                logger.info("Database connection successful!")
+                logger.info(f"Found admin user: {admin_user.name} ({admin_user.email})")
+            else:
+                logger.info("Database connection successful, but no admin user found")
 
-            # Test subscription tables exist
-            cursor.execute("SHOW TABLES LIKE 'subscription_%'")
-            tables = cursor.fetchall()
-            logger.info(f"Subscription tables found: {[t[0] for t in tables]}")
+            # Test subscription models
+            try:
+                subscription_count = len(db.exec(select(SubscriptionPlans)).all())
+                logger.info(f"Subscription plans available: {subscription_count}")
+            except Exception as plan_error:
+                logger.warning(f"Subscription plans table not accessible: {plan_error}")
+
+            try:
+                active_subscriptions = len(
+                    db.exec(
+                        select(UserSubscription).where(
+                            UserSubscription.expiration > datetime.now()
+                        )
+                    ).all()
+                )
+                logger.info(f"Active subscriptions: {active_subscriptions}")
+            except Exception as sub_error:
+                logger.warning(f"User subscriptions table not accessible: {sub_error}")
+
+            try:
+                storage_records = len(db.exec(select(UserStorageUsage)).all())
+                logger.info(f"Storage usage records: {storage_records}")
+            except Exception as storage_error:
+                logger.warning(f"Storage usage table not accessible: {storage_error}")
 
             return True
 
