@@ -1,4 +1,3 @@
-// pages/Subscription/MembershipPlans.tsx
 import { useEffect } from "react"
 import { useDispatch, useSelector } from "react-redux"
 import { useNavigate } from "react-router-dom"
@@ -11,6 +10,7 @@ import {
   Typography,
   CircularProgress,
   Chip,
+  Alert,
 } from "@mui/material"
 
 import {
@@ -53,13 +53,9 @@ const MembershipPlans = () => {
   // Fetch data on component mount
   useEffect(() => {
     const loadData = async () => {
-      // Clear any previous errors
       dispatch(clearError())
-
-      // Fetch subscription plans
       dispatch(getSubscriptionPlan())
 
-      // Fetch user's current subscription if user exists
       if (user?.id) {
         dispatch(getUserSubscription(user.id))
       }
@@ -74,6 +70,7 @@ const MembershipPlans = () => {
   }
 
   const handleUpgradeClick = (planId: number) => {
+    // Simple navigation - Stripe will handle tax automatically
     navigate(`/console/premium-checkout?planId=${planId}`)
   }
 
@@ -87,6 +84,19 @@ const MembershipPlans = () => {
 
   // Filter only active plans
   const activePlans = plans.filter((plan) => plan.status === true)
+
+  // Get price display for a plan
+  const getPriceDisplay = (plan: SubscriptionPlan) => {
+    const currencySymbol = getCurrencySymbol(plan.currency)
+    const billingCycle = getBillingCycleText(plan.billing_cycle)
+
+    if (plan.price === 0) {
+      return "Free"
+    }
+
+    const basePrice = (plan.price / 100).toFixed(0)
+    return `${currencySymbol}${basePrice}/${billingCycle}`
+  }
 
   // Loading state
   if (loading) {
@@ -138,7 +148,16 @@ const MembershipPlans = () => {
     <BoxWrapper>
       <MembershipTitle variant="h3">Membership Plans</MembershipTitle>
 
-      {/* Show current subscription status */}
+      {/* Tax information notice */}
+      <TaxNotice severity="info" sx={{ mb: 3, maxWidth: "600px" }}>
+        <Typography variant="body2">
+          <strong>Tax Information:</strong> Applicable taxes will be calculated
+          automatically based on your location during checkout. Final price may
+          include consumption tax.
+        </Typography>
+      </TaxNotice>
+
+      {/* Current subscription status */}
       {userSubscription && userSubscription.plan_name !== "Free" && (
         <SubscriptionStatus>
           <Typography variant="body1">
@@ -163,20 +182,22 @@ const MembershipPlans = () => {
             const features = getPlanFeatures(plan)
             const isCurrent = isCurrentPlan(plan.id)
             const isFree = plan.price === 0
-            const currencySymbol = getCurrencySymbol(plan.currency)
-            const billingCycle = getBillingCycleText(plan.billing_cycle)
-
-            console.log(`Plan ${plan.id} features:`, features)
+            const priceDisplay = getPriceDisplay(plan)
 
             return (
               <PlanCard key={plan.id} isHighlighted={plan.name === "Premium"}>
                 <PlanHeader>
                   <PlanTitle variant="h4">{plan.name}</PlanTitle>
-                  <PlanPrice variant="h5">
-                    {isFree
-                      ? "Free"
-                      : `${currencySymbol}${(plan.price / 100).toFixed(2)}/${billingCycle}`}
-                  </PlanPrice>
+
+                  <PriceContainer>
+                    <PlanPrice variant="h5">{priceDisplay}</PlanPrice>
+                    {!isFree && (
+                      <Typography variant="caption" color="text.secondary">
+                        + applicable taxes
+                      </Typography>
+                    )}
+                  </PriceContainer>
+
                   {plan.billing_cycle === 2 && (
                     <Chip
                       label="Best Value"
@@ -249,6 +270,13 @@ const MembershipTitle = styled(Typography)(() => ({
   textAlign: "center",
 }))
 
+const TaxNotice = styled(Alert)(() => ({
+  borderRadius: "0.75rem",
+  "& .MuiAlert-message": {
+    width: "100%",
+  },
+}))
+
 const SubscriptionStatus = styled(Box)(() => ({
   backgroundColor: "#f8fafc",
   border: "1px solid #e2e8f0",
@@ -304,6 +332,13 @@ const PlanTitle = styled(Typography)(() => ({
   fontWeight: "bold",
   color: "#111827",
   marginBottom: "0.5rem",
+}))
+
+const PriceContainer = styled(Box)(() => ({
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  gap: "0.25rem",
 }))
 
 const PlanPrice = styled(Typography)(() => ({
