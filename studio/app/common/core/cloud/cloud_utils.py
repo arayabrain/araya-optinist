@@ -22,21 +22,24 @@ def _get_fallback_users(db: Session) -> list:
     """
     try:
         # Get admin user (ID 1) as fallback using ORM
-        admin_user = db.exec(
+        result = db.execute(
             select(UserModel).where(UserModel.id == 1, UserModel.active.is_(True))
-        ).first()
+        )
+        admin_user = result.first()
 
         if admin_user:
             logger.info("Using admin user as fallback for subscription monitoring")
+            # admin_user is a SQLAlchemy Row object containing a tuple with UserModel
+            user_obj = admin_user[0]
             return [
                 {
-                    "id": admin_user.id,
-                    "name": admin_user.name,
-                    "email": admin_user.email,
+                    "id": user_obj.id,
+                    "name": user_obj.name,
+                    "email": user_obj.email,
                     "plan_name": "Free",
                     "plan_price": 0,
                     "status": "active",
-                    "created_at": admin_user.created_at,
+                    "created_at": user_obj.created_at,
                     "tier": "free",
                 }
             ]
@@ -122,7 +125,8 @@ def get_user_context_by_id(user_id: int) -> Optional[Dict[str, Any]]:
                 .where(UserModel.id == user_id, UserModel.active.is_(True))
             )
 
-            result = db.exec(statement).first()
+            query_result = db.execute(statement)
+            result = query_result.first()
 
             if result:
                 user, plan_name, plan_price, expiration = result
@@ -201,7 +205,8 @@ def get_user_subscription_details(user_id: int) -> Optional[Dict[str, Any]]:
                 .where(UserModel.id == user_id, UserModel.active.is_(True))
             )
 
-            result = db.exec(statement).first()
+            query_result = db.execute(statement)
+            result = query_result.first()
 
             if result:
                 # Convert to dictionary
@@ -264,7 +269,8 @@ def get_all_active_subscriptions() -> list:
                     .order_by(SubscriptionPlans.price.desc(), UserModel.name)
                 )
 
-                results = db.exec(statement).all()
+                query_result = db.execute(statement)
+                results = query_result.all()
 
                 results_list = []
                 for result in results:
@@ -310,9 +316,10 @@ def get_user_storage_usage(user_id: int) -> Optional[Dict[str, Any]]:
         with session_scope() as db:
             # Try to query using ORM model
             try:
-                storage_usage = db.exec(
+                query_result = db.execute(
                     select(UserStorageUsage).where(UserStorageUsage.user_id == user_id)
-                ).first()
+                )
+                storage_usage = query_result.first()
 
                 if storage_usage:
                     result_dict = {
@@ -360,9 +367,10 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
         with session_scope() as db:
             try:
                 # Try to find existing storage usage record
-                existing_usage = db.exec(
+                query_result = db.execute(
                     select(UserStorageUsage).where(UserStorageUsage.user_id == user_id)
-                ).first()
+                )
+                existing_usage = query_result.first()
 
                 if existing_usage:
                     # Update existing record
@@ -411,35 +419,39 @@ def test_database_connection() -> bool:
 
         with session_scope() as db:
             # Test basic connection
-            admin_user = db.exec(select(UserModel).where(UserModel.id == 1)).first()
+            query_result = db.execute(select(UserModel).where(UserModel.id == 1))
+            admin_user = query_result.first()
 
             if admin_user:
                 logger.info("Database connection successful!")
-                logger.info(f"Found admin user: {admin_user.name} ({admin_user.email})")
+                # admin_user is a SQLAlchemy Row containing a tuple with UserModel
+                user_obj = admin_user[0]
+                logger.info(f"Found admin user: {user_obj.name} ({user_obj.email})")
             else:
                 logger.info("Database connection successful, but no admin user found")
 
             # Test subscription models
             try:
-                subscription_count = len(db.exec(select(SubscriptionPlans)).all())
+                query_result = db.execute(select(SubscriptionPlans))
+                subscription_count = len(query_result.all())
                 logger.info(f"Subscription plans available: {subscription_count}")
             except Exception as plan_error:
                 logger.warning(f"Subscription plans table not accessible: {plan_error}")
 
             try:
-                active_subscriptions = len(
-                    db.exec(
-                        select(UserSubscription).where(
-                            UserSubscription.expiration > datetime.now()
-                        )
-                    ).all()
+                query_result = db.execute(
+                    select(UserSubscription).where(
+                        UserSubscription.expiration > datetime.now()
+                    )
                 )
+                active_subscriptions = len(query_result.all())
                 logger.info(f"Active subscriptions: {active_subscriptions}")
             except Exception as sub_error:
                 logger.warning(f"User subscriptions table not accessible: {sub_error}")
 
             try:
-                storage_records = len(db.exec(select(UserStorageUsage)).all())
+                query_result = db.execute(select(UserStorageUsage))
+                storage_records = len(query_result.all())
                 logger.info(f"Storage usage records: {storage_records}")
             except Exception as storage_error:
                 logger.warning(f"Storage usage table not accessible: {storage_error}")
