@@ -245,12 +245,80 @@ def check_tasks_stopped() -> bool:
         return False
 
 
+def disable_capacity_provider_managed_scaling() -> bool:
+    """Disable ECS capacity provider managed scaling to prevent ASG from scaling back"""
+    print(f"{Colors.YELLOW}Disabling capacity provider managed scaling...{Colors.NC}")
+
+    # First check if capacity provider exists
+    if not validate_capacity_provider():
+        print(
+            f"{Colors.YELLOW}Capacity provider doesn't exist, "
+            f"skipping disable...{Colors.NC}"
+        )
+        return True
+
+    # Construct the auto-scaling-group-provider parameter
+    asg_provider_config = (
+        "autoScalingGroupArn=arn:aws:autoscaling:ap-northeast-1:637423646530:"
+        "autoScalingGroup:*:autoScalingGroupName/subscr-optinist-asg,"
+        "managedTerminationProtection=DISABLED,"
+        "managedScaling={status=DISABLED,targetCapacity=90,"
+        "minimumScalingStepSize=1,maximumScalingStepSize=1,"
+        "instanceWarmupPeriod=300}"
+    )
+
+    result = run_command(
+        [
+            "aws",
+            "ecs",
+            "update-capacity-provider",
+            "--name",
+            "subscr-optinist-capacity-provider",
+            "--auto-scaling-group-provider",
+            asg_provider_config,
+        ],
+        check=False,
+    )
+
+    if result is not None:
+        print(
+            f"{Colors.GREEN}Successfully disabled capacity provider "
+            f"managed scaling{Colors.NC}"
+        )
+        return True
+    else:
+        print(
+            f"{Colors.YELLOW}Failed to disable managed scaling, "
+            f"continuing anyway...{Colors.NC}"
+        )
+        return True  # Continue shutdown even if this fails
+
+
 def scale_down_asg() -> bool:
     """Scale down Auto Scaling Groups"""
     print(f"{Colors.YELLOW}Scaling down ASGs...{Colors.NC}")
     asg_name = "subscr-optinist-asg"
 
-    # Check ASG state first
+    # Check if ASG exists
+    asg_check = run_command(
+        [
+            "aws",
+            "autoscaling",
+            "describe-auto-scaling-groups",
+            "--auto-scaling-group-names",
+            asg_name,
+            "--query",
+            "AutoScalingGroups[0].AutoScalingGroupName",
+            "--output",
+            "text",
+        ]
+    )
+
+    if asg_check is None or asg_check.strip() == "None":
+        print(f"{Colors.YELLOW}ASG {asg_name} does not exist, skipping...{Colors.NC}")
+        return True
+
+    # Check if ASG is in delete state (rare case)
     state_result = run_command(
         [
             "aws",
@@ -265,17 +333,15 @@ def scale_down_asg() -> bool:
         ]
     )
 
-    if state_result is None or state_result.strip() == "None":
-        print(f"{Colors.YELLOW}ASG {asg_name} does not exist, skipping...{Colors.NC}")
-        return True
-
-    asg_status = state_result.strip()
-    if asg_status == "Delete in progress":
+    if state_result and state_result.strip() == "Delete in progress":
         print(
             f"{Colors.YELLOW}ASG {asg_name} is already being deleted, {Colors.NC}"
             f"{Colors.YELLOW}skipping scale down...{Colors.NC}"
         )
         return True
+
+    # First disable managed scaling to prevent ASG from scaling back up
+    disable_capacity_provider_managed_scaling()
 
     result = run_command(
         [
