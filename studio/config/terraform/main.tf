@@ -488,6 +488,7 @@ resource "aws_db_parameter_group" "main" {
 }
 
 # RDS Instance
+
 resource "aws_db_instance" "main" {
   identifier              = "subscr-optinist-cloud-rds"
   allocated_storage       = 20
@@ -495,7 +496,7 @@ resource "aws_db_instance" "main" {
   engine                  = "mysql"
   engine_version          = "8.0"
   instance_class          = "db.t4g.micro"
-  parameter_group_name    = aws_db_parameter_group.main.name
+  parameter_group_name    = "default.mysql8.0"
   db_name                 = var.mysql_database
   username                = var.mysql_user
   password                = var.mysql_password
@@ -526,7 +527,7 @@ resource "aws_db_instance" "batch" {
   engine                  = "mysql"
   engine_version          = "8.0"
   instance_class          = "db.t4g.micro"
-  parameter_group_name    = aws_db_parameter_group.main.name
+  parameter_group_name    = "default.mysql8.0"
   db_name                 = var.mysql_database
   username                = var.mysql_user
   password                = var.mysql_password

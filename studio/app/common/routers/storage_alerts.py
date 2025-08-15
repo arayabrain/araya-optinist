@@ -149,14 +149,12 @@ async def get_all_storage_alerts(
         List of storage alert dictionaries
     """
     try:
-        # Check if user is admin (you may need to adjust this based on your auth system)
+        # Check if user is admin
         if not hasattr(current_user, "is_admin") or not current_user.is_admin:
-            # Alternative check - you can adapt this based on your user model
-            if current_user.id != 1:  # Assuming user ID 1 is admin
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Admin access required",
-                )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin access required",
+            )
 
         if not remote_bucket_name:
             raise HTTPException(

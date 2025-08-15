@@ -11,7 +11,6 @@ import boto3
 
 from studio.app.common.core.cloud.cloud_utils import (
     get_all_active_subscriptions,
-    get_db_connection,
     get_user_storage_usage,
     update_user_storage_usage,
 )
@@ -153,10 +152,10 @@ class S3StorageMonitor:
                     "checking subscription"
                 )
                 from studio.app.common.core.cloud.cloud_utils import (
-                    get_current_user_context,
+                    get_user_context_by_id,
                 )
 
-                user_context = get_current_user_context()
+                user_context = get_user_context_by_id(user_id)
                 if user_context:
                     tier = user_context.get("subscription_tier", "free")
                     quota_limit = self.TIER_QUOTAS.get(tier, self.TIER_QUOTAS["free"])
@@ -175,10 +174,10 @@ class S3StorageMonitor:
                 if quota_limit <= 0:
                     # Fallback to tier-based quota if database has invalid data
                     from studio.app.common.core.cloud.cloud_utils import (
-                        get_current_user_context,
+                        get_user_context_by_id,
                     )
 
-                    user_context = get_current_user_context()
+                    user_context = get_user_context_by_id(user_id)
                     if user_context:
                         tier = user_context.get("subscription_tier", "free")
                         quota_limit = self.TIER_QUOTAS.get(
@@ -309,35 +308,35 @@ class S3StorageMonitor:
             # Create new storage record with tier-based quota
             quota_bytes = self.TIER_QUOTAS.get(tier, self.TIER_QUOTAS["free"])
 
-            with get_db_connection() as conn:
-                cursor = conn.cursor()
+            from sqlmodel import select
 
-                # Check if user_storage_usage table exists
-                cursor.execute("SHOW TABLES LIKE 'user_storage_usage'")
-                if not cursor.fetchone():
-                    logger.warning(
-                        "user_storage_usage table does not exist, "
-                        "cannot create storage record"
+            from studio.app.common.db.database import session_scope
+            from studio.app.common.models import UserStorageUsage
+
+            with session_scope() as db:
+                # Check if storage record exists
+                existing_usage = db.exec(
+                    select(UserStorageUsage).where(UserStorageUsage.user_id == user_id)
+                ).first()
+
+                if existing_usage:
+                    # Update quota if needed
+                    existing_usage.quota_limit_bytes = quota_bytes
+                    db.add(existing_usage)
+                else:
+                    # Create new storage record
+                    new_storage = UserStorageUsage(
+                        user_id=user_id,
+                        current_usage_bytes=0,
+                        quota_limit_bytes=quota_bytes,
                     )
-                    return False
+                    db.add(new_storage)
 
-                # Insert initial storage record
-                query = """
-                INSERT INTO user_storage_usage
-                (user_id, current_usage_bytes, quota_limit_bytes)
-                VALUES (%s, 0, %s)
-                ON DUPLICATE KEY UPDATE
-                    quota_limit_bytes = VALUES(quota_limit_bytes),
-                    last_updated = CURRENT_TIMESTAMP
-                """
-                cursor.execute(query, (user_id, quota_bytes))
-                conn.commit()
-
-                logger.info(
-                    f"Created storage record for user {user_id} with {tier} "
-                    f"tier quota: {quota_bytes} bytes"
-                )
-                return True
+            logger.info(
+                f"Created storage record for user {user_id} with {tier} "
+                f"tier quota: {quota_bytes} bytes"
+            )
+            return True
 
         except Exception as e:
             logger.error(f"Failed to ensure storage record for user {user_id}: {e}")
