@@ -45,6 +45,18 @@ fi
 
 echo "Database ${MYSQL_DATABASE} ready"
 
+# Create frontend configuration dynamically
+echo "Creating frontend .env.production configuration..."
+cat > /app/frontend/.env.production << ENV_EOF
+REACT_APP_SERVER_HOST=${FRONTEND_SERVER_HOST:-localhost}
+REACT_APP_SERVER_PORT=${FRONTEND_SERVER_PORT:-8000}
+REACT_APP_SERVER_PROTO=${FRONTEND_SERVER_PROTO:-http}
+REACT_APP_EXPDB_METADATA_EDITABLE=${FRONTEND_EXPDB_METADATA_EDITABLE:-true}
+ENV_EOF
+
+echo "Frontend configuration created:"
+cat /app/frontend/.env.production
+
 # Run database migrations using alembic
 # This ensures all database tables and schemas are up to date
 cd /app
