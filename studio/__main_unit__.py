@@ -29,6 +29,7 @@ from studio.app.common.routers import (
     outputs,
     params,
     run,
+    stripe,
     subscriptions,
     users_admin,
     users_me,
@@ -104,6 +105,7 @@ app.include_router(users_search.router, dependencies=[Depends(get_current_user)]
 app.include_router(workflow.router, dependencies=[Depends(get_current_user)])
 app.include_router(workspace.router, dependencies=[Depends(get_current_user)])
 app.include_router(subscriptions.router, dependencies=[Depends(get_current_user)])
+app.include_router(stripe.router, dependencies=[Depends(get_current_user)])
 
 # optinist routers
 app.include_router(hdf5.router, dependencies=[Depends(get_current_user)])
