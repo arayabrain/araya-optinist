@@ -611,6 +611,60 @@ def cleanup_orphaned_batch_instances() -> bool:
     return True
 
 
+def terminate_dedicated_batch_instance() -> bool:
+    """Terminate the dedicated batch instance"""
+    print(f"{Colors.YELLOW}Terminating dedicated batch instance...{Colors.NC}")
+
+    # Get the dedicated batch instance by name tag
+    batch_instance = run_command(
+        [
+            "aws",
+            "ec2",
+            "describe-instances",
+            "--filters",
+            "Name=instance-state-name,Values=running",
+            "Name=tag:Name,Values=subscr-optinist-batch-instance",
+            "--query",
+            "Reservations[].Instances[].InstanceId",
+            "--output",
+            "text",
+        ]
+    )
+
+    if batch_instance and batch_instance.strip() != "None":
+        instance_id = batch_instance.strip()
+        print(
+            f"{Colors.YELLOW}Found dedicated batch instance: {instance_id}{Colors.NC}"
+        )
+
+        result = run_command(
+            [
+                "aws",
+                "ec2",
+                "terminate-instances",
+                "--instance-ids",
+                instance_id,
+            ],
+            check=False,
+        )
+
+        if result is not None:
+            print(
+                f"{Colors.GREEN}Successfully initiated termination of dedicated "
+                f"batch instance: {instance_id}{Colors.NC}"
+            )
+        else:
+            print(
+                f"{Colors.RED}Failed to terminate dedicated batch instance: "
+                f"{instance_id}{Colors.NC}"
+            )
+            return False
+    else:
+        print(f"{Colors.GREEN}No dedicated batch instance found{Colors.NC}")
+
+    return True
+
+
 def shutdown_batch_environments() -> bool:
     """Disable and clean up Batch compute environments"""
     print(f"{Colors.YELLOW}Shutting down AWS Batch environments...{Colors.NC}")
@@ -723,7 +777,10 @@ def tier1_shutdown() -> bool:
     # Step 2: Scale down ECS services
     try:
         print(f"\n{Colors.YELLOW}Step 2: Scaling down ECS services{Colors.NC}")
-        services = ["subscr-optinist-cloud-service"]
+        services = [
+            "subscr-optinist-cloud-service",
+            "subscr-batch-optinist-cloud-service",
+        ]
         if not update_services(services):
             print(f"{Colors.RED}Failed to scale down services{Colors.NC}")
             return False
@@ -780,10 +837,27 @@ def tier1_shutdown() -> bool:
             f"{Colors.NC}"
         )
 
-    # Step 7: Optional capacity provider cleanup (not critical for shutdown)
+    # Step 7: Terminate dedicated batch instance
     try:
         print(
-            f"\n{Colors.YELLOW}Step 7: Cleaning up capacity providers "
+            f"\n{Colors.YELLOW}Step 7: Terminating dedicated batch instance"
+            f"{Colors.NC}"
+        )
+        if not terminate_dedicated_batch_instance():
+            print(
+                f"{Colors.YELLOW}Failed to terminate dedicated batch instance"
+                f"{Colors.NC}"
+            )
+    except Exception as e:
+        print(
+            f"{Colors.RED}Error terminating dedicated batch instance: {e}"
+            f"{Colors.NC}"
+        )
+
+    # Step 8: Optional capacity provider cleanup (not critical for shutdown)
+    try:
+        print(
+            f"\n{Colors.YELLOW}Step 8: Cleaning up capacity providers "
             f"(optional){Colors.NC}"
         )
         if validate_capacity_provider():
