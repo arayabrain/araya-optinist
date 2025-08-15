@@ -2047,7 +2047,7 @@ resource "aws_iam_role_policy" "ecs_task_ecr_access" {
 
 # Store AWS credentials in Secrets Manager
 resource "aws_secretsmanager_secret" "aws_credentials" {
-  name = "subscr-optinist-cloud-aws-credentials-${formatdate("YYYYMMDD-hhmm", timestamp())}"
+  name = "subscr-optinist-cloud-credentials"
   description = "AWS credentials for optinist cloud user"
 }
 
@@ -2575,6 +2575,18 @@ resource "null_resource" "build_and_deploy" {
       echo "=== Starting automated build and deploy ==="
       echo "ALB DNS: ${aws_lb.autoscaling.dns_name}"
 
+      # Create frontend config with ALB DNS
+      echo "Creating frontend .env.production..."
+      cat > ../../../frontend/.env.production << 'ENV_EOF'
+REACT_APP_SERVER_HOST=${aws_lb.autoscaling.dns_name}
+REACT_APP_SERVER_PORT=80
+REACT_APP_SERVER_PROTO=http
+REACT_APP_EXPDB_METADATA_EDITABLE=true
+ENV_EOF
+
+      echo "Frontend configuration created:"
+      cat ../../../frontend/.env.production
+
       # Build and push image
       echo "Building and pushing Docker image..."
       chmod +x ecr_build_push.sh
@@ -2605,6 +2617,18 @@ resource "null_resource" "build_and_deploy_batch" {
       set -e
       echo "=== Starting automated build and deploy ==="
       echo "ALB DNS: ${aws_lb.batch.dns_name}"
+
+      # Create frontend config with ALB DNS
+      echo "Creating frontend .env.production..."
+      cat > ../../../frontend/.env.production << 'ENV_EOF'
+REACT_APP_SERVER_HOST=${aws_lb.batch.dns_name}
+REACT_APP_SERVER_PORT=80
+REACT_APP_SERVER_PROTO=http
+REACT_APP_EXPDB_METADATA_EDITABLE=true
+ENV_EOF
+
+      echo "Frontend configuration created:"
+      cat ../../../frontend/.env.production
 
       # Build and push image
       echo "Building and pushing Docker image..."

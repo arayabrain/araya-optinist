@@ -60,7 +60,22 @@ cat /app/frontend/.env.production
 # Run database migrations using alembic
 # This ensures all database tables and schemas are up to date
 cd /app
-alembic upgrade head
+
+# Try Alembic upgrade and handle multiple heads error if it occurs
+echo "Running Alembic upgrade..."
+if ! alembic upgrade head 2>&1; then
+    echo "Upgrade failed, checking for multiple heads..."
+    HEAD_COUNT=$(alembic heads 2>/dev/null | wc -l)
+    if [ "$HEAD_COUNT" -gt 1 ]; then
+        echo "Multiple Alembic heads detected ($HEAD_COUNT heads), merging automatically..."
+        alembic merge heads -m "auto-merge conflicting heads during startup"
+        echo "Heads merged successfully, retrying upgrade..."
+        alembic upgrade head
+    else
+        echo "Different Alembic error occurred, failing..."
+        exit 1
+    fi
+fi
 
 # Initialize subscription plans
 echo "Initializing subscription plans..."

@@ -30,7 +30,6 @@ RUN cd /tmp && \
     unzip awscli-exe-linux-x86_64.zip && \
     sh ./aws/install
 
-
 # cleaning apt
 RUN apt-get purge wget -y && \
     apt-get autoremove -y && apt-get clean

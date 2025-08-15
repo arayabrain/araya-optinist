@@ -28,7 +28,6 @@ RUN cd /tmp && \
     sh ./aws/install && \
     rm -rf awscli-exe-linux-x86_64.zip aws
 
-
 # Install Python dependencies
 COPY pyproject.toml poetry.lock ./
 RUN pip3 install --no-cache-dir --upgrade pip && \
