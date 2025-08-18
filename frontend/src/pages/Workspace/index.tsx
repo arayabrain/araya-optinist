@@ -220,7 +220,7 @@ const columns = (
     filterable: false, // todo enable when api complete
     sortable: false, // todo enable when api complete
     renderCell: (params: GridRenderCellParams<GridValidRowModel>) => {
-      return (
+      return isMine(user, params.row?.user?.id) ? (
         <Button
           variant="contained"
           color="primary"
@@ -229,7 +229,7 @@ const columns = (
         >
           Dataview
         </Button>
-      )
+      ) : null
     },
   },
   {
