@@ -104,6 +104,11 @@ variable "ecr_batch_repository_url" {
   type        = string
 }
 
+variable "ecr_snakemake_batch_repository_url" {
+  description = "ECR repository URL for OptiNiSt Snakemake Batch Docker image"
+  type        = string
+}
+
 variable "asg_min_size" {
   description = "Minimum number of instances in ASG"
   type        = number
@@ -3171,7 +3176,7 @@ resource "aws_ecs_task_definition" "batch" {
   container_definitions = jsonencode([
     {
       name                  = "subscr-batch-optinist-cloud-container"
-      image                 = "${var.ecr_repository_url}:latest"
+      image                 = "${var.ecr_batch_repository_url}:latest"
       cpu                   = 1536
       memory                = 5120
       memoryReservation     = 3072
@@ -3673,7 +3678,7 @@ resource "aws_batch_job_definition" "optinist" {
   type = "container"
 
   container_properties = jsonencode({
-    image = "${var.ecr_repository_url}:latest"
+    image = "${var.ecr_snakemake_batch_repository_url}:latest"
     vcpus = 2
     memory = 4096
     jobRoleArn = aws_iam_role.batch_job.arn

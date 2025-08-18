@@ -61,20 +61,16 @@ cat /app/frontend/.env.production
 # This ensures all database tables and schemas are up to date
 cd /app
 
-# Try Alembic upgrade and handle multiple heads error if it occurs
+# Try Alembic upgrade and handle migration errors
 echo "Running Alembic upgrade..."
 if ! alembic upgrade head 2>&1; then
-    echo "Upgrade failed, checking for multiple heads..."
-    HEAD_COUNT=$(alembic heads 2>/dev/null | wc -l)
-    if [ "$HEAD_COUNT" -gt 1 ]; then
-        echo "Multiple Alembic heads detected ($HEAD_COUNT heads), merging automatically..."
-        alembic merge heads -m "auto-merge conflicting heads during startup"
-        echo "Heads merged successfully, retrying upgrade..."
-        alembic upgrade head
-    else
-        echo "Different Alembic error occurred, failing..."
-        exit 1
-    fi
+    echo "Migration error detected, dropping and recreating database schema..."
+    mysql --skip-ssl -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "
+        DROP DATABASE IF EXISTS ${MYSQL_DATABASE};
+        CREATE DATABASE ${MYSQL_DATABASE} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    "
+    echo "Database schema recreated, running migrations from scratch..."
+    alembic upgrade head
 fi
 
 # Initialize subscription plans
