@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Generic, List, Optional, TypeVar
+from typing import Generic, Optional, TypeVar
 
 from fastapi_pagination import LimitOffsetPage
 from pydantic import BaseModel, Field
@@ -22,9 +22,9 @@ class PublishStatus(int, Enum):
     off = 0
 
 
-# TODO: Planned to implement
 class DataviewRecordHeader(BaseModel):
-    graph_titles: List[str] = []
+    workspace_id: Optional[int]
+    workspace_name: Optional[str]
 
 
 class DataviewOwner(BaseModel):

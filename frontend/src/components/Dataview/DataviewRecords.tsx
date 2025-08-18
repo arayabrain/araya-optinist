@@ -12,7 +12,6 @@ import { useSearchParams } from "react-router-dom"
 import moment from "moment"
 import { enqueueSnackbar, VariantType } from "notistack"
 
-import CheckCircleIcon from "@mui/icons-material/CheckCircle"
 import ImageIcon from "@mui/icons-material/Image"
 import InsightsIcon from "@mui/icons-material/Insights"
 import PublicIcon from "@mui/icons-material/Public"
@@ -20,6 +19,7 @@ import PublicOffIcon from "@mui/icons-material/PublicOff"
 import {
   Box,
   Checkbox,
+  Chip,
   IconButton,
   Input,
   styled,
@@ -99,7 +99,10 @@ const useDebounce = () => {
 
 const getPublishStatusValue = (publishStatus?: string) => {
   if (!publishStatus) return undefined
-  return publishStatus === "Published" ? 1 : 0
+  // Handle both numeric strings and "Published"/"No_Published" strings
+  if (publishStatus === "1" || publishStatus === "Published") return 1
+  if (publishStatus === "0" || publishStatus === "No_Published") return 0
+  return Number(publishStatus) // Fallback to numeric conversion
 }
 
 const buildFilterParams = (
@@ -120,7 +123,6 @@ const buildFilterParams = (
       return `${key}=${value}`
     })
     .join("&")
-    .replaceAll("publish_status", "published")
 }
 
 const FilterInput = ({
@@ -202,18 +204,6 @@ const defineColumns = (
         />
       ),
     },
-  !is_public && {
-    field: "published",
-    headerName: "Published",
-    renderCell: (params: { row: DataviewType }) =>
-      params.row.publish_status ? <CheckCircleIcon color={"success"} /> : null,
-    valueOptions: ["Published", "No_Published"],
-    type: "singleSelect",
-    width: 140,
-    filterOperators: getGridSingleSelectOperators().filter(
-      (operator) => operator.value === "is",
-    ),
-  },
   {
     field: "uid",
     headerName: "ID",
@@ -649,10 +639,7 @@ const DataviewRecords = ({
     return {
       offset: Number(offset) || 0,
       limit: Number(limit) || 50,
-      sort:
-        sort.length > 0
-          ? [sort[0]?.replace("published", "publish_status"), sort[1]]
-          : [],
+      sort: sort.length > 0 ? [sort[0], sort[1]] : [],
     }
     //eslint-disable-next-line
   }, [offset, limit, JSON.stringify(sort)])
@@ -661,7 +648,7 @@ const DataviewRecords = ({
     () => ({
       uid: searchParams.get("uid") || undefined,
       name: searchParams.get("name") || undefined,
-      publish_status: searchParams.get("published") || undefined,
+      publish_status: searchParams.get("publish_status") || undefined,
       user_name: searchParams.get("user_name") || undefined,
       workspace_id:
         searchParams.get("workspace_id") || workspaceId || undefined,
@@ -719,6 +706,7 @@ const DataviewRecords = ({
     //eslint-disable-next-line
   }, [])
 
+  // This effect should only set initial model based on URL params, not react to changes
   useEffect(() => {
     if (
       Object.keys(dataParamsFilter).every(
@@ -727,29 +715,29 @@ const DataviewRecords = ({
     ) {
       return
     }
-    const fieldFilterName = fieldFilter?.field
-    if (!fieldFilterName?.trim()?.length) return
-    setModel({
-      filter: {
-        items: [
+
+    // Only set initial model if there's a filter in URL but model is empty
+    if (model.filter.items.length === 0 && fieldFilter?.field) {
+      setModel({
+        filter: {
+          items: [
+            {
+              field: fieldFilter.field || "",
+              operator: fieldFilter.operator || "",
+              value: valueFilter || null,
+            },
+          ],
+        },
+        sort: [
           {
-            field:
-              fieldFilterName?.replace("publish_status", "published") || "",
-            operator: fieldFilter.operator || "",
-            value: valueFilter || null,
+            field: dataParams.sort[0] || "",
+            sort: dataParams.sort[1] as GridSortDirection,
           },
         ],
-      },
-      sort: [
-        {
-          field:
-            dataParams.sort[0]?.replace("publish_status", "published") || "",
-          sort: dataParams.sort[1] as GridSortDirection,
-        },
-      ],
-    })
+      })
+    }
     //eslint-disable-next-line
-  }, [dataParams, dataParamsFilter, fieldFilter, valueFilter])
+  }, [])
 
   useEffect(() => {
     if (dataviewRecords.items.length === 0) {
@@ -889,14 +877,11 @@ const DataviewRecords = ({
       } else {
         param = `${filter}${
           rowSelectionModel[0]
-            ? `${filter ? "&" : ""}sort=${rowSelectionModel[0].field?.replace(
-                "publish_status",
-                "published",
-              )}&sort=${rowSelectionModel[0].sort}`
+            ? `${filter ? "&" : ""}sort=${rowSelectionModel[0].field}&sort=${rowSelectionModel[0].sort}`
             : ""
         }&${pagiFilter()}`
       }
-      setNewParams(param.replace("publish_status", "published"))
+      setNewParams(param)
       setCheckBoxAll(false)
     },
     //eslint-disable-next-line
@@ -936,25 +921,29 @@ const DataviewRecords = ({
     setFieldFilter(modelFilter.items[0])
     setValueFilter(modelFilter.items[0]?.value)
     let filter = ""
-    if (modelFilter.items[0]?.value) {
-      filter = modelFilter.items
-        .filter((item) => item.value)
-        .map((item: GridFilterItem) => {
-          if (Array.isArray(item.value)) {
-            return item.value.map((value) => `${item.field}=${value}`).join("&")
-          }
-          return `${item.field}=${item?.value}`
-        })[0]
-        .replace("publish_status", "published")
+    // Only check if value exists (including 0)
+    if (modelFilter.items.length > 0 && modelFilter.items[0].value != null) {
+      filter =
+        modelFilter.items
+          .filter((item) => item.value != null) // != null checks both null and undefined
+          .map((item: GridFilterItem) => {
+            if (Array.isArray(item.value)) {
+              return item.value
+                .map((value) => `${item.field}=${value}`)
+                .join("&")
+            }
+            return `${item.field}=${item.value}`
+          })[0] || ""
     }
     const { sort } = dataParams
+    // Reset offset to 0 when filter changes
     const param =
-      sort[0] || filter || offset
+      sort[0] || filter
         ? `${filter}${
             sort[0] ? `${filter ? "&" : ""}sort=${sort[0]}&sort=${sort[1]}` : ""
-          }&${pagiFilter()}`
+          }&limit=${limit}&offset=0`
         : ""
-    setNewParams(param.replace("publish_status", "published"))
+    setNewParams(param)
     setCheckBoxAll(false)
   }
 
@@ -1011,7 +1000,15 @@ const DataviewRecords = ({
         headerName: "Publish",
         width: 120,
         sortable: false,
-        filterable: false,
+        filterable: true,
+        type: "singleSelect",
+        valueOptions: [
+          { value: 1, label: "Published" },
+          { value: 0, label: "No_Published" },
+        ],
+        filterOperators: getGridSingleSelectOperators().filter(
+          (operator) => operator.value === "is",
+        ),
         renderCell: (params: { row: DataviewType }) => (
           <Box
             sx={{ cursor: "pointer" }}
@@ -1048,8 +1045,18 @@ const DataviewRecords = ({
 
   const columnsTable = [...columnsInstance].filter(Boolean) as GridColDef[]
 
+  const workspaceName = useMemo(() => {
+    if (!workspaceId) return null
+    return dataviewRecords.header?.workspace_name || null
+  }, [workspaceId, dataviewRecords.header])
+
   return (
     <DataviewRecordsWrapper>
+      {workspaceId && workspaceName && (
+        <Box sx={{ mb: 1 }}>
+          <Chip label={`${workspaceName}`} color="primary" variant="outlined" />
+        </Box>
+      )}
       {!is_public ? (
         <Box sx={{ height: 40, margin: "0 0 0.5rem 0" }}>
           {!readonly ? (

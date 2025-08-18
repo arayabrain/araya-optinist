@@ -29,6 +29,10 @@ export type DataviewDTO = {
   limit: number
   total: number
   items: DataviewType[]
+  header?: {
+    workspace_id?: number
+    workspace_name?: string
+  }
 }
 
 export type DataviewParams = {

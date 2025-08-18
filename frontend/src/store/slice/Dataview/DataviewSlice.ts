@@ -12,12 +12,13 @@ import {
   DataviewDTO,
 } from "store/slice/Dataview/DataviewType"
 
-const initData = {
+const initData: DataviewDTO = {
   offset: 0,
   total: 0,
   limit: 50,
   header: {
-    graph_titles: [],
+    workspace_id: undefined,
+    workspace_name: undefined,
   },
   items: [],
 }

@@ -13,6 +13,7 @@ from studio.app.common.routers.workflow import reproduce_experiment
 from studio.app.common.schemas.base import SortDirection, SortOptions
 from studio.app.common.schemas.dataview import (
     DataviewRecord,
+    DataviewRecordHeader,
     DataviewRecordSearchOptions,
     PageWithHeader,
     PublishFlags,
@@ -153,10 +154,32 @@ async def search_dataview_records(
     )
     query = get_records_filtered_query(query, options)
 
+    if options.workspace_id:
+        workspace_record = (
+            db.query(models.Workspace)
+            .filter(
+                models.Workspace.id == options.workspace_id,
+                models.Workspace.user_id == current_user.id,
+                models.Workspace.deleted.is_(False),
+            )
+            .first()
+        )
+
+        record_header = (
+            DataviewRecordHeader(
+                workspace_id=workspace_record.id, workspace_name=workspace_record.name
+            )
+            if workspace_record
+            else DataviewRecordHeader()
+        )
+    else:
+        record_header = DataviewRecordHeader()
+
     data: PageWithHeader = paginate(
         session=db,
         query=query,
         transformer=records_pagenate_transformer,
+        additional_data={"header": record_header},
     )
 
     return data
