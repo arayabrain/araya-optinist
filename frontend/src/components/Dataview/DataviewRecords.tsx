@@ -19,6 +19,7 @@ import PublicOffIcon from "@mui/icons-material/PublicOff"
 import {
   Box,
   Checkbox,
+  Chip,
   IconButton,
   Input,
   styled,
@@ -1044,8 +1045,18 @@ const DataviewRecords = ({
 
   const columnsTable = [...columnsInstance].filter(Boolean) as GridColDef[]
 
+  const workspaceName = useMemo(() => {
+    if (!workspaceId) return null
+    return dataviewRecords.header?.workspace_name || null
+  }, [workspaceId, dataviewRecords.header])
+
   return (
     <DataviewRecordsWrapper>
+      {workspaceId && workspaceName && (
+        <Box sx={{ mb: 1 }}>
+          <Chip label={`${workspaceName}`} color="primary" variant="outlined" />
+        </Box>
+      )}
       {!is_public ? (
         <Box sx={{ height: 40, margin: "0 0 0.5rem 0" }}>
           {!readonly ? (
