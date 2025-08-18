@@ -21,8 +21,8 @@ from studio.app.common.schemas.dataview import (
 from studio.app.common.schemas.users import User
 from studio.app.common.schemas.workflow import WorkflowWithResults
 
-router = APIRouter(tags=["Dataview"], prefix="/dataview")
-public_router = APIRouter(tags=["Dataview"], prefix="/public/dataview")
+router = APIRouter(tags=["Dataview"], prefix="/api/dataview")
+public_router = APIRouter(tags=["Dataview"], prefix="/api/public/dataview")
 
 logger = AppLogger.get_logger()
 

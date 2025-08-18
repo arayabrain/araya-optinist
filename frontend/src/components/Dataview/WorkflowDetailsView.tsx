@@ -138,7 +138,7 @@ export const WorkflowDetailsView = ({
     >
       <DialogTitle>
         <Box display="flex" alignItems="center" gap={1}>
-          <Typography variant="h6">Parameters</Typography>
+          <Typography variant="h6">Node Params</Typography>
           <Chip
             label={`Node: ${paramsDialog.nodeId}`}
             color="primary"
@@ -215,7 +215,7 @@ export const WorkflowDetailsView = ({
               >
                 <TableRow>
                   <TableCell>Function</TableCell>
-                  <TableCell>NodeID</TableCell>
+                  <TableCell>Node ID</TableCell>
                   <TableCell>Params</TableCell>
                 </TableRow>
               </TableHead>
