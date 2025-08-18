@@ -29,6 +29,7 @@ import { NODE_TYPE_SET } from "store/slice/FlowElement/FlowElementType"
 import { clearCurrentPipeline } from "store/slice/Pipeline/PipelineSlice"
 import { reproduceWorkflow } from "store/slice/Workflow/WorkflowActions"
 import { AppDispatch } from "store/store"
+import { formatParamsForDisplay } from "utils/param/ParamUtils"
 
 interface WorkflowDetailsViewProps {
   dataviewRecord: DataviewType | null
@@ -110,9 +111,11 @@ export const WorkflowDetailsView = ({
     nodeId: string,
     functionName: string,
   ) => {
+    // Format params before displaying
+    const formattedParams = formatParamsForDisplay(params)
     setParamsDialog({
       open: true,
-      params,
+      params: formattedParams,
       nodeId,
       functionName,
     })
