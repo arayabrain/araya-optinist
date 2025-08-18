@@ -935,11 +935,12 @@ const DataviewRecords = ({
           })[0] || ""
     }
     const { sort } = dataParams
+    // Reset offset to 0 when filter changes
     const param =
-      sort[0] || filter || offset
+      sort[0] || filter
         ? `${filter}${
             sort[0] ? `${filter ? "&" : ""}sort=${sort[0]}&sort=${sort[1]}` : ""
-          }&${pagiFilter()}`
+          }&limit=${limit}&offset=0`
         : ""
     setNewParams(param)
     setCheckBoxAll(false)
