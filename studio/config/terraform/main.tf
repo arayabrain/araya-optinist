@@ -3289,7 +3289,7 @@ resource "aws_ecs_task_definition" "batch" {
         },
         {
           name  = "AWS_BATCH_JOB_DEFINITION"
-          value = "subscr-optinist-job-definition"
+          value = "subscr-optinist-snakemake-batch-job-definition"
         },
         {
           name  = "AWS_DEFAULT_REGION"
@@ -3309,7 +3309,7 @@ resource "aws_ecs_task_definition" "batch" {
         },
         {
           name  = "AWS_ECR_REPOSITORY"
-          value = "${var.ecr_batch_repository_url}:latest"
+          value = "${var.ecr_snakemake_batch_repository_url}:latest"
         },
         {
           name  = "AWS_BATCH_LOG_GROUP"
@@ -3674,7 +3674,7 @@ resource "aws_instance" "batch" {
 # AWS batch job definition
 # ========================
 resource "aws_batch_job_definition" "optinist" {
-  name = "subscr-optinist-job-definition"
+  name = "subscr-optinist-snakemake-batch-job-definition"
   type = "container"
 
   container_properties = jsonencode({
