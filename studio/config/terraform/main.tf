@@ -1025,7 +1025,7 @@ resource "aws_ecs_capacity_provider" "main" {
     managed_scaling {
       maximum_scaling_step_size = 1
       minimum_scaling_step_size = 1
-      status                    = "ENABLED"
+      status                    = "DISABLED"
       target_capacity           = 90
       instance_warmup_period    = 300
     }
@@ -1190,6 +1190,10 @@ resource "aws_security_group" "alb" {
   tags = {
     Name = "subscr-optinist-alb-sg"
   }
+
+  lifecycle {
+    ignore_changes = [egress]
+  }
 }
 
 resource "aws_security_group_rule" "ecs_from_alb" {
@@ -1243,6 +1247,10 @@ resource "aws_security_group" "rds" {
 
   tags = {
     Name = "subscr-optinist-cloud-sg-rds"
+  }
+
+  lifecycle {
+    ignore_changes = [ingress]
   }
 }
 

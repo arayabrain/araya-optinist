@@ -193,8 +193,11 @@ def _snakemake_execute_batch(
         batch_executor.prepare_batch_workspace()
 
         # Configure storage based on availability
+        # Force EFS usage instead of S3 to avoid Snakemake S3 configuration issues
         storage_settings = None
-        if RemoteStorageController.is_available():
+        if (
+            False
+        ):  # Temporarily disable S3 to use EFS: RemoteStorageController.is_available():
             # Use S3 when available
             s3_prefix = BATCH_CONFIG.AWS_DEFAULT_PROVIDER.lower()
             s3_bucket_name = os.environ.get(
@@ -753,27 +756,33 @@ def _snakemake_execute_batch(
                             # and status tracking
                             import asyncio
 
+                            # Get S3 bucket name for upload
+                            upload_bucket_name = os.environ.get(
+                                "S3_DEFAULT_BUCKET_NAME",
+                                BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME,
+                            )
+
                             try:
                                 asyncio.get_running_loop()
                             except RuntimeError:
                                 # No running loop, create one
                                 asyncio.run(
                                     upload_experiment_wrapper(
-                                        s3_bucket_name, workspace_id, unique_id
+                                        upload_bucket_name, workspace_id, unique_id
                                     )
                                 )
                             else:
                                 # Running loop exists, run in it
                                 asyncio.create_task(
                                     upload_experiment_wrapper(
-                                        s3_bucket_name, workspace_id, unique_id
+                                        upload_bucket_name, workspace_id, unique_id
                                     )
                                 )
 
                             logger.info("Final results upload initiated to S3")
                         else:
-                            logger.warning(
-                                "Remote storage not available, skipping S3 upload"
+                            logger.info(
+                                "Using EFS storage - final results available locally"
                             )
 
                     except Exception as upload_error:
