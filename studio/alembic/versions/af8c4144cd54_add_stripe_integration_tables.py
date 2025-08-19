@@ -1,7 +1,7 @@
 """add stripe integration tables
 
 Revision ID: af8c4144cd54
-Revises: 0b3a8e2ca9c1
+Revises: 4df5949c42ef
 Create Date: 2025-07-22 14:45:36.895878
 
 """
@@ -12,7 +12,7 @@ from sqlalchemy.dialects import mysql
 
 # revision identifiers, used by Alembic.
 revision = "af8c4144cd54"
-down_revision = "0b3a8e2ca9c1"
+down_revision = "4df5949c42ef"
 branch_labels = None
 depends_on = None
 
