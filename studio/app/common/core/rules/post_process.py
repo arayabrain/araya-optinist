@@ -40,21 +40,21 @@ class PostProcessRunner:
         try:
             logger.info("start post_process runner")
 
+            # Get workspace_id, unique_id from output file path
+            ids = ExptOutputPathIds(dirname(__rule.output))
+            workspace_id = ids.workspace_id
+            unique_id = ids.unique_id
+
             # Get input data for a rule.
             # Note:
             #   - Check if all node data can be successfully retrieved.
             #     If there is an error in any node, an AssertionError is generated here.
             #   - read_input_info() is used to determine if there is an error,
             #     and the return value is not used here.
-            Runner.read_input_info(__rule.input)
+            _ = Runner.read_input_info(__rule.input)
 
             # Operate remote storage.
             if RemoteStorageController.is_available():
-                # Get workspace_id, unique_id from output file path
-                ids = ExptOutputPathIds(dirname(__rule.output))
-                workspace_id = ids.workspace_id
-                unique_id = ids.unique_id
-
                 # Delete lock file created at the start of workflow.
                 RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
 
@@ -88,6 +88,12 @@ class PostProcessRunner:
 
             # save msg for GUI
             PickleWriter.write(__rule.output, err_msg)
+
+        finally:
+            # Operate remote storage.
+            if RemoteStorageController.is_available():
+                # Just to be safe, make sure to delete the sync_lock_file.
+                RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
 
 
 if __name__ == "__main__":
