@@ -2185,7 +2185,7 @@ resource "aws_cloudwatch_metric_alarm" "cpu_high" {
   statistic           = "Average"
   threshold           = "90"
   alarm_description   = "This metric monitors ec2 cpu utilization"
-  alarm_actions       = [aws_autoscaling_policy.scale_up.arn]
+  # alarm_actions       = [aws_autoscaling_policy.scale_up.arn]  # Disabled: memory-only scaling
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.main.name
   }
@@ -2194,13 +2194,14 @@ resource "aws_cloudwatch_metric_alarm" "cpu_high" {
 resource "aws_cloudwatch_metric_alarm" "memory_high" {
   alarm_name          = "subscr-optinist-memory-high"
   comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = "2"
+  evaluation_periods  = "3"
   metric_name         = "MemoryUtilization"
   namespace           = "AWS/ECS"
   period              = "120"
   statistic           = "Average"
-  threshold           = "90"
+  threshold           = "80"
   alarm_description   = "This metric monitors memory utilization"
+  alarm_actions       = [aws_autoscaling_policy.scale_up.arn]
   dimensions = {
     ServiceName = aws_ecs_service.autoscaling.name
     ClusterName = aws_ecs_cluster.main.name
@@ -2217,7 +2218,7 @@ resource "aws_cloudwatch_metric_alarm" "cpu_low" {
   statistic           = "Average"
   threshold           = "20"
   alarm_description   = "This metric monitors low cpu utilization"
-  alarm_actions       = [aws_autoscaling_policy.scale_down.arn]
+  # alarm_actions       = [aws_autoscaling_policy.scale_down.arn]  # Disabled: memory-only scaling
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.main.name
   }
@@ -2226,13 +2227,14 @@ resource "aws_cloudwatch_metric_alarm" "cpu_low" {
 resource "aws_cloudwatch_metric_alarm" "memory_low" {
   alarm_name          = "subscr-optinist-memory-low"
   comparison_operator = "LessThanThreshold"
-  evaluation_periods  = "2"
+  evaluation_periods  = "3"
   metric_name         = "MemoryUtilization"
   namespace           = "AWS/ECS"
   period              = "120"
   statistic           = "Average"
-  threshold           = "20"
+  threshold           = "10"
   alarm_description   = "This metric monitors memory utilization"
+  alarm_actions       = [aws_autoscaling_policy.scale_down.arn]
   dimensions = {
     ServiceName = aws_ecs_service.autoscaling.name
     ClusterName = aws_ecs_cluster.main.name
