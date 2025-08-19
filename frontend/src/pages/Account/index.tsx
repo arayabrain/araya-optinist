@@ -26,6 +26,13 @@ import { ROLE } from "@types"
 import ChangePasswordModal from "components/Account/ChangePasswordModal"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
+import { getUserSubscription } from "store/slice/Subscriptions/SubscriptionActions"
+import {
+  selectUserSubscription,
+  selectUserSubscriptionLoading,
+  selectSubscriptionError,
+  selectIsSubscriptionExpired,
+} from "store/slice/Subscriptions/SubscriptionSelector"
 import {
   deleteMe,
   getMe,
@@ -39,8 +46,14 @@ import { convertBytes } from "utils"
 const Account = () => {
   const user = useSelector(selectCurrentUser)
   const loading = useSelector(selectLoading)
+  const userSubscription = useSelector(selectUserSubscription)
+  const subscriptionLoading = useSelector(selectUserSubscriptionLoading)
+  const subscriptionError = useSelector(selectSubscriptionError)
+  const isSubscriptionExpired = useSelector(selectIsSubscriptionExpired)
+
   const dispatch = useDispatch<AppDispatch>()
   const navigate = useNavigate()
+
   const [isDeleteConfirmModalOpen, setIsDeleteConfirmModalOpen] =
     useState(false)
   const [isChangePwModalOpen, setIsChangePwModalOpen] = useState(false)
@@ -55,6 +68,13 @@ const Account = () => {
     enqueueSnackbar(mess, { variant })
   }
 
+  const MEMBERSHIP_STATUS = {
+    LOADING: "Loading...",
+    ERROR: "Error loading subscription",
+    FREE: "FREE",
+    EXPIRED: "EXPIRED",
+  } as const
+
   useEffect(() => {
     dispatch(getMe())
   }, [dispatch])
@@ -62,8 +82,12 @@ const Account = () => {
   useEffect(() => {
     if (!user) return
     setIsName(user.name)
-    //eslint-disable-next-line
-  }, [])
+
+    // Fetch user subscription when user is loaded
+    if (user.id) {
+      dispatch(getUserSubscription(user.id))
+    }
+  }, [user, dispatch])
 
   const handleCloseDeleteComfirmModal = () => {
     setIsDeleteConfirmModalOpen(false)
@@ -137,6 +161,10 @@ const Account = () => {
     setIsEditName(false)
   }
 
+  const onClickUpgrade = () => {
+    navigate("/console/subscription")
+  }
+
   const getRole = (role?: number) => {
     if (!role) return
     let newRole = ""
@@ -162,6 +190,68 @@ const Account = () => {
       return
     }
   }
+
+  const getMembershipStatus = () => {
+    if (subscriptionLoading) {
+      return MEMBERSHIP_STATUS.LOADING
+    }
+
+    if (subscriptionError) {
+      return MEMBERSHIP_STATUS.ERROR
+    }
+
+    if (!userSubscription) {
+      return MEMBERSHIP_STATUS.FREE
+    }
+
+    if (isSubscriptionExpired) {
+      return MEMBERSHIP_STATUS.EXPIRED
+    }
+
+    return userSubscription.plan_name.toUpperCase()
+  }
+
+  // Helper function to get membership button text and action
+  const getMembershipButton = () => {
+    const status = getMembershipStatus()
+
+    if (status === "FREE" || status === "EXPIRED") {
+      return {
+        text: "Upgrade",
+        action: onClickUpgrade,
+        color: "primary" as const,
+      }
+    }
+
+    return {
+      text: "Manage",
+      action: onClickUpgrade,
+      color: "secondary" as const,
+    }
+  }
+
+  // Helper function to format expiration date
+  const getExpirationInfo = () => {
+    if (!userSubscription) return null
+
+    const expirationDate = new Date(userSubscription.expiration)
+
+    if (isSubscriptionExpired) {
+      return (
+        <Typography variant="caption" color="error" sx={{ ml: 1 }}>
+          (Expired on {expirationDate.toLocaleDateString()})
+        </Typography>
+      )
+    }
+
+    return (
+      <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+        (Expires on {expirationDate.toLocaleDateString()})
+      </Typography>
+    )
+  }
+
+  const membershipButton = getMembershipButton()
 
   return (
     <AccountWrapper>
@@ -220,6 +310,38 @@ const Account = () => {
       <BoxFlex>
         <TitleData>Bucket name</TitleData>
         <BoxData>{user?.attributes?.remote_bucket_name || "-"}</BoxData>
+      </BoxFlex>
+      <BoxFlex>
+        <TitleData>Membership</TitleData>
+        <Box
+          sx={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-start",
+          }}
+        >
+          <BoxData>{getMembershipStatus()}</BoxData>
+          {getExpirationInfo()}
+        </Box>
+        <Button
+          variant="contained"
+          color={membershipButton.color}
+          sx={{ ml: 2 }}
+          onClick={membershipButton.action}
+          disabled={subscriptionLoading}
+        >
+          {membershipButton.text}
+        </Button>
+      </BoxFlex>
+      {/* TODO: Fix to be dynamic code */}
+      <BoxFlex>
+        <TitleData>Payment Method</TitleData>
+        <>
+          <Box>Credit Card</Box>
+          <IconButton sx={{ ml: 1 }}>
+            <Edit />
+          </IconButton>
+        </>
       </BoxFlex>
       <BoxFlex sx={{ justifyContent: "space-between", mt: 10, maxWidth: 600 }}>
         <Button variant="contained" color="primary" onClick={onChangePwClick}>

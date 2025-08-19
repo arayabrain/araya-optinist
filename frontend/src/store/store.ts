@@ -25,6 +25,7 @@ import {
   workspaceReducer,
   userReducer,
   modeStandalone,
+  subscriptionReducer,
 } from "store/slice"
 
 export const rootReducer = combineReducers({
@@ -47,6 +48,7 @@ export const rootReducer = combineReducers({
   workspace: workspaceReducer,
   user: userReducer,
   mode: modeStandalone,
+  subscription: subscriptionReducer,
 })
 
 export const store = configureStore({
