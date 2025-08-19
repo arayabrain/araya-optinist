@@ -60,7 +60,7 @@ def _snakemake_execute_process(
         ]
     )
 
-    result = snakemake(
+    snakemake_result = snakemake(
         DIRPATH.SNAKEMAKE_FILEPATH,
         forceall=params.forceall,
         cores=params.cores,
@@ -71,7 +71,7 @@ def _snakemake_execute_process(
         log_handler=[smk_logger.log_handler],
     )
 
-    if result:
+    if snakemake_result:
         logger.info("snakemake_execute succeeded.")
     else:
         logger.error("snakemake_execute failed..")
@@ -82,20 +82,31 @@ def _snakemake_execute_process(
     # Snakemake execution post process
     # ------------------------------------------------------------
 
-    # Update workflow processing results
-    asyncio.run(WorkflowResult(workspace_id, unique_id).observe_overall())
+    try:
+        # Update workflow processing results
+        try:
+            asyncio.run(WorkflowResult(workspace_id, unique_id).observe_overall())
+        except Exception as e:
+            logger.error(
+                f"snakemake_execute post process (WorkflowResult) failed: {e}",
+                exc_info=True,
+            )
 
-    # Update experiment database record
-    if ExperimentRecordService.is_available():
-        ExperimentRecordService.regist_record_on_workflow_completed(
+        # Update experiment database record
+        if ExperimentRecordService.is_available():
+            ExperimentRecordService.regist_record_on_workflow_completed(
+                workspace_id, unique_id
+            )
+
+        # Data usage calculation
+        WorkspaceDataCapacityService.update_experiment_data_usage(
             workspace_id, unique_id
         )
-
-    # Data usage calculation
-    WorkspaceDataCapacityService.update_experiment_data_usage(workspace_id, unique_id)
+    except Exception as e:
+        logger.error(f"snakemake_execute post process failed: {e}", exc_info=True)
 
     # result error handling
-    if not result:
+    if not snakemake_result:
         # Operate remote storage.
         if RemoteStorageController.is_available():
             # force delete sync lock file
@@ -113,7 +124,7 @@ def _snakemake_execute_process(
                 RemoteSyncAction.UPLOAD,
             )
 
-    return result
+    return snakemake_result
 
 
 def delete_dependencies(
