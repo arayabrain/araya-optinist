@@ -93,6 +93,7 @@ const CheckoutForm = () => {
   const [isProcessing, setIsProcessing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [cardError, setCardError] = useState<string | null>(null)
+  const [cardComplete, setCardComplete] = useState(false)
 
   // Get planId from URL params
   const planId = searchParams.get("planId")
@@ -144,7 +145,8 @@ const CheckoutForm = () => {
   }
 
   const handleInputChange =
-    (field: keyof FormData) => (event: React.ChangeEvent<HTMLInputElement>) => {
+    (field: keyof FormData) =>
+    (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
       setFormData({
         ...formData,
         [field]: event.target.value,
@@ -157,14 +159,13 @@ const CheckoutForm = () => {
       return false
     }
 
-    if (!stripe || !elements) {
-      setError("Stripe is not loaded")
+    if (!cardComplete) {
+      setError("Please complete your card information")
       return false
     }
 
-    const cardElement = elements.getElement(CardElement)
-    if (!cardElement) {
-      setError("Card information is required")
+    if (cardError) {
+      setError("Please fix card information errors")
       return false
     }
 
@@ -278,6 +279,7 @@ const CheckoutForm = () => {
   // Handle card element changes with proper typing
   const handleCardChange = (event: StripeCardElementChangeEvent) => {
     setCardError(event.error ? event.error.message : null)
+    setCardComplete(event.complete)
   }
 
   if (!selectedPlan) return null

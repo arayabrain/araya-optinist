@@ -99,7 +99,7 @@ const Span: FC = () => {
     <ParamTextField
       type="number"
       label="vertical offset"
-      value={span}
+      value={span ?? ""}
       onChange={onChange}
     />
   )
@@ -291,14 +291,14 @@ const LegendSelect: FC = () => {
         drawOrderList: newDrawOrderList,
       }),
     )
-    dispatch(
+    ;(dispatch(
       setClickedData({
         itemId,
         clickedDataId: event.target.checked ? index : null,
       }),
     ),
       // eslint-disable-next-line no-console
-      console.log("#############\n In TimeSeriesItemEditor.tsx, clickedDataId")
+      console.log("#############\n In TimeSeriesItemEditor.tsx, clickedDataId"))
 
     if (filePath !== null) {
       dispatch(getTimeSeriesDataById({ path: filePath, index: index }))
