@@ -112,7 +112,7 @@ variable "ecr_snakemake_batch_repository_url" {
 variable "asg_min_size" {
   description = "Minimum number of instances in ASG"
   type        = number
-  default     = 0
+  default     = 1
 }
 
 variable "asg_max_size" {

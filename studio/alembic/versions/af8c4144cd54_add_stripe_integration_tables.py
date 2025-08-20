@@ -291,8 +291,42 @@ VALUES
 """
     )
 
+    # Create taxes table
+    op.create_table(
+        "taxes",
+        sa.Column(
+            "id",
+            mysql.BIGINT(unsigned=True),
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        sa.Column("tax_type", sa.String(length=50), nullable=False),
+        sa.Column("tax_name", sa.String(length=100), nullable=False),
+        sa.Column("tax_rate", sa.DECIMAL(precision=5, scale=4), nullable=False),
+        sa.Column(
+            "is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")
+        ),
+        sa.Column("effective_date", sa.Date(), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.TIMESTAMP(),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.TIMESTAMP(),
+            server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+            nullable=False,
+        ),
+        sa.Index("idx_taxes_type", "tax_type"),
+        sa.Index("idx_taxes_active", "is_active"),
+    )
+
 
 def downgrade() -> None:
+    op.drop_table("taxes")
     op.drop_table("subscription_cancellations")
     op.drop_table("subscription_user_purchases")
     op.drop_table("subscription_user_accounts")
