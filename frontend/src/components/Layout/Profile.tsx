@@ -37,6 +37,7 @@ const Profile: FC = () => {
   const onClickUpgrade = () => {
     setAnchorEl(null)
     navigate("/console/subscription")
+    // eslint-disable-next-line no-console
     console.log("Upgrade clicked")
   }
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import React, { useState, useEffect, useCallback } from "react"
 import { useDispatch, useSelector } from "react-redux"
 import { useSearchParams, useNavigate } from "react-router-dom"
 
@@ -59,7 +59,7 @@ const PremiumCheckout = () => {
   const [selectedPlan, setSelectedPlan] = useState<SubscriptionPlan | null>(
     null,
   )
-  const [plans, setPlans] = useState<SubscriptionPlan[]>([])
+  const [_plans, setPlans] = useState<SubscriptionPlan[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isProcessing, setIsProcessing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -67,21 +67,7 @@ const PremiumCheckout = () => {
   // Get planId from URL params
   const planId = searchParams.get("planId")
 
-  useEffect(() => {
-    if (!user) {
-      navigate("/login")
-      return
-    }
-
-    if (!planId) {
-      navigate("/console/membership")
-      return
-    }
-
-    loadPlanData()
-  }, [planId, user, navigate])
-
-  const loadPlanData = async () => {
+  const loadPlanData = useCallback(async () => {
     try {
       setIsLoading(true)
       setError(null)
@@ -106,12 +92,27 @@ const PremiumCheckout = () => {
 
       setSelectedPlan(plan)
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.error("Error loading plan data:", err)
       setError("Failed to load plan information")
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [dispatch, planId, setPlans])
+
+  useEffect(() => {
+    if (!user) {
+      navigate("/login")
+      return
+    }
+
+    if (!planId) {
+      navigate("/console/membership")
+      return
+    }
+
+    loadPlanData()
+  }, [planId, user, navigate, loadPlanData])
 
   // Refactored handleInputChange using utility functions
   const handleInputChange =
@@ -235,6 +236,7 @@ const PremiumCheckout = () => {
         state: { subscription: result },
       })
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.error("Payment error:", err)
       setError(err instanceof Error ? err.message : "Payment processing failed")
     } finally {

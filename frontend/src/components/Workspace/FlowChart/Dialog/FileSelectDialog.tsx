@@ -1,6 +1,6 @@
 import {
   memo,
-  SyntheticEvent,
+  // SyntheticEvent,
   useContext,
   useEffect,
   useState,

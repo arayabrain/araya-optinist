@@ -62,12 +62,15 @@ const subscriptionSlice = createSlice({
             state.plans = action.payload.map((planData: unknown) =>
               safeConvertPlan(planData as Record<string, unknown>),
             )
+            // eslint-disable-next-line no-console
             console.log("Successfully loaded plans:", state.plans)
           } else {
+            // eslint-disable-next-line no-console
             console.warn("Invalid plans data received:", action.payload)
             state.plans = []
           }
         } catch (error) {
+          // eslint-disable-next-line no-console
           console.error("Error processing subscription plans:", error)
           state.plans = []
           state.error = "Failed to process subscription plans data"
@@ -108,6 +111,7 @@ const subscriptionSlice = createSlice({
                 plan_price: Number(action.payload.plan_price) || 0,
               }
             } else {
+              // eslint-disable-next-line no-console
               console.warn(
                 "Invalid user subscription data received:",
                 action.payload,
@@ -115,6 +119,7 @@ const subscriptionSlice = createSlice({
               state.userSubscription = null
             }
           } catch (error) {
+            // eslint-disable-next-line no-console
             console.error("Error processing user subscription:", error)
             state.userSubscription = null
             state.error = "Failed to process user subscription data"

@@ -27,7 +27,7 @@ import {
 } from "store/slice/Subscriptions/SubscriptionSelector"
 import { clearError } from "store/slice/Subscriptions/SubscriptionSlice"
 import type {
-  SubscriptionPlan,
+  // SubscriptionPlan,
   PlanFeature,
 } from "store/slice/Subscriptions/SubscriptionType"
 import { selectCurrentUser } from "store/slice/User/UserSelector"
@@ -166,6 +166,7 @@ const MembershipPlans = () => {
             const currencySymbol = getCurrencySymbol(plan.currency)
             const billingCycle = getBillingCycleText(plan.billing_cycle)
 
+            // eslint-disable-next-line no-console
             console.log(`Plan ${plan.id} features:`, features)
 
             return (

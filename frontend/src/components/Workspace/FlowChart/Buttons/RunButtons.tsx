@@ -83,6 +83,7 @@ export const RunButtons = memo(function RunButtons(
       }
       return true
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error("Failed to check storage:", error)
       // Allow job to proceed if storage check fails
       return true

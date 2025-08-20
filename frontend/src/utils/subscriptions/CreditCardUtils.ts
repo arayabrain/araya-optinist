@@ -137,7 +137,7 @@ export const validateCardNumber = (
  * @param cardNumber - Card number digits only
  * @returns Boolean indicating if card number is valid
  */
-const isValidLuhn = (cardNumber: string): boolean => {
+const _isValidLuhn = (cardNumber: string): boolean => {
   let sum = 0
   let alternate = false
 
