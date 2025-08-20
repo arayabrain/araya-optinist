@@ -3076,6 +3076,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
           value = aws_s3_bucket.app_storage.id
         },
         {
+          name = "REMOTE_STORAGE_TYPE"
+          value = "2"
+        },
+        {
           name  = "USE_AWS_BATCH"
           value = "false"
         },
@@ -3280,6 +3284,10 @@ resource "aws_ecs_task_definition" "batch" {
         {
           name = "S3_DEFAULT_BUCKET_NAME"
           value = aws_s3_bucket.app_storage_batch.id
+        },
+        {
+          name = "REMOTE_STORAGE_TYPE"
+          value = "2"
         },
         {
           name  = "USE_AWS_BATCH"
@@ -3787,7 +3795,7 @@ resource "aws_batch_job_definition" "optinist" {
       },
       {
         name = "REMOTE_STORAGE_TYPE"
-        value = "0"
+        value = "2"
       },
       {
         name = "TZ"
