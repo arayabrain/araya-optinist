@@ -333,16 +333,6 @@ const Account = () => {
           {membershipButton.text}
         </Button>
       </BoxFlex>
-      {/* TODO: Fix to be dynamic code */}
-      <BoxFlex>
-        <TitleData>Payment Method</TitleData>
-        <>
-          <Box>Credit Card</Box>
-          <IconButton sx={{ ml: 1 }}>
-            <Edit />
-          </IconButton>
-        </>
-      </BoxFlex>
       <BoxFlex sx={{ justifyContent: "space-between", mt: 10, maxWidth: 600 }}>
         <Button variant="contained" color="primary" onClick={onChangePwClick}>
           Change Password

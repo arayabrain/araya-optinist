@@ -1,4 +1,4 @@
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 import { useDispatch, useSelector } from "react-redux"
 import { useNavigate } from "react-router-dom"
 
@@ -11,6 +11,10 @@ import {
   CircularProgress,
   Chip,
   Alert,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from "@mui/material"
 
 import {
@@ -50,6 +54,10 @@ const MembershipPlans = () => {
   const dispatch = useDispatch<AppDispatch>()
   const navigate = useNavigate()
 
+  // State for downgrade confirmation dialog
+  const [showDowngradeDialog, setShowDowngradeDialog] = useState(false)
+  const [selectedPlanId, setSelectedPlanId] = useState<number | null>(null)
+
   // Fetch data on component mount
   useEffect(() => {
     const loadData = async () => {
@@ -69,9 +77,42 @@ const MembershipPlans = () => {
     return currentPlanId === planId
   }
 
+  // Check if the selected plan is a downgrade (free plan)
+  const isDowngrade = (planId: number) => {
+    const plan = plans.find((p) => p.id === planId)
+    return plan?.price === 0
+  }
+
   const handleUpgradeClick = (planId: number) => {
-    // Simple navigation - Stripe will handle tax automatically
-    navigate(`/console/premium-checkout?planId=${planId}`)
+    // Check if it's a downgrade (free plan)
+    if (isDowngrade(planId)) {
+      setSelectedPlanId(planId)
+      setShowDowngradeDialog(true)
+    } else {
+      // For upgrades, navigate to checkout
+      navigate(`/console/premium-checkout?planId=${planId}`)
+    }
+  }
+
+  const handleConfirmDowngrade = () => {
+    if (selectedPlanId) {
+      // Navigate to downgrade api
+      // TODO: Implement the actual downgrade logic
+    }
+    setShowDowngradeDialog(false)
+    setSelectedPlanId(null)
+  }
+
+  const handleCancelDowngrade = () => {
+    setShowDowngradeDialog(false)
+    setSelectedPlanId(null)
+  }
+
+  const getExpirationDate = () => {
+    if (userSubscription?.expiration) {
+      return new Date(userSubscription.expiration).toLocaleDateString()
+    }
+    return "N/A"
   }
 
   const handleRetry = () => {
@@ -250,6 +291,47 @@ const MembershipPlans = () => {
           })}
         </MembershipContent>
       </MembershipWrapper>
+
+      {/* Downgrade Confirmation Dialog */}
+      <Dialog
+        open={showDowngradeDialog}
+        onClose={handleCancelDowngrade}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>
+          <Typography variant="h6" component="div" sx={{ fontWeight: "bold" }}>
+            Cancel Subscription
+          </Typography>
+        </DialogTitle>
+        <DialogContent>
+          <Typography variant="body1" sx={{ mb: 2 }}>
+            Are you sure you want to cancel your subscription? Your subscription
+            will be canceled at <strong>{getExpirationDate()}</strong>.
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            You will lose access to premium features after this date, but you
+            can resubscribe at any time.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button
+            onClick={handleCancelDowngrade}
+            variant="outlined"
+            sx={{ mr: 1 }}
+          >
+            No
+          </Button>
+          <Button
+            onClick={handleConfirmDowngrade}
+            variant="contained"
+            color="error"
+            autoFocus
+          >
+            Yes
+          </Button>
+        </DialogActions>
+      </Dialog>
     </BoxWrapper>
   )
 }
