@@ -2,7 +2,7 @@
 Storage Alerts API Router.
 Provides endpoints for checking and managing S3 storage alerts.
 """
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session
@@ -227,4 +227,70 @@ async def refresh_storage_usage(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to refresh storage usage",
+        )
+
+
+@router.get("/downgrade-warning", response_model=Optional[Dict])
+async def get_my_downgrade_warning(
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Get downgrade warning details for the current user.
+
+    Returns warning information if the user has exceeded free tier limits
+    after subscription expiration, None otherwise.
+    """
+    try:
+        from studio.app.common.core.cloud.cloud_utils import calculate_downgrade_warning
+
+        logger.info(f"Checking downgrade warning for user {current_user.id}")
+        warning = calculate_downgrade_warning(current_user.id)
+
+        if warning:
+            logger.info(
+                f"Downgrade warning for user {current_user.id}: "
+                f"{warning['warning_type']}-{warning['days_remaining']} days remaining"
+            )
+        else:
+            logger.debug(f"No downgrade warning for user {current_user.id}")
+
+        return warning
+
+    except Exception as e:
+        logger.error(f"Failed to get downgrade warning for user {current_user.id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve downgrade warning",
+        )
+
+
+@router.get("/downgrade-warning/check", response_model=Dict)
+async def check_downgrade_warning_status(
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Quick check if user has any downgrade warnings.
+
+    Returns a simple status indicating if warnings exist.
+    """
+    try:
+        from studio.app.common.core.cloud.cloud_utils import calculate_downgrade_warning
+
+        warning = calculate_downgrade_warning(current_user.id)
+
+        return {
+            "has_warning": warning is not None,
+            "warning_type": warning.get("warning_type") if warning else None,
+            "days_remaining": warning.get("days_remaining") if warning else None,
+            "user_id": current_user.id,
+        }
+
+    except Exception as e:
+        logger.error(
+            f"Failed to check downgrade warning status for user "
+            f"{current_user.id}: {e}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to check downgrade warning status",
         )

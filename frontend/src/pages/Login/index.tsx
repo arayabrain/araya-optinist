@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useState } from "react"
+import { ChangeEvent, FormEvent, useState, useEffect } from "react"
 import { useDispatch } from "react-redux"
 import { Link, useNavigate } from "react-router-dom"
 
@@ -6,7 +6,9 @@ import { AxiosError } from "axios"
 
 import { Box, Stack, styled, Typography } from "@mui/material"
 
+import DowngradeWarning from "components/common/DowngradeWarning"
 import Loading from "components/common/Loading"
+import { useDowngradeWarning } from "hooks/useDowngradeWarning"
 import { getMe, login } from "store/slice/User/UserActions"
 import { AppDispatch } from "store/store"
 
@@ -15,6 +17,7 @@ const Login = () => {
   const dispatch: AppDispatch = useDispatch()
 
   const [loading, setLoading] = useState(false)
+  const [loginSuccess, setLoginSuccess] = useState(false)
   const [errors, setErrors] = useState<{ [key: string]: string }>({
     email: "",
     password: "",
@@ -23,6 +26,33 @@ const Login = () => {
     email: "",
     password: "",
   })
+
+  // Downgrade warning hook - only check after successful login
+  const {
+    warning: _warning,
+    hasWarning,
+    checkDowngradeWarning,
+    dismissWarning,
+  } = useDowngradeWarning({
+    autoCheck: false, // Don't auto-check until after login
+    showSnackbar: false, // Don't show snackbar, we'll show modal
+  })
+
+  // Handle navigation after warning dismissal
+  useEffect(() => {
+    if (loginSuccess && !hasWarning) {
+      const timer = setTimeout(() => {
+        navigate("/console")
+      }, 100) // Small delay to ensure modal is dismissed
+
+      return () => clearTimeout(timer)
+    }
+  }, [loginSuccess, hasWarning, navigate])
+
+  const handleWarningClose = () => {
+    dismissWarning()
+    navigate("/console")
+  }
 
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -33,7 +63,15 @@ const Login = () => {
       .unwrap()
       .then(async (_) => {
         await dispatch(getMe())
-        navigate("/console")
+        setLoginSuccess(true)
+
+        // Check for downgrade warnings after successful login
+        const hasWarningResult = await checkDowngradeWarning()
+
+        // Navigate to console (will be delayed if warning modal appears)
+        if (!hasWarningResult) {
+          navigate("/console")
+        }
       })
       .catch((e: AxiosError) => {
         const status = e.response?.status
@@ -125,6 +163,15 @@ const Login = () => {
         </FormSignUp>
       </LoginContent>
       <Loading loading={loading} />
+
+      {/* Show downgrade warning modal after successful login */}
+      {loginSuccess && hasWarning && (
+        <DowngradeWarning
+          showAsModal={true}
+          onClose={handleWarningClose}
+          autoCheck={false}
+        />
+      )}
     </LoginWrapper>
   )
 }

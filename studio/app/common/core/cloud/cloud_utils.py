@@ -1,7 +1,7 @@
 """
 Cloud utilities for user context and subscription management.
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
@@ -143,6 +143,9 @@ def get_user_context_by_id(user_id: int) -> Optional[Dict[str, Any]]:
                     "paid" if subscription_plan_name == "Premium" else "free"
                 )
 
+                # Get downgrade warning information
+                downgrade_warning = calculate_downgrade_warning(user_id)
+
                 user_context = {
                     "id": user.id,
                     "uid": user.uid,
@@ -154,6 +157,7 @@ def get_user_context_by_id(user_id: int) -> Optional[Dict[str, Any]]:
                     "subscription_price": subscription_price,
                     "subscription_status": subscription_status,
                     "subscription_tier": subscription_tier,
+                    "downgrade_warning": downgrade_warning,
                 }
 
                 logger.info(
@@ -419,6 +423,159 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
     except Exception as e:
         logger.warning(f"Failed to update storage usage for user {user_id}: {e}")
         return False
+
+
+def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Calculate downgrade warning for users who have exceeded free tier limits
+    after subscription expiration.
+
+    Timeline: Last subscription end + 30 days grace + 30 days warning = deletion
+
+    Returns warning details if applicable, None otherwise.
+    """
+    try:
+        # Default values as fallbacks
+        DEFAULT_FREE_TIER_LIMIT_GB = 5
+        DEFAULT_FREE_TIER_LIMIT_BYTES = DEFAULT_FREE_TIER_LIMIT_GB * 1024 * 1024 * 1024
+        GRACE_PERIOD_DAYS = 30
+        WARNING_PERIOD_DAYS = 30
+
+        with session_scope() as db:
+            # Get user's current storage usage
+            storage_usage = get_user_storage_usage(user_id)
+            if not storage_usage:
+                return None
+
+            current_usage_bytes = storage_usage.get("current_usage_bytes", 0)
+            # Use actual quota from database, fallback to default if not available
+            quota_limit_bytes = storage_usage.get(
+                "quota_limit_bytes", DEFAULT_FREE_TIER_LIMIT_BYTES
+            )
+            quota_limit_gb = quota_limit_bytes / (1024 * 1024 * 1024)
+
+            # Check if user exceeds their quota limit
+            if current_usage_bytes <= quota_limit_bytes:
+                return None
+
+            # Get user's subscription history to find last active subscription
+            query_result = db.execute(
+                select(UserSubscription)
+                .where(UserSubscription.user_id == user_id)
+                .order_by(UserSubscription.expiration.desc())
+            )
+            result_rows = query_result.all()
+
+            if not result_rows:
+                # No subscription history - user has always been free tier
+                # If they exceed limit, immediate warning (no grace period)
+                excess_bytes = current_usage_bytes - quota_limit_bytes
+                excess_gb = excess_bytes / (1024 * 1024 * 1024)
+
+                return {
+                    "has_warning": True,
+                    "warning_type": "immediate",
+                    "days_remaining": 30,  # Standard warning period
+                    "excess_data_bytes": excess_bytes,
+                    "excess_data_gb": round(excess_gb, 2),
+                    "current_usage_bytes": current_usage_bytes,
+                    "current_usage_gb": round(
+                        current_usage_bytes / (1024 * 1024 * 1024), 2
+                    ),
+                    "free_tier_limit_bytes": quota_limit_bytes,
+                    "free_tier_limit_gb": quota_limit_gb,
+                    "deletion_date": (datetime.now() + timedelta(days=30)).isoformat(),
+                    "message": (
+                        f"Your data usage "
+                        f"({round(current_usage_bytes / (1024 * 1024 * 1024), 2)} GB) "
+                        f"exceeds the free tier limit ({quota_limit_gb:.1f} GB). "
+                        f"Please upgrade or remove {round(excess_gb, 2)} GB of data "
+                        f"within 30 days."
+                    ),
+                }
+
+            # Find the most recent expired subscription
+            last_subscription_row = result_rows[0]
+            last_subscription = (
+                last_subscription_row[0]
+                if isinstance(last_subscription_row, tuple)
+                else last_subscription_row
+            )
+
+            # Check if subscription is still active
+            if last_subscription.expiration > datetime.now():
+                # Subscription is still active, no warning needed
+                return None
+
+            # Calculate timeline from subscription expiration
+            subscription_end = last_subscription.expiration
+            grace_end = subscription_end + timedelta(days=GRACE_PERIOD_DAYS)
+            deletion_date = grace_end + timedelta(days=WARNING_PERIOD_DAYS)
+
+            now = datetime.now()
+
+            # Check if we're in the warning period
+            if now < grace_end:
+                # Still in grace period, no warning yet
+                return None
+            elif now < deletion_date:
+                # In warning period
+                days_remaining = (deletion_date - now).days
+                excess_bytes = current_usage_bytes - quota_limit_bytes
+                excess_gb = excess_bytes / (1024 * 1024 * 1024)
+
+                return {
+                    "has_warning": True,
+                    "warning_type": "downgrade",
+                    "days_remaining": days_remaining,
+                    "excess_data_bytes": excess_bytes,
+                    "excess_data_gb": round(excess_gb, 2),
+                    "current_usage_bytes": current_usage_bytes,
+                    "current_usage_gb": round(
+                        current_usage_bytes / (1024 * 1024 * 1024), 2
+                    ),
+                    "free_tier_limit_bytes": quota_limit_bytes,
+                    "free_tier_limit_gb": quota_limit_gb,
+                    "subscription_end_date": subscription_end.isoformat(),
+                    "grace_end_date": grace_end.isoformat(),
+                    "deletion_date": deletion_date.isoformat(),
+                    "message": (
+                        f"Your premium subscription expired on "
+                        f"{subscription_end.strftime('%B %d, %Y')}. "
+                        f"You have {days_remaining} days to upgrade or remove "
+                        f"{round(excess_gb, 2)} GB of data to stay within the "
+                        f"free tier limit."
+                    ),
+                }
+            else:
+                # Past deletion date - data should have been deleted already
+                # This could trigger automatic cleanup in the future
+                excess_bytes = current_usage_bytes - quota_limit_bytes
+                excess_gb = excess_bytes / (1024 * 1024 * 1024)
+
+                return {
+                    "has_warning": True,
+                    "warning_type": "overdue",
+                    "days_remaining": 0,
+                    "excess_data_bytes": excess_bytes,
+                    "excess_data_gb": round(excess_gb, 2),
+                    "current_usage_bytes": current_usage_bytes,
+                    "current_usage_gb": round(
+                        current_usage_bytes / (1024 * 1024 * 1024), 2
+                    ),
+                    "free_tier_limit_bytes": quota_limit_bytes,
+                    "free_tier_limit_gb": quota_limit_gb,
+                    "deletion_date": deletion_date.isoformat(),
+                    "message": (
+                        f"Your data exceeded the free tier limit and should have been "
+                        f"cleaned up on {deletion_date.strftime('%B %d, %Y')}. "
+                        f"Please contact support or upgrade immediately."
+                    ),
+                }
+
+    except Exception as e:
+        logger.error(f"Failed to calculate downgrade warning for user {user_id}: {e}")
+        return None
 
 
 def test_database_connection() -> bool:
