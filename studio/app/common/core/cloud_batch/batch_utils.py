@@ -1117,7 +1117,7 @@ class BatchDebug:
         This implements the best practices for shared network filesystems.
         """
         # EFS mount path - should be persistent across batch jobs
-        efs_storage = f"file:///mnt/efs/{workspace_id}/{unique_id}/"
+        efs_storage = f"/mnt/efs/{workspace_id}/{unique_id}/"
 
         # Local scratch directory - should be fast local storage (e.g., NVMe SSD)
         # This will be used for intermediate files and temporary storage
@@ -1133,7 +1133,12 @@ class BatchDebug:
             local_storage_prefix=Path(local_scratch),
             # Per-job local scratch for remote batch jobs
             remote_job_local_storage_prefix=Path(job_local_scratch),
-            shared_fs_usage=[SharedFSUsage.SOFTWARE_DEPLOYMENT],
+            shared_fs_usage=[
+                SharedFSUsage.INPUT_OUTPUT,
+                SharedFSUsage.PERSISTENCE,
+                SharedFSUsage.SOFTWARE_DEPLOYMENT,
+                SharedFSUsage.SOURCES,
+            ],
         )
 
         logger.info(f"EFS storage configured: {efs_storage}")

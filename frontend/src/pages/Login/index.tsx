@@ -47,6 +47,7 @@ const Login = () => {
 
       return () => clearTimeout(timer)
     }
+    return undefined
   }, [loginSuccess, hasWarning, navigate])
 
   const handleWarningClose = () => {
