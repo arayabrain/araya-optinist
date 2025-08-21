@@ -312,6 +312,33 @@ class BatchUtils:
             logger.warning("Could not retrieve current user, using default settings")
             return None
 
+    def _get_user_id_from_workspace(self, workspace_id: str) -> Optional[int]:
+        """
+        Get user_id from workspace_id by querying the database.
+        """
+        try:
+            from sqlmodel import select
+
+            from studio.app.common.db.database import session_scope
+            from studio.app.common.models.workspace import Workspace
+
+            with session_scope() as db:
+                query_result = db.execute(
+                    select(Workspace).where(Workspace.id == int(workspace_id))
+                )
+                result_row = query_result.first()
+                workspace = result_row[0] if result_row else None
+
+                if workspace:
+                    return workspace.user_id
+                else:
+                    logger.warning(f"Workspace {workspace_id} not found")
+                    return None
+
+        except Exception as e:
+            logger.warning(f"Failed to get user_id for workspace {workspace_id}: {e}")
+            return None
+
     def get_job_queue_for_user(self, user_id: Optional[int] = None) -> str:
         """
         Determine which AWS Batch job queue to use based on user tier.
@@ -326,11 +353,20 @@ class BatchUtils:
                 # Use the provided user_id directly
                 current_user = get_user_context_by_id(user_id)
             else:
-                # No user_id provided and no way to get current user outside API context
-                logger.warning(
-                    "No user_id provided for queue selection, defaulting to free tier"
-                )
-                current_user = None
+                # Try to get user_id from workspace_id
+                workspace_user_id = self._get_user_id_from_workspace(self.workspace_id)
+                if workspace_user_id:
+                    logger.info(
+                        f"Found user_id {workspace_user_id} for "
+                        f"workspace {self.workspace_id}"
+                    )
+                    current_user = get_user_context_by_id(workspace_user_id)
+                else:
+                    # No user_id provided and can't get current user outside API context
+                    logger.warning(
+                        "No user_id provided for queue selection, default to free tier"
+                    )
+                    current_user = None
 
             if current_user and isinstance(current_user, dict):
                 tier = current_user.get("subscription_tier", "free")
@@ -1094,9 +1130,9 @@ class BatchDebug:
             default_storage_provider="fs",  # Use the filesystem storage plugin
             default_storage_prefix=efs_storage,
             # Local scratch for the coordinator/main process
-            local_storage_prefix=local_scratch,
+            local_storage_prefix=Path(local_scratch),
             # Per-job local scratch for remote batch jobs
-            remote_job_local_storage_prefix=job_local_scratch,
+            remote_job_local_storage_prefix=Path(job_local_scratch),
             shared_fs_usage=[SharedFSUsage.SOFTWARE_DEPLOYMENT],
         )
 

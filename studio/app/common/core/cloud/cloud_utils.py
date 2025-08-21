@@ -21,16 +21,16 @@ def _get_fallback_users(db: Session) -> list:
     Get fallback user list (admin user) when subscription tables don't exist.
     """
     try:
-        # Get admin user (ID 1) as fallback using ORM
+        # Get user with ID 1 as fallback for subscription monitoring
         result = db.execute(
             select(UserModel).where(UserModel.id == 1, UserModel.active.is_(True))
         )
-        admin_user = result.first()
+        fallback_user_row = result.first()
 
-        if admin_user:
-            logger.info("Using admin user as fallback for subscription monitoring")
-            # admin_user is a SQLAlchemy Row object containing a tuple with UserModel
-            user_obj = admin_user[0]
+        if fallback_user_row:
+            logger.info("Using fallback user for subscription monitoring")
+            # fallback_user_row is a SQLAlchemy Row object containing UserModel
+            user_obj = fallback_user_row[0]
             return [
                 {
                     "id": user_obj.id,
@@ -161,6 +161,7 @@ def get_user_context_by_id(user_id: int) -> Optional[Dict[str, Any]]:
                     f"({user_context['email']}) "
                     f"- Tier: {user_context['subscription_tier']}"
                 )
+                logger.info(f"Complete user context for user {user_id}: {user_context}")
                 return user_context
             else:
                 logger.warning(f"User {user_id} not found or inactive")
@@ -319,7 +320,16 @@ def get_user_storage_usage(user_id: int) -> Optional[Dict[str, Any]]:
                 query_result = db.execute(
                     select(UserStorageUsage).where(UserStorageUsage.user_id == user_id)
                 )
-                storage_usage = query_result.first()
+                result_row = query_result.first()
+                logger.debug(
+                    f"get_user_storage_usage: "
+                    f"result_row type={type(result_row)}, value={result_row}"
+                )
+                storage_usage = result_row[0] if result_row else None
+                logger.debug(
+                    f"get_user_storage_usage: "
+                    f"storage_usage type={type(storage_usage)}, value={storage_usage}"
+                )
 
                 if storage_usage:
                     result_dict = {
@@ -370,7 +380,8 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
                 query_result = db.execute(
                     select(UserStorageUsage).where(UserStorageUsage.user_id == user_id)
                 )
-                existing_usage = query_result.first()
+                result_row = query_result.first()
+                existing_usage = result_row[0] if result_row else None
 
                 if existing_usage:
                     # Update existing record
@@ -420,15 +431,17 @@ def test_database_connection() -> bool:
         with session_scope() as db:
             # Test basic connection
             query_result = db.execute(select(UserModel).where(UserModel.id == 1))
-            admin_user = query_result.first()
+            fallback_user_row = query_result.first()
 
-            if admin_user:
+            if fallback_user_row:
                 logger.info("Database connection successful!")
-                # admin_user is a SQLAlchemy Row containing a tuple with UserModel
-                user_obj = admin_user[0]
-                logger.info(f"Found admin user: {user_obj.name} ({user_obj.email})")
+                # fallback_user_row is a SQLAlchemy Row containing UserModel
+                user_obj = fallback_user_row[0]
+                logger.info(f"Found fallback user: {user_obj.name} ({user_obj.email})")
             else:
-                logger.info("Database connection successful, but no admin user found")
+                logger.info(
+                    "Database connection successful, but no fallback user found"
+                )
 
             # Test subscription models
             try:
