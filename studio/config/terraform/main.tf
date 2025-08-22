@@ -84,6 +84,20 @@ variable "firebase_private_json" {
   sensitive   = true
 }
 
+variable "test_users" {
+  description = "Test user configuration with Firebase UIDs and subscription details"
+  type = list(object({
+    email               = string
+    name                = string
+    firebase_uid        = string
+    subscription_plan_id = number
+    role_id             = number
+    storage_quota_gb    = number
+  }))
+  default   = []
+  sensitive = true
+}
+
 variable "git_repo" {
   description = "Git repository"
   type        = string
@@ -2449,7 +2463,7 @@ user_data = base64encode(<<-EOF
 
     # Install packages
     yum update -y
-    yum install -y amazon-ssm-agent mysql amazon-efs-utils nc mysql-client git docker amazon-cloudwatch-agent
+    yum install -y amazon-ssm-agent mysql amazon-efs-utils nc mysql-client git docker amazon-cloudwatch-agent awscli
 
     # Start SSM agent
     if ! systemctl is-active --quiet amazon-ssm-agent; then
@@ -3103,6 +3117,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
           name  = "OPTINIST_DIR"
           value = "/app/studio_data"
         },
+        {
+          name  = "TEST_USERS_CONFIG"
+          value = jsonencode(var.test_users)
+        },
       ]
       secrets = [
         {
@@ -3357,6 +3375,10 @@ resource "aws_ecs_task_definition" "batch" {
           name  = "OPTINIST_DIR"
           value = "/app/studio_data"
         },
+        {
+          name  = "TEST_USERS_CONFIG"
+          value = jsonencode(var.test_users)
+        },
       ]
       secrets = [
         {
@@ -3556,7 +3578,7 @@ user_data = base64encode(<<-EOF
 
     # Install packages
     yum update -y
-    yum install -y amazon-ssm-agent mysql amazon-efs-utils nc mysql-client git docker amazon-cloudwatch-agent
+    yum install -y amazon-ssm-agent mysql amazon-efs-utils nc mysql-client git docker amazon-cloudwatch-agent awscli
 
     # Start SSM agent
     if ! systemctl is-active --quiet amazon-ssm-agent; then
