@@ -341,3 +341,101 @@ def update_workspace_share_status(
     )
     db.commit()
     return True
+
+
+@router.post(
+    "/workspaces/refresh-storage",
+    response_model=dict,
+    description="""
+- refresh S3 storage usage for all workspaces
+""",
+)
+async def refresh_all_workspaces_storage(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+):
+    """
+    Refresh S3 storage usage calculation for all workspaces.
+    This will recalculate both local and S3 storage usage.
+    """
+    try:
+        if not remote_bucket_name:
+            raise HTTPException(
+                status_code=400, detail="No S3 bucket configured for user"
+            )
+
+        # Import the cloud capacity service
+        import sys
+        from pathlib import Path
+
+        project_root = Path(__file__).parent.parent.parent.parent.parent
+        sys.path.insert(0, str(project_root))
+
+        from studio.scripts.run_sync_data_capacity_cloud import (
+            CloudWorkspaceDataCapacityService,
+        )
+
+        # Get all non-deleted workspaces that the user has access to
+        workspaces_query = (
+            select(common_model.Workspace.id)
+            .join(
+                common_model.WorkspacesShareUser,
+                common_model.Workspace.id
+                == common_model.WorkspacesShareUser.workspace_id,
+                isouter=True,
+            )
+            .filter(
+                common_model.Workspace.deleted.is_(False),
+                or_(
+                    common_model.WorkspacesShareUser.user_id == current_user.id,
+                    common_model.Workspace.user_id == current_user.id,
+                ),
+            )
+        )
+
+        workspace_ids = db.execute(workspaces_query).scalars().all()
+
+        logger.info(
+            f"Refreshing storage for {len(workspace_ids)} workspaces "
+            f"for user {current_user.id}"
+        )
+
+        # Process each workspace
+        refreshed_count = 0
+        for workspace_id in workspace_ids:
+            try:
+                service = CloudWorkspaceDataCapacityService
+                await service.sync_workspace_data_capacity_with_s3(
+                    db,
+                    remote_bucket_name,
+                    str(workspace_id),
+                    delete_existing=False,
+                )
+                refreshed_count += 1
+                logger.debug(f"Refreshed storage for workspace {workspace_id}")
+            except Exception as e:
+                logger.error(
+                    f"Failed to refresh storage for workspace {workspace_id}: {e}"
+                )
+                continue
+
+        db.commit()
+
+        logger.info(
+            f"Successfully refreshed storage for {refreshed_count}/"
+            f"{len(workspace_ids)} workspaces"
+        )
+
+        return {
+            "success": True,
+            "refreshed_workspaces": refreshed_count,
+            "total_workspaces": len(workspace_ids),
+            "message": f"Refreshed storage usage for {refreshed_count} workspaces",
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to refresh all workspaces storage: {e}")
+        raise HTTPException(
+            status_code=500, detail="Failed to refresh workspace storage usage"
+        )

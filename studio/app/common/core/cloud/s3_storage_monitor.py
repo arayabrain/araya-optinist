@@ -43,7 +43,7 @@ class S3StorageMonitor:
 
     async def get_user_s3_storage_size(self, user_id: int) -> int:
         """
-        Calculate total storage size for a user's S3 data.
+        Calculate total storage size for a user's S3 data across all their workspaces.
 
         Args:
             user_id: The user ID to check storage for
@@ -54,49 +54,75 @@ class S3StorageMonitor:
         total_size = 0
 
         try:
+            # Get all workspaces the user has access to
+            from sqlmodel import or_, select
+
+            from studio.app.common import models as common_model
+            from studio.app.common.db.database import session_scope
+
+            with session_scope() as db:
+                workspaces_query = (
+                    select(common_model.Workspace.id)
+                    .join(
+                        common_model.WorkspacesShareUser,
+                        common_model.Workspace.id
+                        == common_model.WorkspacesShareUser.workspace_id,
+                        isouter=True,
+                    )
+                    .filter(
+                        common_model.Workspace.deleted.is_(False),
+                        or_(
+                            common_model.WorkspacesShareUser.user_id == user_id,
+                            common_model.Workspace.user_id == user_id,
+                        ),
+                    )
+                )
+                workspace_ids = db.execute(workspaces_query).scalars().all()
+
+            logger.debug(
+                f"Checking S3 storage for user {user_id} across "
+                f"{len(workspace_ids)} workspaces"
+            )
+
             # Create sync S3 client for boto3 operations
             s3_client = boto3.client("s3")
 
-            # Check both input and output directories for the user
-            # Use the same path structure as S3StorageController
-            prefixes = [
-                f"app/studio_data/{S3StorageController.S3_INPUT_DIR}/{user_id}/",
-                f"app/studio_data/{S3StorageController.S3_OUTPUT_DIR}/{user_id}/",
-            ]
-            logger.debug(
-                f"Checking S3 storage for user {user_id} in bucket {self.bucket_name}"
-            )
-            logger.debug(f"Scanning prefixes: {prefixes}")
+            # Check both input and output directories for each workspace
+            for workspace_id in workspace_ids:
+                prefixes = [
+                    f"app/studio_data/"
+                    f"{S3StorageController.S3_INPUT_DIR}/{workspace_id}/",
+                    f"app/studio_data/"
+                    f"{S3StorageController.S3_OUTPUT_DIR}/{workspace_id}/",
+                ]
 
-            for prefix in prefixes:
-                try:
-                    logger.debug(f"Scanning prefix: {prefix}")
-                    # Use paginator to handle large number of objects
-                    paginator = s3_client.get_paginator("list_objects_v2")
-                    page_iterator = paginator.paginate(
-                        Bucket=self.bucket_name, Prefix=prefix
-                    )
+                for prefix in prefixes:
+                    try:
+                        logger.debug(f"Scanning prefix: {prefix}")
+                        # Use paginator to handle large number of objects
+                        paginator = s3_client.get_paginator("list_objects_v2")
+                        page_iterator = paginator.paginate(
+                            Bucket=self.bucket_name, Prefix=prefix
+                        )
 
-                    prefix_size = 0
-                    object_count = 0
-                    for page in page_iterator:
-                        if "Contents" in page:
-                            for obj in page["Contents"]:
-                                object_size = obj["Size"]
-                                total_size += object_size
-                                prefix_size += object_size
-                                object_count += 1
-                                # logger.debug(f"Found object: {obj['Key']} "
-                                #               f"({object_size:,} bytes)")
+                        prefix_size = 0
+                        object_count = 0
+                        for page in page_iterator:
+                            if "Contents" in page:
+                                for obj in page["Contents"]:
+                                    object_size = obj["Size"]
+                                    total_size += object_size
+                                    prefix_size += object_size
+                                    object_count += 1
 
-                    logger.debug(
-                        f"Prefix {prefix}: {object_count} objects, "
-                        f"{prefix_size:,} bytes"
-                    )
+                        logger.debug(
+                            f"Workspace {workspace_id} - Prefix {prefix}: "
+                            f"{object_count} objects, {prefix_size:,} bytes"
+                        )
 
-                except Exception as e:
-                    logger.warning(f"Failed to get size for prefix {prefix}: {e}")
-                    continue
+                    except Exception as e:
+                        logger.warning(f"Failed to get size for prefix {prefix}: {e}")
+                        continue
 
         except Exception as e:
             logger.error(f"Failed to calculate S3 storage size for user {user_id}: {e}")
