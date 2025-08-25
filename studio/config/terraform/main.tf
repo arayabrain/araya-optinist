@@ -2205,9 +2205,9 @@ resource "aws_cloudwatch_metric_alarm" "cpu_high" {
   namespace           = "AWS/AutoScaling"
   period              = "120"
   statistic           = "Average"
-  threshold           = "90"
+  threshold           = "60"
   alarm_description   = "This metric monitors ec2 cpu utilization"
-  # alarm_actions       = [aws_autoscaling_policy.scale_up.arn]  # Disabled: memory-only scaling
+  alarm_actions       = [aws_autoscaling_policy.scale_up.arn]  # Enabled: dual CPU+memory scaling
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.main.name
   }
@@ -2240,7 +2240,7 @@ resource "aws_cloudwatch_metric_alarm" "cpu_low" {
   statistic           = "Average"
   threshold           = "20"
   alarm_description   = "This metric monitors low cpu utilization"
-  # alarm_actions       = [aws_autoscaling_policy.scale_down.arn]  # Disabled: memory-only scaling
+  alarm_actions       = [aws_autoscaling_policy.scale_down.arn]  # Enabled: dual CPU+memory scaling
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.main.name
   }
@@ -2354,21 +2354,39 @@ resource "aws_cloudwatch_dashboard" "main" {
       },
       {
         type   = "metric"
-        x      = 0
-        y      = 6
+        x      = 12
+        y      = 0
         width  = 12
         height = 6
 
         properties = {
           metrics = [
+            ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", aws_autoscaling_group.main.name],
             ["AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", aws_autoscaling_group.main.name],
-            ["AWS/AutoScaling", "GroupInServiceInstances", "AutoScalingGroupName", aws_autoscaling_group.main.name],
+            ["AWS/AutoScaling", "GroupInServiceInstances", "AutoScalingGroupName", aws_autoscaling_group.main.name]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-1"
+          title   = "EC2 & Auto Scaling Metrics"
+          period  = 300
+        }
+      },
+      {
+        type   = "metric"
+        x      = 0
+        y      = 6
+        width  = 24
+        height = 6
+
+        properties = {
+          metrics = [
             ["AWS/AutoScaling", "GroupTotalInstances", "AutoScalingGroupName", aws_autoscaling_group.main.name]
           ]
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
-          title   = "Auto Scaling Group Metrics"
+          title   = "Auto Scaling Group Total Instances"
           period  = 300
         }
       },

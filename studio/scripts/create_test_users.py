@@ -98,10 +98,19 @@ async def create_test_user_in_db(db, user_data, organization_id):
     )
 
     # Create subscription
+    # Set expiration based on subscription plan to test downgrade warnings
+    if user_data["subscription_plan_id"] == 2:  # Premium plan
+        # For premium users, create expired subscription to test downgrade warnings
+        # Expired 31 days ago (past grace period) to trigger warnings
+        expiration_date = datetime.now(timezone.utc) - timedelta(days=50)
+    else:  # Free plan
+        # For free tier users, set future expiration (no need to test warnings)
+        expiration_date = datetime.now(timezone.utc) + timedelta(days=365)
+
     subscription = UserSubscription(
         plan_id=user_data["subscription_plan_id"],
         user_id=user_db.id,
-        expiration=datetime.now(timezone.utc) + timedelta(days=365),
+        expiration=expiration_date,
     )
     db.add(subscription)
 

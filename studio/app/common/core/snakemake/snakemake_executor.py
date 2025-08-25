@@ -364,7 +364,8 @@ def _snakemake_execute_batch(
 
         # Upload config file to S3 so batch jobs can find it
         if os.path.exists(smk_config):
-            if RemoteStorageController.is_available():
+            if False:  # Disable S3 config upload, use EFS
+                # and upload after using RemoteStorageController
                 try:
                     # Construct S3 path relative to smk_workdir structure
                     # smk_workdir = DIRPATH.OUTPUT_DIR/workspace_id/unique_id
@@ -460,7 +461,9 @@ def _snakemake_execute_batch(
 
                 # Prepare environment variables for dryrun (same as real execution)
                 dryrun_envvars = ["USE_AWS_BATCH", "OPTINIST_DIR"]
-                if RemoteStorageController.is_available():
+                if (
+                    False
+                ):  # Temporarily disable S3 for dryrun, use EFS RemoteStorageController
                     dryrun_envvars.extend(
                         [
                             "S3_DEFAULT_BUCKET_NAME",
@@ -471,6 +474,7 @@ def _snakemake_execute_batch(
                     logger.info("Using S3 storage for dryrun validation")
                 else:
                     dryrun_envvars.extend(["EFS_MOUNT_TARGET", "TMPDIR", "TMP"])
+                    logger.info("Using EFS storage for dryrun validation")
 
                 # Execute verbose dryrun validation
                 dag_api.execute_workflow(
@@ -533,7 +537,8 @@ def _snakemake_execute_batch(
                 try:
                     # Prepare environment variables for batch jobs
                     envvars = ["USE_AWS_BATCH", "OPTINIST_DIR"]
-                    if RemoteStorageController.is_available():
+                    if False:  # Temporarily disable S3 for batch jobs
+                        # use EFS RemoteStorageController
                         envvars.extend(
                             [
                                 "S3_DEFAULT_BUCKET_NAME",
@@ -544,10 +549,13 @@ def _snakemake_execute_batch(
                         logger.info("Using S3 storage for batch jobs")
                     else:
                         envvars.extend(["EFS_MOUNT_TARGET", "TMPDIR", "TMP"])
+                        logger.info("Using EFS storage for batch jobs")
 
                     # Prepare container setup for EFS optimization
                     contain_setup = []
-                    if not RemoteStorageController.is_available():
+                    if (
+                        not False
+                    ):  # Temporarily disable S3 for, use EFS + RemoteStorageController
                         contain_setup = BatchDebug.get_batch_contain_setup_commands()
 
                     # logger.debug("=== AWS BATCH EXECUTION DEBUG ===")
@@ -751,9 +759,8 @@ def _snakemake_execute_batch(
                     try:
                         logger.info("Uploading final workflow results to S3...")
 
-                        if RemoteStorageController.is_available():
-                            # Use the existing upload wrapper with proper locking
-                            # and status tracking
+                        if False:  # Disable S3 upload from Snakemake, handle via
+                            # separate process: RemoteStorageController
                             import asyncio
 
                             # Get S3 bucket name for upload
@@ -908,7 +915,9 @@ def _post_process_workflow(workspace_id: str, unique_id: str, result: bool = Fal
     # Download experiment results from S3 if using remote storage and batch mode
     from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
 
-    if result and BATCH_CONFIG.USE_AWS_BATCH and RemoteStorageController.is_available():
+    if result and BATCH_CONFIG.USE_AWS_BATCH and False:
+        # Disable S3 download from Snakemake, handle via
+        # separate process: RemoteStorageController
         try:
             logger.info("Downloading experiment results from S3 for post-processing")
             remote_controller = RemoteStorageController(
