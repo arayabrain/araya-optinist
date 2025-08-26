@@ -12,7 +12,7 @@ import AccountTreeIcon from "@mui/icons-material/AccountTree"
 import AddLinkIcon from "@mui/icons-material/AddLink"
 import AddPhotoAlternateIcon from "@mui/icons-material/AddPhotoAlternate"
 import ChecklistRtlIcon from "@mui/icons-material/ChecklistRtl"
-import { IconButton, Tooltip, Typography } from "@mui/material"
+import { IconButton, Tooltip, Typography, Chip, Box } from "@mui/material"
 import ButtonGroup from "@mui/material/ButtonGroup"
 
 import { FILE_TREE_TYPE, FILE_TREE_TYPE_SET } from "api/files/Files"
@@ -185,6 +185,7 @@ export const FileSelectImple = memo(function FileSelectImple({
 
   const accept = getFileInputAccept(fileTreeType)
   const fileName = getLabelByPath(filePath)
+  const fileCount = Array.isArray(filePath) ? filePath.length : 1
 
   return (
     <div>
@@ -286,9 +287,20 @@ export const FileSelectImple = memo(function FileSelectImple({
           }}
         />
         <Tooltip title={fileName ? fileName : null} placement="right">
-          <Typography className="selectFilePath" variant="body2">
-            {fileName ? fileName : "No file is selected."}
-          </Typography>
+          <Box display="flex" alignItems="center" gap={1}>
+            {fileCount > 1 && (
+              <Chip
+                label={fileCount}
+                size="small"
+                color="info"
+                variant="filled"
+                sx={{ fontSize: "0.75rem", height: "20px", fontWeight: "bold" }}
+              />
+            )}
+            <Typography className="selectFilePath" variant="body2">
+              {fileName ? fileName : "No file is selected."}
+            </Typography>
+          </Box>
         </Tooltip>
       </div>
     </div>
