@@ -87,6 +87,12 @@ mysql --skip-ssl -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" ${MYSQL
     VALUES ('sales_tax', 'Sales Tax', 0.10, 1, CURDATE());
 EOSQL
 
+# Initialize roles
+echo "Initializing roles..."
+mysql --skip-ssl -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" ${MYSQL_DATABASE} <<-EOSQL
+    INSERT IGNORE INTO roles (id, role) VALUES (1, 'Admin'), (20, 'Operator');
+EOSQL
+
 # Initialize admin user and organization
 # Only proceeds if all required environment variables are set
 # This section handles first-time setup of the application
@@ -111,6 +117,14 @@ EOSQL
 EOSQL
         echo "Initial admin user created successfully"
 
+        # Assign admin role to the initial user
+        echo "Assigning admin role to initial user..."
+        mysql --skip-ssl -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" ${MYSQL_DATABASE} <<-EOSQL
+            INSERT IGNORE INTO user_roles (user_id, role_id)
+            SELECT id, 1 FROM users WHERE uid='$INITIAL_FIREBASE_UID';
+EOSQL
+        echo "Admin role assigned successfully"
+
         # Initialize storage usage for admin user
         if [ ! -z "$ADMIN_STORAGE_QUOTA_BYTES" ]; then
             echo "Initializing admin user storage quota..."
@@ -133,6 +147,14 @@ EOSQL
     else
         echo "Admin user already exists, skipping creation"
     fi
+
+    # Ensure admin role is assigned (for both new and existing admin users)
+    echo "Ensuring admin role is assigned to admin user..."
+    mysql --skip-ssl -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" ${MYSQL_DATABASE} <<-EOSQL
+        INSERT IGNORE INTO user_roles (user_id, role_id)
+        SELECT id, 1 FROM users WHERE uid='$INITIAL_FIREBASE_UID';
+EOSQL
+    echo "Admin role assignment verified"
 fi
 
 # Verify backend configuration

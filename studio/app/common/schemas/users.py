@@ -35,6 +35,12 @@ class User(BaseModel):
     role_id: Optional[int]
     data_usage: Optional[int]
     attributes: Optional[dict]
+    subscription_plan_name: Optional[str] = None
+    subscription_status: Optional[str] = None
+    subscription_days_remaining: Optional[int] = None
+    storage_usage_bytes: Optional[int] = None
+    storage_quota_bytes: Optional[int] = None
+    storage_usage_percentage: Optional[float] = None
 
     @property
     def is_admin(self) -> bool:

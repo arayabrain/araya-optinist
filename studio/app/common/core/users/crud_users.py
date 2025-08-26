@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
 from firebase_admin import auth as firebase_auth
@@ -17,6 +19,11 @@ from studio.app.common.models import Role as RoleModel
 from studio.app.common.models import User as UserModel
 from studio.app.common.models import UserRole as UserRoleModel
 from studio.app.common.models.experiment import ExperimentRecord
+from studio.app.common.models.subscription import (
+    SubscriptionPlans,
+    UserStorageUsage,
+    UserSubscription,
+)
 from studio.app.common.models.workspace import Workspace
 from studio.app.common.schemas.auth import UserAuth
 from studio.app.common.schemas.base import SortOptions
@@ -73,9 +80,64 @@ async def list_user(
     def user_transformer(items):
         users = []
         for item in items:
-            user, role_id, data_usage = item
+            (
+                user,
+                role_id,
+                data_usage,
+                subscription_plan_name,
+                storage_usage_bytes,
+                storage_quota_bytes,
+                subscription_expiration,
+                subscription_plan_id,
+            ) = item
             user.__dict__["role_id"] = role_id
             user.__dict__["data_usage"] = data_usage
+            user.__dict__["subscription_plan_name"] = subscription_plan_name or "Free"
+            user.__dict__["storage_usage_bytes"] = storage_usage_bytes or 0
+            user.__dict__["storage_quota_bytes"] = storage_quota_bytes or 0
+            user.__dict__["storage_usage_percentage"] = round(
+                (storage_usage_bytes or 0) / (storage_quota_bytes or 1) * 100, 2
+            )
+
+            # Calculate subscription status and days remaining
+            now = datetime.now(timezone.utc)
+            if subscription_expiration and subscription_plan_id:
+                # Make sure expiration is timezone-aware
+                if subscription_expiration.tzinfo is None:
+                    subscription_expiration = subscription_expiration.replace(
+                        tzinfo=timezone.utc
+                    )
+
+                days_remaining = (subscription_expiration - now).days
+
+                if subscription_plan_id == 1:  # Free plan
+                    user.__dict__["subscription_status"] = "Free"
+                    user.__dict__["subscription_days_remaining"] = None
+                elif subscription_plan_id == 2:  # Premium plan
+                    if days_remaining > 0:
+                        user.__dict__["subscription_status"] = "Premium"
+                        user.__dict__["subscription_days_remaining"] = days_remaining
+                    elif (
+                        days_remaining >= -30
+                    ):  # Grace period (30 days after expiration)
+                        user.__dict__["subscription_status"] = "Downgrade Grace"
+                        user.__dict__["subscription_days_remaining"] = (
+                            30 + days_remaining
+                        )  # Days left in grace period
+                    else:
+                        user.__dict__["subscription_status"] = "Expired"
+                        user.__dict__["subscription_days_remaining"] = None
+                else:
+                    user.__dict__["subscription_status"] = (
+                        subscription_plan_name or "Unknown"
+                    )
+                    user.__dict__["subscription_days_remaining"] = (
+                        days_remaining if days_remaining > 0 else None
+                    )
+            else:
+                user.__dict__["subscription_status"] = "Free"
+                user.__dict__["subscription_days_remaining"] = None
+
             users.append(user)
         return users
 
@@ -120,11 +182,21 @@ async def list_user(
                 + func.coalesce(ExperimentCapacity.c.experiment_capacity, 0).label(
                     "data_usage"
                 ),
+                SubscriptionPlans.name.label("subscription_plan_name"),
+                UserStorageUsage.current_usage_bytes,
+                UserStorageUsage.quota_limit_bytes,
+                UserSubscription.expiration.label("subscription_expiration"),
+                UserSubscription.plan_id.label("subscription_plan_id"),
             )
             .outerjoin(WorkspaceCapacity, WorkspaceCapacity.c.user_id == UserModel.id)
             .outerjoin(ExperimentCapacity, ExperimentCapacity.c.user_id == UserModel.id)
             .join(UserRoleModel, UserRoleModel.user_id == UserModel.id, isouter=True)
             .join(RoleModel, RoleModel.id == UserRoleModel.role_id, isouter=True)
+            .outerjoin(UserSubscription, UserSubscription.user_id == UserModel.id)
+            .outerjoin(
+                SubscriptionPlans, SubscriptionPlans.id == UserSubscription.plan_id
+            )
+            .outerjoin(UserStorageUsage, UserStorageUsage.user_id == UserModel.id)
             .filter(
                 UserModel.active.is_(True),
                 UserModel.organization_id == organization_id,
