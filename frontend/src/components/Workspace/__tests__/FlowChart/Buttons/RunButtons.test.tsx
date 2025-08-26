@@ -43,6 +43,14 @@ describe("RunButtons component", () => {
           type: 1, // WORKSPACE_TYPE.NORMAL
         },
       },
+      flowElement: {
+        flowNodes: [],
+        flowEdges: [],
+        flowPosition: { x: 0, y: 0, zoom: 1 },
+        elementCoord: {},
+        loading: false,
+      },
+      inputNode: {},
     })
   })
 
