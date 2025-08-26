@@ -45,6 +45,27 @@ export function isMicroscopeInputNode(
   return inputNode.fileType === FILE_TYPE_SET.MICROSCOPE
 }
 
+export function isBatchAnyInputNode(
+  inputNode: InputNodeType,
+): inputNode is
+  | BatchImageInputNode
+  | BatchCsvInputNode
+  | BatchFluoInputNode
+  | BatchBehaviorInputNode
+  | BatchMicroscopeInputNode
+  | BatchHDF5InputNode
+  | BatchMatlabInputNode {
+  return (
+    isBatchImageInputNode(inputNode) ||
+    isBatchCsvInputNode(inputNode) ||
+    isBatchFluoInputNode(inputNode) ||
+    isBatchBehaviorInputNode(inputNode) ||
+    isBatchMicroscopeInputNode(inputNode) ||
+    isBatchHDF5InputNode(inputNode) ||
+    isBatchMatlabInputNode(inputNode)
+  )
+}
+
 export function isBatchImageInputNode(
   inputNode: InputNodeType,
 ): inputNode is BatchImageInputNode {

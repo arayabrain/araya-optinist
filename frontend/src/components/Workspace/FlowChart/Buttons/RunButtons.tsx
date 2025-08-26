@@ -23,6 +23,9 @@ import Popper from "@mui/material/Popper"
 import TextField from "@mui/material/TextField"
 
 import { WORKSPACE_TYPE } from "const/Workspace"
+import { selectFlowNodes } from "store/slice/FlowElement/FlowElementSelectors"
+import { selectInputNode } from "store/slice/InputNode/InputNodeSelectors"
+import { isBatchAnyInputNode } from "store/slice/InputNode/InputNodeUtils"
 import { UseRunPipelineReturnType } from "store/slice/Pipeline/PipelineHook"
 import {
   selectPipelineIsStartedSuccess,
@@ -55,6 +58,8 @@ export const RunButtons = memo(function RunButtons(
   const runBtnOption = useSelector(selectPipelineRunBtn)
   const isStartedSuccess = useSelector(selectPipelineIsStartedSuccess)
   const workspaceType = useSelector(selectCurrentWorkspaceType)
+  const flowNodes = useSelector(selectFlowNodes)
+  const inputNodes = useSelector(selectInputNode)
 
   const sendingRunRequest = useRef(false)
 
@@ -98,6 +103,46 @@ export const RunButtons = memo(function RunButtons(
   const onClickCancel = () => {
     handleCancelPipeline()
   }
+  /**
+   * Validates batch input nodes in the flowchart
+   * @returns Error message if validation fails, null otherwise
+   */
+  const validateBatchInputNodes = (): string | null => {
+    // Find all batch input nodes in the flowchart
+    const batchInputNodes = flowNodes
+      .filter((node) => {
+        const inputNode = inputNodes[node.id]
+        return inputNode && isBatchAnyInputNode(inputNode)
+      })
+      .map((node) => ({
+        nodeId: node.id,
+        inputNode: inputNodes[node.id],
+      }))
+
+    // Check if there are any batch nodes
+    if (batchInputNodes.length === 0) {
+      return "There are no batch input nodes."
+    }
+
+    // Check file count consistency across all batch nodes
+    const fileCounts = batchInputNodes.map((node) => {
+      const filePath = node.inputNode.selectedFilePath
+      if (Array.isArray(filePath)) {
+        return filePath.length
+      }
+      return filePath ? 1 : 0
+    })
+
+    const minCount = Math.min(...fileCounts)
+    const maxCount = Math.max(...fileCounts)
+
+    if (minCount !== maxCount) {
+      return `Number of batch input files does not match. [${minCount} - ${maxCount}]`
+    }
+
+    return null
+  }
+
   const onClickBatchRun = () => {
     let errorMessage: string | null = null
     if (algorithmNodeNotExist) {
@@ -106,6 +151,12 @@ export const RunButtons = memo(function RunButtons(
     if (filePathIsUndefined) {
       errorMessage = "please select input file"
     }
+
+    // Validate batch nodes
+    if (errorMessage == null) {
+      errorMessage = validateBatchInputNodes()
+    }
+
     if (errorMessage != null) {
       enqueueSnackbar(errorMessage, {
         variant: "error",

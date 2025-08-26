@@ -292,8 +292,8 @@ export const FileSelectImple = memo(function FileSelectImple({
               <Chip
                 label={fileCount}
                 size="small"
-                color="info"
-                variant="filled"
+                color="primary"
+                variant="outlined"
                 sx={{ fontSize: "0.75rem", height: "20px", fontWeight: "bold" }}
               />
             )}
