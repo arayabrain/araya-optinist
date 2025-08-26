@@ -15,7 +15,7 @@ import DeleteIcon from "@mui/icons-material/Delete"
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline"
 import FolderIcon from "@mui/icons-material/Folder"
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined"
-import { Divider, IconButton, Tooltip } from "@mui/material"
+import { Divider, IconButton, Tooltip, Chip } from "@mui/material"
 import Box from "@mui/material/Box"
 import Button from "@mui/material/Button"
 import Checkbox, { CheckboxProps } from "@mui/material/Checkbox"
@@ -111,11 +111,22 @@ export const FileSelectDialog = memo(function FileSelectDialog({
             selectedFilePath={selectedFilePath}
           />
         </div>
-        <Typography variant="subtitle1">
-          {Array.isArray(selectedFilePath) && selectedFilePath.length === 0
-            ? "No Selected File"
-            : "Selected File"}
-        </Typography>
+        <Box display="flex" alignItems="center" gap={1}>
+          <Typography variant="subtitle1">
+            {Array.isArray(selectedFilePath) && selectedFilePath.length === 0
+              ? "No Selected File"
+              : "Selected Files"}
+          </Typography>
+          {Array.isArray(selectedFilePath) && selectedFilePath.length > 0 && (
+            <Chip
+              label={selectedFilePath.length}
+              size="small"
+              color="primary"
+              variant="outlined"
+              sx={{ fontSize: "0.75rem", height: "20px", fontWeight: "bold" }}
+            />
+          )}
+        </Box>
         <FilePathSelectedListView
           path={selectedFilePath}
           setSelectedFilePath={setSelectedFilePath}
