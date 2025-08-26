@@ -30,9 +30,15 @@ import { RUN_STATUS } from "store/slice/Pipeline/PipelineType"
 import { handleWorkflowYamlError } from "store/slice/Pipeline/PipelineUtils"
 import { selectRunPostData } from "store/slice/Run/RunSelectors"
 import { selectModeStandalone } from "store/slice/Standalone/StandaloneSeclector"
-import { fetchWorkflow } from "store/slice/Workflow/WorkflowActions"
+import {
+  fetchWorkflow,
+  reproduceWorkflow,
+} from "store/slice/Workflow/WorkflowActions"
 import { getWorkspace } from "store/slice/Workspace/WorkspaceActions"
-import { selectIsWorkspaceOwner } from "store/slice/Workspace/WorkspaceSelector"
+import {
+  selectIsWorkspaceOwner,
+  selectCurrentWorkspaceId,
+} from "store/slice/Workspace/WorkspaceSelector"
 import {
   clearCurrentWorkspace,
   setActiveTab,
@@ -88,6 +94,7 @@ export function useRunPipeline() {
   const isStartedSuccess = useSelector(selectPipelineIsStartedSuccess)
   const runDisabled = useIsRunDisabled()
   const isBatchRun = useSelector(selectPipelineIsBatchRun)
+  const currentWorkspaceId = useSelector(selectCurrentWorkspaceId)
 
   const filePathIsUndefined = useSelector(selectFilePathIsUndefined)
   const algorithmNodeNotExist = useSelector(selectAlgorithmNodeNotExist)
@@ -181,6 +188,13 @@ export function useRunPipeline() {
   // タブ移動による再レンダリングするたびにスナックバーが実行されてしまう挙動を回避するために前回の値を保持
   const [prevStatus, setPrevStatus] = useState(status)
 
+  // Handle batch run completion separately
+  const handleBatchRunCompletion = useCallback(() => {
+    if (uid && currentWorkspaceId) {
+      dispatch(reproduceWorkflow({ workspaceId: currentWorkspaceId, uid }))
+    }
+  }, [uid, currentWorkspaceId, dispatch])
+
   useEffect(() => {
     if (prevStatus !== status) {
       let isRunFinished = false
@@ -188,11 +202,15 @@ export function useRunPipeline() {
       if (status === RUN_STATUS.START_SUCCESS) {
         dispatch(getExperiments())
       } else if (status === RUN_STATUS.FINISHED) {
+        // Show different message based on batch run flag
+        const message = isBatchRun ? "Batch run started" : "Workflow finished"
+        enqueueSnackbar(message, { variant: "success" })
+
+        // Update flowchart for batch run
         if (isBatchRun) {
-          enqueueSnackbar("Batch run started", { variant: "success" })
-        } else {
-          enqueueSnackbar("Workflow finished", { variant: "success" })
+          handleBatchRunCompletion()
         }
+
         isRunFinished = true
         dispatch(getExperiments())
       } else if (status === RUN_STATUS.ABORTED) {
@@ -212,7 +230,14 @@ export function useRunPipeline() {
 
       setPrevStatus(status)
     }
-  }, [dispatch, status, prevStatus, enqueueSnackbar, isBatchRun])
+  }, [
+    dispatch,
+    status,
+    prevStatus,
+    enqueueSnackbar,
+    isBatchRun,
+    handleBatchRunCompletion,
+  ])
 
   return {
     filePathIsUndefined,
