@@ -19,6 +19,7 @@ import {
   INITIAL_IMAGE_ELEMENT_ID,
   INITIAL_IMAGE_ELEMENT_NAME,
 } from "const/flowchart"
+import { WORKSPACE_TYPE } from "const/Workspace"
 import { uploadFile } from "store/slice/FileUploader/FileUploaderActions"
 import {
   addAlgorithmNode,
@@ -39,10 +40,13 @@ import {
   fetchWorkflow,
 } from "store/slice/Workflow/WorkflowActions"
 
-const initialNodes: Node<NodeData>[] = [
+const createInitialNodes = (workspaceType?: number): Node<NodeData>[] => [
   {
     id: INITIAL_IMAGE_ELEMENT_ID,
-    type: REACT_FLOW_NODE_TYPE_KEY.ImageFileNode,
+    type:
+      workspaceType === WORKSPACE_TYPE.BATCH
+        ? REACT_FLOW_NODE_TYPE_KEY.BatchImageFileNode
+        : REACT_FLOW_NODE_TYPE_KEY.ImageFileNode,
     data: {
       type: NODE_TYPE_SET.INPUT,
       label: INITIAL_IMAGE_ELEMENT_NAME,
@@ -51,6 +55,8 @@ const initialNodes: Node<NodeData>[] = [
     position: { x: 50, y: 150 },
   },
 ]
+
+const initialNodes: Node<NodeData>[] = createInitialNodes()
 
 const initialFlowPosition: Transform = [0, 0, 0.7] // [x, y, zoom]
 
@@ -71,14 +77,17 @@ export const flowElementSlice = createSlice({
   name: FLOW_ELEMENT_SLICE_NAME,
   initialState,
   reducers: {
-    clearFlowElements: (state) => {
+    clearFlowElements: (
+      state,
+      action: PayloadAction<{ workspaceType?: number }>,
+    ) => {
       state.flowNodes = applyNodeChanges(
         state.flowNodes.map((node) => {
           return { id: node.id, type: "remove" }
         }),
         state.flowNodes,
       )
-      state.flowNodes = initialNodes
+      state.flowNodes = createInitialNodes(action.payload?.workspaceType)
       state.flowEdges = applyEdgeChanges(
         state.flowEdges.map((edge) => {
           return { id: edge.id, type: "remove" }

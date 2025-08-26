@@ -7,17 +7,21 @@ import { IconButton, Tooltip } from "@mui/material"
 import { ConfirmDialog } from "components/common/ConfirmDialog"
 import { clearFlowElements } from "store/slice/FlowElement/FlowElementSlice"
 import { selectPipelineIsStartedSuccess } from "store/slice/Pipeline/PipelineSelectors"
+import { RootState } from "store/store"
 
 export const CreateWorkflowButton = memo(function CreateWorkflowButton() {
   const [open, setOpen] = useState(false)
   const dispatch = useDispatch()
   const isPending = useSelector(selectPipelineIsStartedSuccess)
+  const workspaceType = useSelector(
+    (state: RootState) => state.workspace.currentWorkspace.type,
+  )
 
   const openDialog = () => {
     setOpen(true)
   }
   const onConfirm = () => {
-    dispatch(clearFlowElements())
+    dispatch(clearFlowElements({ workspaceType }))
   }
 
   return (

@@ -2,6 +2,7 @@ import { createSlice, isAnyOf, PayloadAction } from "@reduxjs/toolkit"
 
 import { isInputNodePostData } from "api/run/RunUtils"
 import { INITIAL_IMAGE_ELEMENT_ID } from "const/flowchart"
+import { WORKSPACE_TYPE } from "const/Workspace"
 import { FileNodeFactory } from "factories/FileNodeFactory"
 import { uploadFile } from "store/slice/FileUploader/FileUploaderActions"
 import { addInputNode } from "store/slice/FlowElement/FlowElementActions"
@@ -39,12 +40,18 @@ import {
   fetchWorkflow,
 } from "store/slice/Workflow/WorkflowActions"
 
-const initialState: InputNode = {
-  [INITIAL_IMAGE_ELEMENT_ID]: {
-    fileType: FILE_TYPE_SET.IMAGE,
-    param: {},
-  },
-} as InputNode
+const createInitialState = (workspaceType?: number): InputNode =>
+  ({
+    [INITIAL_IMAGE_ELEMENT_ID]: {
+      fileType:
+        workspaceType === WORKSPACE_TYPE.BATCH
+          ? FILE_TYPE_SET.BATCH_IMAGE
+          : FILE_TYPE_SET.IMAGE,
+      param: {},
+    },
+  }) as InputNode
+
+const initialState: InputNode = createInitialState()
 
 export const inputNodeSlice = createSlice({
   name: INPUT_NODE_SLICE_NAME,
@@ -126,7 +133,9 @@ export const inputNodeSlice = createSlice({
           }
         }
       })
-      .addCase(clearFlowElements, () => initialState)
+      .addCase(clearFlowElements, (_, action) =>
+        createInitialState(action.payload?.workspaceType),
+      )
       .addCase(deleteFlowNodes, (state, action) => {
         action.payload.forEach((node) => {
           if (node.data?.type === NODE_TYPE_SET.INPUT) {
@@ -156,7 +165,7 @@ export const inputNodeSlice = createSlice({
           }
         }
       })
-      .addCase(fetchWorkflow.rejected, () => initialState)
+      .addCase(fetchWorkflow.rejected, () => createInitialState())
       .addCase(importWorkflowConfig.fulfilled, (_, action) => {
         const newState: InputNode = {}
         Object.values(action.payload.nodeDict)
