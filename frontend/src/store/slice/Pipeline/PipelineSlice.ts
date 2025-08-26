@@ -32,6 +32,7 @@ export const initialState: Pipeline = {
     status: RUN_STATUS.START_UNINITIALIZED,
   },
   runBtn: RUN_BTN_OPTIONS.RUN_NEW,
+  isBatchRun: false,
 }
 
 export const pipelineSlice = createSlice({
@@ -120,14 +121,18 @@ export const pipelineSlice = createSlice({
           }
         },
       )
-      .addMatcher(
-        isAnyOf(run.pending, runByCurrentUid.pending, batchRun.pending),
-        (state) => {
-          state.run = {
-            status: RUN_STATUS.START_PENDING,
-          }
-        },
-      )
+      .addMatcher(isAnyOf(run.pending, runByCurrentUid.pending), (state) => {
+        state.run = {
+          status: RUN_STATUS.START_PENDING,
+        }
+        state.isBatchRun = false
+      })
+      .addMatcher(isAnyOf(batchRun.pending), (state) => {
+        state.run = {
+          status: RUN_STATUS.START_PENDING,
+        }
+        state.isBatchRun = true
+      })
       .addMatcher(
         isAnyOf(run.fulfilled, runByCurrentUid.fulfilled),
         (state, action) => {
@@ -142,6 +147,7 @@ export const pipelineSlice = createSlice({
           state.currentPipeline = {
             uid: uid,
           }
+          state.isBatchRun = false
         },
       )
       .addMatcher(isAnyOf(batchRun.fulfilled), (state, action) => {

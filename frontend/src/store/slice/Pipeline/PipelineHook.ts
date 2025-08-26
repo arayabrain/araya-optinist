@@ -24,6 +24,7 @@ import {
   selectPipelineIsStartedSuccess,
   selectPipelineLatestUid,
   selectPipelineStatus,
+  selectPipelineIsBatchRun,
 } from "store/slice/Pipeline/PipelineSelectors"
 import { RUN_STATUS } from "store/slice/Pipeline/PipelineType"
 import { handleWorkflowYamlError } from "store/slice/Pipeline/PipelineUtils"
@@ -86,6 +87,7 @@ export function useRunPipeline() {
   const isCanceled = useSelector(selectPipelineIsCanceled)
   const isStartedSuccess = useSelector(selectPipelineIsStartedSuccess)
   const runDisabled = useIsRunDisabled()
+  const isBatchRun = useSelector(selectPipelineIsBatchRun)
 
   const filePathIsUndefined = useSelector(selectFilePathIsUndefined)
   const algorithmNodeNotExist = useSelector(selectAlgorithmNodeNotExist)
@@ -186,7 +188,11 @@ export function useRunPipeline() {
       if (status === RUN_STATUS.START_SUCCESS) {
         dispatch(getExperiments())
       } else if (status === RUN_STATUS.FINISHED) {
-        enqueueSnackbar("Workflow finished", { variant: "success" })
+        if (isBatchRun) {
+          enqueueSnackbar("Batch run started", { variant: "success" })
+        } else {
+          enqueueSnackbar("Workflow finished", { variant: "success" })
+        }
         isRunFinished = true
         dispatch(getExperiments())
       } else if (status === RUN_STATUS.ABORTED) {
@@ -206,7 +212,7 @@ export function useRunPipeline() {
 
       setPrevStatus(status)
     }
-  }, [dispatch, status, prevStatus, enqueueSnackbar])
+  }, [dispatch, status, prevStatus, enqueueSnackbar, isBatchRun])
 
   return {
     filePathIsUndefined,
