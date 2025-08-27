@@ -98,7 +98,7 @@ const CsvFileNodeImple = memo(function CsvFileNodeImple({
 })
 
 interface ParamSettingDialogProps extends NodeIdProps {
-  filePath: string
+  filePath: string | string[]
   disabled?: boolean
 }
 
@@ -107,6 +107,8 @@ export const ParamSettingDialog = memo(function ParamSettingDialog({
   filePath,
   disabled = false,
 }: ParamSettingDialogProps) {
+  // Handle both single and array filePaths
+  const actualFilePath = Array.isArray(filePath) ? filePath[0] : filePath
   const [open, setOpen] = useState(false)
   // OK時のみStoreに反映させるため一時的な値をuseStateで保持しておく。
   // useStateの初期値はselectorで取得。
@@ -220,7 +222,7 @@ export const ParamSettingDialog = memo(function ParamSettingDialog({
           </Box>
           <Typography variant="h6">Preview</Typography>
           <CsvPreview
-            filePath={filePath}
+            filePath={actualFilePath}
             transpose={transpose}
             setHeader={setHeader}
             setIndex={setIndex}

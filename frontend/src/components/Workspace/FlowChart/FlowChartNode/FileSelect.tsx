@@ -245,17 +245,20 @@ export const FileSelectImple = memo(function FileSelectImple({
             </span>
           </Tooltip>
         ) : null}
-        {fileTreeType === FILE_TREE_TYPE_SET.CSV && !!filePath && !!nodeId && (
-          <Tooltip title={"Settings"}>
-            <span>
-              <ParamSettingDialog
-                nodeId={nodeId}
-                filePath={filePath as string}
-                disabled={!!isPending}
-              />
-            </span>
-          </Tooltip>
-        )}
+        {fileTreeType === FILE_TREE_TYPE_SET.CSV &&
+          !!filePath &&
+          (Array.isArray(filePath) ? filePath.length > 0 : true) &&
+          !!nodeId && (
+            <Tooltip title={"Settings"}>
+              <span>
+                <ParamSettingDialog
+                  nodeId={nodeId}
+                  filePath={filePath}
+                  disabled={!!isPending}
+                />
+              </span>
+            </Tooltip>
+          )}
         {(
           [FILE_TREE_TYPE_SET.HDF5, FILE_TREE_TYPE_SET.MATLAB] as string[]
         ).includes(fileTreeType as string) &&
