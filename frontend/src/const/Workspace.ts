@@ -9,3 +9,14 @@ export const WORKSPACE_TYPE_LABEL: Record<WORKSPACE_TYPE, string> = {
   [WORKSPACE_TYPE.NORMAL]: "Normal",
   [WORKSPACE_TYPE.BATCH]: "Batch",
 }
+
+export const WORKSPACE_TYPE_OPTIONS = [
+  {
+    value: WORKSPACE_TYPE.NORMAL,
+    label: WORKSPACE_TYPE_LABEL[WORKSPACE_TYPE.NORMAL],
+  },
+  {
+    value: WORKSPACE_TYPE.BATCH,
+    label: WORKSPACE_TYPE_LABEL[WORKSPACE_TYPE.BATCH],
+  },
+]
