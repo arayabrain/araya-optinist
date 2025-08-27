@@ -14,6 +14,7 @@ import {
   isBatchMicroscopeInputNode,
   isBatchHDF5InputNode,
   isBatchMatlabInputNode,
+  isCsvBasedInputNode,
 } from "store/slice/InputNode/InputNodeUtils"
 import { RootState } from "store/store"
 
@@ -146,15 +147,10 @@ export const selectInputNodeParam = (nodeId: string) => (state: RootState) =>
 
 const selectCsvInputNodeParam = (nodeId: string) => (state: RootState) => {
   const inputNode = selectInputNodeById(nodeId)(state)
-  if (
-    isCsvInputNode(inputNode) ||
-    isBatchCsvInputNode(inputNode) ||
-    isBatchFluoInputNode(inputNode) ||
-    isBatchBehaviorInputNode(inputNode)
-  ) {
+  if (isCsvBasedInputNode(inputNode)) {
     return inputNode.param
   } else {
-    throw new Error(`The InputNode is not CsvInputNode. (nodeId: ${nodeId})`)
+    throw new Error(`The InputNode is not CSV-based. (nodeId: ${nodeId})`)
   }
 }
 

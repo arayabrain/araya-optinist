@@ -249,15 +249,11 @@ export const FileSelectImple = memo(function FileSelectImple({
           !!filePath &&
           (Array.isArray(filePath) ? filePath.length > 0 : true) &&
           !!nodeId && (
-            <Tooltip title={"Settings"}>
-              <span>
-                <ParamSettingDialog
-                  nodeId={nodeId}
-                  filePath={filePath}
-                  disabled={!!isPending}
-                />
-              </span>
-            </Tooltip>
+            <ParamSettingDialog
+              nodeId={nodeId}
+              filePath={filePath}
+              disabled={!!isPending}
+            />
           )}
         {(
           [FILE_TREE_TYPE_SET.HDF5, FILE_TREE_TYPE_SET.MATLAB] as string[]

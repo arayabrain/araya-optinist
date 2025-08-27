@@ -107,3 +107,26 @@ export function isBatchMatlabInputNode(
 ): inputNode is BatchMatlabInputNode {
   return inputNode.fileType === FILE_TYPE_SET.BATCH_MATLAB
 }
+
+// Helper function to check if a file type is CSV-based
+export function isCsvBasedFileType(fileType: string): boolean {
+  return [
+    FILE_TYPE_SET.CSV,
+    FILE_TYPE_SET.BATCH_CSV,
+    FILE_TYPE_SET.FLUO,
+    FILE_TYPE_SET.BATCH_FLUO,
+    FILE_TYPE_SET.BEHAVIOR,
+    FILE_TYPE_SET.BATCH_BEHAVIOR,
+  ].includes(fileType)
+}
+
+// Helper function to check if an InputNode is CSV-based
+export function isCsvBasedInputNode(
+  inputNode: InputNodeType,
+): inputNode is
+  | CsvInputNode
+  | BatchCsvInputNode
+  | BatchFluoInputNode
+  | BatchBehaviorInputNode {
+  return isCsvBasedFileType(inputNode.fileType)
+}

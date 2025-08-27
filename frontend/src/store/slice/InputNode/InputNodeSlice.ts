@@ -25,14 +25,12 @@ import {
   BatchMatlabInputNode,
 } from "store/slice/InputNode/InputNodeType"
 import {
-  isCsvInputNode,
   isHDF5InputNode,
   isMatlabInputNode,
   isBatchHDF5InputNode,
   isBatchMatlabInputNode,
-  isBatchCsvInputNode,
-  isBatchFluoInputNode,
-  isBatchBehaviorInputNode,
+  isCsvBasedFileType,
+  isCsvBasedInputNode,
 } from "store/slice/InputNode/InputNodeUtils"
 import {
   reproduceWorkflow,
@@ -69,12 +67,7 @@ export const inputNodeSlice = createSlice({
     ) {
       const { nodeId, param } = action.payload
       const inputNode = state[nodeId]
-      if (
-        isCsvInputNode(inputNode) ||
-        isBatchCsvInputNode(inputNode) ||
-        isBatchFluoInputNode(inputNode) ||
-        isBatchBehaviorInputNode(inputNode)
-      ) {
+      if (isCsvBasedInputNode(inputNode)) {
         inputNode.param = param
       }
     },
@@ -176,11 +169,10 @@ export const inputNodeSlice = createSlice({
                 const baseNode = FileNodeFactory.createInputNode(
                   node.data.fileType,
                 )
-                // Use specific param for CSV nodes
-                const param =
-                  node.data.fileType === FILE_TYPE_SET.CSV
-                    ? (node.data.param as CsvInputParamType)
-                    : baseNode.param
+                // Use specific param for CSV-based nodes
+                const param = isCsvBasedFileType(node.data.fileType)
+                  ? (node.data.param as CsvInputParamType)
+                  : baseNode.param
                 newState[node.id] = {
                   ...baseNode,
                   param,
@@ -215,11 +207,10 @@ export const inputNodeSlice = createSlice({
                     node.data.fileType,
                   )
 
-                  // Use specific param for CSV nodes
-                  const param =
-                    node.data.fileType === FILE_TYPE_SET.CSV
-                      ? (node.data.param as CsvInputParamType)
-                      : baseNode.param
+                  // Use specific param for CSV-based nodes
+                  const param = isCsvBasedFileType(node.data.fileType)
+                    ? (node.data.param as CsvInputParamType)
+                    : baseNode.param
 
                   const nodeState: InputNodeType = {
                     ...baseNode,

@@ -16,6 +16,7 @@ import {
   LinearProgress,
   Typography,
   IconButton,
+  Tooltip,
 } from "@mui/material"
 
 import { FileSelect } from "components/Workspace/FlowChart/FlowChartNode/FileSelect"
@@ -137,14 +138,18 @@ export const ParamSettingDialog = memo(function ParamSettingDialog({
 
   return (
     <>
-      <IconButton
-        onClick={() => setOpen(true)}
-        color={"primary"}
-        disabled={disabled}
-        size="small"
-      >
-        <SettingsIcon />
-      </IconButton>
+      <Tooltip title="Settings">
+        <span>
+          <IconButton
+            onClick={() => setOpen(true)}
+            color={"primary"}
+            disabled={disabled}
+            size="small"
+          >
+            <SettingsIcon />
+          </IconButton>
+        </span>
+      </Tooltip>
       <Dialog open={open} onClose={onClickCancel}>
         <DialogTitle>Csv Setting</DialogTitle>
         <DialogContent dividers>
