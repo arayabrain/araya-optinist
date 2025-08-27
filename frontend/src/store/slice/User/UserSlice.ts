@@ -36,6 +36,8 @@ export const userSlice = createSlice({
     logout: () => {
       removeToken()
       removeExToken()
+      // Clear dismissed warnings so they can appear again for the next user
+      localStorage.removeItem("dismissedWarnings")
       return initialState
     },
     resetUserSearch: (state) => {

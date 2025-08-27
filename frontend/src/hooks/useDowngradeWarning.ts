@@ -37,7 +37,19 @@ export const useDowngradeWarning = (
   const { enqueueSnackbar } = useSnackbar()
   const [warning, setWarning] = useState<DowngradeWarning | null>(null)
   const [loading, setLoading] = useState(false)
-  const [dismissed, setDismissed] = useState(false)
+  const [dismissed, setDismissed] = useState(() => {
+    // Check if this warning was already dismissed in localStorage
+    const dismissedWarnings = localStorage.getItem("dismissedWarnings")
+    if (dismissedWarnings) {
+      try {
+        const parsed = JSON.parse(dismissedWarnings)
+        return parsed.downgrade === true
+      } catch {
+        return false
+      }
+    }
+    return false
+  })
 
   const checkDowngradeWarning = useCallback(async (): Promise<boolean> => {
     try {
@@ -83,6 +95,23 @@ export const useDowngradeWarning = (
   }, [warning, showSnackbar, enqueueSnackbar])
 
   const dismissWarning = useCallback(() => {
+    // Persist dismissal in localStorage
+    const dismissedWarnings = localStorage.getItem("dismissedWarnings")
+    let parsed = {}
+    try {
+      parsed = dismissedWarnings ? JSON.parse(dismissedWarnings) : {}
+    } catch {
+      // Handle JSON parse errors
+    }
+
+    localStorage.setItem(
+      "dismissedWarnings",
+      JSON.stringify({
+        ...parsed,
+        downgrade: true,
+      }),
+    )
+
     setDismissed(true)
   }, [])
 

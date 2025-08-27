@@ -427,12 +427,14 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
 
 def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
     """
-    Calculate downgrade warning for users who have exceeded free tier limits
-    after subscription expiration.
+    Calculate downgrade warning based on subscription and storage status:
 
-    Timeline: Last subscription end + 30 days grace + 30 days warning = deletion
-
-    Returns warning details if applicable, None otherwise.
+    Cases:
+    1. Free user, no storage limit exceeded → No warning
+    2. Free user, storage limit exceeded → Storage warning
+    3. Premium user, storage limit exceeded → Storage warning
+    4. Premium user, subscription expiring only → Subscription warning
+    5. Premium user, storage exceeded + subscription expiring → Combined warning
     """
     try:
         # Default values as fallbacks
@@ -441,24 +443,24 @@ def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
         GRACE_PERIOD_DAYS = 30
         WARNING_PERIOD_DAYS = 30
 
-        with session_scope() as db:
-            # Get user's current storage usage
-            storage_usage = get_user_storage_usage(user_id)
-            if not storage_usage:
-                return None
+        logger.info(f"Calculating downgrade warning for user {user_id}")
 
-            current_usage_bytes = storage_usage.get("current_usage_bytes", 0)
+        with session_scope() as db:
+            # Get user's current storage usage (optional - might not exist)
+            storage_usage = get_user_storage_usage(user_id)
+            current_usage_bytes = (
+                storage_usage.get("current_usage_bytes", 0) if storage_usage else 0
+            )
+
             # Use actual quota from database, fallback to default if not available
-            quota_limit_bytes = storage_usage.get(
-                "quota_limit_bytes", DEFAULT_FREE_TIER_LIMIT_BYTES
+            quota_limit_bytes = (
+                storage_usage.get("quota_limit_bytes", DEFAULT_FREE_TIER_LIMIT_BYTES)
+                if storage_usage
+                else DEFAULT_FREE_TIER_LIMIT_BYTES
             )
             quota_limit_gb = quota_limit_bytes / (1024 * 1024 * 1024)
 
-            # Check if user exceeds their quota limit
-            if current_usage_bytes <= quota_limit_bytes:
-                return None
-
-            # Get user's subscription history to find last active subscription
+            # Step 1: Determine subscription status
             query_result = db.execute(
                 select(UserSubscription)
                 .where(UserSubscription.user_id == user_id)
@@ -466,112 +468,174 @@ def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
             )
             result_rows = query_result.all()
 
-            if not result_rows:
-                # No subscription history - user has always been free tier
-                # If they exceed limit, immediate warning (no grace period)
-                excess_bytes = current_usage_bytes - quota_limit_bytes
-                excess_gb = excess_bytes / (1024 * 1024 * 1024)
+            logger.info(
+                f"Found {len(result_rows)} subscription records for user {user_id}"
+            )
 
+            subscription_status = None
+            subscription_end = None
+            days_remaining = None
+
+            if result_rows:
+                last_subscription_row = result_rows[0]
+
+                if hasattr(last_subscription_row, "__getitem__"):
+                    last_subscription = last_subscription_row[0]
+                else:
+                    last_subscription = last_subscription_row
+
+                # Safely access expiration with error handling
+                if hasattr(last_subscription, "expiration"):
+                    subscription_end = last_subscription.expiration
+                    if subscription_end is None:
+                        logger.error(
+                            f"User {user_id} subscription has None expiration date"
+                        )
+                        return None
+                else:
+                    logger.error(
+                        f"User {user_id} subscription object missing "
+                        f"expiration attribute: {dir(last_subscription)}"
+                    )
+                    return None
+                grace_end = subscription_end + timedelta(days=GRACE_PERIOD_DAYS)
+                deletion_date = grace_end + timedelta(days=WARNING_PERIOD_DAYS)
+                now = (
+                    datetime.now(subscription_end.tzinfo)
+                    if subscription_end.tzinfo
+                    else datetime.now()
+                )
+
+                logger.info(f"User {user_id} subscription details:")
+                logger.info(f"  Subscription end: {subscription_end}")
+                logger.info(f"  Grace end: {grace_end}")
+                logger.info(f"  Deletion date: {deletion_date}")
+                logger.info(f"  Current time: {now}")
+
+                if subscription_end > now:
+                    subscription_status = "active"
+                elif now <= grace_end:
+                    subscription_status = "grace"
+                elif now <= deletion_date:
+                    subscription_status = "warning"
+                    days_remaining = (deletion_date - now).days
+                else:
+                    subscription_status = "overdue"
+                    days_remaining = 0
+
+                logger.info(
+                    f"  Final status: {subscription_status}, "
+                    f"days_remaining: {days_remaining}"
+                )
+            else:
+                subscription_status = "free"  # Never had premium
+
+            # Step 2: Determine storage status
+            storage_exceeded = current_usage_bytes > quota_limit_bytes
+            excess_bytes = max(0, current_usage_bytes - quota_limit_bytes)
+            excess_gb = excess_bytes / (1024 * 1024 * 1024)
+            current_usage_gb = current_usage_bytes / (1024 * 1024 * 1024)
+
+            # Step 3: Apply the 5 cases
+            logger.info(f"User {user_id} warning analysis:")
+            logger.info(f"  Subscription status: {subscription_status}")
+            logger.info(f"  Storage exceeded: {storage_exceeded}")
+            logger.info(
+                f"  Current usage: {current_usage_gb:.2f}GB / {quota_limit_gb:.1f}GB"
+            )
+
+            # Case 1: Free user, no storage limit exceeded → No warning
+            if subscription_status == "free" and not storage_exceeded:
+                logger.info(
+                    f"User {user_id}: No warning needed (free tier, within limits)"
+                )
+                return None
+
+            # Case 2: Free user, storage limit exceeded → Storage warning
+            if subscription_status == "free" and storage_exceeded:
                 return {
                     "has_warning": True,
                     "warning_type": "immediate",
-                    "days_remaining": 30,  # Standard warning period
+                    "days_remaining": 30,
                     "excess_data_bytes": excess_bytes,
                     "excess_data_gb": round(excess_gb, 2),
                     "current_usage_bytes": current_usage_bytes,
-                    "current_usage_gb": round(
-                        current_usage_bytes / (1024 * 1024 * 1024), 2
-                    ),
+                    "current_usage_gb": round(current_usage_gb, 2),
                     "free_tier_limit_bytes": quota_limit_bytes,
                     "free_tier_limit_gb": quota_limit_gb,
                     "deletion_date": (datetime.now() + timedelta(days=30)).isoformat(),
                     "message": (
-                        f"Your data usage "
-                        f"({round(current_usage_bytes / (1024 * 1024 * 1024), 2)} GB) "
+                        f"Your data usage ({round(current_usage_gb, 1)} GB) "
                         f"exceeds the free tier limit ({quota_limit_gb:.1f} GB). "
-                        f"Please upgrade or remove {round(excess_gb, 2)} GB of data "
+                        f"Please upgrade or remove {round(excess_gb, 1)} GB of data "
                         f"within 30 days."
                     ),
                 }
 
-            # Find the most recent expired subscription
-            last_subscription_row = result_rows[0]
-            last_subscription = (
-                last_subscription_row[0]
-                if isinstance(last_subscription_row, tuple)
-                else last_subscription_row
-            )
-
-            # Check if subscription is still active
-            if last_subscription.expiration > datetime.now():
-                # Subscription is still active, no warning needed
-                return None
-
-            # Calculate timeline from subscription expiration
-            subscription_end = last_subscription.expiration
-            grace_end = subscription_end + timedelta(days=GRACE_PERIOD_DAYS)
-            deletion_date = grace_end + timedelta(days=WARNING_PERIOD_DAYS)
-
-            now = datetime.now()
-
-            # Check if we're in the warning period
-            if now < grace_end:
-                # Still in grace period, no warning yet
-                return None
-            elif now < deletion_date:
-                # In warning period
-                days_remaining = (deletion_date - now).days
-                excess_bytes = current_usage_bytes - quota_limit_bytes
-                excess_gb = excess_bytes / (1024 * 1024 * 1024)
-
+            # Case 3: Premium user active, storage limit exceeded → Storage warning only
+            if subscription_status == "active" and storage_exceeded:
                 return {
                     "has_warning": True,
-                    "warning_type": "downgrade",
-                    "days_remaining": days_remaining,
+                    "warning_type": "immediate",
+                    "days_remaining": 30,
                     "excess_data_bytes": excess_bytes,
                     "excess_data_gb": round(excess_gb, 2),
                     "current_usage_bytes": current_usage_bytes,
-                    "current_usage_gb": round(
-                        current_usage_bytes / (1024 * 1024 * 1024), 2
-                    ),
+                    "current_usage_gb": round(current_usage_gb, 2),
                     "free_tier_limit_bytes": quota_limit_bytes,
                     "free_tier_limit_gb": quota_limit_gb,
-                    "subscription_end_date": subscription_end.isoformat(),
-                    "grace_end_date": grace_end.isoformat(),
-                    "deletion_date": deletion_date.isoformat(),
                     "message": (
+                        f"Your storage usage ({round(current_usage_gb, 1)} GB) is high."
+                        f" Consider cleaning up unused data."
+                    ),
+                }
+
+            # Cases 4 & 5: Premium user with subscription issues (warning/overdue)
+            if subscription_status in ["warning", "overdue"]:
+                logger.info(
+                    f"User {user_id}: Creating downgrade warning "
+                    f"(status: {subscription_status})"
+                )
+                warning_type = (
+                    "downgrade" if subscription_status == "warning" else "overdue"
+                )
+
+                if storage_exceeded:
+                    # Case 4: Both storage and subscription issues
+                    message = (
                         f"Your premium subscription expired on "
                         f"{subscription_end.strftime('%B %d, %Y')}. "
-                        f"You have {days_remaining} days to upgrade or remove "
-                        f"{round(excess_gb, 2)} GB of data to stay within the "
-                        f"free tier limit."
-                    ),
-                }
-            else:
-                # Past deletion date - data should have been deleted already
-                # This could trigger automatic cleanup in the future
-                excess_bytes = current_usage_bytes - quota_limit_bytes
-                excess_gb = excess_bytes / (1024 * 1024 * 1024)
+                        f"You have {days_remaining or 0} days to upgrade or remove "
+                        f"{round(excess_gb, 1)} GB of data to stay "
+                        f"within the free tier limit."
+                    )
+                else:
+                    # Case 5: Subscription issue only (user within storage limits)
+                    message = (
+                        f"Your premium subscription expired on "
+                        f"{subscription_end.strftime('%B %d, %Y')}. "
+                        f"Please upgrade to maintain premium features."
+                    )
 
                 return {
                     "has_warning": True,
-                    "warning_type": "overdue",
-                    "days_remaining": 0,
+                    "warning_type": warning_type,
+                    "days_remaining": days_remaining or 0,
                     "excess_data_bytes": excess_bytes,
                     "excess_data_gb": round(excess_gb, 2),
                     "current_usage_bytes": current_usage_bytes,
-                    "current_usage_gb": round(
-                        current_usage_bytes / (1024 * 1024 * 1024), 2
-                    ),
+                    "current_usage_gb": round(current_usage_gb, 2),
                     "free_tier_limit_bytes": quota_limit_bytes,
                     "free_tier_limit_gb": quota_limit_gb,
-                    "deletion_date": deletion_date.isoformat(),
-                    "message": (
-                        f"Your data exceeded the free tier limit and should have been "
-                        f"cleaned up on {deletion_date.strftime('%B %d, %Y')}. "
-                        f"Please contact support or upgrade immediately."
-                    ),
+                    "subscription_end_date": subscription_end.isoformat()
+                    if subscription_end
+                    else None,
+                    "message": message,
                 }
+
+            # All other cases: No warning needed
+            logger.info(f"User {user_id}: No warning needed (other cases)")
+            return None
 
     except Exception as e:
         logger.error(f"Failed to calculate downgrade warning for user {user_id}: {e}")

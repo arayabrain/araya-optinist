@@ -3391,7 +3391,7 @@ resource "aws_ecs_task_definition" "batch" {
         },
         {
           name  = "OPTINIST_DIR"
-          value = "/app/studio_data"
+          value = "/mnt/efs"
         },
         {
           name  = "TEST_USERS_CONFIG"
@@ -3847,7 +3847,7 @@ resource "aws_batch_job_definition" "optinist" {
       },
       {
         name = "OPTINIST_DIR"
-        value = "/app/studio_data"
+        value = "/mnt/efs"
       },
     ]
   })

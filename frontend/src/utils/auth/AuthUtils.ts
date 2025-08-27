@@ -22,6 +22,8 @@ export const logout = () => {
   removeRefreshToken()
   removeToken()
   removeExToken()
+  // Clear dismissed warnings so they can appear again for the next user
+  localStorage.removeItem("dismissedWarnings")
   window.location.href = "/login"
 }
 

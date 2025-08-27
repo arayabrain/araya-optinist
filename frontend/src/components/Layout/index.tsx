@@ -5,6 +5,7 @@ import { useLocation, useNavigate } from "react-router-dom"
 import { Box } from "@mui/material"
 import { styled } from "@mui/material/styles"
 
+import DowngradeWarning from "components/common/DowngradeWarning"
 import Loading from "components/common/Loading"
 import Header from "components/Layout/Header"
 import LeftMenu from "components/Layout/LeftMenu"
@@ -82,6 +83,8 @@ const AuthedLayout: FC<{ children: ReactNode }> = ({ children }) => {
         <LeftMenu open={open} handleDrawerClose={handleDrawerClose} />
         <ChildrenWrapper>{children}</ChildrenWrapper>
       </ContentBodyWrapper>
+      {/* Global downgrade warning modal for authenticated users */}
+      <DowngradeWarning showAsModal={true} autoCheck={true} />
     </LayoutWrapper>
   )
 }

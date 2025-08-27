@@ -6,9 +6,7 @@ import { AxiosError } from "axios"
 
 import { Box, Stack, styled, Typography } from "@mui/material"
 
-import DowngradeWarning from "components/common/DowngradeWarning"
 import Loading from "components/common/Loading"
-import { useDowngradeWarning } from "hooks/useDowngradeWarning"
 import { getMe, login } from "store/slice/User/UserActions"
 import { AppDispatch } from "store/store"
 
@@ -27,33 +25,17 @@ const Login = () => {
     password: "",
   })
 
-  // Downgrade warning hook - only check after successful login
-  const {
-    warning: _warning,
-    hasWarning,
-    checkDowngradeWarning,
-    dismissWarning,
-  } = useDowngradeWarning({
-    autoCheck: false, // Don't auto-check until after login
-    showSnackbar: false, // Don't show snackbar, we'll show modal
-  })
-
-  // Handle navigation after warning dismissal
+  // Handle navigation after successful login
   useEffect(() => {
-    if (loginSuccess && !hasWarning) {
+    if (loginSuccess) {
       const timer = setTimeout(() => {
         navigate("/console")
-      }, 100) // Small delay to ensure modal is dismissed
+      }, 100) // Small delay to ensure login completion
 
       return () => clearTimeout(timer)
     }
     return undefined
-  }, [loginSuccess, hasWarning, navigate])
-
-  const handleWarningClose = () => {
-    dismissWarning()
-    navigate("/console")
-  }
+  }, [loginSuccess, navigate])
 
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -65,14 +47,6 @@ const Login = () => {
       .then(async (_) => {
         await dispatch(getMe())
         setLoginSuccess(true)
-
-        // Check for downgrade warnings after successful login
-        const hasWarningResult = await checkDowngradeWarning()
-
-        // Navigate to console (will be delayed if warning modal appears)
-        if (!hasWarningResult) {
-          navigate("/console")
-        }
       })
       .catch((e: AxiosError) => {
         const status = e.response?.status
@@ -164,15 +138,6 @@ const Login = () => {
         </FormSignUp>
       </LoginContent>
       <Loading loading={loading} />
-
-      {/* Show downgrade warning modal after successful login */}
-      {loginSuccess && hasWarning && (
-        <DowngradeWarning
-          showAsModal={true}
-          onClose={handleWarningClose}
-          autoCheck={false}
-        />
-      )}
     </LoginWrapper>
   )
 }

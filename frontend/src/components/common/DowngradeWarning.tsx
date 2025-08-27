@@ -3,12 +3,7 @@ import { useNavigate } from "react-router-dom"
 
 import { useSnackbar } from "notistack"
 
-import {
-  Close as CloseIcon,
-  ErrorOutline as ErrorIcon,
-  Upgrade as UpgradeIcon,
-  Warning as WarningIcon,
-} from "@mui/icons-material"
+import { Close as CloseIcon, Upgrade as UpgradeIcon } from "@mui/icons-material"
 import {
   Alert,
   AlertTitle,
@@ -18,7 +13,6 @@ import {
   Dialog,
   DialogActions,
   DialogContent,
-  DialogTitle,
   IconButton,
   LinearProgress,
   Typography,
@@ -28,6 +22,7 @@ import {
   getMyDowngradeWarningApi,
   DowngradeWarning as DowngradeWarningType,
 } from "api/storage/StorageAlerts"
+import { getToken } from "utils/auth/AuthUtils"
 
 interface DowngradeWarningProps {
   showAsModal?: boolean
@@ -44,15 +39,30 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
   const navigate = useNavigate()
   const [warning, setWarning] = useState<DowngradeWarningType | null>(null)
   const [loading, setLoading] = useState(true)
-  const [dismissed, setDismissed] = useState(false)
+  const [dismissed, setDismissed] = useState(() => {
+    // Check if this warning was already dismissed in localStorage
+    const dismissedWarnings = localStorage.getItem("dismissedWarnings")
+    console.log("Initial dismissed check:", { dismissedWarnings })
+    if (dismissedWarnings) {
+      try {
+        const parsed = JSON.parse(dismissedWarnings)
+        console.log("Parsed dismissed warnings:", parsed)
+        return parsed.downgrade === true
+      } catch {
+        return false
+      }
+    }
+    return false
+  })
 
   const fetchDowngradeWarning = async () => {
     try {
       setLoading(true)
       const warningResponse = await getMyDowngradeWarningApi()
+      console.log("DowngradeWarning API Response:", warningResponse)
       setWarning(warningResponse)
     } catch (error) {
-      // console.error("Failed to fetch downgrade warning:", error)
+      console.error("Failed to fetch downgrade warning:", error)
       // Silently fail to not disrupt the main UI
     } finally {
       setLoading(false)
@@ -60,18 +70,48 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
   }
 
   const handleDismiss = () => {
+    // Persist dismissal in localStorage
+    const dismissedWarnings = localStorage.getItem("dismissedWarnings")
+    let parsed = {}
+    try {
+      parsed = dismissedWarnings ? JSON.parse(dismissedWarnings) : {}
+    } catch {
+      // Handle JSON parse errors
+    }
+
+    localStorage.setItem(
+      "dismissedWarnings",
+      JSON.stringify({
+        ...parsed,
+        downgrade: true,
+      }),
+    )
+
     setDismissed(true)
+    console.log("handleDismiss: calling onClose", { onClose })
     onClose?.()
   }
 
   const handleUpgrade = () => {
+    // Dismiss the warning when user clicks upgrade
+    handleDismiss()
     // Navigate to payment page
     navigate("/payment")
   }
 
   useEffect(() => {
+    console.log("DowngradeWarning useEffect:", {
+      autoCheck,
+      hasToken: !!getToken(),
+    })
     if (autoCheck) {
-      fetchDowngradeWarning()
+      if (getToken()) {
+        console.log("Starting fetchDowngradeWarning...")
+        fetchDowngradeWarning()
+      } else {
+        // No token, stop loading immediately
+        setLoading(false)
+      }
     }
   }, [autoCheck])
 
@@ -84,9 +124,22 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
     )
   }
 
+  console.log("DowngradeWarning render check:", {
+    dismissed,
+    warning,
+    hasWarning: warning?.has_warning,
+  })
+
   if (dismissed || !warning?.has_warning) {
     return null
   }
+
+  // Determine what actions to show based on warning type and conditions
+  const hasStorageIssue = warning.excess_data_gb > 0
+  const hasSubscriptionIssue =
+    warning.warning_type === "downgrade" || warning.warning_type === "overdue"
+  const showUpgradeButton = hasSubscriptionIssue
+  const showManageFilesButton = hasStorageIssue
 
   const getSeverity = (warningType: string) => {
     switch (warningType) {
@@ -98,19 +151,6 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
         return "warning"
       default:
         return "warning"
-    }
-  }
-
-  const getIcon = (warningType: string) => {
-    switch (warningType) {
-      case "overdue":
-        return <ErrorIcon />
-      case "immediate":
-        return <ErrorIcon />
-      case "downgrade":
-        return <WarningIcon />
-      default:
-        return <WarningIcon />
     }
   }
 
@@ -152,12 +192,7 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
         }
         sx={{ mb: showAsModal ? 0 : 2 }}
       >
-        <AlertTitle>
-          <Box display="flex" alignItems="center" gap={1}>
-            {getIcon(warning.warning_type)}
-            {getTitle(warning.warning_type)}
-          </Box>
-        </AlertTitle>
+        <AlertTitle>{getTitle(warning.warning_type)}</AlertTitle>
 
         <Typography variant="body2" sx={{ mb: 2 }}>
           {warning.message}
@@ -217,35 +252,48 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
           </Box>
 
           <Box display="flex" justifyContent="space-between">
-            <Typography variant="body2" color="error.main" fontWeight="bold">
+            <Typography
+              variant="body2"
+              color={hasStorageIssue ? "error.main" : "text.secondary"}
+              fontWeight={hasStorageIssue ? "bold" : "normal"}
+            >
               Excess Data:
             </Typography>
-            <Typography variant="body2" color="error.main" fontWeight="bold">
+            <Typography
+              variant="body2"
+              color={hasStorageIssue ? "error.main" : "text.primary"}
+              fontWeight={hasStorageIssue ? "bold" : "normal"}
+            >
               {warning.excess_data_gb} GB
             </Typography>
           </Box>
         </Box>
 
-        {/* Action buttons */}
-        <Box display="flex" gap={1} flexWrap="wrap">
-          <Button
-            variant="contained"
-            color="primary"
-            startIcon={<UpgradeIcon />}
-            onClick={handleUpgrade}
-            size="small"
-          >
-            Upgrade to Premium
-          </Button>
-          <Button
-            variant="outlined"
-            color="secondary"
-            onClick={() => (window.location.href = "/workspace")}
-            size="small"
-          >
-            Manage Files
-          </Button>
-        </Box>
+        {/* Action buttons - only show when not in modal mode */}
+        {!showAsModal && (
+          <Box display="flex" gap={1} flexWrap="wrap">
+            <Button
+              variant="contained"
+              color="primary"
+              startIcon={<UpgradeIcon />}
+              onClick={handleUpgrade}
+              size="small"
+            >
+              Upgrade to Premium
+            </Button>
+            <Button
+              variant="outlined"
+              color="secondary"
+              onClick={() => {
+                handleDismiss()
+                window.location.href = "/workspace"
+              }}
+              size="small"
+            >
+              Manage Files
+            </Button>
+          </Box>
+        )}
       </Alert>
     </Box>
   )
@@ -258,24 +306,34 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
         maxWidth="md"
         fullWidth
       >
-        <DialogTitle>
-          <Box display="flex" alignItems="center" gap={1}>
-            {getIcon(warning.warning_type)}
-            {getTitle(warning.warning_type)}
-          </Box>
-        </DialogTitle>
         <DialogContent>{warningContent}</DialogContent>
         <DialogActions>
           <Button onClick={handleDismiss} color="inherit">
             Handle later
           </Button>
-          <Button
-            variant="contained"
-            onClick={handleUpgrade}
-            startIcon={<UpgradeIcon />}
-          >
-            Upgrade now
-          </Button>
+          {showManageFilesButton && (
+            <Button
+              onClick={() => {
+                handleDismiss()
+                navigate("/console/workspaces")
+              }}
+              color="inherit"
+            >
+              Manage Files
+            </Button>
+          )}
+          {showUpgradeButton && (
+            <Button
+              variant="contained"
+              onClick={() => {
+                handleDismiss()
+                navigate("/console/subscription")
+              }}
+              startIcon={<UpgradeIcon />}
+            >
+              Upgrade
+            </Button>
+          )}
         </DialogActions>
       </Dialog>
     )

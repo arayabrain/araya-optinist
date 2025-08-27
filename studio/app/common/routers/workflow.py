@@ -256,59 +256,63 @@ async def import_sample_data(
     # Look for any active EFS mounts that indicate batch execution capability
     efs_mount_base = Path("/mnt/efs")
     if efs_mount_base.exists():
-        logger.info(
-            f"EFS mount detected at {efs_mount_base}, "
-            f"copying sample data to EFS structure"
-        )
+        # Check if DIRPATH.DATA_DIR already points to EFS
+        if str(DIRPATH.DATA_DIR).startswith("/mnt/efs"):
+            logger.info(
+                f"OPTINIST_DIR already points to EFS ({DIRPATH.DATA_DIR}), "
+                f"skipping EFS copy as data is already in EFS"
+            )
+        else:
+            logger.info(
+                f"EFS mount detected at {efs_mount_base}, "
+                f"copying sample data to EFS structure"
+            )
 
-        # Create workspace-specific EFS directory
-        efs_workspace_dir = efs_mount_base / workspace_id
-        efs_workspace_dir.mkdir(parents=True, exist_ok=True)
+            # Create workspace-specific EFS directory
+            efs_workspace_dir = efs_mount_base / workspace_id
+            efs_workspace_dir.mkdir(parents=True, exist_ok=True)
 
-        # Copy input data to EFS structure
-        efs_input_dir = (
-            efs_workspace_dir / "app" / "studio_data" / "input" / workspace_id
-        )
-        efs_input_dir.mkdir(parents=True, exist_ok=True)
+            # Copy input data to EFS structure
+            efs_input_dir = efs_mount_base / "input" / workspace_id
+            efs_input_dir.mkdir(parents=True, exist_ok=True)
 
-        local_input_dir = Path(DIRPATH.DATA_DIR) / "input" / workspace_id
-        if local_input_dir.exists():
-            for input_file in local_input_dir.iterdir():
-                if input_file.is_file():
-                    shutil.copy2(input_file, efs_input_dir / input_file.name)
-                    logger.info(
-                        f"Copied {input_file.name} to EFS: "
-                        f"{efs_input_dir / input_file.name}"
-                    )
+            local_input_dir = Path(DIRPATH.DATA_DIR) / "input" / workspace_id
+            if local_input_dir.exists():
+                for input_file in local_input_dir.iterdir():
+                    if input_file.is_file():
+                        shutil.copy2(input_file, efs_input_dir / input_file.name)
+                        logger.info(
+                            f"Copied {input_file.name} to EFS: "
+                            f"{efs_input_dir / input_file.name}"
+                        )
 
-        # Copy output data to EFS structure
-        efs_output_dir = (
-            efs_workspace_dir / "app" / "studio_data" / "output" / workspace_id
-        )
-        efs_output_dir.mkdir(parents=True, exist_ok=True)
+            # Copy output data to EFS structure
+            efs_output_dir = efs_mount_base / "output" / workspace_id
+            efs_output_dir.mkdir(parents=True, exist_ok=True)
 
-        local_output_dir = Path(DIRPATH.DATA_DIR) / "output" / workspace_id
-        if local_output_dir.exists():
-            for output_item in local_output_dir.iterdir():
-                if output_item.is_dir():
-                    efs_target = efs_output_dir / output_item.name
-                    if efs_target.exists():
-                        shutil.rmtree(efs_target)
-                    shutil.copytree(output_item, efs_target)
-                    logger.info(
-                        f"Copied output directory {output_item.name} to EFS: "
-                        f"{efs_target}"
-                    )
-                elif output_item.is_file():
-                    shutil.copy2(output_item, efs_output_dir / output_item.name)
-                    logger.info(
-                        f"Copied output file {output_item.name} to EFS: "
-                        f"{efs_output_dir / output_item.name}"
-                    )
+            local_output_dir = Path(DIRPATH.DATA_DIR) / "output" / workspace_id
+            if local_output_dir.exists():
+                for output_item in local_output_dir.iterdir():
+                    if output_item.is_dir():
+                        efs_target = efs_output_dir / output_item.name
+                        if efs_target.exists():
+                            shutil.rmtree(efs_target)
+                        shutil.copytree(output_item, efs_target)
+                        logger.info(
+                            f"Copied output directory {output_item.name} to EFS: "
+                            f"{efs_target}"
+                        )
+                    elif output_item.is_file():
+                        shutil.copy2(output_item, efs_output_dir / output_item.name)
+                        logger.info(
+                            f"Copied output file {output_item.name} to EFS: "
+                            f"{efs_output_dir / output_item.name}"
+                        )
 
-        logger.info(
-            f"Sample data successfully synchronized to EFS for workspace {workspace_id}"
-        )
+            logger.info(
+                f"Sample data successfully synchronized to "
+                f"EFS for workspace {workspace_id}"
+            )
     else:
         logger.info("No EFS mount detected, skipping EFS synchronization")
 
