@@ -1,6 +1,5 @@
 import {
   memo,
-  SyntheticEvent,
   useContext,
   useEffect,
   useState,
@@ -9,9 +8,27 @@ import {
 } from "react"
 import { useDispatch, useSelector } from "react-redux"
 
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from "@dnd-kit/core"
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+  useSortable,
+} from "@dnd-kit/sortable"
+import { CSS } from "@dnd-kit/utilities"
 import AutorenewIcon from "@mui/icons-material/Autorenew"
 import CloseIcon from "@mui/icons-material/Close"
 import DeleteIcon from "@mui/icons-material/Delete"
+import DragIndicatorIcon from "@mui/icons-material/DragIndicator"
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline"
 import FolderIcon from "@mui/icons-material/Folder"
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined"
@@ -556,6 +573,73 @@ export const TreeItemLabel = memo(function TreeItemLabel({
   )
 })
 
+interface SortableItemProps {
+  id: string
+  text: string
+  onRemove: (text: string) => void
+}
+
+const SortableItem = memo(function SortableItem({
+  id,
+  text,
+  onRemove,
+}: SortableItemProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id })
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  }
+
+  return (
+    <li
+      ref={setNodeRef}
+      style={{
+        ...style,
+        marginBottom: "3px",
+        listStyleType: "none",
+        marginLeft: "8px",
+        cursor: isDragging ? "grabbing" : "grab",
+      }}
+    >
+      <span
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          width: "100%",
+        }}
+      >
+        <span style={{ display: "flex", alignItems: "center", flex: 1 }}>
+          <DragIndicatorIcon
+            {...attributes}
+            {...listeners}
+            style={{
+              width: "20px",
+              height: "20px",
+              marginRight: "8px",
+              cursor: isDragging ? "grabbing" : "grab",
+              color: "#999",
+            }}
+          />
+          <span style={{ flex: 1 }}>{text}</span>
+        </span>
+        <IconButton style={{ padding: "0" }} onClick={() => onRemove(text)}>
+          <CloseIcon style={{ width: "15px", height: "15px" }} />
+        </IconButton>
+      </span>
+    </li>
+  )
+})
+
 interface FilePathProps {
   path: string | string[]
   setSelectedFilePath: (path: string[] | string) => void
@@ -565,43 +649,61 @@ const FilePathSelectedListView = memo(function FilePathSelectedListView({
   path,
   setSelectedFilePath,
 }: FilePathProps) {
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8,
+      },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  )
+
   const handleRemoveFile = (fileToRemove: string) => {
     if (Array.isArray(path)) {
       setSelectedFilePath(path.filter((file) => file !== fileToRemove))
     }
   }
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event
+
+    if (active.id !== over?.id && Array.isArray(path)) {
+      const oldIndex = path.indexOf(active.id as string)
+      const newIndex = path.indexOf(over?.id as string)
+
+      if (oldIndex !== -1 && newIndex !== -1) {
+        setSelectedFilePath(arrayMove(path, oldIndex, newIndex))
+      }
+    }
+  }
+
   return (
     <Typography variant="subtitle2">
       {path ? (
         Array.isArray(path) ? (
-          <ul style={{ padding: 0, margin: 0, listStyleType: "none" }}>
-            {path.map((text) => (
-              <li
-                key={text}
-                style={{
-                  marginBottom: "3px",
-                  listStyleType: "disc",
-                  marginLeft: "24px",
-                }}
-              >
-                <span
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    width: "100%",
-                  }}
-                >
-                  <span>{text}</span>
-                  <IconButton
-                    style={{ padding: "0" }}
-                    onClick={() => handleRemoveFile(text)}
-                  >
-                    <CloseIcon style={{ width: "15px", height: "15px" }} />
-                  </IconButton>
-                </span>
-              </li>
-            ))}
-          </ul>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext
+              items={path}
+              strategy={verticalListSortingStrategy}
+            >
+              <ul style={{ padding: 0, margin: 0, listStyleType: "none" }}>
+                {path.map((text) => (
+                  <SortableItem
+                    key={text}
+                    id={text}
+                    text={text}
+                    onRemove={handleRemoveFile}
+                  />
+                ))}
+              </ul>
+            </SortableContext>
+          </DndContext>
         ) : (
           path
         )
