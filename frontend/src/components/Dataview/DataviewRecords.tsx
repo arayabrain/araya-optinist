@@ -264,7 +264,7 @@ const defineColumns = (
       </Tooltip>
     ),
   },
-  !is_public && {
+  {
     field: "workspace_id",
     headerName: "Ws ID",
     width: 110,
@@ -1129,6 +1129,13 @@ const DataviewRecords = ({
         filterModel={model.filter}
         onFilterModelChange={handleFilter}
         onRowClick={handleRowClick}
+        initialState={{
+          columns: {
+            columnVisibilityModel: {
+              workspace_id: false, //Ws ID column is hidden by default
+            },
+          },
+        }}
         sx={{ flex: 1, minHeight: 0 }}
       />
       {dataviewRecords?.items.length > 0 ? (
