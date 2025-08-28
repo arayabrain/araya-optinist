@@ -516,6 +516,7 @@ const Workspaces = () => {
         `Storage refreshed for ${response.data.refreshed_workspaces} workspaces!`,
       )
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error("Failed to refresh storage:", error)
       handleClickVariant("error", "Failed to refresh storage usage")
     } finally {

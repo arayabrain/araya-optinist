@@ -6,7 +6,10 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
     get_user_remote_bucket_name,
 )
-from studio.app.common.core.cloud.s3_storage_monitor import S3StorageMonitor
+from studio.app.common.core.cloud.cloud_utils import (
+    get_current_user_storage_usage,
+    get_user_storage_usage,
+)
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageLockError,
@@ -50,16 +53,22 @@ async def run(
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     try:
-        # Check storage before running job
-        if remote_bucket_name:
-            monitor = S3StorageMonitor(remote_bucket_name)
-            alert = await monitor.check_user_storage_alerts(current_user.id)
+        # Check storage before running job - works for both S3 and local storage
+        current_usage = await get_current_user_storage_usage(
+            current_user.id, force_live=True
+        )
+        storage_info = get_user_storage_usage(current_user.id)
 
-            if alert and alert.get("alert_level") == "danger":
+        if storage_info and storage_info["quota_limit_bytes"] > 0:
+            quota_limit = storage_info["quota_limit_bytes"]
+            usage_percentage = (current_usage / quota_limit) * 100
+
+            # Block workflow execution if over quota (100%)
+            if usage_percentage >= 100:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Cannot run job: Storage quota exceeded "
-                    f"({alert.get('usage_percentage', 0):.1f}% used). "
+                    f"({usage_percentage:.1f}% used). "
                     f"Please free up space before running jobs.",
                 )
 

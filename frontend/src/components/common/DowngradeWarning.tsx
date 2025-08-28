@@ -42,11 +42,9 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
   const [dismissed, setDismissed] = useState(() => {
     // Check if this warning was already dismissed in localStorage
     const dismissedWarnings = localStorage.getItem("dismissedWarnings")
-    console.log("Initial dismissed check:", { dismissedWarnings })
     if (dismissedWarnings) {
       try {
         const parsed = JSON.parse(dismissedWarnings)
-        console.log("Parsed dismissed warnings:", parsed)
         return parsed.downgrade === true
       } catch {
         return false
@@ -59,10 +57,8 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
     try {
       setLoading(true)
       const warningResponse = await getMyDowngradeWarningApi()
-      console.log("DowngradeWarning API Response:", warningResponse)
       setWarning(warningResponse)
     } catch (error) {
-      console.error("Failed to fetch downgrade warning:", error)
       // Silently fail to not disrupt the main UI
     } finally {
       setLoading(false)
@@ -88,7 +84,6 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
     )
 
     setDismissed(true)
-    console.log("handleDismiss: calling onClose", { onClose })
     onClose?.()
   }
 
@@ -100,13 +95,8 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
   }
 
   useEffect(() => {
-    console.log("DowngradeWarning useEffect:", {
-      autoCheck,
-      hasToken: !!getToken(),
-    })
     if (autoCheck) {
       if (getToken()) {
-        console.log("Starting fetchDowngradeWarning...")
         fetchDowngradeWarning()
       } else {
         // No token, stop loading immediately
@@ -124,12 +114,6 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
     )
   }
 
-  console.log("DowngradeWarning render check:", {
-    dismissed,
-    warning,
-    hasWarning: warning?.has_warning,
-  })
-
   if (dismissed || !warning?.has_warning) {
     return null
   }
@@ -146,7 +130,7 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
       case "overdue":
         return "error"
       case "immediate":
-        return "error"
+        return "warning"
       case "downgrade":
         return "warning"
       default:
@@ -282,8 +266,8 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
               Upgrade to Premium
             </Button>
             <Button
-              variant="outlined"
-              color="secondary"
+              variant="contained"
+              color="primary"
               onClick={() => {
                 handleDismiss()
                 window.location.href = "/workspace"
@@ -313,11 +297,12 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
           </Button>
           {showManageFilesButton && (
             <Button
+              variant="contained"
+              color="primary"
               onClick={() => {
                 handleDismiss()
                 navigate("/console/workspaces")
               }}
-              color="inherit"
             >
               Manage Files
             </Button>

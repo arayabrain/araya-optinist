@@ -419,13 +419,19 @@ class BatchUtils:
         # self._upload_workspace_to_s3()
 
         # Create batch-specific configuration file
-        batch_config_path = join_filepath(
-            [
-                DIRPATH.OUTPUT_DIR,
-                self.workspace_id,
-                self.unique_id,
-                ".batch_config.json",
-            ]
+        batch_config_path = (
+            Path(
+                join_filepath(
+                    [
+                        DIRPATH.OUTPUT_DIR,
+                        self.workspace_id,
+                        self.unique_id,
+                        ".batch_config.json",
+                    ]
+                )
+            )
+            .resolve()
+            .as_posix()
         )
 
         import json
@@ -452,8 +458,10 @@ class BatchUtils:
         )
 
         # Upload workspace data to S3
-        workspace_path = join_filepath(
-            [DIRPATH.OUTPUT_DIR, self.workspace_id, self.unique_id]
+        workspace_path = (
+            Path(join_filepath([DIRPATH.OUTPUT_DIR, self.workspace_id, self.unique_id]))
+            .resolve()
+            .as_posix()
         )
 
         logger.info(f"Uploading workspace files to S3: {workspace_path}")
@@ -1113,51 +1121,52 @@ class BatchDebug:
         workspace_id: str, unique_id: str
     ) -> StorageSettings:
         """
-        Configure optimized storage settings for EFS with local scratch directories.
-        This implements the best practices for shared network filesystems.
+        Configure optimized storage settings for EFS shared filesystem.
+
+        Key fix: When using SharedFSUsage.INPUT_OUTPUT,
+        do NOT set local storage prefixes.
+        This prevents Snakemake from creating duplicated paths like:
+        /tmp/snakemake_scratch/fs/mnt/efs/mnt/efs/input/file.tiff
+
+        Instead, all input/output files are accessed directly from the EFS mount.
         """
         # EFS mount path - should be persistent across batch jobs
-        efs_storage = f"/mnt/efs/{workspace_id}/{unique_id}/"
-
-        # Local scratch directory - should be fast local storage (e.g., NVMe SSD)
-        # This will be used for intermediate files and temporary storage
-        local_scratch = "/tmp/snakemake_scratch"
-
-        # Per-job scratch directory to avoid conflicts between concurrent jobs
-        job_local_scratch = "/tmp/snakemake_scratch/$JOBID"
+        # Use the base EFS mount point since SmkUtils generates full paths
+        efs_storage = Path(DIRPATH.DATA_DIR).resolve().as_posix()
 
         storage_settings = StorageSettings(
             default_storage_provider="fs",  # Use the filesystem storage plugin
             default_storage_prefix=efs_storage,
-            # Local scratch for the coordinator/main process
-            local_storage_prefix=Path(local_scratch),
-            # Per-job local scratch for remote batch jobs
-            remote_job_local_storage_prefix=Path(job_local_scratch),
+            local_storage_prefix=efs_storage,
+            remote_job_local_storage_prefix=efs_storage,
             shared_fs_usage=[
-                SharedFSUsage.INPUT_OUTPUT,
-                SharedFSUsage.PERSISTENCE,
-                SharedFSUsage.SOFTWARE_DEPLOYMENT,
-                SharedFSUsage.SOURCES,
+                SharedFSUsage.INPUT_OUTPUT,  # Input/output files on EFS
+                SharedFSUsage.PERSISTENCE,  # Job metadata on EFS
+                SharedFSUsage.SOFTWARE_DEPLOYMENT,  # Conda envs on EFS
+                SharedFSUsage.SOURCES,  # Workflow sources on EFS
             ],
         )
 
         logger.info(f"EFS storage configured: {efs_storage}")
-        logger.info(f"Local scratch directory: {local_scratch}")
-        logger.info(f"Remote job scratch directory: {job_local_scratch}")
 
         return storage_settings
 
-    def prepare_efs_environment(workspace_id: str, unique_id: str):
+    def prepare_efs_environment(workspace_id: str):
         """
         Ensure EFS directories exist and local scratch is prepared.
         """
-        efs_base_path = Path(f"/mnt/efs/{workspace_id}/{unique_id}")
-        local_scratch_path = Path("/tmp/snakemake_scratch")
+        # EFS base path is the mount point itself, use OPTINIST_DIR from environment
+        efs_mount_path = Path(DIRPATH.DATA_DIR).resolve()
+        local_scratch_path = Path("/tmp/snakemake_scratch").resolve()
 
         try:
             # Create EFS directories if they don't exist
-            efs_base_path.mkdir(parents=True, exist_ok=True)
-            logger.info(f"EFS directory prepared: {efs_base_path}")
+            efs_mount_path.mkdir(parents=True, exist_ok=True)
+
+            # Create input and output directories under EFS mount
+            (efs_mount_path / "input").mkdir(parents=True, exist_ok=True)
+            (efs_mount_path / "output").mkdir(parents=True, exist_ok=True)
+            logger.info(f"EFS directories prepared: {efs_mount_path}")
 
             # Create local scratch directory
             local_scratch_path.mkdir(parents=True, exist_ok=True)
@@ -1166,10 +1175,10 @@ class BatchDebug:
 
             logger.info(f"Local scratch directory prepared: {local_scratch_path}")
 
-            # Create subdirectories that Snakemake might need
-            (efs_base_path / "logs").mkdir(exist_ok=True)
-            (efs_base_path / "benchmarks").mkdir(exist_ok=True)
-            (efs_base_path / ".snakemake").mkdir(exist_ok=True)
+            # Create subdirectories that Snakemake might need under the EFS mount
+            (efs_mount_path / "logs").mkdir(exist_ok=True)
+            (efs_mount_path / "benchmarks").mkdir(exist_ok=True)
+            (efs_mount_path / ".snakemake").mkdir(exist_ok=True)
 
         except Exception as e:
             logger.error(f"Failed to prepare EFS environment: {e}")

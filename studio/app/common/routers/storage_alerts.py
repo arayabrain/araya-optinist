@@ -23,10 +23,19 @@ router = APIRouter(prefix="/storage-alerts", tags=["storage-alerts"])
 logger = AppLogger.get_logger()
 
 
+def _get_storage_utilities():
+    """
+    Helper function to get storage monitoring utilities for formatting and thresholds.
+    Returns S3StorageMonitor instance (used only for utility functions).
+    """
+    from studio.app.common.core.cloud.s3_storage_monitor import S3StorageMonitor
+
+    return S3StorageMonitor("dummy")  # Bucket name not used for utilities
+
+
 @router.get("/me", response_model=Dict)
 async def get_my_storage_alert(
     current_user: User = Depends(get_current_user),
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     """
     Get storage alert information for the current user.
@@ -35,17 +44,42 @@ async def get_my_storage_alert(
         Dict containing user's storage usage and alert information
     """
     try:
-        if not remote_bucket_name:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No S3 bucket configured for user",
-            )
+        # Use the new unified storage calculation function
+        from studio.app.common.core.cloud.cloud_utils import (
+            get_current_user_storage_usage,
+        )
 
-        monitor = S3StorageMonitor(remote_bucket_name)
-        alert = await monitor.check_user_storage_alerts(current_user.id)
+        # Get current usage (uses caching with 60min freshness)
+        current_usage = await get_current_user_storage_usage(current_user.id)
+
+        # Get user's quota and calculate alert
+        from studio.app.common.core.cloud.cloud_utils import get_user_storage_usage
+
+        storage_info = get_user_storage_usage(current_user.id)
+
+        alert = None
+        if storage_info and storage_info["quota_limit_bytes"] > 0:
+            quota_limit = storage_info["quota_limit_bytes"]
+            usage_percentage = (current_usage / quota_limit) * 100
+
+            # Use thresholds from S3StorageMonitor for consistency
+            monitor = _get_storage_utilities()
+            alert_level = monitor.calculate_storage_alert_level(usage_percentage)
+
+            if alert_level:
+                from datetime import datetime, timezone
+
+                alert = {
+                    "user_id": current_user.id,
+                    "alert_level": alert_level,
+                    "usage_bytes": current_usage,
+                    "quota_bytes": quota_limit,
+                    "usage_percentage": round(usage_percentage, 2),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
 
         if alert:
-            # Add user information
+            # Add user information and format message (reuse monitor from above)
             alert.update(
                 {
                     "user_name": current_user.name,
@@ -56,12 +90,13 @@ async def get_my_storage_alert(
             return {"has_alert": True, "alert": alert}
         else:
             # No alert, but still return current usage info
-            current_usage = await monitor.get_user_s3_storage_size(current_user.id)
+            monitor = _get_storage_utilities()
+            usage_formatted = monitor.format_bytes(current_usage)
 
             return {
                 "has_alert": False,
                 "current_usage_bytes": current_usage,
-                "current_usage_formatted": monitor.format_bytes(current_usage),
+                "current_usage_formatted": usage_formatted,
                 "alert": None,
             }
 
@@ -76,7 +111,6 @@ async def get_my_storage_alert(
 @router.get("/usage", response_model=Dict)
 async def get_my_storage_usage(
     current_user: User = Depends(get_current_user),
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     """
     Get detailed storage usage information for the current user.
@@ -85,21 +119,20 @@ async def get_my_storage_usage(
         Dict containing detailed storage usage statistics
     """
     try:
-        if not remote_bucket_name:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No S3 bucket configured for user",
-            )
+        # Use the new unified storage calculation function
+        from studio.app.common.core.cloud.cloud_utils import (
+            get_current_user_storage_usage,
+            get_user_storage_usage,
+        )
 
-        monitor = S3StorageMonitor(remote_bucket_name)
-
-        # Get current S3 usage
-        current_usage = await monitor.get_user_s3_storage_size(current_user.id)
+        # Get current usage (uses caching with 60min freshness)
+        current_usage = await get_current_user_storage_usage(current_user.id)
 
         # Get quota information from database
-        from studio.app.common.core.cloud.cloud_utils import get_user_storage_usage
-
         storage_info = get_user_storage_usage(current_user.id)
+
+        # Use storage utilities for formatting and thresholds
+        monitor = _get_storage_utilities()
 
         if not storage_info:
             return {
@@ -109,6 +142,10 @@ async def get_my_storage_usage(
                 "quota_formatted": None,
                 "usage_percentage": None,
                 "alert_level": None,
+                "thresholds": {
+                    "critical": monitor.CRITICAL_THRESHOLD,
+                    "danger": monitor.DANGER_THRESHOLD,
+                },
             }
 
         quota_limit = storage_info["quota_limit_bytes"]

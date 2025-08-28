@@ -19,7 +19,10 @@ from snakemake.api import (
     StorageSettings,
 )
 from snakemake_executor_plugin_aws_batch import ExecutorSettings
+from sqlmodel import select
 
+from studio.app.common import models as common_model
+from studio.app.common.core.cloud.cloud_utils import get_current_user_storage_usage
 from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
 from studio.app.common.core.cloud_batch.batch_utils import BatchDebug, BatchUtils
 from studio.app.common.core.experiment.experiment_record_services import (
@@ -41,6 +44,7 @@ from studio.app.common.core.workflow.workflow_result import WorkflowResult
 from studio.app.common.core.workspace.workspace_data_capacity_services import (
     WorkspaceDataCapacityService,
 )
+from studio.app.common.db.database import session_scope
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -163,12 +167,18 @@ def _snakemake_execute_batch(
     """
 
     smk_logger = SmkStatusLogger(workspace_id, unique_id)
-    smk_workdir = join_filepath(
-        [
-            DIRPATH.OUTPUT_DIR,
-            workspace_id,
-            unique_id,
-        ]
+    smk_workdir = (
+        Path(
+            join_filepath(
+                [
+                    DIRPATH.OUTPUT_DIR,
+                    workspace_id,
+                    unique_id,
+                ]
+            )
+        )
+        .resolve()
+        .as_posix()
     )
 
     try:
@@ -320,8 +330,8 @@ def _snakemake_execute_batch(
             # final results in S3
             # This completely bypasses all the path duplication issues with
             # Snakemake's S3 storage
-            data_dir_path = DIRPATH.DATA_DIR.lstrip(
-                "/"
+            data_dir_path = (
+                Path(DIRPATH.DATA_DIR).resolve().as_posix().lstrip("/")
             )  # Remove leading slash for S3 path
             s3_storage = f"{s3_prefix}://{s3_bucket_name}/{data_dir_path}"
 
@@ -334,8 +344,10 @@ def _snakemake_execute_batch(
             )
 
             storage_settings = StorageSettings(
-                local_storage_prefix=Path("/tmp/snakemake_storage"),
-                remote_job_local_storage_prefix=Path("/tmp/snakemake_storage"),
+                local_storage_prefix=Path("/tmp/snakemake_storage").resolve(),
+                remote_job_local_storage_prefix=Path(
+                    "/tmp/snakemake_storage"
+                ).resolve(),
                 shared_fs_usage=frozenset(["s3"]),
                 retrieve_storage=True,
                 keep_storage_local=False,
@@ -355,7 +367,7 @@ def _snakemake_execute_batch(
         else:
             # Use optimized EFS configuration when S3 is not available
             logger.info("S3 not available, configuring optimized EFS storage")
-            BatchDebug.prepare_efs_environment(workspace_id, unique_id)
+            BatchDebug.prepare_efs_environment(workspace_id)
             storage_settings = BatchDebug.get_efs_optimized_storage_settings(
                 workspace_id, unique_id
             )
@@ -959,6 +971,30 @@ def _post_process_workflow(workspace_id: str, unique_id: str, result: bool = Fal
 
     # Data usage calculation
     WorkspaceDataCapacityService.update_experiment_data_usage(workspace_id, unique_id)
+
+    # Update user's total storage usage after workflow completion
+    try:
+        # Get the user who owns this workspace to update their storage
+        with session_scope() as db:
+            # Get workspace owner
+            query_result = db.execute(
+                select(common_model.Workspace.user_id).where(
+                    common_model.Workspace.id == int(workspace_id)
+                )
+            )
+            result_row = query_result.first()
+            user_id = result_row[0] if result_row else None
+
+            if user_id:
+                # Force live storage calculation to update database cache
+                asyncio.run(get_current_user_storage_usage(user_id, force_live=True))
+                logger.info(
+                    f"Update storage usage for user {user_id} after workflow completion"
+                )
+    except Exception as e:
+        logger.warning(
+            f"Failed to update user storage usage after workflow completion: {e}"
+        )
 
     # result error handling
     if not result:

@@ -353,28 +353,40 @@ def update_workspace_share_status(
 async def refresh_all_workspaces_storage(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     """
-    Refresh S3 storage usage calculation for all workspaces.
+    Refresh storage usage calculation for all workspaces.
     This will recalculate both local and S3 storage usage.
     """
     try:
-        if not remote_bucket_name:
-            raise HTTPException(
-                status_code=400, detail="No S3 bucket configured for user"
-            )
-
-        # Import the cloud capacity service
+        # Import both local and cloud capacity services
         import sys
         from pathlib import Path
 
         project_root = Path(__file__).parent.parent.parent.parent.parent
         sys.path.insert(0, str(project_root))
 
+        # Determine if we should use S3 or local storage based on environment
+        # Use shared bucket from environment, not user-specific buckets
+        import os
+
+        from studio.app.common.core.storage.remote_storage_controller import (
+            RemoteStorageType,
+        )
+        from studio.app.common.core.workspace.workspace_data_capacity_services import (
+            WorkspaceDataCapacityService,
+        )
         from studio.scripts.run_sync_data_capacity_cloud import (
             CloudWorkspaceDataCapacityService,
         )
+
+        shared_bucket_name = None
+        remote_storage_type = RemoteStorageType.get_activated_type()
+
+        if remote_storage_type == RemoteStorageType.S3:
+            shared_bucket_name = os.environ.get("S3_DEFAULT_BUCKET_NAME")
+
+        use_s3 = bool(shared_bucket_name)
 
         # Get all non-deleted workspaces that the user has access to
         workspaces_query = (
@@ -405,15 +417,36 @@ async def refresh_all_workspaces_storage(
         refreshed_count = 0
         for workspace_id in workspace_ids:
             try:
-                service = CloudWorkspaceDataCapacityService
-                await service.sync_workspace_data_capacity_with_s3(
-                    db,
-                    remote_bucket_name,
-                    str(workspace_id),
-                    delete_existing=False,
-                )
+                if use_s3:
+                    # Use S3 storage service with shared bucket
+                    service = CloudWorkspaceDataCapacityService
+                    await service.sync_workspace_data_capacity_with_s3(
+                        db,
+                        shared_bucket_name,
+                        str(workspace_id),
+                        delete_existing=False,
+                    )
+                else:
+                    # Use local storage service
+                    # For local storage, sync all experiments in the workspace
+                    workspace_output_path = os.path.join(
+                        DIRPATH.OUTPUT_DIR, str(workspace_id)
+                    )
+                    if os.path.exists(workspace_output_path):
+                        for experiment_dir in os.listdir(workspace_output_path):
+                            experiment_path = os.path.join(
+                                workspace_output_path, experiment_dir
+                            )
+                            if os.path.isdir(experiment_path):
+                                service = WorkspaceDataCapacityService
+                                service.update_experiment_data_usage(
+                                    str(workspace_id), experiment_dir
+                                )
+
                 refreshed_count += 1
-                logger.debug(f"Refreshed storage for workspace {workspace_id}")
+                logger.debug(
+                    f"Refreshed storage for workspace {workspace_id} (use_s3={use_s3})"
+                )
             except Exception as e:
                 logger.error(
                     f"Failed to refresh storage for workspace {workspace_id}: {e}"
@@ -421,6 +454,23 @@ async def refresh_all_workspaces_storage(
                 continue
 
         db.commit()
+
+        # After refreshing individual workspaces, update the user's total storage usage
+        try:
+            from studio.app.common.core.cloud.cloud_utils import (
+                get_current_user_storage_usage,
+            )
+
+            # Use our unified storage calculation function with force_live=True
+            total_usage = await get_current_user_storage_usage(
+                current_user.id, force_live=True
+            )
+            logger.info(
+                f"Updated user {current_user.id} total storage usage "
+                f"to {total_usage} bytes ({total_usage/(1024**3):.2f}GB)"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to update user total storage usage: {e}")
 
         logger.info(
             f"Successfully refreshed storage for {refreshed_count}/"
@@ -431,7 +481,7 @@ async def refresh_all_workspaces_storage(
             "success": True,
             "refreshed_workspaces": refreshed_count,
             "total_workspaces": len(workspace_ids),
-            "message": f"Refreshed storage usage for {refreshed_count} workspaces",
+            "message": (f"Refreshed storage usage for {refreshed_count} " "workspaces"),
         }
 
     except Exception as e:

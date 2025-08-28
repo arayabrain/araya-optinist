@@ -28,6 +28,10 @@ const Layout = ({ children }: { children?: ReactNode }) => {
   const [loading, setLoading] = useState(
     !isStandalone && authRequiredPathRegex.test(location.pathname),
   )
+  const [storageRefreshedOnLogin, setStorageRefreshedOnLogin] = useState(() => {
+    // Check if storage was already refreshed in this session
+    return sessionStorage.getItem("storage-refreshed-on-login") === "true"
+  })
 
   useEffect(() => {
     !isStandalone &&
@@ -47,6 +51,32 @@ const Layout = ({ children }: { children?: ReactNode }) => {
     try {
       if (token) {
         await dispatch(getMe())
+
+        // Refresh workspace storage only once per session to ensure accurate downgrade warnings
+        if (!storageRefreshedOnLogin) {
+          try {
+            const { refreshAllWorkspacesStorageApi } = await import(
+              "api/workspace"
+            )
+            await refreshAllWorkspacesStorageApi()
+
+            // Mark as refreshed in session storage
+            sessionStorage.setItem("storage-refreshed-on-login", "true")
+            setStorageRefreshedOnLogin(true)
+          } catch (storageError) {
+            // Don't fail login if storage refresh fails
+            // eslint-disable-next-line no-console
+            console.warn(
+              "Failed to refresh workspace storage usage on login:",
+              storageError,
+            )
+
+            // Still mark as attempted so we don't keep retrying
+            sessionStorage.setItem("storage-refreshed-on-login", "true")
+            setStorageRefreshedOnLogin(true)
+          }
+        }
+
         if (isLogin) navigate("/console")
         return
       } else if (!isLogin) throw new Error("fail auth")

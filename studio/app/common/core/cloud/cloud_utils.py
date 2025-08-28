@@ -425,6 +425,190 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
         return False
 
 
+async def get_current_user_storage_usage(user_id: int, force_live: bool = False) -> int:
+    """
+    Get current storage usage for a user with hybrid caching approach.
+
+    Args:
+        user_id: User ID to check storage for
+        force_live: If True, always calculate live usage (skip cache)
+
+    Returns:
+        Current storage usage in bytes
+    """
+    try:
+        if not force_live:
+            # Try database first (fast)
+            storage_info = get_user_storage_usage(user_id)
+            if storage_info and _is_storage_data_fresh(
+                storage_info, max_age_minutes=60
+            ):
+                logger.debug(f"Using cached storage data for user {user_id}")
+                return storage_info["current_usage_bytes"]
+            else:
+                logger.debug(
+                    f"Storage data for user {user_id} is stale or missing, "
+                    f"calculating live"
+                )
+
+        # Calculate live usage
+        live_usage = await _calculate_live_storage_usage(user_id)
+
+        # Update database with fresh data
+        update_user_storage_usage(user_id, live_usage)
+
+        return live_usage
+
+    except Exception as e:
+        logger.error(f"Failed to get current storage usage for user {user_id}: {e}")
+        # Fallback to database if available, otherwise 0
+        storage_info = get_user_storage_usage(user_id)
+        return storage_info.get("current_usage_bytes", 0) if storage_info else 0
+
+
+def _is_storage_data_fresh(storage_info: Dict, max_age_minutes: int = 60) -> bool:
+    """
+    Check if storage data is fresh enough to use.
+
+    Args:
+        storage_info: Storage info from database
+        max_age_minutes: Maximum age in minutes to consider fresh
+
+    Returns:
+        True if data is fresh enough
+    """
+    try:
+        last_updated = storage_info.get("last_updated")
+        if not last_updated:
+            return False
+
+        # Convert to datetime if it's not already
+        if isinstance(last_updated, str):
+            last_updated = datetime.fromisoformat(last_updated.replace("Z", "+00:00"))
+
+        age_minutes = (datetime.now() - last_updated).total_seconds() / 60
+        return age_minutes <= max_age_minutes
+
+    except Exception as e:
+        logger.warning(f"Failed to check storage data freshness: {e}")
+        return False
+
+
+async def _calculate_live_storage_usage(user_id: int) -> int:
+    """
+    Calculate live storage usage for a user.
+    Detects S3 vs local environment and uses appropriate method.
+
+    Args:
+        user_id: User ID to check storage for
+
+    Returns:
+        Current storage usage in bytes
+    """
+    try:
+        # Determine if we should use S3 or local storage based on environment
+        # (Same logic as workspace refresh endpoint)
+        import os
+
+        from studio.app.common.core.storage.remote_storage_controller import (
+            RemoteStorageType,
+        )
+
+        shared_bucket_name = None
+        remote_storage_type = RemoteStorageType.get_activated_type()
+
+        if remote_storage_type == RemoteStorageType.S3:
+            shared_bucket_name = os.environ.get("S3_DEFAULT_BUCKET_NAME")
+
+        use_s3 = bool(shared_bucket_name)
+
+        if use_s3:
+            # Use S3 storage calculation with shared bucket
+            from studio.app.common.core.cloud.s3_storage_monitor import S3StorageMonitor
+
+            monitor = S3StorageMonitor(shared_bucket_name)
+            return await monitor.get_user_s3_storage_size(user_id)
+        else:
+            # Use local storage calculation
+            return await _calculate_local_user_storage(user_id)
+
+    except Exception as e:
+        logger.error(f"Failed to calculate live storage usage for user {user_id}: {e}")
+        return 0
+
+
+async def _calculate_local_user_storage(user_id: int) -> int:
+    """
+    Calculate total local storage usage for a user across all their workspaces.
+
+    Args:
+        user_id: User ID to check storage for
+
+    Returns:
+        Total storage size in bytes
+    """
+    try:
+        # Get all workspaces the user has access to (same logic as workspace refresh)
+        from sqlmodel import or_, select
+
+        from studio.app.common import models as common_model
+
+        with session_scope() as db:
+            workspaces_query = (
+                select(common_model.Workspace.id)
+                .join(
+                    common_model.WorkspacesShareUser,
+                    common_model.Workspace.id
+                    == common_model.WorkspacesShareUser.workspace_id,
+                    isouter=True,
+                )
+                .filter(
+                    common_model.Workspace.deleted.is_(False),
+                    or_(
+                        common_model.WorkspacesShareUser.user_id == user_id,
+                        common_model.Workspace.user_id == user_id,
+                    ),
+                )
+            )
+            workspace_ids = db.exec(workspaces_query).all()
+
+        # Calculate total storage from input and output folders
+        total_usage = 0
+        import os
+
+        from studio.app.common.core.utils.file_reader import get_folder_size
+        from studio.app.dir_path import DIRPATH
+
+        for workspace_id in workspace_ids:
+            # Add input folder size
+            input_path = os.path.join(DIRPATH.INPUT_DIR, str(workspace_id))
+            if os.path.exists(input_path):
+                input_size = get_folder_size(input_path)
+                total_usage += input_size
+                logger.debug(
+                    f"User {user_id} workspace {workspace_id} input: {input_size} bytes"
+                )
+
+            # Add output folder size
+            output_path = os.path.join(DIRPATH.OUTPUT_DIR, str(workspace_id))
+            if os.path.exists(output_path):
+                output_size = get_folder_size(output_path)
+                total_usage += output_size
+                logger.debug(
+                    f"User {user_id} workspace {workspace_id} output: "
+                    f"{output_size} bytes"
+                )
+
+        logger.info(
+            f"Calculated local storage size for user {user_id}: {total_usage:,} bytes"
+        )
+        return total_usage
+
+    except Exception as e:
+        logger.error(f"Failed to calculate local storage size for user {user_id}: {e}")
+        return 0
+
+
 def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
     """
     Calculate downgrade warning based on subscription and storage status:
@@ -446,11 +630,55 @@ def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
         logger.info(f"Calculating downgrade warning for user {user_id}")
 
         with session_scope() as db:
-            # Get user's current storage usage (optional - might not exist)
+            # Get user's current storage usage - prioritize fresh data at startup
+            import asyncio
+
+            # First check if we have very fresh cached data (within 5 minutes)
+            storage_info = get_user_storage_usage(user_id)
+            if storage_info and _is_storage_data_fresh(storage_info, max_age_minutes=5):
+                current_usage_bytes = storage_info.get("current_usage_bytes", 0)
+                logger.debug(
+                    f"DowngradeWarning: Using fresh cached storage data "
+                    f"for user {user_id}: {current_usage_bytes}"
+                )
+            else:
+                try:
+                    # Try to get current event loop
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # We're in an async context
+                        # use database fallback but log that data may be stale
+                        current_usage_bytes = (
+                            storage_info.get("current_usage_bytes", 0)
+                            if storage_info
+                            else 0
+                        )
+                        logger.warning(
+                            f"DowngradeWarning: Using potentially "
+                            f"stale storage data for user {user_id}: "
+                            f"{current_usage_bytes} (in async context)"
+                        )
+                    else:
+                        # We can run async code safely
+                        current_usage_bytes = loop.run_until_complete(
+                            get_current_user_storage_usage(user_id, force_live=True)
+                        )
+                        logger.debug(
+                            f"DowngradeWarning: Calculated fresh storage data "
+                            f"for user {user_id}: {current_usage_bytes}"
+                        )
+                except RuntimeError:
+                    # No event loop, we can create one
+                    current_usage_bytes = asyncio.run(
+                        get_current_user_storage_usage(user_id, force_live=True)
+                    )
+                    logger.debug(
+                        f"DowngradeWarning: Calculated fresh storage data "
+                        f"for user {user_id}: {current_usage_bytes}"
+                    )
+
+            # Get quota from database for this user
             storage_usage = get_user_storage_usage(user_id)
-            current_usage_bytes = (
-                storage_usage.get("current_usage_bytes", 0) if storage_usage else 0
-            )
 
             # Use actual quota from database, fallback to default if not available
             quota_limit_bytes = (
@@ -585,7 +813,8 @@ def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
                     "free_tier_limit_bytes": quota_limit_bytes,
                     "free_tier_limit_gb": quota_limit_gb,
                     "message": (
-                        f"Your storage usage ({round(current_usage_gb, 1)} GB) is high."
+                        f"Your storage usage ({round(current_usage_gb, 1)} GB) is over "
+                        f"the limit for your plan. You will be unable to run workflows."
                         f" Consider cleaning up unused data."
                     ),
                 }
