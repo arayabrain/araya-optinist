@@ -31,6 +31,7 @@ export interface SubscriptionState {
   plans: SubscriptionPlan[]
   userSubscription: UserSubscription | null
   loading: boolean
+  checkoutLoading: boolean
   error: string | null
   plansLoading: boolean
   userSubscriptionLoading: boolean
@@ -47,4 +48,9 @@ export interface RejectedAction {
   error?: {
     message?: string
   }
+}
+
+export interface CreateCheckoutSessionResponse {
+  checkout_url: string
+  session_id: string
 }

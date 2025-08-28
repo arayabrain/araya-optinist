@@ -15,7 +15,6 @@ import AccountDelete from "pages/AccountDelete"
 import AccountManager from "pages/AccountManager"
 import Dashboard from "pages/Dashboard"
 import Login from "pages/Login"
-import PremiumCheckout from "pages/Payment"
 import ResetPassword from "pages/ResetPassword"
 import SubscriptionPage from "pages/Subscription"
 import Workspaces from "pages/Workspace"
@@ -81,10 +80,6 @@ const App: FC = () => {
               <Route
                 path="/console/subscription"
                 element={<SubscriptionPage />}
-              />
-              <Route
-                path="/console/premium-checkout"
-                element={<PremiumCheckout />}
               />
               <Route
                 path="/console/*"

@@ -20,6 +20,7 @@ import {
 import {
   getSubscriptionPlan,
   getUserSubscription,
+  createCheckoutSession,
 } from "store/slice/Subscriptions/SubscriptionActions"
 import {
   selectSubscriptionPlans,
@@ -28,6 +29,7 @@ import {
   selectSubscriptionError,
   selectIsSubscriptionExpired,
   selectCurrentPlanId,
+  selectCheckoutLoading,
 } from "store/slice/Subscriptions/SubscriptionSelector"
 import { clearError } from "store/slice/Subscriptions/SubscriptionSlice"
 import type {
@@ -42,7 +44,7 @@ import {
   getPlanFeatures,
 } from "utils/subscriptions/SubscriptionUtils"
 
-const MembershipPlans = () => {
+const SubscriptionPlans = () => {
   const user = useSelector(selectCurrentUser)
   const plans = useSelector(selectSubscriptionPlans)
   const userSubscription = useSelector(selectUserSubscription)
@@ -57,6 +59,7 @@ const MembershipPlans = () => {
   // State for downgrade confirmation dialog
   const [showDowngradeDialog, setShowDowngradeDialog] = useState(false)
   const [selectedPlanId, setSelectedPlanId] = useState<number | null>(null)
+  const [processingPlanId, setProcessingPlanId] = useState<number | null>(null) // Track which plan is being processed
 
   // Fetch data on component mount
   useEffect(() => {
@@ -83,14 +86,50 @@ const MembershipPlans = () => {
     return plan?.price === 0
   }
 
-  const handleUpgradeClick = (planId: number) => {
+  const SUBSCRIPTION_PLAN = {
+    FREE: "Free",
+    PREMIUM: "Premium",
+  }
+
+  const handleUpgradeClick = async (planId: number) => {
     // Check if it's a downgrade (free plan)
     if (isDowngrade(planId)) {
       setSelectedPlanId(planId)
       setShowDowngradeDialog(true)
     } else {
-      // For upgrades, navigate to checkout
-      navigate(`/console/premium-checkout?planId=${planId}`)
+      // For upgrades, create checkout session and redirect to Stripe
+      if (!user?.id) {
+        // Handle case where user is not logged in
+        navigate("/login")
+        return
+      }
+
+      try {
+        setProcessingPlanId(planId)
+
+        // Dispatch the action to create checkout session
+        const resultAction = await dispatch(createCheckoutSession(planId))
+
+        // Check if the action was fulfilled
+        if (createCheckoutSession.fulfilled.match(resultAction)) {
+          const { checkout_url } = resultAction.payload
+
+          // Redirect to Stripe checkout
+          window.location.href = checkout_url
+        } else {
+          // Handle error case
+          console.error(
+            "Failed to create checkout session:",
+            resultAction.error,
+          )
+          // You might want to show an error message to the user here
+        }
+      } catch (error) {
+        console.error("Error creating checkout session:", error)
+        // Handle error - maybe show a toast notification
+      } finally {
+        setProcessingPlanId(null)
+      }
     }
   }
 
@@ -132,11 +171,16 @@ const MembershipPlans = () => {
     const billingCycle = getBillingCycleText(plan.billing_cycle)
 
     if (plan.price === 0) {
-      return "Free"
+      return SUBSCRIPTION_PLAN.FREE
     }
 
     const basePrice = (plan.price / 100).toFixed(0)
     return `${currencySymbol}${basePrice}/${billingCycle}`
+  }
+
+  // Check if a specific plan is currently being processed
+  const isPlanProcessing = (planId: number) => {
+    return processingPlanId === planId
   }
 
   // Loading state
@@ -187,7 +231,7 @@ const MembershipPlans = () => {
 
   return (
     <BoxWrapper>
-      <MembershipTitle variant="h3">Membership Plans</MembershipTitle>
+      <SubscriptionTitle variant="h3">Subscription Plans</SubscriptionTitle>
 
       {/* Tax information notice */}
       <TaxNotice severity="info" sx={{ mb: 3, maxWidth: "600px" }}>
@@ -199,31 +243,33 @@ const MembershipPlans = () => {
       </TaxNotice>
 
       {/* Current subscription status */}
-      {userSubscription && userSubscription.plan_name !== "Free" && (
-        <SubscriptionStatus>
-          <Typography variant="body1">
-            Current Plan: <strong>{userSubscription.plan_name}</strong>
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            {isSubscriptionExpired ? (
-              <span style={{ color: "#dc2626" }}>
-                Expired on{" "}
-                {new Date(userSubscription.expiration).toLocaleDateString()}
-              </span>
-            ) : (
-              `Expires on ${new Date(userSubscription.expiration).toLocaleDateString()}`
-            )}
-          </Typography>
-        </SubscriptionStatus>
-      )}
+      {userSubscription &&
+        userSubscription.plan_name !== SUBSCRIPTION_PLAN.FREE && (
+          <SubscriptionStatus>
+            <Typography variant="body1">
+              Current Plan: <strong>{userSubscription.plan_name}</strong>
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              {isSubscriptionExpired ? (
+                <span style={{ color: "#dc2626" }}>
+                  Expired on{" "}
+                  {new Date(userSubscription.expiration).toLocaleDateString()}
+                </span>
+              ) : (
+                `Expires on ${new Date(userSubscription.expiration).toLocaleDateString()}`
+              )}
+            </Typography>
+          </SubscriptionStatus>
+        )}
 
-      <MembershipWrapper>
-        <MembershipContent>
+      <SubscriptionWrapper>
+        <SubscriptionContent>
           {activePlans.map((plan) => {
             const features = getPlanFeatures(plan)
             const isCurrent = isCurrentPlan(plan.id)
             const isFree = plan.price === 0
             const priceDisplay = getPriceDisplay(plan)
+            const isProcessing = isPlanProcessing(plan.id)
 
             return (
               <PlanCard key={plan.id} isHighlighted={plan.name === "Premium"}>
@@ -280,17 +326,24 @@ const MembershipPlans = () => {
                     <UpgradeButton
                       variant="contained"
                       onClick={() => handleUpgradeClick(plan.id)}
-                      disabled={!user}
+                      disabled={!user || isProcessing}
+                      startIcon={
+                        isProcessing ? <CircularProgress size={16} /> : null
+                      }
                     >
-                      {isFree ? "Downgrade" : "Upgrade"}
+                      {isProcessing
+                        ? "Processing..."
+                        : isFree
+                          ? "Downgrade"
+                          : "Upgrade"}
                     </UpgradeButton>
                   )}
                 </ButtonWrapper>
               </PlanCard>
             )
           })}
-        </MembershipContent>
-      </MembershipWrapper>
+        </SubscriptionContent>
+      </SubscriptionWrapper>
 
       {/* Downgrade Confirmation Dialog */}
       <Dialog
@@ -336,7 +389,7 @@ const MembershipPlans = () => {
   )
 }
 
-// Styled Components
+// Styled Components remain the same...
 const BoxWrapper = styled(Box)({
   display: "flex",
   flexDirection: "column",
@@ -345,7 +398,7 @@ const BoxWrapper = styled(Box)({
   padding: "5rem 2rem",
 })
 
-const MembershipTitle = styled(Typography)(() => ({
+const SubscriptionTitle = styled(Typography)(() => ({
   fontWeight: "bold",
   color: "#111827",
   marginBottom: "2rem",
@@ -369,7 +422,7 @@ const SubscriptionStatus = styled(Box)(() => ({
   maxWidth: "400px",
 }))
 
-const MembershipWrapper = styled(Box)(() => ({
+const SubscriptionWrapper = styled(Box)(() => ({
   width: "100%",
   maxWidth: "64rem",
   display: "flex",
@@ -377,7 +430,7 @@ const MembershipWrapper = styled(Box)(() => ({
   justifyContent: "center",
 }))
 
-const MembershipContent = styled(Box)(() => ({
+const SubscriptionContent = styled(Box)(() => ({
   display: "flex",
   flexDirection: "row",
   gap: "2rem",
@@ -485,4 +538,4 @@ const UpgradeButton = styled(Button)(() => ({
   },
 }))
 
-export default MembershipPlans
+export default SubscriptionPlans

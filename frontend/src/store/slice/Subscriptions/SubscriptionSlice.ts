@@ -2,10 +2,12 @@
 import { createSlice, PayloadAction } from "@reduxjs/toolkit"
 
 import {
+  createCheckoutSession,
   getSubscriptionPlan,
   getUserSubscription,
 } from "store/slice/Subscriptions/SubscriptionActions"
-import { SUBSCRIPTION_SLICE_NAME ,
+import {
+  SUBSCRIPTION_SLICE_NAME,
   SubscriptionState,
   UserSubscription,
 } from "store/slice/Subscriptions/SubscriptionType"
@@ -18,6 +20,7 @@ const initialState: SubscriptionState = {
   plans: [],
   userSubscription: null,
   loading: false,
+  checkoutLoading: false,
   error: null,
   plansLoading: false,
   userSubscriptionLoading: false,
@@ -128,6 +131,17 @@ const subscriptionSlice = createSlice({
           action,
           "Failed to load user subscription",
         )
+      })
+      .addCase(createCheckoutSession.pending, (state) => {
+        state.checkoutLoading = true
+        state.error = null
+      })
+      .addCase(createCheckoutSession.fulfilled, (state, action) => {
+        state.checkoutLoading = false
+      })
+      .addCase(createCheckoutSession.rejected, (state, action) => {
+        state.checkoutLoading = false
+        state.error = action.payload || "Failed to create checkout session"
       })
   },
 })

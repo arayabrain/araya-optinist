@@ -34,12 +34,6 @@ const Profile: FC = () => {
     navigate("/console/account")
   }
 
-  const onClickUpgrade = () => {
-    setAnchorEl(null)
-    navigate("/console/subscription")
-    console.log("Upgrade clicked")
-  }
-
   return (
     <>
       <IconButton
@@ -71,10 +65,6 @@ const Profile: FC = () => {
         <MenuItem onClick={onClickLogout}>
           <Logout />
           Sign Out
-        </MenuItem>
-        <MenuItem onClick={onClickUpgrade}>
-          <UpgradeIcon />
-          Upgrade Plan
         </MenuItem>
       </Menu>
     </>

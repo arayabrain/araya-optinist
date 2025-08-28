@@ -68,7 +68,7 @@ const Account = () => {
     enqueueSnackbar(mess, { variant })
   }
 
-  const MEMBERSHIP_STATUS = {
+  const SUBSCRIPTION_STATUS = {
     LOADING: "Loading...",
     ERROR: "Error loading subscription",
     FREE: "FREE",
@@ -191,31 +191,34 @@ const Account = () => {
     }
   }
 
-  const getMembershipStatus = () => {
+  const getSubscriptionStatus = () => {
     if (subscriptionLoading) {
-      return MEMBERSHIP_STATUS.LOADING
+      return SUBSCRIPTION_STATUS.LOADING
     }
 
     if (subscriptionError) {
-      return MEMBERSHIP_STATUS.ERROR
+      return SUBSCRIPTION_STATUS.ERROR
     }
 
     if (!userSubscription) {
-      return MEMBERSHIP_STATUS.FREE
+      return SUBSCRIPTION_STATUS.FREE
     }
 
     if (isSubscriptionExpired) {
-      return MEMBERSHIP_STATUS.EXPIRED
+      return SUBSCRIPTION_STATUS.EXPIRED
     }
 
     return userSubscription.plan_name.toUpperCase()
   }
 
   // Helper function to get membership button text and action
-  const getMembershipButton = () => {
-    const status = getMembershipStatus()
+  const getSubscriptionButton = () => {
+    const status = getSubscriptionStatus()
 
-    if (status === "FREE" || status === "EXPIRED") {
+    if (
+      status === SUBSCRIPTION_STATUS.FREE ||
+      status === SUBSCRIPTION_STATUS.EXPIRED
+    ) {
       return {
         text: "Upgrade",
         action: onClickUpgrade,
@@ -251,7 +254,7 @@ const Account = () => {
     )
   }
 
-  const membershipButton = getMembershipButton()
+  const membershipButton = getSubscriptionButton()
 
   return (
     <AccountWrapper>
@@ -312,7 +315,7 @@ const Account = () => {
         <BoxData>{user?.attributes?.remote_bucket_name || "-"}</BoxData>
       </BoxFlex>
       <BoxFlex>
-        <TitleData>Membership</TitleData>
+        <TitleData>Subscription</TitleData>
         <Box
           sx={{
             display: "flex",
@@ -320,7 +323,7 @@ const Account = () => {
             alignItems: "flex-start",
           }}
         >
-          <BoxData>{getMembershipStatus()}</BoxData>
+          <BoxData>{getSubscriptionStatus()}</BoxData>
           {getExpirationInfo()}
         </Box>
         <Button

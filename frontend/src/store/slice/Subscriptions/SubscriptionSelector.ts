@@ -13,6 +13,11 @@ export const selectPlansLoading = (state: RootState) =>
 export const selectUserSubscriptionLoading = (state: RootState) =>
   state.subscription.userSubscriptionLoading
 
+export const selectSubscriptionExpirationDate = (state: RootState) => {
+  const userSubscription = selectUserSubscription(state)
+  return userSubscription?.expiration
+}
+
 // Derived selectors
 export const selectIsSubscriptionExpired = (state: RootState) => {
   const userSubscription = selectUserSubscription(state)
@@ -34,3 +39,6 @@ export const selectCurrentPlanId = (state: RootState) => {
 
   return userSubscription.plan_id
 }
+
+export const selectCheckoutLoading = (state: RootState) =>
+  state.subscription.checkoutLoading
