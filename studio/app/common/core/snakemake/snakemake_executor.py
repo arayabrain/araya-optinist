@@ -964,13 +964,18 @@ def _post_process_workflow(workspace_id: str, unique_id: str, result: bool = Fal
         asyncio.run(WorkflowResult(workspace_id, unique_id).observe_overall())
 
     # Update experiment database record
-    if ExperimentRecordService.is_available():
-        ExperimentRecordService.regist_record_on_workflow_completed(
+    try:
+        if ExperimentRecordService.is_available():
+            ExperimentRecordService.regist_record_on_workflow_completed(
+                workspace_id, unique_id
+            )
+
+        # Data usage calculation
+        WorkspaceDataCapacityService.update_experiment_data_usage(
             workspace_id, unique_id
         )
-
-    # Data usage calculation
-    WorkspaceDataCapacityService.update_experiment_data_usage(workspace_id, unique_id)
+    except Exception as e:
+        logger.error(f"snakemake_execute post process failed: {e}", exc_info=True)
 
     # Update user's total storage usage after workflow completion
     try:
