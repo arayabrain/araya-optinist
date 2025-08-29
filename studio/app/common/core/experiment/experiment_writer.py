@@ -13,6 +13,9 @@ from filelock import FileLock
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptFunction
 from studio.app.common.core.experiment.experiment_builder import ExptConfigBuilder
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
+from studio.app.common.core.experiment.experiment_record_services import (
+    ExperimentRecordService,
+)
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
@@ -238,6 +241,12 @@ class ExptDataWriter:
         # Overwrite experiment config
         update_params = {"name": new_name}
         ExptConfigWriter(self.workspace_id, self.unique_id).overwrite(update_params)
+
+        # Update ExperimentRecord
+        if ExperimentRecordService.is_available():
+            ExperimentRecordService.update_name(
+                self.workspace_id, self.unique_id, new_name
+            )
 
         # Operate remote storage data.
         if RemoteStorageController.is_available():
