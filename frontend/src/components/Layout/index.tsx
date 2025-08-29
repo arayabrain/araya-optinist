@@ -5,7 +5,7 @@ import { useLocation, useNavigate } from "react-router-dom"
 import { Box } from "@mui/material"
 import { styled } from "@mui/material/styles"
 
-import DowngradeWarning from "components/common/DowngradeWarning"
+import LimitWarning from "components/common/LimitWarning"
 import Loading from "components/common/Loading"
 import Header from "components/Layout/Header"
 import LeftMenu from "components/Layout/LeftMenu"
@@ -52,7 +52,7 @@ const Layout = ({ children }: { children?: ReactNode }) => {
       if (token) {
         await dispatch(getMe())
 
-        // Refresh workspace storage only once per session to ensure accurate downgrade warnings
+        // Refresh workspace storage only once per session to ensure accurate limit warnings
         if (!storageRefreshedOnLogin) {
           try {
             const { refreshAllWorkspacesStorageApi } = await import(
@@ -113,8 +113,8 @@ const AuthedLayout: FC<{ children: ReactNode }> = ({ children }) => {
         <LeftMenu open={open} handleDrawerClose={handleDrawerClose} />
         <ChildrenWrapper>{children}</ChildrenWrapper>
       </ContentBodyWrapper>
-      {/* Global downgrade warning modal for authenticated users */}
-      <DowngradeWarning showAsModal={true} autoCheck={true} />
+      {/* Global limit warning modal for authenticated users */}
+      <LimitWarning showAsModal={true} autoCheck={true} />
     </LayoutWrapper>
   )
 }

@@ -19,25 +19,25 @@ import {
 } from "@mui/material"
 
 import {
-  getMyDowngradeWarningApi,
-  DowngradeWarning as DowngradeWarningType,
+  getMyLimitWarningApi,
+  LimitWarning as LimitWarningType,
 } from "api/storage/StorageAlerts"
 import { getToken } from "utils/auth/AuthUtils"
 
-interface DowngradeWarningProps {
+interface LimitWarningProps {
   showAsModal?: boolean
   onClose?: () => void
   autoCheck?: boolean
 }
 
-const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
+const LimitWarning: React.FC<LimitWarningProps> = ({
   showAsModal = false,
   onClose,
   autoCheck = true,
 }) => {
   const { enqueueSnackbar: _enqueueSnackbar } = useSnackbar()
   const navigate = useNavigate()
-  const [warning, setWarning] = useState<DowngradeWarningType | null>(null)
+  const [warning, setWarning] = useState<LimitWarningType | null>(null)
   const [loading, setLoading] = useState(true)
   const [dismissed, setDismissed] = useState(() => {
     // Check if this warning was already dismissed in localStorage
@@ -45,7 +45,7 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
     if (dismissedWarnings) {
       try {
         const parsed = JSON.parse(dismissedWarnings)
-        return parsed.downgrade === true
+        return parsed.limitWarning === true
       } catch {
         return false
       }
@@ -53,10 +53,10 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
     return false
   })
 
-  const fetchDowngradeWarning = async () => {
+  const fetchLimitWarning = async () => {
     try {
       setLoading(true)
-      const warningResponse = await getMyDowngradeWarningApi()
+      const warningResponse = await getMyLimitWarningApi()
       setWarning(warningResponse)
     } catch (error) {
       // Silently fail to not disrupt the main UI
@@ -79,7 +79,7 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
       "dismissedWarnings",
       JSON.stringify({
         ...parsed,
-        downgrade: true,
+        limitWarning: true,
       }),
     )
 
@@ -97,7 +97,7 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
   useEffect(() => {
     if (autoCheck) {
       if (getToken()) {
-        fetchDowngradeWarning()
+        fetchLimitWarning()
       } else {
         // No token, stop loading immediately
         setLoading(false)
@@ -121,17 +121,17 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
   // Determine what actions to show based on warning type and conditions
   const hasStorageIssue = warning.excess_data_gb > 0
   const hasSubscriptionIssue =
-    warning.warning_type === "downgrade" || warning.warning_type === "overdue"
-  const showUpgradeButton = hasSubscriptionIssue
+    warning.warning_type === "grace" || warning.warning_type === "overdue"
+  const showUpgradeButton = hasStorageIssue || hasSubscriptionIssue
   const showManageFilesButton = hasStorageIssue
 
   const getSeverity = (warningType: string) => {
     switch (warningType) {
       case "overdue":
         return "error"
-      case "immediate":
+      case "storage":
         return "warning"
-      case "downgrade":
+      case "grace":
         return "warning"
       default:
         return "warning"
@@ -142,9 +142,9 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
     switch (warningType) {
       case "overdue":
         return "Data Cleanup Overdue"
-      case "immediate":
+      case "storage":
         return "Storage Limit Exceeded"
-      case "downgrade":
+      case "grace":
         return "Premium Subscription Expired"
       default:
         return "Storage Warning"
@@ -327,4 +327,4 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
   return warningContent
 }
 
-export default DowngradeWarning
+export default LimitWarning

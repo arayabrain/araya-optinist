@@ -129,7 +129,7 @@ EOSQL
         if [ ! -z "$ADMIN_STORAGE_QUOTA_BYTES" ]; then
             echo "Initializing admin user storage quota..."
             mysql --skip-ssl -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" ${MYSQL_DATABASE} <<-EOSQL
-                INSERT IGNORE INTO user_storage_usage (user_id, current_usage_bytes, quota_limit_bytes)
+                INSERT IGNORE INTO user_storage_usage (user_id, storage_usage_bytes, storage_quota_bytes)
                 VALUES (1, 0, $ADMIN_STORAGE_QUOTA_BYTES);
 EOSQL
             echo "Admin user storage quota initialized: $ADMIN_STORAGE_QUOTA_BYTES bytes"

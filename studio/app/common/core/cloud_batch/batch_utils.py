@@ -10,11 +10,11 @@ import boto3
 from botocore.exceptions import ClientError
 from snakemake.api import SharedFSUsage, StorageSettings
 
-from studio.app.common.core.cloud.cloud_utils import get_user_context_by_id
 from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.db.database import session_scope
 from studio.app.common.models.user import User
 from studio.app.dir_path import DIRPATH
 
@@ -349,9 +349,11 @@ class BatchUtils:
             If not provided, will try to get from request context.
         """
         try:
+            target_user_id = None
+            user_obj = None
+
             if user_id is not None:
-                # Use the provided user_id directly
-                current_user = asyncio.run(get_user_context_by_id(user_id))
+                target_user_id = user_id
             else:
                 # Try to get user_id from workspace_id
                 workspace_user_id = self._get_user_id_from_workspace(self.workspace_id)
@@ -360,30 +362,52 @@ class BatchUtils:
                         f"Found user_id {workspace_user_id} for "
                         f"workspace {self.workspace_id}"
                     )
-                    current_user = asyncio.run(
-                        get_user_context_by_id(workspace_user_id)
-                    )
+                    target_user_id = workspace_user_id
                 else:
                     # No user_id provided and can't get current user outside API context
                     logger.warning(
                         "No user_id provided for queue selection, "
                         "default to free subscription plan"
                     )
-                    current_user = None
 
-            if current_user and isinstance(current_user, dict):
-                subscription_plan = current_user.get("subscription_plan", "free")
-                user_name = current_user.get("name", "unknown")
-                plan_name = current_user.get("subscription_plan_name", "Unknown")
-                subscription_status = current_user.get("subscription_status", "expired")
+            if target_user_id:
+                # Get user context using crud_users
+                async def _get_user_async():
+                    from studio.app.common.core.users import crud_users
+
+                    with session_scope() as db:
+                        return await crud_users.get_user_with_context(
+                            db, target_user_id
+                        )
+
+                try:
+                    # Try to get existing event loop
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # Create a new event loop in a thread for sync context
+                        import concurrent.futures
+
+                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                            future = executor.submit(asyncio.run, _get_user_async())
+                            user_obj = future.result()
+                    else:
+                        user_obj = loop.run_until_complete(_get_user_async())
+                except RuntimeError:
+                    # No event loop, create new one
+                    user_obj = asyncio.run(_get_user_async())
+
+            # Simplified logic using has_active_subscription property
+            if user_obj:
+                user_name = user_obj.name
+                plan_name = user_obj.subscription_plan_name or "Free"
 
                 logger.info(
-                    f"User {user_name} has plan: {plan_name}, status: "
-                    f"{subscription_status}, subscription_plan: {subscription_plan}"
+                    f"User {user_name} has plan: {plan_name}, "
+                    f"active subscription: {user_obj.has_active_subscription}"
                 )
 
-                # Only use paid queue if user has active paid subscription
-                if subscription_plan == "paid" and subscription_status == "active":
+                # Use paid queue only for users with active premium subscriptions
+                if user_obj.has_active_subscription:
                     logger.info(
                         f"Using paid subscription plan queue for user: {user_name}"
                     )
@@ -452,7 +476,9 @@ class BatchUtils:
 
         # EFS mount path - should be persistent across batch jobs
         # Use the base EFS mount point since SmkUtils generates full paths
-        logger.debug(f"Creating storage settings for DIRPATH.DATA_DIR: {DIRPATH.DATA_DIR}")
+        logger.debug(
+            f"Creating storage settings for DIRPATH.DATA_DIR: {DIRPATH.DATA_DIR}"
+        )
         efs_storage_path = Path(DIRPATH.DATA_DIR).resolve()
         efs_storage = efs_storage_path.as_posix()
         logger.debug(f"Resolved EFS storage path: {efs_storage}")
@@ -460,7 +486,9 @@ class BatchUtils:
         # Validate the path string before passing to Snakemake
         logger.debug(f"Storage path validation: {repr(efs_storage)}")
         if not isinstance(efs_storage, str):
-            raise TypeError(f"Expected string for storage path, got {type(efs_storage)}")
+            raise TypeError(
+                f"Expected string for storage path, got {type(efs_storage)}"
+            )
         if not efs_storage:
             raise ValueError("Empty storage path provided to StorageSettings")
 
@@ -482,7 +510,9 @@ class BatchUtils:
         return storage_settings
 
     @staticmethod
-    def prepare_efs_environment(workspace_id: str):  # workspace_id kept for API compatibility
+    def prepare_efs_environment(
+        workspace_id: str,
+    ):  # workspace_id kept for API compatibility
         """
         Ensure EFS directories exist and local scratch is prepared.
         """
@@ -491,14 +521,17 @@ class BatchUtils:
             # Debug: Check DIRPATH.DATA_DIR value and type
             logger.debug(f"DIRPATH.DATA_DIR value: {DIRPATH.DATA_DIR}")
             logger.debug(f"DIRPATH.DATA_DIR type: {type(DIRPATH.DATA_DIR)}")
-            
+
             # Ensure we're working with a proper path
             if not isinstance(DIRPATH.DATA_DIR, (str, Path)):
-                raise ValueError(f"DIRPATH.DATA_DIR must be a string or Path, got {type(DIRPATH.DATA_DIR)}")
-            
+                raise ValueError(
+                    f"DIRPATH.DATA_DIR must be a string or Path, "
+                    f"got {type(DIRPATH.DATA_DIR)}"
+                )
+
             efs_mount_path = Path(DIRPATH.DATA_DIR).resolve()
             local_scratch_path = Path("/tmp/snakemake_scratch").resolve()
-            
+
             logger.debug(f"Resolved efs_mount_path: {efs_mount_path}")
             logger.debug(f"efs_mount_path type: {type(efs_mount_path)}")
 
@@ -511,10 +544,12 @@ class BatchUtils:
                 input_path = efs_mount_path / "input"
                 output_path = efs_mount_path / "output"
             except TypeError as e:
-                logger.warning(f"Path / operator failed, falling back to os.path.join: {e}")
+                logger.warning(
+                    f"Path / operator failed, falling back to os.path.join: {e}"
+                )
                 input_path = Path(os.path.join(str(efs_mount_path), "input"))
                 output_path = Path(os.path.join(str(efs_mount_path), "output"))
-            
+
             input_path.mkdir(parents=True, exist_ok=True)
             output_path.mkdir(parents=True, exist_ok=True)
             logger.info(f"EFS directories prepared: {efs_mount_path}")
@@ -532,11 +567,13 @@ class BatchUtils:
                 benchmarks_path = efs_mount_path / "benchmarks"
                 snakemake_path = efs_mount_path / ".snakemake"
             except TypeError as e:
-                logger.warning(f"Path / operator failed for subdirectories, falling back: {e}")
+                logger.warning(
+                    f"Path / operator failed for subdirectories, falling back: {e}"
+                )
                 logs_path = Path(os.path.join(str(efs_mount_path), "logs"))
                 benchmarks_path = Path(os.path.join(str(efs_mount_path), "benchmarks"))
                 snakemake_path = Path(os.path.join(str(efs_mount_path), ".snakemake"))
-            
+
             logs_path.mkdir(exist_ok=True)
             benchmarks_path.mkdir(exist_ok=True)
             snakemake_path.mkdir(exist_ok=True)
@@ -783,7 +820,7 @@ class BatchUtils:
                 "max_parallel_jobs": 2,
                 "priority": 1,
             },
-            "paid": {
+            "premium": {
                 "max_vcpus": 8,
                 "max_memory_mb": 16384,
                 "max_runtime_minutes": 360,

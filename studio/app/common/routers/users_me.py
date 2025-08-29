@@ -5,10 +5,9 @@ from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.cloud.cloud_utils import (
-    get_user_context_by_id,
+    CloudDebug,
+    get_user_context_with_warnings,
     get_user_storage_usage,
-    get_user_subscription_details,
-    print_user_details,
 )
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.users import crud_users
@@ -71,7 +70,7 @@ async def get_my_cloud_details(
 
         # Call the print_user_details function with the current user's ID
         # This will log the details and test the cloud functionality
-        print_user_details(user_id=current_user.id)
+        await CloudDebug.print_user_details(user_id=current_user.id)
 
         result = {
             "user_id": current_user.id,
@@ -80,26 +79,24 @@ async def get_my_cloud_details(
         }
 
         # Get user context
-        user_context = await get_user_context_by_id(current_user.id)
+        user_context = await get_user_context_with_warnings(current_user.id)
         if user_context:
             result["user_context"] = {
                 "subscription_plan_name": user_context["subscription_plan_name"],
                 "subscription_plan": user_context["subscription_plan"],
                 "subscription_status": user_context["subscription_status"],
-                "plan_price_cents": user_context["subscription_price"],
             }
         else:
             result["user_context"] = None
 
-        # Get subscription details
-        subscription_details = get_user_subscription_details(current_user.id)
-        if subscription_details:
+        # Get subscription details using crud_users
+        user_with_details = await crud_users.get_user_with_context(db, current_user.id)
+        if user_with_details:
             result["subscription_details"] = {
-                "plan_name": subscription_details["plan_name"],
-                "plan_price_cents": subscription_details["plan_price"],
-                "status": subscription_details["status"],
-                "storage_usage_bytes": subscription_details["storage_usage_bytes"],
-                "storage_quota_bytes": subscription_details["storage_quota_bytes"],
+                "plan_name": user_with_details.subscription_plan_name or "Free",
+                "status": user_with_details.subscription_status or "Free",
+                "storage_usage_bytes": user_with_details.storage_usage_bytes or 0,
+                "storage_quota_bytes": user_with_details.storage_quota_bytes or 0,
             }
         else:
             result["subscription_details"] = None

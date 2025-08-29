@@ -4,7 +4,6 @@ Cloud utilities for user context and subscription management.
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
-from sqlalchemy.orm import Session
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
@@ -16,42 +15,6 @@ from studio.app.common.models import UserStorageUsage, UserSubscription
 logger = AppLogger.get_logger()
 
 
-def _get_fallback_users(db: Session) -> list:
-    """
-    Get fallback user list (admin user) when subscription tables don't exist.
-    """
-    try:
-        # Get user with ID 1 as fallback for subscription monitoring
-        result = db.execute(
-            select(UserModel).where(UserModel.id == 1, UserModel.active.is_(True))
-        )
-        fallback_user_row = result.first()
-
-        if fallback_user_row:
-            logger.info("Using fallback user for subscription monitoring")
-            # fallback_user_row is a SQLAlchemy Row object containing UserModel
-            user_obj = fallback_user_row[0]
-            return [
-                {
-                    "id": user_obj.id,
-                    "name": user_obj.name,
-                    "email": user_obj.email,
-                    "plan_name": "Free",
-                    "plan_price": 0,
-                    "status": "active",
-                    "created_at": user_obj.created_at,
-                    "plan": "free",
-                }
-            ]
-        else:
-            logger.warning("Admin user (ID 1) not found")
-            return []
-
-    except Exception as e:
-        logger.error(f"Failed to get fallback users: {e}")
-        return []
-
-
 def _get_fallback_storage_quota(user_id: int) -> Dict[str, Any]:
     """
     Get fallback storage quota when storage usage table doesn't exist.
@@ -59,29 +22,39 @@ def _get_fallback_storage_quota(user_id: int) -> Dict[str, Any]:
     """
     try:
         # Try to get user's subscription plan to determine appropriate quota
-        user_context = get_user_context_by_id(user_id)
-        if user_context:
-            subscription_plan = user_context.get("subscription_plan", "free")
-            plan_name = user_context.get("subscription_plan_name", "Free")
-
-            # Set quotas based on subscription plan
-            if subscription_plan == "paid":
-                default_quota_bytes = 100 * 1024 * 1024 * 1024  # 100GB for paid plan
-                logger.info(
-                    f"Using paid plan quota for user {user_id} ({plan_name}): 100GB"
+        # Simple synchronous query for just the subscription plan
+        with session_scope() as db:
+            statement = (
+                select(SubscriptionPlans.name.label("plan_name"))
+                .select_from(UserModel)
+                .outerjoin(
+                    UserSubscription,
+                    (UserModel.id == UserSubscription.user_id)
+                    & (UserSubscription.expiration > datetime.now()),
                 )
-            else:
-                default_quota_bytes = 5 * 1024 * 1024 * 1024  # 5GB for free plan
-                logger.info(
-                    f"Using free plan quota for user {user_id} ({plan_name}): 5GB"
+                .outerjoin(
+                    SubscriptionPlans, UserSubscription.plan_id == SubscriptionPlans.id
                 )
-        else:
-            # Fallback to free plan if we can't determine subscription
-            default_quota_bytes = 5 * 1024 * 1024 * 1024  # 5GB
-            logger.warning(
-                f"Could not determine subscription for user {user_id}, "
-                "using free plan quota: 5GB"
+                .where(UserModel.id == user_id, UserModel.active.is_(True))
             )
+            result = db.execute(statement).first()
+
+        if result and result.plan_name:
+            plan_name = result.plan_name
+            subscription_type = "premium" if plan_name == "Premium" else "free"
+        else:
+            plan_name = "Free"
+            subscription_type = "free"
+
+        # Set quotas based on Subscription Type
+        if subscription_type == "premium":
+            default_quota_bytes = 100 * 1024 * 1024 * 1024  # 100GB for paid plan
+            logger.info(
+                f"Using paid plan quota for user {user_id} ({plan_name}): 100GB"
+            )
+        else:
+            default_quota_bytes = 5 * 1024 * 1024 * 1024  # 5GB for free plan
+            logger.info(f"Using free plan quota for user {user_id} ({plan_name}): 5GB")
 
     except Exception as e:
         logger.warning(
@@ -99,217 +72,51 @@ def _get_fallback_storage_quota(user_id: int) -> Dict[str, Any]:
     }
 
 
-async def get_user_context_by_id(user_id: int) -> Optional[Dict[str, Any]]:
+async def get_user_context_with_warnings(user_id: int) -> Optional[Dict[str, Any]]:
     """
-    Get user context including subscription plan from database by user ID.
-    Returns user info with subscription details or None if not found.
+    Get user context including subscription plan & limit warnings from database by ID.
+    Returns user info with subscription details and limit warnings or None if not found.
+    Note: This is an async function that includes live storage warning calculations.
     """
     try:
+        # Get basic user context using crud_users
+        from studio.app.common.core.users.crud_users import get_user_with_context
+
         with session_scope() as db:
-            # Query user with subscription information using ORM joins
-            statement = (
-                select(
-                    UserModel,
-                    SubscriptionPlans.name.label("plan_name"),
-                    SubscriptionPlans.price.label("plan_price"),
-                    UserSubscription.expiration,
-                )
-                .outerjoin(
-                    UserSubscription,
-                    (UserModel.id == UserSubscription.user_id)
-                    & (UserSubscription.expiration > datetime.now()),
-                )
-                .outerjoin(
-                    SubscriptionPlans, UserSubscription.plan_id == SubscriptionPlans.id
-                )
-                .where(UserModel.id == user_id, UserModel.active.is_(True))
+            user = await get_user_with_context(db, user_id)
+
+        if user:
+            # Convert User object to dict format for backward compatibility
+            user_context = {
+                "id": user.id,
+                "uid": user.uid,
+                "name": user.name,
+                "email": str(user.email),
+                "active": True,  # get_user_with_context only returns active users
+                "attributes": user.attributes,
+                "subscription_plan_name": user.subscription_plan_name,
+                "subscription_price": 0,  # Not available in User schema
+                "subscription_status": user.subscription_status,
+                "subscription_plan": user.subscription_type,
+            }
+
+            # Add limit warning information (async)
+            limit_warning = await calculate_limit_warning(user_id)
+            user_context["limit_warning"] = limit_warning
+
+            logger.info(
+                f"Complete user context with warnings for "
+                f"user {user_id}: {user_context}"
             )
-
-            query_result = db.execute(statement)
-            result = query_result.first()
-
-            if result:
-                user, plan_name, plan_price, expiration = result
-
-                # Determine subscription status and plan
-                subscription_plan_name = plan_name or "Free"
-                subscription_price = plan_price or 0
-                subscription_status = (
-                    "active"
-                    if expiration and expiration > datetime.now()
-                    else "expired"
-                )
-                subscription_plan = (
-                    "paid" if subscription_plan_name == "Premium" else "free"
-                )
-
-                # Get downgrade warning information
-                downgrade_warning = await calculate_downgrade_warning(user_id)
-
-                user_context = {
-                    "id": user.id,
-                    "uid": user.uid,
-                    "name": user.name,
-                    "email": user.email,
-                    "active": user.active,
-                    "attributes": user.attributes,
-                    "subscription_plan_name": subscription_plan_name,
-                    "subscription_price": subscription_price,
-                    "subscription_status": subscription_status,
-                    "subscription_plan": subscription_plan,
-                    "downgrade_warning": downgrade_warning,
-                }
-
-                logger.info(
-                    f"Retrieved user context: {user_context['name']} "
-                    f"({user_context['email']}) "
-                    f"- Plan: {user_context['subscription_plan']}"
-                )
-                logger.info(f"Complete user context for user {user_id}: {user_context}")
-                return user_context
-            else:
-                logger.warning(f"User {user_id} not found or inactive")
-                return None
+            return user_context
+        else:
+            return None
 
     except Exception as e:
-        logger.error(f"Failed to get user context for user {user_id}: {e}")
-        return None
-
-
-def get_user_subscription_details(user_id: int) -> Optional[Dict[str, Any]]:
-    """
-    Get detailed subscription information for a specific user.
-    """
-    try:
-        with session_scope() as db:
-            # Query using ORM joins
-            statement = (
-                select(
-                    UserModel.id.label("user_id"),
-                    UserModel.name,
-                    UserModel.email,
-                    SubscriptionPlans.id.label("plan_id"),
-                    SubscriptionPlans.name.label("plan_name"),
-                    SubscriptionPlans.price.label("plan_price"),
-                    UserSubscription.expiration,
-                    UserSubscription.created_at.label("subscription_start"),
-                    UserSubscription.updated_at.label("subscription_updated"),
-                    UserStorageUsage.storage_usage_bytes,
-                    UserStorageUsage.storage_quota_bytes,
-                    UserStorageUsage.last_updated.label("usage_last_updated"),
-                )
-                .outerjoin(
-                    UserSubscription,
-                    (UserModel.id == UserSubscription.user_id)
-                    & (UserSubscription.expiration > datetime.now()),
-                )
-                .outerjoin(
-                    SubscriptionPlans, UserSubscription.plan_id == SubscriptionPlans.id
-                )
-                .outerjoin(UserStorageUsage, UserModel.id == UserStorageUsage.user_id)
-                .where(UserModel.id == user_id, UserModel.active.is_(True))
-            )
-
-            query_result = db.execute(statement)
-            result = query_result.first()
-
-            if result:
-                # Convert to dictionary
-                subscription_details = {
-                    "user_id": result.user_id,
-                    "name": result.name,
-                    "email": result.email,
-                    "plan_id": result.plan_id,
-                    "plan_name": result.plan_name,
-                    "plan_price": result.plan_price,
-                    "expiration": result.expiration,
-                    "status": "active"
-                    if result.expiration and result.expiration > datetime.now()
-                    else "expired",
-                    "subscription_start": result.subscription_start,
-                    "subscription_updated": result.subscription_updated,
-                    "storage_usage_bytes": result.storage_usage_bytes,
-                    "storage_quota_bytes": result.storage_quota_bytes,
-                    "usage_last_updated": result.usage_last_updated,
-                }
-
-                logger.debug(f"Retrieved subscription details for user {user_id}")
-                return subscription_details
-            else:
-                logger.warning(f"No subscription details found for user {user_id}")
-                return None
-
-    except Exception as e:
-        logger.error(f"Failed to get subscription details for user {user_id}: {e}")
-        return None
-
-
-def get_all_active_subscriptions() -> list:
-    """
-    Get all active subscription users for monitoring and reporting.
-    Falls back to admin user if subscription tables don't exist.
-    """
-    try:
-        with session_scope() as db:
-            # Try to query using ORM models directly
-            try:
-                statement = (
-                    select(
-                        UserModel.id,
-                        UserModel.name,
-                        UserModel.email,
-                        SubscriptionPlans.name.label("plan_name"),
-                        SubscriptionPlans.price.label("plan_price"),
-                        UserSubscription.created_at,
-                    )
-                    .join(UserSubscription, UserModel.id == UserSubscription.user_id)
-                    .join(
-                        SubscriptionPlans,
-                        UserSubscription.plan_id == SubscriptionPlans.id,
-                    )
-                    .where(
-                        UserModel.active.is_(True),
-                        UserSubscription.expiration > datetime.now(),
-                    )
-                    .order_by(SubscriptionPlans.price.desc(), UserModel.name)
-                )
-
-                query_result = db.execute(statement)
-                results = query_result.all()
-
-                results_list = []
-                for result in results:
-                    subscription_data = {
-                        "id": result.id,
-                        "name": result.name,
-                        "email": result.email,
-                        "plan_name": result.plan_name,
-                        "plan_price": result.plan_price,
-                        "status": "active",  # Already filtered for active subscriptions
-                        "created_at": result.created_at,
-                        "plan": "paid" if result.plan_name == "Premium" else "free",
-                    }
-                    results_list.append(subscription_data)
-
-                logger.info(f"Retrieved {len(results_list)} active subscriptions")
-                return results_list
-
-            except Exception as orm_error:
-                logger.warning(
-                    f"ORM query failed: {orm_error}, falling back to admin user"
-                )
-                return _get_fallback_users(db)
-
-    except Exception as e:
-        logger.warning(
-            f"Failed to get active subscriptions: {e}, falling back to admin user"
+        logger.error(
+            f"Failed to get user context with warnings for user {user_id}: {e}"
         )
-        try:
-            with session_scope() as db:
-                return _get_fallback_users(db)
-        except Exception as fallback_error:
-            logger.error(f"Fallback also failed: {fallback_error}")
-            return []
+        return None
 
 
 def get_user_storage_usage(user_id: int) -> Optional[Dict[str, Any]]:
@@ -395,8 +202,23 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
                     db.add(existing_usage)
                 else:
                     # Need to determine quota - try to get from user's subscription
-                    user_context = get_user_context_by_id(user_id)
-                    if user_context and user_context.get("subscription_plan") == "paid":
+                    statement = (
+                        select(SubscriptionPlans.name.label("plan_name"))
+                        .select_from(UserModel)
+                        .outerjoin(
+                            UserSubscription,
+                            (UserModel.id == UserSubscription.user_id)
+                            & (UserSubscription.expiration > datetime.now()),
+                        )
+                        .outerjoin(
+                            SubscriptionPlans,
+                            UserSubscription.plan_id == SubscriptionPlans.id,
+                        )
+                        .where(UserModel.id == user_id, UserModel.active.is_(True))
+                    )
+                    result = db.execute(statement).first()
+
+                    if result and result.plan_name == "Premium":
                         default_quota = 100 * 1024 * 1024 * 1024  # 100GB for paid
                     else:
                         default_quota = 5 * 1024 * 1024 * 1024  # 5GB for free
@@ -442,7 +264,7 @@ async def get_current_user_storage_usage(user_id: int, force_live: bool = False)
             # Try database first (fast)
             storage_info = get_user_storage_usage(user_id)
             if storage_info and _is_storage_data_fresh(
-                storage_info, max_age_minutes=60
+                storage_info, max_age_minutes=20
             ):
                 logger.debug(f"Using cached storage data for user {user_id}")
                 return storage_info["storage_usage_bytes"]
@@ -594,9 +416,9 @@ async def _calculate_local_user_storage(user_id: int) -> int:
         return 0
 
 
-async def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
+async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
     """
-    Calculate downgrade warning based on subscription and storage status:
+    Calculate limit warning based on subscription and storage status:
 
     Cases:
     1. Free user, no storage limit exceeded → No warning
@@ -612,17 +434,19 @@ async def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
         GRACE_PERIOD_DAYS = 30
         WARNING_PERIOD_DAYS = 30
 
-        logger.info(f"Calculating downgrade warning for user {user_id}")
+        logger.info(f"Calculating limit warning for user {user_id}")
 
         with session_scope() as db:
             # Get user's current storage usage - prioritize fresh data at startup
 
-            # First check if we have very fresh cached data (within 5 minutes)
+            # First check if we have cached data (within 20 minutes)
             storage_info = get_user_storage_usage(user_id)
-            if storage_info and _is_storage_data_fresh(storage_info, max_age_minutes=5):
-                current_usage_bytes = storage_info.get("current_usage_bytes", 0)
+            if storage_info and _is_storage_data_fresh(
+                storage_info, max_age_minutes=20
+            ):
+                current_usage_bytes = storage_info.get("storage_usage_bytes", 0)
                 logger.debug(
-                    f"DowngradeWarning: Using fresh cached storage data "
+                    f"LimitWarning: Using fresh cached storage data "
                     f"for user {user_id}: {current_usage_bytes}"
                 )
             else:
@@ -631,7 +455,7 @@ async def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
                     user_id, force_live=True
                 )
                 logger.debug(
-                    f"DowngradeWarning: Calculated fresh storage data "
+                    f"LimitWarning: Calculated fresh storage data "
                     f"for user {user_id}: {current_usage_bytes}"
                 )
 
@@ -738,7 +562,7 @@ async def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
             if subscription_status == "free" and storage_exceeded:
                 return {
                     "has_warning": True,
-                    "warning_type": "immediate",
+                    "warning_type": "storage",
                     "days_remaining": 30,
                     "excess_data_bytes": excess_bytes,
                     "excess_data_gb": round(excess_gb, 2),
@@ -759,7 +583,7 @@ async def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
             if subscription_status == "active" and storage_exceeded:
                 return {
                     "has_warning": True,
-                    "warning_type": "immediate",
+                    "warning_type": "storage",
                     "days_remaining": 30,
                     "excess_data_bytes": excess_bytes,
                     "excess_data_gb": round(excess_gb, 2),
@@ -777,11 +601,11 @@ async def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
             # Cases 4 & 5: Premium user with subscription issues (warning/overdue)
             if subscription_status in ["warning", "overdue"]:
                 logger.info(
-                    f"User {user_id}: Creating downgrade warning "
+                    f"User {user_id}: Creating limit warning "
                     f"(status: {subscription_status})"
                 )
                 warning_type = (
-                    "downgrade" if subscription_status == "warning" else "overdue"
+                    "grace" if subscription_status == "warning" else "overdue"
                 )
 
                 if storage_exceeded:
@@ -822,123 +646,157 @@ async def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
             return None
 
     except Exception as e:
-        logger.error(f"Failed to calculate downgrade warning for user {user_id}: {e}")
+        logger.error(f"Failed to calculate limit warning for user {user_id}: {e}")
         return None
 
 
-def test_database_connection() -> bool:
-    """
-    Test database connectivity and test ORM models.
-    """
-    try:
-        logger.info("Testing database connection with ORM...")
+class CloudDebug:
+    """Debug utilities for cloud functionality."""
 
-        with session_scope() as db:
-            # Test basic connection
-            query_result = db.execute(select(UserModel).where(UserModel.id == 1))
-            fallback_user_row = query_result.first()
+    @staticmethod
+    def test_database_connection() -> bool:
+        """
+        Test database connectivity and test ORM models.
+        """
+        try:
+            logger.info("Testing database connection with ORM...")
 
-            if fallback_user_row:
-                logger.info("Database connection successful!")
-                # fallback_user_row is a SQLAlchemy Row containing UserModel
-                user_obj = fallback_user_row[0]
-                logger.info(f"Found fallback user: {user_obj.name} ({user_obj.email})")
-            else:
-                logger.info(
-                    "Database connection successful, but no fallback user found"
-                )
+            with session_scope() as db:
+                # Test basic connection
+                query_result = db.execute(select(UserModel).where(UserModel.id == 1))
+                fallback_user_row = query_result.first()
 
-            # Test subscription models
-            try:
-                query_result = db.execute(select(SubscriptionPlans))
-                subscription_count = len(query_result.all())
-                logger.info(f"Subscription plans available: {subscription_count}")
-            except Exception as plan_error:
-                logger.warning(f"Subscription plans table not accessible: {plan_error}")
-
-            try:
-                query_result = db.execute(
-                    select(UserSubscription).where(
-                        UserSubscription.expiration > datetime.now()
+                if fallback_user_row:
+                    logger.info("Database connection successful!")
+                    # fallback_user_row is a SQLAlchemy Row containing UserModel
+                    user_obj = fallback_user_row[0]
+                    logger.info(
+                        f"Found fallback user: {user_obj.name} ({user_obj.email})"
                     )
-                )
-                active_subscriptions = len(query_result.all())
-                logger.info(f"Active subscriptions: {active_subscriptions}")
-            except Exception as sub_error:
-                logger.warning(f"User subscriptions table not accessible: {sub_error}")
+                else:
+                    logger.info(
+                        "Database connection successful, but no fallback user found"
+                    )
 
-            try:
-                query_result = db.execute(select(UserStorageUsage))
-                storage_records = len(query_result.all())
-                logger.info(f"Storage usage records: {storage_records}")
-            except Exception as storage_error:
-                logger.warning(f"Storage usage table not accessible: {storage_error}")
+                # Test subscription models
+                try:
+                    query_result = db.execute(select(SubscriptionPlans))
+                    subscription_count = len(query_result.all())
+                    logger.info(f"Subscription plans available: {subscription_count}")
+                except Exception as plan_error:
+                    logger.warning(
+                        f"Subscription plans table not accessible: {plan_error}"
+                    )
 
+                try:
+                    query_result = db.execute(
+                        select(UserSubscription).where(
+                            UserSubscription.expiration > datetime.now()
+                        )
+                    )
+                    active_subscriptions = len(query_result.all())
+                    logger.info(f"Active subscriptions: {active_subscriptions}")
+                except Exception as sub_error:
+                    logger.warning(
+                        f"User subscriptions table not accessible: {sub_error}"
+                    )
+
+                try:
+                    query_result = db.execute(select(UserStorageUsage))
+                    storage_records = len(query_result.all())
+                    logger.info(f"Storage usage records: {storage_records}")
+                except Exception as storage_error:
+                    logger.warning(
+                        f"Storage usage table not accessible: {storage_error}"
+                    )
+
+                return True
+
+        except Exception as e:
+            logger.error(f"Database connection test failed: {e}")
+            return False
+
+    @staticmethod
+    def initialize_cloud_utils():
+        """
+        Initialize cloud utils and test connectivity.
+        """
+        logger.info("Initializing cloud utilities...")
+
+        # Test database connection
+        if CloudDebug.test_database_connection():
+            logger.info("Database connection test passed")
+            logger.info("Cloud utilities initialized successfully")
             return True
-
-    except Exception as e:
-        logger.error(f"Database connection test failed: {e}")
-        return False
-
-
-def print_user_details(user_id: int = 1) -> None:
-    """
-    Print details of the admin user for debugging.
-    """
-    try:
-        logger.info("=== ADMIN USER DETAILS ===")
-
-        # Get user context
-        user_context = get_user_context_by_id(user_id)
-        if user_context:
-            logger.info(f"User ID: {user_context['id']}")
-            logger.info(f"Name: {user_context['name']}")
-            logger.info(f"Email: {user_context['email']}")
-            logger.info(f"UID: {user_context['uid']}")
-            logger.info(f"Subscription Plan: {user_context['subscription_plan_name']}")
-            logger.info(f"Subscription Plan: {user_context['subscription_plan']}")
-            logger.info(f"Subscription Status: {user_context['subscription_status']}")
-            logger.info(f"Plan Price: {user_context['subscription_price']} cents")
         else:
-            logger.error("Failed to retrieve admin user context")
+            logger.error("Cloud utilities initialization failed")
+            return False
 
-        # Get subscription details
-        subscription_details = get_user_subscription_details(user_id)
-        if subscription_details:
-            logger.info(
-                f"Storage Usage: {subscription_details['current_usage_bytes']} bytes"
-            )
-            logger.info(
-                f"Storage Quota: {subscription_details['quota_limit_bytes']} bytes"
-            )
+    @staticmethod
+    async def print_user_details(user_id: int = 1) -> None:
+        """
+        Print details of the admin user for debugging.
+        """
+        try:
+            logger.info("=== ADMIN USER DETAILS ===")
 
-        # Get all active subscriptions
-        active_subs = get_all_active_subscriptions()
-        logger.info(f"Total active subscriptions: {len(active_subs)}")
+            # Get user context using crud_users
+            from studio.app.common.core.users import crud_users
+            from studio.app.common.db.database import session_scope
 
-        logger.info("=== END ADMIN USER DETAILS ===")
+            with session_scope() as db:
+                user_with_details = await crud_users.get_user_with_context(db, user_id)
+                if user_with_details:
+                    logger.info(f"User ID: {user_with_details.id}")
+                    logger.info(f"Name: {user_with_details.name}")
+                    logger.info(f"Email: {user_with_details.email}")
+                    logger.info(f"UID: {user_with_details.uid}")
+                    logger.info(
+                        f"Subscription Type: {user_with_details.subscription_type}"
+                    )
+                    logger.info(
+                        f"Has Active Subscription: "
+                        f"{user_with_details.has_active_subscription}"
+                    )
+                    logger.info(
+                        f"Subscription Status: "
+                        f"{user_with_details.subscription_status or 'Free'}"
+                    )
+                    logger.info(
+                        f"Storage Usage: "
+                        f"{user_with_details.storage_usage_bytes or 0} bytes"
+                    )
+                    logger.info(
+                        f"Storage Quota: "
+                        f"{user_with_details.storage_quota_bytes or 0} bytes"
+                    )
+                else:
+                    logger.error(
+                        f"Failed to retrieve user details for user_id {user_id}"
+                    )
 
-    except Exception as e:
-        logger.error(f"Failed to print admin user details: {e}")
+                # Get count of all active subscriptions
+                try:
+                    active_subscriptions = await crud_users.list_user(
+                        db,
+                        limit=1000,  # Large limit to get all users
+                        skip=0,
+                        user_id=None,  # Get all users
+                        search=None,
+                        email=None,
+                    )
+                    # Count users with active subscriptions
+                    active_count = sum(
+                        1
+                        for user in active_subscriptions
+                        if user.subscription_status
+                        and user.subscription_status != "Free"
+                    )
+                    logger.info(f"Total active subscriptions: {active_count}")
+                except Exception as e:
+                    logger.warning(f"Failed to count active subscriptions: {e}")
 
+            logger.info("=== END ADMIN USER DETAILS ===")
 
-# Test function to be called during initialization
-def initialize_cloud_utils():
-    """
-    Initialize cloud utils and test connectivity.
-    """
-    logger.info("Initializing cloud utilities...")
-
-    # Test database connection
-    if test_database_connection():
-        logger.info("Database connection test passed")
-        logger.info("Cloud utilities initialized successfully")
-        return True
-    else:
-        logger.error("Cloud utilities initialization failed")
-        return False
-
-
-# if __name__ == "__main__":
-#     # For testing purposes
-#     initialize_cloud_utils()
+        except Exception as e:
+            logger.error(f"Failed to print admin user details: {e}")

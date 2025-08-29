@@ -61,10 +61,10 @@ export const refreshStorageUsageApi =
     return response.data
   }
 
-// Downgrade Warning Types
-export interface DowngradeWarning {
+// Limit Warning Types
+export interface LimitWarning {
   has_warning: boolean
-  warning_type: "immediate" | "downgrade" | "overdue"
+  warning_type: "storage" | "grace" | "overdue"
   days_remaining: number
   excess_data_bytes: number
   excess_data_gb: number
@@ -78,22 +78,21 @@ export interface DowngradeWarning {
   message: string
 }
 
-export interface DowngradeWarningStatus {
+export interface LimitWarningStatus {
   has_warning: boolean
   warning_type: string | null
   days_remaining: number | null
   user_id: number
 }
 
-// Downgrade Warning API Functions
-export const getMyDowngradeWarningApi =
-  async (): Promise<DowngradeWarning | null> => {
-    const response = await axios.get("/storage-alerts/downgrade-warning")
-    return response.data
-  }
+// Limit Warning API Functions
+export const getMyLimitWarningApi = async (): Promise<LimitWarning | null> => {
+  const response = await axios.get("/storage-alerts/limit-warning")
+  return response.data
+}
 
-export const checkDowngradeWarningStatusApi =
-  async (): Promise<DowngradeWarningStatus> => {
-    const response = await axios.get("/storage-alerts/downgrade-warning/check")
+export const checkLimitWarningStatusApi =
+  async (): Promise<LimitWarningStatus> => {
+    const response = await axios.get("/storage-alerts/limit-warning/check")
     return response.data
   }

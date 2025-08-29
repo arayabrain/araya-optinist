@@ -373,9 +373,6 @@ async def refresh_all_workspaces_storage(
         from studio.app.common.core.storage.remote_storage_controller import (
             RemoteStorageType,
         )
-        from studio.app.common.core.workspace.workspace_data_capacity_services import (
-            WorkspaceDataCapacityService,
-        )
         from studio.scripts.run_sync_data_capacity_cloud import (
             CloudWorkspaceDataCapacityService,
         )
@@ -414,21 +411,55 @@ async def refresh_all_workspaces_storage(
                         delete_existing=False,
                     )
                 else:
-                    # Use local storage service
-                    # For local storage, sync all experiments in the workspace
+                    # Use local storage service - calculate actual filesystem sizes
+                    from studio.app.common.core.utils.file_reader import get_folder_size
+
+                    # Calculate input folder size
+                    workspace_input_path = os.path.join(
+                        DIRPATH.INPUT_DIR, str(workspace_id)
+                    )
+                    input_size = (
+                        get_folder_size(workspace_input_path)
+                        if os.path.exists(workspace_input_path)
+                        else 0
+                    )
+
+                    # Calculate output folder size
                     workspace_output_path = os.path.join(
                         DIRPATH.OUTPUT_DIR, str(workspace_id)
                     )
-                    if os.path.exists(workspace_output_path):
-                        for experiment_dir in os.listdir(workspace_output_path):
-                            experiment_path = os.path.join(
-                                workspace_output_path, experiment_dir
-                            )
-                            if os.path.isdir(experiment_path):
-                                service = WorkspaceDataCapacityService
-                                service.update_experiment_data_usage(
-                                    str(workspace_id), experiment_dir
-                                )
+                    output_size = (
+                        get_folder_size(workspace_output_path)
+                        if os.path.exists(workspace_output_path)
+                        else 0
+                    )
+
+                    total_workspace_size = input_size + output_size
+
+                    # Update workspace input_data_usage to reflect filesystem size
+                    from sqlalchemy import text
+
+                    db.execute(
+                        text(
+                            "UPDATE workspaces SET input_data_usage = :total_size "
+                            "WHERE id = :ws_id"
+                        ),
+                        {"total_size": total_workspace_size, "ws_id": workspace_id},
+                    )
+
+                    # Clear stale experiment records data_usage for this workspace
+                    db.execute(
+                        text(
+                            "UPDATE experiment_records SET data_usage = 0 "
+                            "WHERE workspace_id = :ws_id"
+                        ),
+                        {"ws_id": workspace_id},
+                    )
+
+                    logger.debug(
+                        f"Workspace {workspace_id}: input={input_size}, "
+                        f"output={output_size}, total={total_workspace_size} bytes"
+                    )
 
                 refreshed_count += 1
                 logger.debug(

@@ -269,53 +269,53 @@ async def refresh_storage_usage(
         )
 
 
-@router.get("/downgrade-warning", response_model=Optional[Dict])
-async def get_my_downgrade_warning(
+@router.get("/limit-warning", response_model=Optional[Dict])
+async def get_my_limit_warning(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Get downgrade warning details for the current user.
+    Get limit warning details for the current user.
 
     Returns warning information if the user has exceeded free plan limits
     after subscription expiration, None otherwise.
     """
     try:
-        from studio.app.common.core.cloud.cloud_utils import calculate_downgrade_warning
+        from studio.app.common.core.cloud.cloud_utils import calculate_limit_warning
 
-        logger.info(f"Checking downgrade warning for user {current_user.id}")
-        warning = await calculate_downgrade_warning(current_user.id)
+        logger.info(f"Checking limit warning for user {current_user.id}")
+        warning = await calculate_limit_warning(current_user.id)
 
         if warning:
             logger.info(
-                f"Downgrade warning for user {current_user.id}: "
+                f"Limit warning for user {current_user.id}: "
                 f"{warning['warning_type']}-{warning['days_remaining']} days remaining"
             )
         else:
-            logger.debug(f"No downgrade warning for user {current_user.id}")
+            logger.debug(f"No limit warning for user {current_user.id}")
 
         return warning
 
     except Exception as e:
-        logger.error(f"Failed to get downgrade warning for user {current_user.id}: {e}")
+        logger.error(f"Failed to get limit warning for user {current_user.id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve downgrade warning",
+            detail="Failed to retrieve limit warning",
         )
 
 
-@router.get("/downgrade-warning/check", response_model=Dict)
-async def check_downgrade_warning_status(
+@router.get("/limit-warning/check", response_model=Dict)
+async def check_limit_warning_status(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Quick check if user has any downgrade warnings.
+    Quick check if user has any limit warnings.
 
     Returns a simple status indicating if warnings exist.
     """
     try:
-        from studio.app.common.core.cloud.cloud_utils import calculate_downgrade_warning
+        from studio.app.common.core.cloud.cloud_utils import calculate_limit_warning
 
-        warning = await calculate_downgrade_warning(current_user.id)
+        warning = await calculate_limit_warning(current_user.id)
 
         return {
             "has_warning": warning is not None,
@@ -326,10 +326,9 @@ async def check_downgrade_warning_status(
 
     except Exception as e:
         logger.error(
-            f"Failed to check downgrade warning status for user "
-            f"{current_user.id}: {e}"
+            f"Failed to check limit warning status for user " f"{current_user.id}: {e}"
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to check downgrade warning status",
+            detail="Failed to check limit warning status",
         )

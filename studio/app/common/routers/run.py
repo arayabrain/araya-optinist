@@ -59,8 +59,8 @@ async def run(
         )
         storage_info = get_user_storage_usage(current_user.id)
 
-        if storage_info and storage_info["quota_limit_bytes"] > 0:
-            quota_limit = storage_info["quota_limit_bytes"]
+        if storage_info and storage_info["storage_quota_bytes"] > 0:
+            quota_limit = storage_info["storage_quota_bytes"]
             storage_usage_percent = (current_usage / quota_limit) * 100
 
             # Block workflow execution if over quota (100%)

@@ -71,6 +71,154 @@ async def get_user(db: Session, user_id: int, organization_id: int) -> User:
         raise HTTPException(status_code=400, detail=str(e))
 
 
+async def get_user_with_context(db: Session, user_id: int) -> User:
+    """
+    Get user with full context including subscription and storage information.
+    Similar to list_user but for a single user by ID.
+    """
+    try:
+        # Use the same transformer logic as list_user for consistency
+        def user_transformer(items):
+            users = []
+            for item in items:
+                (
+                    user,
+                    role_id,
+                    data_usage,
+                    subscription_plan_name,
+                    storage_usage_bytes,
+                    storage_quota_bytes,
+                    subscription_expiration,
+                    subscription_plan_id,
+                ) = item
+                user.__dict__["role_id"] = role_id
+                user.__dict__["data_usage"] = data_usage
+                user.__dict__["subscription_plan_name"] = (
+                    subscription_plan_name or "Free"
+                )
+                user.__dict__["storage_usage_bytes"] = storage_usage_bytes or 0
+                user.__dict__["storage_quota_bytes"] = storage_quota_bytes or 0
+                user.__dict__["storage_usage_percent"] = round(
+                    (storage_usage_bytes or 0) / (storage_quota_bytes or 1) * 100, 2
+                )
+
+                # Calculate subscription status and days remaining
+                now = datetime.now(timezone.utc)
+                if subscription_expiration and subscription_plan_id:
+                    # Make sure expiration is timezone-aware
+                    if subscription_expiration.tzinfo is None:
+                        subscription_expiration = subscription_expiration.replace(
+                            tzinfo=timezone.utc
+                        )
+
+                    days_remaining = (subscription_expiration - now).days
+
+                    if subscription_plan_id == 1:  # Free plan
+                        user.__dict__["subscription_status"] = "Free"
+                        user.__dict__["subscription_days_remaining"] = None
+                    elif subscription_plan_id == 2:  # Premium plan
+                        if days_remaining > 0:
+                            user.__dict__["subscription_status"] = "Premium"
+                            user.__dict__[
+                                "subscription_days_remaining"
+                            ] = days_remaining
+                        elif (
+                            days_remaining >= -30
+                        ):  # Grace period (30 days after expiration)
+                            user.__dict__["subscription_status"] = "Limit Grace"
+                            user.__dict__["subscription_days_remaining"] = (
+                                30 + days_remaining
+                            )  # Days left in grace period
+                        else:
+                            user.__dict__["subscription_status"] = "Expired"
+                            user.__dict__["subscription_days_remaining"] = None
+                    else:
+                        user.__dict__["subscription_status"] = (
+                            subscription_plan_name or "Unknown"
+                        )
+                        user.__dict__["subscription_days_remaining"] = (
+                            days_remaining if days_remaining > 0 else None
+                        )
+                else:
+                    user.__dict__["subscription_status"] = "Free"
+                    user.__dict__["subscription_days_remaining"] = None
+
+                users.append(user)
+            return users
+
+        # Query with the same joins as list_user but filter for single user
+        workspace_capacity_subq = (
+            select(
+                Workspace.user_id,
+                func.coalesce(func.sum(Workspace.input_data_usage), 0).label(
+                    "input_workspace_capacity"
+                ),
+            )
+            .where(Workspace.deleted.is_(False))
+            .group_by(Workspace.user_id)
+            .subquery()
+        )
+        experiment_capacity_subq = (
+            select(
+                Workspace.user_id,
+                func.coalesce(func.sum(ExperimentRecord.data_usage), 0).label(
+                    "experiment_capacity"
+                ),
+            )
+            .join(ExperimentRecord, ExperimentRecord.workspace_id == Workspace.id)
+            .where(Workspace.deleted.is_(False))
+            .group_by(Workspace.user_id)
+            .subquery()
+        )
+
+        WorkspaceCapacity = aliased(workspace_capacity_subq)
+        ExperimentCapacity = aliased(experiment_capacity_subq)
+
+        query_result = db.execute(
+            select(
+                UserModel,
+                func.min(UserRoleModel.role_id),
+                func.coalesce(WorkspaceCapacity.c.input_workspace_capacity, 0)
+                + func.coalesce(ExperimentCapacity.c.experiment_capacity, 0).label(
+                    "data_usage"
+                ),
+                SubscriptionPlans.name.label("subscription_plan_name"),
+                UserStorageUsage.storage_usage_bytes,
+                UserStorageUsage.storage_quota_bytes,
+                UserSubscription.expiration.label("subscription_expiration"),
+                UserSubscription.plan_id.label("subscription_plan_id"),
+            )
+            .outerjoin(WorkspaceCapacity, WorkspaceCapacity.c.user_id == UserModel.id)
+            .outerjoin(ExperimentCapacity, ExperimentCapacity.c.user_id == UserModel.id)
+            .join(UserRoleModel, UserRoleModel.user_id == UserModel.id, isouter=True)
+            .join(RoleModel, RoleModel.id == UserRoleModel.role_id, isouter=True)
+            .outerjoin(UserSubscription, UserSubscription.user_id == UserModel.id)
+            .outerjoin(
+                SubscriptionPlans, SubscriptionPlans.id == UserSubscription.plan_id
+            )
+            .outerjoin(UserStorageUsage, UserStorageUsage.user_id == UserModel.id)
+            .filter(
+                UserModel.active.is_(True),
+                UserModel.id == user_id,
+            )
+            .group_by(UserModel.id)
+        )
+
+        result = query_result.first()
+        if not result:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Transform the single result using the same logic as list_user
+        transformed_users = user_transformer([result])
+        return User.from_orm(transformed_users[0])
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(e, exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 async def list_user(
     db: Session,
     organization_id: int,
@@ -120,7 +268,7 @@ async def list_user(
                     elif (
                         days_remaining >= -30
                     ):  # Grace period (30 days after expiration)
-                        user.__dict__["subscription_status"] = "Downgrade Grace"
+                        user.__dict__["subscription_status"] = "Limit Grace"
                         user.__dict__["subscription_days_remaining"] = (
                             30 + days_remaining
                         )  # Days left in grace period

@@ -47,6 +47,19 @@ class User(BaseModel):
         return self.role_id == UserRole.admin
 
     @property
+    def has_active_subscription(self) -> bool:
+        """Check if user has an active paid subscription."""
+        return (
+            self.subscription_plan_name == "Premium"
+            and self.subscription_status == "active"
+        )
+
+    @property
+    def subscription_type(self) -> str:
+        """Get current effective Subscription Type: 'premium' or 'free'."""
+        return "premium" if self.has_active_subscription else "free"
+
+    @property
     def remote_bucket_name(self) -> str:
         return self.attributes.get("remote_bucket_name") if self.attributes else None
 

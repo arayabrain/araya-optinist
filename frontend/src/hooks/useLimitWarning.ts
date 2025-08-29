@@ -3,30 +3,30 @@ import { useEffect, useState, useCallback } from "react"
 import { useSnackbar } from "notistack"
 
 import {
-  getMyDowngradeWarningApi,
-  checkDowngradeWarningStatusApi,
-  DowngradeWarning,
-  DowngradeWarningStatus,
+  getMyLimitWarningApi,
+  checkLimitWarningStatusApi,
+  LimitWarning,
+  LimitWarningStatus,
 } from "api/storage/StorageAlerts"
 
-interface UseDowngradeWarningReturn {
-  warning: DowngradeWarning | null
+interface UseLimitWarningReturn {
+  warning: LimitWarning | null
   hasWarning: boolean
   loading: boolean
-  checkDowngradeWarning: () => Promise<boolean>
+  checkLimitWarning: () => Promise<boolean>
   dismissWarning: () => void
 }
 
-interface UseDowngradeWarningOptions {
+interface UseLimitWarningOptions {
   autoCheck?: boolean
   checkInterval?: number // in milliseconds
   showSnackbar?: boolean
   showModalOnLogin?: boolean
 }
 
-export const useDowngradeWarning = (
-  options: UseDowngradeWarningOptions = {},
-): UseDowngradeWarningReturn => {
+export const useLimitWarning = (
+  options: UseLimitWarningOptions = {},
+): UseLimitWarningReturn => {
   const {
     autoCheck = true,
     checkInterval = 10 * 60 * 1000, // 10 minutes default (less frequent than storage alerts)
@@ -35,7 +35,7 @@ export const useDowngradeWarning = (
   } = options
 
   const { enqueueSnackbar } = useSnackbar()
-  const [warning, setWarning] = useState<DowngradeWarning | null>(null)
+  const [warning, setWarning] = useState<LimitWarning | null>(null)
   const [loading, setLoading] = useState(false)
   const [dismissed, setDismissed] = useState(() => {
     // Check if this warning was already dismissed in localStorage
@@ -43,7 +43,7 @@ export const useDowngradeWarning = (
     if (dismissedWarnings) {
       try {
         const parsed = JSON.parse(dismissedWarnings)
-        return parsed.downgrade === true
+        return parsed.limitWarning === true
       } catch {
         return false
       }
@@ -51,10 +51,10 @@ export const useDowngradeWarning = (
     return false
   })
 
-  const checkDowngradeWarning = useCallback(async (): Promise<boolean> => {
+  const checkLimitWarning = useCallback(async (): Promise<boolean> => {
     try {
       setLoading(true)
-      const warningResponse = await getMyDowngradeWarningApi()
+      const warningResponse = await getMyLimitWarningApi()
 
       if (warningResponse && warningResponse.has_warning) {
         const newWarning = warningResponse
@@ -85,7 +85,7 @@ export const useDowngradeWarning = (
         return false
       }
     } catch (error) {
-      // console.error("Failed to check downgrade warning:", error)
+      // console.error("Failed to check limit warning:", error)
       // Silently fail to not disrupt user experience
       setWarning(null)
       return false
@@ -108,7 +108,7 @@ export const useDowngradeWarning = (
       "dismissedWarnings",
       JSON.stringify({
         ...parsed,
-        downgrade: true,
+        limitWarning: true,
       }),
     )
 
@@ -118,39 +118,39 @@ export const useDowngradeWarning = (
   useEffect(() => {
     if (autoCheck && !dismissed) {
       // Initial check
-      checkDowngradeWarning()
+      checkLimitWarning()
 
       // Set up interval for periodic checks
-      const interval = setInterval(checkDowngradeWarning, checkInterval)
+      const interval = setInterval(checkLimitWarning, checkInterval)
 
       return () => clearInterval(interval)
     }
     return () => {}
-  }, [autoCheck, checkInterval, checkDowngradeWarning, dismissed])
+  }, [autoCheck, checkInterval, checkLimitWarning, dismissed])
 
   return {
     warning: dismissed ? null : warning,
     hasWarning: Boolean(warning?.has_warning && !dismissed),
     loading,
-    checkDowngradeWarning,
+    checkLimitWarning,
     dismissWarning,
   }
 }
 
 /**
- * Quick hook to check if user has any downgrade warnings without full details
+ * Quick hook to check if user has any limit warnings without full details
  */
-export const useDowngradeWarningStatus = () => {
-  const [status, setStatus] = useState<DowngradeWarningStatus | null>(null)
+export const useLimitWarningStatus = () => {
+  const [status, setStatus] = useState<LimitWarningStatus | null>(null)
   const [loading, setLoading] = useState(false)
 
   const checkStatus = useCallback(async () => {
     try {
       setLoading(true)
-      const statusResponse = await checkDowngradeWarningStatusApi()
+      const statusResponse = await checkLimitWarningStatusApi()
       setStatus(statusResponse)
     } catch (error) {
-      // console.error("Failed to check downgrade warning status:", error)
+      // console.error("Failed to check limit warning status:", error)
     } finally {
       setLoading(false)
     }

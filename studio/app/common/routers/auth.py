@@ -3,7 +3,7 @@ from sqlmodel import Session
 
 from studio.app.common.core.auth import auth
 from studio.app.common.core.auth.auth_dependencies import get_admin_user
-from studio.app.common.core.cloud.cloud_utils import calculate_downgrade_warning
+from studio.app.common.core.cloud.cloud_utils import calculate_limit_warning
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
@@ -38,23 +38,22 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
             ) as remote_storage_controller:
                 await remote_storage_controller.download_all_experiments_metas()
 
-        # Check for downgrade warnings after successful login
+        # Check for limit warnings after successful login
         try:
-            downgrade_warning = await calculate_downgrade_warning(user.id)
-            if downgrade_warning:
+            limit_warning = await calculate_limit_warning(user.id)
+            if limit_warning:
                 logger.warning(
-                    f"User {user.id} ({user.email}) has downgrade warning: "
-                    f"{downgrade_warning['warning_type']} - "
-                    f"{downgrade_warning['days_remaining']} days remaining, "
-                    f"{downgrade_warning['excess_data_gb']} GB over limit"
+                    f"User {user.id} ({user.email}) has limit warning: "
+                    f"{limit_warning['warning_type']} - "
+                    f"{limit_warning['days_remaining']} days remaining, "
+                    f"{limit_warning['excess_data_gb']} GB over limit"
                 )
             else:
-                logger.debug(f"No downgrade warning for user {user.id}")
+                logger.debug(f"No limit warning for user {user.id}")
         except Exception as warning_error:
             # Don't fail login due to warning check failure
             logger.warning(
-                f"Failed to check downgrade warning for user "
-                f"{user.id}: {warning_error}"
+                f"Failed to check limit warning for user " f"{user.id}: {warning_error}"
             )
 
     except HTTPException as e:

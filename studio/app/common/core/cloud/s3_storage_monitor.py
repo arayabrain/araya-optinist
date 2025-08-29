@@ -10,12 +10,13 @@ from typing import Dict, List, Optional
 import boto3
 
 from studio.app.common.core.cloud.cloud_utils import (
-    get_all_active_subscriptions,
     get_user_storage_usage,
     update_user_storage_usage,
 )
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
+from studio.app.common.core.users import crud_users
+from studio.app.common.db.database import session_scope
 
 logger = AppLogger.get_logger()
 
@@ -38,7 +39,7 @@ class S3StorageMonitor:
         # These should match the values in your subscription plan features
         self.PLAN_QUOTAS = {
             "free": 5 * 1024 * 1024 * 1024,  # 5GB
-            "paid": 100 * 1024 * 1024 * 1024,  # 100GB
+            "premium": 100 * 1024 * 1024 * 1024,  # 100GB
         }
 
     async def get_user_s3_storage_size(self, user_id: int) -> int:
@@ -133,7 +134,9 @@ class S3StorageMonitor:
         )
         return total_size
 
-    def calculate_storage_alert_level(self, storage_usage_percent: float) -> Optional[str]:
+    def calculate_storage_alert_level(
+        self, storage_usage_percent: float
+    ) -> Optional[str]:
         """
         Determine alert level based on usage percentage.
 
@@ -177,13 +180,13 @@ class S3StorageMonitor:
                     f"No storage usage record found for user {user_id}, "
                     "checking subscription"
                 )
-                from studio.app.common.core.cloud.cloud_utils import (
-                    get_user_context_by_id,
-                )
+                with session_scope() as db:
+                    user_with_context = await crud_users.get_user_with_context(
+                        db, user_id
+                    )
 
-                user_context = await get_user_context_by_id(user_id)
-                if user_context:
-                    subscription_plan = user_context.get("subscription_plan", "free")
+                if user_with_context:
+                    subscription_plan = user_with_context.subscription_type
                     storage_quota = self.PLAN_QUOTAS.get(
                         subscription_plan, self.PLAN_QUOTAS["free"]
                     )
@@ -201,15 +204,13 @@ class S3StorageMonitor:
                 storage_quota = storage_info["storage_quota_bytes"]
                 if storage_quota <= 0:
                     # Fallback to plan-based quota if database has invalid data
-                    from studio.app.common.core.cloud.cloud_utils import (
-                        get_user_context_by_id,
-                    )
-
-                    user_context = await get_user_context_by_id(user_id)
-                    if user_context:
-                        subscription_plan = user_context.get(
-                            "subscription_plan", "free"
+                    with session_scope() as db:
+                        user_with_context = await crud_users.get_user_with_context(
+                            db, user_id
                         )
+
+                    if user_with_context:
+                        subscription_plan = user_with_context.subscription_type
                         storage_quota = self.PLAN_QUOTAS.get(
                             subscription_plan, self.PLAN_QUOTAS["free"]
                         )
@@ -251,8 +252,31 @@ class S3StorageMonitor:
         alerts = []
 
         try:
-            # Get all active subscription users
-            active_users = get_all_active_subscriptions()
+            # Get all active subscription users using crud_users
+            with session_scope() as db:
+                all_users = await crud_users.list_user(
+                    db,
+                    limit=1000,  # Large limit to get all users
+                    skip=0,
+                    user_id=None,
+                    search=None,
+                    email=None,
+                )
+
+                # Filter for users with active subscriptions
+                active_users = []
+                for user in all_users:
+                    if user.subscription_status and user.subscription_status != "Free":
+                        active_users.append(
+                            {
+                                "id": user.id,
+                                "name": user.name,
+                                "email": str(user.email),
+                                "subscription_plan": user.subscription_type,
+                                "plan_name": user.subscription_plan_name or "Free",
+                                "status": user.subscription_status or "Free",
+                            }
+                        )
 
             if not active_users:
                 logger.info("No active users found for storage monitoring")

@@ -1,6 +1,7 @@
 """
 Cloud utilities initialization.
 """
+from studio.app.common.core.cloud.cloud_utils import CloudDebug
 from studio.app.common.core.logger import AppLogger
 
 logger = AppLogger.get_logger()
@@ -9,10 +10,8 @@ logger = AppLogger.get_logger()
 def initialize_cloud_services():
     """Initialize cloud services and test connectivity."""
     try:
-        from studio.app.common.core.cloud.cloud_utils import initialize_cloud_utils
-
         logger.info("Initializing cloud services...")
-        success = initialize_cloud_utils()
+        success = CloudDebug.initialize_cloud_utils()
 
         if success:
             logger.info("Cloud services initialized successfully")

@@ -725,8 +725,8 @@ const AccountManager = () => {
         if (daysRemaining !== null && daysRemaining !== undefined) {
           if (status === "Premium") {
             statusText = `Premium (${daysRemaining} days left)`
-          } else if (status === "Downgrade Grace") {
-            statusText = `Downgrade Grace (${daysRemaining} days left)`
+          } else if (status === "Limit Grace") {
+            statusText = `Limit Grace (${daysRemaining} days left)`
           }
         }
 
