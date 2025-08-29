@@ -41,6 +41,11 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
     navigate("/console/workspaces")
   }
 
+  const onClickOpenSite = () => {
+    handleDrawerClose()
+    navigate("/")
+  }
+
   const onClickAccountManager = () => {
     handleDrawerClose()
     navigate("/console/account-manager")
