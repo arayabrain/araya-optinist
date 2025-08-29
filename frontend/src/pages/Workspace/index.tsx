@@ -75,6 +75,7 @@ const columns = (
   handleOpenPopupDel: (id: number, nameWorkspace: string) => void,
   handleNavWorkflow: (id: number) => void,
   handleNavRecords: (id: number) => void,
+  handleNavDataview: (id: number) => void,
   user?: UserDTO,
   onEdit?: (id: number) => void,
 ) => [
@@ -180,7 +181,7 @@ const columns = (
     field: "workflow",
     headerName: "",
     flex: 1,
-    minWidth: 160,
+    minWidth: 120,
     filterable: false, // todo enable when api complete
     sortable: false, // todo enable when api complete
     renderCell: (params: GridRenderCellParams<GridValidRowModel>) => (
@@ -212,6 +213,26 @@ const columns = (
           Records
         </Button>
       )
+    },
+  },
+  {
+    field: "dataview",
+    headerName: "",
+    flex: 1,
+    minWidth: 100,
+    filterable: false, // todo enable when api complete
+    sortable: false, // todo enable when api complete
+    renderCell: (params: GridRenderCellParams<GridValidRowModel>) => {
+      return isMine(user, params.row?.user?.id) ? (
+        <Button
+          variant="contained"
+          color="primary"
+          size="small"
+          onClick={() => handleNavDataview(params.row.id)}
+        >
+          Dataview
+        </Button>
+      ) : null
     },
   },
   {
@@ -413,6 +434,11 @@ const Workspaces = () => {
     navigate(`/console/workspaces/${id}`, { state: { tab: 2 } })
   }
 
+  const handleNavDataview = (id: number) => {
+    dispatch(resetVisualizeLayout())
+    navigate(`/console/dataview/${id}`)
+  }
+
   const onEditName = (id: number) => {
     setRowModesModel((pre: GridRowModesModel) => ({
       ...pre,
@@ -571,6 +597,7 @@ const Workspaces = () => {
               handleOpenPopupDel,
               handleNavWorkflow,
               handleNavRecords,
+              handleNavDataview,
               user,
               onEditName,
             ).filter(Boolean)}

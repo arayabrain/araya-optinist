@@ -23,6 +23,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
 from studio.app.common.routers import (
     algolist,
     auth,
+    dataview,
     experiment,
     files,
     logs,
@@ -96,7 +97,9 @@ app.include_router(auth.router)
 app.include_router(experiment.router, dependencies=[Depends(get_current_user)])
 app.include_router(files.router, dependencies=[Depends(get_current_user)])
 app.include_router(logs.router, dependencies=[Depends(get_current_user)])
-app.include_router(outputs.router, dependencies=[Depends(get_current_user)])
+app.include_router(
+    outputs.router
+)  # NOTE: Deauthentication for for-cloud Dataview functionality.
 app.include_router(params.router, dependencies=[Depends(get_current_user)])
 app.include_router(run.router, dependencies=[Depends(get_current_user)])
 app.include_router(storage_alerts.router, dependencies=[Depends(get_current_user)])
@@ -106,6 +109,8 @@ app.include_router(users_search.router, dependencies=[Depends(get_current_user)]
 app.include_router(workflow.router, dependencies=[Depends(get_current_user)])
 app.include_router(workspace.router, dependencies=[Depends(get_current_user)])
 app.include_router(subscriptions.router, dependencies=[Depends(get_current_user)])
+app.include_router(dataview.public_router)
+app.include_router(dataview.router, dependencies=[Depends(get_current_user)])
 
 # optinist routers
 app.include_router(hdf5.router, dependencies=[Depends(get_current_user)])
@@ -123,6 +128,7 @@ if MODE.IS_STANDALONE:
     app.dependency_overrides[get_admin_user] = skip_dependencies
     app.dependency_overrides[is_workspace_owner] = skip_dependencies
     app.dependency_overrides[is_workspace_available] = skip_dependencies
+
 
 app.add_middleware(
     CORSMiddleware,

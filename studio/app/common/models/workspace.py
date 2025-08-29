@@ -48,3 +48,6 @@ class Workspace(Base, TimestampMixin, table=True):
     user_share: List["User"] = Relationship(  # noqa: F821
         back_populates="workspace_share", link_model=WorkspacesShareUser
     )
+    experiments: List["ExperimentRecord"] = Relationship(  # noqa: F821
+        back_populates="workspace"
+    )
