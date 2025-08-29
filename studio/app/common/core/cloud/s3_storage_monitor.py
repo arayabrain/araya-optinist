@@ -181,7 +181,7 @@ class S3StorageMonitor:
                     get_user_context_by_id,
                 )
 
-                user_context = get_user_context_by_id(user_id)
+                user_context = await get_user_context_by_id(user_id)
                 if user_context:
                     tier = user_context.get("subscription_tier", "free")
                     quota_limit = self.TIER_QUOTAS.get(tier, self.TIER_QUOTAS["free"])
@@ -203,7 +203,7 @@ class S3StorageMonitor:
                         get_user_context_by_id,
                     )
 
-                    user_context = get_user_context_by_id(user_id)
+                    user_context = await get_user_context_by_id(user_id)
                     if user_context:
                         tier = user_context.get("subscription_tier", "free")
                         quota_limit = self.TIER_QUOTAS.get(

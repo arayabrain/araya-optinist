@@ -281,7 +281,7 @@ async def get_my_downgrade_warning(
         from studio.app.common.core.cloud.cloud_utils import calculate_downgrade_warning
 
         logger.info(f"Checking downgrade warning for user {current_user.id}")
-        warning = calculate_downgrade_warning(current_user.id)
+        warning = await calculate_downgrade_warning(current_user.id)
 
         if warning:
             logger.info(
@@ -313,7 +313,7 @@ async def check_downgrade_warning_status(
     try:
         from studio.app.common.core.cloud.cloud_utils import calculate_downgrade_warning
 
-        warning = calculate_downgrade_warning(current_user.id)
+        warning = await calculate_downgrade_warning(current_user.id)
 
         return {
             "has_warning": warning is not None,

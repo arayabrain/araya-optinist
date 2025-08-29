@@ -389,24 +389,11 @@ async def refresh_all_workspaces_storage(
         use_s3 = bool(shared_bucket_name)
 
         # Get all non-deleted workspaces that the user has access to
-        workspaces_query = (
-            select(common_model.Workspace.id)
-            .join(
-                common_model.WorkspacesShareUser,
-                common_model.Workspace.id
-                == common_model.WorkspacesShareUser.workspace_id,
-                isouter=True,
-            )
-            .filter(
-                common_model.Workspace.deleted.is_(False),
-                or_(
-                    common_model.WorkspacesShareUser.user_id == current_user.id,
-                    common_model.Workspace.user_id == current_user.id,
-                ),
-            )
+        from studio.app.common.core.workspace.workspace_utils import (
+            get_user_accessible_workspace_ids,
         )
 
-        workspace_ids = db.execute(workspaces_query).scalars().all()
+        workspace_ids = get_user_accessible_workspace_ids(db, current_user.id)
 
         logger.info(
             f"Refreshing storage for {len(workspace_ids)} workspaces "

@@ -24,7 +24,7 @@ from sqlmodel import select
 from studio.app.common import models as common_model
 from studio.app.common.core.cloud.cloud_utils import get_current_user_storage_usage
 from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
-from studio.app.common.core.cloud_batch.batch_utils import BatchDebug, BatchUtils
+from studio.app.common.core.cloud_batch.batch_utils import BatchUtils
 from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
 )
@@ -367,8 +367,8 @@ def _snakemake_execute_batch(
         else:
             # Use optimized EFS configuration when S3 is not available
             logger.info("S3 not available, configuring optimized EFS storage")
-            BatchDebug.prepare_efs_environment(workspace_id)
-            storage_settings = BatchDebug.get_efs_optimized_storage_settings(
+            BatchUtils.prepare_efs_environment(workspace_id)
+            storage_settings = BatchUtils.get_efs_optimized_storage_settings(
                 workspace_id, unique_id
             )
 
@@ -568,7 +568,7 @@ def _snakemake_execute_batch(
                     if (
                         not False
                     ):  # Temporarily disable S3 for, use EFS + RemoteStorageController
-                        contain_setup = BatchDebug.get_batch_contain_setup_commands()
+                        contain_setup = BatchUtils.get_container_setup_commands()
 
                     # logger.debug("=== AWS BATCH EXECUTION DEBUG ===")
                     # logger.debug(f"Job Queue: {selected_job_queue}")
@@ -771,8 +771,9 @@ def _snakemake_execute_batch(
                     try:
                         logger.info("Uploading final workflow results to S3...")
 
-                        if False:  # Disable S3 upload from Snakemake, handle via
-                            # separate process: RemoteStorageController
+                        if (
+                            RemoteStorageController.is_available()
+                        ):  # Upload to S3 after EFS execution
                             import asyncio
 
                             # Get S3 bucket name for upload
@@ -924,12 +925,14 @@ def _snakemake_execute_batch(
 
 
 def _post_process_workflow(workspace_id: str, unique_id: str, result: bool = False):
-    # Download experiment results from S3 if using remote storage and batch mode
+    # Post-processing strategy:
+    # - Execute workflow on EFS for fast intermediate I/O (avoid S3 plugin path issues)
+    # - Upload results to S3 after completion using RemoteStorageController
+    # - Download from S3 only when needed for post-processing
     from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
 
-    if result and BATCH_CONFIG.USE_AWS_BATCH and False:
-        # Disable S3 download from Snakemake, handle via
-        # separate process: RemoteStorageController
+    if result and RemoteStorageController.is_available():
+        # Download from S3 using RemoteStorageController for post-processing
         try:
             logger.info("Downloading experiment results from S3 for post-processing")
             remote_controller = RemoteStorageController(

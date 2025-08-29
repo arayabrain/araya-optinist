@@ -80,7 +80,7 @@ async def get_my_cloud_details(
         }
 
         # Get user context
-        user_context = get_user_context_by_id(current_user.id)
+        user_context = await get_user_context_by_id(current_user.id)
         if user_context:
             result["user_context"] = {
                 "subscription_plan": user_context["subscription_plan_name"],

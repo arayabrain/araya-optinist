@@ -351,7 +351,7 @@ class BatchUtils:
         try:
             if user_id is not None:
                 # Use the provided user_id directly
-                current_user = get_user_context_by_id(user_id)
+                current_user = asyncio.run(get_user_context_by_id(user_id))
             else:
                 # Try to get user_id from workspace_id
                 workspace_user_id = self._get_user_id_from_workspace(self.workspace_id)
@@ -360,7 +360,9 @@ class BatchUtils:
                         f"Found user_id {workspace_user_id} for "
                         f"workspace {self.workspace_id}"
                     )
-                    current_user = get_user_context_by_id(workspace_user_id)
+                    current_user = asyncio.run(
+                        get_user_context_by_id(workspace_user_id)
+                    )
                 else:
                     # No user_id provided and can't get current user outside API context
                     logger.warning(
@@ -406,6 +408,97 @@ class BatchUtils:
             logger.error(f"Failed to get ECR repository URI: {e}")
             # Fallback to configured value
             return "optinist-for-cloud:latest"
+
+    @staticmethod
+    def get_container_setup_commands() -> List[str]:
+        """
+        Return setup commands that should be run in batch containers to prepare
+        the local scratch environment (EFS-specific commands).
+        """
+        return [
+            # Create local scratch with proper permissions
+            # Use AWS_BATCH_JOB_ID (set by AWS Batch) for job isolation
+            "mkdir -p /tmp/snakemake_scratch/$AWS_BATCH_JOB_ID",
+            "chmod 755 /tmp/snakemake_scratch",
+            "chmod 755 /tmp/snakemake_scratch/$AWS_BATCH_JOB_ID",
+            # Set environment variables for better performance
+            "export TMPDIR=/tmp/snakemake_scratch/$AWS_BATCH_JOB_ID",
+            "export TMP=/tmp/snakemake_scratch/$AWS_BATCH_JOB_ID",
+            # Ensure EFS mount point exists
+            "mkdir -p /mnt/efs",
+            # Optional: Set rsync options for better EFS performance
+            "export SNAKEMAKE_RSYNC_OPTS='-av --inplace --no-sparse'",
+        ]
+
+    @staticmethod
+    def get_efs_optimized_storage_settings(
+        workspace_id: str, unique_id: str
+    ) -> StorageSettings:
+        """
+        Configure optimized storage settings for EFS shared filesystem.
+
+        Key fix: When using SharedFSUsage.INPUT_OUTPUT,
+        do NOT set local storage prefixes.
+        This prevents Snakemake from creating duplicated paths like:
+        /tmp/snakemake_scratch/fs/mnt/efs/mnt/efs/input/file.tiff
+
+        Instead, all input/output files are accessed directly from the EFS mount.
+        """
+
+        # EFS mount path - should be persistent across batch jobs
+        # Use the base EFS mount point since SmkUtils generates full paths
+        efs_storage = Path(DIRPATH.DATA_DIR).resolve().as_posix()
+
+        storage_settings = StorageSettings(
+            default_storage_provider="fs",  # Use the filesystem storage plugin
+            default_storage_prefix=efs_storage,
+            local_storage_prefix=efs_storage,
+            remote_job_local_storage_prefix=efs_storage,
+            shared_fs_usage=[
+                SharedFSUsage.INPUT_OUTPUT,  # Input/output files on EFS
+                SharedFSUsage.PERSISTENCE,  # Job metadata on EFS
+                SharedFSUsage.SOFTWARE_DEPLOYMENT,  # Conda envs on EFS
+                SharedFSUsage.SOURCES,  # Workflow sources on EFS
+            ],
+        )
+
+        logger.info(f"EFS storage configured: {efs_storage}")
+
+        return storage_settings
+
+    @staticmethod
+    def prepare_efs_environment(workspace_id: str):
+        """
+        Ensure EFS directories exist and local scratch is prepared.
+        """
+        # EFS base path is the mount point itself, use OPTINIST_DIR from environment
+        efs_mount_path = Path(DIRPATH.DATA_DIR).resolve()
+        local_scratch_path = Path("/tmp/snakemake_scratch").resolve()
+
+        try:
+            # Create EFS directories if they don't exist
+            efs_mount_path.mkdir(parents=True, exist_ok=True)
+
+            # Create input and output directories under EFS mount
+            (efs_mount_path / "input").mkdir(parents=True, exist_ok=True)
+            (efs_mount_path / "output").mkdir(parents=True, exist_ok=True)
+            logger.info(f"EFS directories prepared: {efs_mount_path}")
+
+            # Create local scratch directory
+            local_scratch_path.mkdir(parents=True, exist_ok=True)
+            # Set proper permissions for scratch directory
+            os.chmod(local_scratch_path, 0o755)
+
+            logger.info(f"Local scratch directory prepared: {local_scratch_path}")
+
+            # Create subdirectories that Snakemake might need under the EFS mount
+            (efs_mount_path / "logs").mkdir(exist_ok=True)
+            (efs_mount_path / "benchmarks").mkdir(exist_ok=True)
+            (efs_mount_path / ".snakemake").mkdir(exist_ok=True)
+
+        except Exception as e:
+            logger.error(f"Failed to prepare EFS environment: {e}")
+            raise
 
     def prepare_batch_workspace(self):
         """
@@ -1117,92 +1210,6 @@ class BatchUtils:
 
 
 class BatchDebug:
-    def get_efs_optimized_storage_settings(
-        workspace_id: str, unique_id: str
-    ) -> StorageSettings:
-        """
-        Configure optimized storage settings for EFS shared filesystem.
-
-        Key fix: When using SharedFSUsage.INPUT_OUTPUT,
-        do NOT set local storage prefixes.
-        This prevents Snakemake from creating duplicated paths like:
-        /tmp/snakemake_scratch/fs/mnt/efs/mnt/efs/input/file.tiff
-
-        Instead, all input/output files are accessed directly from the EFS mount.
-        """
-        # EFS mount path - should be persistent across batch jobs
-        # Use the base EFS mount point since SmkUtils generates full paths
-        efs_storage = Path(DIRPATH.DATA_DIR).resolve().as_posix()
-
-        storage_settings = StorageSettings(
-            default_storage_provider="fs",  # Use the filesystem storage plugin
-            default_storage_prefix=efs_storage,
-            local_storage_prefix=efs_storage,
-            remote_job_local_storage_prefix=efs_storage,
-            shared_fs_usage=[
-                SharedFSUsage.INPUT_OUTPUT,  # Input/output files on EFS
-                SharedFSUsage.PERSISTENCE,  # Job metadata on EFS
-                SharedFSUsage.SOFTWARE_DEPLOYMENT,  # Conda envs on EFS
-                SharedFSUsage.SOURCES,  # Workflow sources on EFS
-            ],
-        )
-
-        logger.info(f"EFS storage configured: {efs_storage}")
-
-        return storage_settings
-
-    def prepare_efs_environment(workspace_id: str):
-        """
-        Ensure EFS directories exist and local scratch is prepared.
-        """
-        # EFS base path is the mount point itself, use OPTINIST_DIR from environment
-        efs_mount_path = Path(DIRPATH.DATA_DIR).resolve()
-        local_scratch_path = Path("/tmp/snakemake_scratch").resolve()
-
-        try:
-            # Create EFS directories if they don't exist
-            efs_mount_path.mkdir(parents=True, exist_ok=True)
-
-            # Create input and output directories under EFS mount
-            (efs_mount_path / "input").mkdir(parents=True, exist_ok=True)
-            (efs_mount_path / "output").mkdir(parents=True, exist_ok=True)
-            logger.info(f"EFS directories prepared: {efs_mount_path}")
-
-            # Create local scratch directory
-            local_scratch_path.mkdir(parents=True, exist_ok=True)
-            # Set proper permissions for scratch directory
-            os.chmod(local_scratch_path, 0o755)
-
-            logger.info(f"Local scratch directory prepared: {local_scratch_path}")
-
-            # Create subdirectories that Snakemake might need under the EFS mount
-            (efs_mount_path / "logs").mkdir(exist_ok=True)
-            (efs_mount_path / "benchmarks").mkdir(exist_ok=True)
-            (efs_mount_path / ".snakemake").mkdir(exist_ok=True)
-
-        except Exception as e:
-            logger.error(f"Failed to prepare EFS environment: {e}")
-            raise
-
-    def get_batch_container_setup_commands() -> List[str]:
-        """
-        Return setup commands that should be run in batch containers to prepare
-        the local scratch environment (EFS-specific commands).
-        """
-        return [
-            # Create local scratch with proper permissions
-            "mkdir -p /tmp/snakemake_scratch/$JOBID",
-            "chmod 755 /tmp/snakemake_scratch",
-            "chmod 755 /tmp/snakemake_scratch/$JOBID",
-            # Set environment variables for better performance
-            "export TMPDIR=/tmp/snakemake_scratch/$JOBID",
-            "export TMP=/tmp/snakemake_scratch/$JOBID",
-            # Ensure EFS mount point exists
-            "mkdir -p /mnt/efs",
-            # Optional: Set rsync options for better EFS performance
-            "export SNAKEMAKE_RSYNC_OPTS='-av --inplace --no-sparse'",
-        ]
-
     @staticmethod
     def validate_batch_configuration(batch_executor) -> bool:
         """

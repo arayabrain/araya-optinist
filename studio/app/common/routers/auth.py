@@ -40,7 +40,7 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
 
         # Check for downgrade warnings after successful login
         try:
-            downgrade_warning = calculate_downgrade_warning(user.id)
+            downgrade_warning = await calculate_downgrade_warning(user.id)
             if downgrade_warning:
                 logger.warning(
                     f"User {user.id} ({user.email}) has downgrade warning: "

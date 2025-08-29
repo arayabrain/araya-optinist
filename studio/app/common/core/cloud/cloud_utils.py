@@ -99,7 +99,7 @@ def _get_fallback_storage_quota(user_id: int) -> Dict[str, Any]:
     }
 
 
-def get_user_context_by_id(user_id: int) -> Optional[Dict[str, Any]]:
+async def get_user_context_by_id(user_id: int) -> Optional[Dict[str, Any]]:
     """
     Get user context including subscription tier from database by user ID.
     Returns user info with subscription details or None if not found.
@@ -144,7 +144,7 @@ def get_user_context_by_id(user_id: int) -> Optional[Dict[str, Any]]:
                 )
 
                 # Get downgrade warning information
-                downgrade_warning = calculate_downgrade_warning(user_id)
+                downgrade_warning = await calculate_downgrade_warning(user_id)
 
                 user_context = {
                     "id": user.id,
@@ -548,29 +548,13 @@ async def _calculate_local_user_storage(user_id: int) -> int:
         Total storage size in bytes
     """
     try:
-        # Get all workspaces the user has access to (same logic as workspace refresh)
-        from sqlmodel import or_, select
-
-        from studio.app.common import models as common_model
+        # Get all workspaces the user has access to using shared utility
+        from studio.app.common.core.workspace.workspace_utils import (
+            get_user_accessible_workspace_ids,
+        )
 
         with session_scope() as db:
-            workspaces_query = (
-                select(common_model.Workspace.id)
-                .join(
-                    common_model.WorkspacesShareUser,
-                    common_model.Workspace.id
-                    == common_model.WorkspacesShareUser.workspace_id,
-                    isouter=True,
-                )
-                .filter(
-                    common_model.Workspace.deleted.is_(False),
-                    or_(
-                        common_model.WorkspacesShareUser.user_id == user_id,
-                        common_model.Workspace.user_id == user_id,
-                    ),
-                )
-            )
-            workspace_ids = db.exec(workspaces_query).all()
+            workspace_ids = get_user_accessible_workspace_ids(db, user_id)
 
         # Calculate total storage from input and output folders
         total_usage = 0
@@ -609,7 +593,7 @@ async def _calculate_local_user_storage(user_id: int) -> int:
         return 0
 
 
-def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
+async def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
     """
     Calculate downgrade warning based on subscription and storage status:
 
@@ -631,7 +615,6 @@ def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
 
         with session_scope() as db:
             # Get user's current storage usage - prioritize fresh data at startup
-            import asyncio
 
             # First check if we have very fresh cached data (within 5 minutes)
             storage_info = get_user_storage_usage(user_id)
@@ -642,48 +625,19 @@ def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
                     f"for user {user_id}: {current_usage_bytes}"
                 )
             else:
-                try:
-                    # Try to get current event loop
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # We're in an async context
-                        # use database fallback but log that data may be stale
-                        current_usage_bytes = (
-                            storage_info.get("current_usage_bytes", 0)
-                            if storage_info
-                            else 0
-                        )
-                        logger.warning(
-                            f"DowngradeWarning: Using potentially "
-                            f"stale storage data for user {user_id}: "
-                            f"{current_usage_bytes} (in async context)"
-                        )
-                    else:
-                        # We can run async code safely
-                        current_usage_bytes = loop.run_until_complete(
-                            get_current_user_storage_usage(user_id, force_live=True)
-                        )
-                        logger.debug(
-                            f"DowngradeWarning: Calculated fresh storage data "
-                            f"for user {user_id}: {current_usage_bytes}"
-                        )
-                except RuntimeError:
-                    # No event loop, we can create one
-                    current_usage_bytes = asyncio.run(
-                        get_current_user_storage_usage(user_id, force_live=True)
-                    )
-                    logger.debug(
-                        f"DowngradeWarning: Calculated fresh storage data "
-                        f"for user {user_id}: {current_usage_bytes}"
-                    )
+                # Get fresh storage data using async call
+                current_usage_bytes = await get_current_user_storage_usage(
+                    user_id, force_live=True
+                )
+                logger.debug(
+                    f"DowngradeWarning: Calculated fresh storage data "
+                    f"for user {user_id}: {current_usage_bytes}"
+                )
 
-            # Get quota from database for this user
-            storage_usage = get_user_storage_usage(user_id)
-
-            # Use actual quota from database, fallback to default if not available
+            # Use quota from already retrieved storage_info to avoid redundant DB call
             quota_limit_bytes = (
-                storage_usage.get("quota_limit_bytes", DEFAULT_FREE_TIER_LIMIT_BYTES)
-                if storage_usage
+                storage_info.get("quota_limit_bytes", DEFAULT_FREE_TIER_LIMIT_BYTES)
+                if storage_info
                 else DEFAULT_FREE_TIER_LIMIT_BYTES
             )
             quota_limit_gb = quota_limit_bytes / (1024 * 1024 * 1024)
