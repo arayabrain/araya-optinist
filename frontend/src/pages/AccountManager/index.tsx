@@ -735,14 +735,14 @@ const AccountManager = () => {
     },
     {
       headerName: "Storage Usage",
-      field: "storage_usage_percentage",
+      field: "storage_usage_percent",
       minWidth: 150,
       sortable: false,
       filterable: false,
       renderCell: (params: GridRenderCellParams<GridValidRowModel>) => {
         const usageBytes = params.row?.storage_usage_bytes || 0
         const quotaBytes = params.row?.storage_quota_bytes || 0
-        const percentage = params.row?.storage_usage_percentage || 0
+        const percentage = params.row?.storage_usage_percent || 0
 
         if (quotaBytes === 0) return "No Quota"
 

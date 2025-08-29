@@ -288,7 +288,7 @@ class BatchUtils:
             "logs", region_name=BATCH_CONFIG.AWS_DEFAULT_REGION
         )
 
-        # Get current user info for tier-based queue selection
+        # Get current user info for subscription plan-based queue selection
         self.current_user = self._get_current_user()
 
         # Initialize job monitoring thread
@@ -341,8 +341,8 @@ class BatchUtils:
 
     def get_job_queue_for_user(self, user_id: Optional[int] = None) -> str:
         """
-        Determine which AWS Batch job queue to use based on user tier.
-        Uses the new subscription system to determine user tier.
+        Determine which AWS Batch job queue to use based on user subscription plan.
+        Uses the new subscription system to determine user subscription plan.
 
         Args:
             user_id: Optional user ID.
@@ -366,34 +366,39 @@ class BatchUtils:
                 else:
                     # No user_id provided and can't get current user outside API context
                     logger.warning(
-                        "No user_id provided for queue selection, default to free tier"
+                        "No user_id provided for queue selection, "
+                        "default to free subscription plan"
                     )
                     current_user = None
 
             if current_user and isinstance(current_user, dict):
-                tier = current_user.get("subscription_tier", "free")
+                subscription_plan = current_user.get("subscription_plan", "free")
                 user_name = current_user.get("name", "unknown")
                 plan_name = current_user.get("subscription_plan_name", "Unknown")
                 subscription_status = current_user.get("subscription_status", "expired")
 
                 logger.info(
                     f"User {user_name} has plan: {plan_name}, status: "
-                    f"{subscription_status}, tier: {tier}"
+                    f"{subscription_status}, subscription_plan: {subscription_plan}"
                 )
 
                 # Only use paid queue if user has active paid subscription
-                if tier == "paid" and subscription_status == "active":
-                    logger.info(f"Using paid tier queue for user: {user_name}")
+                if subscription_plan == "paid" and subscription_status == "active":
+                    logger.info(
+                        f"Using paid subscription plan queue for user: {user_name}"
+                    )
                     return BATCH_CONFIG.AWS_BATCH_PAID_QUEUE
                 else:
-                    logger.info(f"Using free tier queue for user: {user_name}")
+                    logger.info(
+                        f"Using free subscription plan queue for user: {user_name}"
+                    )
                     return BATCH_CONFIG.AWS_BATCH_FREE_QUEUE
 
         except Exception as e:
-            logger.warning(f"Failed to determine user tier: {e}")
+            logger.warning(f"Failed to determine user subscription plan: {e}")
 
-        # Default to free tier queue
-        logger.info("Defaulting to free tier queue")
+        # Default to free subscription plan queue
+        logger.info("Defaulting to free subscription plan queue")
         return BATCH_CONFIG.AWS_BATCH_FREE_QUEUE
 
     def get_container_image(self) -> str:
@@ -447,7 +452,17 @@ class BatchUtils:
 
         # EFS mount path - should be persistent across batch jobs
         # Use the base EFS mount point since SmkUtils generates full paths
-        efs_storage = Path(DIRPATH.DATA_DIR).resolve().as_posix()
+        logger.debug(f"Creating storage settings for DIRPATH.DATA_DIR: {DIRPATH.DATA_DIR}")
+        efs_storage_path = Path(DIRPATH.DATA_DIR).resolve()
+        efs_storage = efs_storage_path.as_posix()
+        logger.debug(f"Resolved EFS storage path: {efs_storage}")
+
+        # Validate the path string before passing to Snakemake
+        logger.debug(f"Storage path validation: {repr(efs_storage)}")
+        if not isinstance(efs_storage, str):
+            raise TypeError(f"Expected string for storage path, got {type(efs_storage)}")
+        if not efs_storage:
+            raise ValueError("Empty storage path provided to StorageSettings")
 
         storage_settings = StorageSettings(
             default_storage_provider="fs",  # Use the filesystem storage plugin
@@ -467,21 +482,41 @@ class BatchUtils:
         return storage_settings
 
     @staticmethod
-    def prepare_efs_environment(workspace_id: str):
+    def prepare_efs_environment(workspace_id: str):  # workspace_id kept for API compatibility
         """
         Ensure EFS directories exist and local scratch is prepared.
         """
         # EFS base path is the mount point itself, use OPTINIST_DIR from environment
-        efs_mount_path = Path(DIRPATH.DATA_DIR).resolve()
-        local_scratch_path = Path("/tmp/snakemake_scratch").resolve()
-
         try:
+            # Debug: Check DIRPATH.DATA_DIR value and type
+            logger.debug(f"DIRPATH.DATA_DIR value: {DIRPATH.DATA_DIR}")
+            logger.debug(f"DIRPATH.DATA_DIR type: {type(DIRPATH.DATA_DIR)}")
+            
+            # Ensure we're working with a proper path
+            if not isinstance(DIRPATH.DATA_DIR, (str, Path)):
+                raise ValueError(f"DIRPATH.DATA_DIR must be a string or Path, got {type(DIRPATH.DATA_DIR)}")
+            
+            efs_mount_path = Path(DIRPATH.DATA_DIR).resolve()
+            local_scratch_path = Path("/tmp/snakemake_scratch").resolve()
+            
+            logger.debug(f"Resolved efs_mount_path: {efs_mount_path}")
+            logger.debug(f"efs_mount_path type: {type(efs_mount_path)}")
+
             # Create EFS directories if they don't exist
             efs_mount_path.mkdir(parents=True, exist_ok=True)
 
             # Create input and output directories under EFS mount
-            (efs_mount_path / "input").mkdir(parents=True, exist_ok=True)
-            (efs_mount_path / "output").mkdir(parents=True, exist_ok=True)
+            # Use explicit Path construction to avoid potential string division issues
+            try:
+                input_path = efs_mount_path / "input"
+                output_path = efs_mount_path / "output"
+            except TypeError as e:
+                logger.warning(f"Path / operator failed, falling back to os.path.join: {e}")
+                input_path = Path(os.path.join(str(efs_mount_path), "input"))
+                output_path = Path(os.path.join(str(efs_mount_path), "output"))
+            
+            input_path.mkdir(parents=True, exist_ok=True)
+            output_path.mkdir(parents=True, exist_ok=True)
             logger.info(f"EFS directories prepared: {efs_mount_path}")
 
             # Create local scratch directory
@@ -492,9 +527,19 @@ class BatchUtils:
             logger.info(f"Local scratch directory prepared: {local_scratch_path}")
 
             # Create subdirectories that Snakemake might need under the EFS mount
-            (efs_mount_path / "logs").mkdir(exist_ok=True)
-            (efs_mount_path / "benchmarks").mkdir(exist_ok=True)
-            (efs_mount_path / ".snakemake").mkdir(exist_ok=True)
+            try:
+                logs_path = efs_mount_path / "logs"
+                benchmarks_path = efs_mount_path / "benchmarks"
+                snakemake_path = efs_mount_path / ".snakemake"
+            except TypeError as e:
+                logger.warning(f"Path / operator failed for subdirectories, falling back: {e}")
+                logs_path = Path(os.path.join(str(efs_mount_path), "logs"))
+                benchmarks_path = Path(os.path.join(str(efs_mount_path), "benchmarks"))
+                snakemake_path = Path(os.path.join(str(efs_mount_path), ".snakemake"))
+            
+            logs_path.mkdir(exist_ok=True)
+            benchmarks_path.mkdir(exist_ok=True)
+            snakemake_path.mkdir(exist_ok=True)
 
         except Exception as e:
             logger.error(f"Failed to prepare EFS environment: {e}")
@@ -726,9 +771,9 @@ class BatchUtils:
             return False
 
     @staticmethod
-    def get_tier_resource_limits(tier: str) -> Dict[str, Any]:
+    def get_subscription_plan_resource_limits(subscription_plan: str) -> Dict[str, Any]:
         """
-        Get resource limits based on subscription tier.
+        Get resource limits based on subscription plan.
         """
         limits = {
             "free": {
@@ -747,16 +792,18 @@ class BatchUtils:
             },
         }
 
-        return limits.get(tier, limits["free"])
+        return limits.get(subscription_plan, limits["free"])
 
     @staticmethod
-    def validate_job_resources(requested: Dict[str, int], tier: str) -> Dict[str, int]:
+    def validate_job_resources(
+        requested: Dict[str, int], subscription_plan: str
+    ) -> Dict[str, int]:
         """
-        Validate and adjust requested resources based on tier limits.
+        Validate and adjust requested resources based on subscription plan limits.
         """
-        limits = BatchUtils.get_tier_resource_limits(tier)
+        limits = BatchUtils.get_subscription_plan_resource_limits(subscription_plan)
 
-        logger.debug(f"Validating resources for tier: {tier}")
+        logger.debug(f"Validating resources for subscription_plan: {subscription_plan}")
         logger.debug(f"Requested resources: {requested}")
 
         validated = {
@@ -769,7 +816,8 @@ class BatchUtils:
         for key, value in validated.items():
             if requested.get(key, value) != value:
                 logger.warning(
-                    f"Changed {key} from {requested.get(key)} to {value} as {tier} tier"
+                    f"Changed {key} from {requested.get(key)} to {value} as "
+                    f"{subscription_plan} subscription plan"
                 )
 
         return validated

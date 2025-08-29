@@ -40,7 +40,7 @@ def _get_fallback_users(db: Session) -> list:
                     "plan_price": 0,
                     "status": "active",
                     "created_at": user_obj.created_at,
-                    "tier": "free",
+                    "plan": "free",
                 }
             ]
         else:
@@ -55,53 +55,53 @@ def _get_fallback_users(db: Session) -> list:
 def _get_fallback_storage_quota(user_id: int) -> Dict[str, Any]:
     """
     Get fallback storage quota when storage usage table doesn't exist.
-    Tries to determine quota based on user's subscription tier.
+    Tries to determine quota based on user's subscription plan.
     """
     try:
-        # Try to get user's subscription tier to determine appropriate quota
+        # Try to get user's subscription plan to determine appropriate quota
         user_context = get_user_context_by_id(user_id)
         if user_context:
-            tier = user_context.get("subscription_tier", "free")
+            subscription_plan = user_context.get("subscription_plan", "free")
             plan_name = user_context.get("subscription_plan_name", "Free")
 
-            # Set quotas based on subscription tier
-            if tier == "paid":
-                default_quota_bytes = 100 * 1024 * 1024 * 1024  # 100GB for paid tier
+            # Set quotas based on subscription plan
+            if subscription_plan == "paid":
+                default_quota_bytes = 100 * 1024 * 1024 * 1024  # 100GB for paid plan
                 logger.info(
-                    f"Using paid tier quota for user {user_id} ({plan_name}): 100GB"
+                    f"Using paid plan quota for user {user_id} ({plan_name}): 100GB"
                 )
             else:
-                default_quota_bytes = 5 * 1024 * 1024 * 1024  # 5GB for free tier
+                default_quota_bytes = 5 * 1024 * 1024 * 1024  # 5GB for free plan
                 logger.info(
-                    f"Using free tier quota for user {user_id} ({plan_name}): 5GB"
+                    f"Using free plan quota for user {user_id} ({plan_name}): 5GB"
                 )
         else:
-            # Fallback to free tier if we can't determine subscription
+            # Fallback to free plan if we can't determine subscription
             default_quota_bytes = 5 * 1024 * 1024 * 1024  # 5GB
             logger.warning(
                 f"Could not determine subscription for user {user_id}, "
-                "using free tier quota: 5GB"
+                "using free plan quota: 5GB"
             )
 
     except Exception as e:
         logger.warning(
             f"Error determining subscription quota for user {user_id}: {e}, "
-            "using free tier"
+            "using free plan"
         )
         default_quota_bytes = 5 * 1024 * 1024 * 1024  # 5GB fallback
 
     return {
         "user_id": user_id,
-        "current_usage_bytes": 0,  # Unknown, will be calculated from S3
-        "quota_limit_bytes": default_quota_bytes,
-        "usage_percentage": 0.0,
+        "storage_usage_bytes": 0,  # Unknown, will be calculated from S3
+        "storage_quota_bytes": default_quota_bytes,
+        "storage_usage_percent": 0.0,
         "last_updated": None,
     }
 
 
 async def get_user_context_by_id(user_id: int) -> Optional[Dict[str, Any]]:
     """
-    Get user context including subscription tier from database by user ID.
+    Get user context including subscription plan from database by user ID.
     Returns user info with subscription details or None if not found.
     """
     try:
@@ -131,7 +131,7 @@ async def get_user_context_by_id(user_id: int) -> Optional[Dict[str, Any]]:
             if result:
                 user, plan_name, plan_price, expiration = result
 
-                # Determine subscription status and tier
+                # Determine subscription status and plan
                 subscription_plan_name = plan_name or "Free"
                 subscription_price = plan_price or 0
                 subscription_status = (
@@ -139,7 +139,7 @@ async def get_user_context_by_id(user_id: int) -> Optional[Dict[str, Any]]:
                     if expiration and expiration > datetime.now()
                     else "expired"
                 )
-                subscription_tier = (
+                subscription_plan = (
                     "paid" if subscription_plan_name == "Premium" else "free"
                 )
 
@@ -156,14 +156,14 @@ async def get_user_context_by_id(user_id: int) -> Optional[Dict[str, Any]]:
                     "subscription_plan_name": subscription_plan_name,
                     "subscription_price": subscription_price,
                     "subscription_status": subscription_status,
-                    "subscription_tier": subscription_tier,
+                    "subscription_plan": subscription_plan,
                     "downgrade_warning": downgrade_warning,
                 }
 
                 logger.info(
                     f"Retrieved user context: {user_context['name']} "
                     f"({user_context['email']}) "
-                    f"- Tier: {user_context['subscription_tier']}"
+                    f"- Plan: {user_context['subscription_plan']}"
                 )
                 logger.info(f"Complete user context for user {user_id}: {user_context}")
                 return user_context
@@ -194,8 +194,8 @@ def get_user_subscription_details(user_id: int) -> Optional[Dict[str, Any]]:
                     UserSubscription.expiration,
                     UserSubscription.created_at.label("subscription_start"),
                     UserSubscription.updated_at.label("subscription_updated"),
-                    UserStorageUsage.current_usage_bytes,
-                    UserStorageUsage.quota_limit_bytes,
+                    UserStorageUsage.storage_usage_bytes,
+                    UserStorageUsage.storage_quota_bytes,
                     UserStorageUsage.last_updated.label("usage_last_updated"),
                 )
                 .outerjoin(
@@ -228,8 +228,8 @@ def get_user_subscription_details(user_id: int) -> Optional[Dict[str, Any]]:
                     else "expired",
                     "subscription_start": result.subscription_start,
                     "subscription_updated": result.subscription_updated,
-                    "current_usage_bytes": result.current_usage_bytes,
-                    "quota_limit_bytes": result.quota_limit_bytes,
+                    "storage_usage_bytes": result.storage_usage_bytes,
+                    "storage_quota_bytes": result.storage_quota_bytes,
                     "usage_last_updated": result.usage_last_updated,
                 }
 
@@ -287,7 +287,7 @@ def get_all_active_subscriptions() -> list:
                         "plan_price": result.plan_price,
                         "status": "active",  # Already filtered for active subscriptions
                         "created_at": result.created_at,
-                        "tier": "paid" if result.plan_name == "Premium" else "free",
+                        "plan": "paid" if result.plan_name == "Premium" else "free",
                     }
                     results_list.append(subscription_data)
 
@@ -338,17 +338,18 @@ def get_user_storage_usage(user_id: int) -> Optional[Dict[str, Any]]:
                 if storage_usage:
                     result_dict = {
                         "user_id": storage_usage.user_id,
-                        "current_usage_bytes": storage_usage.current_usage_bytes,
-                        "quota_limit_bytes": storage_usage.quota_limit_bytes,
-                        "usage_percentage": storage_usage.usage_percentage,
+                        "storage_usage_bytes": storage_usage.storage_usage_bytes,
+                        "storage_quota_bytes": storage_usage.storage_quota_bytes,
+                        "storage_usage_percent": storage_usage.storage_usage_percent,
                         "last_updated": storage_usage.last_updated,
                     }
 
                     logger.info(
                         f"Retrieved storage usage for user {user_id}: "
-                        f"current_usage={result_dict.get('current_usage_bytes')}, "
-                        f"quota_limit={result_dict.get('quota_limit_bytes')}, "
-                        f"usage_percentage={result_dict.get('usage_percentage')}%"
+                        f"storage_usage={result_dict.get('storage_usage_bytes')}, "
+                        f"storage_quota={result_dict.get('storage_quota_bytes')}, "
+                        f"storage_usage_percent="
+                        f"{result_dict.get('storage_usage_percent')}%"
                     )
                     return result_dict
                 else:
@@ -389,13 +390,13 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
 
                 if existing_usage:
                     # Update existing record
-                    existing_usage.current_usage_bytes = new_usage_bytes
+                    existing_usage.storage_usage_bytes = new_usage_bytes
                     existing_usage.last_updated = datetime.now()
                     db.add(existing_usage)
                 else:
                     # Need to determine quota - try to get from user's subscription
                     user_context = get_user_context_by_id(user_id)
-                    if user_context and user_context.get("subscription_tier") == "paid":
+                    if user_context and user_context.get("subscription_plan") == "paid":
                         default_quota = 100 * 1024 * 1024 * 1024  # 100GB for paid
                     else:
                         default_quota = 5 * 1024 * 1024 * 1024  # 5GB for free
@@ -403,8 +404,8 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
                     # Create new record
                     new_storage_usage = UserStorageUsage(
                         user_id=user_id,
-                        current_usage_bytes=new_usage_bytes,
-                        quota_limit_bytes=default_quota,
+                        storage_usage_bytes=new_usage_bytes,
+                        storage_quota_bytes=default_quota,
                     )
                     db.add(new_storage_usage)
 
@@ -444,7 +445,7 @@ async def get_current_user_storage_usage(user_id: int, force_live: bool = False)
                 storage_info, max_age_minutes=60
             ):
                 logger.debug(f"Using cached storage data for user {user_id}")
-                return storage_info["current_usage_bytes"]
+                return storage_info["storage_usage_bytes"]
             else:
                 logger.debug(
                     f"Storage data for user {user_id} is stale or missing, "
@@ -463,7 +464,7 @@ async def get_current_user_storage_usage(user_id: int, force_live: bool = False)
         logger.error(f"Failed to get current storage usage for user {user_id}: {e}")
         # Fallback to database if available, otherwise 0
         storage_info = get_user_storage_usage(user_id)
-        return storage_info.get("current_usage_bytes", 0) if storage_info else 0
+        return storage_info.get("storage_usage_bytes", 0) if storage_info else 0
 
 
 def _is_storage_data_fresh(storage_info: Dict, max_age_minutes: int = 60) -> bool:
@@ -606,8 +607,8 @@ async def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
     """
     try:
         # Default values as fallbacks
-        DEFAULT_FREE_TIER_LIMIT_GB = 5
-        DEFAULT_FREE_TIER_LIMIT_BYTES = DEFAULT_FREE_TIER_LIMIT_GB * 1024 * 1024 * 1024
+        DEFAULT_FREE_PLAN_LIMIT_GB = 5
+        DEFAULT_FREE_PLAN_LIMIT_BYTES = DEFAULT_FREE_PLAN_LIMIT_GB * 1024 * 1024 * 1024
         GRACE_PERIOD_DAYS = 30
         WARNING_PERIOD_DAYS = 30
 
@@ -635,12 +636,12 @@ async def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
                 )
 
             # Use quota from already retrieved storage_info to avoid redundant DB call
-            quota_limit_bytes = (
-                storage_info.get("quota_limit_bytes", DEFAULT_FREE_TIER_LIMIT_BYTES)
+            storage_quota_bytes = (
+                storage_info.get("storage_quota_bytes", DEFAULT_FREE_PLAN_LIMIT_BYTES)
                 if storage_info
-                else DEFAULT_FREE_TIER_LIMIT_BYTES
+                else DEFAULT_FREE_PLAN_LIMIT_BYTES
             )
-            quota_limit_gb = quota_limit_bytes / (1024 * 1024 * 1024)
+            storage_quota_gb = storage_quota_bytes / (1024 * 1024 * 1024)
 
             # Step 1: Determine subscription status
             query_result = db.execute(
@@ -713,8 +714,8 @@ async def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
                 subscription_status = "free"  # Never had premium
 
             # Step 2: Determine storage status
-            storage_exceeded = current_usage_bytes > quota_limit_bytes
-            excess_bytes = max(0, current_usage_bytes - quota_limit_bytes)
+            storage_exceeded = current_usage_bytes > storage_quota_bytes
+            excess_bytes = max(0, current_usage_bytes - storage_quota_bytes)
             excess_gb = excess_bytes / (1024 * 1024 * 1024)
             current_usage_gb = current_usage_bytes / (1024 * 1024 * 1024)
 
@@ -723,13 +724,13 @@ async def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
             logger.info(f"  Subscription status: {subscription_status}")
             logger.info(f"  Storage exceeded: {storage_exceeded}")
             logger.info(
-                f"  Current usage: {current_usage_gb:.2f}GB / {quota_limit_gb:.1f}GB"
+                f"  Current usage: {current_usage_gb:.2f}GB / {storage_quota_gb:.1f}GB"
             )
 
             # Case 1: Free user, no storage limit exceeded → No warning
             if subscription_status == "free" and not storage_exceeded:
                 logger.info(
-                    f"User {user_id}: No warning needed (free tier, within limits)"
+                    f"User {user_id}: No warning needed (free plan, within limits)"
                 )
                 return None
 
@@ -741,14 +742,14 @@ async def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
                     "days_remaining": 30,
                     "excess_data_bytes": excess_bytes,
                     "excess_data_gb": round(excess_gb, 2),
-                    "current_usage_bytes": current_usage_bytes,
-                    "current_usage_gb": round(current_usage_gb, 2),
-                    "free_tier_limit_bytes": quota_limit_bytes,
-                    "free_tier_limit_gb": quota_limit_gb,
+                    "storage_usage_bytes": current_usage_bytes,
+                    "storage_usage_gb": round(current_usage_gb, 2),
+                    "storage_quota_bytes": storage_quota_bytes,
+                    "storage_quota_gb": storage_quota_gb,
                     "deletion_date": (datetime.now() + timedelta(days=30)).isoformat(),
                     "message": (
                         f"Your data usage ({round(current_usage_gb, 1)} GB) "
-                        f"exceeds the free tier limit ({quota_limit_gb:.1f} GB). "
+                        f"exceeds the free plan limit ({storage_quota_gb:.1f} GB). "
                         f"Please upgrade or remove {round(excess_gb, 1)} GB of data "
                         f"within 30 days."
                     ),
@@ -762,10 +763,10 @@ async def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
                     "days_remaining": 30,
                     "excess_data_bytes": excess_bytes,
                     "excess_data_gb": round(excess_gb, 2),
-                    "current_usage_bytes": current_usage_bytes,
-                    "current_usage_gb": round(current_usage_gb, 2),
-                    "free_tier_limit_bytes": quota_limit_bytes,
-                    "free_tier_limit_gb": quota_limit_gb,
+                    "storage_usage_bytes": current_usage_bytes,
+                    "storage_usage_gb": round(current_usage_gb, 2),
+                    "storage_quota_bytes": storage_quota_bytes,
+                    "storage_quota_gb": storage_quota_gb,
                     "message": (
                         f"Your storage usage ({round(current_usage_gb, 1)} GB) is over "
                         f"the limit for your plan. You will be unable to run workflows."
@@ -790,7 +791,7 @@ async def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
                         f"{subscription_end.strftime('%B %d, %Y')}. "
                         f"You have {days_remaining or 0} days to upgrade or remove "
                         f"{round(excess_gb, 1)} GB of data to stay "
-                        f"within the free tier limit."
+                        f"within the free plan limit."
                     )
                 else:
                     # Case 5: Subscription issue only (user within storage limits)
@@ -806,10 +807,10 @@ async def calculate_downgrade_warning(user_id: int) -> Optional[Dict[str, Any]]:
                     "days_remaining": days_remaining or 0,
                     "excess_data_bytes": excess_bytes,
                     "excess_data_gb": round(excess_gb, 2),
-                    "current_usage_bytes": current_usage_bytes,
-                    "current_usage_gb": round(current_usage_gb, 2),
-                    "free_tier_limit_bytes": quota_limit_bytes,
-                    "free_tier_limit_gb": quota_limit_gb,
+                    "storage_usage_bytes": current_usage_bytes,
+                    "storage_usage_gb": round(current_usage_gb, 2),
+                    "storage_quota_bytes": storage_quota_bytes,
+                    "storage_quota_gb": storage_quota_gb,
                     "subscription_end_date": subscription_end.isoformat()
                     if subscription_end
                     else None,
@@ -895,7 +896,7 @@ def print_user_details(user_id: int = 1) -> None:
             logger.info(f"Email: {user_context['email']}")
             logger.info(f"UID: {user_context['uid']}")
             logger.info(f"Subscription Plan: {user_context['subscription_plan_name']}")
-            logger.info(f"Subscription Tier: {user_context['subscription_tier']}")
+            logger.info(f"Subscription Plan: {user_context['subscription_plan']}")
             logger.info(f"Subscription Status: {user_context['subscription_status']}")
             logger.info(f"Plan Price: {user_context['subscription_price']} cents")
         else:

@@ -184,12 +184,12 @@ const StorageAlert: React.FC<StorageAlertProps> = ({
             <Box display="flex" alignItems="center" gap={2} mt={1}>
               <LinearProgress
                 variant="determinate"
-                value={Math.min(alert.usage_percentage, 100)}
-                color={getProgressColor(alert.usage_percentage)}
+                value={Math.min(alert.storage_usage_percent, 100)}
+                color={getProgressColor(alert.storage_usage_percent)}
                 sx={{ flexGrow: 1, height: 8, borderRadius: 4 }}
               />
               <Typography variant="caption" fontWeight="bold">
-                {alert.usage_percentage.toFixed(1)}%
+                {alert.storage_usage_percent.toFixed(1)}%
               </Typography>
             </Box>
 
@@ -200,8 +200,8 @@ const StorageAlert: React.FC<StorageAlertProps> = ({
               mt={1}
             >
               <Typography variant="caption" color="text.secondary">
-                {alert.usage_bytes > 0
-                  ? `${(alert.usage_bytes / (1024 * 1024 * 1024)).toFixed(2)} GB used of ${(alert.quota_bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+                {alert.storage_usage_bytes > 0
+                  ? `${(alert.storage_usage_bytes / (1024 * 1024 * 1024)).toFixed(2)} GB used of ${(alert.storage_quota_bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
                   : "Calculating usage..."}
               </Typography>
               <Button
@@ -251,26 +251,26 @@ const StorageAlert: React.FC<StorageAlertProps> = ({
             </Button>
           </Box>
 
-          {usage.quota_bytes ? (
+          {usage.storage_quota_bytes ? (
             <>
               <Box display="flex" alignItems="center" gap={2} mb={2}>
                 <LinearProgress
                   variant="determinate"
-                  value={Math.min(usage.usage_percentage || 0, 100)}
-                  color={getProgressColor(usage.usage_percentage || 0)}
+                  value={Math.min(usage.storage_usage_percent || 0, 100)}
+                  color={getProgressColor(usage.storage_usage_percent || 0)}
                   sx={{ flexGrow: 1, height: 12, borderRadius: 6 }}
                 />
                 <Typography variant="body2" fontWeight="bold" minWidth="60px">
-                  {usage.usage_percentage?.toFixed(1) || "0.0"}%
+                  {usage.storage_usage_percent?.toFixed(1) || "0.0"}%
                 </Typography>
               </Box>
 
               <Box display="flex" justifyContent="space-between" mb={1}>
                 <Typography variant="body2" color="text.secondary">
-                  Used: {usage.usage_formatted}
+                  Used: {usage.storage_usage_formatted}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  Total: {usage.quota_formatted}
+                  Total: {usage.storage_quota_formatted}
                 </Typography>
               </Box>
 
@@ -292,7 +292,7 @@ const StorageAlert: React.FC<StorageAlertProps> = ({
             </>
           ) : (
             <Typography variant="body2" color="text.secondary">
-              {usage.usage_formatted} used (no quota limit set)
+              {usage.storage_usage_formatted} used (no quota limit set)
             </Typography>
           )}
         </Box>

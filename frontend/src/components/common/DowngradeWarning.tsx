@@ -222,16 +222,16 @@ const DowngradeWarning: React.FC<DowngradeWarningProps> = ({
               Current Usage:
             </Typography>
             <Typography variant="body2" fontWeight="bold">
-              {warning.current_usage_gb} GB
+              {warning.storage_usage_gb} GB
             </Typography>
           </Box>
 
           <Box display="flex" justifyContent="space-between" mb={1}>
             <Typography variant="body2" color="text.secondary">
-              Free Tier Limit:
+              Free Plan Limit:
             </Typography>
             <Typography variant="body2">
-              {warning.free_tier_limit_gb} GB
+              {warning.storage_quota_gb} GB
             </Typography>
           </Box>
 

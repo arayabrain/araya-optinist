@@ -95,7 +95,7 @@ async def list_user(
             user.__dict__["subscription_plan_name"] = subscription_plan_name or "Free"
             user.__dict__["storage_usage_bytes"] = storage_usage_bytes or 0
             user.__dict__["storage_quota_bytes"] = storage_quota_bytes or 0
-            user.__dict__["storage_usage_percentage"] = round(
+            user.__dict__["storage_usage_percent"] = round(
                 (storage_usage_bytes or 0) / (storage_quota_bytes or 1) * 100, 2
             )
 
@@ -183,8 +183,8 @@ async def list_user(
                     "data_usage"
                 ),
                 SubscriptionPlans.name.label("subscription_plan_name"),
-                UserStorageUsage.current_usage_bytes,
-                UserStorageUsage.quota_limit_bytes,
+                UserStorageUsage.storage_usage_bytes,
+                UserStorageUsage.storage_quota_bytes,
                 UserSubscription.expiration.label("subscription_expiration"),
                 UserSubscription.plan_id.label("subscription_plan_id"),
             )

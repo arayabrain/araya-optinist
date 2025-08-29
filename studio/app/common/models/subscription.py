@@ -78,10 +78,10 @@ class UserStorageUsage(SQLModel, table=True):
         default=None,
     )
     user_id: int = Field(sa_column=Column(BIGINT, nullable=False, unique=True))
-    current_usage_bytes: int = Field(
+    storage_usage_bytes: int = Field(
         sa_column=Column(BIGINT, nullable=False, default=0)
     )
-    quota_limit_bytes: int = Field(sa_column=Column(BIGINT, nullable=False))
+    storage_quota_bytes: int = Field(sa_column=Column(BIGINT, nullable=False))
     last_updated: Optional[datetime] = Field(
         default_factory=datetime.utcnow,
         sa_column=Column(
@@ -96,8 +96,8 @@ class UserStorageUsage(SQLModel, table=True):
     )
 
     @property
-    def usage_percentage(self) -> float:
+    def storage_usage_percent(self) -> float:
         """Calculate usage percentage."""
-        if self.quota_limit_bytes == 0:
+        if self.storage_quota_bytes == 0:
             return 0.0
-        return round((self.current_usage_bytes / self.quota_limit_bytes) * 100, 2)
+        return round((self.storage_usage_bytes / self.storage_quota_bytes) * 100, 2)

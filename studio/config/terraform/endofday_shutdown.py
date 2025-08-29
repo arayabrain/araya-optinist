@@ -796,8 +796,8 @@ def shutdown_batch_environments() -> bool:
 
     # Disable compute environments
     for env_name in [
-        "subscr-optinist-batch-free-tier",
-        "subscr-optinist-batch-paid-tier",
+        "subscr-optinist-batch-free-plan",
+        "subscr-optinist-batch-paid-plan",
     ]:
         print(
             f"{Colors.YELLOW}Disabling Batch compute environment: {env_name}"
@@ -820,7 +820,7 @@ def shutdown_batch_environments() -> bool:
     return True
 
 
-def tier1_shutdown() -> bool:
+def plan1_shutdown() -> bool:
     """Shutdown infrastructure in proper order"""
     print(f"{Colors.GREEN}{'='*60}{Colors.NC}")
     print(
@@ -949,5 +949,5 @@ def tier1_shutdown() -> bool:
 
 
 if __name__ == "__main__":
-    success = tier1_shutdown()
+    success = plan1_shutdown()
     sys.exit(0 if success else 1)

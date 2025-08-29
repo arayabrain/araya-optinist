@@ -104,7 +104,7 @@ async def create_test_user_in_db(db, user_data, organization_id):
         # Expired 31 days ago (past grace period) to trigger warnings
         expiration_date = datetime.now(timezone.utc) - timedelta(days=50)
     else:  # Free plan
-        # For free tier users, set future expiration (no need to test warnings)
+        # For free plan users, set future expiration (no need to test warnings)
         expiration_date = datetime.now(timezone.utc) + timedelta(days=365)
 
     subscription = UserSubscription(
@@ -117,8 +117,8 @@ async def create_test_user_in_db(db, user_data, organization_id):
     # Create storage usage record
     storage_usage = UserStorageUsage(
         user_id=user_db.id,
-        current_usage_bytes=0,
-        quota_limit_bytes=user_data["storage_quota_gb"]
+        storage_usage_bytes=0,
+        storage_quota_bytes=user_data["storage_quota_gb"]
         * 1024
         * 1024
         * 1024,  # Convert GB to bytes

@@ -537,7 +537,7 @@ def _snakemake_execute_batch(
             logger.info("Starting workflow execution on AWS Batch...")
             try:
                 # Execute workflow - Snakemake will handle job submission to AWS Batch
-                # Get user-appropriate job queue (free or paid tier)
+                # Get user-appropriate job queue (free or paid plan)
                 selected_job_queue = batch_executor.get_job_queue_for_user()
                 logger.info(f"Using AWS Batch job queue: {selected_job_queue}")
 

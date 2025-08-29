@@ -58,13 +58,13 @@ async def get_my_storage_alert(
         storage_info = get_user_storage_usage(current_user.id)
 
         alert = None
-        if storage_info and storage_info["quota_limit_bytes"] > 0:
-            quota_limit = storage_info["quota_limit_bytes"]
-            usage_percentage = (current_usage / quota_limit) * 100
+        if storage_info and storage_info["storage_quota_bytes"] > 0:
+            storage_quota = storage_info["storage_quota_bytes"]
+            storage_usage_percent = (current_usage / storage_quota) * 100
 
             # Use thresholds from S3StorageMonitor for consistency
             monitor = _get_storage_utilities()
-            alert_level = monitor.calculate_storage_alert_level(usage_percentage)
+            alert_level = monitor.calculate_storage_alert_level(storage_usage_percent)
 
             if alert_level:
                 from datetime import datetime, timezone
@@ -72,9 +72,9 @@ async def get_my_storage_alert(
                 alert = {
                     "user_id": current_user.id,
                     "alert_level": alert_level,
-                    "usage_bytes": current_usage,
-                    "quota_bytes": quota_limit,
-                    "usage_percentage": round(usage_percentage, 2),
+                    "storage_usage_bytes": current_usage,
+                    "storage_quota_bytes": storage_quota,
+                    "storage_usage_percent": round(storage_usage_percent, 2),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
 
@@ -95,8 +95,8 @@ async def get_my_storage_alert(
 
             return {
                 "has_alert": False,
-                "current_usage_bytes": current_usage,
-                "current_usage_formatted": usage_formatted,
+                "storage_usage_bytes": current_usage,
+                "storage_usage_formatted": usage_formatted,
                 "alert": None,
             }
 
@@ -136,11 +136,11 @@ async def get_my_storage_usage(
 
         if not storage_info:
             return {
-                "usage_bytes": current_usage,
-                "usage_formatted": monitor.format_bytes(current_usage),
-                "quota_bytes": None,
-                "quota_formatted": None,
-                "usage_percentage": None,
+                "storage_usage_bytes": current_usage,
+                "storage_usage_formatted": monitor.format_bytes(current_usage),
+                "storage_quota_bytes": None,
+                "storage_quota_formatted": None,
+                "storage_usage_percent": None,
                 "alert_level": None,
                 "thresholds": {
                     "critical": monitor.CRITICAL_THRESHOLD,
@@ -148,16 +148,18 @@ async def get_my_storage_usage(
                 },
             }
 
-        quota_limit = storage_info["quota_limit_bytes"]
-        usage_percentage = (current_usage / quota_limit * 100) if quota_limit > 0 else 0
-        alert_level = monitor.calculate_storage_alert_level(usage_percentage)
+        storage_quota = storage_info["storage_quota_bytes"]
+        storage_usage_percent = (
+            (current_usage / storage_quota * 100) if storage_quota > 0 else 0
+        )
+        alert_level = monitor.calculate_storage_alert_level(storage_usage_percent)
 
         return {
-            "usage_bytes": current_usage,
-            "usage_formatted": monitor.format_bytes(current_usage),
-            "quota_bytes": quota_limit,
-            "quota_formatted": monitor.format_bytes(quota_limit),
-            "usage_percentage": round(usage_percentage, 2),
+            "storage_usage_bytes": current_usage,
+            "storage_usage_formatted": monitor.format_bytes(current_usage),
+            "storage_quota_bytes": storage_quota,
+            "storage_quota_formatted": monitor.format_bytes(storage_quota),
+            "storage_usage_percent": round(storage_usage_percent, 2),
             "alert_level": alert_level,
             "thresholds": {
                 "critical": monitor.CRITICAL_THRESHOLD,
@@ -274,7 +276,7 @@ async def get_my_downgrade_warning(
     """
     Get downgrade warning details for the current user.
 
-    Returns warning information if the user has exceeded free tier limits
+    Returns warning information if the user has exceeded free plan limits
     after subscription expiration, None otherwise.
     """
     try:

@@ -5,20 +5,20 @@ export interface StorageAlert {
   user_name: string
   user_email: string
   alert_level: "critical" | "danger"
-  usage_bytes: number
-  quota_bytes: number
-  usage_percentage: number
+  storage_usage_bytes: number
+  storage_quota_bytes: number
+  storage_usage_percent: number
   timestamp: string
   message: string
-  subscription_tier: string
+  subscription_plan: string
 }
 
 export interface StorageUsage {
-  usage_bytes: number
-  usage_formatted: string
-  quota_bytes: number | null
-  quota_formatted: string | null
-  usage_percentage: number | null
+  storage_usage_bytes: number
+  storage_usage_formatted: string
+  storage_quota_bytes: number | null
+  storage_quota_formatted: string | null
+  storage_usage_percent: number | null
   alert_level: "critical" | "danger" | null
   thresholds: {
     critical: number
@@ -28,8 +28,8 @@ export interface StorageUsage {
 
 export interface StorageAlertResponse {
   has_alert: boolean
-  current_usage_bytes?: number
-  current_usage_formatted?: string
+  storage_usage_bytes?: number
+  storage_usage_formatted?: string
   alert: StorageAlert | null
 }
 
@@ -68,10 +68,10 @@ export interface DowngradeWarning {
   days_remaining: number
   excess_data_bytes: number
   excess_data_gb: number
-  current_usage_bytes: number
-  current_usage_gb: number
-  free_tier_limit_bytes: number
-  free_tier_limit_gb: number
+  storage_usage_bytes: number
+  storage_usage_gb: number
+  storage_quota_bytes: number
+  storage_quota_gb: number
   subscription_end_date?: string
   grace_end_date?: string
   deletion_date: string

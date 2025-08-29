@@ -2091,16 +2091,16 @@ resource "aws_secretsmanager_secret_version" "aws_credentials" {
 # AWS Batch resources
 # ===================
 
-resource "aws_batch_job_queue" "free_tier" {
+resource "aws_batch_job_queue" "free_plan" {
   name     = "subscr-optinist-free-queue"
   state    = "ENABLED"
   priority = 1
   compute_environment_order {
     order               = 1
-    compute_environment = aws_batch_compute_environment.free_tier.arn
+    compute_environment = aws_batch_compute_environment.free_plan.arn
   }
 
-  depends_on = [aws_batch_compute_environment.free_tier]
+  depends_on = [aws_batch_compute_environment.free_plan]
 
   lifecycle {
     create_before_destroy = true
@@ -2108,16 +2108,16 @@ resource "aws_batch_job_queue" "free_tier" {
   }
 }
 
-resource "aws_batch_job_queue" "paid_tier" {
+resource "aws_batch_job_queue" "paid_plan" {
   name     = "subscr-optinist-paid-queue"
   state    = "ENABLED"
-  priority = 10  # Higher priority than free tier
+  priority = 10  # Higher priority than free plan
   compute_environment_order {
     order               = 1
-    compute_environment = aws_batch_compute_environment.paid_tier.arn
+    compute_environment = aws_batch_compute_environment.paid_plan.arn
   }
 
-  depends_on = [aws_batch_compute_environment.paid_tier]
+  depends_on = [aws_batch_compute_environment.paid_plan]
 
   lifecycle {
     create_before_destroy = true
@@ -2125,8 +2125,8 @@ resource "aws_batch_job_queue" "paid_tier" {
   }
 }
 
-resource "aws_batch_compute_environment" "free_tier" {
-  name = "subscr-optinist-batch-free-tier"
+resource "aws_batch_compute_environment" "free_plan" {
+  name = "subscr-optinist-batch-free-plan"
   type                    = "MANAGED"
   state                   = "ENABLED"
   service_role           = aws_iam_role.batch_service.arn
@@ -2150,8 +2150,8 @@ resource "aws_batch_compute_environment" "free_tier" {
   }
 }
 
-resource "aws_batch_compute_environment" "paid_tier" {
-  name = "subscr-optinist-batch-paid-tier"
+resource "aws_batch_compute_environment" "paid_plan" {
+  name = "subscr-optinist-batch-paid-plan"
   type                    = "MANAGED"
   state                   = "ENABLED"
   service_role           = aws_iam_role.batch_service.arn
@@ -2280,10 +2280,10 @@ resource "aws_cloudwatch_log_group" "batch" {
     Name = "subscr-optinist-batch-logs"
   }
   depends_on = [
-    aws_batch_job_queue.free_tier,
-    aws_batch_job_queue.paid_tier,
-    aws_batch_compute_environment.free_tier,
-    aws_batch_compute_environment.paid_tier
+    aws_batch_job_queue.free_plan,
+    aws_batch_job_queue.paid_plan,
+    aws_batch_compute_environment.free_plan,
+    aws_batch_compute_environment.paid_plan
   ]
   lifecycle {
     ignore_changes = [name]
@@ -3351,11 +3351,11 @@ resource "aws_ecs_task_definition" "batch" {
         },
         {
           name  = "AWS_BATCH_FREE_QUEUE"
-          value = aws_batch_job_queue.free_tier.name
+          value = aws_batch_job_queue.free_plan.name
         },
         {
           name  = "AWS_BATCH_PAID_QUEUE"
-          value = aws_batch_job_queue.paid_tier.name
+          value = aws_batch_job_queue.paid_plan.name
         },
         {
           name  = "AWS_BATCH_LOG_STREAM_PREFIX"
@@ -4000,8 +4000,8 @@ output "aws_batch_config" {
     AWS_BATCH_JOB_ROLE = aws_iam_role.batch_job.arn
     AWS_BATCH_S3_BUCKET_NAME = aws_s3_bucket.app_storage_batch.id
     AWS_BATCH_S3_USER_DATA_BUCKET = aws_s3_bucket.user_data.id
-    AWS_BATCH_FREE_QUEUE = aws_batch_job_queue.free_tier.name
-    AWS_BATCH_PAID_QUEUE = aws_batch_job_queue.paid_tier.name
+    AWS_BATCH_FREE_QUEUE = aws_batch_job_queue.free_plan.name
+    AWS_BATCH_PAID_QUEUE = aws_batch_job_queue.paid_plan.name
     AWS_BATCH_JOB_DEFINITION = aws_batch_job_definition.optinist.name
   }
 }

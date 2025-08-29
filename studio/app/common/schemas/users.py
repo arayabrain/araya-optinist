@@ -40,7 +40,7 @@ class User(BaseModel):
     subscription_days_remaining: Optional[int] = None
     storage_usage_bytes: Optional[int] = None
     storage_quota_bytes: Optional[int] = None
-    storage_usage_percentage: Optional[float] = None
+    storage_usage_percent: Optional[float] = None
 
     @property
     def is_admin(self) -> bool:

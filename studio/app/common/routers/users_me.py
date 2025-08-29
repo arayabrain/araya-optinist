@@ -83,8 +83,8 @@ async def get_my_cloud_details(
         user_context = await get_user_context_by_id(current_user.id)
         if user_context:
             result["user_context"] = {
-                "subscription_plan": user_context["subscription_plan_name"],
-                "subscription_tier": user_context["subscription_tier"],
+                "subscription_plan_name": user_context["subscription_plan_name"],
+                "subscription_plan": user_context["subscription_plan"],
                 "subscription_status": user_context["subscription_status"],
                 "plan_price_cents": user_context["subscription_price"],
             }
@@ -98,8 +98,8 @@ async def get_my_cloud_details(
                 "plan_name": subscription_details["plan_name"],
                 "plan_price_cents": subscription_details["plan_price"],
                 "status": subscription_details["status"],
-                "current_usage_bytes": subscription_details["current_usage_bytes"],
-                "quota_limit_bytes": subscription_details["quota_limit_bytes"],
+                "storage_usage_bytes": subscription_details["storage_usage_bytes"],
+                "storage_quota_bytes": subscription_details["storage_quota_bytes"],
             }
         else:
             result["subscription_details"] = None

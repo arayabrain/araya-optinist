@@ -27,8 +27,8 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("user_id", sa.BIGINT, nullable=False, unique=True),
-        sa.Column("current_usage_bytes", sa.BIGINT, nullable=False, default=0),
-        sa.Column("quota_limit_bytes", sa.BIGINT, nullable=False),
+        sa.Column("storage_usage_bytes", sa.BIGINT, nullable=False, default=0),
+        sa.Column("storage_quota_bytes", sa.BIGINT, nullable=False),
         sa.Column(
             "last_updated",
             sa.DateTime,
@@ -51,15 +51,15 @@ def upgrade() -> None:
         """
 INSERT INTO
     user_storage_usage
-        (user_id, current_usage_bytes, quota_limit_bytes, last_updated, created_at)
+        (user_id, storage_usage_bytes, storage_quota_bytes, last_updated, created_at)
 SELECT
     u.id as user_id,
-    0 as current_usage_bytes,
+    0 as storage_usage_bytes,
     CASE
         WHEN COALESCE(su.plan_id, 1) = 1 THEN 5368709120    -- 5GB for Free plan
         WHEN COALESCE(su.plan_id, 1) = 2 THEN 107374182400  -- 100GB for Premium plan
         ELSE 5368709120                                      -- Default to 5GB
-    END as quota_limit_bytes,
+    END as storage_quota_bytes,
     NOW() as last_updated,
     NOW() as created_at
 FROM users u

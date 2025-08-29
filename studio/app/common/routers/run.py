@@ -61,14 +61,14 @@ async def run(
 
         if storage_info and storage_info["quota_limit_bytes"] > 0:
             quota_limit = storage_info["quota_limit_bytes"]
-            usage_percentage = (current_usage / quota_limit) * 100
+            storage_usage_percent = (current_usage / quota_limit) * 100
 
             # Block workflow execution if over quota (100%)
-            if usage_percentage >= 100:
+            if storage_usage_percent >= 100:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Cannot run job: Storage quota exceeded "
-                    f"({usage_percentage:.1f}% used). "
+                    f"({storage_usage_percent:.1f}% used). "
                     f"Please free up space before running jobs.",
                 )
 

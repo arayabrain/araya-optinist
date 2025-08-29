@@ -34,9 +34,9 @@ class S3StorageMonitor:
         self.CRITICAL_THRESHOLD = 90  # 90%
         self.DANGER_THRESHOLD = 100  # 100%
 
-        # Storage quotas by tier (in bytes)
+        # Storage quotas by plan (in bytes)
         # These should match the values in your subscription plan features
-        self.TIER_QUOTAS = {
+        self.PLAN_QUOTAS = {
             "free": 5 * 1024 * 1024 * 1024,  # 5GB
             "paid": 100 * 1024 * 1024 * 1024,  # 100GB
         }
@@ -133,19 +133,19 @@ class S3StorageMonitor:
         )
         return total_size
 
-    def calculate_storage_alert_level(self, usage_percentage: float) -> Optional[str]:
+    def calculate_storage_alert_level(self, storage_usage_percent: float) -> Optional[str]:
         """
         Determine alert level based on usage percentage.
 
         Args:
-            usage_percentage: Storage usage as percentage of quota
+            storage_usage_percent: Storage usage as percentage of quota
 
         Returns:
             Alert level string or None if no alert needed
         """
-        if usage_percentage >= self.DANGER_THRESHOLD:
+        if storage_usage_percent >= self.DANGER_THRESHOLD:
             return "danger"
-        elif usage_percentage >= self.CRITICAL_THRESHOLD:
+        elif storage_usage_percent >= self.CRITICAL_THRESHOLD:
             return "critical"
         return None
 
@@ -183,11 +183,13 @@ class S3StorageMonitor:
 
                 user_context = await get_user_context_by_id(user_id)
                 if user_context:
-                    tier = user_context.get("subscription_tier", "free")
-                    quota_limit = self.TIER_QUOTAS.get(tier, self.TIER_QUOTAS["free"])
+                    subscription_plan = user_context.get("subscription_plan", "free")
+                    storage_quota = self.PLAN_QUOTAS.get(
+                        subscription_plan, self.PLAN_QUOTAS["free"]
+                    )
                     logger.info(
-                        f"Using tier-based quota for user {user_id} ({tier}): "
-                        f"{quota_limit} bytes"
+                        f"Using plan-based quota for user {user_id} "
+                        f"({subscription_plan}): {storage_quota} bytes"
                     )
                 else:
                     logger.warning(
@@ -196,39 +198,41 @@ class S3StorageMonitor:
                     )
                     return None
             else:
-                quota_limit = storage_info["quota_limit_bytes"]
-                if quota_limit <= 0:
-                    # Fallback to tier-based quota if database has invalid data
+                storage_quota = storage_info["storage_quota_bytes"]
+                if storage_quota <= 0:
+                    # Fallback to plan-based quota if database has invalid data
                     from studio.app.common.core.cloud.cloud_utils import (
                         get_user_context_by_id,
                     )
 
                     user_context = await get_user_context_by_id(user_id)
                     if user_context:
-                        tier = user_context.get("subscription_tier", "free")
-                        quota_limit = self.TIER_QUOTAS.get(
-                            tier, self.TIER_QUOTAS["free"]
+                        subscription_plan = user_context.get(
+                            "subscription_plan", "free"
+                        )
+                        storage_quota = self.PLAN_QUOTAS.get(
+                            subscription_plan, self.PLAN_QUOTAS["free"]
                         )
                         logger.warning(
                             f"Invalid quota in database for user {user_id}, "
-                            f"using tier-based quota: {quota_limit}"
+                            f"using plan-based quota: {storage_quota}"
                         )
                     else:
                         logger.warning(
-                            f"Invalid quota limit for user {user_id}: {quota_limit}"
+                            f"Invalid quota limit for user {user_id}: {storage_quota}"
                         )
                         return None
 
-            usage_percentage = (current_s3_usage / quota_limit) * 100
-            alert_level = self.calculate_storage_alert_level(usage_percentage)
+            storage_usage_percent = (current_s3_usage / storage_quota) * 100
+            alert_level = self.calculate_storage_alert_level(storage_usage_percent)
 
             if alert_level:
                 return {
                     "user_id": user_id,
                     "alert_level": alert_level,
-                    "usage_bytes": current_s3_usage,
-                    "quota_bytes": quota_limit,
-                    "usage_percentage": round(usage_percentage, 2),
+                    "storage_usage_bytes": current_s3_usage,
+                    "storage_quota_bytes": storage_quota,
+                    "storage_usage_percent": round(storage_usage_percent, 2),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
 
@@ -267,15 +271,16 @@ class S3StorageMonitor:
                         {
                             "user_name": user["name"],
                             "user_email": user["email"],
-                            "subscription_tier": user["tier"],
+                            "subscription_plan": user["subscription_plan"],
                             "plan_name": user.get("plan_name", "Unknown"),
                             "subscription_status": user.get("status", "unknown"),
                         }
                     )
                     alerts.append(alert)
                     logger.info(
-                        f"Storage alert for user {user['name']} ({user['tier']}): "
-                        f"{alert['alert_level']} at {alert['usage_percentage']}%"
+                        f"Storage alert for user {user['name']} "
+                        f"({user['subscription_plan']}): {alert['alert_level']} "
+                        f"at {alert['storage_usage_percent']}%"
                     )
 
         except Exception as e:
@@ -301,9 +306,9 @@ class S3StorageMonitor:
         Returns:
             Formatted alert message
         """
-        usage_formatted = self.format_bytes(alert["usage_bytes"])
-        quota_formatted = self.format_bytes(alert["quota_bytes"])
-        percentage = alert["usage_percentage"]
+        usage_formatted = self.format_bytes(alert["storage_usage_bytes"])
+        quota_formatted = self.format_bytes(alert["storage_quota_bytes"])
+        percentage = alert["storage_usage_percent"]
 
         level_messages = {
             "critical": f"⚠️  Storage usage is at {percentage}% "
@@ -314,13 +319,13 @@ class S3StorageMonitor:
 
         return level_messages.get(alert["alert_level"], f"Storage usage: {percentage}%")
 
-    def ensure_user_storage_record(self, user_id: int, tier: str) -> bool:
+    def ensure_user_storage_record(self, user_id: int, subscription_plan: str) -> bool:
         """
-        Ensure user has a storage usage record with appropriate quota for their tier.
+        Ensure user has a storage usage record with appropriate quota for their plan.
 
         Args:
             user_id: User ID
-            tier: User's subscription tier ('free' or 'paid')
+            subscription_plan: User's subscription plan ('free' or 'paid')
 
         Returns:
             True if record exists or was created successfully
@@ -331,8 +336,10 @@ class S3StorageMonitor:
             if storage_info:
                 return True
 
-            # Create new storage record with tier-based quota
-            quota_bytes = self.TIER_QUOTAS.get(tier, self.TIER_QUOTAS["free"])
+            # Create new storage record with plan-based quota
+            storage_quota_bytes = self.PLAN_QUOTAS.get(
+                subscription_plan, self.PLAN_QUOTAS["free"]
+            )
 
             from sqlmodel import select
 
@@ -347,20 +354,20 @@ class S3StorageMonitor:
 
                 if existing_usage:
                     # Update quota if needed
-                    existing_usage.quota_limit_bytes = quota_bytes
+                    existing_usage.storage_quota_bytes = storage_quota_bytes
                     db.add(existing_usage)
                 else:
                     # Create new storage record
                     new_storage = UserStorageUsage(
                         user_id=user_id,
-                        current_usage_bytes=0,
-                        quota_limit_bytes=quota_bytes,
+                        storage_usage_bytes=0,
+                        storage_quota_bytes=storage_quota_bytes,
                     )
                     db.add(new_storage)
 
             logger.info(
-                f"Created storage record for user {user_id} with {tier} "
-                f"tier quota: {quota_bytes} bytes"
+                f"Created storage record for user {user_id} with {subscription_plan} "
+                f"plan quota: {storage_quota_bytes} bytes"
             )
             return True
 

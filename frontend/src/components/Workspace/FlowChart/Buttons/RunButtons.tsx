@@ -69,14 +69,14 @@ export const RunButtons = memo(function RunButtons(
         if (alert.alert_level === "danger") {
           // Block job submission if quota is exceeded
           enqueueSnackbar(
-            `Cannot run job: Storage quota exceeded (${alert.usage_percentage.toFixed(1)}% used). Please free up space before running jobs.`,
+            `Cannot run job: Storage quota exceeded (${alert.storage_usage_percent.toFixed(1)}% used). Please free up space before running jobs.`,
             { variant: "error", autoHideDuration: 10000 },
           )
           return false
         } else if (alert.alert_level === "critical") {
           // Show warning but allow job to proceed
           enqueueSnackbar(
-            `Warning: Storage usage is high (${alert.usage_percentage.toFixed(1)}% used). Consider freeing up space.`,
+            `Warning: Storage usage is high (${alert.storage_usage_percent.toFixed(1)}% used). Consider freeing up space.`,
             { variant: "warning", autoHideDuration: 8000 },
           )
         }
