@@ -11,3 +11,5 @@ dependencies:
     - hdmf==3.*
     - isx==1.0.*
     - pynwb==2.6.0
+    - tifffile==2022.3.*
+    - matplotlib

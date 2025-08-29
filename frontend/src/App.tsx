@@ -14,7 +14,9 @@ import Account from "pages/Account"
 import AccountDelete from "pages/AccountDelete"
 import AccountManager from "pages/AccountManager"
 import Dashboard from "pages/Dashboard"
+import Dataview from "pages/Dataview"
 import Login from "pages/Login"
+import PublicDataview from "pages/PublicDataview"
 import ResetPassword from "pages/ResetPassword"
 import SubscriptionPage from "pages/Subscription"
 import Workspaces from "pages/Workspace"
@@ -63,7 +65,8 @@ const App: FC = () => {
             </Routes>
           ) : (
             <Routes>
-              <Route path="/" element={<Navigate replace to="/console" />} />
+              <Route path="/" element={<Navigate replace to="/dataview" />} />
+              <Route path="/dataview" element={<PublicDataview />} />
               <Route path="/account-deleted" element={<AccountDelete />} />
               <Route path="/login" element={<Login />} />
               <Route path="/reset-password" element={<ResetPassword />} />
@@ -73,6 +76,11 @@ const App: FC = () => {
                 path="/console/account-manager"
                 element={<AccountManager />}
               />
+              <Route path="/console/dataview">
+                <Route path="" element={<Dataview />} />
+                <Route path=":workspaceId" element={<Dataview />} />
+              </Route>
+
               <Route path="/console/workspaces">
                 <Route path="" element={<Workspaces />} />
                 <Route path=":workspaceId" element={<Workspace />} />

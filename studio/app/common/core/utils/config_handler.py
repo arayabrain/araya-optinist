@@ -30,9 +30,7 @@ class ConfigReader:
 
         if filepath is not None and os.path.exists(filepath):
             with open(filepath) as f:
-                loaded_config = yaml.safe_load(f)
-                if loaded_config is not None:
-                    config = loaded_config
+                config = yaml.safe_load(f)
 
         return config
 
