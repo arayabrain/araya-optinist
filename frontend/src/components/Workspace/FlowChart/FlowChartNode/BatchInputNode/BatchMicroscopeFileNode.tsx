@@ -11,7 +11,7 @@ import { deleteFlowNodeById } from "store/slice/FlowElement/FlowElementSlice"
 import { setInputNodeFilePath } from "store/slice/InputNode/InputNodeActions"
 import {
   selectInputNodeDefined,
-  selectInputNodeSelectedFilePath,
+  selectMicroscopeLikeInputNodeSelectedFilePath,
 } from "store/slice/InputNode/InputNodeSelectors"
 import { FILE_TYPE_SET } from "store/slice/InputNode/InputNodeType"
 import { arrayEqualityFn } from "utils/EqualityUtils"
@@ -34,7 +34,7 @@ const BatchMicroscopeFileNodeImple = memo(
   }: NodeProps) {
     const dispatch = useDispatch()
     const filePath = useSelector(
-      selectInputNodeSelectedFilePath(nodeId),
+      selectMicroscopeLikeInputNodeSelectedFilePath(nodeId),
       (a, b) =>
         a != null && b != null && Array.isArray(a) && Array.isArray(b)
           ? arrayEqualityFn(a, b)

@@ -38,7 +38,7 @@ import {
   selectCsvInputNodeParamSetHeader,
   selectCsvInputNodeParamSetIndex,
   selectCsvInputNodeParamTranspose,
-  selectCsvInputNodeSelectedFilePath,
+  selectCsvLikeInputNodeSelectedFilePath,
   selectInputNodeDefined,
 } from "store/slice/InputNode/InputNodeSelectors"
 import { setCsvInputNodeParam } from "store/slice/InputNode/InputNodeSlice"
@@ -60,7 +60,7 @@ const CsvFileNodeImple = memo(function CsvFileNodeImple({
   selected,
 }: NodeProps) {
   const dispatch = useDispatch<AppDispatch>()
-  const filePath = useSelector(selectCsvInputNodeSelectedFilePath(nodeId))
+  const filePath = useSelector(selectCsvLikeInputNodeSelectedFilePath(nodeId))
   const onChangeFilePath = (path: string) => {
     dispatch(setInputNodeFilePath({ nodeId, filePath: path }))
   }

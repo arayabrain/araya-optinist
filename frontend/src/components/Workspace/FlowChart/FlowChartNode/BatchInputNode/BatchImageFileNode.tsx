@@ -14,7 +14,7 @@ import { deleteFlowNodeById } from "store/slice/FlowElement/FlowElementSlice"
 import { setInputNodeFilePath } from "store/slice/InputNode/InputNodeActions"
 import {
   selectInputNodeDefined,
-  selectInputNodeSelectedFilePath,
+  selectImageLikeInputNodeSelectedFilePath,
 } from "store/slice/InputNode/InputNodeSelectors"
 import { FILE_TYPE_SET } from "store/slice/InputNode/InputNodeType"
 import { arrayEqualityFn } from "utils/EqualityUtils"
@@ -36,7 +36,7 @@ const BatchImageFileNodeImple = memo(function BatchImageFileNodeImple({
 }: NodeProps) {
   const dispatch = useDispatch()
   const filePath = useSelector(
-    selectInputNodeSelectedFilePath(nodeId),
+    selectImageLikeInputNodeSelectedFilePath(nodeId),
     (a, b) =>
       a != null && b != null && Array.isArray(a) && Array.isArray(b)
         ? arrayEqualityFn(a, b)

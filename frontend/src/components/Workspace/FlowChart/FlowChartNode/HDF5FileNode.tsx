@@ -29,7 +29,7 @@ import {
 import { HDF5TreeNodeType } from "store/slice/HDF5/HDF5Type"
 import { setInputNodeFilePath } from "store/slice/InputNode/InputNodeActions"
 import {
-  selectHDF5InputNodeSelectedFilePath,
+  selectHdf5LikeInputNodeSelectedFilePath,
   selectInputNodeDefined,
   selectInputNodeHDF5Path,
 } from "store/slice/InputNode/InputNodeSelectors"
@@ -57,7 +57,7 @@ const HDF5FileNodeImple = memo(function HDF5FileNodeImple({
   selected,
 }: NodeProps) {
   const dispatch = useDispatch()
-  const filePath = useSelector(selectHDF5InputNodeSelectedFilePath(nodeId))
+  const filePath = useSelector(selectHdf5LikeInputNodeSelectedFilePath(nodeId))
 
   const [open, setOpen] = useState(false)
   const onChangeFilePath = (path: string) => {
@@ -215,7 +215,7 @@ function useHDF5Tree(
   const dispatch = useDispatch<AppDispatch>()
   const tree = useSelector(selectHDF5Nodes())
   const isLoading = useSelector(selectHDF5IsLoading())
-  const filePath = useSelector(selectHDF5InputNodeSelectedFilePath(nodeId))
+  const filePath = useSelector(selectHdf5LikeInputNodeSelectedFilePath(nodeId))
   const workspaceId = useSelector(selectCurrentWorkspaceId)
   useEffect(() => {
     if (workspaceId && !isLoading && filePath) {

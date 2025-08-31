@@ -26,7 +26,7 @@ import { setInputNodeFilePath } from "store/slice/InputNode/InputNodeActions"
 import {
   selectInputNodeDefined,
   selectInputNodeMatlabPath,
-  selectMatlabInputNodeSelectedFilePath,
+  selectMatlabLikeInputNodeSelectedFilePath,
 } from "store/slice/InputNode/InputNodeSelectors"
 import { setInputNodeMatlabPath } from "store/slice/InputNode/InputNodeSlice"
 import { FILE_TYPE_SET } from "store/slice/InputNode/InputNodeType"
@@ -58,7 +58,9 @@ const MatlabFileNodeImple = memo(function MatlabFileNodeImple({
   selected,
 }: NodeProps) {
   const dispatch = useDispatch()
-  const filePath = useSelector(selectMatlabInputNodeSelectedFilePath(nodeId))
+  const filePath = useSelector(
+    selectMatlabLikeInputNodeSelectedFilePath(nodeId),
+  )
 
   const [open, setOpen] = useState(false)
   const onChangeFilePath = (path: string) => {
@@ -326,7 +328,9 @@ function useMatlabTree(
   const dispatch = useDispatch<AppDispatch>()
   const tree = useSelector(selectMatlabNodes())
   const isLoading = useSelector(selectMatlabIsLoading())
-  const filePath = useSelector(selectMatlabInputNodeSelectedFilePath(nodeId))
+  const filePath = useSelector(
+    selectMatlabLikeInputNodeSelectedFilePath(nodeId),
+  )
   const workspaceId = useSelector(selectCurrentWorkspaceId)
   useEffect(() => {
     if (workspaceId && !isLoading && filePath) {

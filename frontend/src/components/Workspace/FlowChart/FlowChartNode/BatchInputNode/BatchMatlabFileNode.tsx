@@ -25,7 +25,7 @@ import { NodeIdProps } from "store/slice/FlowElement/FlowElementType"
 import { setInputNodeFilePath } from "store/slice/InputNode/InputNodeActions"
 import {
   selectInputNodeDefined,
-  selectInputNodeSelectedFilePath,
+  selectMatlabLikeInputNodeSelectedFilePath,
   selectInputNodeMatlabPath,
 } from "store/slice/InputNode/InputNodeSelectors"
 import { setInputNodeMatlabPath } from "store/slice/InputNode/InputNodeSlice"
@@ -63,7 +63,7 @@ const BatchMatlabFileNodeImple = memo(function BatchMatlabFileNodeImple({
 }: NodeProps) {
   const dispatch = useDispatch()
   const filePath = useSelector(
-    selectInputNodeSelectedFilePath(nodeId),
+    selectMatlabLikeInputNodeSelectedFilePath(nodeId),
     (a, b) =>
       a != null && b != null && Array.isArray(a) && Array.isArray(b)
         ? arrayEqualityFn(a, b)

@@ -30,7 +30,7 @@ import { HDF5TreeNodeType } from "store/slice/HDF5/HDF5Type"
 import { setInputNodeFilePath } from "store/slice/InputNode/InputNodeActions"
 import {
   selectInputNodeDefined,
-  selectInputNodeSelectedFilePath,
+  selectHdf5LikeInputNodeSelectedFilePath,
   selectInputNodeHDF5Path,
 } from "store/slice/InputNode/InputNodeSelectors"
 import { setInputNodeHDF5Path } from "store/slice/InputNode/InputNodeSlice"
@@ -62,7 +62,7 @@ const BatchHDF5FileNodeImple = memo(function BatchHDF5FileNodeImple({
 }: NodeProps) {
   const dispatch = useDispatch()
   const filePath = useSelector(
-    selectInputNodeSelectedFilePath(nodeId),
+    selectHdf5LikeInputNodeSelectedFilePath(nodeId),
     (a, b) =>
       a != null && b != null && Array.isArray(a) && Array.isArray(b)
         ? arrayEqualityFn(a, b)
