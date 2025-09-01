@@ -163,6 +163,7 @@ const Table = styled("table")(() => ({
   width: "100%",
   background: "white",
   borderCollapse: "collapse",
+  textAlign: "center",
 }))
 
 const TableHeader = styled("thead")(() => ({
@@ -171,7 +172,7 @@ const TableHeader = styled("thead")(() => ({
 
 const TableHeaderCell = styled("th")(() => ({
   padding: "16px 24px",
-  textAlign: "left",
+  textAlign: "center",
   fontSize: "14px",
   fontWeight: "600",
   color: "#111827",
@@ -250,14 +251,16 @@ const InvoicesPage = () => {
             <FlexContainer>
               <FlexRow>
                 {/* Logo */}
-                <Logo>
-                  <LogoDollar>$</LogoDollar>
-                  <LogoDot1 />
-                  <LogoDot2 />
-                </Logo>
-
-                <BrandText>OPTINIST</BrandText>
-
+                <Box
+                  component="img"
+                  src="/static/image.png"
+                  alt="OPTINIST Logo"
+                  sx={{
+                    width: "84px",
+                    height: "84px",
+                    marginRight: "16px",
+                  }}
+                />
                 <Box>
                   <PlanTitle>Premium Plan</PlanTitle>
                   <PlanType>Monthly</PlanType>
