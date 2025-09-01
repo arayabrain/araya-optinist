@@ -1,9 +1,35 @@
 from datetime import datetime
 from typing import Any, Dict, Optional
+from enum import Enum
 
-from sqlalchemy import BIGINT, JSON, Boolean, DateTime, String, UniqueConstraint
+from sqlalchemy.sql.functions import current_timestamp
+from sqlalchemy import (
+    BIGINT,
+    JSON,
+    Boolean,
+    DateTime,
+    Enum as SQLEnum,
+    String,
+    UniqueConstraint,
+    Text,
+    TIMESTAMP,
+)
 from sqlalchemy.sql import func
 from sqlmodel import Column, Field, SQLModel
+
+
+# Enums for subscription management
+class SyncStatus(str, Enum):
+    PENDING = "pending"
+    SYNCED = "synced"
+    FAILED = "failed"
+
+
+class CancellationReason(str, Enum):
+    USER_REQUEST = "user_request"
+    PAYMENT_FAILED = "payment_failed"
+    ADMIN_ACTION = "admin_action"
+    REFUND = "refund"
 
 
 class SubscriptionPlans(SQLModel, table=True):
@@ -38,10 +64,7 @@ class SubscriptionPlans(SQLModel, table=True):
         description="Currency code in enum format (e.g., 1 for USD, 2 for JPY)",
     )
     created_at: Optional[datetime] = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(
-            DateTime, nullable=False, server_default=func.current_timestamp()
-        ),
+        sa_column_kwargs={"server_default": current_timestamp()},
     )
 
     @property
@@ -54,16 +77,131 @@ class UserSubscription(SQLModel, table=True):
     __table_args__ = (UniqueConstraint("id", name="idx_id"),)
 
     id: Optional[int] = Field(
-        sa_column=Column(BIGINT, primary_key=True, nullable=False), default=None
+        sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
+        default=None,
     )
     plan_id: int = Field(sa_column=Column(BIGINT, nullable=False))
     user_id: int = Field(sa_column=Column(BIGINT, nullable=False))
     expiration: datetime = Field(sa_column=Column(DateTime, nullable=False))
+    sync_status: SyncStatus = Field(
+        sa_column=Column(
+            SQLEnum(SyncStatus), nullable=False, default=SyncStatus.PENDING
+        ),
+        default=SyncStatus.PENDING,
+    )
+    last_synced: Optional[datetime] = Field(
+        sa_column_kwargs={"server_default": current_timestamp()},
+    )
     created_at: Optional[datetime] = Field(
-        default_factory=datetime.utcnow,
-        sa_column_kwargs={"server_default": func.current_timestamp()},
+        sa_column_kwargs={"server_default": current_timestamp()},
     )
     updated_at: Optional[datetime] = Field(
+        sa_column=Column(
+            TIMESTAMP,
+            server_default=func.current_timestamp(),
+            onupdate=func.current_timestamp(),
+        ),
+    )
+
+
+class SubscriptionProvider(SQLModel, table=True):
+    __tablename__ = "subscription_providers"
+
+    id: Optional[int] = Field(
+        sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
+        default=None,
+    )
+    name: str = Field(
+        sa_column=Column(String(50), nullable=False),
+        description="Provider name (e.g., 'stripe', 'paypal')",
+    )
+    created_at: Optional[datetime] = Field(
+        sa_column_kwargs={"server_default": current_timestamp()},
+    )
+    updated_at: Optional[datetime] = Field(
+        sa_column=Column(
+            TIMESTAMP,
+            server_default=func.current_timestamp(),
+            onupdate=func.current_timestamp(),
+        ),
+    )
+
+
+class SubscriptionUserAccount(SQLModel, table=True):
+    __tablename__ = "subscription_user_accounts"
+
+    id: Optional[int] = Field(
+        sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
+        default=None,
+    )
+    user_id: int = Field(sa_column=Column(BIGINT, nullable=False))
+    provider_id: int = Field(
+        sa_column=Column(BIGINT, nullable=False),
+        description="FK to subscription_providers.id",
+    )
+    provider_customer_id: str = Field(
+        sa_column=Column(String(255), nullable=False),
+        description="Provider's customer ID (e.g., Stripe customer ID)",
+    )
+    created_at: Optional[datetime] = Field(
+        sa_column_kwargs={"server_default": current_timestamp()},
+    )
+    updated_at: Optional[datetime] = Field(
+        sa_column=Column(
+            TIMESTAMP,
+            server_default=func.current_timestamp(),
+            onupdate=func.current_timestamp(),
+        ),
+    )
+
+
+class SubscriptionUserPurchase(SQLModel, table=True):
+    __tablename__ = "subscription_user_purchases"
+
+    id: Optional[int] = Field(
+        sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
+        default=None,
+    )
+    plan_id: int = Field(
+        sa_column=Column(BIGINT, nullable=False), description="1=FREE, 2=Premium"
+    )
+    user_id: int = Field(sa_column=Column(BIGINT, nullable=False))
+    created_at: Optional[datetime] = Field(
         default_factory=datetime.utcnow,
-        sa_column_kwargs={"server_default": func.current_timestamp()},
+        sa_column=Column(TIMESTAMP, server_default=func.current_timestamp()),
+    )
+    updated_at: Optional[datetime] = Field(
+        sa_column=Column(
+            TIMESTAMP,
+            server_default=func.current_timestamp(),
+            onupdate=func.current_timestamp(),
+        ),
+    )
+
+
+class SubscriptionCancellation(SQLModel, table=True):
+    __tablename__ = "subscription_cancellations"
+
+    id: Optional[int] = Field(
+        sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
+        default=None,
+    )
+    cancelled_by_user_id: int = Field(sa_column=Column(BIGINT, nullable=False))
+    purchases_id: int = Field(
+        sa_column=Column(BIGINT, nullable=False),
+        description="FK to subscription_user_purchases.id",
+    )
+    cancelled_at: Optional[datetime] = Field(
+        default_factory=datetime.utcnow,
+        sa_column=Column(TIMESTAMP, server_default=func.current_timestamp()),
+    )
+    reason: Optional[CancellationReason] = Field(
+        sa_column=Column(SQLEnum(CancellationReason), nullable=True),
+        default=None,
+        description="Reason for cancellation",
+    )
+    notes: Optional[str] = Field(
+        sa_column=Column(Text, nullable=True),
+        default=None,
+        description="Additional notes or comments",
     )
