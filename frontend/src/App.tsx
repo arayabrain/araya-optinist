@@ -15,6 +15,7 @@ import AccountDelete from "pages/AccountDelete"
 import AccountManager from "pages/AccountManager"
 import Dashboard from "pages/Dashboard"
 import Dataview from "pages/Dataview"
+import InvoicesPage from "pages/Invoice"
 import Login from "pages/Login"
 import PublicDataview from "pages/PublicDataview"
 import ResetPassword from "pages/ResetPassword"
@@ -88,6 +89,10 @@ const App: FC = () => {
               <Route
                 path="/console/subscription"
                 element={<SubscriptionPage />}
+              />
+              <Route
+                path="/console/subscription/manage"
+                element={<InvoicesPage />}
               />
               <Route
                 path="/console/*"

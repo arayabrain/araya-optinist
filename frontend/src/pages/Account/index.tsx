@@ -165,6 +165,10 @@ const Account = () => {
     navigate("/console/subscription")
   }
 
+  const onClickManage = () => {
+    navigate("/console/subscription/manage")
+  }
+
   const getRole = (role?: number) => {
     if (!role) return
     let newRole = ""
@@ -228,7 +232,7 @@ const Account = () => {
 
     return {
       text: "Manage",
-      action: onClickUpgrade,
+      action: onClickManage,
       color: "secondary" as const,
     }
   }
