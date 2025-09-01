@@ -102,3 +102,53 @@ function equalsParam(a: ParamType, b: ParamType): boolean {
 function equalsParamChild(a: ParamChild, b: ParamChild) {
   return a.path === b.path && a.value === b.value
 }
+
+/**
+ * Format params for display by removing type/path properties and flattening structure
+ * This function reverses the structure created by convertToParamMap():
+ * - Removes 'type' and 'path' properties that were added by convertToParamMap
+ * - Promotes 'value' to parent level for child nodes (reverses ParamChild structure)
+ * - Flattens 'children' by promoting them one level up (reverses ParamParent structure)
+ *
+ * @param params - The ParamMap or param object to format
+ * @returns Simplified object structure for display
+ */
+export function formatParamsForDisplay(
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const formatted: Record<string, unknown> = {}
+
+  const processValue = (value: unknown): unknown => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const obj = value as Record<string, unknown>
+
+      // Handle ParamChild structure (type: 'child', value, path)
+      if (obj.type === "child" && "value" in obj) {
+        return obj.value
+      }
+
+      // Handle ParamParent structure (type: 'parent', children)
+      if (obj.type === "parent" && "children" in obj) {
+        return formatParamsForDisplay(obj.children as Record<string, unknown>)
+      }
+
+      // Process regular objects recursively
+      const processedObj: Record<string, unknown> = {}
+      for (const [key, val] of Object.entries(obj)) {
+        // Skip type and path properties
+        if (key !== "type" && key !== "path") {
+          processedObj[key] = processValue(val)
+        }
+      }
+      return processedObj
+    }
+
+    return value
+  }
+
+  for (const [key, value] of Object.entries(params)) {
+    formatted[key] = processValue(value)
+  }
+
+  return formatted
+}

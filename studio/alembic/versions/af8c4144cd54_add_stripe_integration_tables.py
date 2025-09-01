@@ -1,7 +1,7 @@
 """add stripe integration tables
 
 Revision ID: af8c4144cd54
-Revises: 86201451bfdd
+Revises: 4df5949c42ef
 Create Date: 2025-07-22 14:45:36.895878
 
 """

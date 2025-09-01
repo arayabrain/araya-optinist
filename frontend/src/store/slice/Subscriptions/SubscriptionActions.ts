@@ -4,10 +4,14 @@ import _ from "lodash"
 import { createAsyncThunk } from "@reduxjs/toolkit"
 
 import {
+  createCheckoutSessionApi,
   getSubscriptionPlansApi,
   getUserSubscriptionApi,
 } from "api/subscriptions/Subscriptions"
-import { SUBSCRIPTION_SLICE_NAME } from "store/slice/Subscriptions/SubscriptionType"
+import {
+  CreateCheckoutSessionResponse,
+  SUBSCRIPTION_SLICE_NAME,
+} from "store/slice/Subscriptions/SubscriptionType"
 
 // Helper function to extract error message
 const extractErrorMessage = (error: unknown): string => {
@@ -75,3 +79,17 @@ export const getUserSubscription = createAsyncThunk(
     }
   },
 )
+
+export const createCheckoutSession = createAsyncThunk<
+  CreateCheckoutSessionResponse,
+  number,
+  { rejectValue: string }
+>("subscription/createCheckoutSession", async (planId, { rejectWithValue }) => {
+  try {
+    const response = await createCheckoutSessionApi(planId)
+    return response
+  } catch (error: unknown) {
+    const message = extractErrorMessage(error)
+    return rejectWithValue(message)
+  }
+})

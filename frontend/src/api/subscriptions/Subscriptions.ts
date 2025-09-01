@@ -14,3 +14,12 @@ export const getUserSubscriptionApi = async (user_id: number) => {
   console.log("User subscription response:", response.data)
   return response.data
 }
+
+export const createCheckoutSessionApi = async (planId: number) => {
+  const response = await axios.post("/subscriptions/create-checkout-session", {
+    plan_id: planId,
+  })
+  console.log("API Response:", response)
+  console.log("API Response Data:", response.data)
+  return response.data
+}

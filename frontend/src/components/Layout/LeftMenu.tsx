@@ -6,6 +6,8 @@ import AnalyticsIcon from "@mui/icons-material/Analytics"
 import DashboardIcon from "@mui/icons-material/Dashboard"
 import ManageAccountsIcon from "@mui/icons-material/ManageAccounts"
 import UpgradeIcon from "@mui/icons-material/Upgrade"
+import ViewListIcon from "@mui/icons-material/ViewList"
+import WebIcon from "@mui/icons-material/Web"
 import { Box } from "@mui/material"
 import Drawer from "@mui/material/Drawer"
 import List from "@mui/material/List"
@@ -29,9 +31,19 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
     navigate("/console")
   }
 
+  const onClickDataview = () => {
+    handleDrawerClose()
+    navigate("/console/dataview")
+  }
+
   const onClickWorkspaces = () => {
     handleDrawerClose()
     navigate("/console/workspaces")
+  }
+
+  const onClickOpenSite = () => {
+    handleDrawerClose()
+    navigate("/")
   }
 
   const onClickAccountManager = () => {
@@ -65,6 +77,14 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
                   <ListItemText primary="Dashboard" />
                 </ListItemButton>
               </ListItem>
+              <ListItem key="dataview" disablePadding>
+                <ListItemButton onClick={onClickDataview}>
+                  <ListItemIcon>
+                    <ViewListIcon />
+                  </ListItemIcon>
+                  <ListItemText primary="Dataview" />
+                </ListItemButton>
+              </ListItem>
               <ListItem key="workspaces" disablePadding>
                 <ListItemButton onClick={onClickWorkspaces}>
                   <ListItemIcon>
@@ -83,6 +103,14 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
                   </ListItemButton>
                 </ListItem>
               ) : null}
+              <ListItem key="site" disablePadding>
+                <ListItemButton onClick={onClickOpenSite}>
+                  <ListItemIcon>
+                    <WebIcon />
+                  </ListItemIcon>
+                  <ListItemText primary="Open Site" />
+                </ListItemButton>
+              </ListItem>
             </List>
           </Box>
           <Box>

@@ -26,7 +26,9 @@ import {
   userReducer,
   modeStandalone,
   subscriptionReducer,
+  dataviewReducer,
 } from "store/slice"
+import { DATAVIEW_SLICE_NAME } from "store/slice/Dataview/DataviewType"
 
 export const rootReducer = combineReducers({
   algorithmList: algorithmListReducer,
@@ -48,6 +50,7 @@ export const rootReducer = combineReducers({
   workspace: workspaceReducer,
   user: userReducer,
   mode: modeStandalone,
+  [DATAVIEW_SLICE_NAME]: dataviewReducer,
   subscription: subscriptionReducer,
 })
 

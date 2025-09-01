@@ -98,3 +98,12 @@ class UserSubscriptionSummary(BaseModel):
     is_active: bool = False
     has_stripe_customer: bool = False
     stripe_customer_id: Optional[str] = None
+
+
+class CreateCheckoutSessionRequest(BaseModel):
+    plan_id: int
+
+
+class CreateCheckoutSessionResponse(BaseModel):
+    checkout_url: str
+    session_id: str
