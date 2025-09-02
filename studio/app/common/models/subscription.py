@@ -83,9 +83,12 @@ class UserSubscription(SQLModel, table=True):
     plan_id: int = Field(sa_column=Column(BIGINT, nullable=False))
     user_id: int = Field(sa_column=Column(BIGINT, nullable=False))
     expiration: datetime = Field(sa_column=Column(DateTime, nullable=False))
+    # メモ: When I used SyncStatus Enum directly, I got an error of value mismatch
     sync_status: SyncStatus = Field(
         sa_column=Column(
-            SQLEnum(SyncStatus), nullable=False, default=SyncStatus.PENDING
+            SQLEnum("pending", "synced", "failed", name="sync_status_enum"),
+            nullable=False,
+            default="pending",
         ),
         default=SyncStatus.PENDING,
     )

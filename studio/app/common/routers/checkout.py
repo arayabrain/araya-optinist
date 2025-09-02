@@ -62,6 +62,21 @@ async def checkout_success(
     Creates or updates user subscription and records purchase.
     """
     try:
+        # 1. Validate session belongs to current user
+        stripe_session = stripe.checkout.Session.retrieve(request.session_id)
+        if stripe_session.metadata.get("user_id") != str(request.user_id):
+            raise HTTPException(
+                status_code=403, detail="Session doesn't belong to user"
+            )
+
+        # 2. Check if already processed (prevent double processing)
+        existing_subscription = CheckoutService.get_existing_subscription(
+            db, request.user_id
+        )
+
+        if existing_subscription:
+            return {"message": "Subscription already processed"}
+
         # Process checkout using service
         result = CheckoutService.process_checkout_success(
             db=db,

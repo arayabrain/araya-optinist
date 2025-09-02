@@ -28,6 +28,29 @@ class CheckoutService:
     """Service class for handling checkout operations"""
 
     @staticmethod
+    def get_existing_subscription(
+        db: Session, user_id: int
+    ) -> Optional[UserSubscription]:
+        """
+        Check if user has an active subscription
+
+        Args:
+            db: Database session
+            user_id: Internal user ID
+
+        Returns:
+            UserSubscription object if active subscription exists, else None
+        """
+        return (
+            db.query(UserSubscription)
+            .filter(
+                UserSubscription.user_id == user_id,
+                UserSubscription.expiration > datetime.now(timezone.utc),
+            )
+            .first()
+        )
+
+    @staticmethod
     def verify_stripe_session(session_id: str) -> Dict[str, Any]:
         """
         Verify and retrieve Stripe checkout session details
@@ -476,6 +499,6 @@ class SyncService:
             "plan_id": subscription.plan_id,
             "plan_name": plan.name if plan else "Unknown",
             "expiration": subscription.expiration,
-            "sync_status": subscription.sync_status,
-            "last_synced": subscription.last_synced,
+            # "sync_status": subscription.sync_status,
+            # "last_synced": subscription.last_synced,
         }
