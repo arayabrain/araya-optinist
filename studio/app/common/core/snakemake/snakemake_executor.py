@@ -22,7 +22,10 @@ from snakemake_executor_plugin_aws_batch import ExecutorSettings
 from sqlmodel import select
 
 from studio.app.common import models as common_model
-from studio.app.common.core.cloud.cloud_utils import get_current_user_storage_usage
+from studio.app.common.core.cloud.cloud_utils import (
+    get_current_user_storage_usage,
+    get_user_storage_usage,
+)
 from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
 from studio.app.common.core.cloud_batch.batch_utils import BatchUtils
 from studio.app.common.core.experiment.experiment_record_services import (
@@ -994,11 +997,23 @@ def _post_process_workflow(workspace_id: str, unique_id: str, result: bool = Fal
             user_id = result_row[0] if result_row else None
 
             if user_id:
-                # Force live storage calculation to update database cache
-                asyncio.run(get_current_user_storage_usage(user_id, force_live=True))
-                logger.info(
-                    f"Update storage usage for user {user_id} after workflow completion"
-                )
+                # Check if we have an existing event loop
+                try:
+                    _ = asyncio.get_running_loop()
+                    has_event_loop = True
+                except RuntimeError:
+                    has_event_loop = False
+
+                if has_event_loop:
+                    # Event loop exists, use sync version
+                    get_user_storage_usage(user_id)
+                    logger.info(f"Retrieved cached storage usage for user {user_id}")
+                else:
+                    # No running loop, safe to use async version
+                    asyncio.run(
+                        get_current_user_storage_usage(user_id, force_live=True)
+                    )
+                    logger.info(f"Updated live storage usage for user {user_id}")
     except Exception as e:
         logger.warning(
             f"Failed to update user storage usage after workflow completion: {e}"
