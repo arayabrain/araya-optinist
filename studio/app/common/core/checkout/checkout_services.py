@@ -256,39 +256,87 @@ class CheckoutService:
             Exception: For processing errors
         """
         try:
-            # Verify Stripe session
+            # 1. CHECK FOR DUPLICATE PROCESSING FIRST
+            # Check if this session has already been processed
+            existing_purchase = (
+                db.query(SubscriptionUserPurchase)
+                .join(
+                    UserSubscription,
+                    SubscriptionUserPurchase.user_id == UserSubscription.user_id,
+                )
+                .filter(
+                    SubscriptionUserPurchase.user_id == user_id,
+                    SubscriptionUserPurchase.plan_id == plan_id,
+                    SubscriptionUserPurchase.created_at
+                    > datetime.now(timezone.utc)
+                    - timedelta(minutes=30),  # Within last 30 minutes
+                )
+                .first()
+            )
+
+            if existing_purchase:
+                # Find the corresponding subscription
+                existing_subscription = (
+                    db.query(UserSubscription)
+                    .filter(
+                        UserSubscription.user_id == user_id,
+                        UserSubscription.plan_id == plan_id,
+                        UserSubscription.expiration > datetime.now(timezone.utc),
+                    )
+                    .first()
+                )
+
+                logger.info(
+                    f"Duplicate processing detected for user {user_id}, "
+                    f"session {session_id}"
+                )
+                return {
+                    "success": True,
+                    "subscription_user_id": (
+                        existing_subscription.id if existing_subscription else None
+                    ),
+                    "purchase_id": existing_purchase.id,
+                    "expiration_date": (
+                        existing_subscription.expiration
+                        if existing_subscription
+                        else None
+                    ),
+                    "message": "Subscription already processed successfully",
+                }
+
+            # 2. Verify Stripe session
             session_data = CheckoutService.verify_stripe_session(session_id)
 
             if session_data["payment_status"] != "paid":
                 raise ValueError("Payment not completed")
 
-            # Get subscription plan
+            # 3. Get subscription plan
             plan = CheckoutService.get_subscription_plan(db, plan_id)
             if not plan:
                 raise ValueError("Subscription plan not found")
 
-            # Get or create Stripe provider
+            # 4. Get or create Stripe provider
             stripe_provider_id = CheckoutService.get_or_create_stripe_provider(db)
 
-            # Create or update user account
+            # 5. Create or update user account
             CheckoutService.create_or_update_user_account(
                 db, user_id, stripe_provider_id, session_data["customer_id"]
             )
 
-            # Calculate expiration date
+            # 6. Calculate expiration date
             expiration_date = CheckoutService.calculate_expiration_date(
                 plan.billing_cycle
             )
 
-            # Create or update subscription
+            # 7. Create or update subscription
             subscription_user_id = CheckoutService.create_or_update_subscription(
                 db, user_id, plan_id, expiration_date
             )
 
-            # Record purchase
+            # 8. Record purchase
             purchase = CheckoutService.record_purchase(db, plan_id, user_id)
 
-            # Commit all changes
+            # 9. Commit all changes
             db.commit()
 
             logger.info(

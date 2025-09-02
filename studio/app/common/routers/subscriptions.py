@@ -223,7 +223,10 @@ async def create_checkout_session(
                     }
                 ],
                 mode="subscription",
-                success_url="http://localhost:3000/console/account",
+                success_url=(
+                    "http://localhost:3000/console/account"
+                    "?session_id={CHECKOUT_SESSION_ID}"
+                ),
                 cancel_url="http://localhost:3000/console/subscription",
                 client_reference_id=str(user.id),
                 customer_email=user.email,

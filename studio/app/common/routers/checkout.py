@@ -62,21 +62,6 @@ async def checkout_success(
     Creates or updates user subscription and records purchase.
     """
     try:
-        # 1. Validate session belongs to current user
-        stripe_session = stripe.checkout.Session.retrieve(request.session_id)
-        if stripe_session.metadata.get("user_id") != str(request.user_id):
-            raise HTTPException(
-                status_code=403, detail="Session doesn't belong to user"
-            )
-
-        # 2. Check if already processed (prevent double processing)
-        existing_subscription = CheckoutService.get_existing_subscription(
-            db, request.user_id
-        )
-
-        if existing_subscription:
-            return {"message": "Subscription already processed"}
-
         # Process checkout using service
         result = CheckoutService.process_checkout_success(
             db=db,
@@ -85,20 +70,27 @@ async def checkout_success(
             plan_id=request.plan_id,
         )
 
+        # Validate that result has all required fields
+        if not isinstance(result, dict) or "success" not in result:
+            logger.error(f"Invalid result from process_checkout_success: {result}")
+            raise HTTPException(status_code=500, detail="Invalid processing result")
+
         # Add background task for syncing
-        background_tasks.add_task(
-            sync_subscription_background, result["subscription_user_id"]
-        )
+        if result.get("subscription_user_id"):
+            background_tasks.add_task(
+                sync_subscription_background, result["subscription_user_id"]
+            )
 
         return CheckoutSuccessResponse(
             success=result["success"],
-            message=result["message"],
-            subscription_user_id=result["subscription_user_id"],
-            purchase_id=result["purchase_id"],
-            expiration_date=result["expiration_date"],
+            message=result.get("message", "Subscription processed successfully"),
+            subscription_user_id=result.get("subscription_user_id"),
+            purchase_id=result.get("purchase_id"),
+            expiration_date=result.get("expiration_date"),
         )
 
     except ValueError as e:
+        logger.error(f"Validation error in checkout: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Checkout processing error: {str(e)}")
