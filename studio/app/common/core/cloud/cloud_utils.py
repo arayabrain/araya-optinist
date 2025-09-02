@@ -800,3 +800,34 @@ class CloudDebug:
 
         except Exception as e:
             logger.error(f"Failed to print admin user details: {e}")
+
+
+async def update_user_storage_after_workflow(workspace_id: str) -> None:
+    """
+    Update user storage usage after workflow completion.
+    Gets the user who owns the workspace and updates their live storage usage.
+    Args:
+        workspace_id: The workspace ID to update storage for
+    """
+    try:
+        from sqlmodel import select
+
+        from studio.app.common import models as common_model
+        from studio.app.common.db.database import session_scope
+
+        with session_scope() as db:
+            query_result = db.execute(
+                select(common_model.Workspace.user_id).where(
+                    common_model.Workspace.id == int(workspace_id)
+                )
+            )
+            result_row = query_result.first()
+            user_id = result_row[0] if result_row else None
+
+            if user_id:
+                await get_current_user_storage_usage(user_id, force_live=True)
+                logger.info(f"Updated live storage usage for user {user_id}")
+    except Exception as e:
+        logger.warning(
+            f"Failed to update user storage usage after workflow completion: {e}"
+        )

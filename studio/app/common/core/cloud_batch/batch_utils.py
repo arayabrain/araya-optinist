@@ -12,6 +12,9 @@ from snakemake.api import SharedFSUsage, StorageSettings
 
 from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteStorageController,
+)
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.db.database import session_scope
@@ -1923,3 +1926,160 @@ class BatchDebug:
         except Exception as e:
             logger.error(f"Batch environment debug failed: {e}")
             # Don't let debug failure break the main execution
+
+    @staticmethod
+    def debug_batch_failure(batch_executor, smk_logger, smk_workdir: str) -> None:
+        """
+        Debug batch execution failures by retrieving enhanced job logs and analysis.
+
+        Args:
+            batch_executor: BatchUtils instance for job monitoring
+            smk_logger: SmkStatusLogger for logging errors
+            smk_workdir: Snakemake working directory
+        """
+        logger.info("Stopping enhanced job monitoring...")
+        batch_executor.stop_job_monitoring()
+
+        smk_logger.extract_errors_from_snakemake_log(smk_workdir)
+
+        logger.error(
+            "AWS Batch execution failed - " "attempting to retrieve enhanced job logs"
+        )
+        try:
+            # Get recent failed jobs with enhanced context
+            recent_jobs = batch_executor.get_recent_failed_jobs(
+                limit=3, include_context=True
+            )
+
+            if recent_jobs:
+                logger.error(
+                    f"Found {len(recent_jobs)} recent "
+                    "failed jobs with enhanced context:"
+                )
+
+                for i, job_context in enumerate(recent_jobs, 1):
+                    logger.error(f"\n=== FAILED JOB {i} ANALYSIS ===")
+                    logger.error(f"Job ID: {job_context.get('job_id')}")
+                    logger.error(f"Job Name: {job_context.get('job_name')}")
+                    logger.error(f"Exit Code: {job_context.get('exit_code')}")
+                    logger.error(f"Exit Reason: {job_context.get('exit_reason')}")
+                    logger.error(f"Status Reason: {job_context.get('status_reason')}")
+
+                    # Show failure analysis
+                    failure_analysis = job_context.get("failure_analysis", {})
+                    if failure_analysis:
+                        logger.error("Likely Causes:")
+                        for cause in failure_analysis.get("likely_causes", []):
+                            logger.error(f"  - {cause}")
+
+                        logger.error("Recommendations:")
+                        for rec in failure_analysis.get("recommendations", []):
+                            logger.error(f"  - {rec}")
+
+                    # Show monitoring context if available
+                    mon_cntx = job_context.get("monitoring_context", {})
+                    if mon_cntx and mon_cntx.get("log_snapshots"):
+                        logger.error(
+                            f"Monitoring captured "
+                            f"{len(mon_cntx['log_snapshots'])} "
+                            "log snapshots"
+                        )
+
+                    # Show key log errors
+                    logs = job_context.get("logs", {})
+                    if logs and logs.get("error_patterns"):
+                        logger.error("Error Patterns Found:")
+                        for pattern in logs["error_patterns"][:3]:  # First 3 patterns
+                            logger.error(
+                                f"  - {pattern['pattern']}: "
+                                f"{pattern['message'][:100]}..."
+                            )
+
+                    logger.error("=== END JOB ANALYSIS ===\n")
+            else:
+                logger.error(
+                    "No recent failed jobs found " "(they may have been cleaned up)"
+                )
+
+        except Exception as log_error:
+            logger.error(f"Failed to retrieve enhanced batch job logs: {log_error}")
+
+
+async def download_workflow_results_from_s3(workspace_id: str, unique_id: str) -> bool:
+    """
+    Download batch execution results from S3 for post-processing.
+    This is needed because AWS Batch execution uses a separate EFS system
+    from the main application, so results must be transferred via S3.
+    """
+    try:
+        if RemoteStorageController.is_available():
+            logger.info("Downloading experiment results from S3 for post-processing")
+            remote_controller = RemoteStorageController(
+                BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME
+            )
+            await remote_controller.download_experiment(workspace_id, unique_id)
+            logger.info(f"Downloaded experiment results for {workspace_id}/{unique_id}")
+            return True
+        else:
+            logger.debug("RemoteStorageController not available, skipping S3 download")
+            return True  # Not an error if S3 is not available
+
+    except Exception as e:
+        logger.error(f"Failed to download experiment results from S3: {e}")
+        logger.warning("Post-processing may fail due to missing local files")
+        return False
+
+
+async def upload_workflow_results_to_s3(workspace_id: str, unique_id: str) -> bool:
+    """
+    Upload batch execution results to S3 for persistence.
+
+    This uploads final workflow results from the batch EFS to S3 storage
+    for long-term persistence and access by the main application.
+
+    Args:
+        workspace_id: The workspace ID
+        unique_id: The unique experiment ID
+
+    Returns:
+        bool: True if upload was successful or not needed, False on failure
+    """
+    try:
+        import asyncio
+        import os
+
+        from studio.app.common.core.storage.remote_storage_controller import (
+            upload_experiment_wrapper,
+        )
+
+        if RemoteStorageController.is_available():
+            logger.info("Uploading final workflow results to S3...")
+
+            # Get S3 bucket name for upload
+            upload_bucket_name = os.environ.get(
+                "S3_DEFAULT_BUCKET_NAME",
+                BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME,
+            )
+
+            # Handle event loop context properly
+            try:
+                asyncio.get_running_loop()
+                # Running loop exists, run in it
+                await upload_experiment_wrapper(
+                    upload_bucket_name, workspace_id, unique_id
+                )
+            except RuntimeError:
+                # No running loop, create one
+                await upload_experiment_wrapper(
+                    upload_bucket_name, workspace_id, unique_id
+                )
+
+            logger.info("Final results upload completed to S3")
+            return True
+        else:
+            logger.info("Using EFS storage - final results available locally")
+            return True  # Not an error if S3 is not available
+
+    except Exception as e:
+        logger.error(f"Failed to upload final results to S3: {e}")
+        return False
