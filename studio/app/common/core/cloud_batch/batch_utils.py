@@ -442,12 +442,18 @@ class BatchUtils:
             return "optinist-for-cloud:latest"
 
     @staticmethod
-    def get_container_setup_commands() -> List[str]:
+    def get_container_setup_commands(
+        workspace_id: str = None, unique_id: str = None
+    ) -> List[str]:
         """
         Return setup commands that should be run in batch containers to prepare
         the local scratch environment (EFS-specific commands).
+
+        Args:
+            workspace_id: Optional workspace ID for config download
+            unique_id: Optional unique experiment ID for config download
         """
-        return [
+        commands = [
             # Create local scratch with proper permissions
             # Use AWS_BATCH_JOB_ID (set by AWS Batch) for job isolation
             "mkdir -p /tmp/snakemake_scratch/$AWS_BATCH_JOB_ID",
@@ -461,6 +467,30 @@ class BatchUtils:
             # Optional: Set rsync options for better EFS performance
             "export SNAKEMAKE_RSYNC_OPTS='-av --inplace --no-sparse'",
         ]
+
+        # Add config download
+        config_download_cmd = (
+            'python -c "'
+            "import asyncio; "
+            "from studio.app.common.core.cloud_batch.batch_utils "
+            "import download_snakemake_config_from_s3; "
+            f"asyncio.run(download_snakemake_config_from_s3('{workspace_id}', "
+            f"'{unique_id}'))\""
+        )
+        commands.append(config_download_cmd)
+
+        # Add snakefile download command
+        snakefile_download_cmd = (
+            'python -c "'
+            "import asyncio; "
+            "from studio.app.common.core.cloud_batch.batch_utils "
+            "import download_snakefile_from_s3; "
+            f"asyncio.run(download_snakefile_from_s3('{workspace_id}', "
+            f"'{unique_id}'))\""
+        )
+        commands.append(snakefile_download_cmd)
+
+        return commands
 
     @staticmethod
     def get_efs_optimized_storage_settings(
@@ -1928,6 +1958,66 @@ class BatchDebug:
             # Don't let debug failure break the main execution
 
     @staticmethod
+    def debug_aws_batch_execution(
+        batch_executor, selected_job_queue: str, envvars: list, contain_setup: list
+    ) -> None:
+        """
+        Debug AWS Batch execution configuration and environment.
+        Consolidates all the commented debug statements from snakemake_executor.py.
+        """
+        logger.debug("=== AWS BATCH EXECUTION DEBUG ===")
+        logger.debug(f"Job Queue: {selected_job_queue}")
+        logger.debug(f"Job Role: {BATCH_CONFIG.AWS_BATCH_JOB_ROLE}")
+        logger.debug(f"Container Image: {batch_executor.get_container_image()}")
+        logger.debug(f"Environment Variables: {envvars}")
+        logger.debug(f"S3 Available: {RemoteStorageController.is_available()}")
+        logger.debug(f"Container Setup Commands: {contain_setup}")
+
+        # Enhanced debugging - Check AWS configuration
+        logger.debug(f"AWS Region: {BATCH_CONFIG.AWS_DEFAULT_REGION}")
+        logger.debug(f"S3 Bucket: {BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME}")
+        logger.debug(f"Job Definition: {BATCH_CONFIG.AWS_BATCH_JOB_DEFINITION}")
+
+        # Check current environment variables that will be passed
+        for env_var in envvars:
+            value = os.environ.get(env_var, "NOT_SET")
+            logger.debug(f"Env {env_var}: {value}")
+
+        # Check AWS credentials (without logging the actual values)
+        aws_key_exists = "AWS_ACCESS_KEY_ID" in os.environ
+        aws_secret_exists = "AWS_SECRET_ACCESS_KEY" in os.environ
+        logger.debug(f"AWS_ACCESS_KEY_ID exists: {aws_key_exists}")
+        logger.debug(f"AWS_SECRET_ACCESS_KEY exists: {aws_secret_exists}")
+
+        logger.debug("=== END AWS BATCH EXECUTION DEBUG ===")
+
+    @staticmethod
+    def debug_container_command(batch_executor, contain_setup: list) -> None:
+        """
+        Debug container command configuration.
+        """
+        logger.debug("=== CONTAINER COMMAND DEBUG ===")
+        logger.debug(f"Container Image: {batch_executor.get_container_image()}")
+        logger.debug(f"Precommand Setup: {contain_setup}")
+        logger.debug("Note: Using script-based Snakemake rules with ENTRYPOINT fix")
+        logger.debug("If 'Shell command: None', check container ENTRYPOINT")
+        logger.debug("=== END CONTAINER COMMAND DEBUG ===")
+
+    @staticmethod
+    def debug_s3_storage_config(
+        s3_storage: str, s3_bucket_name: str, s3_prefix: str
+    ) -> None:
+        """
+        Debug S3 storage configuration - critical for file latency issues.
+        """
+        logger.debug("=== S3 STORAGE DEBUG ===")
+        logger.debug(f"S3 Storage Prefix: {s3_storage}")
+        logger.debug(f"S3 Bucket: {s3_bucket_name}")
+        logger.debug(f"S3 Provider: {s3_prefix}")
+        logger.debug("Increased latency_wait to 300s for S3 consistency")
+        logger.debug("=== END S3 STORAGE DEBUG ===")
+
+    @staticmethod
     def debug_batch_failure(batch_executor, smk_logger, smk_workdir: str) -> None:
         """
         Debug batch execution failures by retrieving enhanced job logs and analysis.
@@ -2037,12 +2127,6 @@ async def upload_workflow_results_to_s3(workspace_id: str, unique_id: str) -> bo
     This uploads final workflow results from the batch EFS to S3 storage
     for long-term persistence and access by the main application.
 
-    Args:
-        workspace_id: The workspace ID
-        unique_id: The unique experiment ID
-
-    Returns:
-        bool: True if upload was successful or not needed, False on failure
     """
     try:
         import asyncio
@@ -2082,4 +2166,257 @@ async def upload_workflow_results_to_s3(workspace_id: str, unique_id: str) -> bo
 
     except Exception as e:
         logger.error(f"Failed to upload final results to S3: {e}")
+        return False
+
+
+async def upload_snakemake_config_to_s3(workspace_id: str, unique_id: str) -> bool:
+    """
+    Upload snakemake config to S3 for batch execution.
+
+    This uploads the snakemake.yaml config file from the main EFS to S3
+    so that batch jobs can access it from their separate EFS system.
+
+    """
+    try:
+        if not RemoteStorageController.is_available():
+            logger.debug(
+                "RemoteStorageController not available, skipping config upload"
+            )
+            return True  # Not an error if S3 is not available
+
+        # Construct local config file path
+        smk_config = join_filepath(
+            [DIRPATH.OUTPUT_DIR, workspace_id, unique_id, DIRPATH.SNAKEMAKE_CONFIG_YML]
+        )
+
+        if not os.path.exists(smk_config):
+            logger.error(f"Config file not found at {smk_config}")
+            return False
+
+        # Construct S3 path relative to smk_workdir structure
+        # smk_workdir = DIRPATH.OUTPUT_DIR/workspace_id/unique_id
+        # So S3 path should be:
+        # app/studio_data/output/workspace_id/unique_id/snakemake.yaml
+        s3_config_path = join_filepath(
+            [
+                DIRPATH.OUTPUT_DIR,
+                workspace_id,
+                unique_id,
+                DIRPATH.SNAKEMAKE_CONFIG_YML,
+            ]
+        )
+
+        logger.info("Uploading snakemake config to S3 for batch execution")
+
+        # Upload using boto3 S3 client directly
+        import boto3
+
+        s3_client = boto3.client("s3")
+
+        # Remove leading slash for S3 key
+        s3_key = s3_config_path.lstrip("/")
+        s3_client.upload_file(smk_config, BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME, s3_key)
+
+        logger.info(
+            f"Uploaded config to S3: "
+            f"s3://{BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME}/{s3_key}"
+        )
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to upload config to S3: {e}")
+        return False
+
+
+async def upload_snakefile_to_s3(workspace_id: str, unique_id: str) -> bool:
+    """
+    Upload Snakefile to S3 for batch execution.
+
+    This uploads the Snakefile from the main EFS to S3
+    so that batch jobs can access it from their separate EFS system.
+
+    """
+    try:
+        if not RemoteStorageController.is_available():
+            logger.debug(
+                "RemoteStorageController not available, skipping Snakefile upload"
+            )
+            return True  # Not an error if S3 is not available
+
+        # Construct local Snakefile path
+        snakefile_path = DIRPATH.SNAKEMAKE_FILEPATH
+
+        if not os.path.exists(snakefile_path):
+            logger.error(f"Snakefile not found at {snakefile_path}")
+            return False
+
+        # Construct S3 path - store Snakefile at workspace/unique_id level
+        s3_snakefile_path = join_filepath(
+            [
+                DIRPATH.OUTPUT_DIR,
+                workspace_id,
+                unique_id,
+                "Snakefile",
+            ]
+        )
+
+        logger.info("Uploading Snakefile to S3 for batch execution")
+
+        # Upload using boto3 S3 client directly
+        import boto3
+
+        s3_client = boto3.client("s3")
+
+        # Remove leading slash for S3 key
+        s3_key = s3_snakefile_path.lstrip("/")
+        s3_client.upload_file(
+            snakefile_path, BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME, s3_key
+        )
+
+        logger.info(
+            f"Uploaded Snakefile to S3: "
+            f"s3://{BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME}/{s3_key}"
+        )
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to upload Snakefile to S3: {e}")
+        return False
+
+
+async def download_snakemake_config_from_s3(workspace_id: str, unique_id: str) -> bool:
+    """
+    Download snakemake config from S3 for batch execution.
+
+    This downloads the snakemake.yaml config file from S3 to the batch EFS
+    so that batch jobs can access the config created by the main application.
+
+    """
+    try:
+        if not RemoteStorageController.is_available():
+            logger.debug(
+                "RemoteStorageController not available, skipping config download"
+            )
+            return True  # Not an error if S3 is not available
+
+        # Construct local config file path where it should be downloaded
+        local_config_path = join_filepath(
+            [DIRPATH.OUTPUT_DIR, workspace_id, unique_id, DIRPATH.SNAKEMAKE_CONFIG_YML]
+        )
+
+        # Construct S3 key path
+        s3_config_path = join_filepath(
+            [
+                DIRPATH.OUTPUT_DIR,
+                workspace_id,
+                unique_id,
+                DIRPATH.SNAKEMAKE_CONFIG_YML,
+            ]
+        )
+        s3_key = s3_config_path.lstrip("/")
+
+        logger.info("Downloading snakemake config from S3 for batch execution")
+
+        # Create directory structure if it doesn't exist
+        local_config_dir = os.path.dirname(local_config_path)
+        os.makedirs(local_config_dir, exist_ok=True)
+
+        # Download using boto3 S3 client directly
+        import boto3
+        from botocore.exceptions import ClientError
+
+        s3_client = boto3.client("s3")
+
+        try:
+            s3_client.download_file(
+                BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME, s3_key, local_config_path
+            )
+            logger.info(
+                f"Downloaded config from S3: "
+                f"s3://{BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME}/{s3_key} "
+                f"-> {local_config_path}"
+            )
+            return True
+        except ClientError as e:
+            error_code = e.response["Error"]["Code"]
+            if error_code == "NoSuchKey":
+                logger.warning(
+                    f"Config file not found in S3: "
+                    f"s3://{BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME}/{s3_key}. "
+                    f"This may be expected if config was not uploaded."
+                )
+                return True  # Don't fail if config wasn't uploaded
+            else:
+                raise e
+
+    except Exception as e:
+        logger.error(f"Failed to download config from S3: {e}")
+        return False
+
+
+async def download_snakefile_from_s3(workspace_id: str, unique_id: str) -> bool:
+    """
+    Download Snakefile from S3 for batch execution.
+
+    This downloads the Snakefile from S3 to the batch EFS
+    so that batch jobs can access the Snakefile created by the main application.
+
+    """
+    try:
+        if not RemoteStorageController.is_available():
+            logger.debug(
+                "RemoteStorageController not available, skipping Snakefile download"
+            )
+            return True  # Not an error if S3 is not available
+
+        # Construct local Snakefile path where it should be downloaded
+        local_snakefile_path = DIRPATH.SNAKEMAKE_FILEPATH
+
+        # Construct S3 key path
+        s3_snakefile_path = join_filepath(
+            [
+                DIRPATH.OUTPUT_DIR,
+                workspace_id,
+                unique_id,
+                "Snakefile",
+            ]
+        )
+        s3_key = s3_snakefile_path.lstrip("/")
+
+        logger.info("Downloading Snakefile from S3 for batch execution")
+
+        # Create directory structure if it doesn't exist
+        local_snakefile_dir = os.path.dirname(local_snakefile_path)
+        os.makedirs(local_snakefile_dir, exist_ok=True)
+
+        # Download using boto3 S3 client directly
+        import boto3
+        from botocore.exceptions import ClientError
+
+        s3_client = boto3.client("s3")
+
+        try:
+            s3_client.download_file(
+                BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME, s3_key, local_snakefile_path
+            )
+            logger.info(
+                f"Downloaded Snakefile from S3: "
+                f"s3://{BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME}/{s3_key} "
+                f"-> {local_snakefile_path}"
+            )
+            return True
+        except ClientError as e:
+            error_code = e.response["Error"]["Code"]
+            if error_code == "NoSuchKey":
+                logger.warning(
+                    f"Snakefile not found in S3: "
+                    f"s3://{BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME}/{s3_key}. "
+                    f"This may be expected if Snakefile was not uploaded."
+                )
+                return True  # Don't fail if Snakefile wasn't uploaded
+            else:
+                raise e
+
+    except Exception as e:
+        logger.error(f"Failed to download Snakefile from S3: {e}")
         return False

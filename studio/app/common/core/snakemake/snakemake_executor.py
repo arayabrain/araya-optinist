@@ -26,6 +26,8 @@ from studio.app.common.core.cloud_batch.batch_utils import (
     BatchDebug,
     BatchUtils,
     download_workflow_results_from_s3,
+    upload_snakefile_to_s3,
+    upload_snakemake_config_to_s3,
     upload_workflow_results_to_s3,
 )
 from studio.app.common.core.experiment.experiment_record_services import (
@@ -238,16 +240,25 @@ def _snakemake_execute_batch(
         batch_executor = BatchUtils(workspace_id, unique_id)
 
         # Debug AWS Batch environment status for immediate visibility
-        # logger.info("Debugging AWS Batch environment...")
         # BatchDebug.debug_batch_environment(batch_executor)
-
-        # Validate AWS Batch configuration before proceeding
-        # logger.info("Validating AWS Batch configuration...")
         # if not BatchDebug.validate_batch_configuration(batch_executor):
-        #     logger.error(
-        #         "AWS Batch configuration validation failed - aborting execution"
-        #     )
         #     return False
+
+        # Upload config file to S3 so batch jobs can access it
+        config_upload_success = asyncio.run(
+            upload_snakemake_config_to_s3(workspace_id, unique_id)
+        )
+        if not config_upload_success:
+            logger.error("Failed to upload snakemake config to S3")
+            return False
+
+        # Upload Snakefile to S3 so batch jobs can access it
+        snakefile_upload_success = asyncio.run(
+            upload_snakefile_to_s3(workspace_id, unique_id)
+        )
+        if not snakefile_upload_success:
+            logger.error("Failed to upload Snakefile to S3")
+            return False
 
         # Prepare workspace for batch execution
         logger.info("Prepare batch workspace")
@@ -403,6 +414,9 @@ def _snakemake_execute_batch(
                 retrieve_storage=True,
                 keep_storage_local=False,
             )
+            # Debug S3 storage configuration (uncomment to enable)
+            # BatchDebug.debug_s3_storage_config(s3_storage, s3_bucket_name, s3_prefix)
+
             logger.debug(f"Using S3 storage: {s3_storage}")
             logger.debug(
                 f"S3 storage breakdown: provider='{s3_prefix}', "
@@ -422,50 +436,6 @@ def _snakemake_execute_batch(
             storage_settings = BatchUtils.get_efs_optimized_storage_settings(
                 workspace_id, unique_id
             )
-
-        smk_config = join_filepath([smk_workdir, DIRPATH.SNAKEMAKE_CONFIG_YML])
-
-        # Upload config file to S3 so batch jobs can find it
-        if os.path.exists(smk_config):
-            if False:  # Disable S3 config upload, use EFS
-                # and upload after using RemoteStorageController
-                try:
-                    # Construct S3 path relative to smk_workdir structure
-                    # smk_workdir = DIRPATH.OUTPUT_DIR/workspace_id/unique_id
-                    # So S3 path should be:
-                    # app/studio_data/output/workspace_id/unique_id/snakemake.yaml
-                    s3_config_path = join_filepath(
-                        [
-                            DIRPATH.OUTPUT_DIR,
-                            workspace_id,
-                            unique_id,
-                            DIRPATH.SNAKEMAKE_CONFIG_YML,
-                        ]
-                    )
-
-                    # Upload using boto3 S3 client directly
-                    import boto3
-
-                    s3_client = boto3.client("s3")
-                    # Remove leading slash for S3 key
-                    s3_key = s3_config_path.lstrip("/")
-                    s3_client.upload_file(
-                        smk_config, BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME, s3_key
-                    )
-                    logger.info(
-                        f"Uploaded config to S3: "
-                        f"s3://{BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME}/{s3_key}"
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to upload config to S3: {e}")
-                    return False
-            else:
-                logger.warning(
-                    "S3 not available - config may not be accessible to batch jobs"
-                )
-        else:
-            logger.error(f"Config file not found at {smk_config}")
-            return False
 
         # Use context manager for proper cleanup
         with SnakemakeApi(
@@ -619,66 +589,22 @@ def _snakemake_execute_batch(
                     if (
                         not False
                     ):  # Temporarily disable S3 for, use EFS + RemoteStorageController
-                        contain_setup = BatchUtils.get_container_setup_commands()
+                        contain_setup = BatchUtils.get_container_setup_commands(
+                            workspace_id, unique_id
+                        )
 
-                    # logger.debug("=== AWS BATCH EXECUTION DEBUG ===")
-                    # logger.debug(f"Job Queue: {selected_job_queue}")
-                    # logger.debug(f"Job Role: {BATCH_CONFIG.AWS_BATCH_JOB_ROLE}")
-                    # logger.debug(
-                    #     f"Container Image: {batch_executor.get_container_image()}"
-                    # )
-                    # logger.debug(f"Environment Variables: {envvars}")
-                    # logger.debug(
-                    #     f"S3 Available: {RemoteStorageController.is_available()}"
-                    # )
-                    # logger.debug(f"Container Setup Commands: {contain_setup}")
+                    # Debug container command configuration (uncomment to enable)
+                    # BatchDebug.debug_container_command(batch_executor, contain_setup)
 
-                    # # Enhanced debugging - Check AWS configuration
-                    # logger.debug(f"AWS Region: {BATCH_CONFIG.AWS_DEFAULT_REGION}")
-                    # logger.debug(
-                    #     f"S3 Bucket: {BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME}"
-                    # )
-                    # logger.debug(
-                    #     f"Job Definition: {BATCH_CONFIG.AWS_BATCH_JOB_DEFINITION}"
-                    # )
+                    # Debug AWS Batch execution (uncomment to enable)
+                    # BatchDebug.debug_aws_batch_execution(
+                    #     batch_executor, selected_job_queue, envvars, contain_setup
+                    #     )
 
                     # Check current environment variables that will be passed
                     for env_var in envvars:
                         value = os.environ.get(env_var, "NOT_SET")
                         logger.debug(f"Env {env_var}: {value}")
-
-                    # Check AWS credentials (without logging the actual values)
-                    # aws_key_exists = "AWS_ACCESS_KEY_ID" in os.environ
-                    # aws_secret_exists = "AWS_SECRET_ACCESS_KEY" in os.environ
-                    # logger.debug(f"AWS_ACCESS_KEY_ID exists: {aws_key_exists}")
-                    # logger.debug(f"AWS_SECRET_ACCESS_KEY exists: {aws_secret_exists}")
-
-                    # Check resource settings
-                    # logger.debug(f"Resource settings - nodes: 10, cores: {cores}")
-                    # logger.debug("Default resources: mem_mb=4096")
-
-                    # logger.debug("=== CONTAINER COMMAND DEBUG ===")
-                    # logger.debug(
-                    #     f"Container Image: {batch_executor.get_container_image()}"
-                    # )
-                    # logger.debug(f"Precommand Setup: {contain_setup}")
-                    # logger.debug(
-                    #     "Note: Using script-based Snakemake rules with ENTRYPOINT fix"
-                    # )
-                    # logger.debug(
-                    #     "If 'Shell command: None', check container ENTRYPOINT"
-                    # )
-                    # logger.debug("=== END CONTAINER COMMAND DEBUG ===")
-
-                    # Debug S3 storage configuration - critical for file latency issues
-                    # logger.debug("=== S3 STORAGE DEBUG ===")
-                    # logger.debug(f"S3 Storage Prefix: {s3_storage}")
-                    # logger.debug(f"S3 Bucket: {s3_bucket_name}")
-                    # logger.debug(f"S3 Provider: {s3_prefix}")
-                    # logger.debug("Increased latency_wait to 300s for S3 consistency")
-                    # logger.debug("=== END S3 STORAGE DEBUG ===")
-
-                    # logger.debug("=== AWS BATCH EXECUTION DEBUG ===")
 
                     # Store start time for monitoring
                     execution_start_time = time.time()
