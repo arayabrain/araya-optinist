@@ -22,10 +22,7 @@ from snakemake_executor_plugin_aws_batch import ExecutorSettings
 from sqlmodel import select
 
 from studio.app.common import models as common_model
-from studio.app.common.core.cloud.cloud_utils import (
-    get_current_user_storage_usage,
-    get_user_storage_usage,
-)
+from studio.app.common.core.cloud.cloud_utils import get_current_user_storage_usage
 from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
 from studio.app.common.core.cloud_batch.batch_utils import BatchUtils
 from studio.app.common.core.experiment.experiment_record_services import (
@@ -60,7 +57,7 @@ def snakemake_execute(workspace_id: str, unique_id: str, params: SmkParam):
     """
     if BATCH_CONFIG.USE_AWS_BATCH:
         logger.info("Starting AWS Batch execution mode")
-        return _snakemake_execute_batch(workspace_id, unique_id, params)
+        future_result = _snakemake_execute_batch(workspace_id, unique_id, params)
     else:
         logger.info("Starting local execution mode")
         with ProcessPoolExecutor(max_workers=1) as executor:
@@ -71,9 +68,10 @@ def snakemake_execute(workspace_id: str, unique_id: str, params: SmkParam):
             )
             future_result = future.result()
 
-            logger.info("finish snakemake running process. result: %s", future_result)
+    # Post-processing in main process - safe for async operations
+    _post_process_workflow(workspace_id, unique_id, future_result)
 
-            return future_result
+    return future_result
 
 
 def _snakemake_execute_process(
@@ -155,9 +153,6 @@ def _snakemake_execute_process(
         logger.error("snakemake_execute failed..")
 
     smk_logger.clean_up()
-
-    # Post-processing
-    _post_process_workflow(workspace_id, unique_id, snakemake_result)
 
     return snakemake_result
 
@@ -921,53 +916,15 @@ def _snakemake_execute_batch(
     finally:
         smk_logger.clean_up()
 
-    # Post-processing (download results and run workflow observation)
-    _post_process_workflow(workspace_id, unique_id, snakemake_result)
-
     return snakemake_result
 
 
 def _post_process_workflow(workspace_id: str, unique_id: str, result: bool = False):
-    # Post-processing strategy:
-    # - Execute workflow on EFS for fast intermediate I/O (avoid S3 plugin path issues)
-    # - Upload results to S3 after completion using RemoteStorageController
-    # - Download from S3 only when needed for post-processing
-    from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
-
-    if result and RemoteStorageController.is_available():
-        # Download from S3 using RemoteStorageController for post-processing
-        try:
-            logger.info("Downloading experiment results from S3 for post-processing")
-            remote_controller = RemoteStorageController(
-                BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME
-            )
-            try:
-                # Check if we're already in an event loop
-                asyncio.get_running_loop()
-                logger.warning(
-                    "Cannot download experiment results in async context - "
-                    "post-processing may fail"
-                )
-            except RuntimeError:
-                # No running loop, safe to create a new one
-                asyncio.run(
-                    remote_controller.download_experiment(workspace_id, unique_id)
-                )
-                logger.info(
-                    f"Downloaded experiment results for {workspace_id}/{unique_id}"
-                )
-        except Exception as e:
-            logger.error(f"Failed to download experiment results from S3: {e}")
-            logger.warning("Post-processing may fail due to missing local files")
-
     # Update workflow processing results
     try:
-        # Check if we're already in an event loop
-        asyncio.get_running_loop()
-        logger.warning("Cannot run workflow observation in async context - skipping")
-    except RuntimeError:
-        # No running loop, safe to create a new one
         asyncio.run(WorkflowResult(workspace_id, unique_id).observe_overall())
+    except Exception as e:
+        logger.warning(f"Failed to run workflow observation: {e}", exc_info=True)
 
     # Update experiment database record
     try:
@@ -976,18 +933,30 @@ def _post_process_workflow(workspace_id: str, unique_id: str, result: bool = Fal
                 workspace_id, unique_id
             )
 
-        # Data usage calculation
         WorkspaceDataCapacityService.update_experiment_data_usage(
             workspace_id, unique_id
         )
     except Exception as e:
         logger.error(f"snakemake_execute post process failed: {e}", exc_info=True)
 
+    # Download experiment results from S3 for post-processing
+    if result and RemoteStorageController.is_available():
+        try:
+            from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
+
+            logger.info("Downloading experiment results from S3 for post-processing")
+            remote_controller = RemoteStorageController(
+                BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME
+            )
+            asyncio.run(remote_controller.download_experiment(workspace_id, unique_id))
+            logger.info(f"Downloaded experiment results for {workspace_id}/{unique_id}")
+        except Exception as e:
+            logger.error(f"Failed to download experiment results from S3: {e}")
+            logger.warning("Post-processing may fail due to missing local files")
+
     # Update user's total storage usage after workflow completion
     try:
-        # Get the user who owns this workspace to update their storage
         with session_scope() as db:
-            # Get workspace owner
             query_result = db.execute(
                 select(common_model.Workspace.user_id).where(
                     common_model.Workspace.id == int(workspace_id)
@@ -997,40 +966,22 @@ def _post_process_workflow(workspace_id: str, unique_id: str, result: bool = Fal
             user_id = result_row[0] if result_row else None
 
             if user_id:
-                # Check if we have an existing event loop
-                try:
-                    _ = asyncio.get_running_loop()
-                    has_event_loop = True
-                except RuntimeError:
-                    has_event_loop = False
-
-                if has_event_loop:
-                    # Event loop exists, use sync version
-                    get_user_storage_usage(user_id)
-                    logger.info(f"Retrieved cached storage usage for user {user_id}")
-                else:
-                    # No running loop, safe to use async version
-                    asyncio.run(
-                        get_current_user_storage_usage(user_id, force_live=True)
-                    )
-                    logger.info(f"Updated live storage usage for user {user_id}")
+                asyncio.run(get_current_user_storage_usage(user_id, force_live=True))
+                logger.info(f"Updated live storage usage for user {user_id}")
     except Exception as e:
         logger.warning(
             f"Failed to update user storage usage after workflow completion: {e}"
         )
 
-    # result error handling
+    # Handle workflow failure
     if not result:
-        # Operate remote storage.
         if RemoteStorageController.is_available():
-            # force delete sync lock file
             RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
 
             remote_bucket_name = RemoteSyncStatusFileUtil.get_remote_bucket_name(
                 workspace_id, unique_id
             )
 
-            # force update sync status file
             RemoteSyncStatusFileUtil.create_sync_status_file_for_error(
                 remote_bucket_name,
                 workspace_id,
