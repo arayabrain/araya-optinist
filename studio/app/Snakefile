@@ -30,6 +30,8 @@ else:
                     SmkUtils.output(details)
                 params:
                     name = details
+                priority:
+                    details.get("priority", config.get("snakemake_priority", 1))
                 script:
                     f"{DIRPATH.APP_DIR}/common/core/rules/data.py"
 
@@ -46,6 +48,8 @@ else:
                     SmkUtils.output(details)
                 params:
                     name = details
+                priority:
+                    details.get("priority", config.get("snakemake_priority", 1))
                 script:
                     f"{DIRPATH.APP_DIR}/common/core/rules/post_process.py"
 
@@ -60,6 +64,8 @@ else:
                     SmkUtils.output(details)
                 params:
                     name = details
+                priority:
+                    details.get("priority", config.get("snakemake_priority", 1))
                 conda:
                     SmkUtils.conda(details)
                 script:

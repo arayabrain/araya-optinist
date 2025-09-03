@@ -2,6 +2,7 @@ import uuid
 from dataclasses import asdict
 from typing import Dict, List
 
+from studio.app.common.core.cloud.cloud_utils import get_user_subscription_tier
 from studio.app.common.core.experiment.experiment_writer import ExptConfigWriter
 from studio.app.common.core.rules.runner import Runner
 from studio.app.common.core.snakemake.smk import FlowConfig, ForceRun, Rule, SmkParam
@@ -132,10 +133,15 @@ class WorkflowRunner:
 
         nwb_template = get_typecheck_params(self.runItem.nwbParam, "nwb")
 
+        # Calculate priority based on user subscription tier
+        user_tier = get_user_subscription_tier()
+        snakemake_priority = 10 if user_tier == "paid" else 1
+
         flow_config = FlowConfig(
             rules=rules,
             last_output=last_output,
             nwb_template=nwb_template,
+            snakemake_priority=snakemake_priority,
         )
 
         SmkConfigWriter.write_raw(
