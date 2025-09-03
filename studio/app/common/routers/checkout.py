@@ -1,16 +1,17 @@
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+import logging
+import os
+from datetime import datetime
+from typing import Any, Dict, Optional
+
+import stripe
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from datetime import datetime
-from typing import Optional, Dict, Any
-import stripe
-import os
-import logging
 
 from studio.app.common.core.checkout.checkout_services import (
     CheckoutService,
-    WebhookService,
     SyncService,
+    WebhookService,
 )
 from studio.app.common.db.database import get_db
 

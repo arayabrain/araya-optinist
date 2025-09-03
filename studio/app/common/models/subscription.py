@@ -1,20 +1,12 @@
 from datetime import datetime
-from typing import Any, Dict, Optional
 from enum import Enum
+from typing import Any, Dict, Optional
 
-from sqlalchemy.sql.functions import current_timestamp
-from sqlalchemy import (
-    BIGINT,
-    JSON,
-    Boolean,
-    DateTime,
-    Enum as SQLEnum,
-    String,
-    UniqueConstraint,
-    Text,
-    TIMESTAMP,
-)
+from sqlalchemy import BIGINT, JSON, TIMESTAMP, Boolean, DateTime
+from sqlalchemy import Enum as SQLEnum
+from sqlalchemy import String, Text, UniqueConstraint
 from sqlalchemy.sql import func
+from sqlalchemy.sql.functions import current_timestamp
 from sqlmodel import Column, Field, SQLModel
 
 
