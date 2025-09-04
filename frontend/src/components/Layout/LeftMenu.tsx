@@ -55,74 +55,18 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
     handleDrawerClose()
     navigate("/console/subscription")
   }
-    
-  const onClickOpenSite = () => {
-    handleDrawerClose()
-    navigate("/")
-  }
 
   return (
-    <>
-      <Drawer anchor="left" open={open} onClose={handleDrawerClose}>
-        <Box
-          sx={{
-            width: DRAWER_WIDTH,
-            display: "flex",
-            flexDirection: "column",
-            height: "100%",
-          }}
-        >
-          <Box sx={{ flex: 1 }}>
-            <List>
-              <ListItem key="dashboard" disablePadding>
-                <ListItemButton onClick={onClickDashboard}>
-                  <ListItemIcon>
-                    <DashboardIcon />
-                  </ListItemIcon>
-                  <ListItemText primary="Dashboard" />
-                </ListItemButton>
-              </ListItem>
-              <ListItem key="dataview" disablePadding>
-                <ListItemButton onClick={onClickDataview}>
-                  <ListItemIcon>
-                    <ViewListIcon />
-                  </ListItemIcon>
-                  <ListItemText primary="Dataview" />
-                </ListItemButton>
-              </ListItem>
-              <ListItem key="workspaces" disablePadding>
-                <ListItemButton onClick={onClickWorkspaces}>
-                  <ListItemIcon>
-                    <AnalyticsIcon />
-                  </ListItemIcon>
-                  <ListItemText primary="Workspaces" />
-                </ListItemButton>
-              </ListItem>
-              {admin ? (
-                <ListItem key="account-manager" disablePadding>
-                  <ListItemButton onClick={onClickAccountManager}>
-                    <ListItemIcon>
-                      <ManageAccountsIcon />
-                    </ListItemIcon>
-                    <ListItemText primary="Account Manager" />
-                  </ListItemButton>
-                </ListItem>
-              ) : null}
-              <ListItem key="site" disablePadding>
-                <ListItemButton onClick={onClickOpenSite}>
-                  <ListItemIcon>
-                    <WebIcon />
-                  </ListItemIcon>
-                  <ListItemText primary="Open Site" />
-                </ListItemButton>
-              </ListItem>
-            </List>
-          </Box>
-          <Box>
-            <List>
-              <ListItem key="subscription" disablePadding>
-                <ListItemButton>
-        <Box sx={{ width: DRAWER_WIDTH }}>
+    <Drawer anchor="left" open={open} onClose={handleDrawerClose}>
+      <Box
+        sx={{
+          width: DRAWER_WIDTH,
+          display: "flex",
+          flexDirection: "column",
+          height: "100%",
+        }}
+      >
+        <Box sx={{ flex: 1 }}>
           <List>
             <ListItem key="dashboard" disablePadding>
               <ListItemButton onClick={onClickDashboard}>
@@ -148,21 +92,16 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
                 <ListItemText primary="Workspaces" />
               </ListItemButton>
             </ListItem>
-            {admin ? (
+            {admin && (
               <ListItem key="account-manager" disablePadding>
                 <ListItemButton onClick={onClickAccountManager}>
                   <ListItemIcon>
-                    <UpgradeIcon />
+                    <ManageAccountsIcon />
                   </ListItemIcon>
-                  <Box onClick={onClickUpgrade} sx={{ width: "100%" }}>
-                    <ListItemText primary="Upgrade Plan" />
-                    <ListItemText secondary="More Access to Optinist" />
-                  </Box>
+                  <ListItemText primary="Account Manager" />
                 </ListItemButton>
               </ListItem>
-            </List>
-          </Box>
-            ) : null}
+            )}
             <ListItem key="site" disablePadding>
               <ListItemButton onClick={onClickOpenSite}>
                 <ListItemIcon>
@@ -173,8 +112,23 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
             </ListItem>
           </List>
         </Box>
-      </Drawer>
-    </>
+        <Box>
+          <List>
+            <ListItem key="subscription" disablePadding>
+              <ListItemButton onClick={onClickUpgrade}>
+                <ListItemIcon>
+                  <UpgradeIcon />
+                </ListItemIcon>
+                <Box sx={{ width: "100%" }}>
+                  <ListItemText primary="Upgrade Plan" />
+                  <ListItemText secondary="More Access to Optinist" />
+                </Box>
+              </ListItemButton>
+            </ListItem>
+          </List>
+        </Box>
+      </Box>
+    </Drawer>
   )
 }
 
