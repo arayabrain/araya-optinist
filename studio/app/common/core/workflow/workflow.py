@@ -137,6 +137,7 @@ class NodeTypeUtil:
 
 @dataclass
 class OutputType:
+    EMPTY: str = "empty"
     IMAGE: str = "images"
     TIMESERIES: str = "timeseries"
     HEATMAP: str = "heatmap"
