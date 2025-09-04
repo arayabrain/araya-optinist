@@ -107,3 +107,43 @@ class CreateCheckoutSessionRequest(BaseModel):
 class CreateCheckoutSessionResponse(BaseModel):
     checkout_url: str
     session_id: str
+
+
+class PaymentMethodResponse(BaseModel):
+    id: str
+    last4: str
+    brand: str  # visa, mastercard, amex, etc.
+    exp_month: int
+    exp_year: int
+    is_default: bool
+
+    class Config:
+        from_attributes = True
+        json_encoders = {
+            # Add any custom encoders if needed
+        }
+
+    @property
+    def card_logo_url(self) -> str:
+        """
+        Return a URL or identifier for the card brand logo
+        You can customize this based on where you store your card logos
+        """
+        brand_logos = {
+            "visa": "/static/images/cards/visa.png",
+            "mastercard": "/static/images/cards/mastercard.png",
+            "amex": "/static/images/cards/amex.png",
+            "discover": "/static/images/cards/discover.png",
+            "jcb": "/static/images/cards/jcb.png",
+            "diners": "/static/images/cards/diners.png",
+            "unionpay": "/static/images/cards/unionpay.png",
+        }
+        return brand_logos.get(self.brand.lower(), "/static/images/cards/default.png")
+
+    @property
+    def display_name(self) -> str:
+        """
+        Return a user-friendly display name for the payment method
+        """
+        brand_name = self.brand.title()
+        return f"{brand_name} ending in {self.last4}"
