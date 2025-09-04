@@ -55,6 +55,11 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
     handleDrawerClose()
     navigate("/console/subscription")
   }
+    
+  const onClickOpenSite = () => {
+    handleDrawerClose()
+    navigate("/")
+  }
 
   return (
     <>
@@ -117,6 +122,35 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
             <List>
               <ListItem key="subscription" disablePadding>
                 <ListItemButton>
+        <Box sx={{ width: DRAWER_WIDTH }}>
+          <List>
+            <ListItem key="dashboard" disablePadding>
+              <ListItemButton onClick={onClickDashboard}>
+                <ListItemIcon>
+                  <DashboardIcon />
+                </ListItemIcon>
+                <ListItemText primary="Dashboard" />
+              </ListItemButton>
+            </ListItem>
+            <ListItem key="dataview" disablePadding>
+              <ListItemButton onClick={onClickDataview}>
+                <ListItemIcon>
+                  <ViewListIcon />
+                </ListItemIcon>
+                <ListItemText primary="Dataview" />
+              </ListItemButton>
+            </ListItem>
+            <ListItem key="workspaces" disablePadding>
+              <ListItemButton onClick={onClickWorkspaces}>
+                <ListItemIcon>
+                  <AnalyticsIcon />
+                </ListItemIcon>
+                <ListItemText primary="Workspaces" />
+              </ListItemButton>
+            </ListItem>
+            {admin ? (
+              <ListItem key="account-manager" disablePadding>
+                <ListItemButton onClick={onClickAccountManager}>
                   <ListItemIcon>
                     <UpgradeIcon />
                   </ListItemIcon>
@@ -128,6 +162,16 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
               </ListItem>
             </List>
           </Box>
+            ) : null}
+            <ListItem key="site" disablePadding>
+              <ListItemButton onClick={onClickOpenSite}>
+                <ListItemIcon>
+                  <WebIcon />
+                </ListItemIcon>
+                <ListItemText primary="Open Site" />
+              </ListItemButton>
+            </ListItem>
+          </List>
         </Box>
       </Drawer>
     </>
