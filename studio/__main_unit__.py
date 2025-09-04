@@ -110,7 +110,7 @@ app.include_router(workspace.router, dependencies=[Depends(get_current_user)])
 app.include_router(dataview.public_router)
 app.include_router(dataview.router, dependencies=[Depends(get_current_user)])
 app.include_router(subscriptions.router, dependencies=[Depends(get_current_user)])
-app.include_router(checkout.router)
+app.include_router(checkout.router, dependencies=[Depends(get_current_user)])
 
 # optinist routers
 app.include_router(hdf5.router, dependencies=[Depends(get_current_user)])
