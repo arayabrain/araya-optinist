@@ -106,7 +106,7 @@ class WorkflowRunner:
             function.outputPaths = {
                 "empty": OutputPath(
                     path="empty",
-                    type=OutputType.IMAGE,
+                    type=OutputType.EMPTY,
                     max_index=1,
                 )
             }
