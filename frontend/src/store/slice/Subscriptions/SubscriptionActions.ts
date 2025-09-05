@@ -1,4 +1,3 @@
-// store/slice/Subscriptions/SubscriptionActions.ts
 import _ from "lodash"
 
 import { createAsyncThunk } from "@reduxjs/toolkit"
@@ -67,7 +66,7 @@ export const getSubscriptionPlan = createAsyncThunk(
 
 export const getUserSubscription = createAsyncThunk(
   `${SUBSCRIPTION_SLICE_NAME}/getUserSubscription`,
-  async (userId: number, thunkAPI) => {
+  async (userId: number | undefined, thunkAPI) => {
     try {
       const response = await getUserSubscriptionApi(userId)
       return response

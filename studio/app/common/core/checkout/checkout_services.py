@@ -373,7 +373,57 @@ class WebhookService:
         """
         session_id = session_data.get("id")
         logger.info(f"Webhook: Checkout session completed: {session_id}")
-        # Additional logic can be added here if needed
+
+        try:
+            # Only handle subscription checkouts
+            if session_data.get("mode") == "subscription":
+                customer_id = session_data.get("customer")
+                subscription_id = session_data.get("subscription")
+
+                if not customer_id or not subscription_id:
+                    logger.warning(
+                        f"Missing customer_id or subscription_id for session "
+                        f"{session_id}"
+                    )
+                    return
+
+                logger.info(
+                    f"Processing subscription checkout - Customer: {customer_id}, Subscription: {subscription_id}"
+                )
+
+                # Get the subscription to access the payment method
+                subscription = stripe.Subscription.retrieve(subscription_id)
+                payment_method_id = subscription.default_payment_method
+
+                if payment_method_id:
+                    logger.info(
+                        f"Setting payment method {payment_method_id} as default for customer {customer_id}"
+                    )
+
+                    # Set this payment method as the customer's default
+                    stripe.Customer.modify(
+                        customer_id,
+                        invoice_settings={"default_payment_method": payment_method_id},
+                    )
+
+                    logger.info(
+                        f"Successfully set default payment method for customer {customer_id}"
+                    )
+                else:
+                    logger.warning(
+                        f"No payment method found for subscription {subscription_id}"
+                    )
+
+            # Additional logic can be added here if needed
+
+        except stripe.error.StripeError as e:
+            logger.error(
+                f"Stripe error while setting default payment method for session {session_id}: {str(e)}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Error handling checkout completed for session {session_id}: {str(e)}"
+            )
 
     @staticmethod
     def handle_payment_failed(db: Session, invoice_data: Dict[str, Any]) -> None:

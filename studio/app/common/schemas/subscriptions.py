@@ -147,3 +147,33 @@ class PaymentMethodResponse(BaseModel):
         """
         brand_name = self.brand.title()
         return f"{brand_name} ending in {self.last4}"
+
+
+class InvoiceResponse(BaseModel):
+    id: str
+    date: str  # ISO format date string
+    total: str  # Formatted total amount (e.g., "$20.00")
+    status: str  # Invoice status (Paid, Open, Draft, etc.)
+    invoice_url: str  # URL to view/download the invoice
+    amount_paid: int  # Amount paid in cents
+    amount_due: int  # Amount due in cents
+    currency: str  # Currency code (USD, JPY, etc.)
+    description: Optional[str] = None  # Invoice description
+    period_start: Optional[str] = None  # Billing period start (ISO format)
+    period_end: Optional[str] = None  # Billing period end (ISO format)
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda v: v.isoformat()}
+
+
+# You might also want a simpler version for basic display
+class InvoiceBasicResponse(BaseModel):
+    id: str
+    date: str
+    total: str
+    status: str
+    invoice_url: str
+
+    class Config:
+        from_attributes = True

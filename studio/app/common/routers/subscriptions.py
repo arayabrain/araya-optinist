@@ -16,6 +16,7 @@ from studio.app.common.models.subscription import SubscriptionPlans
 from studio.app.common.schemas.subscriptions import (
     CreateCheckoutSessionRequest,
     CreateCheckoutSessionResponse,
+    InvoiceResponse,
     PaymentMethodResponse,
     SubscriptionPlanResponse,
     UserSubscriptionResponse,
@@ -423,4 +424,93 @@ async def get_user_default_payment_method(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch default payment method: {str(e)}",
+        )
+
+
+@router.get("/invoices/{user_id}", response_model=List[InvoiceResponse])
+async def get_user_invoices(
+    user_id: int,
+    db: Session = Depends(get_db),
+    # current_user: User = Depends(get_current_user),
+):
+    """
+    Get user's invoices from Stripe
+    """
+    # Uncomment when you want to enable auth
+    # if current_user.id != user_id and not current_user.is_admin:
+    #     raise HTTPException(
+    #         status_code=status.HTTP_403_FORBIDDEN,
+    #         detail="Not authorized to access this user's invoices",
+    #     )
+
+    try:
+        # Get user email to find Stripe customer
+        user = (
+            db.query(common_model.User).filter(common_model.User.id == user_id).first()
+        )
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        logger.info(f"Fetching invoices for user {user_id} with email {user.email}")
+
+        # Find Stripe customer by email
+        stripe_customers = stripe.Customer.list(email=user.email, limit=1)
+
+        if not stripe_customers.data:
+            logger.info(f"No Stripe customer found for user {user_id}")
+            return []
+
+        customer = stripe_customers.data[0]
+
+        # Get all invoices for this customer
+        invoices = stripe.Invoice.list(
+            customer=customer.id,
+            limit=100,  # Adjust limit as needed
+            expand=["data.subscription"],  # Expand subscription data for more details
+        )
+
+        result = []
+        for invoice in invoices.data:
+            # Convert Stripe invoice to our response format
+            invoice_response = InvoiceResponse(
+                id=invoice.id,
+                date=datetime.fromtimestamp(invoice.created).isoformat(),
+                total=f"${(invoice.total / 100):.2f}",  # Convert cents to dollars
+                status=invoice.status.title(),  # Capitalize status
+                invoice_url=invoice.hosted_invoice_url or invoice.invoice_pdf or "",
+                amount_paid=invoice.amount_paid,
+                amount_due=invoice.amount_due,
+                currency=invoice.currency.upper(),
+                description=invoice.description or "Subscription payment",
+                period_start=(
+                    datetime.fromtimestamp(invoice.period_start).isoformat()
+                    if invoice.period_start
+                    else None
+                ),
+                period_end=(
+                    datetime.fromtimestamp(invoice.period_end).isoformat()
+                    if invoice.period_end
+                    else None
+                ),
+            )
+            result.append(invoice_response)
+
+        # Sort by date (newest first)
+        result.sort(key=lambda x: x.date, reverse=True)
+
+        return result
+
+    except stripe.error.StripeError as e:
+        logger.error(
+            f"Stripe error when fetching invoices for user {user_id}: {str(e)}"
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to fetch invoices from Stripe: {str(e)}",
+        )
+    except Exception as e:
+        logger.error(f"Error fetching invoices for user {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch invoices: {str(e)}",
         )
