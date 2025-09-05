@@ -3,6 +3,8 @@ from dataclasses import asdict
 from datetime import datetime
 from typing import Dict, List
 
+from fastapi import BackgroundTasks
+
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
@@ -60,7 +62,7 @@ class WorkflowRunner:
         new_unique_id = str(uuid.uuid4())[:8]
         return new_unique_id
 
-    def run_workflow(self, background_tasks):
+    def run_workflow(self, background_tasks: BackgroundTasks):
         self.set_smk_config()
 
         snakemake_params: SmkParam = get_typecheck_params(

@@ -1,17 +1,15 @@
-import copy
-import time
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.workflow.workflow import (
-    BatchInputNodeType,
     DataFilterParam,
     Message,
     NodeItem,
     RunItem,
 )
+from studio.app.common.core.workflow.workflow_batch_runner import WorkflowBatchRunner
 from studio.app.common.core.workflow.workflow_filter import WorkflowNodeDataFilter
 from studio.app.common.core.workflow.workflow_result import (
     WorkflowMonitor,
@@ -178,112 +176,12 @@ async def batch_run(
     workspace_id: str, runItem: RunItem, background_tasks: BackgroundTasks
 ):
     try:
-        # ------------------------------------------------------------
-        # Save Batch Run Template Workflow
-        # ------------------------------------------------------------
-
         new_unique_id = WorkflowRunner.create_workflow_unique_id()
-
-        WorkflowRunner(
-            workspace_id, new_unique_id, runItem
-        ).finish_workflow_without_run()
-
-        # ------------------------------------------------------------
-        # Process each Batch Run Workflows
-        # #1) Data Construction
-        # ------------------------------------------------------------
-
-        # Search for batch input nodes
-        batch_input_files = {}
-        batch_input_counts = {}
-        for node_id, node in runItem.nodeDict.items():
-            if BatchInputNodeType.is_batch_input_node(node.type):
-                data_paths = getattr(
-                    getattr(node, "data", None), "path", None
-                )  # get `node.data.path`
-                batch_input_record = {node_id: node}
-                batch_input_files[node_id] = (
-                    data_paths if type(data_paths) is list else [data_paths]
-                )
-                batch_input_counts[node_id] = (
-                    len(data_paths) if type(data_paths) is list else 1
-                )
-
-        # Validations
-        assert batch_input_files, "No batch input nodes specified."
-        batch_input_counts_min = min(batch_input_counts.values())
-        batch_input_counts_max = max(batch_input_counts.values())
-        if batch_input_counts_min != batch_input_counts_max:
-            logger.error(
-                "The number of input files in the batch nodes does not match. [%s]",
-                batch_input_counts,
-            )
-            assert False, (
-                "The number of input files in the batch nodes does not match."
-                f" [{batch_input_counts_min} - {batch_input_counts_max}]"
-            )
-        batch_input_fixed_count = batch_input_counts_max
-        del batch_input_counts_min, batch_input_counts_max
-
-        # Transform batch input data paths
-        #   into a structure suitable for batch processing.
-        batch_input_records = []
-        for idx in range(batch_input_fixed_count):
-            batch_input_record = {}
-            for node_id, data_paths in batch_input_files.items():
-                batch_input_record[node_id] = data_paths[idx]
-
-            batch_input_records.append(batch_input_record)
-
-        # Build workflow execution data (RunItem type data)
-        batch_runItems: List[RunItem] = []
-        for idx, batch_input_record in enumerate(batch_input_records):
-            # Duplicate and use the original RunItem
-            new_run_item = copy.deepcopy(runItem)
-
-            new_run_item.name = f"{new_run_item.name} ({new_unique_id} - {idx+1})"
-
-            # Scan batch input records
-            for node_id, data_path in batch_input_record.items():
-                node_type = new_run_item.nodeDict[node_id].type
-
-                # Construct RunItem parameters
-                new_run_item.nodeDict[node_id].data.path = (
-                    [data_path]
-                    if node_type == BatchInputNodeType.BATCH_IMAGE
-                    else data_path
-                )
-                new_run_item.nodeDict[node_id].data.label = data_path
-
-                # Replace node type with corresponding standard node type.
-                normal_node_type = BatchInputNodeType.refer_corresponding_node_type(
-                    node_type
-                )
-                assert normal_node_type, f"Invalid batch node type: {node_type}"
-                new_run_item.nodeDict[node_id].type = normal_node_type[0]
-                new_run_item.nodeDict[node_id].data.fileType = normal_node_type[1]
-
-            batch_runItems.append(new_run_item)
-
-        # ------------------------------------------------------------
-        # Process each Batch Run Workflows
-        # #2) Start multiple workflows
-        # ------------------------------------------------------------
-
-        # TODO: (Tentative) Wait a short time before starting a batch run
-        time.sleep(1)
-
-        # Executes processing for the number of input data items
-        # TODO: Parallel processing is required for performance.
-        for run_item in batch_runItems:
-            unique_id = WorkflowRunner.create_workflow_unique_id()
-            WorkflowRunner(workspace_id, unique_id, run_item).run_workflow(
-                background_tasks
-            )
-
-        logger.info(
-            "Start processing batch workflows. [%d workflows]",
+        WorkflowBatchRunner(workspace_id, new_unique_id, runItem).run_batch_workflow(
+            background_tasks
         )
+
+        logger.info("Start processing batch workflows.")
 
         return new_unique_id
 
