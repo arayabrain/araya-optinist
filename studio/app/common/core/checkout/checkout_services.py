@@ -387,18 +387,11 @@ class WebhookService:
                     )
                     return
 
-                logger.info(
-                    f"Processing subscription checkout - Customer: {customer_id}, Subscription: {subscription_id}"
-                )
-
                 # Get the subscription to access the payment method
                 subscription = stripe.Subscription.retrieve(subscription_id)
                 payment_method_id = subscription.default_payment_method
 
                 if payment_method_id:
-                    logger.info(
-                        f"Setting payment method {payment_method_id} as default for customer {customer_id}"
-                    )
 
                     # Set this payment method as the customer's default
                     stripe.Customer.modify(
@@ -407,7 +400,8 @@ class WebhookService:
                     )
 
                     logger.info(
-                        f"Successfully set default payment method for customer {customer_id}"
+                        f"Successfully set default payment method for customer "
+                        f"{customer_id}"
                     )
                 else:
                     logger.warning(
@@ -418,7 +412,8 @@ class WebhookService:
 
         except stripe.error.StripeError as e:
             logger.error(
-                f"Stripe error while setting default payment method for session {session_id}: {str(e)}"
+                f"Stripe error while setting default payment method for session "
+                f"{session_id}: {str(e)}"
             )
         except Exception as e:
             logger.error(
