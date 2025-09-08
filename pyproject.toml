@@ -88,7 +88,7 @@ concurrent-log-handler = "^0.9.25"
 numpydoc = "*"
 yapf = "*"
 setuptools = "<70"
-pulp = "2.9.0"
+pulp = {extras = ["cbc"], version = "*"}
 
 [tool.poetry.group.dev]
 optional = true
