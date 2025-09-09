@@ -228,9 +228,7 @@ const InvoicesPage = () => {
   const navigate = useNavigate()
 
   const handleGoBack = () => {
-    // You can replace this with your navigation logic
-    window.history.back()
-    // Or use React Router: navigate(-1);
+    navigate("/console/account")
   }
 
   const handleAdjustPlan = () => {
