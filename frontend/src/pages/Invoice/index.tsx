@@ -291,6 +291,7 @@ function formatCardBrand(brand?: string): string {
 
 const InvoicesPage: React.FC = () => {
   const navigate = useNavigate()
+
   const dispatch = useDispatch<AppDispatch>()
 
   // Redux selectors - separate slices
@@ -361,7 +362,7 @@ const InvoicesPage: React.FC = () => {
 
   const handleGoBack = (): void => {
     if (!shouldShowLoader) {
-      window.history.back()
+      navigate("/console/account")
     }
   }
 
