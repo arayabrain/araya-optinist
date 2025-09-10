@@ -27,7 +27,7 @@ try:
     from studio.app.common.models.user import User as UserModel
     from studio.app.common.models.workspace import Workspace
 except ImportError as e:
-    print(f"❌ Import error: {e}")
+    print(f"Import error: {e}")
     print("Make sure you're running from the studio directory")
     sys.exit(1)
 
@@ -60,14 +60,14 @@ def get_test_users():
     test_users_json = os.getenv("TEST_USERS_CONFIG")
 
     if not test_users_json:
-        print("❌ Error: TEST_USERS_CONFIG environment variable not set.")
+        print("Error: TEST_USERS_CONFIG environment variable not set.")
         print("This script requires test user configuration from Terraform.")
         return []
 
     try:
         return json.loads(test_users_json)
     except json.JSONDecodeError as e:
-        print(f"❌ Error: Could not parse TEST_USERS_CONFIG: {e}")
+        print(f"Error: Could not parse TEST_USERS_CONFIG: {e}")
         return []
 
 
@@ -135,17 +135,17 @@ async def delete_test_user_from_db(db, user_email):
         return True
 
     except Exception as e:
-        print(f"❌ Error deleting user {user_name}: {str(e)}")
+        print(f"Error deleting user {user_name}: {str(e)}")
         db.rollback()
         return False
 
 
 async def main():
-    print("🚀 Deleting specific test users...")
+    print("Deleting specific test users...")
 
     db_url = get_database_url()
     if not db_url:
-        print("❌ Error: Could not determine database URL.")
+        print("Error: Could not determine database URL.")
         return
 
     print("📦 Connecting to database...")
@@ -158,7 +158,7 @@ async def main():
         # Get test users from environment variable
         test_users = get_test_users()
         if not test_users:
-            print("❌ No test users to delete. Exiting.")
+            print("No test users to delete. Exiting.")
             return
 
         print(f"📝 Found {len(test_users)} test users to delete")
@@ -172,7 +172,7 @@ async def main():
                     deleted_count += 1
 
             except Exception as e:
-                print(f"❌ Error deleting user {user_data['email']}: {str(e)}")
+                print(f"Error deleting user {user_data['email']}: {str(e)}")
                 db.rollback()
                 continue
 
@@ -181,7 +181,7 @@ async def main():
         db.close()
 
     except Exception as e:
-        print(f"❌ Database connection error: {str(e)}")
+        print(f"Database connection error: {str(e)}")
 
 
 if __name__ == "__main__":

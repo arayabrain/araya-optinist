@@ -25,7 +25,7 @@ try:
     from studio.app.common.models.workspace import Workspace
     from studio.app.dir_path import DIRPATH
 except ImportError as e:
-    print(f"❌ Import error: {e}")
+    print(f"Import error: {e}")
     print(
         "Make sure you're running from the correct "
         "directory with dependencies installed"

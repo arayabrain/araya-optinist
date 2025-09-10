@@ -90,6 +90,7 @@ concurrent-log-handler = "^0.9.25"
 numpydoc = "*"
 yapf = "*"
 setuptools = "<70"
+pulp = {extras = ["cbc"], version = "*"}
 aioboto3 = "^15.0.0"
 async-timeout = "^5.0.1"
 snakemake-executor-plugin-aws-batch = "^0.2.1"

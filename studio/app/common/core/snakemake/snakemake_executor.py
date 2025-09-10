@@ -520,11 +520,11 @@ def _snakemake_execute_batch(
                 )
 
                 logger.info("=" * 60)
-                logger.info("✅ Dryrun validation passed - workflow structure is valid")
+                logger.info("Dryrun validation passed - workflow structure is valid")
 
             except Exception as dryrun_error:
                 logger.error("=" * 60)
-                logger.error("❌ Dryrun validation failed")
+                logger.error("Dryrun validation failed")
                 logger.error(f"Dryrun error: {dryrun_error}")
 
                 # Enhanced error reporting with full traceback

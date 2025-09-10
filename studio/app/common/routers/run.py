@@ -74,7 +74,7 @@ async def run(
 
         unique_id = WorkflowRunner.create_workflow_unique_id()
         WorkflowRunner(
-            remote_bucket_name, workspace_id, unique_id, runItem
+            remote_bucket_name, workspace_id, unique_id, runItem, current_user.id
         ).run_workflow(background_tasks)
 
         logger.info("run snakemake")
@@ -113,11 +113,12 @@ async def run_id(
     runItem: RunItem,
     background_tasks: BackgroundTasks,
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    current_user: User = Depends(get_current_user),
 ):
     try:
-        WorkflowRunner(remote_bucket_name, workspace_id, uid, runItem).run_workflow(
-            background_tasks
-        )
+        WorkflowRunner(
+            remote_bucket_name, workspace_id, uid, runItem, current_user.id
+        ).run_workflow(background_tasks)
 
         logger.info("run snakemake")
         logger.info("forcerun list: %s", runItem.forceRunList)

@@ -30,28 +30,23 @@ try:
     from studio.app.common.models.subscription import UserStorageUsage, UserSubscription
     from studio.app.common.models.user import Organization
 except ImportError as e:
-    print(f"❌ Import error: {e}")
+    print(f"Import error: {e}")
     print("Make sure you're running from the studio directory")
     sys.exit(1)
 
 
 def get_test_users():
-    """Get test user data from environment variable (set by Terraform)."""
-    import json
+    """Get test user data from unified configuration loader."""
+    from test_user_config import load_test_users_for_db, print_configuration_help
 
-    # Get test users from environment variable (set by Terraform)
-    test_users_json = os.getenv("TEST_USERS_CONFIG")
+    test_users = load_test_users_for_db()
 
-    if not test_users_json:
-        print("❌ Error: TEST_USERS_CONFIG environment variable not set.")
-        print("This script requires test user configuration from Terraform.")
+    if not test_users:
+        print_configuration_help()
+        print("This script requires test user configuration.")
         return []
 
-    try:
-        return json.loads(test_users_json)
-    except json.JSONDecodeError as e:
-        print(f"❌ Error: Could not parse TEST_USERS_CONFIG: {e}")
-        return []
+    return test_users
 
 
 def get_database_url():
@@ -98,11 +93,15 @@ async def create_test_user_in_db(db, user_data, organization_id):
     )
 
     # Create subscription
-    # Set expiration based on subscription plan to test downgrade warnings
+    # Set expiration based on subscription plan to test different scenarios
     if user_data["subscription_plan_id"] == 2:  # Premium plan
-        # For premium users, create expired subscription to test downgrade warnings
-        # Expired 31 days ago (past grace period) to trigger warnings
-        expiration_date = datetime.now(timezone.utc) - timedelta(days=50)
+        if "expire" in user_data["email"]:
+            # Only the "expire" user gets expired subscription
+            # Expired 50 days ago (past grace period) to trigger warnings
+            expiration_date = datetime.now(timezone.utc) - timedelta(days=50)
+        else:
+            # Other premium users get active subscriptions for priority testing
+            expiration_date = datetime.now(timezone.utc) + timedelta(days=365)
     else:  # Free plan
         # For free plan users, set future expiration (no need to test warnings)
         expiration_date = datetime.now(timezone.utc) + timedelta(days=365)
@@ -127,7 +126,7 @@ async def create_test_user_in_db(db, user_data, organization_id):
 
     db.commit()
 
-    print(f"✅ Created user: {user_data['name']} ({user_data['email']})")
+    print(f"Created user: {user_data['name']} ({user_data['email']})")
     print(f"   - User ID: {user_db.id}")
     print(
         f"   - Plan: {'Premium' if user_data['subscription_plan_id'] == 2 else 'Free'}"
@@ -138,13 +137,13 @@ async def create_test_user_in_db(db, user_data, organization_id):
 
 
 async def main():
-    print("🚀 Creating test users...")
+    print("Creating test users...")
 
     # Get database connection
     db_url = get_database_url()
     if not db_url:
         print(
-            "❌ Error: Could not determine database URL. "
+            "Error: Could not determine database URL. "
             "Please set DATABASE_URL environment variable."
         )
         return
@@ -160,7 +159,7 @@ async def main():
         org = db.query(Organization).first()
         if not org:
             print(
-                "❌ Error: No organization found in database. "
+                "Error: No organization found in database. "
                 "Please create an organization first."
             )
             return
@@ -170,7 +169,7 @@ async def main():
         # Get test users from environment variable
         test_users = get_test_users()
         if not test_users:
-            print("❌ No test users to create. Exiting.")
+            print("No test users to create. Exiting.")
             return
 
         print(f"📝 Found {len(test_users)} test users to create")
@@ -192,11 +191,11 @@ async def main():
                 created_users.append(user)
 
             except Exception as e:
-                print(f"❌ Error creating user {user_data['name']}: {str(e)}")
+                print(f"Error creating user {user_data['name']}: {str(e)}")
                 db.rollback()
                 continue
 
-        print(f"\n✅ Successfully created {len(created_users)} test users!")
+        print(f"\nSuccessfully created {len(created_users)} test users!")
         print("\n📋 Test User Credentials:")
         print("=" * 60)
         for user_data in test_users:
@@ -210,7 +209,7 @@ async def main():
         db.close()
 
     except Exception as e:
-        print(f"❌ Database connection error: {str(e)}")
+        print(f"Database connection error: {str(e)}")
         print(
             "\n💡 Make sure your database is running and environment "
             "variables are set correctly."

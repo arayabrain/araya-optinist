@@ -17,7 +17,7 @@ try:
     from studio.app.common.db.database import session_scope
     from studio.app.common.models.workspace import Workspace
 except ImportError as e:
-    print(f"❌ Import error: {e}")
+    print(f"Import error: {e}")
     print(
         "Make sure you're running from the correct "
         "directory with dependencies installed"

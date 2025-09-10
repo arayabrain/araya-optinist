@@ -182,11 +182,11 @@ async def get_user_with_context(db: Session, user_id: int) -> User:
                 + func.coalesce(ExperimentCapacity.c.experiment_capacity, 0).label(
                     "data_usage"
                 ),
-                SubscriptionPlans.name.label("subscription_plan_name"),
+                func.max(SubscriptionPlans.name).label("subscription_plan_name"),
                 UserStorageUsage.storage_usage_bytes,
                 UserStorageUsage.storage_quota_bytes,
-                UserSubscription.expiration.label("subscription_expiration"),
-                UserSubscription.plan_id.label("subscription_plan_id"),
+                func.max(UserSubscription.expiration).label("subscription_expiration"),
+                func.max(UserSubscription.plan_id).label("subscription_plan_id"),
             )
             .outerjoin(WorkspaceCapacity, WorkspaceCapacity.c.user_id == UserModel.id)
             .outerjoin(ExperimentCapacity, ExperimentCapacity.c.user_id == UserModel.id)

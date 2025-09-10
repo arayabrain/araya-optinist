@@ -124,6 +124,20 @@ def get_user_storage_usage(user_id: int) -> Optional[Dict[str, Any]]:
     Get storage usage information for a user.
     Falls back to default quota if storage table doesn't exist.
     """
+    import os
+
+    # Skip storage check during testing - return safe default
+    skip_checks_value = os.environ.get("SKIP_STORAGE_CHECKS", "")
+    if skip_checks_value.lower() == "true":
+        logger.debug(f"Skipping storage usage lookup for user {user_id} (test mode)")
+        return {
+            "user_id": user_id,
+            "storage_usage_bytes": 0,
+            "storage_quota_bytes": 100 * 1024 * 1024 * 1024,  # 100GB default quota
+            "storage_usage_percent": 0.0,
+            "last_updated": None,
+        }
+
     try:
         with session_scope() as db:
             # Try to query using ORM model
@@ -370,6 +384,14 @@ async def _calculate_local_user_storage(user_id: int) -> int:
     Returns:
         Total storage size in bytes
     """
+    import os
+
+    # Skip storage calculation during testing
+    skip_checks_value = os.environ.get("SKIP_STORAGE_CHECKS", "")
+    if skip_checks_value.lower() == "true":
+        logger.debug(f"Skipping storage calculation for user {user_id} (test mode)")
+        return 0
+
     try:
         # Get all workspaces the user has access to using shared utility
         from studio.app.common.core.workspace.workspace_utils import (
@@ -831,3 +853,51 @@ async def update_user_storage_after_workflow(workspace_id: str) -> None:
         logger.warning(
             f"Failed to update user storage usage after workflow completion: {e}"
         )
+
+
+async def get_user_subscription_plan(user_id: int) -> Dict[str, Any]:
+    """
+    Get user subscription tier information.
+    Returns subscription tier details including plan name and active status.
+    """
+    try:
+        from studio.app.common.core.users import crud_users
+
+        with session_scope() as db:
+            user = await crud_users.get_user_with_context(db, user_id)
+
+            if not user:
+                logger.warning(f"User {user_id} not found")
+                return {
+                    "tier": "free",
+                    "plan_name": "Free",
+                    "is_premium": False,
+                    "has_active_subscription": False,
+                }
+
+            # Extract subscription information from user context
+            plan_name = getattr(user, "subscription_plan_name", "Free")
+            has_active = getattr(user, "has_active_subscription", False)
+
+            # Determine tier - Premium users should get priority even in grace period
+            is_premium = plan_name and plan_name.lower() == "premium"
+            tier = "premium" if is_premium else "free"
+
+            logger.info(f"User {user_id} subscription tier: {tier} (plan: {plan_name})")
+
+            return {
+                "tier": tier,
+                "plan_name": plan_name or "Free",
+                "is_premium": is_premium,
+                "has_active_subscription": has_active,
+            }
+
+    except Exception as e:
+        logger.warning(f"Failed to get subscription tier for user {user_id}: {e}")
+        # Return free tier as fallback
+        return {
+            "tier": "free",
+            "plan_name": "Free",
+            "is_premium": False,
+            "has_active_subscription": False,
+        }
