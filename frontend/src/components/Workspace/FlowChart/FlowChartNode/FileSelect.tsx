@@ -283,6 +283,7 @@ export const FileSelectImple = memo(function FileSelectImple({
             visibility: "hidden",
             width: 0,
             height: 0,
+            position: "absolute",
           }}
         />
         <Tooltip title={fileName ? fileName : null} placement="right">
