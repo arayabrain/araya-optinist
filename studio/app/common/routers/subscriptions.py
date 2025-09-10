@@ -1,18 +1,18 @@
 import os
-from datetime import datetime
 from typing import List, Optional
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 # Import your database models and dependencies
-from studio.app.common import models as common_model
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.subscription.subscription_controller import (
+    SubscriptionReader,
+    SubscriptionCurrencyType,
+)
 from studio.app.common.db.database import get_db
-from studio.app.common.models.subscription import SubscriptionPlans
 from studio.app.common.schemas.subscriptions import (
     CreateCheckoutSessionRequest,
     CreateCheckoutSessionResponse,
@@ -26,22 +26,11 @@ stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 router = APIRouter(prefix="/api/subscriptions", tags=["subscriptions"])
 logger = AppLogger.get_logger()
 
-# Enum for Subscription Status
-SUBSCRIPTION_ACTIVE_STATUS = {
-    "ACTIVE": "1",
-    "INACTIVE": "0",
-}
-
 
 @router.get("/plans", response_model=List[SubscriptionPlanResponse])
 def get_subscription_plans(db: Session = Depends(get_db)):
     try:
-        # Query active plans
-        plans = (
-            db.query(SubscriptionPlans)
-            .filter(SubscriptionPlans.status == SUBSCRIPTION_ACTIVE_STATUS["ACTIVE"])
-            .all()
-        )
+        plans = SubscriptionReader.get_active_plans(db)
 
         if not plans:
             logger.info("No subscription plans found")
@@ -98,35 +87,12 @@ async def get_user_subscription(
 
     try:
         # Get the most recent active subscription
-        subscription = (
-            db.query(common_model.UserSubscription, common_model.SubscriptionPlans)
-            .join(
-                common_model.SubscriptionPlans,
-                common_model.UserSubscription.plan_id
-                == common_model.SubscriptionPlans.id,
-            )
-            .filter(
-                and_(
-                    common_model.UserSubscription.user_id == user_id,
-                    common_model.UserSubscription.expiration > datetime.now(),
-                )
-            )
-            .order_by(common_model.UserSubscription.expiration.desc())
-            .first()
-        )
+        subscription = SubscriptionReader.get_user_subscription_plan(db, user_id)
 
         if not subscription:
             # Check if user has any expired subscriptions
-            expired_subscription = (
-                db.query(common_model.UserSubscription, common_model.SubscriptionPlans)
-                .join(
-                    common_model.SubscriptionPlans,
-                    common_model.UserSubscription.plan_id
-                    == common_model.SubscriptionPlans.id,
-                )
-                .filter(common_model.UserSubscription.user_id == user_id)
-                .order_by(common_model.UserSubscription.expiration.desc())
-                .first()
+            expired_subscription = SubscriptionReader.get_user_expired_subscription(
+                db, user_id
             )
 
             if expired_subscription:
@@ -174,13 +140,7 @@ async def create_checkout_session(
     try:
         # Get subscription plan from database using plan_id as string
         logger.info(f"Creating checkout session for plan_id: {request.plan_id}")
-        plan = (
-            db.query(SubscriptionPlans)
-            .filter(
-                SubscriptionPlans.id == request.plan_id,
-            )
-            .first()
-        )
+        plan = SubscriptionReader.get_plan_by_id(db, int(request.plan_id))
         logger.info(f"Retrieved plan: {plan}")
 
         if not plan:
@@ -193,9 +153,9 @@ async def create_checkout_session(
         price = plan.price
         currency = plan.currency
 
-        if currency == 1:
+        if currency == SubscriptionCurrencyType.USD.value:
             currency = "usd"
-        elif currency == 2:
+        elif currency == SubscriptionCurrencyType.JPY.value:
             currency = "jpy"
 
         logger.info(f"Request details - price: {price}, currency: {currency}")
