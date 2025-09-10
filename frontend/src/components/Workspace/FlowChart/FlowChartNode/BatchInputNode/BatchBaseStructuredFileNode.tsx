@@ -4,9 +4,8 @@ import { Handle, Position, NodeProps } from "reactflow"
 
 import FolderIcon from "@mui/icons-material/Folder"
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined"
-import { Box, Checkbox, Typography, Tooltip, Divider } from "@mui/material"
+import { Box, Typography, Divider } from "@mui/material"
 import Button from "@mui/material/Button"
-import { CheckboxProps } from "@mui/material/Checkbox"
 import Dialog from "@mui/material/Dialog"
 import DialogActions from "@mui/material/DialogActions"
 import DialogContent from "@mui/material/DialogContent"
@@ -17,6 +16,10 @@ import { TreeItem } from "@mui/x-tree-view/TreeItem"
 import { TreeView } from "@mui/x-tree-view/TreeView"
 import { Action, ThunkAction } from "@reduxjs/toolkit"
 
+import {
+  TreeNodeType,
+  TreeItemLabel as BaseTreeItemLabel,
+} from "components/Workspace/FlowChart/FlowChartNode/BaseStructuredFileNode"
 import { FileSelect } from "components/Workspace/FlowChart/FlowChartNode/FileSelect"
 import { toHandleId } from "components/Workspace/FlowChart/FlowChartNode/FlowChartUtils"
 import { NodeContainer } from "components/Workspace/FlowChart/FlowChartNode/NodeContainer"
@@ -27,27 +30,9 @@ import { setInputNodeFilePath } from "store/slice/InputNode/InputNodeActions"
 import { selectInputNodeDefined } from "store/slice/InputNode/InputNodeSelectors"
 import { selectCurrentWorkspaceId } from "store/slice/Workspace/WorkspaceSelector"
 import { AppDispatch, RootState } from "store/store"
+import { arrayEqualityFn } from "utils/EqualityUtils"
 
-export type TreeNodeType = TreeDirType | TreeFileType
-
-export interface TreeDirType {
-  path: string
-  name: string
-  isDir: true
-  nodes: TreeNodeType[]
-  dataType?: string | null
-}
-
-export interface TreeFileType {
-  path: string
-  name: string
-  isDir: false
-  dataType?: string | null
-  shape?: number[] | null
-  nbytes?: string
-}
-
-export interface FileNodeConfig {
+export interface BatchFileNodeConfig {
   fileType: string
   handleId: string
   handleType: string
@@ -73,33 +58,37 @@ export interface FileNodeConfig {
 type ItemSelectProps = {
   open: boolean
   setOpen: (value: boolean) => void
-  config: FileNodeConfig
+  config: BatchFileNodeConfig
+  filePath: string[] | undefined
 } & NodeIdProps
 
-export function createStructuredFileNode(config: FileNodeConfig) {
-  const FileNode = memo(function FileNode(element: NodeProps) {
+export function createBatchStructuredFileNode(config: BatchFileNodeConfig) {
+  const BatchFileNode = memo(function BatchFileNode(element: NodeProps) {
     const defined = useSelector(selectInputNodeDefined(element.id))
     if (defined) {
-      return <FileNodeImple {...element} config={config} />
+      return <BatchFileNodeImple {...element} config={config} />
     } else {
       return null
     }
   })
-  FileNode.displayName = `${config.fileType}FileNode`
-  return FileNode
+  BatchFileNode.displayName = `Batch${config.fileType}FileNode`
+  return BatchFileNode
 }
 
-const FileNodeImple = memo(function FileNodeImple({
+const BatchFileNodeImple = memo(function BatchFileNodeImple({
   id: nodeId,
   selected,
   config,
-}: NodeProps & { config: FileNodeConfig }) {
+}: NodeProps & { config: BatchFileNodeConfig }) {
   const dispatch = useDispatch()
-  const filePathRaw = useSelector(config.selectFilePath(nodeId))
-  const filePath = Array.isArray(filePathRaw) ? filePathRaw[0] : filePathRaw
+  const filePath = useSelector(config.selectFilePath(nodeId), (a, b) =>
+    a != null && b != null && Array.isArray(a) && Array.isArray(b)
+      ? arrayEqualityFn(a, b)
+      : a === b,
+  )
 
   const [open, setOpen] = useState(false)
-  const onChangeFilePath = (path: string) => {
+  const onChangeFilePath = (path: string[]) => {
     dispatch(setInputNodeFilePath({ nodeId, filePath: path }))
   }
 
@@ -118,23 +107,29 @@ const FileNodeImple = memo(function FileNodeImple({
       </button>
       <FileSelect
         nodeId={nodeId}
+        multiSelect
         onChangeFilePath={(path) => {
-          if (!Array.isArray(path)) {
+          if (Array.isArray(path)) {
             onChangeFilePath(path)
           }
         }}
         setOpen={setOpen}
         fileType={config.fileType}
-        filePath={filePath ?? ""}
+        filePath={
+          Array.isArray(filePath) ? filePath : filePath ? [filePath] : []
+        }
       />
-      {filePath !== undefined && (
-        <ItemSelect
-          open={open}
-          setOpen={setOpen}
-          nodeId={nodeId}
-          config={config}
-        />
-      )}
+      {filePath !== undefined &&
+        Array.isArray(filePath) &&
+        filePath.length > 0 && (
+          <ItemSelect
+            open={open}
+            setOpen={setOpen}
+            nodeId={nodeId}
+            filePath={filePath}
+            config={config}
+          />
+        )}
       <Handle
         type="source"
         position={Position.Right}
@@ -149,6 +144,7 @@ const ItemSelect = memo(function ItemSelect({
   nodeId,
   open,
   setOpen,
+  filePath,
   config,
 }: ItemSelectProps) {
   const dispatch = useDispatch<AppDispatch>()
@@ -166,19 +162,24 @@ const ItemSelect = memo(function ItemSelect({
     setOpen?.(false)
   }
 
+  const displayText = structureFileName
+    ? `Structure: ${structureFileName}`
+    : "No structure is selected."
+
   return (
     <>
       <Typography className="selectFilePath" variant="caption">
-        {structureFileName
-          ? `\u21B3 ${structureFileName}`
-          : "No structure is selected."}
+        {displayText}
       </Typography>
       <Dialog open={open} onClose={() => setOpen(false)} fullWidth>
-        <DialogTitle>Select Structure</DialogTitle>
+        <DialogTitle>
+          {"Select File Structure (Applied to all files)"}
+        </DialogTitle>
         <Structure
           nodeId={nodeId}
           fileSelect={fileSelect}
           setFileSelect={setFileSelect}
+          filePath={filePath}
           config={config}
         />
         <DialogActions>
@@ -198,15 +199,26 @@ const Structure = memo(function Structure({
   nodeId,
   fileSelect,
   setFileSelect,
+  filePath,
   config,
 }: NodeIdProps & {
-  config: FileNodeConfig
+  config: BatchFileNodeConfig
   fileSelect: string
   setFileSelect: (value: string) => void
+  filePath: string[] | undefined
 }) {
   const theme = useTheme()
   return (
     <DialogContent dividers>
+      {filePath && filePath.length > 0 && (
+        <Typography
+          variant="caption"
+          color="textSecondary"
+          style={{ marginBottom: theme.spacing(1), display: "block" }}
+        >
+          Using structure of first file: {`"${filePath[0]}"`}
+        </Typography>
+      )}
       <div
         style={{
           height: 300,
@@ -217,12 +229,15 @@ const Structure = memo(function Structure({
           borderColor: theme.palette.divider,
         }}
       >
-        <FileTreeView
-          nodeId={nodeId}
-          fileSelect={fileSelect}
-          setFileSelect={setFileSelect}
-          config={config}
-        />
+        {filePath && filePath.length > 0 && (
+          <FileTreeView
+            nodeId={nodeId}
+            fileSelect={fileSelect}
+            setFileSelect={setFileSelect}
+            filePath={filePath[0]}
+            config={config}
+          />
+        )}
       </div>
       <Typography>Selected Path</Typography>
       <Typography variant="subtitle2">{fileSelect || "---"}</Typography>
@@ -234,24 +249,32 @@ const FileTreeView = memo(function FileTreeView({
   nodeId,
   fileSelect,
   setFileSelect,
+  filePath,
   config,
 }: NodeIdProps & {
-  config: FileNodeConfig
+  config: BatchFileNodeConfig
   fileSelect: string
   setFileSelect: (value: string) => void
+  filePath: string
 }) {
-  const [tree, isLoading] = useStructuredTree(nodeId, config)
+  const [tree, isLoading] = useBatchStructuredTree(nodeId, filePath, config)
+  const hasDetailedInfo = tree && tree.length > 0 && "shape" in tree[0]
+
   return (
     <div>
       {isLoading && <LinearProgress />}
-      <Box display={"flex"} paddingBottom={1}>
-        <Box flexGrow={4}>Structure</Box>
-        <Box flexGrow={2}>Type</Box>
-        <Box flexGrow={3}>Shape</Box>
-        <Box flexGrow={2}>Nbytes</Box>
-        <Box flexGrow={1}></Box>
-      </Box>
-      <Divider />
+      {hasDetailedInfo && (
+        <>
+          <Box display={"flex"} paddingBottom={1}>
+            <Box flexGrow={4}>Structure</Box>
+            <Box flexGrow={2}>Type</Box>
+            <Box flexGrow={3}>Shape</Box>
+            <Box flexGrow={2}>Nbytes</Box>
+            <Box flexGrow={1}></Box>
+          </Box>
+          <Divider />
+        </>
+      )}
       <TreeView>
         {tree?.map((node, i) => (
           <TreeNode
@@ -268,60 +291,11 @@ const FileTreeView = memo(function FileTreeView({
   )
 })
 
-interface TreeItemLabelProps {
-  isFile: boolean
-  shape: number[]
-  type: string | null
-  label: string
-  nbytes?: string
-  checkboxProps: CheckboxProps
-}
-
-export const TreeItemLabel = memo(function TreeItemLabel({
-  isFile = false,
-  label,
-  shape,
-  type,
-  nbytes,
-  checkboxProps,
-}: TreeItemLabelProps) {
-  return (
-    <Box display="flex" alignItems="center" gap={2}>
-      <Tooltip
-        title={<span style={{ fontSize: 14 }}>{label}</span>}
-        placement={"left"}
-      >
-        <Box
-          width={isFile ? "25%" : "22%"}
-          overflow={"hidden"}
-          textOverflow={"ellipsis"}
-        >
-          {label}
-        </Box>
-      </Tooltip>
-      <Box width={"15%"}>{type}</Box>
-      <Box width={"25%"}>{shape ? `(${shape.join(", ")})` : ""}</Box>
-      <Box width={"15%"}>{nbytes}</Box>
-      <Box>
-        <Checkbox
-          {...checkboxProps}
-          disableRipple
-          size="small"
-          sx={{
-            marginRight: "4px",
-            padding: "2px",
-          }}
-        />
-      </Box>
-    </Box>
-  )
-})
-
 interface TreeNodeProps extends NodeIdProps {
   setFileSelect?: (value: string) => void
   fileSelect?: string
   node: TreeNodeType
-  config: FileNodeConfig
+  config: BatchFileNodeConfig
 }
 
 const TreeNode = memo(function TreeNode({
@@ -337,22 +311,21 @@ const TreeNode = memo(function TreeNode({
   useEffect(() => {
     if (!structureFileName) return
     setFileSelect?.(structureFileName)
-    //eslint-disable-next-line
-  }, [dispatch, structureFileName])
+  }, [structureFileName, setFileSelect])
 
   const onClickFile = (path: string) => {
     setFileSelect?.(path === fileSelect ? "" : path)
+    dispatch(config.setStructurePath({ nodeId, path }))
   }
 
   if (node.isDir) {
-    // Directory
     return (
       <TreeItem
         icon={<FolderIcon htmlColor="skyblue" />}
         nodeId={node.path}
         label={node.name}
       >
-        {(node as TreeDirType).nodes.map((childNode, i) => (
+        {node.nodes.map((childNode, i) => (
           <TreeNode
             setFileSelect={setFileSelect}
             fileSelect={fileSelect}
@@ -365,48 +338,63 @@ const TreeNode = memo(function TreeNode({
       </TreeItem>
     )
   } else {
-    // File
-    return (
-      <TreeItem
-        icon={<InsertDriveFileOutlinedIcon fontSize="small" />}
-        nodeId={node.path}
-        label={
-          <TreeItemLabel
-            isFile={true}
-            label={node.name}
-            type={node.dataType || null}
-            shape={(node as TreeFileType).shape || []}
-            nbytes={(node as TreeFileType).nbytes}
-            checkboxProps={{
-              checked: fileSelect === node.path,
-            }}
-          />
-        }
-        onClick={() => onClickFile(node.path)}
-      />
-    )
+    const hasDetailedInfo =
+      "shape" in node || "dataType" in node || "nbytes" in node
+
+    if (hasDetailedInfo) {
+      return (
+        <TreeItem
+          icon={<InsertDriveFileOutlinedIcon fontSize="small" />}
+          nodeId={node.path}
+          label={
+            <BaseTreeItemLabel
+              isFile={true}
+              label={node.name}
+              type={node.dataType || null}
+              shape={node.shape || []}
+              nbytes={node.nbytes}
+              checkboxProps={{
+                checked: fileSelect === node.path,
+              }}
+            />
+          }
+          onClick={() => onClickFile(node.path)}
+        />
+      )
+    } else {
+      return (
+        <TreeItem
+          icon={<InsertDriveFileOutlinedIcon fontSize="small" />}
+          nodeId={node.path}
+          label={
+            node.name +
+            ("shape" in node && node.shape ? `   (shape=${node.shape}` : "") +
+            ("nbytes" in node && node.nbytes
+              ? `, nbytes=${node.nbytes})`
+              : "shape" in node && node.shape
+                ? ")"
+                : "")
+          }
+          onClick={() => onClickFile(node.path)}
+        />
+      )
+    }
   }
 })
 
-function useStructuredTree(
-  nodeId: string,
-  config: FileNodeConfig,
+function useBatchStructuredTree(
+  _nodeId: string,
+  filePath: string | undefined,
+  config: BatchFileNodeConfig,
 ): [TreeNodeType[] | undefined, boolean] {
   const dispatch = useDispatch<AppDispatch>()
   const tree = useSelector(config.selectTree())
   const isLoading = useSelector(config.selectIsLoading())
-  const filePathRaw = useSelector(config.selectFilePath(nodeId))
-  const filePath = Array.isArray(filePathRaw) ? filePathRaw[0] : filePathRaw
   const workspaceId = useSelector(selectCurrentWorkspaceId)
 
   useEffect(() => {
-    if (workspaceId && !isLoading && filePath) {
-      dispatch(
-        config.getTree({
-          path: filePath as string,
-          workspaceId: Number(workspaceId),
-        }),
-      )
+    if (workspaceId && filePath) {
+      dispatch(config.getTree({ path: filePath, workspaceId }))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, filePath])
