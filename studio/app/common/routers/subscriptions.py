@@ -23,7 +23,7 @@ from studio.app.common.schemas.users import User
 
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
-router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
+router = APIRouter(prefix="/api/subscriptions", tags=["subscriptions"])
 logger = AppLogger.get_logger()
 
 # Enum for Subscription Status
