@@ -14,7 +14,7 @@ router = APIRouter()
 class HDF5Getter:
     @classmethod
     def get(cls, filepath) -> List[HDF5Node]:
-        cls.hdf5_list = []
+        cls.hdf5_list: List[HDF5Node] = []
         with h5py.File(filepath, "r") as f:
             f.visititems(cls.get_ds_dictionaries)
 
@@ -68,12 +68,18 @@ class HDF5Getter:
                         name=name,
                         path=path,
                         shape=node.shape,
-                        nbytes=f"{int(node.nbytes / (1000**2))} M",
-                        dataType="array"
-                        if isinstance(node[:], np.ndarray)
-                        else type(node[:]).__name__,
+                        nbytes=cls.format_nbytes(node.nbytes),
+                        dataType=(
+                            "array"
+                            if isinstance(node[:], np.ndarray)
+                            else type(node[:]).__name__
+                        ),
                     )
                 )
+
+    @classmethod
+    def format_nbytes(cls, nbytes: int) -> str:
+        return f"{float(nbytes / (1000**2)):.1f} MB"
 
 
 @router.get("/hdf5/{file_path:path}", response_model=List[HDF5Node], tags=["outputs"])
