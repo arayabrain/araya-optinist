@@ -10,7 +10,6 @@ import {
 } from "store/slice/HDF5/HDF5Selectors"
 import {
   selectHdf5LikeInputNodeSelectedFilePath,
-  selectInputNodeDefined,
   selectInputNodeHDF5Path,
 } from "store/slice/InputNode/InputNodeSelectors"
 import { setInputNodeHDF5Path } from "store/slice/InputNode/InputNodeSlice"
