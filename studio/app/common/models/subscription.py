@@ -28,9 +28,7 @@ class SubscriptionPlans(SQLModel, table=True):
         description="JSON object of features included in the plan",
     )
     status: bool = Field(
-        sa_column=Column(
-            Boolean, nullable=False, default=True
-        ),  # Fixed: Use Boolean type
+        sa_column=Column(Boolean, nullable=False, default=True),
         description="True=Active, False=Inactive",
     )
     currency: int = Field(

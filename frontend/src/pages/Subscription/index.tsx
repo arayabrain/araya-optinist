@@ -86,9 +86,9 @@ const SubscriptionPlans = () => {
     return plan?.price === 0
   }
 
-  const SUBSCRIPTION_PLAN = {
-    FREE: "Free",
-    PREMIUM: "Premium",
+  enum SUBSCRIPTION_PLAN {
+    FREE = "Free",
+    PREMIUM = "Premium",
   }
 
   const handleUpgradeClick = async (planId: number) => {

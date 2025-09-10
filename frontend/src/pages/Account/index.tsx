@@ -69,8 +69,8 @@ const Account = () => {
   }
 
   const SUBSCRIPTION_STATUS = {
-    LOADING: "Loading...",
-    ERROR: "Error loading subscription",
+    LOADING: "LOADING",
+    ERROR: "ERROR",
     FREE: "FREE",
     EXPIRED: "EXPIRED",
   } as const
