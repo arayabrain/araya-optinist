@@ -1,4 +1,4 @@
-import datetime
+from datetime import datetime
 from enum import Enum
 from typing import List
 
@@ -45,10 +45,15 @@ class SubscriptionReader:
                 common_model.UserSubscription.plan_id
                 == common_model.SubscriptionPlans.id,
             )
+            .join(
+                common_model.User,
+                common_model.UserSubscription.user_id == common_model.User.id,
+            )
             .filter(
                 and_(
                     common_model.UserSubscription.user_id == user_id,
                     common_model.UserSubscription.expiration > datetime.now(),
+                    common_model.User.active.is_(True),
                 )
             )
             .order_by(common_model.UserSubscription.expiration.desc())
@@ -60,13 +65,24 @@ class SubscriptionReader:
         db: Session, user_id: int
     ) -> common_model.UserSubscription:
         return (
-            db.query(common_model.UserSubscription, common_model.SubscriptionPlans)
+            db.query(
+                common_model.UserSubscription,
+                common_model.SubscriptionPlans,
+                common_model.User,
+            )
             .join(
                 common_model.SubscriptionPlans,
                 common_model.UserSubscription.plan_id
                 == common_model.SubscriptionPlans.id,
             )
-            .filter(common_model.UserSubscription.user_id == user_id)
+            .join(
+                common_model.User,
+                common_model.UserSubscription.user_id == common_model.User.id,
+            )
+            .filter(
+                common_model.UserSubscription.user_id == user_id,
+                common_model.User.active.is_(True),
+            )
             .order_by(common_model.UserSubscription.expiration.desc())
             .first()
         )

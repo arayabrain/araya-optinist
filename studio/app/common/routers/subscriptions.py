@@ -78,13 +78,6 @@ async def get_user_subscription(
     """
     Get user's current active subscription
     """
-    # Check if user can access this data (either own data or admin)
-    if current_user.id != user_id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to access this user's subscription data",
-        )
-
     try:
         # Get the most recent active subscription
         subscription = SubscriptionReader.get_user_subscription_plan(db, user_id)
