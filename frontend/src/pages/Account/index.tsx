@@ -68,12 +68,12 @@ const Account = () => {
     enqueueSnackbar(mess, { variant })
   }
 
-  const SUBSCRIPTION_STATUS = {
-    LOADING: "LOADING",
-    ERROR: "ERROR",
-    FREE: "FREE",
-    EXPIRED: "EXPIRED",
-  } as const
+  enum SUBSCRIPTION_STATUS {
+    LOADING = "LOADING",
+    ERROR = "ERROR",
+    FREE = "FREE",
+    EXPIRED = "EXPIRED",
+  }
 
   useEffect(() => {
     dispatch(getMe())
