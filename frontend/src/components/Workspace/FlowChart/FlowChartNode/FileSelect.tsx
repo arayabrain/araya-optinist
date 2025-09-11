@@ -16,8 +16,8 @@ import { IconButton, Tooltip, Typography, Chip, Box } from "@mui/material"
 import ButtonGroup from "@mui/material/ButtonGroup"
 
 import { FILE_TREE_TYPE, FILE_TREE_TYPE_SET } from "api/files/Files"
+import { CsvParamSettingDialog } from "components/Workspace/FlowChart/Dialog/CsvParamSettingDialog"
 import { DialogContext } from "components/Workspace/FlowChart/Dialog/DialogContext"
-import { ParamSettingDialog } from "components/Workspace/FlowChart/FlowChartNode/CsvFileNode"
 import { LinearProgressWithLabel } from "components/Workspace/FlowChart/FlowChartNode/LinerProgressWithLabel"
 import { FileNodeFactory } from "factories/FileNodeFactory"
 import { getFilesTree } from "store/slice/FilesTree/FilesTreeAction"
@@ -249,11 +249,15 @@ export const FileSelectImple = memo(function FileSelectImple({
           !!filePath &&
           (Array.isArray(filePath) ? filePath.length > 0 : true) &&
           !!nodeId && (
-            <ParamSettingDialog
-              nodeId={nodeId}
-              filePath={filePath}
-              disabled={!!isPending}
-            />
+            <Tooltip title={"Settings"}>
+              <span>
+                <CsvParamSettingDialog
+                  nodeId={nodeId}
+                  filePath={Array.isArray(filePath) ? filePath[0] : filePath}
+                  disabled={!!isPending}
+                />
+              </span>
+            </Tooltip>
           )}
         {(
           [FILE_TREE_TYPE_SET.HDF5, FILE_TREE_TYPE_SET.MATLAB] as string[]

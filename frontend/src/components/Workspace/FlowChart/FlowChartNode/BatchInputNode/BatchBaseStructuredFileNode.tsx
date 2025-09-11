@@ -16,10 +16,8 @@ import { TreeItem } from "@mui/x-tree-view/TreeItem"
 import { TreeView } from "@mui/x-tree-view/TreeView"
 import { Action, ThunkAction } from "@reduxjs/toolkit"
 
-import {
-  TreeNodeType,
-  TreeItemLabel as BaseTreeItemLabel,
-} from "components/Workspace/FlowChart/FlowChartNode/BaseStructuredFileNode"
+import { TreeItemLabel as BaseTreeItemLabel } from "components/Workspace/FlowChart/Dialog/StructureItemSelectDialog"
+import { TreeNodeType } from "components/Workspace/FlowChart/FlowChartNode/BaseStructuredFileNode"
 import { FileSelect } from "components/Workspace/FlowChart/FlowChartNode/FileSelect"
 import { toHandleId } from "components/Workspace/FlowChart/FlowChartNode/FlowChartUtils"
 import { NodeContainer } from "components/Workspace/FlowChart/FlowChartNode/NodeContainer"
