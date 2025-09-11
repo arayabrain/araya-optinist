@@ -251,7 +251,7 @@ const InvoicesPage = () => {
                 {/* Logo */}
                 <Box
                   component="img"
-                  src="/static/image.png"
+                  src="/static/optinist_logo.png"
                   alt="OPTINIST Logo"
                   sx={{
                     width: "84px",
