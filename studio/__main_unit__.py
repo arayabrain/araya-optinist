@@ -23,13 +23,13 @@ from studio.app.common.core.workspace.workspace_dependencies import (
 from studio.app.common.routers import (
     algolist,
     auth,
-    checkout,
     dataview,
     experiment,
     files,
     logs,
     outputs,
     params,
+    payments,
     run,
     subscriptions,
     users_admin,
@@ -110,7 +110,7 @@ app.include_router(workspace.router, dependencies=[Depends(get_current_user)])
 app.include_router(dataview.public_router)
 app.include_router(dataview.router, dependencies=[Depends(get_current_user)])
 app.include_router(subscriptions.router, dependencies=[Depends(get_current_user)])
-app.include_router(checkout.router, dependencies=[Depends(get_current_user)])
+app.include_router(payments.router, dependencies=[Depends(get_current_user)])
 
 # optinist routers
 app.include_router(hdf5.router, dependencies=[Depends(get_current_user)])

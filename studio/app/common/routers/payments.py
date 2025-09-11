@@ -8,8 +8,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from studio.app.common.core.checkout.checkout_services import (
-    CheckoutService,
+from studio.app.common.core.payment.payment_services import (
+    PaymentService,
     SyncService,
     WebhookService,
 )
@@ -22,17 +22,17 @@ logger = logging.getLogger(__name__)
 # Stripe setup
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
-router = APIRouter(prefix="/api/v1/checkout", tags=["checkout"])
+router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
 
 
 # Pydantic Models
-class CheckoutSuccessRequest(BaseModel):
+class PaymentSuccessRequest(BaseModel):
     session_id: str = Field(..., description="Stripe checkout session ID")
     user_id: int = Field(..., description="Internal user ID")
     plan_id: int = Field(..., description="Subscription plan ID (1=Free, 2=Premium)")
 
 
-class CheckoutSuccessResponse(BaseModel):
+class PaymentSuccessResponse(BaseModel):
     success: bool
     message: str
     subscription_user_id: Optional[int] = None
@@ -52,9 +52,9 @@ class SubscriptionStatusResponse(BaseModel):
 
 
 # API Endpoints
-@router.post("/stripe/checkout-success", response_model=CheckoutSuccessResponse)
-async def checkout_success(
-    request: CheckoutSuccessRequest,
+@router.post("/stripe/success", response_model=PaymentSuccessResponse)
+async def payment_success(
+    request: PaymentSuccessRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
@@ -64,7 +64,7 @@ async def checkout_success(
     """
     try:
         # Process checkout using service
-        result = CheckoutService.process_checkout_success(
+        result = PaymentService.process_payment_success(
             db=db,
             session_id=request.session_id,
             user_id=request.user_id,
@@ -73,7 +73,7 @@ async def checkout_success(
 
         # Validate that result has all required fields
         if not isinstance(result, dict) or "success" not in result:
-            logger.error(f"Invalid result from process_checkout_success: {result}")
+            logger.error(f"Invalid result from process_payment_success: {result}")
             raise HTTPException(status_code=500, detail="Invalid processing result")
 
         # Add background task for syncing
@@ -82,7 +82,7 @@ async def checkout_success(
                 sync_subscription_background, result["subscription_user_id"]
             )
 
-        return CheckoutSuccessResponse(
+        return PaymentSuccessResponse(
             success=result["success"],
             message=result.get("message", "Subscription processed successfully"),
             subscription_user_id=result.get("subscription_user_id"),
@@ -101,13 +101,30 @@ async def checkout_success(
 @router.post("/stripe/webhook")
 async def stripe_webhook(
     request: WebhookRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """Handle Stripe webhooks for subscription events"""
     try:
-        event_type = request.event_type
-        data = request.data
+        # Get raw body and signature header
+        body = await request.body()
+        sig_header = request.headers.get("stripe-signature")
+
+        # Your webhook endpoint secret from Stripe Dashboard
+        endpoint_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
+
+        # Verify the webhook signature
+        try:
+            event = stripe.Webhook.construct_event(body, sig_header, endpoint_secret)
+        except ValueError as e:
+            logger.error("Invalid payload: " + str(e))
+            raise HTTPException(status_code=400, detail="Invalid payload")
+        except stripe.error.SignatureVerificationError as e:
+            logger.error("Invalid signature: " + str(e))
+            raise HTTPException(status_code=400, detail="Invalid signature")
+
+        # Now use the verified event data
+        event_type = event["type"]
+        data = event["data"]["object"]
 
         if event_type == "checkout.session.completed":
             WebhookService.handle_checkout_completed(db, data)

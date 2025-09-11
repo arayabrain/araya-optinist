@@ -221,40 +221,28 @@ async def create_checkout_session(
 async def get_user_payment_methods(
     user_id: int,
     db: Session = Depends(get_db),
-    # current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Get user's payment methods with last 4 digits and card brand
     """
-    # Check if user can access this data (either own data or admin)
-    # if current_user.id != user_id and not current_user.is_admin:
-    #     raise HTTPException(
-    #         status_code=status.HTTP_403_FORBIDDEN,
-    #         detail="Not authorized to access this user's payment methods",
-    #     )
-
     try:
-        # First, get the user's active subscription to find their Stripe customer ID
-        subscription = (
-            db.query(common_model.UserSubscription)
-            .filter(
-                and_(
-                    common_model.UserSubscription.user_id == user_id,
-                    common_model.UserSubscription.expiration > datetime.now(),
-                )
+        # Check if user can access this data (either own data or admin)
+        if current_user.id != user_id and not current_user.is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to access this user's payment methods",
             )
-            .order_by(common_model.UserSubscription.expiration.desc())
-            .first()
-        )
+
+        # First, get the user's active subscription to find their Stripe customer ID
+        subscription = SubscriptionReader.get_user_subscription_plan(db, user_id)
 
         if not subscription:
             logger.info(f"No active subscription found for user {user_id}")
             return []
 
         # Get user email to find Stripe customer
-        user = (
-            db.query(common_model.User).filter(common_model.User.id == user_id).first()
-        )
+        user = current_user
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
@@ -311,7 +299,7 @@ async def get_user_payment_methods(
 async def get_user_default_payment_method(
     user_id: int,
     db: Session = Depends(get_db),
-    # current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Get user's default payment method
@@ -325,9 +313,7 @@ async def get_user_default_payment_method(
 
     try:
         # Get user email to find Stripe customer
-        user = (
-            db.query(common_model.User).filter(common_model.User.id == user_id).first()
-        )
+        user = current_user
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 

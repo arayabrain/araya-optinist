@@ -25,7 +25,7 @@ SUBSCRIPTION_ACTIVE_STATUS = {
 }
 
 
-class CheckoutService:
+class PaymentService:
     """Service class for handling checkout operations"""
 
     @staticmethod
@@ -237,7 +237,7 @@ class CheckoutService:
         return purchase
 
     @staticmethod
-    def process_checkout_success(
+    def process_payment_success(
         db: Session, session_id: str, user_id: int, plan_id: int
     ) -> Dict[str, Any]:
         """
@@ -306,36 +306,36 @@ class CheckoutService:
                 }
 
             # 2. Verify Stripe session
-            session_data = CheckoutService.verify_stripe_session(session_id)
+            session_data = PaymentService.verify_stripe_session(session_id)
 
             if session_data["payment_status"] != "paid":
                 raise ValueError("Payment not completed")
 
             # 3. Get subscription plan
-            plan = CheckoutService.get_subscription_plan(db, plan_id)
+            plan = PaymentService.get_subscription_plan(db, plan_id)
             if not plan:
                 raise ValueError("Subscription plan not found")
 
             # 4. Get or create Stripe provider
-            stripe_provider_id = CheckoutService.get_or_create_stripe_provider(db)
+            stripe_provider_id = PaymentService.get_or_create_stripe_provider(db)
 
             # 5. Create or update user account
-            CheckoutService.create_or_update_user_account(
+            PaymentService.create_or_update_user_account(
                 db, user_id, stripe_provider_id, session_data["customer_id"]
             )
 
             # 6. Calculate expiration date
-            expiration_date = CheckoutService.calculate_expiration_date(
+            expiration_date = PaymentService.calculate_expiration_date(
                 plan.billing_cycle
             )
 
             # 7. Create or update subscription
-            subscription_user_id = CheckoutService.create_or_update_subscription(
+            subscription_user_id = PaymentService.create_or_update_subscription(
                 db, user_id, plan_id, expiration_date
             )
 
             # 8. Record purchase
-            purchase = CheckoutService.record_purchase(db, plan_id, user_id)
+            purchase = PaymentService.record_purchase(db, plan_id, user_id)
 
             # 9. Commit all changes
             db.commit()
