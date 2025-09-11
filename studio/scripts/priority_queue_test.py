@@ -141,7 +141,6 @@ class SimplePriorityQueueTester:
                     str(Path(__file__).parent / "get_jwt_tokens.py"),
                     "--environment",
                     self.environment,
-                    "--update-script",
                     "--output-file",
                     str(tokens_file),
                 ]

@@ -6,7 +6,7 @@ This script automatically generates JWT tokens for the test users using
 email/password login, then updates the test script with the new tokens.
 
 Usage:
-    python get_jwt_tokens.py [--local|--cloud] [--update-script]
+    python get_jwt_tokens.py [--local|--cloud]
 
 Prerequisites:
     - requests library (pip install requests)

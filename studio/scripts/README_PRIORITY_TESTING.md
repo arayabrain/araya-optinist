@@ -109,9 +109,6 @@ The scripts use these pre-configured test users from terraform.tfvars:
 # Just generate tokens (with analysis)
 python3 get_jwt_tokens.py --environment local
 
-# Update test script with tokens
-python3 get_jwt_tokens.py --environment local --update-script
-
 # Run comprehensive test with custom settings
 python3 priority_queue_test.py --premium-count 5 --free-count 5
 
@@ -125,7 +122,7 @@ python3 get_jwt_tokens.py --output-file tokens.json
 ### Using Shell Scripts (Legacy)
 ```bash
 # Generate tokens
-python3 get_jwt_tokens.py --environment local --update-script
+python3 get_jwt_tokens.py --environment local
 
 # Run the shell-based test runner
 ./run_priority_queue_test.sh
