@@ -1,21 +1,39 @@
-import {
+import React, {
   memo,
-  SyntheticEvent,
   useContext,
   useEffect,
   useState,
   MouseEvent,
   useCallback,
+  useRef,
 } from "react"
 import { useDispatch, useSelector } from "react-redux"
 
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from "@dnd-kit/core"
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+  useSortable,
+} from "@dnd-kit/sortable"
+import { CSS } from "@dnd-kit/utilities"
 import AutorenewIcon from "@mui/icons-material/Autorenew"
 import CloseIcon from "@mui/icons-material/Close"
 import DeleteIcon from "@mui/icons-material/Delete"
+import DragIndicatorIcon from "@mui/icons-material/DragIndicator"
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline"
 import FolderIcon from "@mui/icons-material/Folder"
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined"
-import { Divider, IconButton, Tooltip } from "@mui/material"
+import { Divider, IconButton, Tooltip, Chip } from "@mui/material"
 import Box from "@mui/material/Box"
 import Button from "@mui/material/Button"
 import Checkbox, { CheckboxProps } from "@mui/material/Checkbox"
@@ -24,7 +42,7 @@ import DialogActions from "@mui/material/DialogActions"
 import DialogContent from "@mui/material/DialogContent"
 import DialogTitle from "@mui/material/DialogTitle"
 import LinearProgress from "@mui/material/LinearProgress"
-import { useTheme } from "@mui/material/styles"
+import { useTheme, styled } from "@mui/material/styles"
 import Typography from "@mui/material/Typography"
 import { TreeItem } from "@mui/x-tree-view/TreeItem"
 import { TreeView } from "@mui/x-tree-view/TreeView"
@@ -44,6 +62,48 @@ import { updateShape } from "store/slice/FileUploader/FileUploaderActions"
 import { selectPipelineLatestUid } from "store/slice/Pipeline/PipelineSelectors"
 import { selectCurrentWorkspaceId } from "store/slice/Workspace/WorkspaceSelector"
 import { AppDispatch } from "store/store"
+
+// Constants
+const COLUMN_MIN_WIDTH = 20
+const COLUMN_MAX_WIDTH = 80
+const COLUMN_DEFAULT_WIDTH = 50
+
+// Styled components (5+ attributes or commonly used)
+const StyledColumnResizer = styled(Box)({
+  width: "10px",
+  cursor: "col-resize",
+  position: "absolute",
+  top: 0,
+  bottom: "6px",
+  zIndex: 10,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  "&::before": {
+    content: "''",
+    width: "1px",
+    height: "100%",
+    backgroundColor: "rgba(0, 0, 0, 0.2)",
+    display: "block",
+  },
+  "&:hover::before": {
+    backgroundColor: "rgba(0, 0, 0, 0.4)",
+    width: "2px",
+  },
+})
+
+const StyledCheckbox = styled(Checkbox)({
+  marginRight: "4px",
+  padding: "2px",
+  minWidth: 24,
+})
+
+// Common style objects for reuse
+const ellipsisStyle = {
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+} as const
 
 type FileSelectDialogProps = {
   initialFilePath: string[] | string
@@ -111,11 +171,22 @@ export const FileSelectDialog = memo(function FileSelectDialog({
             selectedFilePath={selectedFilePath}
           />
         </div>
-        <Typography variant="subtitle1">
-          {Array.isArray(selectedFilePath) && selectedFilePath.length === 0
-            ? "No Selected File"
-            : "Selected File"}
-        </Typography>
+        <Box display="flex" alignItems="center" gap={1}>
+          <Typography variant="subtitle1">
+            {Array.isArray(selectedFilePath) && selectedFilePath.length === 0
+              ? "No Selected File"
+              : "Selected Files"}
+          </Typography>
+          {Array.isArray(selectedFilePath) && selectedFilePath.length > 0 && (
+            <Chip
+              label={selectedFilePath.length}
+              size="small"
+              color="primary"
+              variant="outlined"
+              sx={{ fontSize: "0.75rem", height: "20px", fontWeight: "bold" }}
+            />
+          )}
+        </Box>
         <FilePathSelectedListView
           path={selectedFilePath}
           setSelectedFilePath={setSelectedFilePath}
@@ -148,6 +219,8 @@ const FileTreeView = memo(function FileTreeView({
 }: FileTreeViewProps) {
   const [tree, isLoading] = useFileTree(fileType)
   const [initialized, setInitialized] = useState(false)
+  const [columnWidth, setColumnWidth] = useState(COLUMN_DEFAULT_WIDTH) // Column width in percentage
+  const [isDragging, setIsDragging] = useState(false)
 
   // Helper function to check if a file exists in the tree
   const isFileInTree = (path: string, tree: TreeNodeType[] | null): boolean => {
@@ -213,35 +286,97 @@ const FileTreeView = memo(function FileTreeView({
       }
     }
   }
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+    setIsDragging(true)
+  }
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false)
+  }, [])
+
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  const handleMouseMove = useCallback(
+    (e: Event) => {
+      if (!isDragging || !containerRef.current) return
+      const mouseEvent = e as unknown as MouseEvent
+      const rect = containerRef.current.getBoundingClientRect()
+      const newWidth = ((mouseEvent.clientX - rect.left) / rect.width) * 100
+      setColumnWidth(
+        Math.max(COLUMN_MIN_WIDTH, Math.min(COLUMN_MAX_WIDTH, newWidth)),
+      )
+    },
+    [isDragging],
+  )
+
+  useEffect(() => {
+    if (isDragging) {
+      document.addEventListener("mousemove", handleMouseMove)
+      document.addEventListener("mouseup", handleMouseUp)
+      document.body.style.cursor = "col-resize"
+      document.body.style.userSelect = "none"
+      return () => {
+        document.removeEventListener("mousemove", handleMouseMove)
+        document.removeEventListener("mouseup", handleMouseUp)
+        document.body.style.cursor = ""
+        document.body.style.userSelect = ""
+      }
+    }
+    return undefined
+  }, [isDragging, handleMouseMove, handleMouseUp])
+
   return (
-    <div>
+    <div
+      ref={containerRef}
+      style={{ display: "flex", flexDirection: "column", height: "100%" }}
+    >
       {isLoading && <LinearProgress />}
-      {fileType === FILE_TREE_TYPE_SET.IMAGE ? (
-        <>
-          <Box sx={{ display: "flex" }}>
-            <Typography sx={{ width: "50%" }}>Files</Typography>
-            <Typography sx={{ minWidth: "35%" }} marginLeft={2}>
+      <>
+        <Box
+          sx={{
+            display: "flex",
+            position: "sticky",
+            top: 0,
+            backgroundColor: "background.paper",
+            zIndex: 5,
+            userSelect: "none",
+            paddingBottom: "6px",
+          }}
+        >
+          <Typography sx={{ width: `${columnWidth}%`, ...ellipsisStyle }}>
+            Files
+          </Typography>
+          <StyledColumnResizer
+            sx={{ left: `calc(${columnWidth}% - 5px)` }}
+            onMouseDown={handleMouseDown}
+          />
+          {fileType === FILE_TREE_TYPE_SET.IMAGE && (
+            <Typography sx={{ flex: 1, ...ellipsisStyle }} marginLeft={2}>
               Shapes
             </Typography>
-            <Box></Box>
-          </Box>
-          <Divider />
-        </>
-      ) : null}
-      <TreeView disableSelection={multiSelect} multiSelect={multiSelect}>
-        {tree?.map((node) => (
-          <TreeNode
-            fileType={fileType}
-            key={node.name}
-            node={node}
-            selectedFilePath={selectedFilePath}
-            multiSelect={multiSelect}
-            onCheckDir={onCheckDir}
-            onCheckFile={onCheckFile}
-            setSelectedFilePath={setSelectedFilePath}
-          />
-        ))}
-      </TreeView>
+          )}
+        </Box>
+        <Divider />
+      </>
+      <Box sx={{ flex: 1, overflow: "auto" }}>
+        <TreeView disableSelection={multiSelect} multiSelect={multiSelect}>
+          {tree?.map((node) => (
+            <TreeNode
+              fileType={fileType}
+              key={node.name}
+              node={node}
+              selectedFilePath={selectedFilePath}
+              multiSelect={multiSelect}
+              onCheckDir={onCheckDir}
+              onCheckFile={onCheckFile}
+              setSelectedFilePath={setSelectedFilePath}
+              columnWidth={columnWidth}
+            />
+          ))}
+        </TreeView>
+      </Box>
     </div>
   )
 })
@@ -254,6 +389,7 @@ interface TreeNodeProps {
   onCheckDir: (path: string, checked: boolean) => void
   onCheckFile: (path: string) => void
   setSelectedFilePath: (path: string[] | string) => void
+  columnWidth?: number
 }
 
 const TreeNode = memo(function TreeNode({
@@ -264,6 +400,7 @@ const TreeNode = memo(function TreeNode({
   onCheckDir,
   onCheckFile,
   setSelectedFilePath,
+  columnWidth = COLUMN_DEFAULT_WIDTH,
 }: TreeNodeProps) {
   if (node.isDir) {
     const allChecked =
@@ -301,6 +438,7 @@ const TreeNode = memo(function TreeNode({
               }}
               setSelectedFilePath={setSelectedFilePath}
               selectedFilePath={selectedFilePath}
+              columnWidth={columnWidth}
             />
           ) : (
             node.name
@@ -317,6 +455,7 @@ const TreeNode = memo(function TreeNode({
             onCheckDir={onCheckDir}
             onCheckFile={onCheckFile}
             setSelectedFilePath={setSelectedFilePath}
+            columnWidth={columnWidth}
           />
         ))}
       </TreeItem>
@@ -362,6 +501,7 @@ const TreeNode = memo(function TreeNode({
             }}
             setSelectedFilePath={setSelectedFilePath}
             selectedFilePath={selectedFilePath}
+            columnWidth={columnWidth}
           />
         }
       />
@@ -378,6 +518,7 @@ interface TreeItemLabelProps {
   setSelectedFilePath: (path: string[] | string) => void
   selectedFilePath: string[] | string
   multiSelect: boolean
+  columnWidth?: number
 }
 
 export const TreeItemLabel = memo(function TreeItemLabel({
@@ -389,6 +530,7 @@ export const TreeItemLabel = memo(function TreeItemLabel({
   setSelectedFilePath,
   selectedFilePath,
   multiSelect,
+  columnWidth = COLUMN_DEFAULT_WIDTH,
 }: TreeItemLabelProps) {
   const dispatch = useDispatch<AppDispatch>()
   const workspaceId = useSelector(selectCurrentWorkspaceId)
@@ -447,9 +589,8 @@ export const TreeItemLabel = memo(function TreeItemLabel({
         >
           <Box
             sx={{
-              width: "48%",
-              textOverflow: "ellipsis",
-              overflowX: "hidden",
+              width: `${columnWidth}%`,
+              ...ellipsisStyle,
               whiteSpace: "pre",
             }}
           >
@@ -458,7 +599,7 @@ export const TreeItemLabel = memo(function TreeItemLabel({
         </Tooltip>
         {fileType === FILE_TREE_TYPE_SET.IMAGE ? (
           <>
-            <Box minWidth={175} marginLeft={2} alignItems={"center"}>
+            <Box flex={1} marginLeft={2} alignItems="center" sx={ellipsisStyle}>
               {!isDir ? (
                 !shape ? (
                   <Tooltip
@@ -472,40 +613,16 @@ export const TreeItemLabel = memo(function TreeItemLabel({
                     <ErrorOutlineIcon color={"error"} />
                   </Tooltip>
                 ) : (
-                  `(${shape.join(", ")})`
+                  <span>{`(${shape.join(", ")})`}</span>
                 )
               ) : null}
             </Box>
           </>
         ) : null}
-        <Box display={"flex"} alignItems={"center"}>
-          {multiSelect ? (
-            <Box>
-              <Checkbox
-                {...checkboxProps}
-                size="small"
-                disableRipple
-                sx={{
-                  marginRight: "4px",
-                  padding: "2px",
-                  minWidth: 24,
-                }}
-              />
-            </Box>
-          ) : (
-            <Box>
-              <Checkbox
-                {...checkboxProps}
-                size="small"
-                disableRipple
-                sx={{
-                  marginRight: "4px",
-                  padding: "2px",
-                  minWidth: 24,
-                }}
-              />
-            </Box>
-          )}
+        <Box display="flex" alignItems="center">
+          <Box>
+            <StyledCheckbox {...checkboxProps} size="small" disableRipple />
+          </Box>
 
           {!isDir && multiSelect ? (
             <IconButton
@@ -545,6 +662,73 @@ export const TreeItemLabel = memo(function TreeItemLabel({
   )
 })
 
+interface SortableItemProps {
+  id: string
+  text: string
+  onRemove: (text: string) => void
+}
+
+const SortableItem = memo(function SortableItem({
+  id,
+  text,
+  onRemove,
+}: SortableItemProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id })
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  }
+
+  return (
+    <li
+      ref={setNodeRef}
+      style={{
+        ...style,
+        marginBottom: "3px",
+        listStyleType: "none",
+        marginLeft: "8px",
+        cursor: isDragging ? "grabbing" : "grab",
+      }}
+    >
+      <span
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          width: "100%",
+        }}
+      >
+        <span style={{ display: "flex", alignItems: "center", flex: 1 }}>
+          <DragIndicatorIcon
+            {...attributes}
+            {...listeners}
+            style={{
+              width: "20px",
+              height: "20px",
+              marginRight: "8px",
+              cursor: isDragging ? "grabbing" : "grab",
+              color: "#999",
+            }}
+          />
+          <span style={{ flex: 1 }}>{text}</span>
+        </span>
+        <IconButton style={{ padding: "0" }} onClick={() => onRemove(text)}>
+          <CloseIcon style={{ width: "15px", height: "15px" }} />
+        </IconButton>
+      </span>
+    </li>
+  )
+})
+
 interface FilePathProps {
   path: string | string[]
   setSelectedFilePath: (path: string[] | string) => void
@@ -554,43 +738,61 @@ const FilePathSelectedListView = memo(function FilePathSelectedListView({
   path,
   setSelectedFilePath,
 }: FilePathProps) {
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8,
+      },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  )
+
   const handleRemoveFile = (fileToRemove: string) => {
     if (Array.isArray(path)) {
       setSelectedFilePath(path.filter((file) => file !== fileToRemove))
     }
   }
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event
+
+    if (active.id !== over?.id && Array.isArray(path)) {
+      const oldIndex = path.indexOf(active.id as string)
+      const newIndex = path.indexOf(over?.id as string)
+
+      if (oldIndex !== -1 && newIndex !== -1) {
+        setSelectedFilePath(arrayMove(path, oldIndex, newIndex))
+      }
+    }
+  }
+
   return (
     <Typography variant="subtitle2">
       {path ? (
         Array.isArray(path) ? (
-          <ul style={{ padding: 0, margin: 0, listStyleType: "none" }}>
-            {path.map((text) => (
-              <li
-                key={text}
-                style={{
-                  marginBottom: "3px",
-                  listStyleType: "disc",
-                  marginLeft: "24px",
-                }}
-              >
-                <span
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    width: "100%",
-                  }}
-                >
-                  <span>{text}</span>
-                  <IconButton
-                    style={{ padding: "0" }}
-                    onClick={() => handleRemoveFile(text)}
-                  >
-                    <CloseIcon style={{ width: "15px", height: "15px" }} />
-                  </IconButton>
-                </span>
-              </li>
-            ))}
-          </ul>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext
+              items={path}
+              strategy={verticalListSortingStrategy}
+            >
+              <ul style={{ padding: 0, margin: 0, listStyleType: "none" }}>
+                {path.map((text) => (
+                  <SortableItem
+                    key={text}
+                    id={text}
+                    text={text}
+                    onRemove={handleRemoveFile}
+                  />
+                ))}
+              </ul>
+            </SortableContext>
+          </DndContext>
         ) : (
           path
         )
