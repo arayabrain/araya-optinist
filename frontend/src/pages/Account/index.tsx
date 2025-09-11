@@ -211,7 +211,6 @@ const Account = () => {
     return userSubscription.plan_name.toUpperCase()
   }
 
-  // Helper function to get membership button text and action
   const getSubscriptionButton = () => {
     const status = getSubscriptionStatus()
 
@@ -254,7 +253,7 @@ const Account = () => {
     )
   }
 
-  const membershipButton = getSubscriptionButton()
+  const subscriptionButton = getSubscriptionButton()
 
   return (
     <AccountWrapper>
@@ -328,12 +327,12 @@ const Account = () => {
         </Box>
         <Button
           variant="contained"
-          color={membershipButton.color}
+          color={subscriptionButton.color}
           sx={{ ml: 2 }}
-          onClick={membershipButton.action}
+          onClick={subscriptionButton.action}
           disabled={subscriptionLoading}
         >
-          {membershipButton.text}
+          {subscriptionButton.text}
         </Button>
       </BoxFlex>
       <BoxFlex sx={{ justifyContent: "space-between", mt: 10, maxWidth: 600 }}>
