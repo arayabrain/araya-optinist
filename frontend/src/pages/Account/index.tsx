@@ -44,7 +44,9 @@ import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
 import { getAccurateTime } from "utils/subscriptions/SubscriptionUtils"
 
-const useSubscriptionExpiration = (userSubscription: UserSubscription) => {
+const useSubscriptionExpiration = (
+  userSubscription: UserSubscription | null,
+) => {
   const [isExpired, setIsExpired] = useState(false)
   const [isValidating, setIsValidating] = useState(false)
 
@@ -88,7 +90,6 @@ const Account = () => {
   const subscriptionLoading = useSelector(selectUserSubscriptionLoading)
   const subscriptionError = useSelector(selectSubscriptionError)
 
-  // Use custom hook for proper time validation
   const {
     isExpired: isSubscriptionExpired,
     isValidating: isValidatingExpiration,
