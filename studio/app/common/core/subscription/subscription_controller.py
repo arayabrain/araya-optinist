@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from enum import Enum
 from typing import List
@@ -19,7 +20,7 @@ class SubscriptionCurrencyType(Enum):
     JPY = 2
 
 
-class SubscriptionReader:
+class SubscriptionService:
     @staticmethod
     def get_active_plans(db: Session) -> List[SubscriptionPlans]:
         return (
@@ -86,3 +87,17 @@ class SubscriptionReader:
             .order_by(common_model.UserSubscription.expiration.desc())
             .first()
         )
+
+    @staticmethod
+    def get_stripe_key() -> str:
+        stripe_key = os.getenv("STRIPE_SECRET_KEY")
+        if not stripe_key:
+            raise ValueError("STRIPE_SECRET_KEY environment variable is not set")
+        return stripe_key
+
+    @staticmethod
+    def get_base_url() -> str:
+        base_url = os.getenv("BASE_URL")
+        if not base_url:
+            raise ValueError("BASE_URL environment variable is not set")
+        return base_url
