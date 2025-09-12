@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from "react"
+import React, { memo, useEffect, useState } from "react"
 import { useDispatch, useSelector } from "react-redux"
 
 import FolderIcon from "@mui/icons-material/Folder"
@@ -129,6 +129,50 @@ const FileTreeView = memo(function FileTreeView({
   setFileSelect: (value: string) => void
 }) {
   const [tree, isLoading] = useStructuredTree(nodeId, config)
+  const [expanded, setExpanded] = useState<string[]>([])
+
+  // Calculate paths to expand when fileSelect changes
+  useEffect(() => {
+    if (!fileSelect || !tree) return
+
+    const pathsToExpand: string[] = []
+    const findPathsToExpand = (
+      nodes: TreeNodeType[],
+      currentPath: string[] = [],
+    ) => {
+      for (const node of nodes) {
+        if (node.isDir) {
+          const dirNode = node as TreeDirType
+          // Check if any child contains the selected file
+          const containsSelectedFile = (n: TreeNodeType): boolean => {
+            if (!n.isDir && n.path === fileSelect) return true
+            if (n.isDir) {
+              return (n as TreeDirType).nodes.some(containsSelectedFile)
+            }
+            return false
+          }
+
+          if (containsSelectedFile(node)) {
+            pathsToExpand.push(node.path)
+            findPathsToExpand(dirNode.nodes, [...currentPath, node.path])
+          }
+        }
+      }
+    }
+
+    findPathsToExpand(tree)
+    if (pathsToExpand.length > 0) {
+      setExpanded(pathsToExpand)
+    }
+  }, [fileSelect, tree])
+
+  const handleNodeToggle = (
+    _event: React.SyntheticEvent,
+    nodeIds: string[],
+  ) => {
+    setExpanded(nodeIds)
+  }
+
   return (
     <div>
       {isLoading && <LinearProgress />}
@@ -140,7 +184,7 @@ const FileTreeView = memo(function FileTreeView({
         <Box flexGrow={1}></Box>
       </Box>
       <Divider />
-      <TreeView>
+      <TreeView expanded={expanded} onNodeToggle={handleNodeToggle}>
         {tree?.map((node, i) => (
           <TreeNode
             fileSelect={fileSelect}
