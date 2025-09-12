@@ -18,6 +18,7 @@ import Dataview from "pages/Dataview"
 import Login from "pages/Login"
 import PublicDataview from "pages/PublicDataview"
 import ResetPassword from "pages/ResetPassword"
+import SubscriptionPage from "pages/Subscription"
 import Workspaces from "pages/Workspace"
 import Workspace from "pages/Workspace/Workspace"
 import { getModeStandalone } from "store/slice/Standalone/StandaloneActions"
@@ -84,6 +85,10 @@ const App: FC = () => {
                 <Route path="" element={<Workspaces />} />
                 <Route path=":workspaceId" element={<Workspace />} />
               </Route>
+              <Route
+                path="/console/subscription"
+                element={<SubscriptionPage />}
+              />
               <Route
                 path="/console/*"
                 element={<Navigate replace to="/console" />}

@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom"
 import AccountCircleIcon from "@mui/icons-material/AccountCircle"
 import Logout from "@mui/icons-material/Logout"
 import PortraitIcon from "@mui/icons-material/Portrait"
+import UpgradeIcon from "@mui/icons-material/Upgrade"
 import { Menu, MenuItem } from "@mui/material"
 import IconButton from "@mui/material/IconButton"
 
@@ -63,7 +64,7 @@ const Profile: FC = () => {
         </MenuItem>
         <MenuItem onClick={onClickLogout}>
           <Logout />
-          SIGN OUT
+          Sign Out
         </MenuItem>
       </Menu>
     </>
