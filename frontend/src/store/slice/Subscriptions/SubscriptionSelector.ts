@@ -1,5 +1,4 @@
 import { RootState } from "store/store"
-import { getAccurateTime } from "utils/subscriptions/SubscriptionUtils"
 
 export const selectSubscriptionPlans = (state: RootState) =>
   state.subscription.plans

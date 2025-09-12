@@ -42,7 +42,7 @@ import {
 import { selectCurrentUser, selectLoading } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
-import { getAccurateTime } from "utils/subscriptions/SubscriptionUtils"
+import { getAccurateTimeUTC } from "utils/subscriptions/SubscriptionUtils"
 
 const useSubscriptionExpiration = (
   userSubscription: UserSubscription | null,
@@ -59,19 +59,21 @@ const useSubscriptionExpiration = (
     const validateExpiration = async () => {
       setIsValidating(true)
       try {
-        // Use accurate server time for validation
-        const accurateTime = await getAccurateTime()
+        // Get current UTC time from server
+        const accurateTime = await getAccurateTimeUTC()
         const expirationDate = new Date(userSubscription.expiration)
-        setIsExpired(expirationDate <= accurateTime)
+
+        // Ensure expiration is treated as UTC
+        const expirationUTC = new Date(expirationDate.getTime())
+        setIsExpired(expirationUTC <= accurateTime)
       } catch (error) {
         console.warn(
-          "Failed to get accurate time, falling back to client time:",
+          "Failed to get accurate time, falling back to client UTC:",
           error,
         )
-        // Fallback to client time if server time is unavailable
-        const clientTime = new Date()
+        const clientTimeUTC = new Date() // This is already UTC internally
         const expirationDate = new Date(userSubscription.expiration)
-        setIsExpired(expirationDate <= clientTime)
+        setIsExpired(expirationDate <= clientTimeUTC)
       } finally {
         setIsValidating(false)
       }

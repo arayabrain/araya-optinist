@@ -165,13 +165,12 @@ export const getPlanFeatures = (plan: SubscriptionPlan): PlanFeature[] => {
   }
 }
 
-export const getAccurateTime = async () => {
+export const getAccurateTimeUTC = async () => {
   try {
-    const response = await fetch("http://worldtimeapi.org/api/timezone/Etc/UTC")
+    const response = await fetch("http://worldtimeapi.org/api/timezone/UTC")
     const data = await response.json()
-    return new Date(data.datetime)
+    return new Date(data.utc_datetime)
   } catch (error) {
-    // Fallback to client time if API fails
-    return new Date()
+    return new Date() // JavaScript Date is UTC internally
   }
 }
