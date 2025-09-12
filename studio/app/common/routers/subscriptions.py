@@ -1,4 +1,3 @@
-import os
 from typing import List, Optional
 
 import stripe
@@ -10,7 +9,7 @@ from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.subscription_controller import (
     SubscriptionCurrencyType,
-    SubscriptionReader,
+    SubscriptionService,
 )
 from studio.app.common.db.database import get_db
 from studio.app.common.schemas.subscriptions import (
@@ -22,7 +21,8 @@ from studio.app.common.schemas.subscriptions import (
 )
 from studio.app.common.schemas.users import User
 
-stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+stripe.api_key = SubscriptionService.get_stripe_key()
+BASE_URL = SubscriptionService.get_base_url()
 
 router = APIRouter(prefix="/api/subscriptions", tags=["subscriptions"])
 logger = AppLogger.get_logger()
@@ -31,7 +31,7 @@ logger = AppLogger.get_logger()
 @router.get("/plans", response_model=List[SubscriptionPlanResponse])
 def get_subscription_plans(db: Session = Depends(get_db)):
     try:
-        plans = SubscriptionReader.get_active_plans(db)
+        plans = SubscriptionService.get_active_plans(db)
 
         if not plans:
             logger.info("No subscription plans found")
@@ -79,20 +79,13 @@ async def get_user_subscription(
     """
     Get user's current active subscription
     """
-    # Check if user can access this data (either own data or admin)
-    if current_user.id != user_id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to access this user's subscription data",
-        )
-
     try:
         # Get the most recent active subscription
-        subscription = SubscriptionReader.get_user_subscription_plan(db, user_id)
+        subscription = SubscriptionService.get_user_subscription_plan(db, user_id)
 
         if not subscription:
             # Check if user has any expired subscriptions
-            expired_subscription = SubscriptionReader.get_user_expired_subscription(
+            expired_subscription = SubscriptionService.get_user_expired_subscription(
                 db, user_id
             )
 
@@ -141,7 +134,7 @@ async def create_checkout_session(
     try:
         # Get subscription plan from database using plan_id as string
         logger.info(f"Creating checkout session for plan_id: {request.plan_id}")
-        plan = SubscriptionReader.get_plan_by_id(db, int(request.plan_id))
+        plan = SubscriptionService.get_plan_by_id(db, int(request.plan_id))
         logger.info(f"Retrieved plan: {plan}")
 
         if not plan:
@@ -167,10 +160,6 @@ async def create_checkout_session(
         # Create Stripe checkout session directly with price_data
         try:
             logger.info("Initializing Stripe")
-            # Get base URL from environment variables
-            BASE_URL = os.getenv(
-                "BASE_URL", "http://localhost:3000"
-            )  # Default fallback
 
             checkout_session = stripe.checkout.Session.create(
                 payment_method_types=["card"],
