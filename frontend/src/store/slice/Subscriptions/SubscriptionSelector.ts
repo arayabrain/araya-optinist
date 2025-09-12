@@ -1,4 +1,5 @@
 import { RootState } from "store/store"
+import { getAccurateTime } from "utils/subscriptions/SubscriptionUtils"
 
 export const selectSubscriptionPlans = (state: RootState) =>
   state.subscription.plans
@@ -23,6 +24,7 @@ export const selectIsSubscriptionExpired = (state: RootState) => {
   const userSubscription = selectUserSubscription(state)
   if (!userSubscription) return false
 
+  // Use client time for selector - validation happens elsewhere
   const now = new Date()
   const expirationDate = new Date(userSubscription.expiration)
   return expirationDate <= now
@@ -34,7 +36,7 @@ export const selectCurrentPlanId = (state: RootState) => {
 
   if (!userSubscription || isExpired) {
     const plans = selectSubscriptionPlans(state)
-    return plans.find((p: { name: string }) => p.name === "Free")?.id
+    return plans.find((p) => p.price === 0)?.id
   }
 
   return userSubscription.plan_id

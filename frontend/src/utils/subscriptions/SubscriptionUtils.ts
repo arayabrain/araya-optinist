@@ -1,4 +1,3 @@
-// store/slice/Subscriptions/SubscriptionUtils.ts
 import {
   PlanFeature,
   SubscriptionPlan,
@@ -139,5 +138,16 @@ export const getPlanFeatures = (plan: SubscriptionPlan): PlanFeature[] => {
   } catch (error) {
     console.error(`Error extracting features for plan ${plan.id}:`, error)
     return []
+  }
+}
+
+export const getAccurateTime = async () => {
+  try {
+    const response = await fetch("http://worldtimeapi.org/api/timezone/Etc/UTC")
+    const data = await response.json()
+    return new Date(data.datetime)
+  } catch (error) {
+    // Fallback to client time if API fails
+    return new Date()
   }
 }

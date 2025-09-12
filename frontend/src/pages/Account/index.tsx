@@ -31,8 +31,8 @@ import {
   selectUserSubscription,
   selectUserSubscriptionLoading,
   selectSubscriptionError,
-  selectIsSubscriptionExpired,
 } from "store/slice/Subscriptions/SubscriptionSelector"
+import { UserSubscription } from "store/slice/Subscriptions/SubscriptionType"
 import {
   deleteMe,
   getMe,
@@ -42,6 +42,44 @@ import {
 import { selectCurrentUser, selectLoading } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
+import { getAccurateTime } from "utils/subscriptions/SubscriptionUtils"
+
+const useSubscriptionExpiration = (userSubscription: UserSubscription) => {
+  const [isExpired, setIsExpired] = useState(false)
+  const [isValidating, setIsValidating] = useState(false)
+
+  useEffect(() => {
+    if (!userSubscription) {
+      setIsExpired(false)
+      return
+    }
+
+    const validateExpiration = async () => {
+      setIsValidating(true)
+      try {
+        // Use accurate server time for validation
+        const accurateTime = await getAccurateTime()
+        const expirationDate = new Date(userSubscription.expiration)
+        setIsExpired(expirationDate <= accurateTime)
+      } catch (error) {
+        console.warn(
+          "Failed to get accurate time, falling back to client time:",
+          error,
+        )
+        // Fallback to client time if server time is unavailable
+        const clientTime = new Date()
+        const expirationDate = new Date(userSubscription.expiration)
+        setIsExpired(expirationDate <= clientTime)
+      } finally {
+        setIsValidating(false)
+      }
+    }
+
+    validateExpiration()
+  }, [userSubscription])
+
+  return { isExpired, isValidating }
+}
 
 const Account = () => {
   const user = useSelector(selectCurrentUser)
@@ -49,7 +87,12 @@ const Account = () => {
   const userSubscription = useSelector(selectUserSubscription)
   const subscriptionLoading = useSelector(selectUserSubscriptionLoading)
   const subscriptionError = useSelector(selectSubscriptionError)
-  const isSubscriptionExpired = useSelector(selectIsSubscriptionExpired)
+
+  // Use custom hook for proper time validation
+  const {
+    isExpired: isSubscriptionExpired,
+    isValidating: isValidatingExpiration,
+  } = useSubscriptionExpiration(userSubscription)
 
   const dispatch = useDispatch<AppDispatch>()
   const navigate = useNavigate()
@@ -73,6 +116,7 @@ const Account = () => {
     ERROR = "ERROR",
     FREE = "FREE",
     EXPIRED = "EXPIRED",
+    VALIDATING = "VALIDATING",
   }
 
   useEffect(() => {
@@ -194,17 +238,13 @@ const Account = () => {
   const getSubscriptionStatus = () => {
     if (subscriptionLoading) {
       return SUBSCRIPTION_STATUS.LOADING
-    }
-
-    if (subscriptionError) {
+    } else if (isValidatingExpiration) {
+      return SUBSCRIPTION_STATUS.VALIDATING
+    } else if (subscriptionError) {
       return SUBSCRIPTION_STATUS.ERROR
-    }
-
-    if (!userSubscription) {
+    } else if (!userSubscription) {
       return SUBSCRIPTION_STATUS.FREE
-    }
-
-    if (isSubscriptionExpired) {
+    } else if (isSubscriptionExpired) {
       return SUBSCRIPTION_STATUS.EXPIRED
     }
 
@@ -232,11 +272,19 @@ const Account = () => {
     }
   }
 
-  // Helper function to format expiration date
+  // Helper function to format expiration date with server-validated expiration status
   const getExpirationInfo = () => {
     if (!userSubscription) return null
 
     const expirationDate = new Date(userSubscription.expiration)
+
+    if (isValidatingExpiration) {
+      return (
+        <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+          (Validating expiration...)
+        </Typography>
+      )
+    }
 
     if (isSubscriptionExpired) {
       return (
@@ -330,7 +378,7 @@ const Account = () => {
           color={subscriptionButton.color}
           sx={{ ml: 2 }}
           onClick={subscriptionButton.action}
-          disabled={subscriptionLoading}
+          disabled={subscriptionLoading || isValidatingExpiration}
         >
           {subscriptionButton.text}
         </Button>
