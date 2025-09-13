@@ -263,6 +263,7 @@ export const FileSelectImple = memo(function FileSelectImple({
           [FILE_TREE_TYPE_SET.HDF5, FILE_TREE_TYPE_SET.MATLAB] as string[]
         ).includes(fileTreeType as string) &&
           !!filePath &&
+          (Array.isArray(filePath) ? filePath.length > 0 : true) &&
           !!nodeId && (
             <Tooltip title={"Structure"}>
               <span>
