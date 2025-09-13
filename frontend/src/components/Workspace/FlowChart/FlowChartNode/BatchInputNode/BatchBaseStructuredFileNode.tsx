@@ -123,6 +123,7 @@ const BatchFileNodeImple = memo(function BatchFileNodeImple({
             setOpen={setOpen}
             nodeId={nodeId}
             config={createBatchConfigAdapter(config, filePath)}
+            filePath={filePath[0]}
           />
         )}
       <Handle

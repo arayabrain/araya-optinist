@@ -113,6 +113,7 @@ const FileNodeImple = memo(function FileNodeImple({
           setOpen={setOpen}
           nodeId={nodeId}
           config={config}
+          filePath={filePath}
         />
       )}
       <Handle
