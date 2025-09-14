@@ -538,6 +538,43 @@ resource "aws_db_instance" "main" {
   }
 }
 
+# Create premium user assignments table in RDS
+resource "null_resource" "premium_user_assignments_table" {
+  depends_on = [aws_db_instance.main]
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Wait for RDS to be available
+      timeout 300 bash -c 'until nc -z ${split(":", aws_db_instance.main.endpoint)[0]} 3306; do sleep 5; done'
+
+      # Create premium user assignments table
+      mysql -h ${split(":", aws_db_instance.main.endpoint)[0]} -P 3306 \
+        -u ${var.mysql_user} -p'${var.mysql_password}' ${var.mysql_database} << 'SQL'
+
+      CREATE TABLE IF NOT EXISTS premium_user_assignments (
+        user_id VARCHAR(255) PRIMARY KEY,
+        instance_id VARCHAR(20) NOT NULL,
+        target_group_arn VARCHAR(512) NOT NULL,
+        alb_rule_arn VARCHAR(512) NOT NULL,
+        assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        status ENUM('active', 'migrating', 'terminating') DEFAULT 'active',
+        last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+        INDEX idx_instance_id (instance_id),
+        INDEX idx_last_activity (last_activity),
+        INDEX idx_status (status)
+      );
+
+SQL
+    EOT
+  }
+
+  # Trigger recreation if table schema changes
+  triggers = {
+    schema_version = "v1.0"
+  }
+}
+
 # RDS Instance for Batch Service (Isolated)
 resource "aws_db_instance" "batch" {
   identifier              = "subscr-optinist-cloud-rds-batch"
@@ -2072,6 +2109,497 @@ resource "aws_iam_role_policy" "ecs_task_ecr_access" {
   })
 }
 
+# =============================================================================
+# PREMIUM TIER IAM ROLES
+# =============================================================================
+
+# Premium Spot Fleet IAM Role
+resource "aws_iam_role" "premium_spot_fleet" {
+  name = "subscr-optinist-premium-spot-fleet-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "spotfleet.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "premium_spot_fleet_policy" {
+  role       = aws_iam_role.premium_spot_fleet.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2SpotFleetTaggingRole"
+}
+
+# Premium Manager Lambda Role
+resource "aws_iam_role" "premium_manager_lambda" {
+  name = "subscr-premium-manager-lambda-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "premium_manager_lambda_basic" {
+  role       = aws_iam_role.premium_manager_lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "premium_manager_lambda_vpc" {
+  role       = aws_iam_role.premium_manager_lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+# Premium Manager Lambda Permissions
+resource "aws_iam_role_policy" "premium_manager_permissions" {
+  name = "subscr-premium-manager-permissions"
+  role = aws_iam_role.premium_manager_lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeSpotFleetInstances",
+          "ec2:DescribeSpotFleetRequests",
+          "ec2:ModifySpotFleetRequest",
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceHealth"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeServices",
+          "ecs:UpdateService",
+          "ecs:RegisterTargets",
+          "ecs:DeregisterTargets",
+          "ecs:ListTasks",
+          "ecs:DescribeTasks",
+          "ecs:DescribeContainerInstances",
+          "ecs:ListContainerInstances"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "elasticloadbalancing:CreateTargetGroup",
+          "elasticloadbalancing:DeleteTargetGroup",
+          "elasticloadbalancing:CreateRule",
+          "elasticloadbalancing:DeleteRule",
+          "elasticloadbalancing:ModifyRule",
+          "elasticloadbalancing:RegisterTargets",
+          "elasticloadbalancing:DeregisterTargets",
+          "elasticloadbalancing:DescribeTargetGroups",
+          "elasticloadbalancing:DescribeRules"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "rds:DescribeDBInstances",
+          "rds-data:BatchExecuteStatement",
+          "rds-data:BeginTransaction",
+          "rds-data:CommitTransaction",
+          "rds-data:ExecuteStatement",
+          "rds-data:RollbackTransaction"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.app_storage.arn,
+          "${aws_s3_bucket.app_storage.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
+# Spot Interruption Handler Lambda Role
+resource "aws_iam_role" "spot_interruption_handler" {
+  name = "subscr-spot-interruption-handler-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "spot_interruption_handler_basic" {
+  role       = aws_iam_role.spot_interruption_handler.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# Cost Controller Lambda Role
+resource "aws_iam_role" "cost_controller_lambda" {
+  name = "subscr-cost-controller-lambda-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "cost_controller_lambda_basic" {
+  role       = aws_iam_role.cost_controller_lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# =============================================================================
+# PREMIUM TIER LAMBDA FUNCTIONS
+# =============================================================================
+
+# Premium Manager Lambda Function
+resource "aws_lambda_function" "premium_manager" {
+  filename      = "${path.module}/premium_manager.py.zip"
+  function_name = "subscr-premium-manager"
+  role          = aws_iam_role.premium_manager_lambda.arn
+  handler       = "premium_manager.handler"
+  runtime       = "python3.9"
+  timeout       = 300
+
+  source_code_hash = base64sha256(data.local_file.premium_manager_zip.content)
+
+  environment {
+    variables = {
+      VPC_ID              = aws_vpc.main.id
+      SUBNET_IDS          = "${aws_subnet.private1.id},${aws_subnet.private2.id}"
+      SECURITY_GROUP_ID   = aws_security_group.ecs.id
+      ALB_ARN             = aws_lb.autoscaling.arn
+      ALB_LISTENER_ARN    = aws_lb_listener.autoscaling.arn
+      SPOT_FLEET_ID       = aws_spot_fleet_request.premium.id
+      CLUSTER_NAME        = aws_ecs_cluster.main.name
+      RDS_HOST            = aws_db_instance.main.endpoint
+      RDS_USER            = var.mysql_user
+      RDS_PASSWORD        = var.mysql_password
+      RDS_DATABASE        = var.mysql_database
+    }
+  }
+
+  vpc_config {
+    subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id]
+    security_group_ids = [aws_security_group.ecs.id]
+  }
+
+  tags = {
+    Name = "Premium Manager Lambda"
+    Type = "Premium-Lambda"
+    Service = "premium-tier"
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.premium_manager_lambda_basic,
+    aws_cloudwatch_log_group.premium_manager_logs,
+    null_resource.premium_manager_package
+  ]
+}
+
+# Migration Queue Processing Lambda Function
+resource "aws_lambda_function" "premium_migration_queue" {
+  filename      = "${path.module}/premium_manager.py.zip"
+  function_name = "subscr-premium-migration-queue"
+  role          = aws_iam_role.premium_manager_lambda.arn
+  handler       = "premium_manager.process_migration_queue"
+  runtime       = "python3.9"
+  timeout       = 300
+
+  source_code_hash = base64sha256(data.local_file.premium_manager_zip.content)
+
+  environment {
+    variables = {
+      VPC_ID              = aws_vpc.main.id
+      SUBNET_IDS          = "${aws_subnet.private1.id},${aws_subnet.private2.id}"
+      SECURITY_GROUP_ID   = aws_security_group.ecs.id
+      ALB_ARN             = aws_lb.autoscaling.arn
+      ALB_LISTENER_ARN    = aws_lb_listener.autoscaling.arn
+      SPOT_FLEET_ID       = aws_spot_fleet_request.premium.id
+      CLUSTER_NAME        = aws_ecs_cluster.main.name
+      RDS_HOST            = aws_db_instance.main.endpoint
+      RDS_USER            = var.mysql_user
+      RDS_PASSWORD        = var.mysql_password
+      RDS_DATABASE        = var.mysql_database
+    }
+  }
+
+  vpc_config {
+    subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id]
+    security_group_ids = [aws_security_group.ecs.id]
+  }
+
+  tags = {
+    Name = "Premium Migration Queue Lambda"
+    Type = "Premium-Lambda"
+    Service = "premium-tier"
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.premium_manager_lambda_basic,
+    aws_cloudwatch_log_group.premium_migration_queue_logs,
+    null_resource.premium_manager_package
+  ]
+}
+
+# CloudWatch Log Groups
+resource "aws_cloudwatch_log_group" "premium_migration_queue_logs" {
+  name              = "/aws/lambda/subscr-premium-migration-queue"
+  retention_in_days = 14
+
+  tags = {
+    Name = "Premium Migration Queue Lambda Logs"
+  }
+}
+
+# CloudWatch Events Rule for Migration Queue Processing (every 2 minutes)
+resource "aws_cloudwatch_event_rule" "premium_migration_schedule" {
+  name                = "subscr-premium-migration-schedule"
+  description         = "Trigger premium user migration queue processing"
+  schedule_expression = "rate(2 minutes)"
+  state              = "ENABLED"
+
+  tags = {
+    Name = "Premium Migration Schedule"
+    Type = "Premium-CloudWatch"
+    Service = "premium-tier"
+  }
+}
+
+# CloudWatch Events Target
+resource "aws_cloudwatch_event_target" "premium_migration_target" {
+  rule      = aws_cloudwatch_event_rule.premium_migration_schedule.name
+  target_id = "PremiumMigrationTarget"
+  arn       = aws_lambda_function.premium_migration_queue.arn
+}
+
+# Lambda Permission for CloudWatch Events
+resource "aws_lambda_permission" "allow_cloudwatch_migration" {
+  statement_id  = "AllowExecutionFromCloudWatch"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.premium_migration_queue.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.premium_migration_schedule.arn
+}
+
+# Create ZIP file for premium manager Lambda with dependencies
+resource "null_resource" "premium_manager_package" {
+  provisioner "local-exec" {
+    command = <<-EOT
+      cd ${path.module}
+      rm -rf premium_manager_package premium_manager.py.zip
+      mkdir -p premium_manager_package
+      cp premium_manager.py premium_manager_package/
+      pip install pymysql -t premium_manager_package/
+      cd premium_manager_package
+      zip -r ../premium_manager.py.zip .
+      cd ..
+    EOT
+  }
+
+  triggers = {
+    code_changes = filesha256("${path.module}/premium_manager.py")
+  }
+}
+
+data "local_file" "premium_manager_zip" {
+  depends_on = [null_resource.premium_manager_package]
+  filename   = "${path.module}/premium_manager.py.zip"
+}
+
+# CloudWatch Log Group for Premium Manager
+resource "aws_cloudwatch_log_group" "premium_manager_logs" {
+  name              = "/aws/lambda/subscr-premium-manager"
+  retention_in_days = 14
+
+  tags = {
+    Name = "Premium Manager Logs"
+    Type = "Premium-CloudWatch"
+  }
+}
+
+# API Gateway for Premium Management
+resource "aws_api_gateway_rest_api" "premium_management" {
+  name        = "subscr-premium-management-api"
+  description = "API for premium user assignment and management"
+
+  tags = {
+    Name = "Premium Management API"
+    Type = "Premium-API"
+  }
+}
+
+# API Gateway Resource for Premium endpoints
+resource "aws_api_gateway_resource" "premium_resource" {
+  rest_api_id = aws_api_gateway_rest_api.premium_management.id
+  parent_id   = aws_api_gateway_rest_api.premium_management.root_resource_id
+  path_part   = "premium"
+}
+
+# API Gateway Resource for assign endpoint
+resource "aws_api_gateway_resource" "premium_assign" {
+  rest_api_id = aws_api_gateway_rest_api.premium_management.id
+  parent_id   = aws_api_gateway_resource.premium_resource.id
+  path_part   = "assign"
+}
+
+# API Gateway Resource for release endpoint
+resource "aws_api_gateway_resource" "premium_release" {
+  rest_api_id = aws_api_gateway_rest_api.premium_management.id
+  parent_id   = aws_api_gateway_resource.premium_resource.id
+  path_part   = "release"
+}
+
+# API Gateway Resource for status endpoint
+resource "aws_api_gateway_resource" "premium_status" {
+  rest_api_id = aws_api_gateway_rest_api.premium_management.id
+  parent_id   = aws_api_gateway_resource.premium_resource.id
+  path_part   = "status"
+}
+
+# API Gateway Method for assign (POST)
+resource "aws_api_gateway_method" "premium_assign_post" {
+  rest_api_id   = aws_api_gateway_rest_api.premium_management.id
+  resource_id   = aws_api_gateway_resource.premium_assign.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+# API Gateway Method for release (POST)
+resource "aws_api_gateway_method" "premium_release_post" {
+  rest_api_id   = aws_api_gateway_rest_api.premium_management.id
+  resource_id   = aws_api_gateway_resource.premium_release.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+# API Gateway Method for status (GET)
+resource "aws_api_gateway_method" "premium_status_get" {
+  rest_api_id   = aws_api_gateway_rest_api.premium_management.id
+  resource_id   = aws_api_gateway_resource.premium_status.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+# API Gateway Integration for assign
+resource "aws_api_gateway_integration" "premium_assign_integration" {
+  rest_api_id = aws_api_gateway_rest_api.premium_management.id
+  resource_id = aws_api_gateway_resource.premium_assign.id
+  http_method = aws_api_gateway_method.premium_assign_post.http_method
+
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.premium_manager.invoke_arn
+}
+
+# API Gateway Integration for release
+resource "aws_api_gateway_integration" "premium_release_integration" {
+  rest_api_id = aws_api_gateway_rest_api.premium_management.id
+  resource_id = aws_api_gateway_resource.premium_release.id
+  http_method = aws_api_gateway_method.premium_release_post.http_method
+
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.premium_manager.invoke_arn
+}
+
+# API Gateway Integration for status
+resource "aws_api_gateway_integration" "premium_status_integration" {
+  rest_api_id = aws_api_gateway_rest_api.premium_management.id
+  resource_id = aws_api_gateway_resource.premium_status.id
+  http_method = aws_api_gateway_method.premium_status_get.http_method
+
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.premium_manager.invoke_arn
+}
+
+# Lambda permission for API Gateway to invoke premium manager
+resource "aws_lambda_permission" "premium_manager_api_gateway" {
+  statement_id  = "AllowExecutionFromAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.premium_manager.function_name
+  principal     = "apigateway.amazonaws.com"
+
+  source_arn = "${aws_api_gateway_rest_api.premium_management.execution_arn}/*/*"
+}
+
+# API Gateway Deployment
+resource "aws_api_gateway_deployment" "premium_management_deployment" {
+  depends_on = [
+    aws_api_gateway_integration.premium_assign_integration,
+    aws_api_gateway_integration.premium_release_integration,
+    aws_api_gateway_integration.premium_status_integration
+  ]
+
+  rest_api_id = aws_api_gateway_rest_api.premium_management.id
+  stage_name  = "v1"
+
+  triggers = {
+    redeployment = sha1(jsonencode([
+      aws_api_gateway_resource.premium_assign.id,
+      aws_api_gateway_resource.premium_release.id,
+      aws_api_gateway_resource.premium_status.id,
+      aws_api_gateway_method.premium_assign_post.id,
+      aws_api_gateway_method.premium_release_post.id,
+      aws_api_gateway_method.premium_status_get.id,
+      aws_api_gateway_integration.premium_assign_integration.id,
+      aws_api_gateway_integration.premium_release_integration.id,
+      aws_api_gateway_integration.premium_status_integration.id,
+    ]))
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
 # Store AWS credentials in Secrets Manager
 resource "aws_secretsmanager_secret" "aws_credentials" {
   name = "subscr-optinist-cloud-credentials"
@@ -2600,6 +3128,104 @@ user_data = base64encode(<<-EOF
     create_before_destroy = true
   }
 }
+
+# =============================================================================
+# PREMIUM TIER INFRASTRUCTURE
+# =============================================================================
+
+# Premium Launch Template - Optimized for dedicated premium users
+resource "aws_launch_template" "premium" {
+  name_prefix   = "subscr-optinist-premium-"
+  image_id      = data.aws_ami.ecs_optimized.id
+  instance_type = "t3.large"  # Will be overridden by spot fleet instance types
+  key_name      = aws_key_pair.subscr_optinist_cloud_key_pair.key_name
+
+  vpc_security_group_ids = [aws_security_group.ecs.id]
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ecs_instance_profile.name
+  }
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size = 30
+      volume_type = "gp3"
+      encrypted   = true
+    }
+  }
+
+  monitoring {
+    enabled = true
+  }
+
+  user_data = base64encode(templatefile("${path.module}/user_data_premium.sh", {
+    cluster_name = aws_ecs_cluster.main.name
+  }))
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "subscr-optinist-premium-instance"
+      Type = "ECS-Premium"
+      Tier = "premium"
+      Service = "premium-spot-fleet"
+    }
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Premium Spot Fleet Request - Cost-optimized premium instances
+resource "aws_spot_fleet_request" "premium" {
+  iam_fleet_role      = aws_iam_role.premium_spot_fleet.arn
+  allocation_strategy = "diversified"
+  target_capacity     = 1  # Start with 1 instance, scale up via Lambda
+  valid_until         = "2025-12-31T23:59:59Z"
+  spot_price          = "0.10"  # Max price per hour
+  instance_interruption_behaviour = "terminate"
+  replace_unhealthy_instances = true
+
+  # Enable auto-scaling modification capability
+  excess_capacity_termination_policy = "default"
+
+  launch_template_config {
+    launch_template_specification {
+      id      = aws_launch_template.premium.id
+      version = "$Latest"
+    }
+
+    overrides {
+      instance_type = "t3.large"
+      subnet_id     = aws_subnet.private1.id
+      spot_price    = "0.08"
+    }
+
+    overrides {
+      instance_type = "t3.xlarge"
+      subnet_id     = aws_subnet.private2.id
+      spot_price    = "0.15"
+    }
+
+    overrides {
+      instance_type = "c5.large"
+      subnet_id     = aws_subnet.private1.id
+      spot_price    = "0.09"
+    }
+  }
+
+  tags = {
+    Name = "subscr-premium-spot-fleet"
+    Type = "Premium-Spot-Fleet"
+    Service = "premium-tier"
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.premium_spot_fleet_policy]
+}
+
+
 
 # =============
 # Setup scripts
@@ -3471,6 +4097,132 @@ resource "aws_ecs_task_definition" "batch" {
     Name = "subscr-batch-optinist-cloud-taskdef"
   }
 }
+
+# Premium ECS Task Definition - Pre-warmed containers for instant access
+resource "aws_ecs_task_definition" "premium" {
+  family                   = "subscr-premium-optinist-cloud-taskdef"
+  requires_compatibilities = ["EC2"]
+  network_mode            = "bridge"
+  cpu                     = 2048
+  memory                  = 6144
+  task_role_arn          = aws_iam_role.ecs_task.arn
+  execution_role_arn     = aws_iam_role.ecs_task_execution.arn
+
+  container_definitions = jsonencode([
+    {
+      name                  = "subscr-premium-optinist-cloud-container"
+      image                 = "${var.ecr_repository_url}:latest"
+      cpu                   = 1536
+      memory                = 5120
+      memoryReservation     = 3072
+      essential             = true
+      workingDirectory      = "/app"
+      entryPoint            = ["/bin/sh", "-c"]
+      command               = ["./cloud-startup.sh"]
+
+      portMappings = [
+        {
+          name           = "subscr-premium-optinist-cloud-container-port-8000"
+          containerPort  = 8000
+          hostPort       = 8000
+          protocol       = "tcp"
+        }
+      ]
+
+      environment = [
+        {
+          name  = "CLOUDWATCH_LOG_GROUP"
+          value = "/ecs/subscr-premium-optinist-cloud-taskdef"
+        },
+        {
+          name  = "PYTHONPATH"
+          value = "/app/"
+        },
+        {
+          name  = "USER_TIER"
+          value = "premium"
+        },
+        {
+          name  = "MYSQL_SERVER"
+          value = aws_db_instance.main.endpoint
+        },
+        {
+          name  = "MYSQL_USER"
+          value = var.mysql_user
+        },
+        {
+          name  = "MYSQL_PASSWORD"
+          value = var.mysql_password
+        },
+        {
+          name  = "MYSQL_DATABASE"
+          value = var.mysql_database
+        },
+        {
+          name  = "S3_DEFAULT_BUCKET_NAME"
+          value = aws_s3_bucket.app_storage.id
+        }
+      ]
+
+      mountPoints = [
+        {
+          sourceVolume  = "subscr-premium-optinist-cloud-studio-data-volume"
+          containerPath = "/opt/studio/dataset"
+          readOnly      = false
+        },
+        {
+          sourceVolume  = "subscr-premium-optinist-cloud-snmk-volume"
+          containerPath = "/efs"
+          readOnly      = false
+        }
+      ]
+
+      healthCheck = {
+        command     = ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+        interval    = 30
+        timeout     = 5
+        retries     = 3
+        startPeriod = 60
+      }
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = "/ecs/subscr-premium-optinist-cloud-taskdef"
+          "awslogs-multiline-pattern" = "^\\[\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
+          "max-buffer-size"       = "25m"
+          "awslogs-region"        = "ap-northeast-1"
+          "awslogs-create-group"  = "true"
+          "awslogs-stream-prefix" = "ecs"
+          "mode"                  = "non-blocking"
+        }
+      }
+    }
+  ])
+
+  volume {
+    name = "subscr-premium-optinist-cloud-studio-data-volume"
+  }
+
+  volume {
+    name = "subscr-premium-optinist-cloud-snmk-volume"
+    efs_volume_configuration {
+      file_system_id = aws_efs_file_system.snmk.id
+      root_directory = "/"
+      transit_encryption = "ENABLED"
+      authorization_config {
+        access_point_id = aws_efs_access_point.main.id
+        iam            = "DISABLED"
+      }
+    }
+  }
+
+  tags = {
+    Name = "subscr-premium-optinist-cloud-taskdef"
+    Tier = "premium"
+  }
+}
+
 # ===========
 # ECS Service
 # ===========
@@ -3535,20 +4287,38 @@ resource "aws_ecs_service" "batch" {
     container_name   = "subscr-batch-optinist-cloud-container"
     container_port   = 8000
   }
+}
+
+# Premium ECS Service for pre-warmed containers
+resource "aws_ecs_service" "premium" {
+  name             = "subscr-premium-optinist-cloud-service"
+  cluster          = aws_ecs_cluster.main.id
+  task_definition  = aws_ecs_task_definition.premium.arn
+  desired_count    = 1
+  deployment_maximum_percent        = 200
+  deployment_minimum_healthy_percent = 50
+  launch_type      = "EC2"
+
+  enable_execute_command = true
+
+  # Target premium spot fleet instances only
+  placement_constraints {
+    type       = "memberOf"
+    expression = "attribute:tier == premium"
+  }
+
+  # Spread tasks across instances for availability
+  placement_strategy {
+    type  = "spread"
+    field = "instanceId"
+  }
+
+  # Auto-scaling will be handled by Lambda manager
+  # No load balancer - routing handled dynamically by premium manager
 
   depends_on = [
-    aws_instance.batch,
-    aws_autoscaling_group.main,
-    aws_db_instance.batch,
-    aws_lb.batch,
-    aws_lb_listener.batch
+    aws_spot_fleet_request.premium
   ]
-
-  health_check_grace_period_seconds = 300
-
-  tags = {
-    Name = "subscr-batch-optinist-cloud-service"
-  }
 }
 
 
@@ -4042,4 +4812,31 @@ output "batch_instance_id" {
 output "batch_instance_private_ip" {
   description = "Private IP of the dedicated batch instance"
   value       = aws_instance.batch.private_ip
+}
+
+output "alb_arn" {
+  description = "ARN of the main ALB for premium instance routing"
+  value       = aws_lb.autoscaling.arn
+}
+
+output "alb_listener_arn" {
+  description = "ARN of the main ALB listener for premium routing rules"
+  value       = aws_lb_listener.autoscaling.arn
+}
+
+output "premium_spot_fleet_id" {
+  description = "ID of the premium spot fleet request"
+  value       = aws_spot_fleet_request.premium.id
+}
+
+
+
+output "premium_api_gateway_url" {
+  description = "URL of the premium management API Gateway"
+  value       = "${aws_api_gateway_deployment.premium_management_deployment.invoke_url}/premium"
+}
+
+output "premium_manager_lambda_arn" {
+  description = "ARN of the premium manager Lambda function"
+  value       = aws_lambda_function.premium_manager.arn
 }
