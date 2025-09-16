@@ -1,13 +1,18 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
-from typing import List
+from typing import Any, Dict, List, Optional
 
+from fastapi import logger
 from sqlalchemy import and_
 from sqlmodel import Session
 
 from studio.app.common import models as common_model
-from studio.app.common.models.subscription import SubscriptionPlans
+from studio.app.common.models.subscription import (
+    SubscriptionPlans,
+    SyncStatus,
+    UserSubscription,
+)
 
 
 class SubscriptionStatusType(Enum):
@@ -101,3 +106,89 @@ class SubscriptionService:
         if not base_url:
             raise ValueError("STRIPE_CALLBACK_URL environment variable is not set")
         return base_url
+
+
+class SyncService:
+    """Service class for handling subscription synchronization"""
+
+    @staticmethod
+    def sync_subscription_status(db: Session, subscription_user_id: int) -> bool:
+        """
+        Sync subscription status with external systems
+
+        Args:
+            db: Database session
+            subscription_user_id: Subscription user ID
+
+        Returns:
+            True if sync successful, False otherwise
+        """
+        try:
+            subscription = (
+                db.query(UserSubscription)
+                .filter(UserSubscription.id == subscription_user_id)
+                .first()
+            )
+
+            if not subscription:
+                logger.error(f"Subscription {subscription_user_id} not found")
+                return False
+
+            # Mark as synced
+            subscription.sync_status = SyncStatus.SYNCED
+            subscription.last_synced = datetime.now(timezone.utc)
+            subscription.updated_at = datetime.now(timezone.utc)
+            db.commit()
+
+            logger.info(f"Successfully synced subscription {subscription_user_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error syncing subscription {subscription_user_id}: {str(e)}")
+
+            # Mark as failed
+            if subscription:
+                subscription.sync_status = SyncStatus.FAILED
+                subscription.updated_at = datetime.now(timezone.utc)
+                db.commit()
+
+            return False
+
+    @staticmethod
+    def get_subscription_status(db: Session, user_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get current subscription status for a user
+
+        Args:
+            db: Database session
+            user_id: Internal user ID
+
+        Returns:
+            Dict with subscription details or None if no active subscription
+        """
+        subscription = (
+            db.query(UserSubscription)
+            .filter(
+                UserSubscription.user_id == user_id,
+                UserSubscription.expiration > datetime.now(timezone.utc),
+            )
+            .first()
+        )
+
+        if not subscription:
+            return None
+
+        plan = (
+            db.query(SubscriptionPlans)
+            .filter(SubscriptionPlans.id == subscription.plan_id)
+            .first()
+        )
+
+        return {
+            "subscription_id": subscription.id,
+            "plan_id": subscription.plan_id,
+            "plan_name": plan.name if plan else "Unknown",
+            "expiration": subscription.expiration,
+            # "sync_status": subscription.sync_status,
+            # "last_synced": subscription.last_synced,
+        }

@@ -1,28 +1,22 @@
-import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import stripe
-from sqlalchemy.orm import Session
+from fastapi import logger
+from sqlmodel import Enum, Session
 
-# Import your existing models and the enums you'll add
 from studio.app.common.models.subscription import (
-    CancellationReason,
-    SubscriptionCancellation,
     SubscriptionPlans,
     SubscriptionProvider,
     SubscriptionUserAccount,
     SubscriptionUserPurchase,
-    SyncStatus,
     UserSubscription,
 )
 
-logger = logging.getLogger(__name__)
 
-SUBSCRIPTION_ACTIVE_STATUS = {
-    "ACTIVE": "1",
-    "INACTIVE": "0",
-}
+class SUBSCRIPTION_ACTIVE_STATUS(Enum):
+    ACTIVE = "1"
+    INACTIVE = "0"
 
 
 class PaymentService:
@@ -119,7 +113,7 @@ class PaymentService:
             db.query(SubscriptionPlans)
             .filter(
                 SubscriptionPlans.id == plan_id,
-                SubscriptionPlans.status == SUBSCRIPTION_ACTIVE_STATUS["ACTIVE"],
+                SubscriptionPlans.status == SUBSCRIPTION_ACTIVE_STATUS.ACTIVE.value,
             )
             .first()
         )
@@ -357,197 +351,3 @@ class PaymentService:
             logger.error(f"Error processing checkout success: {str(e)}")
             db.rollback()
             raise
-
-
-class WebhookService:
-    """Service class for handling Stripe webhooks"""
-
-    @staticmethod
-    def handle_checkout_completed(db: Session, session_data: Dict[str, Any]) -> None:
-        """
-        Handle checkout.session.completed webhook
-
-        Args:
-            db: Database session
-            session_data: Webhook session data
-        """
-        session_id = session_data.get("id")
-        logger.info(f"Webhook: Checkout session completed: {session_id}")
-        # Additional logic can be added here if needed
-
-    @staticmethod
-    def handle_payment_failed(db: Session, invoice_data: Dict[str, Any]) -> None:
-        """
-        Handle invoice.payment_failed webhook
-
-        Args:
-            db: Database session
-            invoice_data: Webhook invoice data
-        """
-        customer_id = invoice_data.get("customer")
-        logger.warning(f"Webhook: Payment failed for customer: {customer_id}")
-
-        # Find user account by customer ID
-        user_account = (
-            db.query(SubscriptionUserAccount)
-            .filter(SubscriptionUserAccount.provider_customer_id == customer_id)
-            .first()
-        )
-
-        if user_account:
-            # Find active subscription and mark as failed
-            subscription = (
-                db.query(UserSubscription)
-                .filter(
-                    UserSubscription.user_id == user_account.user_id,
-                    UserSubscription.expiration > datetime.now(timezone.utc),
-                )
-                .first()
-            )
-
-            if subscription:
-                subscription.sync_status = SyncStatus.FAILED
-                subscription.updated_at = datetime.now(timezone.utc)
-                db.commit()
-                logger.info(
-                    f"Marked subscription as failed for user {user_account.user_id}"
-                )
-
-    @staticmethod
-    def handle_subscription_cancelled(
-        db: Session, subscription_data: Dict[str, Any]
-    ) -> None:
-        """
-        Handle customer.subscription.deleted webhook
-
-        Args:
-            db: Database session
-            subscription_data: Webhook subscription data
-        """
-        customer_id = subscription_data.get("customer")
-        stripe_subscription_id = subscription_data.get("id")
-        logger.info(f"Webhook: Subscription cancelled: {stripe_subscription_id}")
-
-        # Find user account by customer ID
-        user_account = (
-            db.query(SubscriptionUserAccount)
-            .filter(SubscriptionUserAccount.provider_customer_id == customer_id)
-            .first()
-        )
-
-        if user_account:
-            # Find active subscription and expire it
-            subscription = (
-                db.query(UserSubscription)
-                .filter(
-                    UserSubscription.user_id == user_account.user_id,
-                    UserSubscription.expiration > datetime.now(timezone.utc),
-                )
-                .first()
-            )
-
-            if subscription:
-                # Expire subscription immediately
-                subscription.expiration = datetime.now(timezone.utc)
-                subscription.updated_at = datetime.now(timezone.utc)
-
-                # Record cancellation
-                cancellation = SubscriptionCancellation(
-                    cancelled_by_user_id=user_account.user_id,
-                    purchases_id=subscription.id,
-                    reason=CancellationReason.USER_REQUEST,
-                    notes=(
-                        f"Cancelled via Stripe webhook for subscription "
-                        f"{stripe_subscription_id}"
-                    ),
-                )
-                db.add(cancellation)
-                db.commit()
-
-                logger.info(f"Cancelled subscription for user {user_account.user_id}")
-
-
-class SyncService:
-    """Service class for handling subscription synchronization"""
-
-    @staticmethod
-    def sync_subscription_status(db: Session, subscription_user_id: int) -> bool:
-        """
-        Sync subscription status with external systems
-
-        Args:
-            db: Database session
-            subscription_user_id: Subscription user ID
-
-        Returns:
-            True if sync successful, False otherwise
-        """
-        try:
-            subscription = (
-                db.query(UserSubscription)
-                .filter(UserSubscription.id == subscription_user_id)
-                .first()
-            )
-
-            if not subscription:
-                logger.error(f"Subscription {subscription_user_id} not found")
-                return False
-
-            # Mark as synced
-            subscription.sync_status = SyncStatus.SYNCED
-            subscription.last_synced = datetime.now(timezone.utc)
-            subscription.updated_at = datetime.now(timezone.utc)
-            db.commit()
-
-            logger.info(f"Successfully synced subscription {subscription_user_id}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error syncing subscription {subscription_user_id}: {str(e)}")
-
-            # Mark as failed
-            if subscription:
-                subscription.sync_status = SyncStatus.FAILED
-                subscription.updated_at = datetime.now(timezone.utc)
-                db.commit()
-
-            return False
-
-    @staticmethod
-    def get_subscription_status(db: Session, user_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Get current subscription status for a user
-
-        Args:
-            db: Database session
-            user_id: Internal user ID
-
-        Returns:
-            Dict with subscription details or None if no active subscription
-        """
-        subscription = (
-            db.query(UserSubscription)
-            .filter(
-                UserSubscription.user_id == user_id,
-                UserSubscription.expiration > datetime.now(timezone.utc),
-            )
-            .first()
-        )
-
-        if not subscription:
-            return None
-
-        plan = (
-            db.query(SubscriptionPlans)
-            .filter(SubscriptionPlans.id == subscription.plan_id)
-            .first()
-        )
-
-        return {
-            "subscription_id": subscription.id,
-            "plan_id": subscription.plan_id,
-            "plan_name": plan.name if plan else "Unknown",
-            "expiration": subscription.expiration,
-            # "sync_status": subscription.sync_status,
-            # "last_synced": subscription.last_synced,
-        }

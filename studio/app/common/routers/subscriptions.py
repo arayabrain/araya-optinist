@@ -4,14 +4,25 @@ import stripe
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-# Import your database models and dependencies
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.logger import AppLogger
+
+# Import your database models and dependencies
+
+from studio.app.common.core.subscription.payment_service import PaymentService
 from studio.app.common.core.subscription.subscription_service import (
     SubscriptionCurrencyType,
     SubscriptionService,
+    SyncService,
 )
+from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.db.database import get_db
+from studio.app.common.schemas.payments import (
+    PaymentSuccessRequest,
+    PaymentSuccessResponse,
+    SubscriptionStatusResponse,
+    WebhookRequest,
+)
 from studio.app.common.schemas.subscriptions import (
     CreateCheckoutSessionRequest,
     CreateCheckoutSessionResponse,
@@ -26,11 +37,11 @@ from studio.app.common.schemas.users import User
 stripe.api_key = SubscriptionService.get_stripe_key()
 STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
 
-router = APIRouter(prefix="/api/subscriptions", tags=["subscriptions"])
+router = APIRouter(prefix="/api/subsc", tags=["Subscriptions"])
 logger = AppLogger.get_logger()
 
 
-@router.get("/plans", response_model=List[SubscriptionPlanResponse])
+@router.get("/mgmts/plans", response_model=List[SubscriptionPlanResponse])
 def get_subscription_plans(db: Session = Depends(get_db)):
     try:
         plans = SubscriptionService.get_active_plans(db)
@@ -70,13 +81,12 @@ def get_subscription_plans(db: Session = Depends(get_db)):
 
 
 @router.get(
-    "/user/{user_id}",
+    "/mgmts/{user_id}",
     response_model=Optional[UserSubscriptionResponse],
 )
 async def get_user_subscription(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
 ):
     """
     Get user's current active subscription
@@ -126,87 +136,21 @@ async def get_user_subscription(
         )
 
 
-@router.post("/create-checkout-session", response_model=CreateCheckoutSessionResponse)
-async def create_checkout_session(
-    request: CreateCheckoutSessionRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Create a Stripe checkout session for subscription"""
+@router.get("/mgmts/status/{user_id}", response_model=SubscriptionStatusResponse)
+async def get_subscription_status(user_id: int, db: Session = Depends(get_db)):
+    """Get current subscription status for a user"""
     try:
-        # Get subscription plan from database using plan_id as string
-        logger.info(f"Creating checkout session for plan_id: {request.plan_id}")
-        plan = SubscriptionService.get_plan_by_id(db, int(request.plan_id))
-        logger.info(f"Retrieved plan: {plan}")
+        subscription_details = SyncService.get_subscription_status(db, user_id)
 
-        if not plan:
-            raise HTTPException(status_code=404, detail="Subscription plan not found")
+        return SubscriptionStatusResponse(
+            user_id=user_id,
+            has_active_subscription=subscription_details is not None,
+            subscription_details=subscription_details,
+        )
 
-        # Get user details
-        user = current_user
-
-        # Use the price and currency from the request
-        price = plan.price
-        currency = plan.currency
-
-        if currency == SubscriptionCurrencyType.USD.value:
-            currency = "usd"
-        elif currency == SubscriptionCurrencyType.JPY.value:
-            currency = "jpy"
-
-        logger.info(f"Request details - price: {price}, currency: {currency}")
-
-        # Determine billing cycle for Stripe (default to monthly if not specified)
-        price_interval = "month"  # You can modify this based on your needs
-
-        # Create Stripe checkout session directly with price_data
-        try:
-            logger.info("Initializing Stripe")
-
-            checkout_session = stripe.checkout.Session.create(
-                payment_method_types=["card"],
-                line_items=[
-                    {
-                        "price_data": {
-                            "currency": currency,
-                            "product_data": {
-                                "name": plan.name,
-                                "description": "Subscription Plan Purchase",
-                            },
-                            "unit_amount": price,  # Price in cents from request
-                            "recurring": {"interval": price_interval},
-                        },
-                        "quantity": 1,
-                    }
-                ],
-                mode="subscription",
-                success_url=(
-                    f"{STRIPE_CALLBACK_URL}/console/account"
-                    "?session_id={CHECKOUT_SESSION_ID}"
-                ),
-                cancel_url=f"{STRIPE_CALLBACK_URL}/console/subscription",
-                client_reference_id=str(user.id),
-                customer_email=user.email,
-                metadata={
-                    "user_id": str(user.id),
-                    "plan_id": request.plan_id,
-                    "plan_name": plan.name,
-                },
-            )
-
-            return CreateCheckoutSessionResponse(
-                checkout_url=checkout_session.url, session_id=checkout_session.id
-            )
-
-        except stripe.error.StripeError as e:
-            raise HTTPException(
-                status_code=400, detail=f"Failed to create checkout session: {str(e)}"
-            )
-
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"Error getting subscription status: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/payment-methods", response_model=List[PaymentMethodResponse])
@@ -270,7 +214,7 @@ async def get_user_payment_methods(
 
 
 @router.get(
-    "/payment-methods/{user_id}/default", response_model=Optional[PaymentMethodResponse]
+    "/payment-methods/default/{user_id}", response_model=Optional[PaymentMethodResponse]
 )
 async def get_user_default_payment_method(
     user_id: int,
@@ -290,16 +234,14 @@ async def get_user_default_payment_method(
         )
 
         # Find Stripe customer by email
-        stripe_customers = _get_stripe_customer_by_email(user.email)
+        stripe_customer = await _get_stripe_customer_by_email(user.email)
 
-        if not stripe_customers.data:
+        if not stripe_customer:
             logger.info(f"No Stripe customer found for user {user.id}")
             return None
 
-        customer = stripe_customers.data[0]
-
         # Get default payment method
-        default_pm_id = customer.invoice_settings.default_payment_method
+        default_pm_id = stripe_customer.invoice_settings.default_payment_method
         if not default_pm_id:
             logger.info(f"No default payment method set for user {user.id}")
             return None
@@ -528,6 +470,174 @@ async def delete_payment_method(
     except Exception as e:
         logger.error(f"Error deleting payment method: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to delete payment method")
+
+
+@router.post(
+    "/checkout/create-checkout-session", response_model=CreateCheckoutSessionResponse
+)
+async def create_checkout_session(
+    request: CreateCheckoutSessionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create a Stripe checkout session for subscription"""
+    try:
+        # Get subscription plan from database using plan_id as string
+        logger.info(f"Creating checkout session for plan_id: {request.plan_id}")
+        plan = SubscriptionService.get_plan_by_id(db, int(request.plan_id))
+        logger.info(f"Retrieved plan: {plan}")
+
+        if not plan:
+            raise HTTPException(status_code=404, detail="Subscription plan not found")
+
+        # Get user details
+        user = current_user
+
+        # Use the price and currency from the request
+        price = plan.price
+        currency = plan.currency
+
+        if currency == SubscriptionCurrencyType.USD.value:
+            currency = "usd"
+        elif currency == SubscriptionCurrencyType.JPY.value:
+            currency = "jpy"
+
+        logger.info(f"Request details - price: {price}, currency: {currency}")
+
+        # Determine billing cycle for Stripe (default to monthly if not specified)
+        price_interval = "month"  # You can modify this based on your needs
+
+        # Create Stripe checkout session directly with price_data
+        try:
+            logger.info("Initializing Stripe")
+
+            checkout_session = stripe.checkout.Session.create(
+                payment_method_types=["card"],
+                line_items=[
+                    {
+                        "price_data": {
+                            "currency": currency,
+                            "product_data": {
+                                "name": plan.name,
+                                "description": "Subscription Plan Purchase",
+                            },
+                            "unit_amount": price,  # Price in cents from request
+                            "recurring": {"interval": price_interval},
+                        },
+                        "quantity": 1,
+                    }
+                ],
+                mode="subscription",
+                success_url=(
+                    f"{STRIPE_CALLBACK_URL}/console/account"
+                    "?session_id={CHECKOUT_SESSION_ID}"
+                ),
+                cancel_url=f"{STRIPE_CALLBACK_URL}/console/subscription",
+                client_reference_id=str(user.id),
+                customer_email=user.email,
+                metadata={
+                    "user_id": str(user.id),
+                    "plan_id": request.plan_id,
+                    "plan_name": plan.name,
+                },
+            )
+
+            return CreateCheckoutSessionResponse(
+                checkout_url=checkout_session.url, session_id=checkout_session.id
+            )
+
+        except stripe.error.StripeError as e:
+            raise HTTPException(
+                status_code=400, detail=f"Failed to create checkout session: {str(e)}"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.post("/checkout/success", response_model=PaymentSuccessResponse)
+async def payment_success(
+    request: PaymentSuccessRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Handle successful Stripe checkout completion.
+    Creates or updates user subscription and records purchase.
+    """
+    try:
+        # Process checkout using service
+        result = PaymentService.process_payment_success(
+            db=db,
+            session_id=request.session_id,
+            user_id=request.user_id,
+            plan_id=request.plan_id,
+        )
+
+        # Validate that result has all required fields
+        if not isinstance(result, dict) or "success" not in result:
+            logger.error(f"Invalid result from process_payment_success: {result}")
+            raise HTTPException(status_code=500, detail="Invalid processing result")
+
+        return PaymentSuccessResponse(
+            success=result["success"],
+            message=result.get("message", "Subscription processed successfully"),
+            subscription_user_id=result.get("subscription_user_id"),
+            purchase_id=result.get("purchase_id"),
+            expiration_date=result.get("expiration_date"),
+        )
+
+    except ValueError as e:
+        logger.error(f"Validation error in checkout: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Checkout processing error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/stripe/webhook")
+async def stripe_webhook(
+    request: WebhookRequest,
+    db: Session = Depends(get_db),
+):
+    """Handle Stripe webhooks for subscription events"""
+    try:
+        # Get raw body and signature header
+        body = await request.body()
+        sig_header = request.headers.get("stripe-signature")
+
+        # Your webhook endpoint secret from Stripe Dashboard
+        endpoint_secret = SubscriptionService.get_webhook_secret()
+
+        # Verify the webhook signature
+        try:
+            event = stripe.Webhook.construct_event(body, sig_header, endpoint_secret)
+        except ValueError as e:
+            logger.error("Invalid payload: " + str(e))
+            raise HTTPException(status_code=400, detail="Invalid payload")
+        except stripe.error.SignatureVerificationError as e:
+            logger.error("Invalid signature: " + str(e))
+            raise HTTPException(status_code=400, detail="Invalid signature")
+
+        # Now use the verified event data
+        event_type = event["type"]
+        data = event["data"]["object"]
+
+        if event_type == "checkout.session.completed":
+            WebhookService.handle_checkout_completed(db, data)
+
+        elif event_type == "invoice.payment_failed":
+            WebhookService.handle_payment_failed(db, data)
+
+        elif event_type == "customer.subscription.deleted":
+            WebhookService.handle_subscription_cancelled(db, data)
+
+        return {"received": True, "processed": event_type}
+
+    except Exception as e:
+        logger.error(f"Webhook processing error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Webhook processing failed")
 
 
 async def _get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
