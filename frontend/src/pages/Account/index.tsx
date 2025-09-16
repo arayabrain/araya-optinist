@@ -120,7 +120,7 @@ const Account = () => {
     FREE = "FREE",
     EXPIRED = "EXPIRED",
     VALIDATING = "VALIDATING",
-    NONE = "NONE",
+    ACTIVE = "ACTIVE",
   }
 
   enum SUBSCRIPTION_PLAN {
@@ -256,7 +256,7 @@ const Account = () => {
     } else if (isSubscriptionExpired) {
       return SUBSCRIPTION_STATUS.EXPIRED
     } else {
-      return SUBSCRIPTION_STATUS.NONE
+      return SUBSCRIPTION_STATUS.ACTIVE
     }
   }
 
