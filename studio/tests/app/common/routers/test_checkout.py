@@ -1,6 +1,6 @@
 import requests
 
-BASE_URL = "http://localhost:8000/api/v1/checkout"
+STRIPE_CALLBACK_URL = "http://localhost:8000/api/v1/checkout"
 
 
 def test_checkout_api():
@@ -15,7 +15,7 @@ def test_checkout_api():
     }
 
     response = requests.post(
-        f"{BASE_URL}/stripe/checkout-success",
+        f"{STRIPE_CALLBACK_URL}/stripe/checkout-success",
         json=payload,
         headers={"Content-Type": "application/json"},
     )
@@ -36,7 +36,7 @@ def test_checkout_api():
     invalid_payload = {"session_id": "test"}  # Missing user_id, plan_id
 
     response = requests.post(
-        f"{BASE_URL}/stripe/checkout-success",
+        f"{STRIPE_CALLBACK_URL}/stripe/checkout-success",
         json=invalid_payload,
         headers={"Content-Type": "application/json"},
     )
@@ -62,7 +62,7 @@ def test_webhook_api():
         },
     }
 
-    response = requests.post(f"{BASE_URL}/stripe/webhook", json=payload)
+    response = requests.post(f"{STRIPE_CALLBACK_URL}/stripe/webhook", json=payload)
 
     if response.status_code == 200:
         data = response.json()
@@ -78,7 +78,7 @@ def test_subscription_status_api():
     """Test subscription status API"""
     print("Testing Subscription Status API...")
 
-    response = requests.get(f"{BASE_URL}/subscription/status/1")
+    response = requests.get(f"{STRIPE_CALLBACK_URL}/subscription/status/1")
 
     if response.status_code == 200:
         data = response.json()
@@ -100,7 +100,7 @@ def run_checkout_tests():
 
     # Check API connectivity first
     try:
-        response = requests.get(f"{BASE_URL}/health", timeout=3)
+        response = requests.get(f"{STRIPE_CALLBACK_URL}/health", timeout=3)
         if response.status_code != 200:
             print("API not responding properly")
             return

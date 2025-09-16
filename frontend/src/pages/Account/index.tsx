@@ -120,6 +120,12 @@ const Account = () => {
     FREE = "FREE",
     EXPIRED = "EXPIRED",
     VALIDATING = "VALIDATING",
+    NONE = "NONE",
+  }
+
+  enum SUBSCRIPTION_PLAN {
+    FREE = "Free",
+    PREMIUM = "Premium",
   }
 
   useEffect(() => {
@@ -249,9 +255,9 @@ const Account = () => {
       return SUBSCRIPTION_STATUS.FREE
     } else if (isSubscriptionExpired) {
       return SUBSCRIPTION_STATUS.EXPIRED
+    } else {
+      return SUBSCRIPTION_STATUS.NONE
     }
-
-    return userSubscription.plan_name.toUpperCase()
   }
 
   const getSubscriptionButton = () => {
@@ -373,7 +379,9 @@ const Account = () => {
             alignItems: "flex-start",
           }}
         >
-          <BoxData>{getSubscriptionStatus()}</BoxData>
+          <BoxData>
+            {userSubscription?.plan_name ?? SUBSCRIPTION_PLAN.FREE}
+          </BoxData>
           {getExpirationInfo()}
         </Box>
         <Button

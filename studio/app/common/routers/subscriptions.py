@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 # Import your database models and dependencies
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.subscription.subscription_controller import (
+from studio.app.common.core.subscription.subscription_service import (
     SubscriptionCurrencyType,
     SubscriptionService,
 )
@@ -24,7 +24,7 @@ from studio.app.common.schemas.subscriptions import (
 from studio.app.common.schemas.users import User
 
 stripe.api_key = SubscriptionService.get_stripe_key()
-BASE_URL = SubscriptionService.get_base_url()
+STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
 
 router = APIRouter(prefix="/api/subscriptions", tags=["subscriptions"])
 logger = AppLogger.get_logger()
@@ -181,9 +181,10 @@ async def create_checkout_session(
                 ],
                 mode="subscription",
                 success_url=(
-                    f"{BASE_URL}/console/account" "?session_id={CHECKOUT_SESSION_ID}"
+                    f"{STRIPE_CALLBACK_URL}/console/account"
+                    "?session_id={CHECKOUT_SESSION_ID}"
                 ),
-                cancel_url=f"{BASE_URL}/console/subscription",
+                cancel_url=f"{STRIPE_CALLBACK_URL}/console/subscription",
                 client_reference_id=str(user.id),
                 customer_email=user.email,
                 metadata={

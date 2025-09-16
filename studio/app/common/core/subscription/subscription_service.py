@@ -97,7 +97,7 @@ class SubscriptionService:
 
     @staticmethod
     def get_base_url() -> str:
-        base_url = os.getenv("BASE_URL")
+        base_url = os.getenv("STRIPE_CALLBACK_URL")
         if not base_url:
-            raise ValueError("BASE_URL environment variable is not set")
+            raise ValueError("STRIPE_CALLBACK_URL environment variable is not set")
         return base_url
