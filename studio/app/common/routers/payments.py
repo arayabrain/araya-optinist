@@ -1,11 +1,9 @@
 import logging
 import os
 from datetime import datetime
-from typing import Any, Dict, Optional
 
 import stripe
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from studio.app.common.core.payment.payment_services import (
@@ -14,6 +12,12 @@ from studio.app.common.core.payment.payment_services import (
     WebhookService,
 )
 from studio.app.common.db.database import get_db
+from studio.app.common.schemas.payments import (
+    PaymentSuccessRequest,
+    PaymentSuccessResponse,
+    SubscriptionStatusResponse,
+    WebhookRequest,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,33 +26,7 @@ logger = logging.getLogger(__name__)
 # Stripe setup
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
-router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
-
-
-# Pydantic Models
-class PaymentSuccessRequest(BaseModel):
-    session_id: str = Field(..., description="Stripe checkout session ID")
-    user_id: int = Field(..., description="Internal user ID")
-    plan_id: int = Field(..., description="Subscription plan ID (1=Free, 2=Premium)")
-
-
-class PaymentSuccessResponse(BaseModel):
-    success: bool
-    message: str
-    subscription_user_id: Optional[int] = None
-    purchase_id: Optional[int] = None
-    expiration_date: Optional[datetime] = None
-
-
-class WebhookRequest(BaseModel):
-    event_type: str
-    data: Dict[str, Any]
-
-
-class SubscriptionStatusResponse(BaseModel):
-    user_id: int
-    has_active_subscription: bool
-    subscription_details: Optional[Dict[str, Any]] = None
+router = APIRouter(prefix="/api/payments", tags=["payments"])
 
 
 # API Endpoints

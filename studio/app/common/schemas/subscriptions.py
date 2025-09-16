@@ -147,3 +147,20 @@ class PaymentMethodResponse(BaseModel):
         """
         brand_name = self.brand.title()
         return f"{brand_name} ending in {self.last4}"
+
+
+class CreateSetupIntentRequest(BaseModel):
+    pass  # No additional fields needed, user_id comes from auth
+
+
+class CreateSetupIntentResponse(BaseModel):
+    success: bool
+    client_secret: str
+    setup_intent_id: str
+    message: Optional[str] = None
+
+
+class UpdatePaymentMethodResponse(BaseModel):
+    success: bool
+    message: str
+    payment_method_id: Optional[str] = None
