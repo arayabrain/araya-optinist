@@ -22,6 +22,7 @@ from studio.app.common.schemas.payments import (
     WebhookRequest,
 )
 from studio.app.common.schemas.subscriptions import (
+    CancelSubscriptionResponse,
     CreateCheckoutSessionRequest,
     CreateCheckoutSessionResponse,
     CreateSetupIntentResponse,
@@ -322,6 +323,124 @@ async def update_user_subscription(
         logger.error(f"Error updating subscription for user {user_id}: {str(e)}")
         raise HTTPException(
             status_code=500, detail=f"Failed to update subscription: {str(e)}"
+        )
+
+
+@router.delete("/mgmts/cancel/{user_id}", response_model=CancelSubscriptionResponse)
+async def cancel_user_subscription(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Cancel user's subscription at period end
+    - Subscription will be cancelled when current billing period ends
+    - User retains access until then
+    - Database updates handled via webhook
+    """
+    try:
+        # Verify user access
+        if current_user.id != user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied: Can only cancel your own subscription",
+            )
+
+        # Get current user subscription
+        current_subscription_result = SubscriptionService.get_user_subscription_plan(
+            db, user_id
+        )
+        if not current_subscription_result:
+            raise HTTPException(
+                status_code=404, detail="No active subscription found to cancel"
+            )
+
+        sub_data, current_plan = current_subscription_result
+
+        # Get Stripe customer
+        customer = await _get_stripe_customer_by_email(current_user.email)
+        if not customer:
+            raise HTTPException(
+                status_code=404, detail="No Stripe customer found for user"
+            )
+
+        # Get active Stripe subscription
+        stripe_subscriptions = stripe.Subscription.list(
+            customer=customer.id, status="active", limit=1
+        )
+
+        if not stripe_subscriptions.data:
+            raise HTTPException(
+                status_code=404, detail="No active Stripe subscription found"
+            )
+
+        stripe_subscription = stripe_subscriptions.data[0]
+
+        logger.info(
+            f"Scheduling subscription cancellation at period end for user {user_id}"
+        )
+
+        current_period_end = stripe_subscription["items"]["data"][0][
+            "current_period_end"
+        ]
+
+        # Handle existing schedule if present
+        existing_schedule_id = stripe_subscription.get("schedule")
+        if existing_schedule_id:
+            try:
+                # Cancel any existing schedule
+                stripe.SubscriptionSchedule.cancel(existing_schedule_id)
+                logger.info(f"Cancelled existing schedule: {existing_schedule_id}")
+
+                # Get the subscription again after cancelling schedule
+                stripe_subscription = stripe.Subscription.retrieve(
+                    stripe_subscription.id
+                )
+            except Exception as e:
+                logger.warning(f"Could not cancel schedule: {e}")
+
+        # Set subscription to cancel at period end
+        stripe.Subscription.modify(
+            stripe_subscription.id,
+            cancel_at_period_end=True,
+            metadata={
+                **stripe_subscription.metadata,
+                "cancellation_requested": "true",
+                "cancellation_requested_at": str(int(datetime.utcnow().timestamp())),
+            },
+        )
+
+        # Database will be updated via customer.subscription.updated webhook
+
+        access_until_date = datetime.fromtimestamp(current_period_end)
+        message = (
+            f"Subscription will be cancelled on "
+            f"{access_until_date.strftime('%Y-%m-%d')}. "
+            f"You will retain access until then."
+        )
+
+        logger.info(
+            f"Successfully scheduled cancellation for user {user_id} at period end"
+        )
+
+        return CancelSubscriptionResponse(
+            success=True,
+            message=message,
+            cancellation_date=access_until_date.strftime("%Y-%m-%d"),
+            access_until=access_until_date.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error cancelling subscription: {str(e)}")
+        raise HTTPException(
+            status_code=400, detail=f"Payment processing error: {str(e)}"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error cancelling subscription for user {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to cancel subscription: {str(e)}"
         )
 
 
@@ -805,15 +924,8 @@ async def stripe_webhook(
         elif event_type == "customer.subscription.deleted":
             WebhookService.handle_subscription_cancelled(db, data)
 
-        # NEW: Subscription schedule webhook handlers
         elif event_type == "subscription_schedule.released":
-            # This fires when the scheduled plan change actually happens
             WebhookService.handle_subscription_schedule_released(db, data)
-
-        # Additional useful events you might want to handle
-        elif event_type == "customer.subscription.updated":
-            # Handle subscription updates (like payment method changes)
-            logger.info(f"Subscription updated for customer: {data.get('customer')}")
 
         elif event_type == "invoice.payment_succeeded":
             # Handle successful payments

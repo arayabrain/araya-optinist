@@ -189,3 +189,10 @@ class UpdateSubscriptionResponse(BaseModel):
     effective_date: Optional[int] = None
     next_billing_date: Optional[int] = None
     prorated_amount: Optional[str] = None
+
+
+class CancelSubscriptionResponse(BaseModel):
+    success: bool
+    message: str
+    cancellation_date: str
+    access_until: str
