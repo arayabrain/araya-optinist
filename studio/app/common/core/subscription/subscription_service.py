@@ -3,16 +3,18 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from fastapi import logger
 from sqlalchemy import and_
 from sqlmodel import Session
 
 from studio.app.common import models as common_model
+from studio.app.common.core.logger import AppLogger
 from studio.app.common.models.subscription import (
     SubscriptionPlans,
     SyncStatus,
     UserSubscription,
 )
+
+logger = AppLogger.get_logger()
 
 
 class SubscriptionStatusType(Enum):
@@ -106,6 +108,41 @@ class SubscriptionService:
         if not base_url:
             raise ValueError("STRIPE_CALLBACK_URL environment variable is not set")
         return base_url
+
+    @staticmethod
+    def update_user_subscription(
+        db: Session, user_id: int, new_plan_id: int
+    ) -> Optional[UserSubscription]:
+        """
+        Update user's subscription to a new plan
+        """
+        try:
+            # Get existing subscription
+            subscription = (
+                db.query(UserSubscription)
+                .filter(
+                    UserSubscription.user_id == user_id,
+                    UserSubscription.expiration > datetime.now(timezone.utc),
+                )
+                .first()
+            )
+
+            if not subscription:
+                return None
+
+            # Update the subscription
+            subscription.plan_id = new_plan_id
+            subscription.updated_at = datetime.utcnow()
+
+            db.commit()
+            db.refresh(subscription)
+
+            return subscription
+
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error updating subscription for user {user_id}: {str(e)}")
+            raise
 
 
 class SyncService:

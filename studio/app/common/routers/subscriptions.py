@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import List, Optional
 
 import stripe
@@ -6,9 +7,6 @@ from sqlalchemy.orm import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.logger import AppLogger
-
-# Import your database models and dependencies
-
 from studio.app.common.core.subscription.payment_service import PaymentService
 from studio.app.common.core.subscription.subscription_service import (
     SubscriptionCurrencyType,
@@ -30,9 +28,14 @@ from studio.app.common.schemas.subscriptions import (
     PaymentMethodResponse,
     SubscriptionPlanResponse,
     UpdatePaymentMethodResponse,
+    UpdateSubscriptionRequest,
+    UpdateSubscriptionResponse,
     UserSubscriptionResponse,
 )
 from studio.app.common.schemas.users import User
+
+# Import your database models and dependencies
+
 
 stripe.api_key = SubscriptionService.get_stripe_key()
 STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
@@ -151,6 +154,175 @@ async def get_subscription_status(user_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Error getting subscription status: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.put("/mgmts/{user_id}", response_model=UpdateSubscriptionResponse)
+async def update_user_subscription(
+    user_id: int,
+    request: UpdateSubscriptionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Update user's subscription to a different plan - webhook-driven database updates
+    """
+    try:
+        # Verify user access
+        if current_user.id != user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied: Can only update your own subscription",
+            )
+
+        # Get the new plan details
+        new_plan = SubscriptionService.get_plan_by_id(db, request.new_plan_id)
+        if not new_plan:
+            raise HTTPException(
+                status_code=404, detail="New subscription plan not found"
+            )
+
+        # Get current user subscription
+        current_subscription_result = SubscriptionService.get_user_subscription_plan(
+            db, user_id
+        )
+        if not current_subscription_result:
+            raise HTTPException(
+                status_code=404,
+                detail="No active subscription found. Please create a new subscription",
+            )
+
+        sub_data, current_plan = current_subscription_result
+
+        # Check if user is trying to "update" to the same plan
+        if current_plan.id == new_plan.id:
+            raise HTTPException(
+                status_code=400, detail="User is already subscribed to this plan"
+            )
+
+        # Get Stripe customer
+        customer = await _get_stripe_customer_by_email(current_user.email)
+        if not customer:
+            raise HTTPException(
+                status_code=404, detail="No Stripe customer found for user"
+            )
+
+        # Get active Stripe subscription
+        stripe_subscriptions = stripe.Subscription.list(
+            customer=customer.id, status="active", limit=1
+        )
+
+        if not stripe_subscriptions.data:
+            raise HTTPException(
+                status_code=404, detail="No active Stripe subscription found"
+            )
+
+        stripe_subscription = stripe_subscriptions.data[0]
+
+        # Prepare currency for Stripe
+        currency = new_plan.currency
+        if currency == SubscriptionCurrencyType.USD.value:
+            currency = "usd"
+        elif currency == SubscriptionCurrencyType.JPY.value:
+            currency = "jpy"
+
+        # Create new price in Stripe for the new plan
+        stripe_price = stripe.Price.create(
+            currency=currency,
+            unit_amount=new_plan.price,
+            recurring={"interval": "month"},
+            product_data={
+                "name": new_plan.name,
+                "metadata": {"plan_id": str(new_plan.id)},
+            },
+        )
+
+        logger.info(f"Processing scheduled subscription change for user {user_id}")
+
+        # Get the current period end from the subscription items
+        current_period_end = stripe_subscription["items"]["data"][0][
+            "current_period_end"
+        ]
+
+        logger.info(f"Current period end timestamp: {current_period_end}")
+        logger.info(
+            f"Current period end date: {datetime.fromtimestamp(current_period_end)}"
+        )
+
+        # Schedule change at period end using proper Stripe schedules
+        current_period_end = stripe_subscription["items"]["data"][0][
+            "current_period_end"
+        ]
+
+        # Cancel current subscription at period end
+        stripe.Subscription.modify(stripe_subscription.id, cancel_at_period_end=True)
+
+        # Create a new subscription schedule that starts when current ends
+        stripe.SubscriptionSchedule.create(
+            customer=stripe_subscription.customer,
+            start_date=current_period_end,  # Start when current subscription ends
+            phases=[
+                {
+                    # New phase - switch to new plan
+                    "items": [
+                        {
+                            "price": stripe_price.id,
+                            "quantity": 1,
+                        }
+                    ],
+                    # This phase continues indefinitely
+                },
+            ],
+            metadata={
+                "user_id": str(user_id),
+                "new_plan_id": str(new_plan.id),
+                "old_plan_id": str(current_plan.id),
+                "scheduled_change": "true",
+            },
+        )
+
+        change_date = datetime.fromtimestamp(current_period_end)
+        message = (
+            f"Subscription will change to {new_plan.name} on "
+            f"{change_date.strftime('%Y-%m-%d')}"
+        )
+        effective_date = int(current_period_end)
+
+        # Database will be updated via subscription_schedule.updated and
+        # subscription_schedule.released webhooks
+
+        # Determine if this is an upgrade or downgrade
+        plan_change_type = (
+            "upgrade" if new_plan.price > current_plan.price else "downgrade"
+        )
+
+        logger.info(
+            f"subscription change for user {user_id} "
+            f"from plan {current_plan.id} to plan {new_plan.id} ({plan_change_type})"
+        )
+
+        return UpdateSubscriptionResponse(
+            success=True,
+            message=message,
+            old_plan_name=current_plan.name,
+            new_plan_name=new_plan.name,
+            change_type=plan_change_type,
+            effective_date=effective_date,
+            next_billing_date=int(current_period_end),
+            prorated_amount=("Check latest invoice for proration details"),
+        )
+
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error updating subscription: {str(e)}")
+        raise HTTPException(
+            status_code=400, detail=f"Payment processing error: {str(e)}"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating subscription for user {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to update subscription: {str(e)}"
+        )
 
 
 @router.get("/payment-methods", response_model=List[PaymentMethodResponse])
@@ -632,6 +804,23 @@ async def stripe_webhook(
 
         elif event_type == "customer.subscription.deleted":
             WebhookService.handle_subscription_cancelled(db, data)
+
+        # NEW: Subscription schedule webhook handlers
+        elif event_type == "subscription_schedule.released":
+            # This fires when the scheduled plan change actually happens
+            WebhookService.handle_subscription_schedule_released(db, data)
+
+        # Additional useful events you might want to handle
+        elif event_type == "customer.subscription.updated":
+            # Handle subscription updates (like payment method changes)
+            logger.info(f"Subscription updated for customer: {data.get('customer')}")
+
+        elif event_type == "invoice.payment_succeeded":
+            # Handle successful payments
+            logger.info(f"Payment succeeded for customer: {data.get('customer')}")
+
+        else:
+            logger.info(f"Unhandled webhook event type: {event_type}")
 
         return {"received": True, "processed": event_type}
 

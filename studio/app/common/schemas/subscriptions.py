@@ -164,3 +164,28 @@ class UpdatePaymentMethodResponse(BaseModel):
     success: bool
     message: str
     payment_method_id: Optional[str] = None
+
+
+class UpdateSubscriptionRequest(BaseModel):
+    """Request model for updating user subscription"""
+
+    new_plan_id: int = Field(..., description="ID of the new subscription plan")
+    proration_behavior: Optional[str] = Field(
+        default="create_prorations",
+        description=(
+            "How to handle prorations: 'create_prorations', 'none', " "'always_invoice'"
+        ),
+    )
+
+
+class UpdateSubscriptionResponse(BaseModel):
+    """Response model for subscription updates"""
+
+    success: bool
+    message: str
+    old_plan_name: str
+    new_plan_name: str
+    change_type: str  # "upgrade" or "downgrade"
+    effective_date: Optional[int] = None
+    next_billing_date: Optional[int] = None
+    prorated_amount: Optional[str] = None

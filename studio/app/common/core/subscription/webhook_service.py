@@ -2,19 +2,26 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict
 
-from fastapi import logger
+import stripe
 from sqlmodel import Session
 
+from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.models.subscription import (
     CancellationReason,
     SubscriptionCancellation,
+    SubscriptionPlans,
     SubscriptionUserAccount,
     SyncStatus,
     UserSubscription,
 )
 
+logger = AppLogger.get_logger()
+
 
 class WebhookService:
+    stripe.api_key = SubscriptionService.get_stripe_key()
+
     """Service class for handling Stripe webhooks"""
 
     @staticmethod
@@ -120,6 +127,106 @@ class WebhookService:
                 db.commit()
 
                 logger.info(f"Cancelled subscription for user {user_account.user_id}")
+
+    @staticmethod
+    def handle_subscription_schedule_released(db: Session, data: dict):
+        """
+        Handle when a subscription schedule is released (plan change executed)
+        Event: subscription_schedule.released
+        """
+        try:
+            logger.info("Processing subscription_schedule.released webhook")
+
+            # Get the subscription schedule data
+            subscription_id = data.get("subscription")
+            customer_id = data.get("customer")
+
+            if not subscription_id:
+                logger.error("No subscription ID in schedule released event")
+                return
+
+            # Get the subscription details from Stripe
+            subscription = stripe.Subscription.retrieve(subscription_id)
+            current_period_end = subscription["items"]["data"][0]["current_period_end"]
+
+            # Get customer details to find user
+            customer = stripe.Customer.retrieve(customer_id)
+            customer_email = customer.get("email")
+
+            if not customer_email:
+                logger.error(f"No email found for customer {customer_id}")
+                return
+
+            # Find user by email
+            from studio.app.common.models.user import User  # Adjust import as needed
+
+            user = db.query(User).filter(User.email == customer_email).first()
+
+            if not user:
+                logger.error(f"No user found with email {customer_email}")
+                return
+
+            # Find the plan by matching the price or metadata
+            new_plan_id = None
+
+            # Try to get plan_id from subscription metadata first
+            if "plan_id" in subscription.get("metadata", {}):
+                new_plan_id = int(subscription["metadata"]["plan_id"])
+            else:
+                # Fallback: find plan by price and currency
+                price = subscription["items"]["data"][0]["price"]
+                plan = (
+                    db.query(SubscriptionPlans)
+                    .filter(
+                        SubscriptionPlans.price == price["unit_amount"],
+                        SubscriptionPlans.currency
+                        == (1 if price["currency"] == "usd" else 2),
+                    )
+                    .first()
+                )
+
+                if plan:
+                    new_plan_id = plan.id
+
+            if not new_plan_id:
+                logger.error(f"Could not determine new plan ID for user {user.id}")
+                return
+
+            # Update the user's subscription in database
+            # Find the active subscription for this user
+            user_subscription = (
+                db.query(UserSubscription)
+                .filter(
+                    UserSubscription.user_id == user.id,
+                    UserSubscription.expiration > datetime.now(timezone.utc),
+                )
+                .first()
+            )
+
+            if user_subscription:
+                # Update the subscription with new plan details
+                user_subscription.plan_id = new_plan_id
+                user_subscription.updated_at = datetime.now(timezone.utc)
+                user_subscription.expiration = datetime.fromtimestamp(
+                    current_period_end
+                )
+            else:
+                logger.error(f"No active subscription found for user {user.id}")
+                return
+
+            db.commit()
+
+            logger.info(
+                f"Successfully updated subscription for user {user.id} to plan "
+                f"{new_plan_id} via webhook"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"Error processing subscription_schedule.released webhook: {str(e)}"
+            )
+            db.rollback()
+            raise
 
     @staticmethod
     def get_webhook_secret() -> str:
