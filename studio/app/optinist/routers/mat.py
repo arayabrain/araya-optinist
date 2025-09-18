@@ -50,7 +50,7 @@ class MatGetter:
                 name=name,
                 path=current_path,
                 shape=data.shape,
-                nbytes=cls.format_nbytes(data.nbytes),
+                nbytes=data.nbytes,
                 dataType="array",
             )
         else:
@@ -60,10 +60,6 @@ class MatGetter:
                 path=current_path,
                 dataType=type(data).__name__,
             )
-
-    @classmethod
-    def format_nbytes(cls, nbytes: int) -> str:
-        return f"{float(nbytes / (1000**2)):.1f} MB"
 
 
 @router.get(

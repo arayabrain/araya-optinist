@@ -216,7 +216,7 @@ DOWNLOAD_STATUS: Dict[str, DownloadStatus] = {}
 
 
 @router.delete(
-    "/{workspace_id}/delete/{filename}",
+    "/{workspace_id}/delete/{filename:path}",
     response_model=bool,
     dependencies=[Depends(is_workspace_owner)],
 )
