@@ -29,7 +29,7 @@ const Failed = () => {
 
           {/* Subtitle */}
           <SubtitlePrimary variant="h6">
-            We couldn&apos;t process your payment
+            We are not able to process your payment
           </SubtitlePrimary>
           <SubtitleSecondary variant="body1">
             Please check your payment information and try again.
