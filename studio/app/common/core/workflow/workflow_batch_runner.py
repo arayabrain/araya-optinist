@@ -25,8 +25,6 @@ class WorkflowBatchRunner:
             self.workspace_id, self.unique_id, self.runItem
         ).finish_workflow_without_run()
 
-        # TODO: finish_workflow_without_run で、snakemake.yaml を保存するようにする
-
         # ------------------------------------------------------------
         # Process each Batch Run Workflows
         # #1) Data Construction
