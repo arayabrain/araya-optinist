@@ -95,7 +95,8 @@ class RoutingService {
   private isPremiumUser(user: UserDTO): boolean {
     return (
       user.subscription_plan_name === "Premium" &&
-      user.subscription_status === "active"
+      (user.subscription_status === "Premium" ||
+        user.subscription_status === "Limit Grace")
     )
   }
 

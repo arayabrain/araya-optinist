@@ -470,23 +470,21 @@ class BatchUtils:
 
         # Add config download
         config_download_cmd = (
-            'python -c "'
-            "import asyncio; "
-            "from studio.app.common.core.cloud_batch.batch_utils "
-            "import download_snakemake_config_from_s3; "
-            f"asyncio.run(download_snakemake_config_from_s3('{workspace_id}', "
-            f"'{unique_id}'))\""
+            f'python -c "import asyncio; '
+            f"from studio.app.common.core.cloud_batch.batch_utils "
+            f"import download_snakemake_config_from_s3; "
+            f"asyncio.run(download_snakemake_config_from_s3("
+            f"'{workspace_id}', '{unique_id}'))\""
         )
         commands.append(config_download_cmd)
 
         # Add snakefile download command
         snakefile_download_cmd = (
-            'python -c "'
-            "import asyncio; "
-            "from studio.app.common.core.cloud_batch.batch_utils "
-            "import download_snakefile_from_s3; "
-            f"asyncio.run(download_snakefile_from_s3('{workspace_id}', "
-            f"'{unique_id}'))\""
+            f'python -c "import asyncio; '
+            f"from studio.app.common.core.cloud_batch.batch_utils "
+            f"import download_snakefile_from_s3; "
+            f"asyncio.run(download_snakefile_from_s3("
+            f"'{workspace_id}', '{unique_id}'))\""
         )
         commands.append(snakefile_download_cmd)
 
@@ -526,15 +524,15 @@ class BatchUtils:
             raise ValueError("Empty storage path provided to StorageSettings")
 
         storage_settings = StorageSettings(
-            default_storage_provider="fs",  # Use the filesystem storage plugin
-            default_storage_prefix="",  # Empty to avoid path duplication
-            local_storage_prefix=Path(efs_storage),  # Full EFS path: /mnt/efs
-            remote_job_local_storage_prefix=Path(efs_storage),  # Same for batch jobs
+            default_storage_provider="fs",
+            default_storage_prefix="/mnt/efs",  # Set the full EFS path here
+            local_storage_prefix=Path(""),  # Empty to avoid duplication
+            remote_job_local_storage_prefix=Path(""),  # Empty to avoid duplication
             shared_fs_usage=[
-                SharedFSUsage.INPUT_OUTPUT,  # Input/output files on EFS
-                SharedFSUsage.PERSISTENCE,  # Job metadata on EFS
-                SharedFSUsage.SOFTWARE_DEPLOYMENT,  # Conda envs on EFS
-                SharedFSUsage.SOURCES,  # Workflow sources on EFS
+                SharedFSUsage.INPUT_OUTPUT,
+                SharedFSUsage.PERSISTENCE,
+                SharedFSUsage.SOFTWARE_DEPLOYMENT,
+                SharedFSUsage.SOURCES,
             ],
         )
 

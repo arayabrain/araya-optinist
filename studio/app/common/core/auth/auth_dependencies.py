@@ -1,5 +1,6 @@
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import Depends, HTTPException, Response, status
@@ -18,6 +19,11 @@ from studio.app.common.db.database import get_db
 from studio.app.common.models import User as UserModel
 from studio.app.common.models import UserRole as UserRoleModel
 from studio.app.common.models.experiment import ExperimentRecord
+from studio.app.common.models.subscription import (
+    SubscriptionPlans,
+    UserStorageUsage,
+    UserSubscription,
+)
 from studio.app.common.models.workspace import Workspace
 from studio.app.common.schemas.users import User
 
@@ -77,17 +83,84 @@ async def get_current_user(
                 + func.coalesce(ExperimentCapacity.c.experiment_capacity, 0).label(
                     "data_usage"
                 ),
+                func.max(SubscriptionPlans.name).label("subscription_plan_name"),
+                UserStorageUsage.storage_usage_bytes,
+                UserStorageUsage.storage_quota_bytes,
+                func.max(UserSubscription.expiration).label("subscription_expiration"),
+                func.max(UserSubscription.plan_id).label("subscription_plan_id"),
             )
             .outerjoin(WorkspaceCapacity, WorkspaceCapacity.c.user_id == UserModel.id)
             .outerjoin(ExperimentCapacity, ExperimentCapacity.c.user_id == UserModel.id)
             .outerjoin(UserRoleModel, UserRoleModel.user_id == UserModel.id)
+            .outerjoin(UserSubscription, UserSubscription.user_id == UserModel.id)
+            .outerjoin(
+                SubscriptionPlans, SubscriptionPlans.id == UserSubscription.plan_id
+            )
+            .outerjoin(UserStorageUsage, UserStorageUsage.user_id == UserModel.id)
             .filter(UserModel.uid == uid)
+            .group_by(UserModel.id)
             .first()
         )
         assert user_data is not None, "Invalid user data"
-        authed_user, role_id, data_usage = user_data
+        (
+            authed_user,
+            role_id,
+            data_usage,
+            subscription_plan_name,
+            storage_usage_bytes,
+            storage_quota_bytes,
+            subscription_expiration,
+            subscription_plan_id,
+        ) = user_data
+
         authed_user.__dict__["role_id"] = role_id
         authed_user.__dict__["data_usage"] = data_usage
+        authed_user.__dict__["subscription_plan_name"] = (
+            subscription_plan_name or "Free"
+        )
+        authed_user.__dict__["storage_usage_bytes"] = storage_usage_bytes or 0
+        authed_user.__dict__["storage_quota_bytes"] = storage_quota_bytes or 0
+        authed_user.__dict__["storage_usage_percent"] = round(
+            (storage_usage_bytes or 0) / (storage_quota_bytes or 1) * 100, 2
+        )
+
+        # Calculate subscription status and days remaining
+        now = datetime.now(timezone.utc)
+        if subscription_expiration and subscription_plan_id:
+            # Make sure expiration is timezone-aware
+            if subscription_expiration.tzinfo is None:
+                subscription_expiration = subscription_expiration.replace(
+                    tzinfo=timezone.utc
+                )
+
+            days_remaining = (subscription_expiration - now).days
+
+            if subscription_plan_id == 1:  # Free plan
+                authed_user.__dict__["subscription_status"] = "Free"
+                authed_user.__dict__["subscription_days_remaining"] = None
+            elif subscription_plan_id == 2:  # Premium plan
+                if days_remaining > 0:
+                    authed_user.__dict__["subscription_status"] = "Premium"
+                    authed_user.__dict__["subscription_days_remaining"] = days_remaining
+                elif days_remaining >= -30:  # Grace period (30 days after expiration)
+                    authed_user.__dict__["subscription_status"] = "Limit Grace"
+                    authed_user.__dict__["subscription_days_remaining"] = (
+                        30 + days_remaining
+                    )  # Days left in grace period
+                else:
+                    authed_user.__dict__["subscription_status"] = "Expired"
+                    authed_user.__dict__["subscription_days_remaining"] = None
+            else:
+                authed_user.__dict__["subscription_status"] = (
+                    subscription_plan_name or "Unknown"
+                )
+                authed_user.__dict__["subscription_days_remaining"] = (
+                    days_remaining if days_remaining > 0 else None
+                )
+        else:
+            authed_user.__dict__["subscription_status"] = "Free"
+            authed_user.__dict__["subscription_days_remaining"] = None
+
         return User.from_orm(authed_user)
 
     except ValidationError as e:

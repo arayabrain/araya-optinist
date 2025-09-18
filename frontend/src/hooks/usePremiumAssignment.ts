@@ -42,7 +42,8 @@ export const usePremiumAssignment = () => {
 
   const isPremiumUser =
     currentUser?.subscription_plan_name === "Premium" &&
-    currentUser?.subscription_status === "active"
+    (currentUser?.subscription_status === "Premium" ||
+      currentUser?.subscription_status === "Limit Grace")
 
   /**
    * Assign premium instance

@@ -1947,7 +1947,8 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
           "ecr:DescribeImages",
           "ecr:GetRepositoryPolicy",
           "cloudwatch:ListMetrics",
-          "cloudwatch:GetMetricStatistics"
+          "cloudwatch:GetMetricStatistics",
+          "lambda:InvokeFunction"
         ]
         Resource = "*"
       }
@@ -2290,7 +2291,7 @@ resource "aws_lambda_function" "premium_manager" {
       SECURITY_GROUP_ID     = aws_security_group.ecs.id
       ALB_ARN               = aws_lb.autoscaling.arn
       ALB_LISTENER_ARN      = aws_lb_listener.autoscaling.arn
-      PREMIUM_INSTANCE_IDS  = join(",", aws_instance.premium_standby[*].id)
+      PREMIUM_INSTANCE_IDS  = join(",", aws_instance.premium[*].id)
       CLUSTER_NAME          = aws_ecs_cluster.main.name
       RDS_HOST              = aws_db_instance.main.endpoint
       RDS_USER              = var.mysql_user
@@ -2339,7 +2340,7 @@ resource "aws_lambda_function" "premium_migration_queue" {
       SECURITY_GROUP_ID     = aws_security_group.ecs.id
       ALB_ARN               = aws_lb.autoscaling.arn
       ALB_LISTENER_ARN      = aws_lb_listener.autoscaling.arn
-      PREMIUM_INSTANCE_IDS  = join(",", aws_instance.premium_standby[*].id)
+      PREMIUM_INSTANCE_IDS  = join(",", aws_instance.premium[*].id)
       CLUSTER_NAME          = aws_ecs_cluster.main.name
       RDS_HOST              = aws_db_instance.main.endpoint
       RDS_USER              = var.mysql_user
@@ -2416,8 +2417,7 @@ resource "null_resource" "install_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
       mkdir -p ${path.module}/premium_manager_package
-      cp ${path.module}/premium_manager_package/premium_manager.py ${path.module}/premium_manager_package/premium_manager.py
-      pip install pymysql -t ${path.module}/premium_manager_package/
+      /usr/bin/python3 -m pip install pymysql -t ${path.module}/premium_manager_package/ --no-cache-dir
     EOT
   }
 
@@ -2876,7 +2876,6 @@ resource "aws_lambda_function" "cost_tracker" {
 
   environment {
     variables = {
-      SPOT_FLEET_ID = aws_spot_fleet_request.premium.id
       ASG_NAME      = aws_autoscaling_group.main.name
       REGION        = var.aws_region
       INSTANCE_TYPE = "t3.large"
@@ -3003,8 +3002,8 @@ resource "aws_cloudwatch_dashboard" "main" {
             ["AWS/AutoScaling", "GroupInServiceInstances", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Free Tier Running" }],
             ["AWS/AutoScaling", "GroupMinSize", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Free Tier Min" }],
             ["AWS/AutoScaling", "GroupMaxSize", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Free Tier Max" }],
-            ["AWS/EC2", "InstanceCount", "InstanceId", aws_instance.premium_standby[0].id, { "label": "Premium Standby 1" }],
-            ["AWS/EC2", "InstanceCount", "InstanceId", aws_instance.premium_standby[1].id, { "label": "Premium Standby 2" }]
+            ["AWS/EC2", "InstanceCount", "InstanceId", aws_instance.premium[0].id, { "label": "Premium 1" }],
+            ["AWS/EC2", "InstanceCount", "InstanceId", aws_instance.premium[1].id, { "label": "Premium 2" }]
           ]
           view    = "timeSeries"
           stacked = false
@@ -3029,8 +3028,8 @@ resource "aws_cloudwatch_dashboard" "main" {
           metrics = [
             ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Free Tier EC2 CPU" }],
             ["CWAgent", "mem_used_percent", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Free Tier EC2 Memory" }],
-            ["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.premium_standby[0].id, { "label": "Premium Standby 1 CPU" }],
-            ["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.premium_standby[1].id, { "label": "Premium Standby 2 CPU" }]
+            ["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.premium[0].id, { "label": "Premium 1 CPU" }],
+            ["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.premium[1].id, { "label": "Premium 2 CPU" }]
           ]
           view    = "timeSeries"
           stacked = false
@@ -3451,10 +3450,9 @@ resource "aws_launch_template" "premium" {
   }
 }
 
-# Premium On-Demand Standby Pool - Individual stopped instances for fast startup
-# Initial standby instance - always kept stopped and ready
-resource "aws_instance" "premium_standby" {
-  count = 2  # Start with 2 standby instances
+# Premium On-Demand Instances - Start stopped, activated when users connect
+resource "aws_instance" "premium" {
+  count = 2  # Start with 2 premium instances
 
   launch_template {
     id      = aws_launch_template.premium.id
@@ -3471,11 +3469,11 @@ resource "aws_instance" "premium_standby" {
   disable_api_termination = false
 
   tags = {
-    Name = "subscr-premium-standby-${count.index + 1}"
-    Type = "Premium-Standby-Pool"
+    Name = "subscr-premium-${count.index + 1}"
+    Type = "Premium-Instance"
     Service = "premium-tier"
-    StandbyInstance = "true"
-    StandbyIndex = count.index + 1
+    Tier = "premium"
+    InstanceIndex = count.index + 1
   }
 
   # Ensure instances are stopped on creation
@@ -3487,10 +3485,6 @@ resource "aws_instance" "premium_standby" {
 
   lifecycle {
     create_before_destroy = true
-    ignore_changes = [
-      # Allow instances to be started/stopped without Terraform interference
-      instance_state,
-    ]
   }
 }
 
@@ -4578,7 +4572,7 @@ resource "aws_ecs_service" "premium" {
 
 
   depends_on = [
-    aws_instance.premium_standby
+    aws_instance.premium
   ]
 }
 
@@ -5087,7 +5081,7 @@ output "alb_listener_arn" {
 
 output "premium_instance_ids" {
   description = "IDs of the premium standby instances"
-  value       = aws_instance.premium_standby[*].id
+  value       = aws_instance.premium[*].id
 }
 
 

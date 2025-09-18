@@ -267,6 +267,11 @@ ls -la /app/.snakemake/
 curl http://localhost:8000/health
 nc -zv $DB_HOST 3306
 
+# Connect to database
+# First get RDS endpoint: terraform output rds_endpoint
+# Then connect using: mysql -h <RDS_ENDPOINT> -P 3306 -u studio_db_user -p studio --ssl=0
+# Example: mysql -h subscr-optinist-cloud-rds.cdmeogcuo1v2.ap-northeast-1.rds.amazonaws.com -P 3306 -u studio_db_user -p studio --ssl=0
+
 # Check mounts
 df -h
 mount | grep -E "(efs|nfs)"

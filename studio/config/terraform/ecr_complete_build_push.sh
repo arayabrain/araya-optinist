@@ -1,16 +1,40 @@
 #!/bin/bash
 set -e
 
-# Enhanced ECR Build Push Script with Complete Conda Environment Setup
-# This script creates a complete all-in-one Docker image with all conda environments pre-built
+# Enhanced ECR Build Push Script with Optional Complete Conda Environment Setup
+# This script creates either a standard Docker image or an all-in-one image with conda environments pre-built
 
-echo "=========================================="
-echo "OPTINIST ALL-IN-ONE IMAGE BUILDER"
-echo "=========================================="
-echo "This script will build a complete OptiNiSt Docker image with all conda environments pre-built."
-echo "Estimated build time: 30-60 minutes"
-echo "Final image size: ~27GB"
-echo ""
+# Parse command line arguments
+ALLINONE=false
+for arg in "$@"; do
+    case $arg in
+        --allinone)
+        ALLINONE=true
+        shift
+        ;;
+        *)
+        # Unknown option
+        ;;
+    esac
+done
+
+if [ "$ALLINONE" = true ]; then
+    echo "=========================================="
+    echo "OPTINIST ALL-IN-ONE IMAGE BUILDER"
+    echo "=========================================="
+    echo "This script will build a complete OptiNiSt Docker image with all conda environments pre-built."
+    echo "Estimated build time: 30-60 minutes"
+    echo "Final image size: ~27GB"
+    echo ""
+else
+    echo "=========================================="
+    echo "OPTINIST STANDARD IMAGE BUILDER"
+    echo "=========================================="
+    echo "This script will build a standard OptiNiSt Docker image without pre-built conda environments."
+    echo "Estimated build time: 5-10 minutes"
+    echo "Final image size: ~4GB"
+    echo ""
+fi
 
 # AWS Configuration
 echo "Checking AWS configuration..."
@@ -153,27 +177,31 @@ echo "Building base Docker image..."
 docker build -f studio/config/docker/Dockerfile -t optinist-base:$IMAGE_TAG .
 
 # ===========================================
-# 3. Create Container and Setup Conda Environments
+# 3. Create Container and Setup Conda Environments (Only for --allinone)
 # ===========================================
-echo "Creating container for conda environment setup..."
+if [ "$ALLINONE" = true ]; then
+    echo "Creating container for conda environment setup..."
 
-# Create temporary volume for studio_data
-docker volume create optinist-conda-build || true
+    # Create temporary volume for studio_data
+    docker volume create optinist-conda-build || true
 
-# Run container with environment setup configuration
-docker run -d \
-    --name optinist-conda-build \
-    --env IS_STANDALONE=True \
-    --env USE_FIREBASE_TOKEN=False \
-    --env OPTINIST_DIR="/app/studio_data" \
-    -v optinist-conda-build:/app/studio_data \
-    --shm-size=2G \
-    optinist-base:$IMAGE_TAG \
-    sleep infinity
+    # Run container with environment setup configuration
+    docker run -d \
+        --name optinist-conda-build \
+        --env IS_STANDALONE=True \
+        --env USE_FIREBASE_TOKEN=False \
+        --env OPTINIST_DIR="/app/studio_data" \
+        -v optinist-conda-build:/app/studio_data \
+        --shm-size=2G \
+        optinist-base:$IMAGE_TAG \
+        sleep infinity
 
-# Wait for container to be ready
-echo "Waiting for container to start..."
-sleep 10
+    # Wait for container to be ready
+    echo "Waiting for container to start..."
+    sleep 10
+else
+    echo "Skipping conda environment setup (standard build mode)"
+fi
 
 # Function to setup conda environment programmatically
 setup_conda_env() {
@@ -343,50 +371,59 @@ PYTHON_EOF
     fi
 }
 
-# List of conda environments to create
-CONDA_ENVS=("caiman" "suite2p" "lccd" "optinist" "custom")
+if [ "$ALLINONE" = true ]; then
+    # List of conda environments to create
+    CONDA_ENVS=("caiman" "suite2p" "lccd" "optinist" "custom")
 
-echo "Starting conda environment setup..."
-echo "This process may take 30-60 minutes depending on your internet connection and system performance."
+    echo "Starting conda environment setup..."
+    echo "This process may take 30-60 minutes depending on your internet connection and system performance."
 
-# Setup each conda environment
-for env in "${CONDA_ENVS[@]}"; do
-    echo "=========================================="
-    echo "Setting up conda environment: $env"
-    echo "=========================================="
+    # Setup each conda environment
+    for env in "${CONDA_ENVS[@]}"; do
+        echo "=========================================="
+        echo "Setting up conda environment: $env"
+        echo "=========================================="
 
-    setup_conda_env "$env"
+        setup_conda_env "$env"
 
-    # Wait between environments to avoid overwhelming the system
-    echo "Waiting 30 seconds before next environment..."
-    sleep 30
-done
+        # Wait between environments to avoid overwhelming the system
+        echo "Waiting 30 seconds before next environment..."
+        sleep 30
+    done
 
-# ===========================================
-# 4. Verify Conda Environments
-# ===========================================
-echo "Verifying conda environments..."
-docker exec optinist-conda-build bash -c "
-    echo 'Checking conda environments:'
-    ls -la /app/.snakemake/conda/ 2>/dev/null || echo 'No conda environments found yet'
+    # ===========================================
+    # 4. Verify Conda Environments
+    # ===========================================
+    echo "Verifying conda environments..."
+    docker exec optinist-conda-build bash -c "
+        echo 'Checking conda environments:'
+        ls -la /app/.snakemake/conda/ 2>/dev/null || echo 'No conda environments found yet'
 
-    echo 'Conda environment directories:'
-    find /app/.snakemake -name 'envs' -type d 2>/dev/null || echo 'No envs directories found'
-"
+        echo 'Conda environment directories:'
+        find /app/.snakemake -name 'envs' -type d 2>/dev/null || echo 'No envs directories found'
+    "
 
-# ===========================================
-# 5. Create Final All-in-One Image
-# ===========================================
-echo "Creating final all-in-one Docker image..."
+    # ===========================================
+    # 5. Create Final All-in-One Image
+    # ===========================================
+    echo "Creating final all-in-one Docker image..."
 
-# Commit the container with conda environments to new image
-docker commit optinist-conda-build $REPO_NAME:$IMAGE_TAG
-docker commit optinist-conda-build $REPO_NAME:$VERSION_TAG
+    # Commit the container with conda environments to new image
+    docker commit optinist-conda-build $REPO_NAME:$IMAGE_TAG
+    docker commit optinist-conda-build $REPO_NAME:$VERSION_TAG
 
-# Clean up temporary container
-docker stop optinist-conda-build
-docker rm optinist-conda-build
-docker volume rm optinist-conda-build
+    # Clean up temporary container
+    docker stop optinist-conda-build
+    docker rm optinist-conda-build
+    docker volume rm optinist-conda-build
+else
+    # ===========================================
+    # Standard Build - Tag the base image directly
+    # ===========================================
+    echo "Creating standard Docker image..."
+    docker tag optinist-base:$IMAGE_TAG $REPO_NAME:$IMAGE_TAG
+    docker tag optinist-base:$IMAGE_TAG $REPO_NAME:$VERSION_TAG
+fi
 
 # ===========================================
 # 6. Push to ECR
@@ -433,23 +470,46 @@ fi
 # 8. Testing Instructions
 # ===========================================
 echo ""
-echo "=========================================="
-echo "ALL-IN-ONE BUILD COMPLETE!"
-echo "=========================================="
-echo ""
-echo "Image size: $(docker images $REPO_NAME:$IMAGE_TAG --format 'table {{.Size}}')"
-echo ""
-echo "To test the all-in-one image locally:"
-echo "docker run -it --shm-size=2G \\"
-echo "  -v /tmp:/app/studio_data \\"
-echo "  --env OPTINIST_DIR=\"/app/studio_data\" \\"
-echo "  --name optinist_allinone -d -p 8000:8000 --restart=unless-stopped \\"
-echo "  $ECR_URI:latest \\"
-echo "  poetry run python main.py --host 0.0.0.0 --port 8000"
-echo ""
-echo "Then access http://localhost:8000 and verify that:"
-echo "1. All algorithm categories are available"
-echo "2. Conda environments are pre-created (no 'Create Env' buttons needed)"
-echo "3. Workflows run without conda setup delays"
-echo ""
-echo "Estimated image size: ~27GB (includes all conda environments)"
+if [ "$ALLINONE" = true ]; then
+    echo "=========================================="
+    echo "ALL-IN-ONE BUILD COMPLETE!"
+    echo "=========================================="
+    echo ""
+    echo "Image size: $(docker images $REPO_NAME:$IMAGE_TAG --format 'table {{.Size}}')"
+    echo ""
+    echo "To test the all-in-one image locally:"
+    echo "docker run -it --shm-size=2G \\"
+    echo "  -v /tmp:/app/studio_data \\"
+    echo "  --env OPTINIST_DIR=\"/app/studio_data\" \\"
+    echo "  --name optinist_allinone -d -p 8000:8000 --restart=unless-stopped \\"
+    echo "  $ECR_URI:latest \\"
+    echo "  poetry run python main.py --host 0.0.0.0 --port 8000"
+    echo ""
+    echo "Then access http://localhost:8000 and verify that:"
+    echo "1. All algorithm categories are available"
+    echo "2. Conda environments are pre-created (no 'Create Env' buttons needed)"
+    echo "3. Workflows run without conda setup delays"
+    echo ""
+    echo "Estimated image size: ~27GB (includes all conda environments)"
+else
+    echo "=========================================="
+    echo "STANDARD BUILD COMPLETE!"
+    echo "=========================================="
+    echo ""
+    echo "Image size: $(docker images $REPO_NAME:$IMAGE_TAG --format 'table {{.Size}}')"
+    echo ""
+    echo "To test the standard image locally:"
+    echo "docker run -it --shm-size=2G \\"
+    echo "  -v /tmp:/app/studio_data \\"
+    echo "  --env OPTINIST_DIR=\"/app/studio_data\" \\"
+    echo "  --name optinist_standard -d -p 8000:8000 --restart=unless-stopped \\"
+    echo "  $ECR_URI:latest \\"
+    echo "  poetry run python main.py --host 0.0.0.0 --port 8000"
+    echo ""
+    echo "Then access http://localhost:8000 and verify that:"
+    echo "1. All algorithm categories are available"
+    echo "2. Conda environments will be created on-demand when running workflows"
+    echo "3. First-time workflow runs will take longer due to conda setup"
+    echo ""
+    echo "Estimated image size: ~4GB (conda environments created on-demand)"
+fi

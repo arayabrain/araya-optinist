@@ -611,12 +611,30 @@ def _snakemake_execute_batch(
                         )
 
                     # Debug container command configuration (uncomment to enable)
-                    # BatchDebug.debug_container_command(batch_executor, contain_setup)
+                    BatchDebug.debug_container_command(batch_executor, contain_setup)
+
+                    # Debug: Log the contain_setup to understand the structure
+                    logger.info(f"Container setup commands: {contain_setup}")
+                    logger.info(f"Container setup type: {type(contain_setup)}")
+                    for i, cmd in enumerate(contain_setup):
+                        logger.info(f"Command {i}: {repr(cmd)} (type: {type(cmd)})")
+
+                    # Ensure all commands are strings and flatten any nested lists
+                    if contain_setup:
+                        flattened_commands = []
+                        for cmd in contain_setup:
+                            if isinstance(cmd, list):
+                                flattened_commands.extend(str(subcmd) for subcmd in cmd)
+                            else:
+                                flattened_commands.append(str(cmd))
+                        # Join commands with " && " as expected by Snakemake precommand
+                        contain_setup = " && ".join(flattened_commands)
+                        logger.info(f"Joined precommand: {contain_setup}")
 
                     # Debug AWS Batch execution (uncomment to enable)
-                    # BatchDebug.debug_aws_batch_execution(
-                    #     batch_executor, selected_job_queue, envvars, contain_setup
-                    #     )
+                    BatchDebug.debug_aws_batch_execution(
+                        batch_executor, selected_job_queue, envvars, contain_setup
+                    )
 
                     # Check current environment variables that will be passed
                     for env_var in envvars:
