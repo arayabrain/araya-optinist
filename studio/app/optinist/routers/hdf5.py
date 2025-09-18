@@ -68,7 +68,7 @@ class HDF5Getter:
                         name=name,
                         path=path,
                         shape=node.shape,
-                        nbytes=cls.format_nbytes(node.nbytes),
+                        nbytes=node.nbytes,
                         dataType=(
                             "array"
                             if isinstance(node[:], np.ndarray)
@@ -76,10 +76,6 @@ class HDF5Getter:
                         ),
                     )
                 )
-
-    @classmethod
-    def format_nbytes(cls, nbytes: int) -> str:
-        return f"{float(nbytes / (1000**2)):.1f} MB"
 
 
 @router.get("/hdf5/{file_path:path}", response_model=List[HDF5Node], tags=["outputs"])

@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from "react"
+import React, { memo, useEffect, useState } from "react"
 import { useDispatch, useSelector } from "react-redux"
 
 import FolderIcon from "@mui/icons-material/Folder"
@@ -105,7 +105,7 @@ const StructureView = memo(function StructureView({
           borderColor: theme.palette.divider,
         }}
       >
-        <FileTreeView
+        <StructureTreeView
           nodeId={nodeId}
           fileSelect={fileSelect}
           setFileSelect={setFileSelect}
@@ -118,7 +118,7 @@ const StructureView = memo(function StructureView({
   )
 })
 
-const FileTreeView = memo(function FileTreeView({
+const StructureTreeView = memo(function StructureTreeView({
   nodeId,
   fileSelect,
   setFileSelect,
@@ -129,6 +129,50 @@ const FileTreeView = memo(function FileTreeView({
   setFileSelect: (value: string) => void
 }) {
   const [tree, isLoading] = useStructuredTree(nodeId, config)
+  const [expanded, setExpanded] = useState<string[]>([])
+
+  // Calculate paths to expand when fileSelect changes
+  useEffect(() => {
+    if (!fileSelect || !tree) return
+
+    const pathsToExpand: string[] = []
+    const findPathsToExpand = (
+      nodes: TreeNodeType[],
+      currentPath: string[] = [],
+    ) => {
+      for (const node of nodes) {
+        if (node.isDir) {
+          const dirNode = node as TreeDirType
+          // Check if any child contains the selected file
+          const containsSelectedFile = (n: TreeNodeType): boolean => {
+            if (!n.isDir && n.path === fileSelect) return true
+            if (n.isDir) {
+              return (n as TreeDirType).nodes.some(containsSelectedFile)
+            }
+            return false
+          }
+
+          if (containsSelectedFile(node)) {
+            pathsToExpand.push(node.path)
+            findPathsToExpand(dirNode.nodes, [...currentPath, node.path])
+          }
+        }
+      }
+    }
+
+    findPathsToExpand(tree)
+    if (pathsToExpand.length > 0) {
+      setExpanded(pathsToExpand)
+    }
+  }, [fileSelect, tree])
+
+  const handleNodeToggle = (
+    _event: React.SyntheticEvent,
+    nodeIds: string[],
+  ) => {
+    setExpanded(nodeIds)
+  }
+
   return (
     <div>
       {isLoading && <LinearProgress />}
@@ -140,9 +184,9 @@ const FileTreeView = memo(function FileTreeView({
         <Box flexGrow={1}></Box>
       </Box>
       <Divider />
-      <TreeView>
+      <TreeView expanded={expanded} onNodeToggle={handleNodeToggle}>
         {tree?.map((node, i) => (
-          <TreeNode
+          <StructureTreeNode
             fileSelect={fileSelect}
             setFileSelect={setFileSelect}
             key={`${config.treeKeyPrefix}-${nodeId}-${i}`}
@@ -156,7 +200,7 @@ const FileTreeView = memo(function FileTreeView({
   )
 })
 
-interface TreeItemLabelProps {
+interface StructureTreeItemLabelProps {
   isFile: boolean
   shape: number[]
   type: string | null
@@ -165,14 +209,34 @@ interface TreeItemLabelProps {
   checkboxProps: CheckboxProps
 }
 
-export const TreeItemLabel = memo(function TreeItemLabel({
+const formatBytes = (nbytesStr?: string): string => {
+  if (!nbytesStr) return ""
+
+  const nbytes = parseInt(nbytesStr, 10)
+  if (isNaN(nbytes)) return nbytesStr
+
+  const BYTES_PER_KB = 1000
+  const BYTES_PER_MB = BYTES_PER_KB * 1000
+
+  if (nbytes < BYTES_PER_KB) {
+    return `${nbytes} B`
+  } else if (nbytes < BYTES_PER_MB) {
+    const kb = nbytes / BYTES_PER_KB
+    return `${kb.toFixed(1)} KB`
+  } else {
+    const mb = nbytes / BYTES_PER_MB
+    return `${mb.toFixed(1)} MB`
+  }
+}
+
+export const StructureTreeItemLabel = memo(function StructureTreeItemLabel({
   isFile = false,
   label,
   shape,
   type,
   nbytes,
   checkboxProps,
-}: TreeItemLabelProps) {
+}: StructureTreeItemLabelProps) {
   return (
     <Box display="flex" alignItems="center" gap={2}>
       <Tooltip
@@ -189,7 +253,7 @@ export const TreeItemLabel = memo(function TreeItemLabel({
       </Tooltip>
       <Box width={"15%"}>{type}</Box>
       <Box width={"25%"}>{shape ? `(${shape.join(", ")})` : ""}</Box>
-      <Box width={"15%"}>{nbytes}</Box>
+      <Box width={"15%"}>{formatBytes(nbytes)}</Box>
       <Box>
         <Checkbox
           {...checkboxProps}
@@ -205,20 +269,20 @@ export const TreeItemLabel = memo(function TreeItemLabel({
   )
 })
 
-interface TreeNodeProps extends NodeIdProps {
+interface StructureTreeNodeProps extends NodeIdProps {
   setFileSelect?: (value: string) => void
   fileSelect?: string
   node: TreeNodeType
   config: FileNodeConfig
 }
 
-const TreeNode = memo(function TreeNode({
+const StructureTreeNode = memo(function TreeNode({
   node,
   nodeId,
   setFileSelect,
   fileSelect,
   config,
-}: TreeNodeProps) {
+}: StructureTreeNodeProps) {
   const dispatch = useDispatch()
   const structureFileName = useSelector(config.selectStructurePath(nodeId))
   useEffect(() => {
@@ -257,7 +321,7 @@ const TreeNode = memo(function TreeNode({
         icon={<InsertDriveFileOutlinedIcon fontSize="small" />}
         nodeId={node.path}
         label={
-          <TreeItemLabel
+          <StructureTreeItemLabel
             isFile={true}
             label={node.name}
             type={node.dataType || null}
