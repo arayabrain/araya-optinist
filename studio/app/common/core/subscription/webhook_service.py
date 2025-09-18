@@ -1,17 +1,19 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 import stripe
 from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.models.subscription import (
     CancellationReason,
     SubscriptionCancellation,
     SubscriptionPlans,
     SubscriptionUserAccount,
+    SubscriptionUserPurchase,
     SyncStatus,
     UserSubscription,
 )
@@ -25,17 +27,154 @@ class WebhookService:
     """Service class for handling Stripe webhooks"""
 
     @staticmethod
-    def handle_checkout_completed(db: Session, session_data: Dict[str, Any]) -> None:
+    def handle_checkout_completed(
+        db: Session, session_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         Handle checkout.session.completed webhook
 
         Args:
             db: Database session
-            session_data: Webhook session data
+            session_data: Webhook session data from Stripe
+
+        Returns:
+            Dict with processing results
+
+        Raises:
+            ValueError: If validation fails
+            Exception: For processing errors
         """
-        session_id = session_data.get("id")
-        logger.info(f"Webhook: Checkout session completed: {session_id}")
-        # Additional logic can be added here if needed
+        try:
+            session_id = session_data.get("id")
+            logger.info(f"Webhook: Processing checkout session completed: {session_id}")
+
+            # Extract data from webhook payload
+            customer_id = session_data.get("customer")
+            payment_status = session_data.get("payment_status")
+
+            # Get metadata from the session (should contain user_id and plan_id)
+            metadata = session_data.get("metadata", {})
+            user_id = metadata.get("user_id")
+            plan_id = metadata.get("plan_id")
+
+            # Validate required data
+            if not user_id or not plan_id:
+                raise ValueError(
+                    f"Missing user_id or plan_id in session metadata: {session_id}"
+                )
+
+            # Convert to integers
+            try:
+                user_id = int(user_id)
+                plan_id = int(plan_id)
+            except (ValueError, TypeError):
+                raise ValueError(
+                    f"Invalid user_id or plan_id format in session metadata: {session_id}"
+                )
+
+            # 1. CHECK FOR DUPLICATE PROCESSING FIRST
+            # Check if this session has already been processed
+            existing_purchase = (
+                db.query(SubscriptionUserPurchase)
+                .join(
+                    UserSubscription,
+                    SubscriptionUserPurchase.user_id == UserSubscription.user_id,
+                )
+                .filter(
+                    SubscriptionUserPurchase.user_id == user_id,
+                    SubscriptionUserPurchase.plan_id == plan_id,
+                    SubscriptionUserPurchase.created_at
+                    > datetime.now(timezone.utc)
+                    - timedelta(minutes=30),  # Within last 30 minutes
+                )
+                .first()
+            )
+
+            if existing_purchase:
+                # Find the corresponding subscription
+                existing_subscription = (
+                    db.query(UserSubscription)
+                    .filter(
+                        UserSubscription.user_id == user_id,
+                        UserSubscription.plan_id == plan_id,
+                        UserSubscription.expiration > datetime.now(timezone.utc),
+                    )
+                    .first()
+                )
+
+                logger.info(
+                    f"Webhook: Duplicate processing detected for user {user_id}, "
+                    f"session {session_id}"
+                )
+                return {
+                    "success": True,
+                    "subscription_user_id": (
+                        existing_subscription.id if existing_subscription else None
+                    ),
+                    "purchase_id": existing_purchase.id,
+                    "expiration_date": (
+                        existing_subscription.expiration
+                        if existing_subscription
+                        else None
+                    ),
+                    "message": "Subscription already processed successfully",
+                    "webhook_processed": True,
+                }
+
+            # 2. Verify payment status from webhook data
+            if payment_status != "paid":
+                raise ValueError(f"Payment not completed. Status: {payment_status}")
+
+            # 3. Get subscription plan
+            plan = CheckoutService.get_subscription_plan(db, plan_id)
+            if not plan:
+                raise ValueError(f"Subscription plan not found: {plan_id}")
+
+            # 4. Get or create Stripe provider
+            stripe_provider_id = CheckoutService.get_or_create_stripe_provider(db)
+
+            # 5. Create or update user account
+            CheckoutService.create_or_update_user_account(
+                db, user_id, stripe_provider_id, customer_id
+            )
+
+            # 6. Calculate expiration date
+            expiration_date = CheckoutService.calculate_expiration_date(
+                plan.billing_cycle
+            )
+
+            # 7. Create or update subscription
+            subscription_user_id = CheckoutService.create_or_update_subscription(
+                db, user_id, plan_id, expiration_date
+            )
+
+            # 8. Record purchase (optionally store session_id for reference)
+            purchase = CheckoutService.record_purchase(db, plan_id, user_id)
+
+            # 9. Commit all changes
+            db.commit()
+
+            logger.info(
+                f"Webhook: Successfully processed checkout for user {user_id}, "
+                f"plan {plan_id}, session {session_id}"
+            )
+
+            return {
+                "success": True,
+                "subscription_user_id": subscription_user_id,
+                "purchase_id": purchase.id,
+                "expiration_date": expiration_date,
+                "message": "Subscription activated successfully via webhook",
+                "webhook_processed": True,
+                "session_id": session_id,
+            }
+
+        except Exception as e:
+            logger.error(
+                f"Webhook: Error processing checkout success for session {session_id}: {str(e)}"
+            )
+            db.rollback()
+            raise
 
     @staticmethod
     def handle_payment_failed(db: Session, invoice_data: Dict[str, Any]) -> None:

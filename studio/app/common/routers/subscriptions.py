@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.subscription.payment_service import PaymentService
+from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.subscription_service import (
     SubscriptionCurrencyType,
     SubscriptionService,
@@ -15,9 +15,9 @@ from studio.app.common.core.subscription.subscription_service import (
 )
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.db.database import get_db
-from studio.app.common.schemas.payments import (
-    PaymentSuccessRequest,
-    PaymentSuccessResponse,
+from studio.app.common.schemas.checkouts import (
+    CheckoutSuccessRequest,
+    CheckoutSuccessResponse,
     SubscriptionStatusResponse,
     WebhookRequest,
 )
@@ -848,9 +848,9 @@ async def create_checkout_session(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.post("/checkout/success", response_model=PaymentSuccessResponse)
+@router.post("/checkout/success", response_model=CheckoutSuccessResponse)
 async def payment_success(
-    request: PaymentSuccessRequest,
+    request: CheckoutSuccessRequest,
     db: Session = Depends(get_db),
 ):
     """
@@ -859,7 +859,7 @@ async def payment_success(
     """
     try:
         # Process checkout using service
-        result = PaymentService.process_payment_success(
+        result = CheckoutService.process_checkout_success(
             db=db,
             session_id=request.session_id,
             user_id=request.user_id,
@@ -871,7 +871,7 @@ async def payment_success(
             logger.error(f"Invalid result from process_payment_success: {result}")
             raise HTTPException(status_code=500, detail="Invalid processing result")
 
-        return PaymentSuccessResponse(
+        return CheckoutSuccessResponse(
             success=result["success"],
             message=result.get("message", "Subscription processed successfully"),
             subscription_user_id=result.get("subscription_user_id"),
@@ -914,6 +914,42 @@ async def stripe_webhook(
         # Now use the verified event data
         event_type = event["type"]
         data = event["data"]["object"]
+
+        if event_type == "checkout.session.completed":
+            WebhookService.handle_checkout_completed(db, data)
+
+        elif event_type == "invoice.payment_failed":
+            WebhookService.handle_payment_failed(db, data)
+
+        elif event_type == "customer.subscription.deleted":
+            WebhookService.handle_subscription_cancelled(db, data)
+
+        elif event_type == "subscription_schedule.released":
+            WebhookService.handle_subscription_schedule_released(db, data)
+
+        elif event_type == "invoice.payment_succeeded":
+            # Handle successful payments
+            logger.info(f"Payment succeeded for customer: {data.get('customer')}")
+
+        else:
+            logger.info(f"Unhandled webhook event type: {event_type}")
+
+        return {"received": True, "processed": event_type}
+
+    except Exception as e:
+        logger.error(f"Webhook processing error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Webhook processing failed")
+
+
+@router.post("/stripe/webhook/test")
+async def stripe_webhook_test(
+    request: WebhookRequest,
+    db: Session = Depends(get_db),
+):
+    """Handle Stripe webhooks for subscription events"""
+    try:
+        event_type = request.event_type
+        data = request.data
 
         if event_type == "checkout.session.completed":
             WebhookService.handle_checkout_completed(db, data)
