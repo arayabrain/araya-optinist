@@ -1,7 +1,7 @@
 import React from "react"
+import { useNavigate } from "react-router-dom"
 
 import CloseIcon from "@mui/icons-material/Close"
-import DescriptionIcon from "@mui/icons-material/Description"
 import GitHubIcon from "@mui/icons-material/GitHub"
 import {
   Box,
@@ -13,6 +13,7 @@ import {
 } from "@mui/material"
 
 const Failed = () => {
+  const navigate = useNavigate()
   return (
     <PageWrapper>
       <ContentContainer>
@@ -37,7 +38,12 @@ const Failed = () => {
 
         {/* Try Again Button */}
         <RetrySection>
-          <RetryButton variant="contained">Try Again</RetryButton>
+          <RetryButton
+            variant="contained"
+            onClick={() => navigate("/console/subscription")}
+          >
+            Try Again
+          </RetryButton>
         </RetrySection>
 
         {/* Bottom Action Cards */}
@@ -48,7 +54,15 @@ const Failed = () => {
               sx={{ textAlign: "center", padding: "2rem !important" }}
             >
               <IconsContainer>
-                <GitHubIcon sx={{ fontSize: "3rem", color: "#374151" }} />
+                <GitHubIcon
+                  sx={{ fontSize: "3rem", color: "#374151", cursor: "pointer" }}
+                  onClick={() =>
+                    window.open(
+                      "https://github.com/arayabrain/optinist-for-cloud",
+                      "_blank",
+                    )
+                  }
+                />
               </IconsContainer>
               <CardTitle variant="h5">Connect with us</CardTitle>
             </CardContent>
@@ -69,7 +83,17 @@ const Failed = () => {
               <CardDescription variant="body1">
                 Check our documentation
               </CardDescription>
-              <VisitButton variant="contained">Visit</VisitButton>
+              <VisitButton
+                variant="contained"
+                onClick={() =>
+                  window.open(
+                    "https://optinist.readthedocs.io/en/latest",
+                    "_blank",
+                  )
+                }
+              >
+                Visit
+              </VisitButton>
             </CardContent>
           </ActionCard>
         </CardsSection>

@@ -1,7 +1,7 @@
 import React from "react"
+import { useNavigate } from "react-router-dom"
 
 import CheckIcon from "@mui/icons-material/Check"
-import DescriptionIcon from "@mui/icons-material/Description"
 import GitHubIcon from "@mui/icons-material/GitHub"
 import {
   Box,
@@ -13,6 +13,7 @@ import {
 } from "@mui/material"
 
 const Thanks = () => {
+  const navigate = useNavigate()
   return (
     <PageWrapper>
       <ContentContainer>
@@ -37,7 +38,12 @@ const Thanks = () => {
 
         {/* Dashboard Button */}
         <DashboardSection>
-          <DashboardButton variant="contained">Dashboard</DashboardButton>
+          <DashboardButton
+            variant="contained"
+            onClick={() => navigate("/console/dashboard")}
+          >
+            Dashboard
+          </DashboardButton>
         </DashboardSection>
 
         {/* Bottom Action Cards */}
@@ -48,7 +54,15 @@ const Thanks = () => {
               sx={{ textAlign: "center", padding: "2rem !important" }}
             >
               <IconsContainer>
-                <GitHubIcon sx={{ fontSize: "3rem", color: "#374151" }} />
+                <GitHubIcon
+                  sx={{ fontSize: "3rem", color: "#374151", cursor: "pointer" }}
+                  onClick={() =>
+                    window.open(
+                      "https://github.com/arayabrain/optinist-for-cloud",
+                      "_blank",
+                    )
+                  }
+                />
                 {/* <SlackIcon sx={{ fontSize: "3rem", color: "#374151" }} /> */}
               </IconsContainer>
               <CardTitle variant="h5">Connect with us</CardTitle>
@@ -70,7 +84,17 @@ const Thanks = () => {
               <CardDescription variant="body1">
                 Check our documentation
               </CardDescription>
-              <VisitButton variant="contained">Visit</VisitButton>
+              <VisitButton
+                variant="contained"
+                onClick={() =>
+                  window.open(
+                    "https://optinist.readthedocs.io/en/latest",
+                    "_blank",
+                  )
+                }
+              >
+                Visit
+              </VisitButton>
             </CardContent>
           </ActionCard>
         </CardsSection>
