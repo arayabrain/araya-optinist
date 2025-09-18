@@ -31,6 +31,5 @@ chkconfig ecs on
 
 # Send success signal
 yum install -y aws-cfn-bootstrap
-/opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource PremiumInstance --region ${AWS::Region}
 
 echo "Premium user instance setup complete"

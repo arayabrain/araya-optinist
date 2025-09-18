@@ -1,6 +1,6 @@
 from typing import Dict
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
@@ -10,6 +10,9 @@ from studio.app.common.core.cloud.cloud_utils import (
     get_user_storage_usage,
 )
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.premium.premium_assignment_service import (
+    premium_assignment_service,
+)
 from studio.app.common.core.users import crud_users
 from studio.app.common.db.database import get_db
 from studio.app.common.schemas.users import SelfUserUpdate, User, UserPasswordUpdate
@@ -20,7 +23,156 @@ logger = AppLogger.get_logger()
 
 @router.get("", response_model=User)
 async def me(current_user: User = Depends(get_current_user)):
+    """
+    Get current user information including subscription tier for premium routing.
+    This endpoint is enhanced to support ALB header-based routing for premium users.
+    """
+    # The current_user already includes subscription_plan_name and subscription_type
+    # from auth_dependencies.get_current_user(), so we can return it directly
     return current_user
+
+
+@router.get("/routing-info", response_model=Dict)
+async def get_routing_info(current_user: User = Depends(get_current_user)):
+    """
+    Get routing information for ALB header-based routing.
+    Returns the headers that should be sent with requests for premium users.
+    """
+    is_premium = current_user.subscription_type == "premium"
+
+    routing_info = {
+        "user_id": str(current_user.id),
+        "user_tier": current_user.subscription_type,
+        "requires_premium_routing": is_premium,
+        "routing_headers": {},
+    }
+
+    # Add routing headers if user is premium
+    if is_premium:
+        routing_info["routing_headers"] = {
+            "X-User-Tier": "premium",
+            "X-User-ID": str(current_user.id),
+        }
+
+    logger.info(
+        f"Routing info for user {current_user.id}: "
+        f"tier={current_user.subscription_type}, premium={is_premium}"
+    )
+
+    return routing_info
+
+
+@router.post("/premium/assign", response_model=Dict)
+async def assign_premium_instance(current_user: User = Depends(get_current_user)):
+    """
+    Assign current user to a premium instance if they have an active subscription.
+    This endpoint triggers the premium assignment process.
+    """
+    # Check if user is premium
+    if current_user.subscription_type != "premium":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Premium subscription required for dedicated instance assignment",
+        )
+
+    try:
+        # Call the premium assignment service
+        result = await premium_assignment_service.assign_premium_user(current_user.id)
+
+        if result["success"]:
+            return {
+                "message": result["message"],
+                "instance_id": result.get("instance_id"),
+                "assigned": True,
+            }
+        elif result.get("requires_retry"):
+            # Return 202 for scaling in progress
+            return {
+                "message": result["message"],
+                "assigned": False,
+                "retry_after": result.get("retry_after", 180),
+                "scaling_in_progress": True,
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=result["message"],
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Failed to assign premium instance for user {current_user.id}: {e}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to assign premium instance",
+        )
+
+
+@router.delete("/premium/assign", response_model=Dict)
+async def release_premium_instance(current_user: User = Depends(get_current_user)):
+    """
+    Release current user from their assigned premium instance.
+    This endpoint should be called on logout for premium users.
+    """
+    try:
+        # Call the premium assignment service
+        result = await premium_assignment_service.release_premium_user(current_user.id)
+
+        if result["success"]:
+            return {
+                "message": result["message"],
+                "released_instance": result.get("released_instance"),
+                "released": True,
+            }
+        else:
+            # Log the error but don't fail completely - user may not have been assigned
+            logger.warning(
+                f"Failed to release premium instance for user "
+                f"{current_user.id}: {result['message']}"
+            )
+            return {
+                "message": "Release completed (user may not have been assigned)",
+                "released": True,
+            }
+
+    except Exception as e:
+        logger.error(
+            f"Error releasing premium instance for user {current_user.id}: {e}"
+        )
+        # Don't fail on release errors - just log them
+        return {"message": "Release completed with warnings", "released": True}
+
+
+@router.get("/premium/status", response_model=Dict)
+async def get_premium_assignment_status(current_user: User = Depends(get_current_user)):
+    """
+    Get the current premium instance assignment status for the user.
+    """
+    try:
+        # Get assignment status
+        status_info = await premium_assignment_service.get_premium_user_status(
+            current_user.id
+        )
+
+        return {
+            "user_id": current_user.id,
+            "subscription_type": current_user.subscription_type,
+            "is_premium": current_user.subscription_type == "premium",
+            "assignment": status_info,
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting premium status for user {current_user.id}: {e}")
+        return {
+            "user_id": current_user.id,
+            "subscription_type": current_user.subscription_type,
+            "is_premium": current_user.subscription_type == "premium",
+            "assignment": None,
+            "error": str(e),
+        }
 
 
 @router.put("", response_model=User)

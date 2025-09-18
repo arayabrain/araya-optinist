@@ -406,10 +406,16 @@ def _snakemake_execute_batch(
             )
 
             storage_settings = StorageSettings(
-                local_storage_prefix=Path("/tmp/snakemake_storage").resolve(),
+                default_storage_provider="s3",  # Use S3 storage plugin
+                default_storage_prefix=s3_storage,  # S3 prefix with bucket and path
+                # FIX: Use default storage prefixes to avoid path duplication
+                # Same approach as EFS fix - let Snakemake use its default paths
+                local_storage_prefix=Path(
+                    ".snakemake/storage"
+                ),  # Use Snakemake default
                 remote_job_local_storage_prefix=Path(
-                    "/tmp/snakemake_storage"
-                ).resolve(),
+                    ".snakemake/storage"
+                ),  # Use Snakemake default
                 shared_fs_usage=frozenset(["s3"]),
                 retrieve_storage=True,
                 keep_storage_local=False,
@@ -422,7 +428,10 @@ def _snakemake_execute_batch(
                 f"S3 storage breakdown: provider='{s3_prefix}', "
                 f"bucket='{s3_bucket_name}', full_prefix='{s3_storage}'"
             )
-            logger.debug("Local storage prefix: /tmp/snakemake_storage")
+            logger.debug(
+                "Local storage prefix: .snakemake/storage "
+                "(using Snakemake default to prevent path duplication)"
+            )
             logger.debug(f"DIRPATH.DATA_DIR: {DIRPATH.DATA_DIR}")
             logger.debug(
                 f"Path conversion flow: {DIRPATH.DATA_DIR}/output/1/abc/file.pkl "
@@ -506,6 +515,10 @@ def _snakemake_execute_batch(
                     )
                     logger.info("Using S3 storage for dryrun validation")
                 else:
+                    # Set environment variables for EFS storage before adding to envvars
+                    os.environ["EFS_MOUNT_TARGET"] = DIRPATH.DATA_DIR
+                    os.environ["TMPDIR"] = "/tmp"
+                    os.environ["TMP"] = "/tmp"
                     dryrun_envvars.extend(["EFS_MOUNT_TARGET", "TMPDIR", "TMP"])
                     logger.info("Using EFS storage for dryrun validation")
 
@@ -581,6 +594,10 @@ def _snakemake_execute_batch(
                         )
                         logger.info("Using S3 storage for batch jobs")
                     else:
+                        # Set env variables for EFS storage before adding to envvars
+                        os.environ["EFS_MOUNT_TARGET"] = DIRPATH.DATA_DIR
+                        os.environ["TMPDIR"] = "/tmp"
+                        os.environ["TMP"] = "/tmp"
                         envvars.extend(["EFS_MOUNT_TARGET", "TMPDIR", "TMP"])
                         logger.info("Using EFS storage for batch jobs")
 

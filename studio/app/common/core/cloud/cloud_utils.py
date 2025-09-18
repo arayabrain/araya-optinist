@@ -837,10 +837,19 @@ async def update_user_storage_after_workflow(workspace_id: str) -> None:
         from studio.app.common import models as common_model
         from studio.app.common.db.database import session_scope
 
+        # Skip storage update for maintenance/setup workspaces (non-integer IDs)
+        try:
+            workspace_id_int = int(workspace_id)
+        except ValueError:
+            logger.info(
+                f"Skipping storage update for maintenance workspace: {workspace_id}"
+            )
+            return
+
         with session_scope() as db:
             query_result = db.execute(
                 select(common_model.Workspace.user_id).where(
-                    common_model.Workspace.id == int(workspace_id)
+                    common_model.Workspace.id == workspace_id_int
                 )
             )
             result_row = query_result.first()

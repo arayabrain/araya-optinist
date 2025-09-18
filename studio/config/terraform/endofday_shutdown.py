@@ -731,6 +731,120 @@ def terminate_dedicated_batch_instance() -> bool:
     return True
 
 
+def shutdown_premium_instances() -> bool:
+    """Shutdown all premium instances (running and standby)"""
+    print(f"{Colors.YELLOW}Shutting down premium instances...{Colors.NC}")
+
+    # Get all premium instances by tag
+    premium_instances = run_command(
+        [
+            "aws",
+            "ec2",
+            "describe-instances",
+            "--filters",
+            "Name=instance-state-name,Values=running,stopped",
+            "Name=tag:Type,Values=premium",
+            "--query",
+            "Reservations[].Instances[].[InstanceId,State.Name,"
+            "Tags[?Key=='Name'].Value|[0]]",
+            "--output",
+            "text",
+        ]
+    )
+
+    if premium_instances and premium_instances.strip() != "None":
+        instance_lines = premium_instances.strip().split("\n")
+        print(
+            f"{Colors.YELLOW}Found {len(instance_lines)} premium instances{Colors.NC}"
+        )
+
+        for line in instance_lines:
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                instance_id = parts[0]
+                state = parts[1]
+                name = parts[2] if len(parts) > 2 and parts[2] != "None" else "Unknown"
+
+                print(
+                    f"{Colors.YELLOW}Premium instance: {instance_id} ({name}) - "
+                    f"State: {state}{Colors.NC}"
+                )
+
+                if state == "running":
+                    print(
+                        f"{Colors.YELLOW}Terminating running premium "
+                        f"instance: {instance_id}{Colors.NC}"
+                    )
+                    result = run_command(
+                        [
+                            "aws",
+                            "ec2",
+                            "terminate-instances",
+                            "--instance-ids",
+                            instance_id,
+                        ],
+                        check=False,
+                    )
+                    if result is not None:
+                        print(
+                            f"{Colors.GREEN}Successfully initiated termination "
+                            f"of {instance_id}{Colors.NC}"
+                        )
+                    else:
+                        print(
+                            f"{Colors.RED}Failed to terminate {instance_id}{Colors.NC}"
+                        )
+                elif state == "stopped":
+                    print(
+                        f"{Colors.GREEN}Premium instance {instance_id} "
+                        f"already stopped{Colors.NC}"
+                    )
+    else:
+        print(f"{Colors.GREEN}No premium instances found{Colors.NC}")
+
+    # Also check for instances with premium-related naming patterns
+    premium_named_instances = run_command(
+        [
+            "aws",
+            "ec2",
+            "describe-instances",
+            "--filters",
+            "Name=instance-state-name,Values=running",
+            "Name=tag:Name,Values=*premium*,*Premium*",
+            "--query",
+            "Reservations[].Instances[].InstanceId",
+            "--output",
+            "text",
+        ]
+    )
+
+    if premium_named_instances and premium_named_instances.strip() != "None":
+        instance_ids = premium_named_instances.split()
+        print(
+            f"{Colors.YELLOW}Found {len(instance_ids)} premium-named "
+            f"instances{Colors.NC}"
+        )
+
+        for instance_id in instance_ids:
+            print(
+                f"{Colors.YELLOW}Terminating premium-named instance: "
+                f"{instance_id}{Colors.NC}"
+            )
+            run_command(
+                [
+                    "aws",
+                    "ec2",
+                    "terminate-instances",
+                    "--instance-ids",
+                    instance_id,
+                ],
+                check=False,
+            )
+
+    print(f"{Colors.GREEN}Premium instances shutdown completed{Colors.NC}")
+    return True
+
+
 def shutdown_batch_environments() -> bool:
     """Disable and clean up Batch compute environments"""
     print(f"{Colors.YELLOW}Shutting down AWS Batch environments...{Colors.NC}")
@@ -829,10 +943,20 @@ def plan1_shutdown() -> bool:
     )
     print(f"{Colors.GREEN}{'='*60}{Colors.NC}")
 
-    # Step 1: Shutdown AWS Batch environments
+    # Step 1: Shutdown Premium Instances
     try:
         print(
-            f"\n{Colors.YELLOW}Step 1: Shutting down AWS Batch environments"
+            f"\n{Colors.YELLOW}Step 1: Shutting down premium instances" f"{Colors.NC}"
+        )
+        shutdown_premium_instances()
+    except Exception as e:
+        print(f"{Colors.RED}Error shutting down premium instances: {e}{Colors.NC}")
+        print(f"{Colors.YELLOW}Continuing with Batch shutdown...{Colors.NC}")
+
+    # Step 2: Shutdown AWS Batch environments
+    try:
+        print(
+            f"\n{Colors.YELLOW}Step 2: Shutting down AWS Batch environments"
             f"{Colors.NC}"
         )
         shutdown_batch_environments()
@@ -840,9 +964,9 @@ def plan1_shutdown() -> bool:
         print(f"{Colors.RED}Error shutting down Batch: {e}{Colors.NC}")
         print(f"{Colors.YELLOW}Continuing with ECS shutdown...{Colors.NC}")
 
-    # Step 2: Scale down ECS services
+    # Step 3: Scale down ECS services
     try:
-        print(f"\n{Colors.YELLOW}Step 2: Scaling down ECS services{Colors.NC}")
+        print(f"\n{Colors.YELLOW}Step 3: Scaling down ECS services{Colors.NC}")
         services = [
             "subscr-optinist-cloud-service",
             "subscr-batch-optinist-cloud-service",
@@ -854,16 +978,16 @@ def plan1_shutdown() -> bool:
         print(f"{Colors.RED}Error scaling down services: {e}{Colors.NC}")
         return False
 
-    # Step 3: Stop all running tasks
+    # Step 4: Stop all running tasks
     try:
-        print(f"\n{Colors.YELLOW}Step 3: Stopping all running ECS tasks" f"{Colors.NC}")
+        print(f"\n{Colors.YELLOW}Step 4: Stopping all running ECS tasks" f"{Colors.NC}")
         stop_all_tasks()
     except Exception as e:
         print(f"{Colors.RED}Error stopping tasks: {e}{Colors.NC}")
 
-    # Step 4: Wait for tasks to stop
+    # Step 5: Wait for tasks to stop
     try:
-        print(f"\n{Colors.YELLOW}Step 4: Waiting for all tasks to stop" f"{Colors.NC}")
+        print(f"\n{Colors.YELLOW}Step 5: Waiting for all tasks to stop" f"{Colors.NC}")
         if not wait_for_tasks_to_stop(timeout=300):
             print(
                 f"{Colors.YELLOW}Some tasks may still be running, but "
@@ -872,10 +996,10 @@ def plan1_shutdown() -> bool:
     except Exception as e:
         print(f"{Colors.RED}Error waiting for tasks to stop: {e}{Colors.NC}")
 
-    # Step 5: Scale down ASGs
+    # Step 6: Scale down ASGs
     try:
         print(
-            f"\n{Colors.YELLOW}Step 5: Scaling down Auto Scaling Groups" f"{Colors.NC}"
+            f"\n{Colors.YELLOW}Step 6: Scaling down Auto Scaling Groups" f"{Colors.NC}"
         )
         if not scale_down_asg():
             print(f"{Colors.RED}Failed to scale down ASGs{Colors.NC}")
@@ -884,10 +1008,10 @@ def plan1_shutdown() -> bool:
         print(f"{Colors.RED}Error scaling down ASGs: {e}{Colors.NC}")
         return False
 
-    # Step 6: Wait for ASG instances to terminate
+    # Step 7: Wait for ASG instances to terminate
     try:
         print(
-            f"\n{Colors.YELLOW}Step 6: Waiting for ASG instances to terminate"
+            f"\n{Colors.YELLOW}Step 7: Waiting for ASG instances to terminate"
             f"{Colors.NC}"
         )
         if not wait_for_asg_to_terminate(timeout=100):
@@ -903,10 +1027,10 @@ def plan1_shutdown() -> bool:
             f"{Colors.NC}"
         )
 
-    # Step 7: Terminate dedicated batch instance
+    # Step 8: Terminate dedicated batch instance
     try:
         print(
-            f"\n{Colors.YELLOW}Step 7: Terminating dedicated batch instance"
+            f"\n{Colors.YELLOW}Step 8: Terminating dedicated batch instance"
             f"{Colors.NC}"
         )
         if not terminate_dedicated_batch_instance():
@@ -920,10 +1044,10 @@ def plan1_shutdown() -> bool:
             f"{Colors.NC}"
         )
 
-    # Step 8: Optional capacity provider cleanup (not critical for shutdown)
+    # Step 9: Optional capacity provider cleanup (not critical for shutdown)
     try:
         print(
-            f"\n{Colors.YELLOW}Step 8: Cleaning up capacity providers "
+            f"\n{Colors.YELLOW}Step 9: Cleaning up capacity providers "
             f"(optional){Colors.NC}"
         )
         if validate_capacity_provider():

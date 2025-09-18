@@ -31,3 +31,9 @@ terraform.*
 .terraform*
 *.pem
 app_setup.sh
+
+# Lambda deployment packages
+*.py.zip
+*_package/
+studio/config/terraform/premium_manager_package/
+studio/config/terraform/cost_tracker_package/

@@ -527,9 +527,9 @@ class BatchUtils:
 
         storage_settings = StorageSettings(
             default_storage_provider="fs",  # Use the filesystem storage plugin
-            default_storage_prefix=efs_storage,
-            local_storage_prefix=efs_storage,
-            remote_job_local_storage_prefix=efs_storage,
+            default_storage_prefix="",  # Empty to avoid path duplication
+            local_storage_prefix=Path(efs_storage),  # Full EFS path: /mnt/efs
+            remote_job_local_storage_prefix=Path(efs_storage),  # Same for batch jobs
             shared_fs_usage=[
                 SharedFSUsage.INPUT_OUTPUT,  # Input/output files on EFS
                 SharedFSUsage.PERSISTENCE,  # Job metadata on EFS

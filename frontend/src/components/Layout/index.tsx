@@ -9,6 +9,8 @@ import LimitWarning from "components/common/LimitWarning"
 import Loading from "components/common/Loading"
 import Header from "components/Layout/Header"
 import LeftMenu from "components/Layout/LeftMenu"
+import PremiumAssignmentManager from "components/Premium/PremiumAssignmentManager"
+import PremiumNotificationManager from "components/Premium/PremiumNotificationManager"
 import { APP_BAR_HEIGHT } from "const/Layout"
 import { selectModeStandalone } from "store/slice/Standalone/StandaloneSeclector"
 import { getMe } from "store/slice/User/UserActions"
@@ -115,6 +117,10 @@ const AuthedLayout: FC<{ children: ReactNode }> = ({ children }) => {
       </ContentBodyWrapper>
       {/* Global limit warning modal for authenticated users */}
       <LimitWarning showAsModal={true} autoCheck={true} />
+      {/* Premium assignment manager for automatic instance assignment */}
+      <PremiumAssignmentManager />
+      {/* Premium notification manager for user feedback */}
+      <PremiumNotificationManager />
     </LayoutWrapper>
   )
 }

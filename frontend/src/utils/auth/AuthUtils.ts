@@ -1,3 +1,5 @@
+import { routingService } from "utils/routing/RoutingService"
+
 export const saveToken = (access_token: string) => {
   localStorage.setItem("access_token", access_token)
 }
@@ -24,6 +26,14 @@ export const logout = () => {
   removeExToken()
   // Clear dismissed warnings so they can appear again for the next user
   localStorage.removeItem("dismissedWarnings")
+
+  // Clear premium routing information on logout
+  try {
+    routingService.clearRoutingInfo()
+  } catch (e) {
+    // Ignore if routing service isn't available
+  }
+
   window.location.href = "/login"
 }
 

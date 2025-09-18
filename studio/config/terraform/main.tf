@@ -539,41 +539,11 @@ resource "aws_db_instance" "main" {
 }
 
 # Create premium user assignments table in RDS
-resource "null_resource" "premium_user_assignments_table" {
-  depends_on = [aws_db_instance.main]
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      # Wait for RDS to be available
-      timeout 300 bash -c 'until nc -z ${split(":", aws_db_instance.main.endpoint)[0]} 3306; do sleep 5; done'
-
-      # Create premium user assignments table
-      mysql -h ${split(":", aws_db_instance.main.endpoint)[0]} -P 3306 \
-        -u ${var.mysql_user} -p'${var.mysql_password}' ${var.mysql_database} << 'SQL'
-
-      CREATE TABLE IF NOT EXISTS premium_user_assignments (
-        user_id VARCHAR(255) PRIMARY KEY,
-        instance_id VARCHAR(20) NOT NULL,
-        target_group_arn VARCHAR(512) NOT NULL,
-        alb_rule_arn VARCHAR(512) NOT NULL,
-        assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        status ENUM('active', 'migrating', 'terminating') DEFAULT 'active',
-        last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-        INDEX idx_instance_id (instance_id),
-        INDEX idx_last_activity (last_activity),
-        INDEX idx_status (status)
-      );
-
-SQL
-    EOT
-  }
-
-  # Trigger recreation if table schema changes
-  triggers = {
-    schema_version = "v1.0"
-  }
-}
+# Premium user assignments table now managed via Alembic migration:
+# studio/alembic/versions/b301b4120016_add_premium_user_assignments_table.py
+#
+# To apply the migration:
+# cd studio && alembic upgrade head
 
 # RDS Instance for Batch Service (Isolated)
 resource "aws_db_instance" "batch" {
@@ -1027,7 +997,7 @@ resource "aws_lb_target_group" "batch" {
   stickiness {
     type            = "lb_cookie"
     cookie_duration = 86400
-    enabled         = false
+    enabled         = true
   }
 
   lifecycle {
@@ -2179,7 +2149,11 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
           "ec2:DescribeSpotFleetRequests",
           "ec2:ModifySpotFleetRequest",
           "ec2:DescribeInstances",
-          "ec2:DescribeInstanceHealth"
+          "ec2:DescribeInstanceHealth",
+          "ec2:StopInstances",
+          "ec2:StartInstances",
+          "ec2:TerminateInstances",
+          "ec2:RunInstances"
         ]
         Resource = "*"
       },
@@ -2307,21 +2281,25 @@ resource "aws_lambda_function" "premium_manager" {
   runtime       = "python3.9"
   timeout       = 300
 
-  source_code_hash = base64sha256(data.local_file.premium_manager_zip.content)
+  source_code_hash = data.archive_file.premium_manager_zip.output_base64sha256
 
   environment {
     variables = {
-      VPC_ID              = aws_vpc.main.id
-      SUBNET_IDS          = "${aws_subnet.private1.id},${aws_subnet.private2.id}"
-      SECURITY_GROUP_ID   = aws_security_group.ecs.id
-      ALB_ARN             = aws_lb.autoscaling.arn
-      ALB_LISTENER_ARN    = aws_lb_listener.autoscaling.arn
-      SPOT_FLEET_ID       = aws_spot_fleet_request.premium.id
-      CLUSTER_NAME        = aws_ecs_cluster.main.name
-      RDS_HOST            = aws_db_instance.main.endpoint
-      RDS_USER            = var.mysql_user
-      RDS_PASSWORD        = var.mysql_password
-      RDS_DATABASE        = var.mysql_database
+      VPC_ID                = aws_vpc.main.id
+      SUBNET_IDS            = "${aws_subnet.private1.id},${aws_subnet.private2.id}"
+      SECURITY_GROUP_ID     = aws_security_group.ecs.id
+      ALB_ARN               = aws_lb.autoscaling.arn
+      ALB_LISTENER_ARN      = aws_lb_listener.autoscaling.arn
+      PREMIUM_INSTANCE_IDS  = join(",", aws_instance.premium_standby[*].id)
+      CLUSTER_NAME          = aws_ecs_cluster.main.name
+      RDS_HOST              = aws_db_instance.main.endpoint
+      RDS_USER              = var.mysql_user
+      RDS_PASSWORD          = var.mysql_password
+      RDS_DATABASE          = var.mysql_database
+      # Dynamic capacity settings (use existing ABSOLUTE_MAX + minimal new ones)
+      PREMIUM_SAFETY_BUFFER      = "1"   # Extra instances for quick response
+      PREMIUM_STANDBY_POOL_SIZE  = "1"   # Number of stopped instances to maintain
+      PREMIUM_IDLE_TIMEOUT_HOURS = "3"   # Hours before idle instances are converted to standby
     }
   }
 
@@ -2339,7 +2317,7 @@ resource "aws_lambda_function" "premium_manager" {
   depends_on = [
     aws_iam_role_policy_attachment.premium_manager_lambda_basic,
     aws_cloudwatch_log_group.premium_manager_logs,
-    null_resource.premium_manager_package
+    data.archive_file.premium_manager_zip
   ]
 }
 
@@ -2352,21 +2330,25 @@ resource "aws_lambda_function" "premium_migration_queue" {
   runtime       = "python3.9"
   timeout       = 300
 
-  source_code_hash = base64sha256(data.local_file.premium_manager_zip.content)
+  source_code_hash = data.archive_file.premium_manager_zip.output_base64sha256
 
   environment {
     variables = {
-      VPC_ID              = aws_vpc.main.id
-      SUBNET_IDS          = "${aws_subnet.private1.id},${aws_subnet.private2.id}"
-      SECURITY_GROUP_ID   = aws_security_group.ecs.id
-      ALB_ARN             = aws_lb.autoscaling.arn
-      ALB_LISTENER_ARN    = aws_lb_listener.autoscaling.arn
-      SPOT_FLEET_ID       = aws_spot_fleet_request.premium.id
-      CLUSTER_NAME        = aws_ecs_cluster.main.name
-      RDS_HOST            = aws_db_instance.main.endpoint
-      RDS_USER            = var.mysql_user
-      RDS_PASSWORD        = var.mysql_password
-      RDS_DATABASE        = var.mysql_database
+      VPC_ID                = aws_vpc.main.id
+      SUBNET_IDS            = "${aws_subnet.private1.id},${aws_subnet.private2.id}"
+      SECURITY_GROUP_ID     = aws_security_group.ecs.id
+      ALB_ARN               = aws_lb.autoscaling.arn
+      ALB_LISTENER_ARN      = aws_lb_listener.autoscaling.arn
+      PREMIUM_INSTANCE_IDS  = join(",", aws_instance.premium_standby[*].id)
+      CLUSTER_NAME          = aws_ecs_cluster.main.name
+      RDS_HOST              = aws_db_instance.main.endpoint
+      RDS_USER              = var.mysql_user
+      RDS_PASSWORD          = var.mysql_password
+      RDS_DATABASE          = var.mysql_database
+      # Dynamic capacity settings (use existing ABSOLUTE_MAX + minimal new ones)
+      PREMIUM_SAFETY_BUFFER      = "1"   # Extra instances for quick response
+      PREMIUM_STANDBY_POOL_SIZE  = "1"   # Number of stopped instances to maintain
+      PREMIUM_IDLE_TIMEOUT_HOURS = "3"   # Hours before idle instances are converted to standby
     }
   }
 
@@ -2384,7 +2366,7 @@ resource "aws_lambda_function" "premium_migration_queue" {
   depends_on = [
     aws_iam_role_policy_attachment.premium_manager_lambda_basic,
     aws_cloudwatch_log_group.premium_migration_queue_logs,
-    null_resource.premium_manager_package
+    data.archive_file.premium_manager_zip
   ]
 }
 
@@ -2429,28 +2411,28 @@ resource "aws_lambda_permission" "allow_cloudwatch_migration" {
 }
 
 # Create ZIP file for premium manager Lambda with dependencies
-resource "null_resource" "premium_manager_package" {
+# Install dependencies first
+resource "null_resource" "install_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
-      cd ${path.module}
-      rm -rf premium_manager_package premium_manager.py.zip
-      mkdir -p premium_manager_package
-      cp premium_manager.py premium_manager_package/
-      pip install pymysql -t premium_manager_package/
-      cd premium_manager_package
-      zip -r ../premium_manager.py.zip .
-      cd ..
+      mkdir -p ${path.module}/premium_manager_package
+      cp ${path.module}/premium_manager_package/premium_manager.py ${path.module}/premium_manager_package/premium_manager.py
+      pip install pymysql -t ${path.module}/premium_manager_package/
     EOT
   }
 
   triggers = {
-    code_changes = filesha256("${path.module}/premium_manager.py")
+    code_changes = filesha256("${path.module}/premium_manager_package/premium_manager.py")
   }
 }
 
-data "local_file" "premium_manager_zip" {
-  depends_on = [null_resource.premium_manager_package]
-  filename   = "${path.module}/premium_manager.py.zip"
+# Create ZIP using archive_file
+data "archive_file" "premium_manager_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/premium_manager_package"
+  output_path = "${path.module}/premium_manager.py.zip"
+
+  depends_on = [null_resource.install_dependencies]
 }
 
 # CloudWatch Log Group for Premium Manager
@@ -2579,7 +2561,6 @@ resource "aws_api_gateway_deployment" "premium_management_deployment" {
   ]
 
   rest_api_id = aws_api_gateway_rest_api.premium_management.id
-  stage_name  = "v1"
 
   triggers = {
     redeployment = sha1(jsonencode([
@@ -2597,6 +2578,18 @@ resource "aws_api_gateway_deployment" "premium_management_deployment" {
 
   lifecycle {
     create_before_destroy = true
+  }
+}
+
+# API Gateway Stage
+resource "aws_api_gateway_stage" "premium_management_v1" {
+  deployment_id = aws_api_gateway_deployment.premium_management_deployment.id
+  rest_api_id   = aws_api_gateway_rest_api.premium_management.id
+  stage_name    = "v1"
+
+  tags = {
+    Name = "Premium Management API v1"
+    Service = "premium-api"
   }
 }
 
@@ -2705,7 +2698,7 @@ resource "aws_batch_compute_environment" "paid_plan" {
 }
 
 # ==================================================
-# CloudWatch Log Groups for comprehensive monitoring
+# CloudWatch Log Groups for Comprehensive Monitoring
 # ==================================================
 resource "aws_cloudwatch_log_group" "ecs" {
   name              = "/ecs/subscr-optinist-cloud-taskdef"
@@ -2852,97 +2845,377 @@ resource "aws_cloudwatch_log_metric_filter" "user_cpu_usage" {
   }
 }
 
+# Custom CloudWatch Metrics for Premium Tracking
+resource "aws_cloudwatch_log_metric_filter" "premium_assignments" {
+  name           = "premium-assignments"
+  log_group_name = aws_cloudwatch_log_group.premium_manager_logs.name
+  pattern        = "[timestamp, level=\"INFO\", message=\"Successfully assigned premium user*\"]"
 
-# CloudWatch Dashboard for monitoring
+  metric_transformation {
+    name      = "ActiveAssignments"
+    namespace = "OptiNiSt/Premium"
+    value     = "1"
+  }
+}
+# Create ZIP using archive_file for cost tracker Lambda
+data "archive_file" "cost_tracker_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/cost_tracker_package"
+  output_path = "${path.module}/cost_tracker.py.zip"
+}
+
+# Cost Tracking Lambda Function
+resource "aws_lambda_function" "cost_tracker" {
+  filename         = "${path.module}/cost_tracker.py.zip"
+  function_name    = "subscr-cost-tracker"
+  role             = aws_iam_role.premium_manager_lambda.arn
+  handler          = "cost_tracker.handler"
+  runtime          = "python3.9"
+  timeout          = 300
+  source_code_hash = data.archive_file.cost_tracker_zip.output_base64sha256
+
+  environment {
+    variables = {
+      SPOT_FLEET_ID = aws_spot_fleet_request.premium.id
+      ASG_NAME      = aws_autoscaling_group.main.name
+      REGION        = var.aws_region
+      INSTANCE_TYPE = "t3.large"
+    }
+  }
+
+  tags = {
+    Name    = "Cost Tracker Lambda"
+    Service = "cost-monitoring"
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.premium_manager_lambda_basic
+  ]
+}
+
+# Essential CloudWatch Alarms for Premium Monitoring
+resource "aws_cloudwatch_metric_alarm" "premium_cost_high" {
+  alarm_name          = "subscr-premium-monthly-cost-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "TotalMonthlyCost"
+  namespace           = "OptiNiSt/Cost"
+  period              = "86400"  # Daily
+  statistic           = "Maximum"
+  threshold           = "500"
+  alarm_description   = "Monthly cost estimate is high"
+  alarm_actions       = []
+
+  tags = {
+    Name = "High Monthly Cost Alarm"
+    Service = "cost-monitoring"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "premium_cpu_high" {
+  alarm_name          = "subscr-premium-cpu-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/ECS"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "80"
+  alarm_description   = "Premium ECS service CPU utilization is high"
+
+  dimensions = {
+    ServiceName = aws_ecs_service.premium.name
+    ClusterName = aws_ecs_cluster.main.name
+  }
+
+  tags = {
+    Name = "Premium CPU High Alarm"
+    Service = "premium-monitoring"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "premium_memory_high" {
+  alarm_name          = "subscr-premium-memory-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "3"
+  metric_name         = "MemoryUtilization"
+  namespace           = "AWS/ECS"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "85"
+  alarm_description   = "Premium ECS service memory utilization is high"
+
+  dimensions = {
+    ServiceName = aws_ecs_service.premium.name
+    ClusterName = aws_ecs_cluster.main.name
+  }
+
+  tags = {
+    Name = "Premium Memory High Alarm"
+    Service = "premium-monitoring"
+  }
+}
+
+
+# CloudWatch Dashboard for monitoring both Free and Premium tiers
 resource "aws_cloudwatch_dashboard" "main" {
   dashboard_name = "subscr-optinist-monitoring"
 
   dashboard_body = jsonencode({
     widgets = [
+      # Row 1: CPU and Memory Comparison - Free vs Premium
       {
         type   = "metric"
         x      = 0
         y      = 0
         width  = 12
         height = 6
-
         properties = {
           metrics = [
-            ["AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.autoscaling.name, "ClusterName", aws_ecs_cluster.main.name],
-            ["AWS/ECS", "MemoryUtilization", "ServiceName", aws_ecs_service.autoscaling.name, "ClusterName", aws_ecs_cluster.main.name],
-            ["AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.batch.name, "ClusterName", aws_ecs_cluster.main.name],
-            ["AWS/ECS", "MemoryUtilization", "ServiceName", aws_ecs_service.batch.name, "ClusterName", aws_ecs_cluster.main.name]
+            ["AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.autoscaling.name, "ClusterName", aws_ecs_cluster.main.name, { "label": "Free Tier CPU" }],
+            ["AWS/ECS", "MemoryUtilization", "ServiceName", aws_ecs_service.autoscaling.name, "ClusterName", aws_ecs_cluster.main.name, { "label": "Free Tier Memory" }],
+            ["AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.premium.name, "ClusterName", aws_ecs_cluster.main.name, { "label": "Premium CPU" }],
+            ["AWS/ECS", "MemoryUtilization", "ServiceName", aws_ecs_service.premium.name, "ClusterName", aws_ecs_cluster.main.name, { "label": "Premium Memory" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
-          title   = "ECS Service Metrics"
+          title   = "Free vs Premium: CPU & Memory Utilization"
           period  = 300
+          yAxis = {
+            left = {
+              min = 0
+              max = 100
+            }
+          }
         }
       },
+      # Row 1: Instance Counts and Capacity with Autoscaling
       {
         type   = "metric"
         x      = 12
         y      = 0
         width  = 12
         height = 6
-
         properties = {
           metrics = [
-            ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", aws_autoscaling_group.main.name],
-            ["AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", aws_autoscaling_group.main.name],
-            ["AWS/AutoScaling", "GroupInServiceInstances", "AutoScalingGroupName", aws_autoscaling_group.main.name]
+            ["AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Free Tier Desired" }],
+            ["AWS/AutoScaling", "GroupInServiceInstances", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Free Tier Running" }],
+            ["AWS/AutoScaling", "GroupMinSize", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Free Tier Min" }],
+            ["AWS/AutoScaling", "GroupMaxSize", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Free Tier Max" }],
+            ["AWS/EC2", "InstanceCount", "InstanceId", aws_instance.premium_standby[0].id, { "label": "Premium Standby 1" }],
+            ["AWS/EC2", "InstanceCount", "InstanceId", aws_instance.premium_standby[1].id, { "label": "Premium Standby 2" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
-          title   = "EC2 & Auto Scaling Metrics"
+          title   = "Autoscaling: Free Tier Capacity Management"
           period  = 300
+          yAxis = {
+            left = {
+              min = 0
+            }
+          }
         }
       },
+      # Row 2: Detailed EC2 Metrics
       {
         type   = "metric"
         x      = 0
         y      = 6
-        width  = 24
+        width  = 12
         height = 6
-
         properties = {
           metrics = [
-            ["AWS/AutoScaling", "GroupTotalInstances", "AutoScalingGroupName", aws_autoscaling_group.main.name]
+            ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Free Tier EC2 CPU" }],
+            ["CWAgent", "mem_used_percent", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Free Tier EC2 Memory" }],
+            ["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.premium_standby[0].id, { "label": "Premium Standby 1 CPU" }],
+            ["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.premium_standby[1].id, { "label": "Premium Standby 2 CPU" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
-          title   = "Auto Scaling Group Total Instances"
+          title   = "EC2 Host Metrics: CPU & Memory"
           period  = 300
+          yAxis = {
+            left = {
+              min = 0
+              max = 100
+            }
+          }
         }
       },
+      # Row 2: Cost Metrics
+      {
+        type   = "metric"
+        x      = 12
+        y      = 6
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/Billing", "EstimatedCharges", "Currency", "USD", "ServiceName", "AmazonEC2", { "label": "EC2 Costs" }],
+            ["AWS/Billing", "EstimatedCharges", "Currency", "USD", "ServiceName", "AmazonECS", { "label": "ECS Costs" }],
+            ["AWS/Billing", "EstimatedCharges", "Currency", "USD", "ServiceName", "AmazonElasticLoadBalancing", { "label": "ALB Costs" }],
+            ["OptiNiSt/Cost", "PremiumSpotSavings", { "label": "Premium Spot Savings %" }],
+            ["OptiNiSt/Cost", "TotalMonthlyCost", { "label": "Total Monthly Cost" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-1"
+          title   = "Cost Tracking & Savings"
+          period  = 3600
+          stat    = "Maximum"
+        }
+      },
+      # Row 3: Load Balancer Performance
       {
         type   = "metric"
         x      = 0
         y      = 12
         width  = 12
         height = 6
-
         properties = {
           metrics = [
-            ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", aws_lb.autoscaling.arn_suffix],
-            ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", aws_lb.autoscaling.arn_suffix],
-            ["AWS/ApplicationELB", "HTTPCode_Target_2XX_Count", "LoadBalancer", aws_lb.autoscaling.arn_suffix],
-            ["AWS/ApplicationELB", "HTTPCode_Target_4XX_Count", "LoadBalancer", aws_lb.autoscaling.arn_suffix],
-            ["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", aws_lb.autoscaling.arn_suffix],
-            ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", aws_lb.batch.arn_suffix],
-            ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", aws_lb.batch.arn_suffix],
-            ["AWS/ApplicationELB", "HTTPCode_Target_2XX_Count", "LoadBalancer", aws_lb.batch.arn_suffix],
-            ["AWS/ApplicationELB", "HTTPCode_Target_4XX_Count", "LoadBalancer", aws_lb.batch.arn_suffix],
-            ["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", aws_lb.batch.arn_suffix],
+            ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", aws_lb.autoscaling.arn_suffix, { "label": "Free Tier Requests" }],
+            ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", aws_lb.autoscaling.arn_suffix, { "label": "Free Tier Response Time" }],
+            ["AWS/ApplicationELB", "HTTPCode_Target_2XX_Count", "LoadBalancer", aws_lb.autoscaling.arn_suffix, { "label": "Free Tier 2XX" }],
+            ["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", aws_lb.autoscaling.arn_suffix, { "label": "Free Tier 5XX" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
-          title   = "Load Balancer Metrics"
+          title   = "ALB Performance: Free Tier & Premium Routing"
           period  = 300
+        }
+      },
+      # Row 3: Premium-specific Metrics
+      {
+        type   = "metric"
+        x      = 12
+        y      = 12
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["OptiNiSt/Premium", "ActiveAssignments", { "label": "Active Premium Users" }],
+            ["OptiNiSt/Premium", "InstanceUtilization", { "label": "Premium Instance Utilization %" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label": "Premium Manager Duration" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label": "Premium Manager Errors" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-1"
+          title   = "Premium Tier Operations"
+          period  = 300
+        }
+      },
+      # Row 4: Batch Processing Metrics
+      {
+        type   = "metric"
+        x      = 0
+        y      = 18
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.batch.name, "ClusterName", aws_ecs_cluster.main.name, { "label": "Batch CPU" }],
+            ["AWS/ECS", "MemoryUtilization", "ServiceName", aws_ecs_service.batch.name, "ClusterName", aws_ecs_cluster.main.name, { "label": "Batch Memory" }],
+            ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", aws_lb.batch.arn_suffix, { "label": "Batch Requests" }],
+            ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", aws_lb.batch.arn_suffix, { "label": "Batch Response Time" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-1"
+          title   = "Batch Processing Performance"
+          period  = 300
+        }
+      },
+      # Row 4: System Health Overview
+      {
+        type   = "metric"
+        x      = 12
+        y      = 18
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.main.id, { "label": "RDS CPU" }],
+            ["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", aws_db_instance.main.id, { "label": "RDS Connections" }],
+            ["AWS/EFS", "ClientConnections", "FileSystemId", aws_efs_file_system.snmk.id, { "label": "EFS Connections" }],
+            ["AWS/EFS", "DataReadIOBytes", "FileSystemId", aws_efs_file_system.snmk.id, { "label": "EFS Read I/O" }],
+            ["AWS/EFS", "DataWriteIOBytes", "FileSystemId", aws_efs_file_system.snmk.id, { "label": "EFS Write I/O" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-1"
+          title   = "Infrastructure Health: RDS & EFS"
+          period  = 300
+        }
+      },
+      # Row 5: Autoscaling Activity and Events
+      {
+        type   = "metric"
+        x      = 0
+        y      = 24
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/AutoScaling", "GroupTotalInstances", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Total Instances" }],
+            ["AWS/AutoScaling", "GroupPendingInstances", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Pending Instances" }],
+            ["AWS/AutoScaling", "GroupTerminatingInstances", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Terminating Instances" }],
+            ["AWS/AutoScaling", "GroupStandbyInstances", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Standby Instances" }]
+          ]
+          view    = "timeSeries"
+          stacked = true
+          region  = "ap-northeast-1"
+          title   = "Autoscaling Activity: Instance Lifecycle"
+          period  = 300
+          yAxis = {
+            left = {
+              min = 0
+            }
+          }
+        }
+      },
+      # Row 5: Autoscaling Metrics and Alarms
+      {
+        type   = "metric"
+        x      = 12
+        y      = 24
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["CWAgent", "mem_used_percent", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Memory Utilization %" }],
+            ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "CPU Utilization %" }],
+            ["AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.autoscaling.name, "ClusterName", aws_ecs_cluster.main.name, { "label": "ECS CPU %" }],
+            ["AWS/ECS", "MemoryUtilization", "ServiceName", aws_ecs_service.autoscaling.name, "ClusterName", aws_ecs_cluster.main.name, { "label": "ECS Memory %" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-1"
+          title   = "Autoscaling Triggers: CPU & Memory Thresholds"
+          period  = 300
+          yAxis = {
+            left = {
+              min = 0
+              max = 100
+            }
+          }
+          annotations = {
+            horizontal = [
+              {
+                label = "CPU Scale Up (60%)"
+                value = 60
+              },
+              {
+                label = "Memory Scale Up (80%)"
+                value = 80
+              }
+            ]
+          }
         }
       }
     ]
@@ -3178,51 +3451,47 @@ resource "aws_launch_template" "premium" {
   }
 }
 
-# Premium Spot Fleet Request - Cost-optimized premium instances
-resource "aws_spot_fleet_request" "premium" {
-  iam_fleet_role      = aws_iam_role.premium_spot_fleet.arn
-  allocation_strategy = "diversified"
-  target_capacity     = 1  # Start with 1 instance, scale up via Lambda
-  valid_until         = "2025-12-31T23:59:59Z"
-  spot_price          = "0.10"  # Max price per hour
-  instance_interruption_behaviour = "terminate"
-  replace_unhealthy_instances = true
+# Premium On-Demand Standby Pool - Individual stopped instances for fast startup
+# Initial standby instance - always kept stopped and ready
+resource "aws_instance" "premium_standby" {
+  count = 2  # Start with 2 standby instances
 
-  # Enable auto-scaling modification capability
-  excess_capacity_termination_policy = "default"
-
-  launch_template_config {
-    launch_template_specification {
-      id      = aws_launch_template.premium.id
-      version = "$Latest"
-    }
-
-    overrides {
-      instance_type = "t3.large"
-      subnet_id     = aws_subnet.private1.id
-      spot_price    = "0.08"
-    }
-
-    overrides {
-      instance_type = "t3.xlarge"
-      subnet_id     = aws_subnet.private2.id
-      spot_price    = "0.15"
-    }
-
-    overrides {
-      instance_type = "c5.large"
-      subnet_id     = aws_subnet.private1.id
-      spot_price    = "0.09"
-    }
+  launch_template {
+    id      = aws_launch_template.premium.id
+    version = "$Latest"
   }
 
+  instance_type = "t3.large"
+  subnet_id     = aws_subnet.private1.id
+
+  # Start in stopped state for cost savings
+  instance_initiated_shutdown_behavior = "stop"
+
+  # Prevent termination
+  disable_api_termination = false
+
   tags = {
-    Name = "subscr-premium-spot-fleet"
-    Type = "Premium-Spot-Fleet"
+    Name = "subscr-premium-standby-${count.index + 1}"
+    Type = "Premium-Standby-Pool"
     Service = "premium-tier"
+    StandbyInstance = "true"
+    StandbyIndex = count.index + 1
+  }
+
+  # Ensure instances are stopped on creation
+  provisioner "local-exec" {
+    command = "aws ec2 stop-instances --instance-ids ${self.id} --region ${var.aws_region} || true"
   }
 
   depends_on = [aws_iam_role_policy_attachment.premium_spot_fleet_policy]
+
+  lifecycle {
+    create_before_destroy = true
+    ignore_changes = [
+      # Allow instances to be started/stopped without Terraform interference
+      instance_state,
+    ]
+  }
 }
 
 
@@ -4211,7 +4480,7 @@ resource "aws_ecs_task_definition" "premium" {
       root_directory = "/"
       transit_encryption = "ENABLED"
       authorization_config {
-        access_point_id = aws_efs_access_point.main.id
+        access_point_id = aws_efs_access_point.snmk.id
         iam            = "DISABLED"
       }
     }
@@ -4307,17 +4576,9 @@ resource "aws_ecs_service" "premium" {
     expression = "attribute:tier == premium"
   }
 
-  # Spread tasks across instances for availability
-  placement_strategy {
-    type  = "spread"
-    field = "instanceId"
-  }
-
-  # Auto-scaling will be handled by Lambda manager
-  # No load balancer - routing handled dynamically by premium manager
 
   depends_on = [
-    aws_spot_fleet_request.premium
+    aws_instance.premium_standby
   ]
 }
 
@@ -4824,16 +5085,16 @@ output "alb_listener_arn" {
   value       = aws_lb_listener.autoscaling.arn
 }
 
-output "premium_spot_fleet_id" {
-  description = "ID of the premium spot fleet request"
-  value       = aws_spot_fleet_request.premium.id
+output "premium_instance_ids" {
+  description = "IDs of the premium standby instances"
+  value       = aws_instance.premium_standby[*].id
 }
 
 
 
 output "premium_api_gateway_url" {
   description = "URL of the premium management API Gateway"
-  value       = "${aws_api_gateway_deployment.premium_management_deployment.invoke_url}/premium"
+  value       = "https://${aws_api_gateway_rest_api.premium_management.id}.execute-api.${var.aws_region}.amazonaws.com/${aws_api_gateway_stage.premium_management_v1.stage_name}/premium"
 }
 
 output "premium_manager_lambda_arn" {

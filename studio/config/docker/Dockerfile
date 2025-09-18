@@ -7,8 +7,8 @@ RUN apt-get --allow-releaseinfo-change update && \
     apt-get install --no-install-recommends -y sudo procps iproute2 iputils-ping telnet wget curl unzip less vim git \
         default-mysql-client
 
-# install conda & packages
-RUN apt-get install --no-install-recommends -y gcc g++ clang libgl1 libgl1-mesa-dev libopencv-dev && \
+# install conda & packages and optimization solvers
+RUN apt-get install --no-install-recommends -y gcc g++ clang libgl1 libgl1-mesa-dev libopencv-dev coinor-cbc rsync && \
     apt-get autoremove -y && apt-get clean
 
 # Specify compiler (use clang)

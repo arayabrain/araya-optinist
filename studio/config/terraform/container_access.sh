@@ -13,7 +13,7 @@ NC='\033[0m' # No Color
 CLUSTER_NAME="subscr-optinist-cloud-cluster"
 SERVICE_NAME="subscr-optinist-cloud-service"
 ASG_NAME="subscr-optinist-asg"
-SSH_KEY_PATH="./subscr-optinist-cloud-private-key.pem"
+SSH_KEY_PATH=$(terraform output -raw ssh_private_key_path 2>/dev/null || echo "./subscr-optinist-cloud-private-key.pem")
 REGION="ap-northeast-1"
 
 echo -e "${BLUE}=== OptiNiSt Container Access Script ===${NC}"

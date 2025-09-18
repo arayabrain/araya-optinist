@@ -21,6 +21,7 @@ import {
   saveRefreshToken,
   saveToken,
 } from "utils/auth/AuthUtils"
+import { routingService } from "utils/routing/RoutingService"
 
 const initialState: User = {
   currentUser: undefined,
@@ -38,6 +39,8 @@ export const userSlice = createSlice({
       removeExToken()
       // Clear dismissed warnings so they can appear again for the next user
       localStorage.removeItem("dismissedWarnings")
+      // Clear premium routing information
+      routingService.clearRoutingInfo()
       return initialState
     },
     resetUserSearch: (state) => {
@@ -48,6 +51,10 @@ export const userSlice = createSlice({
     builder
       .addCase(getMe.fulfilled, (state, action) => {
         state.currentUser = action.payload
+        // Update routing information when user data is loaded
+        if (action.payload) {
+          routingService.updateRoutingInfo(action.payload)
+        }
       })
       .addCase(getListUser.fulfilled, (state, action) => {
         state.listUser = action.payload
@@ -105,6 +112,8 @@ export const userSlice = createSlice({
         () => {
           removeToken()
           removeExToken()
+          // Clear premium routing information on auth failure
+          routingService.clearRoutingInfo()
           return initialState
         },
       )
