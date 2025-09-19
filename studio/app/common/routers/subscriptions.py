@@ -176,8 +176,8 @@ async def create_checkout_session(
                     }
                 ],
                 mode="subscription",
-                success_url=f"{BASE_URL}/console/account",
-                cancel_url=f"{BASE_URL}/console/subscription",
+                success_url=f"{BASE_URL}/console/subscription/thanks",
+                cancel_url=f"{BASE_URL}/console/subscription/failed",
                 client_reference_id=str(user.id),
                 customer_email=user.email,
                 metadata={
