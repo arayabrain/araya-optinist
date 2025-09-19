@@ -368,6 +368,208 @@ class WebhookService:
             raise
 
     @staticmethod
+    def handle_subscription_payment_succeeded(
+        db: Session, invoice_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Handle invoice.payment_succeeded webhook for subscription renewals
+
+        Args:
+            db: Database session
+            invoice_data: Webhook invoice data from Stripe
+
+        Returns:
+            Dict with processing results
+
+        Raises:
+            ValueError: If validation fails
+            Exception: For processing errors
+        """
+        try:
+            invoice_id = invoice_data.get("id")
+            logger.info(
+                f"Webhook: Processing subscription payment succeeded: {invoice_id}"
+            )
+
+            # Extract data from webhook payload
+            customer_id = invoice_data.get("customer")
+            subscription_id = invoice_data.get("subscription")
+            payment_status = invoice_data.get("status")
+            amount_paid = invoice_data.get("amount_paid", 0)
+            billing_reason = invoice_data.get("billing_reason")
+
+            logger.info(
+                f"Webhook: customer_id={customer_id}, subscription_id={subscription_id}"
+            )
+            logger.info(
+                f"Webhook: payment_status={payment_status}, amount={amount_paid}, "
+                f"billing_reason={billing_reason}"
+            )
+
+            # Only process subscription cycle payments (not initial payments)
+            if billing_reason not in ["subscription_cycle", "subscription_update"]:
+                logger.info(
+                    f"Webhook: Skipping invoice - billing_reason: {billing_reason}"
+                )
+                return {
+                    "success": True,
+                    "message": f"Invoice skipped - billing_reason: {billing_reason}",
+                    "webhook_processed": True,
+                    "skipped": True,
+                }
+
+            # Validate required data
+            if not customer_id or not subscription_id:
+                raise ValueError(
+                    f"Missing customer_id or subscription_id in invoice: {invoice_id}"
+                )
+
+            # Verify payment was successful
+            if payment_status != "paid":
+                raise ValueError(f"Payment not completed. Status: {payment_status}")
+
+            # 1. Find user by Stripe customer ID
+            try:
+                logger.info(f"Webhook: Finding user by customer_id: {customer_id}")
+                user_account = (
+                    db.query(SubscriptionUserAccount)
+                    .filter(SubscriptionUserAccount.provider_customer_id == customer_id)
+                    .first()
+                )
+
+                if not user_account:
+                    raise ValueError(f"User not found for customer_id: {customer_id}")
+
+                user_id = user_account.user_id
+                logger.info(f"Webhook: Found user_id: {user_id}")
+
+            except Exception as e:
+                logger.error(f"Webhook: Error finding user: {str(e)}")
+                raise
+
+            # 2. Find active subscription by Stripe subscription ID
+            try:
+                user_subscription = (
+                    db.query(UserSubscription)
+                    .filter(
+                        UserSubscription.user_id == user_id,
+                        UserSubscription.expiration > datetime.now(timezone.utc),
+                    )
+                    .order_by(UserSubscription.expiration.desc())
+                    .first()
+                )
+
+                if not user_subscription:
+                    raise ValueError(
+                        f"Active subscription not found for user: {user_id}"
+                    )
+
+                plan_id = user_subscription.plan_id
+                logger.info(f"Webhook: Found subscription plan_id: {plan_id}")
+
+            except Exception as e:
+                logger.error(f"Webhook: Error finding subscription: {str(e)}")
+                raise
+
+            # 3. Get subscription plan details
+            try:
+                logger.info(f"Webhook: Getting subscription plan: {plan_id}")
+                plan = CheckoutService.get_subscription_plan(db, plan_id)
+                if not plan:
+                    raise ValueError(f"Subscription plan not found: {plan_id}")
+
+            except Exception as e:
+                logger.error(f"Webhook: Error getting subscription plan: {str(e)}")
+                raise
+
+            # 4. Calculate new expiration date (extend from current expiration)
+            try:
+                logger.info("Webhook: Calculating new expiration date...")
+
+                current_expiration = user_subscription.expiration
+                billing_cycle = plan.billing_cycle
+
+                # Calculate extension period
+                if billing_cycle == "1":
+                    new_expiration = current_expiration + timedelta(days=30)
+                elif billing_cycle == "2":
+                    new_expiration = current_expiration + timedelta(days=365)
+                else:
+                    # Default to monthly if unknown
+                    new_expiration = current_expiration + timedelta(days=30)
+                    logger.warning(
+                        f"Unknown billing cycle: {billing_cycle}, defaulting to monthly"
+                    )
+
+                logger.info(
+                    f"Webhook: Extending expiration from {current_expiration} "
+                    f"to {new_expiration}"
+                )
+
+            except Exception as e:
+                logger.error(f"Webhook: Error calculating expiration: {str(e)}")
+                raise
+
+            # 5. Update subscription expiration
+            try:
+                logger.info("Webhook: Updating subscription expiration...")
+                user_subscription.expiration = new_expiration
+                user_subscription.updated_at = datetime.now(timezone.utc)
+
+            except Exception as e:
+                logger.error(f"Webhook: Error updating subscription: {str(e)}")
+                raise
+
+            # 6. Record the payment/purchase
+            try:
+                logger.info("Webhook: Recording subscription renewal purchase...")
+
+                # Create purchase record for the renewal
+                purchase = SubscriptionUserPurchase(
+                    user_id=user_id,
+                    plan_id=plan_id,
+                    created_at=datetime.now(timezone.utc),
+                )
+
+                db.add(purchase)
+                db.flush()  # Get the purchase ID
+
+                logger.info(f"Webhook: Purchase recorded with ID: {purchase.id}")
+
+            except Exception as e:
+                logger.error(f"Webhook: Error recording purchase: {str(e)}")
+                raise
+
+            # 7. Commit all changes
+            db.commit()
+
+            logger.info(
+                f"Webhook: Successfully processed subscription renewal for user "
+                f"{user_id}, plan {plan_id}, invoice {invoice_id}. "
+                f"New expiration: {new_expiration}"
+            )
+
+            return {
+                "success": True,
+                "user_id": user_id,
+                "subscription_id": user_subscription.id,
+                "purchase_id": purchase.id,
+                "old_expiration": current_expiration.isoformat(),
+                "new_expiration": new_expiration.isoformat(),
+                "amount_paid": amount_paid / 100,
+                "message": "Subscription renewed successfully via webhook",
+                "webhook_processed": True,
+                "invoice_id": invoice_id,
+            }
+
+        except Exception as e:
+            logger.error(
+                f"Webhook: Error processing subscription payment for invoice {invoice_id}: {str(e)}"
+            )
+            db.rollback()
+            raise
+
+    @staticmethod
     def get_webhook_secret() -> str:
         webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
         if not webhook_secret:

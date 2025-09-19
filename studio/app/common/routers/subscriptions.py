@@ -928,8 +928,7 @@ async def stripe_webhook(
             WebhookService.handle_subscription_schedule_released(db, data)
 
         elif event_type == "invoice.payment_succeeded":
-            # Handle successful payments
-            logger.info(f"Payment succeeded for customer: {data.get('customer')}")
+            WebhookService.handle_subscription_payment_succeeded(db, data)
 
         else:
             logger.info(f"Unhandled webhook event type: {event_type}")
@@ -964,8 +963,7 @@ async def stripe_webhook_test(
             WebhookService.handle_subscription_schedule_released(db, data)
 
         elif event_type == "invoice.payment_succeeded":
-            # Handle successful payments
-            logger.info(f"Payment succeeded for customer: {data.get('customer')}")
+            WebhookService.handle_subscription_payment_succeeded(db, data)
 
         else:
             logger.info(f"Unhandled webhook event type: {event_type}")
