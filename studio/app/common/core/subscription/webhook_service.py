@@ -69,7 +69,8 @@ class WebhookService:
                 plan_id = int(plan_id)
             except (ValueError, TypeError):
                 raise ValueError(
-                    f"Invalid user_id or plan_id format in session metadata: {session_id}"
+                    f"Invalid user_id or plan_id format in session metadata: "
+                    f"{session_id}"
                 )
 
             # 1. CHECK FOR DUPLICATE PROCESSING FIRST
@@ -171,7 +172,8 @@ class WebhookService:
 
         except Exception as e:
             logger.error(
-                f"Webhook: Error processing checkout success for session {session_id}: {str(e)}"
+                f"Webhook: Error processing checkout success for session "
+                f"{session_id}: {str(e)}"
             )
             db.rollback()
             raise
@@ -564,7 +566,8 @@ class WebhookService:
 
         except Exception as e:
             logger.error(
-                f"Webhook: Error processing subscription payment for invoice {invoice_id}: {str(e)}"
+                f"Webhook: Error processing subscription payment for invoice "
+                f"{invoice_id}: {str(e)}"
             )
             db.rollback()
             raise
