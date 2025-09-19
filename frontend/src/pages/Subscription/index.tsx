@@ -86,9 +86,9 @@ const SubscriptionPlans = () => {
     return plan?.price === 0
   }
 
-  const SUBSCRIPTION_PLAN = {
-    FREE: "Free",
-    PREMIUM: "Premium",
+  enum SUBSCRIPTION_PLAN {
+    FREE = "Free",
+    PREMIUM = "Premium",
   }
 
   const handleUpgradeClick = async (planId: number) => {
@@ -440,23 +440,23 @@ const SubscriptionContent = styled(Box)(() => ({
   },
 }))
 
-const PlanCard = styled(Box)<{ isHighlighted?: boolean }>(
-  ({ isHighlighted }) => ({
-    flex: 1,
-    backgroundColor: "white",
-    borderRadius: "1rem",
-    border: isHighlighted ? "2px solid #3b82f6" : "2px solid #dbeafe",
-    padding: "2rem",
-    boxShadow: isHighlighted
-      ? "0 10px 25px -3px rgba(59, 130, 246, 0.1)"
-      : "0 1px 3px 0 rgba(0, 0, 0, 0.1)",
-    display: "flex",
-    flexDirection: "column",
-    position: "relative",
-    transform: isHighlighted ? "scale(1.05)" : "scale(1)",
-    transition: "transform 0.2s ease-in-out",
-  }),
-)
+const PlanCard = styled(Box, {
+  shouldForwardProp: (prop) => prop !== "isHighlighted",
+})<{ isHighlighted?: boolean }>(({ isHighlighted }) => ({
+  flex: 1,
+  backgroundColor: "white",
+  borderRadius: "1rem",
+  border: isHighlighted ? "2px solid #3b82f6" : "2px solid #dbeafe",
+  padding: "2rem",
+  boxShadow: isHighlighted
+    ? "0 10px 25px -3px rgba(59, 130, 246, 0.1)"
+    : "0 1px 3px 0 rgba(0, 0, 0, 0.1)",
+  display: "flex",
+  flexDirection: "column",
+  position: "relative",
+  transform: isHighlighted ? "scale(1.05)" : "scale(1)",
+  transition: "transform 0.2s ease-in-out",
+}))
 
 const PlanHeader = styled(Box)(() => ({
   textAlign: "center",
@@ -495,13 +495,13 @@ const FeatureItem = styled(Box)(() => ({
   gap: "0.75rem",
 }))
 
-const FeatureText = styled(Typography)<{ isPremium?: boolean }>(
-  ({ isPremium }) => ({
-    color: isPremium ? "#16a34a" : "#374151",
-    fontSize: "1rem",
-    fontWeight: isPremium ? "500" : "400",
-  }),
-)
+const FeatureText = styled(Typography, {
+  shouldForwardProp: (prop) => prop !== "isPremium",
+})<{ isPremium?: boolean }>(({ isPremium }) => ({
+  color: isPremium ? "#16a34a" : "#374151",
+  fontSize: "1rem",
+  fontWeight: isPremium ? "500" : "400",
+}))
 
 const ButtonWrapper = styled(Box)(() => ({
   textAlign: "center",

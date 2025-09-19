@@ -63,7 +63,6 @@ const subscriptionSlice = createSlice({
             state.plans = action.payload.map((planData: unknown) =>
               safeConvertPlan(planData as Record<string, unknown>),
             )
-            console.log("Successfully loaded plans:", state.plans)
           } else {
             console.warn("Invalid plans data received:", action.payload)
             state.plans = []
