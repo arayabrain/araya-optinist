@@ -16,6 +16,7 @@ from studio.app.common.core.subscription.subscription_service import (
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.db.database import get_db
 from studio.app.common.schemas.checkouts import (
+    CheckoutSessionRequest,
     CheckoutSuccessRequest,
     CheckoutSuccessResponse,
     SubscriptionStatusResponse,
@@ -820,10 +821,13 @@ async def create_checkout_session(
                 ],
                 mode="subscription",
                 success_url=(
-                    f"{STRIPE_CALLBACK_URL}/console/account"
+                    f"{STRIPE_CALLBACK_URL}/console/subscription/thanks"
                     "?session_id={CHECKOUT_SESSION_ID}"
                 ),
-                cancel_url=f"{STRIPE_CALLBACK_URL}/console/subscription",
+                cancel_url=(
+                    f"{STRIPE_CALLBACK_URL}/console/subscription/failed"
+                    "?session_id={CHECKOUT_SESSION_ID}"
+                ),
                 client_reference_id=str(user.id),
                 customer_email=user.email,
                 metadata={
@@ -884,6 +888,67 @@ async def payment_success(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Checkout processing error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/checkout/validate-checkout-session", response_model=bool)
+async def validate_checkout_session(
+    request: CheckoutSessionRequest,
+):
+    """
+    Validate a Stripe checkout session ID
+    """
+    try:
+        # Retrieve the session from Stripe
+        session = stripe.checkout.Session.retrieve(request.session_id)
+
+        # Check if the session is complete and paid
+        if session.payment_status == "paid" and session.status == "complete":
+            return True
+        else:
+            return False
+
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error validating checkout session: {str(e)}")
+        raise HTTPException(
+            status_code=400, detail=f"Failed to validate checkout session: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Error validating checkout session: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/checkout/failed-checkout-session", response_model=bool)
+async def validate_failed_checkout_session(
+    request: CheckoutSessionRequest,
+):
+    """
+    Validate a Stripe checkout session ID for FAILED page
+    Returns True if session exists and is in a failed/incomplete state
+    """
+    try:
+        # Retrieve the session from Stripe
+        session = stripe.checkout.Session.retrieve(request.session_id)
+
+        # Check if the session exists and is in a legitimate failed state
+        # Valid failed states: expired, open with unpaid status
+        if session.status == "expired" or (
+            session.status == "open" and session.payment_status == "unpaid"
+        ):
+            return True
+        else:
+            return False
+
+    except stripe.error.InvalidRequestError:
+        # Session doesn't exist or is invalid
+        return False
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error validating failed checkout session: {str(e)}")
+        raise HTTPException(
+            status_code=400, detail=f"Failed to validate checkout session: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Error validating failed checkout session: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

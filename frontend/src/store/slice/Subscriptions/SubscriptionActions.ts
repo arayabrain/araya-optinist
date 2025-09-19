@@ -7,6 +7,7 @@ import {
   createCheckoutSessionApi,
   getSubscriptionPlansApi,
   getUserSubscriptionApi,
+  validateCheckoutSessionApi,
 } from "api/subscriptions/Subscriptions"
 import {
   CreateCheckoutSessionResponse,
@@ -93,3 +94,18 @@ export const createCheckoutSession = createAsyncThunk<
     return rejectWithValue(message)
   }
 })
+
+export const validateCheckoutSession = createAsyncThunk(
+  `${SUBSCRIPTION_SLICE_NAME}/validateCheckoutSession`,
+  async (sessionId: string, thunkAPI) => {
+    try {
+      const response = await validateCheckoutSessionApi(sessionId)
+      return response
+    } catch (error) {
+      console.error("Error validating checkout session:", error)
+      // Extract clean error message instead of passing entire error object
+      const errorMessage = extractErrorMessage(error)
+      return thunkAPI.rejectWithValue(errorMessage)
+    }
+  },
+)

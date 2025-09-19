@@ -1,3 +1,5 @@
+import { createAsyncThunk } from "@reduxjs/toolkit"
+
 import { SubscriptionPlanDTO } from "api/subscriptions/SubscriptionsApiDTO"
 import axios from "utils/axios"
 
@@ -15,9 +17,32 @@ export const getUserSubscriptionApi = async (user_id: number) => {
 
 export const createCheckoutSessionApi = async (planId: number) => {
   const response = await axios.post(
-    "/api/subscriptions/create-checkout-session",
+    "/api/subsc/checkout/create-checkout-session",
     {
       plan_id: planId,
+    },
+  )
+  return response.data
+}
+
+export const validateCheckoutSessionApi = createAsyncThunk(
+  "subscription/validateCheckoutSession",
+  async (sessionId: string) => {
+    const response = await axios.post(
+      "/api/subsc/checkout/validate-checkout-session",
+      {
+        session_id: sessionId,
+      },
+    )
+    return response.data
+  },
+)
+
+export const validateFailedCheckoutSessionApi = async (sessionId: string) => {
+  const response = await axios.post(
+    "/api/subsc/checkout/validate-failed-checkout-session",
+    {
+      session_id: sessionId,
     },
   )
   return response.data

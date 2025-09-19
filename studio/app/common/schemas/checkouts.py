@@ -11,6 +11,10 @@ class CheckoutSuccessRequest(BaseModel):
     plan_id: int = Field(..., description="Subscription plan ID (1=Free, 2=Premium)")
 
 
+class CheckoutSessionRequest(BaseModel):
+    session_id: str
+
+
 class CheckoutSuccessResponse(BaseModel):
     success: bool
     message: str
