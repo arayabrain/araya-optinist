@@ -2084,28 +2084,6 @@ resource "aws_iam_role_policy" "ecs_task_ecr_access" {
 # PREMIUM TIER IAM ROLES
 # =============================================================================
 
-# Premium Spot Fleet IAM Role
-resource "aws_iam_role" "premium_spot_fleet" {
-  name = "subscr-optinist-premium-spot-fleet-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "spotfleet.amazonaws.com"
-        }
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "premium_spot_fleet_policy" {
-  role       = aws_iam_role.premium_spot_fleet.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2SpotFleetTaggingRole"
-}
 
 # Premium Manager Lambda Role
 resource "aws_iam_role" "premium_manager_lambda" {
@@ -2183,7 +2161,9 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
           "elasticloadbalancing:RegisterTargets",
           "elasticloadbalancing:DeregisterTargets",
           "elasticloadbalancing:DescribeTargetGroups",
-          "elasticloadbalancing:DescribeRules"
+          "elasticloadbalancing:DescribeRules",
+          "elasticloadbalancing:AddTags",
+          "elasticloadbalancing:RemoveTags"
         ]
         Resource = "*"
       },
@@ -2292,6 +2272,7 @@ resource "aws_lambda_function" "premium_manager" {
       ALB_ARN               = aws_lb.autoscaling.arn
       ALB_LISTENER_ARN      = aws_lb_listener.autoscaling.arn
       PREMIUM_INSTANCE_IDS  = join(",", aws_instance.premium[*].id)
+      PREMIUM_LAUNCH_TEMPLATE_ID = aws_launch_template.premium.id
       CLUSTER_NAME          = aws_ecs_cluster.main.name
       RDS_HOST              = aws_db_instance.main.endpoint
       RDS_USER              = var.mysql_user
@@ -2323,92 +2304,47 @@ resource "aws_lambda_function" "premium_manager" {
 }
 
 # Migration Queue Processing Lambda Function
-resource "aws_lambda_function" "premium_migration_queue" {
-  filename      = "${path.module}/premium_manager.py.zip"
-  function_name = "subscr-premium-migration-queue"
-  role          = aws_iam_role.premium_manager_lambda.arn
-  handler       = "premium_manager.process_migration_queue"
-  runtime       = "python3.9"
-  timeout       = 300
-
-  source_code_hash = data.archive_file.premium_manager_zip.output_base64sha256
-
-  environment {
-    variables = {
-      VPC_ID                = aws_vpc.main.id
-      SUBNET_IDS            = "${aws_subnet.private1.id},${aws_subnet.private2.id}"
-      SECURITY_GROUP_ID     = aws_security_group.ecs.id
-      ALB_ARN               = aws_lb.autoscaling.arn
-      ALB_LISTENER_ARN      = aws_lb_listener.autoscaling.arn
-      PREMIUM_INSTANCE_IDS  = join(",", aws_instance.premium[*].id)
-      CLUSTER_NAME          = aws_ecs_cluster.main.name
-      RDS_HOST              = aws_db_instance.main.endpoint
-      RDS_USER              = var.mysql_user
-      RDS_PASSWORD          = var.mysql_password
-      RDS_DATABASE          = var.mysql_database
-      # Dynamic capacity settings (use existing ABSOLUTE_MAX + minimal new ones)
-      PREMIUM_SAFETY_BUFFER      = "1"   # Extra instances for quick response
-      PREMIUM_STANDBY_POOL_SIZE  = "1"   # Number of stopped instances to maintain
-      PREMIUM_IDLE_TIMEOUT_HOURS = "3"   # Hours before idle instances are converted to standby
-    }
-  }
-
-  vpc_config {
-    subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id]
-    security_group_ids = [aws_security_group.ecs.id]
-  }
-
-  tags = {
-    Name = "Premium Migration Queue Lambda"
-    Type = "Premium-Lambda"
-    Service = "premium-tier"
-  }
-
-  depends_on = [
-    aws_iam_role_policy_attachment.premium_manager_lambda_basic,
-    aws_cloudwatch_log_group.premium_migration_queue_logs,
-    data.archive_file.premium_manager_zip
-  ]
-}
 
 # CloudWatch Log Groups
-resource "aws_cloudwatch_log_group" "premium_migration_queue_logs" {
-  name              = "/aws/lambda/subscr-premium-migration-queue"
-  retention_in_days = 14
-
-  tags = {
-    Name = "Premium Migration Queue Lambda Logs"
-  }
-}
 
 # CloudWatch Events Rule for Migration Queue Processing (every 2 minutes)
-resource "aws_cloudwatch_event_rule" "premium_migration_schedule" {
-  name                = "subscr-premium-migration-schedule"
-  description         = "Trigger premium user migration queue processing"
-  schedule_expression = "rate(2 minutes)"
+
+# CloudWatch Events Rule for Premium Cleanup (every hour)
+resource "aws_cloudwatch_event_rule" "premium_cleanup_schedule" {
+  name                = "subscr-premium-cleanup-schedule"
+  description         = "Trigger premium assignment cleanup every hour"
+  schedule_expression = "rate(1 hour)"
   state              = "ENABLED"
 
   tags = {
-    Name = "Premium Migration Schedule"
+    Name = "Premium Cleanup Schedule"
     Type = "Premium-CloudWatch"
     Service = "premium-tier"
   }
 }
 
-# CloudWatch Events Target
-resource "aws_cloudwatch_event_target" "premium_migration_target" {
-  rule      = aws_cloudwatch_event_rule.premium_migration_schedule.name
-  target_id = "PremiumMigrationTarget"
-  arn       = aws_lambda_function.premium_migration_queue.arn
+# CloudWatch Events Target for Cleanup
+resource "aws_cloudwatch_event_target" "premium_cleanup_target" {
+  rule      = aws_cloudwatch_event_rule.premium_cleanup_schedule.name
+  target_id = "PremiumCleanupTarget"
+  arn       = aws_lambda_function.premium_cleanup.arn
+
+  input = jsonencode({
+    source      = "aws.events"
+    detail-type = "Scheduled Event"
+    detail = {
+      action = "cleanup"
+    }
+  })
 }
 
-# Lambda Permission for CloudWatch Events
-resource "aws_lambda_permission" "allow_cloudwatch_migration" {
-  statement_id  = "AllowExecutionFromCloudWatch"
+# Lambda Permission for Cleanup CloudWatch Events
+resource "aws_lambda_permission" "allow_cloudwatch_cleanup" {
+  statement_id  = "AllowExecutionFromCloudWatchCleanup"
   action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.premium_migration_queue.function_name
+  function_name = aws_lambda_function.premium_cleanup.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.premium_migration_schedule.arn
+  source_arn    = aws_cloudwatch_event_rule.premium_cleanup_schedule.arn
 }
 
 # Create ZIP file for premium manager Lambda with dependencies
@@ -2442,6 +2378,72 @@ resource "aws_cloudwatch_log_group" "premium_manager_logs" {
 
   tags = {
     Name = "Premium Manager Logs"
+    Type = "Premium-CloudWatch"
+  }
+}
+
+# Premium Cleanup Lambda Function
+resource "aws_lambda_function" "premium_cleanup" {
+  filename      = "${path.module}/premium_cleanup.py.zip"
+  function_name = "subscr-premium-cleanup"
+  role          = aws_iam_role.premium_manager_lambda.arn
+  handler       = "premium_cleanup.handler"
+  runtime       = "python3.9"
+  timeout       = 300
+
+  source_code_hash = data.archive_file.premium_cleanup_zip.output_base64sha256
+
+  environment {
+    variables = {
+      VPC_ID                = aws_vpc.main.id
+      SUBNET_IDS            = "${aws_subnet.private1.id},${aws_subnet.private2.id}"
+      SECURITY_GROUP_ID     = aws_security_group.ecs.id
+      ALB_ARN               = aws_lb.autoscaling.arn
+      ALB_LISTENER_ARN      = aws_lb_listener.autoscaling.arn
+      PREMIUM_INSTANCE_IDS  = join(",", aws_instance.premium[*].id)
+      PREMIUM_LAUNCH_TEMPLATE_ID = aws_launch_template.premium.id
+      CLUSTER_NAME          = aws_ecs_cluster.main.name
+      RDS_HOST              = aws_db_instance.main.endpoint
+      RDS_USER              = var.mysql_user
+      RDS_PASSWORD          = var.mysql_password
+      RDS_DATABASE          = var.mysql_database
+      # Cleanup-specific settings
+      PREMIUM_IDLE_TIMEOUT_HOURS = "3"
+    }
+  }
+
+  vpc_config {
+    subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id]
+    security_group_ids = [aws_security_group.ecs.id]
+  }
+
+  tags = {
+    Name = "Premium Cleanup Lambda"
+    Type = "Premium-Lambda"
+    Service = "premium-tier"
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.premium_manager_lambda_basic,
+    aws_cloudwatch_log_group.premium_cleanup_logs,
+    data.archive_file.premium_cleanup_zip
+  ]
+}
+
+# Create ZIP file for premium cleanup Lambda
+data "archive_file" "premium_cleanup_zip" {
+  type        = "zip"
+  source_file = "${path.module}/premium_cleanup.py"
+  output_path = "${path.module}/premium_cleanup.py.zip"
+}
+
+# CloudWatch Log Group for Premium Cleanup
+resource "aws_cloudwatch_log_group" "premium_cleanup_logs" {
+  name              = "/aws/lambda/subscr-premium-cleanup"
+  retention_in_days = 14
+
+  tags = {
+    Name = "Premium Cleanup Lambda Logs"
     Type = "Premium-CloudWatch"
   }
 }
@@ -3481,7 +3483,6 @@ resource "aws_instance" "premium" {
     command = "aws ec2 stop-instances --instance-ids ${self.id} --region ${var.aws_region} || true"
   }
 
-  depends_on = [aws_iam_role_policy_attachment.premium_spot_fleet_policy]
 
   lifecycle {
     create_before_destroy = true

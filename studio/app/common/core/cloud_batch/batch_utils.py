@@ -523,20 +523,33 @@ class BatchUtils:
         if not efs_storage:
             raise ValueError("Empty storage path provided to StorageSettings")
 
+        # storage_settings = StorageSettings(
+        #     default_storage_provider="fs",
+        #     default_storage_prefix="/mnt/efs",  # Set the full EFS path here
+        #     local_storage_prefix=Path(""),  # Empty to avoid duplication
+        #     remote_job_local_storage_prefix=Path(""),  # Empty to avoid duplication
+        #     shared_fs_usage=[
+        #         SharedFSUsage.INPUT_OUTPUT,
+        #         SharedFSUsage.PERSISTENCE,
+        #         SharedFSUsage.SOFTWARE_DEPLOYMENT,
+        #         SharedFSUsage.SOURCES,
+        #     ],
+        # )
+        # Resulted in snakemake.exceptions.MissingInputException: Missing input files
+        # fs/mnt/efs/mnt/efs/input/1/sample_mouse2p_image.tiff
+
         storage_settings = StorageSettings(
             default_storage_provider="fs",
-            default_storage_prefix="/mnt/efs",  # Set the full EFS path here
+            default_storage_prefix="/mnt/efs",  # EFS mount path
             local_storage_prefix=Path(""),  # Empty to avoid duplication
             remote_job_local_storage_prefix=Path(""),  # Empty to avoid duplication
             shared_fs_usage=[
-                SharedFSUsage.INPUT_OUTPUT,
+                # SharedFSUsage.INPUT_OUTPUT,  # Remove this
                 SharedFSUsage.PERSISTENCE,
                 SharedFSUsage.SOFTWARE_DEPLOYMENT,
                 SharedFSUsage.SOURCES,
             ],
         )
-
-        logger.info(f"EFS storage configured: {efs_storage}")
 
         return storage_settings
 

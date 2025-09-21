@@ -9,9 +9,11 @@ import LimitWarning from "components/common/LimitWarning"
 import Loading from "components/common/Loading"
 import Header from "components/Layout/Header"
 import LeftMenu from "components/Layout/LeftMenu"
+import InactivityWarning from "components/Premium/InactivityWarning"
 import PremiumAssignmentManager from "components/Premium/PremiumAssignmentManager"
 import PremiumNotificationManager from "components/Premium/PremiumNotificationManager"
 import { APP_BAR_HEIGHT } from "const/Layout"
+import { PremiumAssignmentProvider } from "contexts/PremiumAssignmentContext"
 import { selectModeStandalone } from "store/slice/Standalone/StandaloneSeclector"
 import { getMe } from "store/slice/User/UserActions"
 import { selectCurrentUser } from "store/slice/User/UserSelector"
@@ -109,19 +111,23 @@ const AuthedLayout: FC<{ children: ReactNode }> = ({ children }) => {
     setOpen(false)
   }
   return (
-    <LayoutWrapper>
-      <Header handleDrawerOpen={handleDrawerOpen} />
-      <ContentBodyWrapper>
-        <LeftMenu open={open} handleDrawerClose={handleDrawerClose} />
-        <ChildrenWrapper>{children}</ChildrenWrapper>
-      </ContentBodyWrapper>
-      {/* Global limit warning modal for authenticated users */}
-      <LimitWarning showAsModal={true} autoCheck={true} />
-      {/* Premium assignment manager for automatic instance assignment */}
-      <PremiumAssignmentManager />
-      {/* Premium notification manager for user feedback */}
-      <PremiumNotificationManager />
-    </LayoutWrapper>
+    <PremiumAssignmentProvider>
+      <LayoutWrapper>
+        <Header handleDrawerOpen={handleDrawerOpen} />
+        <ContentBodyWrapper>
+          <LeftMenu open={open} handleDrawerClose={handleDrawerClose} />
+          <ChildrenWrapper>{children}</ChildrenWrapper>
+        </ContentBodyWrapper>
+        {/* Global limit warning modal for authenticated users */}
+        <LimitWarning showAsModal={true} autoCheck={true} />
+        {/* Premium assignment manager for automatic instance assignment */}
+        <PremiumAssignmentManager />
+        {/* Premium notification manager for user feedback */}
+        <PremiumNotificationManager />
+        {/* Inactivity warning for premium users */}
+        <InactivityWarning />
+      </LayoutWrapper>
+    </PremiumAssignmentProvider>
   )
 }
 

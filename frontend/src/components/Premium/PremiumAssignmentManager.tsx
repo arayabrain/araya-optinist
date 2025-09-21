@@ -1,44 +1,31 @@
 /**
  * Premium Assignment Manager
  *
- * Component that handles automatic premium instance assignment for premium users.
- * Should be included in the app layout to run in the background.
+ * Component that handles cleanup and logging for premium assignments.
+ * Assignment logic is handled by PremiumAssignmentContext.
  */
 
-import { FC, useEffect } from "react"
-import { useSelector } from "react-redux"
+import { FC, useEffect, useRef } from "react"
 
-import { usePremiumAssignment } from "hooks/usePremiumAssignment"
-import { selectCurrentUser } from "store/slice/User/UserSelector"
+import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 
 const PremiumAssignmentManager: FC = () => {
-  const currentUser = useSelector(selectCurrentUser)
-  const {
-    isPremiumUser,
-    autoAssignOnLogin,
-    autoReleaseOnLogout,
-    assignmentResult,
-    error,
-  } = usePremiumAssignment()
+  const { isPremiumUser, release, assignmentResult, error } =
+    usePremiumAssignment()
 
-  // Handle premium assignment on user login
-  useEffect(() => {
-    if (isPremiumUser && currentUser) {
-      // eslint-disable-next-line no-console
-      console.log("Premium user detected, triggering auto-assignment...")
-      autoAssignOnLogin()
-    }
-  }, [isPremiumUser, currentUser, autoAssignOnLogin])
+  // Use ref to store the release function to avoid dependency issues
+  const releaseRef = useRef(release)
+  releaseRef.current = release
 
   // Handle cleanup on component unmount (app close/logout)
   useEffect(() => {
     return () => {
       if (isPremiumUser) {
         // Don't await this - just fire and forget on unmount
-        autoReleaseOnLogout()
+        releaseRef.current()
       }
     }
-  }, [isPremiumUser, autoReleaseOnLogout])
+  }, [isPremiumUser]) // Only depend on isPremiumUser, not the release function
 
   // Log assignment status for debugging
   useEffect(() => {

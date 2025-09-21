@@ -2,6 +2,11 @@
 """
 OptiNiSt Autoscaling Load Test
 
+RUNTIME ENVIRONMENT:
+⚠️ Best run on cloud (requires AWS credentials and infrastructure)
+⚠️ Can run locally with --mock flag (limited functionality)
+✅ Requires AWS CLI configured or IAM role with appropriate permissions
+
 This script tests autoscaling behavior by generating controlled load to trigger
 CPU and memory thresholds, then validates that the Auto Scaling Group responds
 correctly according to the configured CloudWatch alarms.

@@ -51,7 +51,14 @@ def upgrade() -> None:
         # Instance state tracking columns (c501c5230017)
         sa.Column(
             "instance_state",
-            sa.Enum("launching", "running", "terminating", name="instance_state"),
+            sa.Enum(
+                "launching",
+                "running",
+                "stopping",
+                "stopped",
+                "terminating",
+                name="instance_state",
+            ),
             nullable=False,
             server_default="launching",
         ),
@@ -84,13 +91,6 @@ def upgrade() -> None:
             sa.TIMESTAMP,
             nullable=True,
         ),
-        # Migration ready tracking (d601d6240018)
-        sa.Column(
-            "migration_ready",
-            sa.Boolean,
-            nullable=False,
-            server_default="0",
-        ),
     )
 
     # Create all indexes
@@ -112,18 +112,11 @@ def upgrade() -> None:
         "idx_standby_created_at", "premium_user_assignments", ["standby_created_at"]
     )
 
-    # Migration ready index (d601d6240018)
-    op.create_index(
-        "idx_migration_ready", "premium_user_assignments", ["migration_ready"]
-    )
-
 
 def downgrade() -> None:
     """Drop the entire premium_user_assignments table and all related objects."""
 
     # Drop all indexes first
-    # Migration ready index (d601d6240018)
-    op.drop_index("idx_migration_ready", "premium_user_assignments")
 
     # Instance state tracking indexes (c501c5230017)
     op.drop_index("idx_standby_created_at", "premium_user_assignments")

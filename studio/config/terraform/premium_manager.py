@@ -382,7 +382,10 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
-        raise e
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": f"Assignment failed: {str(e)}"}),
+        }
 
 
 def create_additional_standby_if_needed():
@@ -525,7 +528,10 @@ def release_premium_user(user_id: str) -> Dict[str, Any]:
 
     except Exception as e:
         print(f"Error releasing premium user: {str(e)}")
-        raise e
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": f"Release failed: {str(e)}"}),
+        }
 
 
 def stop_idle_instances_if_needed():

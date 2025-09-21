@@ -8,7 +8,7 @@ import { FC, useEffect, useState } from "react"
 
 import { useSnackbar } from "notistack"
 
-import { usePremiumAssignment } from "hooks/usePremiumAssignment"
+import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 
 const PremiumNotificationManager: FC = () => {
   const { enqueueSnackbar } = useSnackbar()

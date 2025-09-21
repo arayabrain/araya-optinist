@@ -3,7 +3,7 @@
 Premium Instance Cleanup Script
 
 This script cleans up orphaned premium instances and database entries
-that are not part of the current active spot fleet configuration.
+that are not part of the current active premium instances.
 """
 
 import os
@@ -40,39 +40,30 @@ def get_db_connection():
         return None
 
 
-def get_active_spot_fleet_instances() -> List[str]:
-    """Get instance IDs from the current active spot fleet"""
+def get_active_premium_instances() -> List[str]:
+    """Get instance IDs from premium instances (running/stopped)"""
     ec2 = boto3.client("ec2")
     try:
-        # Get active spot fleet ID from environment or find it
-        spot_fleet_id = os.environ.get("SPOT_FLEET_ID")
-
-        if not spot_fleet_id:
-            # Find active spot fleet
-            response = ec2.describe_spot_fleet_requests()
-            active_fleets = [
-                fleet
-                for fleet in response["SpotFleetRequestConfigs"]
-                if fleet["SpotFleetRequestState"] == "active"
-                and "premium"
-                in fleet.get("SpotFleetRequestConfig", {})
-                .get("LaunchTemplateConfigs", [{}])[0]
-                .get("LaunchTemplateSpecification", {})
-                .get("id", "")
+        # Get all premium instances
+        response = ec2.describe_instances(
+            Filters=[
+                {"Name": "tag:Service", "Values": ["optinist-premium"]},
+                {
+                    "Name": "instance-state-name",
+                    "Values": ["pending", "running", "stopping", "stopped"],
+                },
             ]
+        )
 
-            if not active_fleets:
-                logger.warning("No active premium spot fleet found")
-                return []
+        instance_ids = []
+        for reservation in response["Reservations"]:
+            for instance in reservation["Instances"]:
+                instance_ids.append(instance["InstanceId"])
 
-            spot_fleet_id = active_fleets[0]["SpotFleetRequestId"]
-
-        # Get instances from active spot fleet
-        response = ec2.describe_spot_fleet_instances(SpotFleetRequestId=spot_fleet_id)
-        return [instance["InstanceId"] for instance in response["ActiveInstances"]]
+        return instance_ids
 
     except Exception as e:
-        logger.error(f"Failed to get active spot fleet instances: {e}")
+        logger.error(f"Failed to get active premium instances: {e}")
         return []
 
 
@@ -117,7 +108,7 @@ def get_all_premium_instances() -> List[Dict]:
 
 def cleanup_orphaned_instances(dry_run: bool = True) -> Dict:
     """
-    Clean up orphaned premium instances that are not in the active spot fleet
+    Clean up orphaned premium instances that are not in the active premium instances
 
     Args:
         dry_run: If True, only report what would be cleaned up
@@ -126,22 +117,22 @@ def cleanup_orphaned_instances(dry_run: bool = True) -> Dict:
     elbv2 = boto3.client("elbv2")
 
     # Get current state
-    active_fleet_instances = set(get_active_spot_fleet_instances())
+    active_premium_instances = set(get_active_premium_instances())
     all_premium_instances = get_all_premium_instances()
 
-    # Find orphaned instances (not in active fleet and not terminated)
+    # Find orphaned instances (not in active premium instances and not terminated)
     orphaned_instances = [
         instance
         for instance in all_premium_instances
         if (
-            instance["instance_id"] not in active_fleet_instances
+            instance["instance_id"] not in active_premium_instances
             and instance["state"] not in ["terminated", "terminating"]
         )
     ]
 
     cleanup_results = {
         "total_premium_instances": len(all_premium_instances),
-        "active_fleet_instances": len(active_fleet_instances),
+        "active_premium_instances": len(active_premium_instances),
         "orphaned_instances": len(orphaned_instances),
         "terminated_instances": 0,
         "cleaned_target_groups": 0,
@@ -187,7 +178,9 @@ def cleanup_orphaned_instances(dry_run: bool = True) -> Dict:
 
                 # If no targets or all targets are from orphaned instances
                 target_instance_ids = {target["Target"]["Id"] for target in targets}
-                orphaned_target_instances = target_instance_ids - active_fleet_instances
+                orphaned_target_instances = (
+                    target_instance_ids - active_premium_instances
+                )
 
                 if (
                     target_instance_ids
@@ -292,7 +285,7 @@ def main():
     # Print results
     logger.info("Cleanup Results:")
     logger.info(f"  Total premium instances: {results['total_premium_instances']}")
-    logger.info(f"  Active fleet instances: {results['active_fleet_instances']}")
+    logger.info(f"  Active premium instances: {results['active_premium_instances']}")
     logger.info(f"  Orphaned instances: {results['orphaned_instances']}")
     logger.info(f"  Terminated instances: {results['terminated_instances']}")
     logger.info(f"  Cleaned target groups: {results['cleaned_target_groups']}")

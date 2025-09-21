@@ -357,9 +357,12 @@ const AccountManager = () => {
 
   const { enqueueSnackbar } = useSnackbar()
 
-  const handleClickVariant = (variant: VariantType, mess: string) => {
-    enqueueSnackbar(mess, { variant })
-  }
+  const handleClickVariant = useCallback(
+    (variant: VariantType, mess: string) => {
+      enqueueSnackbar(mess, { variant })
+    },
+    [enqueueSnackbar],
+  )
 
   useEffect(() => {
     if (!admin) navigate("/console")

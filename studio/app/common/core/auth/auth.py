@@ -41,56 +41,6 @@ async def authenticate_user(db: Session, data: UserAuth) -> Tuple[Token, UserMod
 
         assert user_db is not None, "Invalid user uid"
 
-        # Auto-assign premium users to dedicated instances
-        try:
-            from studio.app.common.core.premium.premium_assignment_service import (
-                premium_assignment_service,
-            )
-            from studio.app.common.core.users import crud_users
-
-            # Get user with subscription details
-            user_with_context = await crud_users.get_user_with_context(db, user_db.id)
-
-            # Check if user has active premium subscription
-            if (
-                user_with_context
-                and user_with_context.subscription_plan_name == "Premium"
-                and user_with_context.subscription_status in ["Premium", "Limit Grace"]
-            ):
-                logger.info(
-                    f"Auto-assigning premium user {user_db.id} to "
-                    f"dedicated instance"
-                )
-
-                # Try to assign premium user (async, non-blocking)
-                assignment_result = (
-                    await premium_assignment_service.assign_premium_user(user_db.id)
-                )
-
-                if assignment_result["success"]:
-                    logger.info(
-                        f"Successfully auto-assigned premium user {user_db.id} to "
-                        f"instance {assignment_result.get('instance_id')}"
-                    )
-                elif assignment_result.get("requires_retry"):
-                    logger.info(
-                        f"Premium instance starting for user {user_db.id}, "
-                        f"will be available in "
-                        f"{assignment_result.get('retry_after', 120)} seconds"
-                    )
-                else:
-                    logger.warning(
-                        f"Failed to auto-assign premium user {user_db.id}: "
-                        f"{assignment_result.get('message')}"
-                    )
-
-        except Exception as e:
-            # Don't fail login if premium assignment fails
-            logger.warning(
-                f"Error during premium auto-assignment for user "
-                f"{user_db.id}: {str(e)}"
-            )
-
         ex_token = create_access_token(subject=user_db.uid)
         token = Token(
             access_token=user["idToken"],

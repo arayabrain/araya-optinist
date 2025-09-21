@@ -175,6 +175,52 @@ async def get_premium_assignment_status(current_user: User = Depends(get_current
         }
 
 
+@router.post("/premium/heartbeat", response_model=Dict)
+async def send_premium_heartbeat(current_user: User = Depends(get_current_user)):
+    """
+    Send heartbeat to update activity timestamp for premium users.
+    Prevents stale assignment cleanup for active users.
+    """
+    # Check if user is premium
+    is_premium = current_user.subscription_type == "premium"
+
+    if not is_premium:
+        return {
+            "message": "Heartbeat received (non-premium user)",
+            "user_id": current_user.id,
+            "user_tier": "free",
+            "assignment_active": False,
+            "updated": False,
+        }
+
+    try:
+        # Call the premium assignment service to update activity
+        result = await premium_assignment_service.update_user_activity(current_user.id)
+
+        return {
+            "message": "Activity updated successfully"
+            if result["success"]
+            else "No active assignment found",
+            "updated": result["success"],
+            "user_id": current_user.id,
+            "user_tier": "premium",
+            "assignment_active": result["success"],
+            "activity_update": result.get("timestamp"),
+        }
+
+    except Exception as e:
+        logger.error(f"Error processing heartbeat for user {current_user.id}: {e}")
+        # Don't fail heartbeats - they should always succeed
+        return {
+            "message": f"Heartbeat processed with warnings: {str(e)}",
+            "updated": False,
+            "user_id": current_user.id,
+            "user_tier": "premium",
+            "assignment_active": False,
+            "error": str(e),
+        }
+
+
 @router.put("", response_model=User)
 async def update_me(
     data: SelfUserUpdate,
@@ -195,6 +241,60 @@ async def update_password(
     return await crud_users.update_password(
         db, current_user.id, data, organization_id=current_user.organization.id
     )
+
+
+@router.post("/premium/heartbeat", response_model=Dict)
+async def premium_heartbeat(current_user: User = Depends(get_current_user)):
+    """
+    Update activity timestamp for premium users to prevent stale assignment cleanup.
+    Should be called every 2-5 minutes by frontend for premium users.
+    """
+    # Only premium users need heartbeat tracking
+    if current_user.subscription_type != "premium":
+        return {
+            "message": "Heartbeat not needed for non-premium users",
+            "updated": False,
+            "user_tier": current_user.subscription_type,
+        }
+
+    try:
+        logger.info(f"Processing heartbeat for premium user {current_user.id}")
+
+        activity_result = await premium_assignment_service.update_user_activity(
+            current_user.id
+        )
+
+        # Check if the update was successful
+        if activity_result.get("success", False):
+            return {
+                "message": "Premium user heartbeat recorded",
+                "updated": True,
+                "user_id": current_user.id,
+                "user_tier": current_user.subscription_type,
+                "assignment_active": True,
+                "activity_update": activity_result,
+            }
+        else:
+            # User might not have an active assignment - not an error
+            return {
+                "message": "No active premium assignment found",
+                "updated": False,
+                "user_id": current_user.id,
+                "user_tier": current_user.subscription_type,
+                "assignment_active": False,
+                "activity_update": activity_result,
+            }
+
+    except Exception as e:
+        logger.error(f"Error processing heartbeat for user {current_user.id}: {e}")
+        # Don't fail the heartbeat - return success to keep frontend happy
+        return {
+            "message": "Heartbeat processed with warnings",
+            "updated": True,
+            "user_id": current_user.id,
+            "user_tier": current_user.subscription_type,
+            "error": str(e),
+        }
 
 
 @router.delete("", response_model=bool)

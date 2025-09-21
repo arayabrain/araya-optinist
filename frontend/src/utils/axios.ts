@@ -14,7 +14,10 @@ axios.interceptors.request.use(
   async (config) => {
     // Add authentication headers
     config.headers!.Authorization = `Bearer ${getToken()}`
-    config.headers!.ExToken = getExToken()
+    const exToken = getExToken()
+    if (exToken) {
+      config.headers!.ExToken = exToken
+    }
 
     // Add premium routing headers for ALB-based routing
     const routingHeaders = routingService.getRoutingHeaders()

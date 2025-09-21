@@ -43,6 +43,16 @@ export interface PremiumStatusResult {
   error?: string
 }
 
+export interface PremiumHeartbeatResult {
+  message: string
+  updated: boolean
+  user_id: number
+  user_tier: "premium" | "free"
+  assignment_active: boolean
+  activity_update?: boolean
+  error?: string
+}
+
 /**
  * Get routing information for the current user
  */
@@ -76,3 +86,13 @@ export const getPremiumStatus = async (): Promise<PremiumStatusResult> => {
   const response = await axios.get("/users/me/premium/status")
   return response.data
 }
+
+/**
+ * Send heartbeat to update activity timestamp for premium users
+ * Prevents stale assignment cleanup for active users
+ */
+export const sendPremiumHeartbeat =
+  async (): Promise<PremiumHeartbeatResult> => {
+    const response = await axios.post("/users/me/premium/heartbeat")
+    return response.data
+  }
