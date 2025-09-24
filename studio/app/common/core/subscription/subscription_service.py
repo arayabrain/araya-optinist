@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import and_
 from sqlmodel import Session
@@ -45,7 +45,7 @@ class SubscriptionService:
     @staticmethod
     def get_user_subscription_plan(
         db: Session, user_id: int
-    ) -> List[SubscriptionPlans]:
+    ) -> Optional[Tuple[UserSubscription, SubscriptionPlans]]:
         return (
             db.query(common_model.UserSubscription, common_model.SubscriptionPlans)
             .join(
@@ -108,6 +108,28 @@ class SubscriptionService:
         if not base_url:
             raise ValueError("STRIPE_CALLBACK_URL environment variable is not set")
         return base_url
+
+    @staticmethod
+    def update_scheduled_downgrade(db: Session, user_id: int, scheduled: bool) -> None:
+        """
+        Update the scheduled downgrade status for a user's subscription
+        """
+        try:
+            subscription = (
+                db.query(UserSubscription)
+                .filter(UserSubscription.user_id == user_id)
+                .first()
+            )
+
+            if subscription:
+                subscription.scheduled_downgrade = scheduled
+                db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(
+                f"Error updating scheduled downgrade for user {user_id}: {str(e)}"
+            )
+            raise
 
     @staticmethod
     def update_user_subscription(

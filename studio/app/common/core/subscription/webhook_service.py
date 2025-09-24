@@ -139,20 +139,23 @@ class WebhookService:
                 db, user_id, stripe_provider_id, customer_id
             )
 
-            # 6. Calculate expiration date
+            # 6. SET DEFAULT PAYMENT METHOD
+            CheckoutService.set_default_payment_method(session_id, customer_id)
+
+            # 7. Calculate expiration date
             expiration_date = CheckoutService.calculate_expiration_date(
                 plan.billing_cycle
             )
 
-            # 7. Create or update subscription
+            # 8. Create or update subscription
             subscription_user_id = CheckoutService.create_or_update_subscription(
                 db, user_id, plan_id, expiration_date
             )
 
-            # 8. Record purchase (optionally store session_id for reference)
+            # 9. Record purchase (optionally store session_id for reference)
             purchase = CheckoutService.record_purchase(db, plan_id, user_id)
 
-            # 9. Commit all changes
+            # 10. Commit all changes
             db.commit()
 
             logger.info(
@@ -228,6 +231,7 @@ class WebhookService:
             subscription_data: Webhook subscription data
         """
         customer_id = subscription_data.get("customer")
+        logger.info(f"Webhook: Subscription cancelled for customer: {customer_id}")
         stripe_subscription_id = subscription_data.get("id")
         logger.info(f"Webhook: Subscription cancelled: {stripe_subscription_id}")
 
@@ -237,6 +241,8 @@ class WebhookService:
             .filter(SubscriptionUserAccount.provider_customer_id == customer_id)
             .first()
         )
+
+        logger.info(f"Webhook: Found user account: {user_account}")
 
         if user_account:
             # Find active subscription and expire it
@@ -253,6 +259,9 @@ class WebhookService:
                 # Expire subscription immediately
                 subscription.expiration = datetime.now(timezone.utc)
                 subscription.updated_at = datetime.now(timezone.utc)
+
+                # Remove any scheduled downgrade
+                subscription.scheduled_downgrade = False
 
                 # Record cancellation
                 cancellation = SubscriptionCancellation(

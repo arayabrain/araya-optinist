@@ -4,6 +4,7 @@ import _ from "lodash"
 import { createAsyncThunk } from "@reduxjs/toolkit"
 
 import {
+  cancelSubscriptionApi,
   createCheckoutSessionApi,
   getSubscriptionPlansApi,
   getUserSubscriptionApi,
@@ -103,6 +104,21 @@ export const validateCheckoutSession = createAsyncThunk(
       return response
     } catch (error) {
       console.error("Error validating checkout session:", error)
+      // Extract clean error message instead of passing entire error object
+      const errorMessage = extractErrorMessage(error)
+      return thunkAPI.rejectWithValue(errorMessage)
+    }
+  },
+)
+
+export const cancelSubscription = createAsyncThunk(
+  `${SUBSCRIPTION_SLICE_NAME}/cancelSubscription`,
+  async (userId: number, thunkAPI) => {
+    try {
+      const response = await cancelSubscriptionApi(userId)
+      return response
+    } catch (error) {
+      console.error("Error cancelling subscription:", error)
       // Extract clean error message instead of passing entire error object
       const errorMessage = extractErrorMessage(error)
       return thunkAPI.rejectWithValue(errorMessage)

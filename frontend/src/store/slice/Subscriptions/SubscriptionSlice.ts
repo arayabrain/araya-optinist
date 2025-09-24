@@ -1,6 +1,7 @@
 import { createSlice, PayloadAction } from "@reduxjs/toolkit"
 
 import {
+  cancelSubscription,
   createCheckoutSession,
   getSubscriptionPlan,
   getUserSubscription,
@@ -104,6 +105,9 @@ const subscriptionSlice = createSlice({
                 plan_id: Number(action.payload.plan_id) || 0,
                 user_id: Number(action.payload.user_id) || 0,
                 expiration: String(action.payload.expiration || ""),
+                scheduled_downgrade: Boolean(
+                  action.payload.scheduled_downgrade,
+                ),
                 plan_name: String(action.payload.plan_name || ""),
                 plan_price: Number(action.payload.plan_price) || 0,
               }
@@ -140,6 +144,23 @@ const subscriptionSlice = createSlice({
       .addCase(createCheckoutSession.rejected, (state, action) => {
         state.checkoutLoading = false
         state.error = action.payload || "Failed to create checkout session"
+      })
+      .addCase(cancelSubscription.pending, (state) => {
+        state.loading = true
+        state.error = null
+      })
+      .addCase(cancelSubscription.fulfilled, (state, action) => {
+        state.loading = false
+        if (state.userSubscription) {
+          state.userSubscription.scheduled_downgrade = true
+        }
+      })
+      .addCase(cancelSubscription.rejected, (state, action) => {
+        state.loading = false
+        state.error = extractRejectedErrorMessage(
+          action,
+          "Failed to cancel subscription",
+        )
       })
   },
 })

@@ -384,7 +384,9 @@ const Account = () => {
           }}
         >
           <BoxData>
-            {userSubscription?.plan_name ?? SUBSCRIPTION_PLAN.FREE}
+            {userSubscription?.plan_name && !isSubscriptionExpired
+              ? userSubscription.plan_name
+              : SUBSCRIPTION_PLAN.FREE}
           </BoxData>
           {getExpirationInfo()}
         </Box>

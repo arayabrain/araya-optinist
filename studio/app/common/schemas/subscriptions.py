@@ -79,6 +79,7 @@ class UserSubscriptionResponse(BaseModel):
     plan_id: int
     user_id: int
     expiration: datetime
+    scheduled_downgrade: bool
     plan_name: str
     plan_price: int
     created_at: datetime
