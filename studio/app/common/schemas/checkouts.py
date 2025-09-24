@@ -26,9 +26,3 @@ class CheckoutSuccessResponse(BaseModel):
 class WebhookRequest(BaseModel):
     event_type: str
     data: Dict[str, Any]
-
-
-class SubscriptionStatusResponse(BaseModel):
-    user_id: int
-    has_active_subscription: bool
-    subscription_details: Optional[Dict[str, Any]] = None

@@ -11,7 +11,6 @@ from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.subscription_service import (
     SubscriptionCurrencyType,
     SubscriptionService,
-    SyncService,
 )
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.db.database import get_db
@@ -19,7 +18,6 @@ from studio.app.common.schemas.checkouts import (
     CheckoutSessionRequest,
     CheckoutSuccessRequest,
     CheckoutSuccessResponse,
-    SubscriptionStatusResponse,
 )
 from studio.app.common.schemas.subscriptions import (
     CancelSubscriptionResponse,
@@ -143,23 +141,6 @@ async def get_user_subscription(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch user subscription: {str(e)}",
         )
-
-
-@router.get("/mgmts/status/{user_id}", response_model=SubscriptionStatusResponse)
-async def get_subscription_status(user_id: int, db: Session = Depends(get_db)):
-    """Get current subscription status for a user"""
-    try:
-        subscription_details = SyncService.get_subscription_status(db, user_id)
-
-        return SubscriptionStatusResponse(
-            user_id=user_id,
-            has_active_subscription=subscription_details is not None,
-            subscription_details=subscription_details,
-        )
-
-    except Exception as e:
-        logger.error(f"Error getting subscription status: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.put("/mgmts/{user_id}", response_model=UpdateSubscriptionResponse)
