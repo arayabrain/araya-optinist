@@ -57,6 +57,12 @@ def upgrade() -> None:
         sa.Column("user_id", mysql.BIGINT(unsigned=True), nullable=False),
         sa.Column("expiration", sa.DateTime(), nullable=False),
         sa.Column(
+            "scheduled_downgrade",
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
+        sa.Column(
             "sync_status",
             sa.Enum("pending", "synced", "failed", name="sync_status_enum"),
             nullable=False,

@@ -1,28 +1,30 @@
-import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import stripe
-from sqlalchemy.orm import Session
+from sqlmodel import Enum, Session
 
-# Import your existing models and the enums you'll add
+from studio.app.common.core.logger import AppLogger
 from studio.app.common.models.subscription import (
-    CancellationReason,
-    SubscriptionCancellation,
     SubscriptionPlans,
     SubscriptionProvider,
     SubscriptionUserAccount,
     SubscriptionUserPurchase,
-    SyncStatus,
     UserSubscription,
 )
 
-logger = logging.getLogger(__name__)
+logger = AppLogger.get_logger()
 
-SUBSCRIPTION_ACTIVE_STATUS = {
-    "ACTIVE": "1",
-    "INACTIVE": "0",
-}
+
+class SUBSCRIPTION_ACTIVE_STATUS(Enum):
+    ACTIVE = "1"
+    INACTIVE = "0"
+
+
+class SUBSCRIPTION_SYNC_STATUS(Enum):
+    SYNCED = "synced"
+    PENDING = "pending"
+    FAILED = "failed"
 
 
 class CheckoutService:
@@ -119,7 +121,7 @@ class CheckoutService:
             db.query(SubscriptionPlans)
             .filter(
                 SubscriptionPlans.id == plan_id,
-                SubscriptionPlans.status == SUBSCRIPTION_ACTIVE_STATUS["ACTIVE"],
+                SubscriptionPlans.status == SUBSCRIPTION_ACTIVE_STATUS.ACTIVE,
             )
             .first()
         )
@@ -176,6 +178,94 @@ class CheckoutService:
         return user_account
 
     @staticmethod
+    def set_default_payment_method(session_id: str, customer_id: str):
+        try:
+            # Retrieve the full session from Stripe
+            checkout_session = stripe.checkout.Session.retrieve(session_id)
+
+            payment_method_id = None
+
+            # For subscription mode checkouts, get payment method from subscription
+            if checkout_session.get("mode") == "subscription" and checkout_session.get(
+                "subscription"
+            ):
+                subscription_id = checkout_session["subscription"]
+
+                # Retrieve the subscription to get the payment method
+                subscription = stripe.Subscription.retrieve(subscription_id)
+
+                if subscription.default_payment_method:
+                    payment_method_id = subscription.default_payment_method
+                elif len(subscription.items.data) > 0:
+                    # Fallback: get from subscription items if available
+                    payment_method_id = getattr(
+                        subscription.items.data[0], "default_payment_method", None
+                    )
+
+            # For payment mode checkouts, get from payment_intent
+            elif checkout_session.get("payment_intent"):
+                payment_intent = stripe.PaymentIntent.retrieve(
+                    checkout_session["payment_intent"], expand=["payment_method"]
+                )
+                if payment_intent.payment_method:
+                    payment_method_id = payment_intent.payment_method.id
+
+            # Alternative approach: Get the most recent payment method for the customer
+            if not payment_method_id:
+                # Get payment methods attached to this customer
+                payment_methods = stripe.PaymentMethod.list(
+                    customer=customer_id, type="card", limit=1
+                )
+
+                if payment_methods.data:
+                    payment_method_id = payment_methods.data[0].id
+                    logger.info(
+                        f"Using most recent payment method {payment_method_id} for customer {customer_id}"
+                    )
+
+            if payment_method_id:
+                # Ensure payment method is attached to customer (might already be attached)
+                try:
+                    stripe.PaymentMethod.attach(
+                        payment_method_id,
+                        customer=customer_id,
+                    )
+                except stripe.error.InvalidRequestError as e:
+                    if "already been attached" in str(e):
+                        logger.info(
+                            f"Payment method {payment_method_id} already attached to customer {customer_id}"
+                        )
+                    else:
+                        raise e
+
+                # Update customer's default payment method
+                stripe.Customer.modify(
+                    customer_id,
+                    invoice_settings={"default_payment_method": payment_method_id},
+                )
+
+                logger.info(
+                    f"Webhook: Set payment method {payment_method_id} as default "
+                    f"for customer {customer_id}"
+                )
+            else:
+                logger.warning(
+                    f"Webhook: Could not find any payment method for session {session_id} "
+                    f"and customer {customer_id}"
+                )
+
+        except stripe.error.StripeError as e:
+            logger.error(
+                f"Webhook: Failed to set default payment method for customer "
+                f"{customer_id}: {str(e)}"
+            )
+            # Don't fail the entire webhook for this - continue processing
+        except Exception as e:
+            logger.error(
+                f"Webhook: Unexpected error setting default payment method: {str(e)}"
+            )
+
+    @staticmethod
     def create_or_update_subscription(
         db: Session, user_id: int, plan_id: int, expiration_date: datetime
     ) -> int:
@@ -191,12 +281,11 @@ class CheckoutService:
         Returns:
             Subscription user ID
         """
-        # Check for existing active subscription
+        # Check for existing subscription
         existing_subscription = (
             db.query(UserSubscription)
             .filter(
                 UserSubscription.user_id == user_id,
-                UserSubscription.expiration > datetime.now(timezone.utc),
             )
             .first()
         )
@@ -204,17 +293,45 @@ class CheckoutService:
         if existing_subscription:
             # Update existing subscription
             existing_subscription.plan_id = plan_id
+            existing_subscription.sync_status = SUBSCRIPTION_SYNC_STATUS.SYNCED
             existing_subscription.expiration = expiration_date
+            existing_subscription.scheduled_downgrade = False
             existing_subscription.updated_at = datetime.now(timezone.utc)
             return existing_subscription.id
         else:
             # Create new subscription
             new_subscription = UserSubscription(
-                plan_id=plan_id, user_id=user_id, expiration=expiration_date
+                plan_id=plan_id,
+                user_id=user_id,
+                expiration=expiration_date,
+                sync_status=SUBSCRIPTION_SYNC_STATUS.SYNCED,
             )
             db.add(new_subscription)
             db.flush()  # Get ID without committing
             return new_subscription.id
+
+    @staticmethod
+    def get_subscription_account(
+        db: Session, user_id: int
+    ) -> Optional[SubscriptionUserAccount]:
+        """
+        Retrieve subscription user account by user ID
+
+        Args:
+            db: Database session
+            user_id: Internal user ID
+            provider_id: Payment provider ID
+
+        Returns:
+            SubscriptionUserAccount object or None if not found
+        """
+        return (
+            db.query(SubscriptionUserAccount)
+            .filter(
+                SubscriptionUserAccount.user_id == user_id,
+            )
+            .first()
+        )
 
     @staticmethod
     def record_purchase(
@@ -357,242 +474,3 @@ class CheckoutService:
             logger.error(f"Error processing checkout success: {str(e)}")
             db.rollback()
             raise
-
-
-class WebhookService:
-    """Service class for handling Stripe webhooks"""
-
-    @staticmethod
-    def handle_checkout_completed(db: Session, session_data: Dict[str, Any]) -> None:
-        """
-        Handle checkout.session.completed webhook
-
-        Args:
-            db: Database session
-            session_data: Webhook session data
-        """
-        session_id = session_data.get("id")
-        logger.info(f"Webhook: Checkout session completed: {session_id}")
-
-        try:
-            # Only handle subscription checkouts
-            if session_data.get("mode") == "subscription":
-                customer_id = session_data.get("customer")
-                subscription_id = session_data.get("subscription")
-
-                if not customer_id or not subscription_id:
-                    logger.warning(
-                        f"Missing customer_id or subscription_id for session "
-                        f"{session_id}"
-                    )
-                    return
-
-                # Get the subscription to access the payment method
-                subscription = stripe.Subscription.retrieve(subscription_id)
-                payment_method_id = subscription.default_payment_method
-
-                if payment_method_id:
-
-                    # Set this payment method as the customer's default
-                    stripe.Customer.modify(
-                        customer_id,
-                        invoice_settings={"default_payment_method": payment_method_id},
-                    )
-
-                    logger.info(
-                        f"Successfully set default payment method for customer "
-                        f"{customer_id}"
-                    )
-                else:
-                    logger.warning(
-                        f"No payment method found for subscription {subscription_id}"
-                    )
-
-            # Additional logic can be added here if needed
-
-        except stripe.error.StripeError as e:
-            logger.error(
-                f"Stripe error while setting default payment method for session "
-                f"{session_id}: {str(e)}"
-            )
-        except Exception as e:
-            logger.error(
-                f"Error handling checkout completed for session {session_id}: {str(e)}"
-            )
-
-    @staticmethod
-    def handle_payment_failed(db: Session, invoice_data: Dict[str, Any]) -> None:
-        """
-        Handle invoice.payment_failed webhook
-
-        Args:
-            db: Database session
-            invoice_data: Webhook invoice data
-        """
-        customer_id = invoice_data.get("customer")
-        logger.warning(f"Webhook: Payment failed for customer: {customer_id}")
-
-        # Find user account by customer ID
-        user_account = (
-            db.query(SubscriptionUserAccount)
-            .filter(SubscriptionUserAccount.provider_customer_id == customer_id)
-            .first()
-        )
-
-        if user_account:
-            # Find active subscription and mark as failed
-            subscription = (
-                db.query(UserSubscription)
-                .filter(
-                    UserSubscription.user_id == user_account.user_id,
-                    UserSubscription.expiration > datetime.now(timezone.utc),
-                )
-                .first()
-            )
-
-            if subscription:
-                subscription.sync_status = SyncStatus.FAILED
-                subscription.updated_at = datetime.now(timezone.utc)
-                db.commit()
-                logger.info(
-                    f"Marked subscription as failed for user {user_account.user_id}"
-                )
-
-    @staticmethod
-    def handle_subscription_cancelled(
-        db: Session, subscription_data: Dict[str, Any]
-    ) -> None:
-        """
-        Handle customer.subscription.deleted webhook
-
-        Args:
-            db: Database session
-            subscription_data: Webhook subscription data
-        """
-        customer_id = subscription_data.get("customer")
-        stripe_subscription_id = subscription_data.get("id")
-        logger.info(f"Webhook: Subscription cancelled: {stripe_subscription_id}")
-
-        # Find user account by customer ID
-        user_account = (
-            db.query(SubscriptionUserAccount)
-            .filter(SubscriptionUserAccount.provider_customer_id == customer_id)
-            .first()
-        )
-
-        if user_account:
-            # Find active subscription and expire it
-            subscription = (
-                db.query(UserSubscription)
-                .filter(
-                    UserSubscription.user_id == user_account.user_id,
-                    UserSubscription.expiration > datetime.now(timezone.utc),
-                )
-                .first()
-            )
-
-            if subscription:
-                # Expire subscription immediately
-                subscription.expiration = datetime.now(timezone.utc)
-                subscription.updated_at = datetime.now(timezone.utc)
-
-                # Record cancellation
-                cancellation = SubscriptionCancellation(
-                    cancelled_by_user_id=user_account.user_id,
-                    purchases_id=subscription.id,
-                    reason=CancellationReason.USER_REQUEST,
-                    notes=(
-                        f"Cancelled via Stripe webhook for subscription "
-                        f"{stripe_subscription_id}"
-                    ),
-                )
-                db.add(cancellation)
-                db.commit()
-
-                logger.info(f"Cancelled subscription for user {user_account.user_id}")
-
-
-class SyncService:
-    """Service class for handling subscription synchronization"""
-
-    @staticmethod
-    def sync_subscription_status(db: Session, subscription_user_id: int) -> bool:
-        """
-        Sync subscription status with external systems
-
-        Args:
-            db: Database session
-            subscription_user_id: Subscription user ID
-
-        Returns:
-            True if sync successful, False otherwise
-        """
-        try:
-            subscription = (
-                db.query(UserSubscription)
-                .filter(UserSubscription.id == subscription_user_id)
-                .first()
-            )
-
-            if not subscription:
-                logger.error(f"Subscription {subscription_user_id} not found")
-                return False
-
-            # Mark as synced
-            subscription.sync_status = SyncStatus.SYNCED
-            subscription.last_synced = datetime.now(timezone.utc)
-            subscription.updated_at = datetime.now(timezone.utc)
-            db.commit()
-
-            logger.info(f"Successfully synced subscription {subscription_user_id}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error syncing subscription {subscription_user_id}: {str(e)}")
-
-            # Mark as failed
-            if subscription:
-                subscription.sync_status = SyncStatus.FAILED
-                subscription.updated_at = datetime.now(timezone.utc)
-                db.commit()
-
-            return False
-
-    @staticmethod
-    def get_subscription_status(db: Session, user_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Get current subscription status for a user
-
-        Args:
-            db: Database session
-            user_id: Internal user ID
-
-        Returns:
-            Dict with subscription details or None if no active subscription
-        """
-        subscription = (
-            db.query(UserSubscription)
-            .filter(
-                UserSubscription.user_id == user_id,
-                UserSubscription.expiration > datetime.now(timezone.utc),
-            )
-            .first()
-        )
-
-        if not subscription:
-            return None
-
-        plan = (
-            db.query(SubscriptionPlans)
-            .filter(SubscriptionPlans.id == subscription.plan_id)
-            .first()
-        )
-
-        return {
-            "subscription_id": subscription.id,
-            "plan_id": subscription.plan_id,
-            "plan_name": plan.name if plan else "Unknown",
-            "expiration": subscription.expiration,
-            # "sync_status": subscription.sync_status,
-            # "last_synced": subscription.last_synced,
-        }

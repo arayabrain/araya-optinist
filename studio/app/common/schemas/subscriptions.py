@@ -79,6 +79,7 @@ class UserSubscriptionResponse(BaseModel):
     plan_id: int
     user_id: int
     expiration: datetime
+    scheduled_downgrade: bool
     plan_name: str
     plan_price: int
     created_at: datetime
@@ -177,3 +178,52 @@ class InvoiceBasicResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class CreateSetupIntentRequest(BaseModel):
+    pass  # No additional fields needed, user_id comes from auth
+
+
+class CreateSetupIntentResponse(BaseModel):
+    success: bool
+    client_secret: str
+    setup_intent_id: str
+    message: Optional[str] = None
+
+
+class UpdatePaymentMethodResponse(BaseModel):
+    success: bool
+    message: str
+    payment_method_id: Optional[str] = None
+
+
+class UpdateSubscriptionRequest(BaseModel):
+    """Request model for updating user subscription"""
+
+    new_plan_id: int = Field(..., description="ID of the new subscription plan")
+    proration_behavior: Optional[str] = Field(
+        default="create_prorations",
+        description=(
+            "How to handle prorations: 'create_prorations', 'none', " "'always_invoice'"
+        ),
+    )
+
+
+class UpdateSubscriptionResponse(BaseModel):
+    """Response model for subscription updates"""
+
+    success: bool
+    message: str
+    old_plan_name: str
+    new_plan_name: str
+    change_type: str  # "upgrade" or "downgrade"
+    effective_date: Optional[int] = None
+    next_billing_date: Optional[int] = None
+    prorated_amount: Optional[str] = None
+
+
+class CancelSubscriptionResponse(BaseModel):
+    success: bool
+    message: str
+    cancellation_date: str
+    access_until: str

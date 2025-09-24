@@ -8,7 +8,7 @@ export const getDefaultPaymentMethodApi = async (
   userId: number | undefined,
 ): Promise<PaymentMethodDTO | null> => {
   const response = await axios.get(
-    `/subscriptions/payment-methods/${userId}/default`,
+    `/api/subsc/payment-methods/default/${userId}`,
   )
   return response.data
 }
@@ -16,13 +16,13 @@ export const getDefaultPaymentMethodApi = async (
 export const getAllPaymentMethodsApi = async (
   userId: number | undefined,
 ): Promise<PaymentMethodDTO[]> => {
-  const response = await axios.get(`/subscriptions/payment-methods/${userId}`)
+  const response = await axios.get("/api/subsc/payment-methods")
   return response.data
 }
 
 export const getInvoicesApi = async (
   userId: number | undefined,
 ): Promise<InvoiceDTO[]> => {
-  const response = await axios.get(`/subscriptions/invoices/${userId}`)
+  const response = await axios.get(`/api/subsc/invoices/${userId}`)
   return response.data
 }

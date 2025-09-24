@@ -21,6 +21,7 @@ import {
   getSubscriptionPlan,
   getUserSubscription,
   createCheckoutSession,
+  cancelSubscription,
 } from "store/slice/Subscriptions/SubscriptionActions"
 import {
   selectSubscriptionPlans,
@@ -135,8 +136,11 @@ const SubscriptionPlans = () => {
 
   const handleConfirmDowngrade = () => {
     if (selectedPlanId) {
-      // Navigate to downgrade api
-      // TODO: Implement the actual downgrade logic
+      if (user?.id) {
+        dispatch(cancelSubscription(user.id))
+      } else {
+        console.error("User not logged in")
+      }
     }
     setShowDowngradeDialog(false)
     setSelectedPlanId(null)
@@ -242,9 +246,22 @@ const SubscriptionPlans = () => {
         </Typography>
       </TaxNotice>
 
+      {/* Scheduled downgrade notification */}
+      {userSubscription?.scheduled_downgrade && (
+        <Alert severity="warning" sx={{ mb: 3, maxWidth: "600px" }}>
+          <Typography variant="body2">
+            <strong>Subscription Canceled:</strong> Your subscription has been
+            canceled and will remain active until{" "}
+            <strong>{getExpirationDate()}</strong>. You can renew your
+            subscription after this date.
+          </Typography>
+        </Alert>
+      )}
+
       {/* Current subscription status */}
       {userSubscription &&
-        userSubscription.plan_name !== SUBSCRIPTION_PLAN.FREE && (
+        userSubscription.plan_name !== SUBSCRIPTION_PLAN.FREE &&
+        !isSubscriptionExpired && (
           <SubscriptionStatus>
             <Typography variant="body1">
               Current Plan: <strong>{userSubscription.plan_name}</strong>

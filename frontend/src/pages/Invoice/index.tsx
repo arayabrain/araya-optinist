@@ -372,9 +372,12 @@ const InvoicesPage: React.FC = () => {
     }
   }
 
-  const handleUpdatePayment = async (): Promise<void> => {
+  const handleManageBilling = async (): Promise<void> => {
     if (!shouldShowLoader) {
-      navigate("/console/payment-methods")
+      window.open(
+        "https://billing.stripe.com/p/login/test_5kQ9ATdaS2TbdknghI2wU00",
+        "_blank",
+      )
     }
   }
 
@@ -522,10 +525,10 @@ const InvoicesPage: React.FC = () => {
               </Box>
 
               <PrimaryButton
-                onClick={handleUpdatePayment}
+                onClick={handleManageBilling}
                 disabled={shouldShowLoader}
               >
-                {paymentMethod ? "Update" : "Add Payment Method"}
+                Manage Billing
               </PrimaryButton>
             </FlexContainer>
           </Section>
