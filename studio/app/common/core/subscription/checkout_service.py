@@ -220,11 +220,11 @@ class CheckoutService:
                 if payment_methods.data:
                     payment_method_id = payment_methods.data[0].id
                     logger.info(
-                        f"Using most recent payment method {payment_method_id} for customer {customer_id}"
+                        f"Using most recent payment method {payment_method_id} "
+                        f"for customer {customer_id}"
                     )
 
             if payment_method_id:
-                # Ensure payment method is attached to customer (might already be attached)
                 try:
                     stripe.PaymentMethod.attach(
                         payment_method_id,
@@ -233,7 +233,8 @@ class CheckoutService:
                 except stripe.error.InvalidRequestError as e:
                     if "already been attached" in str(e):
                         logger.info(
-                            f"Payment method {payment_method_id} already attached to customer {customer_id}"
+                            f"Payment method {payment_method_id} already attached "
+                            f"to customer {customer_id}"
                         )
                     else:
                         raise e
@@ -250,8 +251,8 @@ class CheckoutService:
                 )
             else:
                 logger.warning(
-                    f"Webhook: Could not find any payment method for session {session_id} "
-                    f"and customer {customer_id}"
+                    f"Webhook: Could not find any payment method for session "
+                    f"{session_id} and customer {customer_id}"
                 )
 
         except stripe.error.StripeError as e:

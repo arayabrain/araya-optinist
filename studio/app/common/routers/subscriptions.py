@@ -14,15 +14,13 @@ from studio.app.common.core.subscription.subscription_service import (
 )
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.db.database import get_db
-from studio.app.common.schemas.checkouts import (
-    CheckoutSessionRequest,
-)
+from studio.app.common.schemas.checkouts import CheckoutSessionRequest
 from studio.app.common.schemas.subscriptions import (
     CancelSubscriptionResponse,
     CreateCheckoutSessionRequest,
     CreateCheckoutSessionResponse,
-    InvoiceResponse,
     CreateSetupIntentResponse,
+    InvoiceResponse,
     PaymentMethodResponse,
     SubscriptionPlanResponse,
     UpdatePaymentMethodResponse,
