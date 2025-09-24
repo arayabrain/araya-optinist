@@ -11,15 +11,11 @@ from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.subscription_service import (
     SubscriptionCurrencyType,
     SubscriptionService,
-    SyncService,
 )
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.db.database import get_db
 from studio.app.common.schemas.checkouts import (
     CheckoutSessionRequest,
-    CheckoutSuccessRequest,
-    CheckoutSuccessResponse,
-    SubscriptionStatusResponse,
 )
 from studio.app.common.schemas.subscriptions import (
     CancelSubscriptionResponse,
@@ -144,23 +140,6 @@ async def get_user_subscription(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch user subscription: {str(e)}",
         )
-
-
-@router.get("/mgmts/status/{user_id}", response_model=SubscriptionStatusResponse)
-async def get_subscription_status(user_id: int, db: Session = Depends(get_db)):
-    """Get current subscription status for a user"""
-    try:
-        subscription_details = SyncService.get_subscription_status(db, user_id)
-
-        return SubscriptionStatusResponse(
-            user_id=user_id,
-            has_active_subscription=subscription_details is not None,
-            subscription_details=subscription_details,
-        )
-
-    except Exception as e:
-        logger.error(f"Error getting subscription status: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.put("/mgmts/{user_id}", response_model=UpdateSubscriptionResponse)
@@ -864,45 +843,6 @@ async def create_checkout_session(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-
-@router.post("/checkout/success", response_model=CheckoutSuccessResponse)
-async def payment_success(
-    request: CheckoutSuccessRequest,
-    db: Session = Depends(get_db),
-):
-    """
-    Handle successful Stripe checkout completion.
-    Creates or updates user subscription and records purchase.
-    """
-    try:
-        # Process checkout using service
-        result = CheckoutService.process_checkout_success(
-            db=db,
-            session_id=request.session_id,
-            user_id=request.user_id,
-            plan_id=request.plan_id,
-        )
-
-        # Validate that result has all required fields
-        if not isinstance(result, dict) or "success" not in result:
-            logger.error(f"Invalid result from process_payment_success: {result}")
-            raise HTTPException(status_code=500, detail="Invalid processing result")
-
-        return CheckoutSuccessResponse(
-            success=result["success"],
-            message=result.get("message", "Subscription processed successfully"),
-            subscription_user_id=result.get("subscription_user_id"),
-            purchase_id=result.get("purchase_id"),
-            expiration_date=result.get("expiration_date"),
-        )
-
-    except ValueError as e:
-        logger.error(f"Validation error in checkout: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Checkout processing error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/checkout/validate-checkout-session", response_model=bool)

@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from sqlalchemy import and_
 from sqlmodel import Session
@@ -230,40 +230,3 @@ class SyncService:
                 db.commit()
 
             return False
-
-    @staticmethod
-    def get_subscription_status(db: Session, user_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Get current subscription status for a user
-
-        Args:
-            db: Database session
-            user_id: Internal user ID
-
-        Returns:
-            Dict with subscription details or None if no active subscription
-        """
-        subscription = (
-            db.query(UserSubscription)
-            .filter(
-                UserSubscription.user_id == user_id,
-                UserSubscription.expiration > datetime.now(timezone.utc),
-            )
-            .first()
-        )
-
-        if not subscription:
-            return None
-
-        plan = (
-            db.query(SubscriptionPlans)
-            .filter(SubscriptionPlans.id == subscription.plan_id)
-            .first()
-        )
-
-        return {
-            "subscription_id": subscription.id,
-            "plan_id": subscription.plan_id,
-            "plan_name": plan.name if plan else "Unknown",
-            "expiration": subscription.expiration,
-        }
