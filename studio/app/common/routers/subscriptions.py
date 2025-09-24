@@ -16,8 +16,6 @@ from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.db.database import get_db
 from studio.app.common.schemas.checkouts import (
     CheckoutSessionRequest,
-    CheckoutSuccessRequest,
-    CheckoutSuccessResponse,
 )
 from studio.app.common.schemas.subscriptions import (
     CancelSubscriptionResponse,
@@ -844,45 +842,6 @@ async def create_checkout_session(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-
-@router.post("/checkout/success", response_model=CheckoutSuccessResponse)
-async def payment_success(
-    request: CheckoutSuccessRequest,
-    db: Session = Depends(get_db),
-):
-    """
-    Handle successful Stripe checkout completion.
-    Creates or updates user subscription and records purchase.
-    """
-    try:
-        # Process checkout using service
-        result = CheckoutService.process_checkout_success(
-            db=db,
-            session_id=request.session_id,
-            user_id=request.user_id,
-            plan_id=request.plan_id,
-        )
-
-        # Validate that result has all required fields
-        if not isinstance(result, dict) or "success" not in result:
-            logger.error(f"Invalid result from process_payment_success: {result}")
-            raise HTTPException(status_code=500, detail="Invalid processing result")
-
-        return CheckoutSuccessResponse(
-            success=result["success"],
-            message=result.get("message", "Subscription processed successfully"),
-            subscription_user_id=result.get("subscription_user_id"),
-            purchase_id=result.get("purchase_id"),
-            expiration_date=result.get("expiration_date"),
-        )
-
-    except ValueError as e:
-        logger.error(f"Validation error in checkout: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Checkout processing error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/checkout/validate-checkout-session", response_model=bool)
