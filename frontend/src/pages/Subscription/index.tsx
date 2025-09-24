@@ -30,7 +30,6 @@ import {
   selectSubscriptionError,
   selectIsSubscriptionExpired,
   selectCurrentPlanId,
-  selectCheckoutLoading,
 } from "store/slice/Subscriptions/SubscriptionSelector"
 import { clearError } from "store/slice/Subscriptions/SubscriptionSlice"
 import type {

@@ -105,6 +105,7 @@ const subscriptionSlice = createSlice({
                 plan_id: Number(action.payload.plan_id) || 0,
                 user_id: Number(action.payload.user_id) || 0,
                 expiration: String(action.payload.expiration || ""),
+                is_expired: Boolean(action.payload.is_expired),
                 scheduled_downgrade: Boolean(
                   action.payload.scheduled_downgrade,
                 ),
