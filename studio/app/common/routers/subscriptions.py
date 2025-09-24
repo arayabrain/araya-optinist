@@ -15,7 +15,6 @@ from studio.app.common.core.subscription.subscription_service import (
 )
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.db.database import get_db
-from studio.app.common.models.subscription import UserSubscription
 from studio.app.common.schemas.checkouts import (
     CheckoutSessionRequest,
     CheckoutSuccessRequest,
