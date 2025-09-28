@@ -469,7 +469,10 @@ const InvoicesPage: React.FC = () => {
                       </PlanTitle>
                       <PlanType>Monthly</PlanType>
                       <ExpirationText>
-                        Your subscription will expire on{" "}
+                        Your subscription{" "}
+                        {new Date(subscription.expiration) < new Date()
+                          ? "expired on"
+                          : "will expire on"}{" "}
                         {formatDate(subscription.expiration)}
                       </ExpirationText>
                     </>
@@ -489,7 +492,11 @@ const InvoicesPage: React.FC = () => {
                 onClick={handleAdjustPlan}
                 disabled={shouldShowLoader}
               >
-                {subscription ? "Adjust Plan" : "Subscribe Now"}
+                {subscription
+                  ? new Date(subscription.expiration) < new Date()
+                    ? "Upgrade"
+                    : "Downgrade"
+                  : "Subscribe Now"}
               </PrimaryButton>
             </FlexContainer>
           </Section>

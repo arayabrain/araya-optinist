@@ -11,7 +11,7 @@ import { useNavigate } from "react-router-dom"
 
 import { useSnackbar, VariantType } from "notistack"
 
-import Edit from "@mui/icons-material/Edit"
+import { Edit } from "@mui/icons-material"
 import {
   Box,
   Button,
@@ -215,25 +215,56 @@ const Account = () => {
     }
   }
 
-  const getSubscriptionButton = () => {
+  // Updated function to handle showing both buttons for users with subscription records
+  const renderSubscriptionButtons = () => {
     const status = getSubscriptionStatus()
 
-    if (
-      status === SUBSCRIPTION_STATUS.FREE ||
-      status === SUBSCRIPTION_STATUS.EXPIRED
-    ) {
-      return {
-        text: "Upgrade",
-        action: onClickUpgrade,
-        color: "primary" as const,
-      }
+    // For users who never had a subscription (completely free users)
+    if (status === SUBSCRIPTION_STATUS.FREE) {
+      return (
+        <Button
+          variant="contained"
+          color="primary"
+          sx={{ ml: 2 }}
+          onClick={onClickUpgrade}
+          disabled={subscriptionLoading}
+        >
+          Upgrade
+        </Button>
+      )
     }
 
-    return {
-      text: "Manage",
-      action: onClickManage,
-      color: "secondary" as const,
+    // For users with subscription records (active or expired)
+    if (
+      status === SUBSCRIPTION_STATUS.ACTIVE ||
+      status === SUBSCRIPTION_STATUS.EXPIRED
+    ) {
+      return (
+        <Box sx={{ ml: 2, display: "flex", gap: 1 }}>
+          {status === SUBSCRIPTION_STATUS.EXPIRED && (
+            <Button
+              variant="contained"
+              color="primary"
+              onClick={onClickUpgrade}
+              disabled={subscriptionLoading}
+            >
+              Upgrade
+            </Button>
+          )}
+          <Button
+            variant="contained"
+            color="secondary"
+            onClick={onClickManage}
+            disabled={subscriptionLoading}
+          >
+            Manage
+          </Button>
+        </Box>
+      )
     }
+
+    // Fallback for loading/error states
+    return null
   }
 
   // Helper function to format expiration date with server-validated expiration status
@@ -255,8 +286,6 @@ const Account = () => {
       </Typography>
     )
   }
-
-  const subscriptionButton = getSubscriptionButton()
 
   return (
     <AccountWrapper>
@@ -332,15 +361,7 @@ const Account = () => {
           </BoxData>
           {getExpirationInfo()}
         </Box>
-        <Button
-          variant="contained"
-          color={subscriptionButton.color}
-          sx={{ ml: 2 }}
-          onClick={subscriptionButton.action}
-          disabled={subscriptionLoading}
-        >
-          {subscriptionButton.text}
-        </Button>
+        {renderSubscriptionButtons()}
       </BoxFlex>
       <BoxFlex sx={{ justifyContent: "space-between", mt: 10, maxWidth: 600 }}>
         <Button variant="contained" color="primary" onClick={onChangePwClick}>
