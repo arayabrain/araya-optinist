@@ -1,10 +1,12 @@
 import os
+import re
 from pathlib import Path
 from typing import List
 
+from fastapi import Request
 from sqlmodel import Session, delete
 
-from studio.app.common.core.experiment.experiment import ExptConfig
+from studio.app.common.core.experiment.experiment import ExptConfig, ExptOutputPathIds
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
@@ -29,10 +31,17 @@ logger = AppLogger.get_logger()
 
 
 class DataviewService:
+    DATAVIEW_PUBLIC_REQUEST_KEY = "DATAVIEW_PUBLIC_REQUEST"
+    OUTPUTS_URL_PREFIX = r"^/outputs/[^/]+/"
+    OUTPUTS_IMAGE_URL_PREFIX = r"^/outputs/image/"
+
     @classmethod
     def find_published_dataview_record(
         cls, db: Session, workspace_id: int, unique_id: str
     ) -> ExperimentRecord:
+        """
+        Search for a published experiment_record that matches the specified id
+        """
         record: ExperimentRecord = (
             db.query(ExperimentRecord)
             .join(
@@ -51,9 +60,42 @@ class DataviewService:
         return record
 
     @classmethod
+    def find_published_dataview_record_input(
+        cls, db: Session, workspace_id: int, input_path: str
+    ) -> ExperimentRecord:
+        """
+        Search for an experiment_record that contains the specified input data
+        """
+
+        record: ExperimentRecord = (
+            db.query(ExperimentRecord)
+            .join(
+                Workspace,
+                Workspace.id == ExperimentRecord.workspace_id,
+            )
+            .filter(
+                Workspace.deleted.is_(False),
+                ExperimentRecord.workspace_id == int(workspace_id),
+                ExperimentRecord.publish_status == PublishStatus.on.value,
+                ExperimentRecord.thumbnails["image_url"].as_string() == input_path,
+                # > Note: input data does not depend on unique_id (shared within
+                # >   a workspace), so it is determined by workspace_id only.
+                # models.ExperimentRecord.uid == unique_id,
+            )
+            .first()
+        )
+
+        return record
+
+    @classmethod
     def find_user_owned_dataview_record(
         cls, db: Session, record_id: int, user_id: int
     ) -> ExperimentRecord:
+        """
+        Search for the experiment_record
+          that belongs to the specified record_id and user_id
+        """
+
         record: ExperimentRecord = (
             db.query(ExperimentRecord)
             .join(
@@ -73,6 +115,81 @@ class DataviewService:
         )
 
         return record
+
+    @classmethod
+    def is_dataview_public_outputs_request(cls, req: Request) -> bool:
+        """
+        Check whether the access is to public output data (HTTP header check)
+        """
+
+        has_public_request_header = (
+            cls.DATAVIEW_PUBLIC_REQUEST_KEY.lower() in req.headers
+        )
+        is_outputs_request = re.match(cls.OUTPUTS_URL_PREFIX, req.url.path)
+
+        return has_public_request_header and is_outputs_request
+
+    @classmethod
+    def validate_dataview_public_outputs_request(
+        cls, req: Request, db: Session
+    ) -> bool:
+        """
+        Validate requests for public outputs data
+        *Deny access to private outputs data
+        """
+
+        if not cls.is_dataview_public_outputs_request(req):
+            return False
+
+        request_url_path = req.url.path
+        data_file_path = re.sub(cls.OUTPUTS_URL_PREFIX, "", request_url_path)
+        is_allowed_access = False
+
+        # Request case for output data
+        if data_file_path.startswith(DIRPATH.OUTPUT_DIR):
+            # Note: Processing specific paths of some data
+            data_file_path = re.sub(
+                r"/tiff/mc_images.*$", "", data_file_path
+            )  # output of caiman_mc
+
+            ids = ExptOutputPathIds(os.path.dirname(data_file_path))
+
+            # Check whether the data is in a public record
+            record = DataviewService.find_published_dataview_record(
+                db, int(ids.workspace_id), ids.unique_id
+            )
+            is_allowed_access = record is not None
+
+        # Request case for input data
+        else:
+            ids = None
+            query_params = dict(req.query_params)
+            workspace_id = query_params.get("workspace_id")
+
+            # For image data
+            if re.match(cls.OUTPUTS_IMAGE_URL_PREFIX, request_url_path):
+                # Check whether the data is in a public record
+                record = cls.find_published_dataview_record_input(
+                    db, workspace_id, data_file_path
+                )
+                is_allowed_access = record is not None
+
+            # For other data
+            else:
+                """
+                Currently (2025-9), this feature does not support validation
+                  of data other than images.
+                - This is because information about input data other than images is not
+                  stored in experiment_records (a specification change is required).
+                - While validation will need to be strengthened in the future,
+                  the initial version will only validate images
+                  (since most preview requests are images).
+                """
+
+                # Force Allow Access
+                is_allowed_access = True
+
+        return is_allowed_access
 
     @classmethod
     def multiple_publish_dataview_records(
