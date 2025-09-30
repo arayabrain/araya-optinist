@@ -21,9 +21,9 @@ from studio.app.dir_path import DIRPATH
 def session_fixture():
     app.dependency_overrides[get_admin_user] = skip_dependencies
     app.dependency_overrides[get_current_user] = skip_dependencies
-    app.dependency_overrides[get_current_user_with_dataview_outputs_check] = (
-        skip_dependencies
-    )
+    app.dependency_overrides[
+        get_current_user_with_dataview_outputs_check
+    ] = skip_dependencies
     app.dependency_overrides[is_workspace_available] = skip_dependencies
     app.dependency_overrides[is_workspace_owner] = skip_dependencies
 
