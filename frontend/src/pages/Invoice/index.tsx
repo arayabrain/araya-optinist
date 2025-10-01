@@ -328,7 +328,7 @@ const InvoicesPage: React.FC = () => {
         // Dispatch all actions concurrently
         await Promise.all([
           dispatch(getUserSubscription()),
-          dispatch(getDefaultPaymentMethod(userId)),
+          dispatch(getDefaultPaymentMethod()),
           dispatch(getUserInvoices(userId)),
         ])
       } catch (err) {
@@ -350,7 +350,7 @@ const InvoicesPage: React.FC = () => {
 
       await Promise.all([
         dispatch(getUserSubscription()),
-        dispatch(getDefaultPaymentMethod(userId)),
+        dispatch(getDefaultPaymentMethod()),
         dispatch(getUserInvoices(userId)),
       ])
     } catch (err) {
