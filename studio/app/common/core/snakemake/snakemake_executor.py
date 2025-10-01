@@ -549,7 +549,7 @@ def _snakemake_execute_batch(
 
                 # Decision point: fail fast or continue with warning
                 logger.error(
-                    "⚠️  Dryrun validation failed - batch execution may also fail"
+                    "  Dryrun validation failed - batch execution may also fail"
                 )
                 logger.error(
                     "This indicates workflow configuration issues "

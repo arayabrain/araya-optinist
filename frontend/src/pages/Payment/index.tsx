@@ -550,7 +550,7 @@ const PremiumCheckout = () => {
 
           {/* Renewal Notice */}
           <div style={noticeStyle}>
-            <span style={{ color: "#6b7280", fontSize: "1.2rem" }}>ℹ️</span>
+            <span style={{ color: "#6b7280", fontSize: "1.2rem" }}>i</span>
             <p style={noticeTextStyle}>
               Your subscription will auto renew on {calculateNextRenewalDate()}.
               You will be charged {formatPrice(totalPrice)} (plus applicable

@@ -102,21 +102,21 @@ class PremiumScalingTester:
         # Assign user
         success = self.assign_premium_user(user_id)
         if not success:
-            print("❌ Single user assignment failed")
+            print(" Single user assignment failed")
             return False
 
         # Wait a moment and check status
         time.sleep(5)
         status = self.get_premium_status(user_id)
         if status:
-            print(f"✅ User {user_id} status: {status}")
+            print(f" User {user_id} status: {status}")
 
         # Release user
         success = self.release_premium_user(user_id)
         if success:
-            print("✅ Single user test completed successfully")
+            print(" Single user test completed successfully")
         else:
-            print("❌ Single user release failed")
+            print(" Single user release failed")
 
         return success
 
@@ -147,9 +147,9 @@ class PremiumScalingTester:
                 user_id, success = future.result()
                 if success:
                     successful_assignments.append(user_id)
-                    print(f"✅ Successfully assigned {user_id}")
+                    print(f" Successfully assigned {user_id}")
                 else:
-                    print(f"❌ Failed to assign {user_id}")
+                    print(f" Failed to assign {user_id}")
 
         print(
             f"Successfully assigned {len(successful_assignments)} out of "
@@ -205,17 +205,17 @@ class PremiumScalingTester:
         for user_id in list(self.assigned_users.keys()):
             self.release_premium_user(user_id)
 
-        print("✅ Cleanup completed")
+        print(" Cleanup completed")
 
     def run_full_test_suite(self):
         """Run the complete test suite"""
-        print("🚀 Starting Premium Dynamic Scaling Test Suite")
+        print(" Starting Premium Dynamic Scaling Test Suite")
         print(f"API URL: {self.api_url}")
 
         try:
             # Test 1: Single user assignment
             if not self.test_single_user_assignment():
-                print("❌ Basic assignment test failed, stopping")
+                print(" Basic assignment test failed, stopping")
                 return False
 
             time.sleep(10)
@@ -224,7 +224,7 @@ class PremiumScalingTester:
             assigned_users = self.test_concurrent_user_assignment(3)
 
             if not assigned_users:
-                print("❌ No users were successfully assigned")
+                print(" No users were successfully assigned")
                 return False
 
             # Test 3: Migration timing
@@ -233,15 +233,15 @@ class PremiumScalingTester:
             # Cleanup
             self.cleanup_all_users()
 
-            print("\\n🎉 Test suite completed successfully!")
+            print("\\n Test suite completed successfully!")
             return True
 
         except KeyboardInterrupt:
-            print("\\n🛑 Test interrupted by user")
+            print("\\n Test interrupted by user")
             self.cleanup_all_users()
             return False
         except Exception as e:
-            print(f"\\n❌ Test suite failed with error: {str(e)}")
+            print(f"\\n Test suite failed with error: {str(e)}")
             self.cleanup_all_users()
             return False
 

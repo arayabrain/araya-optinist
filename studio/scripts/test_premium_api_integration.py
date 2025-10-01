@@ -3,9 +3,9 @@
 Premium API Integration Tests
 
 RUNTIME ENVIRONMENT:
-✅ Can run locally (with mocked dependencies)
-✅ Can run on cloud (with mocked dependencies)
-⚠️ Requires studio app modules to be available
+ Can run locally (with mocked dependencies)
+ Can run on cloud (with mocked dependencies)
+ Requires studio app modules to be available
 
 Tests the critical premium management API endpoints,
 especially the new heartbeat endpoint.
@@ -61,7 +61,7 @@ class TestPremiumAPIIntegration:
         assert "message" in result, "Response should include message field"
         assert "user_id" in result, "Response should include user_id field"
 
-        print("✅ Heartbeat endpoint structure test passed")
+        print(" Heartbeat endpoint structure test passed")
 
     def test_heartbeat_endpoint_with_fastapi_mock(self):
         """Test heartbeat endpoint through FastAPI router simulation"""
@@ -109,7 +109,7 @@ class TestPremiumAPIIntegration:
                 loop = asyncio.get_event_loop()
                 result = loop.run_until_complete(run_test())
 
-            print("✅ FastAPI heartbeat endpoint test passed")
+            print(" FastAPI heartbeat endpoint test passed")
             print(f"   Response: {json.dumps(result, indent=2)}")
 
     def test_heartbeat_endpoint_non_premium_user(self):
@@ -148,7 +148,7 @@ class TestPremiumAPIIntegration:
                 loop = asyncio.get_event_loop()
                 result = loop.run_until_complete(run_test())
 
-            print("✅ Non-premium user heartbeat test passed")
+            print(" Non-premium user heartbeat test passed")
             print(f"   Response: {json.dumps(result, indent=2)}")
 
     def test_heartbeat_error_handling(self):
@@ -187,7 +187,7 @@ class TestPremiumAPIIntegration:
                 loop = asyncio.get_event_loop()
                 result = loop.run_until_complete(run_test())
 
-            print("✅ Heartbeat error handling test passed")
+            print(" Heartbeat error handling test passed")
             print(f"   Error response: {json.dumps(result, indent=2)}")
 
     def test_assign_release_status_endpoints(self):
@@ -261,14 +261,14 @@ class TestPremiumAPIIntegration:
                 loop = asyncio.get_event_loop()
                 loop.run_until_complete(run_tests())
 
-            print("✅ Assign/Status/Release endpoints test passed")
+            print(" Assign/Status/Release endpoints test passed")
             print("   All endpoints responded correctly")
 
 
 def run_api_integration_tests():
     """Run all API integration tests"""
 
-    print("🧪 Starting Premium API Integration Tests")
+    print(" Starting Premium API Integration Tests")
     print("=" * 60)
 
     test_suite = TestPremiumAPIIntegration()
@@ -296,25 +296,25 @@ def run_api_integration_tests():
 
     for test_name, test_func in tests:
         try:
-            print(f"\n🔬 Running: {test_name}")
+            print(f"\nRunning: {test_name}")
             test_func()
             passed += 1
-            print(f"   ✅ PASSED: {test_name}")
+            print(f"    PASSED: {test_name}")
         except Exception as e:
             failed += 1
-            print(f"   ❌ FAILED: {test_name}")
+            print(f"    FAILED: {test_name}")
             print(f"      Error: {str(e)}")
             import traceback
 
             print(f"      Details: {traceback.format_exc()}")
 
-    print(f"\n📊 Test Results: {passed} passed, {failed} failed")
+    print(f"\n Test Results: {passed} passed, {failed} failed")
 
     if failed == 0:
-        print("🎉 All API integration tests passed!")
+        print(" All API integration tests passed!")
         return True
     else:
-        print("⚠️ Some tests failed - check the errors above")
+        print(" Some tests failed - check the errors above")
         return False
 
 
@@ -323,7 +323,7 @@ if __name__ == "__main__":
         success = run_api_integration_tests()
         sys.exit(0 if success else 1)
     except Exception as e:
-        print(f"❌ Test runner failed: {e}")
+        print(f" Test runner failed: {e}")
         import traceback
 
         traceback.print_exc()

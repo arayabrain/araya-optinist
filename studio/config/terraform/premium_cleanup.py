@@ -146,13 +146,13 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
             stale_assignments = cursor.fetchall()
 
             if not stale_assignments:
-                print("✅ No stale assignments found")
+                print("No stale assignments found")
                 return {
                     "cleaned_assignments": 0,
                     "message": "No stale assignments to clean",
                 }
 
-            print(f"🔍 Found {len(stale_assignments)} stale assignments to clean")
+            print(f" Found {len(stale_assignments)} stale assignments to clean")
 
             # Clean up AWS resources for each stale assignment
             elbv2 = boto3.client("elbv2")
@@ -164,7 +164,7 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
                 alb_rule_arn = assignment["alb_rule_arn"]
 
                 try:
-                    print(f"🗑️ Cleaning stale assignment for user {user_id}")
+                    print(f"Cleaning stale assignment for user {user_id}")
 
                     # Delete ALB rule and target group
                     if alb_rule_arn and alb_rule_arn != "STANDBY":
@@ -188,10 +188,10 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
                     )
 
                     cleaned_count += 1
-                    print(f"   ✅ Cleaned assignment for user {user_id}")
+                    print(f"   Cleaned assignment for user {user_id}")
 
                 except Exception as e:
-                    print(f"   ❌ Error cleaning assignment for user {user_id}: {e}")
+                    print(f"    Error cleaning assignment for user {user_id}: {e}")
                     # Continue with other assignments
 
             print(
@@ -206,7 +206,7 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
             }
 
     except Exception as e:
-        print(f"❌ Error during stale assignment cleanup: {str(e)}")
+        print(f" Error during stale assignment cleanup: {str(e)}")
         raise e
 
 
@@ -255,14 +255,12 @@ def stop_idle_instances_if_needed():
                 # Update database to mark as standby
                 update_instance_as_standby(inst["instance_id"])
         else:
-            print(
-                "✅ No idle premium instances found, all instances have assigned users"
-            )
+            print("No idle premium instances found, all instances have assigned users")
 
         return len(idle_instances)
 
     except Exception as e:
-        print(f"❌ Error stopping idle instances: {str(e)}")
+        print(f" Error stopping idle instances: {str(e)}")
         return 0
 
 
@@ -282,9 +280,9 @@ def update_instance_as_standby(connection, instance_id: str):
                 """,
                 ("STANDBY", instance_id, "STANDBY", "STANDBY", 1, "stopped"),
             )
-        print(f"✅ Marked instance {instance_id} as standby in database")
+        print(f"Marked instance {instance_id} as standby in database")
     except Exception as e:
-        print(f"❌ Error updating instance as standby: {str(e)}")
+        print(f" Error updating instance as standby: {str(e)}")
         raise e
 
 
@@ -334,7 +332,7 @@ def get_standby_pool_status() -> Dict[str, Any]:
         return status
 
     except Exception as e:
-        print(f"❌ Error getting standby pool status: {str(e)}")
+        print(f" Error getting standby pool status: {str(e)}")
         return {"error": str(e)}
 
 
@@ -351,19 +349,19 @@ def ensure_standby_pool_capacity() -> Dict[str, Any]:
 
         # Log current status
         print(
-            f"📊 Standby pool status: {status['running']} running, "
+            f" Standby pool status: {status['running']} running, "
             f"{status['stopped']} stopped, {status['failed']} failed"
         )
 
         # Check for capacity issues
         if status["stopped"] < target_stopped and status["idle_running"] == 0:
-            actions_taken.append("⚠️ Low standby capacity detected")
+            actions_taken.append(" Low standby capacity detected")
 
         if status["failed"] > 0:
-            actions_taken.append(f"⚠️ Found {status['failed']} failed instances")
+            actions_taken.append(f" Found {status['failed']} failed instances")
 
         if status["health_issues"]:
-            actions_taken.extend([f"⚠️ {issue}" for issue in status["health_issues"]])
+            actions_taken.extend([f" {issue}" for issue in status["health_issues"]])
 
         return {
             "success": True,
@@ -377,7 +375,7 @@ def ensure_standby_pool_capacity() -> Dict[str, Any]:
         }
 
     except Exception as e:
-        print(f"❌ Error ensuring standby pool capacity: {str(e)}")
+        print(f" Error ensuring standby pool capacity: {str(e)}")
         return {"success": False, "error": str(e)}
 
 
@@ -441,7 +439,7 @@ def reconcile_instance_states() -> Dict[str, Any]:
                         # Update database state to match AWS
                         aws_state = aws_instance["state"]
                         print(
-                            f"🔄 Updating instance state for user "
+                            f" Updating instance state for user "
                             f"{user_id}: {db_state} → {aws_state}"
                         )
                         cursor.execute(
@@ -461,7 +459,7 @@ def reconcile_instance_states() -> Dict[str, Any]:
         }
 
     except Exception as e:
-        print(f"❌ Error reconciling instance states: {str(e)}")
+        print(f" Error reconciling instance states: {str(e)}")
         return {"error": str(e)}
 
 
@@ -499,7 +497,7 @@ def maintain_standby_pool() -> bool:
         # Target: 1 stopped standby instance (was target_standby = 1)
 
         print(
-            f"📊 Standby pool status: {running_count} running ({assigned_count} "
+            f" Standby pool status: {running_count} running ({assigned_count} "
             f"assigned, {idle_running} idle), {stopped_count} stopped"
         )
 
@@ -512,7 +510,7 @@ def maintain_standby_pool() -> bool:
         return True
 
     except Exception as e:
-        print(f"❌ Error maintaining standby pool: {str(e)}")
+        print(f" Error maintaining standby pool: {str(e)}")
         return False
 
 
@@ -547,7 +545,7 @@ def cleanup_idle_running_instances() -> int:
         return stopped_count
 
     except Exception as e:
-        print(f"❌ Error cleaning up idle instances: {str(e)}")
+        print(f" Error cleaning up idle instances: {str(e)}")
         return 0
 
 
@@ -569,7 +567,7 @@ def convert_running_instance_to_standby(instance_id: str) -> bool:
         return True
 
     except Exception as e:
-        print(f"❌ Error converting instance {instance_id} to standby: {str(e)}")
+        print(f" Error converting instance {instance_id} to standby: {str(e)}")
         return False
 
 
@@ -601,11 +599,11 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         results["cleanup_stats"] = cleanup_stale_assignments()
 
         # 2. Reconcile instance states with AWS
-        print("🔄 Step 2: Reconciling instance states...")
+        print(" Step 2: Reconciling instance states...")
         results["reconciliation_stats"] = reconcile_instance_states()
 
         # 3. Maintain standby pool
-        print("📊 Step 3: Maintaining standby pool...")
+        print(" Step 3: Maintaining standby pool...")
         results["standby_maintenance"] = maintain_standby_pool()
 
         # 4. Stop idle instances for cost optimization
@@ -613,7 +611,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         results["idle_instances_stopped"] = cleanup_idle_running_instances()
 
         # 5. Ensure standby pool capacity
-        print("📊 Step 5: Checking standby pool capacity...")
+        print(" Step 5: Checking standby pool capacity...")
         results["capacity_check"] = ensure_standby_pool_capacity()
 
         # Summary
@@ -625,7 +623,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         )
 
         print(
-            f"✅ Premium cleanup complete: {total_operations} total operations performed"
+            f"Premium cleanup complete: {total_operations} total operations performed"
         )
 
         return {
@@ -640,7 +638,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
 
     except Exception as e:
-        print(f"❌ Error during premium cleanup: {str(e)}")
+        print(f" Error during premium cleanup: {str(e)}")
         return {
             "statusCode": 500,
             "body": json.dumps(

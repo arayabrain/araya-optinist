@@ -3,10 +3,10 @@
 Database Schema Tests
 
 RUNTIME ENVIRONMENT:
-✅ Can run locally (with mocked database)
-✅ Can run on cloud (with mocked database)
-❌ Does NOT require actual database connection
-✅ Tests alembic migration file directly
+ Can run locally (with mocked database)
+ Can run on cloud (with mocked database)
+ Does NOT require actual database connection
+ Tests alembic migration file directly
 
 Critical tests to verify the database schema supports our fixes,
 especially the 'stopped' state in the instance_state enum. These tests
@@ -32,7 +32,7 @@ class TestDatabaseSchema:
     def test_enum_values_supported(self):
         """Test that all required enum values are supported"""
 
-        print("🧪 Testing Database Enum Values Support")
+        print(" Testing Database Enum Values Support")
         print("=" * 50)
 
         # Test the enum values that our code uses
@@ -78,9 +78,7 @@ class TestDatabaseSchema:
                     # Simulate the database call
                     mock_cursor.execute(test_query, test_params)
 
-                    print(
-                        f"   ✅ Enum value '{enum_value}' - INSERT operation supported"
-                    )
+                    print(f"    Enum value '{enum_value}' - INSERT operation supported")
 
                     # Test UPDATE operation too
                     update_query = """
@@ -90,15 +88,13 @@ class TestDatabaseSchema:
                     """
                     mock_cursor.execute(update_query, (enum_value, self.test_user_id))
 
-                    print(
-                        f"   ✅ Enum value '{enum_value}' - UPDATE operation supported"
-                    )
+                    print(f"    Enum value '{enum_value}' - UPDATE operation supported")
 
                 except Exception as e:
-                    print(f"   ❌ Enum value '{enum_value}' failed: {e}")
+                    print(f"    Enum value '{enum_value}' failed: {e}")
                     raise AssertionError(f"Enum value '{enum_value}' not supported")
 
-        print("\n✅ All enum values supported by schema")
+        print("\n All enum values supported by schema")
 
     def test_stopped_state_critical_operations(self):
         """Test the critical 'stopped' state operations that were failing"""
@@ -163,20 +159,20 @@ class TestDatabaseSchema:
                     # Execute the operation
                     mock_cursor.execute(operation["query"], operation["params"])
 
-                    print(f"   ✅ {operation['name']} - SUCCESS")
+                    print(f"    {operation['name']} - SUCCESS")
 
                 except Exception as e:
-                    print(f"   ❌ {operation['name']} - FAILED: {e}")
+                    print(f"    {operation['name']} - FAILED: {e}")
                     raise AssertionError(
                         f"Critical operation failed: {operation['name']}"
                     )
 
-        print("\n✅ All critical 'stopped' state operations work")
+        print("\n All critical 'stopped' state operations work")
 
     def test_schema_migration_compatibility(self):
         """Test that our migration creates the correct schema"""
 
-        print("\n📋 Testing Schema Migration Compatibility")
+        print("\nTesting Schema Migration Compatibility")
         print("=" * 50)
 
         # Test that our alembic migration would create the correct enum
@@ -197,7 +193,7 @@ class TestDatabaseSchema:
 
             # Check that the migration includes our fixed enum
             if "stopping" in migration_content and "stopped" in migration_content:
-                print("   ✅ Migration file includes 'stopping' and 'stopped' states")
+                print("    Migration file includes 'stopping' and 'stopped' states")
             else:
                 raise AssertionError("Migration file missing required enum states")
 
@@ -218,7 +214,7 @@ class TestDatabaseSchema:
 
             if not missing_states:
                 print(
-                    f"   ✅ Enum definition includes all required states: "
+                    f"    Enum definition includes all required states: "
                     f"{required_states}"
                 )
             else:
@@ -226,22 +222,22 @@ class TestDatabaseSchema:
 
             # Verify it's the instance_state enum
             if 'name="instance_state"' in migration_content:
-                print("   ✅ Enum correctly named 'instance_state'")
+                print("    Enum correctly named 'instance_state'")
             else:
                 raise AssertionError("Enum name 'instance_state' not found")
 
         except FileNotFoundError:
-            print("   ⚠️ Migration file not found, assuming correct enum definition")
+            print("    Migration file not found, assuming correct enum definition")
         except Exception as e:
-            print(f"   ❌ Migration compatibility check failed: {e}")
+            print(f"    Migration compatibility check failed: {e}")
             raise
 
-        print("\n✅ Schema migration compatibility verified")
+        print("\n Schema migration compatibility verified")
 
     def test_transaction_safety_with_new_enum(self):
         """Test that transactions work correctly with the new enum values"""
 
-        print("\n🔒 Testing Transaction Safety with New Enum")
+        print("\nTesting Transaction Safety with New Enum")
         print("=" * 50)
 
         with patch("pymysql.connect") as mock_connect:
@@ -291,18 +287,18 @@ class TestDatabaseSchema:
                         params = (enum_state, self.test_user_id)
 
                     mock_cursor.execute(query, params)
-                    print(f"   ✅ {operation_name} with '{enum_state}' - SUCCESS")
+                    print(f"    {operation_name} with '{enum_state}' - SUCCESS")
 
                 # Simulate transaction commit
                 mock_connection.commit.return_value = None
-                print("   ✅ Transaction committed successfully")
+                print("    Transaction committed successfully")
 
             except Exception as e:
                 mock_connection.rollback.return_value = None
-                print(f"   ❌ Transaction failed: {e}")
+                print(f"    Transaction failed: {e}")
                 raise AssertionError(f"Transaction safety test failed: {e}")
 
-        print("\n✅ Transaction safety with new enum verified")
+        print("\n Transaction safety with new enum verified")
 
     def test_race_condition_scenarios(self):
         """Test database operations under race condition scenarios"""
@@ -328,7 +324,7 @@ class TestDatabaseSchema:
                 WHERE user_id = %s FOR UPDATE
             """
             mock_cursor.execute(select_query, (self.test_user_id,))
-            print("     ✅ SELECT FOR UPDATE executed")
+            print("      SELECT FOR UPDATE executed")
 
             # Simulate INSERT with proper enum value
             insert_query = """
@@ -340,7 +336,7 @@ class TestDatabaseSchema:
                 insert_query,
                 (self.test_user_id, self.test_instance_id, "arn1", "arn2", "launching"),
             )
-            print("     ✅ INSERT with 'launching' state executed")
+            print("      INSERT with 'launching' state executed")
 
             # Simulate state transition
             update_query = """
@@ -349,15 +345,15 @@ class TestDatabaseSchema:
                 WHERE user_id = %s
             """
             mock_cursor.execute(update_query, ("running", self.test_user_id))
-            print("     ✅ UPDATE to 'running' state executed")
+            print("      UPDATE to 'running' state executed")
 
-        print("\n✅ Race condition scenarios handled correctly")
+        print("\n Race condition scenarios handled correctly")
 
 
 def run_database_schema_tests():
     """Run all database schema tests"""
 
-    print("🧪 Starting Database Schema Tests")
+    print(" Starting Database Schema Tests")
     print("=" * 60)
     print("These tests verify our enum fixes prevent SQL runtime errors")
     print("=" * 60)
@@ -389,26 +385,26 @@ def run_database_schema_tests():
         try:
             test_func()
             passed += 1
-            print(f"\n🎯 PASSED: {test_name}")
+            print(f"\n PASSED: {test_name}")
         except Exception as e:
             failed += 1
-            print(f"\n💥 FAILED: {test_name}")
+            print(f"\n FAILED: {test_name}")
             print(f"   Error: {str(e)}")
             import traceback
 
             print(f"   Details: {traceback.format_exc()}")
 
-    print(f"\n📊 Test Results: {passed} passed, {failed} failed")
+    print(f"\n Test Results: {passed} passed, {failed} failed")
 
     if failed == 0:
-        print("\n🎉 All database schema tests passed!")
-        print("✅ The enum fix prevents SQL runtime errors")
-        print("✅ Critical 'stopped' state operations will work")
-        print("✅ Database transactions are safe with new enum")
+        print("\n All database schema tests passed!")
+        print(" The enum fix prevents SQL runtime errors")
+        print(" Critical 'stopped' state operations will work")
+        print(" Database transactions are safe with new enum")
         return True
     else:
-        print("\n⚠️ Some database schema tests failed!")
-        print("❌ There may be SQL runtime errors in production")
+        print("\n Some database schema tests failed!")
+        print(" There may be SQL runtime errors in production")
         return False
 
 
@@ -417,7 +413,7 @@ if __name__ == "__main__":
         success = run_database_schema_tests()
         sys.exit(0 if success else 1)
     except Exception as e:
-        print(f"❌ Database schema test runner failed: {e}")
+        print(f" Database schema test runner failed: {e}")
         import traceback
 
         traceback.print_exc()

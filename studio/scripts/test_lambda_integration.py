@@ -3,10 +3,10 @@
 Lambda Integration Tests
 
 RUNTIME ENVIRONMENT:
-✅ Can run locally (with mocked AWS services)
-✅ Can run on cloud (with mocked AWS services)
-⚠️ Requires Lambda function files to be available
-⚠️ May require Terraform config directory access
+ Can run locally (with mocked AWS services)
+ Can run on cloud (with mocked AWS services)
+ Requires Lambda function files to be available
+ May require Terraform config directory access
 
 Tests the Lambda functions end-to-end to verify they handle our fixes correctly.
 These tests simulate the actual API Gateway events and Lambda context.
@@ -50,7 +50,7 @@ class TestLambdaIntegration:
     def test_premium_manager_assign_event(self):
         """Test premium_manager Lambda with assignment API Gateway event"""
 
-        print("🧪 Testing Premium Manager Lambda - Assignment Event")
+        print(" Testing Premium Manager Lambda - Assignment Event")
         print("=" * 60)
 
         # Create realistic API Gateway event for assignment
@@ -203,9 +203,9 @@ class TestLambdaIntegration:
                 status_code = result["statusCode"]
                 response_body = json.loads(result["body"])
 
-                print("   ✅ Lambda executed successfully")
-                print(f"   📊 Status Code: {status_code}")
-                print(f"   📋 Response: {json.dumps(response_body, indent=2)}")
+                print("    Lambda executed successfully")
+                print(f"    Status Code: {status_code}")
+                print(f"   Response: {json.dumps(response_body, indent=2)}")
 
                 # Verify successful assignment
                 if status_code == 200:
@@ -214,7 +214,7 @@ class TestLambdaIntegration:
                     ), "Successful assignment should include instance_id"
                     assert response_body["instance_id"] == self.test_instance_id
                     print(
-                        f"   ✅ Assignment successful to instance "
+                        f"    Assignment successful to instance "
                         f"{self.test_instance_id}"
                     )
                 elif status_code == 202:
@@ -226,21 +226,21 @@ class TestLambdaIntegration:
                         f"{response_body.get('retry_after')} seconds"
                     )
                 else:
-                    print(f"   ⚠️ Unexpected status code: {status_code}")
+                    print(f"    Unexpected status code: {status_code}")
 
                 return True
 
             except Exception as e:
-                print(f"   ❌ Lambda execution failed: {e}")
+                print(f"    Lambda execution failed: {e}")
                 import traceback
 
-                print(f"   📋 Details: {traceback.format_exc()}")
+                print(f"   Details: {traceback.format_exc()}")
                 return False
 
     def test_premium_manager_heartbeat_event(self):
         """Test premium_manager Lambda with heartbeat/activity update event"""
 
-        print("\n🧪 Testing Premium Manager Lambda - Heartbeat Event")
+        print("\n Testing Premium Manager Lambda - Heartbeat Event")
         print("=" * 60)
 
         # Create API Gateway event for heartbeat
@@ -283,9 +283,9 @@ class TestLambdaIntegration:
                 status_code = result["statusCode"]
                 response_body = json.loads(result["body"])
 
-                print("   ✅ Heartbeat lambda executed successfully")
-                print(f"   📊 Status Code: {status_code}")
-                print(f"   📋 Response: {json.dumps(response_body, indent=2)}")
+                print("    Heartbeat lambda executed successfully")
+                print(f"    Status Code: {status_code}")
+                print(f"   Response: {json.dumps(response_body, indent=2)}")
 
                 # Verify heartbeat was processed
                 assert status_code == 200, "Heartbeat should return 200"
@@ -295,13 +295,13 @@ class TestLambdaIntegration:
                 return True
 
             except Exception as e:
-                print(f"   ❌ Heartbeat lambda execution failed: {e}")
+                print(f"    Heartbeat lambda execution failed: {e}")
                 return False
 
     def test_premium_manager_release_event(self):
         """Test premium_manager Lambda with release event"""
 
-        print("\n🧪 Testing Premium Manager Lambda - Release Event")
+        print("\n Testing Premium Manager Lambda - Release Event")
         print("=" * 60)
 
         release_event = {
@@ -351,9 +351,9 @@ class TestLambdaIntegration:
                 status_code = result["statusCode"]
                 response_body = json.loads(result["body"])
 
-                print("   ✅ Release lambda executed successfully")
-                print(f"   📊 Status Code: {status_code}")
-                print(f"   📋 Response: {json.dumps(response_body, indent=2)}")
+                print("    Release lambda executed successfully")
+                print(f"    Status Code: {status_code}")
+                print(f"   Response: {json.dumps(response_body, indent=2)}")
 
                 # Release should always succeed (to not block logout)
                 assert status_code == 200, "Release should always return 200"
@@ -364,13 +364,13 @@ class TestLambdaIntegration:
                 return True
 
             except Exception as e:
-                print(f"   ❌ Release lambda execution failed: {e}")
+                print(f"    Release lambda execution failed: {e}")
                 return False
 
     def test_enum_values_in_lambda_operations(self):
         """Test that Lambda operations work with our fixed enum values"""
 
-        print("\n🧪 Testing Lambda with Fixed Enum Values")
+        print("\n Testing Lambda with Fixed Enum Values")
         print("=" * 60)
 
         # Test each enum state that caused issues
@@ -398,7 +398,7 @@ class TestLambdaIntegration:
                 )
 
                 for enum_state, description in enum_states_to_test:
-                    print(f"   🔬 Testing enum state: '{enum_state}' ({description})")
+                    print(f"Testing enum state: '{enum_state}' ({description})")
 
                     # Test storing assignment with enum state
                     try:
@@ -411,12 +411,12 @@ class TestLambdaIntegration:
                             is_shared=False,
                         )
                         print(
-                            f"     ✅ store_user_assignment with '{enum_state}' - "
+                            f"      store_user_assignment with '{enum_state}' - "
                             f"SUCCESS"
                         )
                     except Exception as e:
                         print(
-                            f"     ❌ store_user_assignment with '{enum_state}' - "
+                            f"      store_user_assignment with '{enum_state}' - "
                             f"FAILED: {e}"
                         )
                         raise
@@ -425,27 +425,27 @@ class TestLambdaIntegration:
                     try:
                         update_instance_state(self.test_user_id, enum_state)
                         print(
-                            f"     ✅ update_instance_state to '{enum_state}' - "
+                            f"      update_instance_state to '{enum_state}' - "
                             f"SUCCESS"
                         )
                     except Exception as e:
                         print(
-                            f"     ❌ update_instance_state to '{enum_state}' - "
+                            f"      update_instance_state to '{enum_state}' - "
                             f"FAILED: {e}"
                         )
                         raise
 
-                print("\n   ✅ All enum values work correctly in Lambda operations")
+                print("\n    All enum values work correctly in Lambda operations")
                 return True
 
             except Exception as e:
-                print(f"\n   ❌ Enum testing failed: {e}")
+                print(f"\n    Enum testing failed: {e}")
                 return False
 
     def test_lambda_error_handling(self):
         """Test Lambda error handling scenarios"""
 
-        print("\n🧪 Testing Lambda Error Handling")
+        print("\n Testing Lambda Error Handling")
         print("=" * 60)
 
         # Test malformed event
@@ -469,8 +469,8 @@ class TestLambdaIntegration:
                 ), "Error response should include statusCode"
 
                 status_code = result["statusCode"]
-                print("   ✅ Malformed event handled gracefully")
-                print(f"   📊 Status Code: {status_code}")
+                print("    Malformed event handled gracefully")
+                print(f"    Status Code: {status_code}")
 
                 # Should return error status but not crash
                 assert status_code >= 400, "Malformed event should return error status"
@@ -478,13 +478,13 @@ class TestLambdaIntegration:
                 return True
 
             except Exception as e:
-                print(f"   ❌ Error handling test failed: {e}")
+                print(f"    Error handling test failed: {e}")
                 return False
 
     def test_premium_cleanup_lambda_scheduled_event(self):
         """Test premium_cleanup Lambda with CloudWatch scheduled event"""
 
-        print("\n🧪 Testing Premium Cleanup Lambda - Scheduled Event")
+        print("\n Testing Premium Cleanup Lambda - Scheduled Event")
         print("=" * 60)
 
         # Create CloudWatch scheduled event
@@ -544,25 +544,25 @@ class TestLambdaIntegration:
                 assert isinstance(result, dict), "Cleanup Lambda should return dict"
                 status_code = result["statusCode"]
 
-                print("   ✅ Cleanup lambda executed successfully")
-                print(f"   📊 Status Code: {status_code}")
+                print("    Cleanup lambda executed successfully")
+                print(f"    Status Code: {status_code}")
 
                 assert status_code == 200, "Cleanup should return 200"
 
                 return True
 
             except ImportError:
-                print("   ⚠️ premium_cleanup.py not found, skipping cleanup test")
+                print("    premium_cleanup.py not found, skipping cleanup test")
                 return True
             except Exception as e:
-                print(f"   ❌ Cleanup lambda execution failed: {e}")
+                print(f"    Cleanup lambda execution failed: {e}")
                 return False
 
 
 def run_lambda_integration_tests():
     """Run all Lambda integration tests"""
 
-    print("🧪 Starting Lambda Integration Tests")
+    print(" Starting Lambda Integration Tests")
     print("=" * 70)
     print("These tests verify Lambda functions work with our fixes")
     print("=" * 70)
@@ -602,29 +602,29 @@ def run_lambda_integration_tests():
             success = test_func()
             if success:
                 passed += 1
-                print(f"\n🎯 PASSED: {test_name}")
+                print(f"\n PASSED: {test_name}")
             else:
                 failed += 1
-                print(f"\n💥 FAILED: {test_name}")
+                print(f"\n FAILED: {test_name}")
         except Exception as e:
             failed += 1
-            print(f"\n💥 FAILED: {test_name}")
+            print(f"\n FAILED: {test_name}")
             print(f"   Error: {str(e)}")
             import traceback
 
             print(f"   Details: {traceback.format_exc()}")
 
-    print(f"\n📊 Test Results: {passed} passed, {failed} failed")
+    print(f"\n Test Results: {passed} passed, {failed} failed")
 
     if failed == 0:
-        print("\n🎉 All Lambda integration tests passed!")
-        print("✅ Lambda functions handle our fixes correctly")
-        print("✅ Enum values work properly in all operations")
-        print("✅ End-to-end workflows function as expected")
+        print("\n All Lambda integration tests passed!")
+        print(" Lambda functions handle our fixes correctly")
+        print(" Enum values work properly in all operations")
+        print(" End-to-end workflows function as expected")
         return True
     else:
-        print("\n⚠️ Some Lambda integration tests failed!")
-        print("❌ Check the errors above for integration issues")
+        print("\n Some Lambda integration tests failed!")
+        print(" Check the errors above for integration issues")
         return False
 
 
@@ -633,7 +633,7 @@ if __name__ == "__main__":
         success = run_lambda_integration_tests()
         sys.exit(0 if success else 1)
     except Exception as e:
-        print(f"❌ Lambda integration test runner failed: {e}")
+        print(f" Lambda integration test runner failed: {e}")
         import traceback
 
         traceback.print_exc()

@@ -116,7 +116,7 @@ class PriorityQueueTester:
 
                 # Save config to temp directory
                 config_path = self.save_config_to_file(workflow_config, temp_workdir)
-                print(f"📝 Config saved to: {config_path}")
+                print(f"Config saved to: {config_path}")
 
                 # Setup output directory
                 output_dir = Path(
@@ -158,7 +158,7 @@ class PriorityQueueTester:
                     duration = end_time - start_time
 
                     print(
-                        f"✅ {user_type} workflow {workflow_id} "
+                        f"{user_type} workflow {workflow_id} "
                         f"completed in {duration:.2f}s"
                     )
                     return True, duration, workflow_id
@@ -167,7 +167,7 @@ class PriorityQueueTester:
             end_time = time.time()
             duration = end_time - start_time
             print(
-                f"❌ {user_type} workflow {workflow_id} "
+                f" {user_type} workflow {workflow_id} "
                 f"failed after {duration:.2f}s: {e}"
             )
             return False, duration, workflow_id
@@ -181,7 +181,7 @@ class PriorityQueueTester:
         """Run workflows in parallel to test true priority queue behavior"""
 
         print(
-            f"🔄 Running {len(premium_configs)} premium + {len(free_configs)} free "
+            f" Running {len(premium_configs)} premium + {len(free_configs)} free "
             f"workflows in parallel"
         )
         print(f"Max workers: {max_workers}")
@@ -211,12 +211,12 @@ class PriorityQueueTester:
                     }
                     results.append(result)
                     print(
-                        f"📊 Completed: {result['user_type']} {workflow_id} - "
+                        f" Completed: {result['user_type']} {workflow_id} - "
                         f"Success: {success}, Duration: {duration:.2f}s"
                     )
 
                 except Exception as e:
-                    print(f"❌ Workflow {config['unique_id']} generated exception: {e}")
+                    print(f" Workflow {config['unique_id']} generated exception: {e}")
 
         return results
 
@@ -225,7 +225,7 @@ class PriorityQueueTester:
     ) -> List[Dict]:
         """Run workflows sequentially to test execution order"""
 
-        print("🔄 Running workflows sequentially")
+        print(" Running workflows sequentially")
         print(f"Premium workflows: {len(premium_configs)}")
         print(f"Free workflows: {len(free_configs)}")
 
@@ -275,7 +275,7 @@ class PriorityQueueTester:
         report.append("")
 
         # Summary statistics
-        report.append("📊 EXECUTION SUMMARY:")
+        report.append(" EXECUTION SUMMARY:")
         report.append(
             f"   Premium workflows: {len(premium_results)} submitted, "
             f"{len(successful_premium)} successful"
@@ -291,7 +291,7 @@ class PriorityQueueTester:
             avg_premium_time = sum(r["duration"] for r in successful_premium) / len(
                 successful_premium
             )
-            report.append("⏱️  TIMING ANALYSIS:")
+            report.append("TIMING ANALYSIS:")
             report.append(f"   Average premium execution time: {avg_premium_time:.2f}s")
 
         if successful_free:
@@ -361,7 +361,7 @@ def main(args):
     tester = PriorityQueueTester(workspace_dir=args.workspace_dir, cores=args.cores)
 
     # Generate test workflows
-    print("📝 Generating test workflow configurations...")
+    print("Generating test workflow configurations...")
 
     premium_configs = []
     free_configs = []
@@ -389,7 +389,7 @@ def main(args):
         free_configs.append(config)
 
     print(
-        f"✅ Generated {len(premium_configs)} premium + {len(free_configs)} free "
+        f"Generated {len(premium_configs)} premium + {len(free_configs)} free "
         f"workflow configs"
     )
 
@@ -398,13 +398,13 @@ def main(args):
 
     if args.parallel:
         print(
-            f"🔄 Running workflows in PARALLEL mode " f"(max_workers={args.max_workers})"
+            f" Running workflows in PARALLEL mode " f"(max_workers={args.max_workers})"
         )
         results = tester.run_workflows_parallel(
             premium_configs, free_configs, args.max_workers
         )
     else:
-        print("🔄 Running workflows in SEQUENTIAL mode")
+        print(" Running workflows in SEQUENTIAL mode")
         results = tester.run_workflows_sequential(premium_configs, free_configs)
 
     total_time = time.time() - start_time
@@ -413,7 +413,7 @@ def main(args):
     report = tester.generate_report(results)
     print("\n" + report)
 
-    print(f"\n⏱️  Total test execution time: {total_time:.2f}s")
+    print(f"\nTotal test execution time: {total_time:.2f}s")
 
     # Save results to file
     results_file = f"priority_queue_cluster_test_results_{int(time.time())}.json"
@@ -435,7 +435,7 @@ def main(args):
             indent=2,
         )
 
-    print(f"💾 Results saved to: {results_file}")
+    print(f"Results saved to: {results_file}")
 
     # Return success if at least some workflows completed
     successful_count = len([r for r in results if r["success"]])
@@ -502,8 +502,8 @@ if __name__ == "__main__":
         success = main(parser.parse_args())
         exit(0 if success else 1)
     except KeyboardInterrupt:
-        print("\n⚠️  Test interrupted by user")
+        print("\n  Test interrupted by user")
         exit(2)
     except Exception as e:
-        print(f"\n❌ Test failed with error: {e}")
+        print(f"\n Test failed with error: {e}")
         exit(1)

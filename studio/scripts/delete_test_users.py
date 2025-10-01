@@ -76,13 +76,13 @@ async def delete_test_user_from_db(db, user_email):
 
     user_db = db.query(UserModel).filter_by(email=user_email).first()
     if not user_db:
-        print(f"⚠️  User not found: {user_email} (skipping)")
+        print(f"  User not found: {user_email} (skipping)")
         return False
 
     user_id = user_db.id
     user_name = user_db.name
 
-    print(f"🗑️  Deleting user: {user_name} ({user_email})")
+    print(f"Deleting user: {user_name} ({user_email})")
     print(f"   - User ID: {user_id}")
 
     try:
@@ -130,7 +130,7 @@ async def delete_test_user_from_db(db, user_email):
         print(f"   - Deleted {workspace_count} workspaces")
         print(f"   - Deleted {storage_count} storage records")
         print(f"   - Deleted {subscription_count} subscriptions")
-        print(f"✅ Successfully deleted user: {user_name}")
+        print(f"Successfully deleted user: {user_name}")
 
         return True
 
@@ -161,7 +161,7 @@ async def main():
             print("No test users to delete. Exiting.")
             return
 
-        print(f"📝 Found {len(test_users)} test users to delete")
+        print(f"Found {len(test_users)} test users to delete")
 
         # Delete test users
         deleted_count = 0
@@ -176,7 +176,7 @@ async def main():
                 db.rollback()
                 continue
 
-        print(f"\n✅ Successfully deleted {deleted_count} test users!")
+        print(f"\nSuccessfully deleted {deleted_count} test users!")
 
         db.close()
 

@@ -76,11 +76,11 @@ def get_db_connection(auto_commit=False):
         )
     except ValueError as e:
         print(
-            f"❌ Database connection failed - environment configuration error: {str(e)}"
+            f" Database connection failed - environment configuration error: {str(e)}"
         )
         raise
     except Exception as e:
-        print(f"❌ Database connection failed - connection error: {str(e)}")
+        print(f" Database connection failed - connection error: {str(e)}")
         raise
 
 
@@ -103,7 +103,8 @@ def with_transaction(func):
 
 @with_transaction
 def _increment_assignment_attempts_transaction(connection, user_id: str) -> int:
-    """Internal function: Increment assignment attempts for retry scenarios with transaction safety"""
+    """Internal function: Increment assignment attempts for
+    retry scenarios with transaction safety"""
     with connection.cursor() as cursor:
         # Check if user has existing assignment and increment attempts
         cursor.execute(
@@ -173,10 +174,12 @@ def _store_user_assignment_transaction(
             )
 
             print(
-                f"User {user_id} already has assignment, incremented attempts to {new_attempts}"
+                f"User {user_id} already has assignment, "
+                f"incremented attempts to {new_attempts}"
             )
             raise Exception(
-                f"User {user_id} already has a premium assignment (attempt #{new_attempts})"
+                f"User {user_id} already has a premium "
+                f"assignment (attempt #{new_attempts})"
             )
 
         # Insert new assignment with enhanced tracking
@@ -264,7 +267,7 @@ def _get_assigned_users_for_instance_transaction(connection, instance_id: str):
         )
         all_assignments = cursor.fetchall()
 
-        print(f"    📋 All assignments for instance {instance_id}:")
+        print(f"    All assignments for instance {instance_id}:")
         for assignment in all_assignments:
             user_id = assignment.get("user_id", "N/A")
             is_standby = assignment.get("is_standby", 0)
@@ -281,7 +284,7 @@ def _get_assigned_users_for_instance_transaction(connection, instance_id: str):
         )
         real_users = cursor.fetchall()
 
-        print(f"    👥 Real user assignments (excluding standby): {len(real_users)}")
+        print(f"Real user assignments (excluding standby): {len(real_users)}")
         for user in real_users:
             print(f"      - Real user: {user.get('user_id', 'N/A')}")
 
@@ -293,7 +296,7 @@ def get_assigned_users_for_instance(instance_id: str):
     try:
         return _get_assigned_users_for_instance_transaction(instance_id)
     except Exception as e:
-        print(f"    ❌ Error getting assigned users for {instance_id}: {str(e)}")
+        print(f"     Error getting assigned users for {instance_id}: {str(e)}")
         return []
 
 
@@ -355,9 +358,9 @@ def get_all_premium_instances_with_states():
                         "launch_time": instance.get("LaunchTime"),
                     }
                     instances.append(instance_data)
-                    print(f"✅ Added premium instance: {instance_data}")
+                    print(f"Added premium instance: {instance_data}")
                 else:
-                    print(f"❌ Skipped non-premium instance: {instance_id}")
+                    print(f" Skipped non-premium instance: {instance_id}")
 
         print("Instance discovery summary:")
         print(f"  - Total instances found in AWS: {all_instances_found}")
@@ -393,7 +396,7 @@ def _count_active_premium_users_transaction(connection):
         result = cursor.fetchone()
         real_user_count = result["count"] if result else 0
 
-        print("📊 User count analysis:")
+        print(" User count analysis:")
         print(f"  - Total active assignments: {total_count}")
         print(f"  - Standby assignments: {standby_count}")
         print(f"  - Real user assignments: {real_user_count}")
@@ -406,7 +409,7 @@ def count_active_premium_users():
     try:
         return _count_active_premium_users_transaction()
     except Exception as e:
-        print(f"❌ Error counting active premium users: {str(e)}")
+        print(f" Error counting active premium users: {str(e)}")
         return 0
 
 
@@ -429,7 +432,8 @@ def count_total_premium_users():
                     if result and result["count"] > 0:
                         total_premium = result["count"]
                         print(
-                            f"Total premium subscribers (from subscription tables): {total_premium}"
+                            f"Total premium subscribers (from subscription tables):"
+                            f" {total_premium}"
                         )
                         return total_premium
                 except Exception as subscription_error:
@@ -437,7 +441,8 @@ def count_total_premium_users():
                         f"Subscription tables query failed: {str(subscription_error)}"
                     )
 
-                # Fallback: Try to count from premium_user_assignments (real users, not standby)
+                # Fallback: Try to count from premium_user_assignments
+                # (real users, not standby)
                 try:
                     cursor.execute(
                         """SELECT COUNT(DISTINCT user_id) as count
@@ -447,14 +452,18 @@ def count_total_premium_users():
                     result = cursor.fetchone()
                     active_assignments = result["count"] if result else 0
 
-                    # For capacity planning, assume at least some premium users aren't currently assigned
-                    # Use active assignments as minimum, but add buffer for unassigned premium users
+                    # For capacity planning, assume at least some premium users
+                    # aren't currently assigned
+                    # Use active assignments as minimum, but add buffer for
+                    # unassigned premium users
                     estimated_premium = max(
                         active_assignments, 1
                     )  # At least 1 for testing
 
                     print(
-                        f"Estimated premium subscribers (from assignments): {estimated_premium} (based on {active_assignments} active assignments)"
+                        f"Estimated premium subscribers (from assignments): "
+                        f"{estimated_premium} (based on {active_assignments} "
+                        f"active assignments)"
                     )
                     return estimated_premium
 
@@ -589,7 +598,8 @@ def get_available_standby_instances():
                         available_standby.append(inst)
 
                 print(
-                    f"Standby instances: {len(db_standby_instances)} in DB, {len(available_standby)} actually stopped in AWS"
+                    f"Standby instances: {len(db_standby_instances)} in DB, "
+                    f"{len(available_standby)} actually stopped in AWS"
                 )
 
             except Exception as aws_error:
@@ -630,7 +640,8 @@ def register_orphaned_stopped_instances():
                     orphaned_instances.append(instance)
 
         print(
-            f"Found {len(orphaned_instances)} orphaned stopped instances to register as standby"
+            f"Found {len(orphaned_instances)} orphaned stopped "
+            f"instances to register as standby"
         )
 
         # Register each orphaned instance as standby
@@ -653,7 +664,8 @@ def register_orphaned_stopped_instances():
                     with connection.cursor() as cursor:
                         cursor.execute(
                             """UPDATE premium_user_assignments
-                               SET is_standby = 1, standby_created_at = NOW(), last_state_check = NOW()
+                               SET is_standby = 1, standby_created_at = NOW(),
+                                   last_state_check = NOW()
                                WHERE instance_id = %s""",
                             (instance_id,),
                         )
@@ -739,7 +751,8 @@ def create_and_stop_standby_instance():
             with connection.cursor() as cursor:
                 cursor.execute(
                     """UPDATE premium_user_assignments
-                       SET is_standby = 1, standby_created_at = NOW(), last_state_check = NOW()
+                       SET is_standby = 1, standby_created_at = NOW(),
+                           last_state_check = NOW()
                        WHERE instance_id = %s""",
                     (instance_id,),
                 )
@@ -774,7 +787,8 @@ def start_standby_instance(instance_id: str):
             with connection.cursor() as cursor:
                 cursor.execute(
                     """UPDATE premium_user_assignments
-                       SET instance_state = 'running', is_standby = 0, last_state_check = NOW()
+                       SET instance_state = 'running', is_standby = 0,
+                           last_state_check = NOW()
                        WHERE instance_id = %s""",
                     (instance_id,),
                 )
@@ -862,8 +876,10 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 "statusCode": 400,
                 "body": json.dumps(
                     {
-                        "error": "Scheduled events should be handled by premium_cleanup Lambda",
-                        "message": "This Lambda only handles real-time assignment operations",
+                        "error": "Scheduled events should be handled by "
+                        "premium_cleanup Lambda",
+                        "message": "This Lambda only handles real-time "
+                        "assignment operations",
                     }
                 ),
             }
@@ -933,7 +949,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         vpc_id = get_required_env_var("VPC_ID")
         alb_listener_arn = get_required_env_var("ALB_LISTENER_ARN")
     except ValueError as e:
-        print(f"❌ Assignment failed - environment configuration error: {str(e)}")
+        print(f" Assignment failed - environment configuration error: {str(e)}")
         return {
             "statusCode": 500,
             "body": json.dumps(
@@ -959,27 +975,29 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         standby_instances = get_available_standby_instances()
         standby_count = len(standby_instances)
 
-        print("🚀 === PREMIUM USER ASSIGNMENT START ===")
-        print(f"🎯 Target user: {user_id}")
-        print("📊 Assignment context:")
+        print(" === PREMIUM USER ASSIGNMENT START ===")
+        print(f"Target user: {user_id}")
+        print(" Assignment context:")
         print(f"  - Running instances: {len(running_instances)}")
         print(f"  - Launching instances: {len(launching_instances)}")
         print(f"  - Active users: {active_users}")
         print(f"  - Standby available: {standby_count}")
         print(f"  - Total instances: {len(all_instances)}")
 
-        print("📋 Instance details:")
+        print("Instance details:")
         for instance in all_instances:
             print(f"  - {instance['instance_id']}: {instance['state']}")
 
         stopped_instances = [i for i in all_instances if i["state"] == "stopped"]
         print(
-            f"🛑 Stopped instances found in AWS: {[i['instance_id'] for i in stopped_instances]}"
+            f" Stopped instances found in AWS: "
+            f"{[i['instance_id'] for i in stopped_instances]}"
         )
         print(
-            f"⏸️ Standby instances in database: {[i['instance_id'] for i in standby_instances]}"
+            f" Standby instances in database: "
+            f"{[i['instance_id'] for i in standby_instances]}"
         )
-        print("🚀 === STARTING ASSIGNMENT LOGIC ===")
+        print(" === STARTING ASSIGNMENT LOGIC ===")
         print()
 
         # Initialize assignment variables
@@ -994,55 +1012,58 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         min_users = float("inf")
 
         print(
-            f"🔍 PRIORITY 1: Evaluating {len(running_instances)} running instances for immediate assignment"
+            f" PRIORITY 1: Evaluating {len(running_instances)} running "
+            f"instances for immediate assignment"
         )
 
         for i, instance in enumerate(running_instances):
             instance_id = instance["instance_id"]
-            print(
-                f"  [{i+1}/{len(running_instances)}] Evaluating instance {instance_id}"
-            )
+            print(f"[{i+1}/{len(running_instances)}] Evaluating instance {instance_id}")
 
             # Check instance readiness
-            print(f"    🔧 Checking readiness for instance {instance_id}...")
+            print(f"Checking readiness for instance {instance_id}...")
             is_ready = check_instance_readiness(instance_id)
-            print(f"    🔧 Readiness result: {is_ready}")
+            print(f"     Readiness result: {is_ready}")
 
             if not is_ready:
-                print(f"    ❌ Skipping {instance_id} - not ready")
+                print(f"Skipping {instance_id} - not ready")
                 continue
 
             # Check assigned users
-            print(f"    👥 Checking assigned users for instance {instance_id}...")
+            print(f"Checking assigned users for instance {instance_id}...")
             assigned_users = get_assigned_users_for_instance(instance_id)
             user_count = len(assigned_users)
             print(
-                f"    👥 Found {user_count} assigned users: {[u.get('user_id', u) for u in assigned_users]}"
+                f"Found {user_count} assigned users: "
+                f"{[u.get('user_id', u) for u in assigned_users]}"
             )
 
             if user_count == 0:
                 # Found dedicated instance
                 available_dedicated = instance
-                print(f"    ✅ Found dedicated instance: {instance_id}")
+                print(f"    Found dedicated instance: {instance_id}")
                 break
             elif user_count < min_users:
                 # Track least loaded for sharing
                 least_loaded_instance = instance
                 min_users = user_count
                 print(
-                    f"    📊 Tracking as least loaded: {instance_id} ({user_count} users)"
+                    f"     Tracking as least loaded: {instance_id} ({user_count} users)"
                 )
             else:
                 print(
-                    f"    📊 Instance {instance_id} has {user_count} users (not optimal)"
+                    f"     Instance {instance_id} has {user_count} users (not optimal)"
                 )
 
-        print("🔍 PRIORITY 1 Results:")
+        print(" PRIORITY 1 Results:")
         print(
-            f"  - Available dedicated: {available_dedicated['instance_id'] if available_dedicated else 'None'}"
+            f"  - Available dedicated: "
+            f"{available_dedicated['instance_id'] if available_dedicated else 'None'}"  # noqa: E501
         )
         print(
-            f"  - Least loaded: {least_loaded_instance['instance_id'] if least_loaded_instance else 'None'} ({min_users} users)"
+            f"  - Least loaded: "
+            f"{least_loaded_instance['instance_id'] if least_loaded_instance else 'None'} "  # noqa: E501
+            f"({min_users} users)"
         )
 
         # Use dedicated instance if available (PRIORITY 1)
@@ -1052,10 +1073,11 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             instance_state = "running"
             assignment_source = "dedicated"
             print(
-                f"✅ PRIORITY 1 SUCCESS: Using dedicated running instance {instance_to_use['instance_id']} for user {user_id}"
+                f"PRIORITY 1 SUCCESS: Using dedicated running instance "
+                f"{instance_to_use['instance_id']} for user {user_id}"
             )
         else:
-            print("❌ PRIORITY 1 FAILED: No dedicated instances available")
+            print(" PRIORITY 1 FAILED: No dedicated instances available")
 
         # 3. PRIORITY 2: Start standby instance (5-15 second assignment)
         if not instance_to_use and standby_instances:
@@ -1069,7 +1091,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             if start_standby_instance(standby_instance_id):
                 # Create replacement standby instance asynchronously
                 print("Creating replacement standby instance")
-                create_and_stop_standby_instance()  # Create a single replacement standby
+                create_and_stop_standby_instance()  # Create a single standby
 
                 # Proceed with assignment to the started instance
                 instance_to_use = {"instance_id": standby_instance_id}
@@ -1089,7 +1111,8 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
 
         # 3.5 PRIORITY 2.5: Fallback to AWS stopped instances not in database
         if not instance_to_use:
-            # Find stopped instances directly from AWS that aren't in our standby database
+            # Find stopped instances directly from AWS that
+            # are not in our standby database
             stopped_aws_instances = [
                 i for i in all_instances if i["state"] == "stopped"
             ]
@@ -1106,7 +1129,8 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                 fallback_instance = aws_only_stopped[0]
                 fallback_instance_id = fallback_instance["instance_id"]
                 print(
-                    f"No standby instances available, using AWS stopped instance {fallback_instance_id}"
+                    f"No standby instances available, using AWS stopped "
+                    f"instance {fallback_instance_id}"
                 )
 
                 # Start this AWS instance directly
@@ -1129,12 +1153,14 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                     assignment_source = "aws_fallback"
 
                     print(
-                        f"Successfully started and using AWS instance {fallback_instance_id}"
+                        f"Successfully started and using AWS "
+                        f"instance {fallback_instance_id}"
                     )
 
                 except Exception as start_error:
                     print(
-                        f"Failed to start AWS instance {fallback_instance_id}: {str(start_error)}"
+                        f"Failed to start AWS instance "
+                        f"{fallback_instance_id}: {str(start_error)}"
                     )
 
         # 4. PRIORITY 3: Use existing running instances with sharing
@@ -1197,7 +1223,8 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                         i for i in all_instances if i["state"] == "stopped"
                     ]
                     error_details = {
-                        "error": "No available premium instances and cannot scale further",
+                        "error": "No available premium instances "
+                        "and cannot scale further",
                         "debug_info": {
                             "total_instances": len(all_instances),
                             "running_instances": len(running_instances),
@@ -1221,53 +1248,55 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
 
         # Final check: Ensure we have an instance assigned
         if not instance_to_use:
-            print("💥 === ASSIGNMENT FAILURE ANALYSIS ===")
+            print(" === ASSIGNMENT FAILURE ANALYSIS ===")
 
             # Analyze why each priority failed
             failure_reasons = []
 
             if len(running_instances) == 0:
-                failure_reasons.append("❌ Priority 1: No running instances found")
+                failure_reasons.append(" Priority 1: No running instances found")
             else:
                 failure_reasons.append(
-                    f"❌ Priority 1: {len(running_instances)} running instances found but all failed readiness/assignment checks"
+                    f" Priority 1: {len(running_instances)} running instances "
+                    f"found but all failed readiness/assignment checks"
                 )
 
             if len(standby_instances) == 0:
                 failure_reasons.append(
-                    "❌ Priority 2: No standby instances available in database"
+                    " Priority 2: No standby instances available in database"
                 )
             else:
                 failure_reasons.append(
-                    f"❌ Priority 2: {len(standby_instances)} standby instances found but failed to start"
+                    f" Priority 2: {len(standby_instances)} standby instances "
+                    f"found but failed to start"
                 )
 
             if len(stopped_instances) == 0:
                 failure_reasons.append(
-                    "❌ Priority 2.5: No stopped instances found in AWS"
+                    " Priority 2.5: No stopped instances found in AWS"
                 )
             else:
                 failure_reasons.append(
-                    f"❌ Priority 2.5: {len(stopped_instances)} stopped instances found but failed to start"
+                    f" Priority 2.5: {len(stopped_instances)} stopped "
+                    f"instances found but failed to start"
                 )
 
             if least_loaded_instance:
                 failure_reasons.append(
-                    f"❌ Priority 3: Sharing available but conditions not met"
+                    "Priority 3: Sharing available but conditions not met"
                 )
             else:
-                failure_reasons.append(
-                    "❌ Priority 3: No instances available for sharing"
-                )
+                failure_reasons.append("Priority 3: No instances available for sharing")
 
-            failure_reasons.append("❌ Priority 4: Scaling failed or blocked")
+            failure_reasons.append(" Priority 4: Scaling failed or blocked")
 
-            print("🔍 Failure analysis:")
+            print(" Failure analysis:")
             for reason in failure_reasons:
                 print(f"  {reason}")
 
             error_details = {
-                "error": "Could not assign premium instance - all assignment paths failed",
+                "error": "Could not assign premium instance - "
+                "all assignment paths failed",
                 "debug_info": {
                     "user_id": user_id,
                     "total_instances": len(all_instances),
@@ -1292,8 +1321,8 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                     else None,
                 },
             }
-            print(f"💥 Final assignment failure details: {error_details}")
-            print("💥 === ASSIGNMENT FAILED ===")
+            print(f" Final assignment failure details: {error_details}")
+            print(" === ASSIGNMENT FAILED ===")
 
             return {
                 "statusCode": 503,
@@ -1301,16 +1330,14 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             }
 
         # 6. Create target group for the user
-        print("✅ === ASSIGNMENT SUCCESS ===")
-        print(
-            f"🎯 Assigning user {user_id} to instance {instance_to_use['instance_id']}"
-        )
-        print("📋 Assignment details:")
+        print("=== ASSIGNMENT SUCCESS ===")
+        print(f"Assigning user {user_id} to instance {instance_to_use['instance_id']}")
+        print("Assignment details:")
         print(f"  - Instance ID: {instance_to_use['instance_id']}")
         print(f"  - Assignment source: {assignment_source}")
         print(f"  - Instance state: {instance_state}")
         print(f"  - Is shared: {is_shared}")
-        print("✅ === PROCEEDING WITH TARGET GROUP CREATION ===")
+        print("=== PROCEEDING WITH TARGET GROUP CREATION ===")
         print()
 
         instance_id = instance_to_use["instance_id"]
@@ -1373,9 +1400,9 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         # 10.1. Initialize activity tracking for the new assignment
         try:
             update_user_activity(user_id)
-            print(f"✅ Initialized activity tracking for user {user_id}")
+            print(f"Initialized activity tracking for user {user_id}")
         except Exception as activity_error:
-            print(f"⚠️ Failed to initialize activity tracking: {str(activity_error)}")
+            print(f" Failed to initialize activity tracking: {str(activity_error)}")
             # Don't fail the assignment for activity tracking errors
 
         # If this was a standby instance, clean up the dummy standby assignment
@@ -1444,7 +1471,7 @@ def scale_premium_instances_if_needed():
         # Get subscriber count for comparison
         total_subscribers = count_total_premium_users()
 
-        print("📊 Enhanced premium instance analysis:")
+        print(" Enhanced premium instance analysis:")
         print(f"  - Running instances: {running_count}")
         print(f"  - Launching instances: {launching_count}")
         print(f"  - Total instances: {total_instances}")
@@ -1454,14 +1481,14 @@ def scale_premium_instances_if_needed():
 
         # NO SCALING CONDITIONS:
         if launching_count > 0:
-            print(f"❌ Scaling blocked: {launching_count} instances already launching")
+            print(f" Scaling blocked: {launching_count} instances already launching")
             return False
 
         # Key decision: Scale based on ACTIVE ASSIGNMENTS, not subscribers
         # This represents current demand (logged-in users) vs available capacity
         if running_count >= active_users:
             print(
-                f"❌ Scaling not needed: {running_count} running >= "
+                f" Scaling not needed: {running_count} running >= "
                 f"{active_users} active assignments"
             )
             print(
@@ -1486,7 +1513,8 @@ def scale_premium_instances_if_needed():
                 ]
 
                 print(
-                    f"Starting {instances_to_start} stopped instances: {instance_ids_to_start}"
+                    f"Starting {instances_to_start} stopped instances:"
+                    f" {instance_ids_to_start}"
                 )
                 ec2.start_instances(InstanceIds=instance_ids_to_start)
                 return True
@@ -1494,15 +1522,18 @@ def scale_premium_instances_if_needed():
                 # No stopped instances available, check if we can create new ones
                 if total_instances + needed_capacity <= max_capacity:
                     print(
-                        f"No stopped instances available, need to create {needed_capacity} new instances"
+                        f"No stopped instances available, need to create "
+                        f"{needed_capacity} new instances"
                     )
                     for _ in range(needed_capacity):
                         create_and_stop_standby_instance()
-                        # Note: New instances will be stopped, will need another scaling cycle to start them
+                        # Note: New instances will be stopped,
+                        # will need another scaling cycle to start them
                     return True
                 else:
                     print(
-                        f"Cannot scale: would exceed max capacity ({total_instances + needed_capacity} > {max_capacity})"
+                        f"Cannot scale: would exceed max capacity "
+                        f"({total_instances + needed_capacity} > {max_capacity})"
                     )
                     return False
 
@@ -1514,7 +1545,8 @@ def scale_premium_instances_if_needed():
             return False
 
         print(
-            f"No scaling needed: running={running_count}, active_users={active_users}, total={total_instances}, max={max_capacity}"
+            f"No scaling needed: running={running_count}, active_users={active_users},"
+            f" total={total_instances}, max={max_capacity}"
         )
         return False
 
@@ -1528,20 +1560,18 @@ def get_ecs_container_instance_id(ec2_instance_id: str, cluster_name: str) -> st
     ecs = boto3.client("ecs")
 
     try:
-        print(
-            f"    🔍 Looking up ECS container instance for EC2 instance {ec2_instance_id}"
-        )
+        print(f"Looking up ECS container instance for EC2 instance {ec2_instance_id}")
 
         # List all container instances in the cluster
         response = ecs.list_container_instances(cluster=cluster_name)
         container_instance_arns = response.get("containerInstanceArns", [])
 
         if not container_instance_arns:
-            print(f"    ❌ No container instances found in cluster {cluster_name}")
+            print(f"     No container instances found in cluster {cluster_name}")
             return None
 
         print(
-            f"    📋 Found {len(container_instance_arns)} container instances in cluster"
+            f"    Found {len(container_instance_arns)} container instances in cluster"
         )
 
         # Describe container instances to find the one matching our EC2 instance
@@ -1552,16 +1582,17 @@ def get_ecs_container_instance_id(ec2_instance_id: str, cluster_name: str) -> st
         for container_instance in describe_response.get("containerInstances", []):
             if container_instance.get("ec2InstanceId") == ec2_instance_id:
                 container_instance_id = container_instance.get("containerInstanceArn")
-                print(f"    ✅ Found ECS container instance: {container_instance_id}")
+                print(f"    Found ECS container instance: {container_instance_id}")
                 return container_instance_id
 
         print(
-            f"    ❌ No ECS container instance found for EC2 instance {ec2_instance_id}"
+            f"     No ECS container instance found for EC2 instance "
+            f"{ec2_instance_id}"
         )
         return None
 
     except Exception as e:
-        print(f"    ❌ Error mapping EC2 to ECS container instance: {str(e)}")
+        print(f"     Error mapping EC2 to ECS container instance: {str(e)}")
         return None
 
 
@@ -1573,11 +1604,12 @@ def check_instance_readiness(instance_id: str) -> bool:
         cluster_name = get_required_env_var("CLUSTER_NAME")
     except ValueError as e:
         print(
-            f"❌ Instance readiness check failed - environment configuration error: {str(e)}"
+            f" Instance readiness check failed - environment configuration error: "
+            f"{str(e)}"
         )
         return False
 
-    print(f"    🔧 Checking readiness for EC2 instance {instance_id}")
+    print(f"     Checking readiness for EC2 instance {instance_id}")
 
     try:
         # First, get the ECS container instance ID from the EC2 instance ID
@@ -1587,29 +1619,28 @@ def check_instance_readiness(instance_id: str) -> bool:
 
         if not ecs_container_instance_id:
             print(
-                f"    ❌ Cannot find ECS container instance for EC2 instance {instance_id}"
+                f"     Cannot find ECS container instance for EC2 instance "
+                f"{instance_id}"
             )
-            print("    ❌ Instance not ready: No ECS container instance mapping")
+            print("     Instance not ready: No ECS container instance mapping")
             return False
 
         # Get ECS tasks running on this container instance
-        print("    🔍 Listing tasks on ECS container instance...")
+        print("     Listing tasks on ECS container instance...")
         tasks_response = ecs.list_tasks(
             cluster=cluster_name, containerInstance=ecs_container_instance_id
         )
 
         task_arns = tasks_response.get("taskArns", [])
-        print(f"    📋 Found {len(task_arns)} tasks on container instance")
+        print(f"    Found {len(task_arns)} tasks on container instance")
 
         if not task_arns:
-            print(
-                f"    ❌ No tasks running on container instance {ecs_container_instance_id}"
-            )
-            print("    ❌ Instance not ready: No ECS tasks running")
+            print(f"No tasks running on container instance {ecs_container_instance_id}")
+            print("     Instance not ready: No ECS tasks running")
             return False
 
         # Check task status
-        print(f"    🔍 Describing {len(task_arns)} tasks...")
+        print(f"     Describing {len(task_arns)} tasks...")
         task_details = ecs.describe_tasks(cluster=cluster_name, tasks=task_arns)
 
         premium_tasks_running = 0
@@ -1623,21 +1654,21 @@ def check_instance_readiness(instance_id: str) -> bool:
 
             if "premium" in task_def_arn.lower() and last_status == "RUNNING":
                 premium_tasks_running += 1
-                print("        ✅ Premium task running!")
+                print("        Premium task running!")
 
-        print(f"    📊 Found {premium_tasks_running} running premium tasks")
+        print(f"     Found {premium_tasks_running} running premium tasks")
 
         if premium_tasks_running > 0:
-            print(f"    ✅ Instance {instance_id} is ready (has running premium tasks)")
+            print(f"    Instance {instance_id} is ready (has running premium tasks)")
             return True
         else:
-            print("    ❌ No running premium tasks found")
-            print("    ❌ Instance not ready: No premium ECS tasks running")
+            print("     No running premium tasks found")
+            print("     Instance not ready: No premium ECS tasks running")
             return False
 
     except Exception as e:
-        print(f"    ❌ Error checking instance readiness for {instance_id}: {str(e)}")
-        print("    ❌ Instance not ready: Error during readiness check")
+        print(f"     Error checking instance readiness for {instance_id}: {str(e)}")
+        print("     Instance not ready: Error during readiness check")
         return False
 
 
@@ -1677,7 +1708,8 @@ def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bo
 
                 # Update RDS assignment
                 cursor.execute(
-                    """UPDATE premium_user_assignments SET instance_id = %s, last_state_check = NOW()
+                    """UPDATE premium_user_assignments SET instance_id = %s,
+                    last_state_check = NOW()
                        WHERE user_id = %s""",
                     (new_instance_id, user_id),
                 )
@@ -1694,7 +1726,8 @@ def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bo
 
 
 def release_premium_user(user_id: str) -> Dict[str, Any]:
-    """Release premium user from assigned instance - always succeeds to prevent logout blocking"""
+    """Release premium user from assigned instance
+    (always succeeds to prevent logout blocking)"""
 
     _ = boto3.client("ec2")
     elbv2 = boto3.client("elbv2")
@@ -1713,7 +1746,7 @@ def release_premium_user(user_id: str) -> Dict[str, Any]:
             print(f"Found assignment for user {user_id} on instance {instance_id}")
         except Exception as assignment_error:
             print(f"No assignment found for user {user_id}: {str(assignment_error)}")
-            # User may not have been assigned or already released - not an error for logout
+            # User may not have been assigned or already released
             target_group_arn = None
             rule_arn = None
 
@@ -1737,14 +1770,14 @@ def release_premium_user(user_id: str) -> Dict[str, Any]:
                 print(error_msg)
                 errors.append(error_msg)
 
-        # Note: Stale assignment cleanup is now handled by separate premium_cleanup Lambda
+        # Note: Stale assignment cleanup is now handled by premium_cleanup Lambda
         # running on scheduled basis (hourly)
 
         # 5. Check if we can scale down premium instances by stopping idle ones
         try:
             scale_down_if_possible()
         except Exception as scale_error:
-            print(f"⚠️ Scale down failed but continuing: {str(scale_error)}")
+            print(f" Scale down failed but continuing: {str(scale_error)}")
 
         # 6. Immediately convert idle instances to standby if no premium users are left
         try:
@@ -1761,7 +1794,7 @@ def release_premium_user(user_id: str) -> Dict[str, Any]:
                         f"to standby after user logout"
                     )
         except Exception as standby_error:
-            print(f"⚠️ Standby conversion failed but continuing: {str(standby_error)}")
+            print(f" Standby conversion failed but continuing: {str(standby_error)}")
 
         # Always return success - don't block user logout
         message = f"Premium user {user_id} release completed"
@@ -1785,7 +1818,7 @@ def release_premium_user(user_id: str) -> Dict[str, Any]:
     except Exception as e:
         # Even on critical errors, return success to prevent blocking user logout
         error_msg = f"Error releasing premium user {user_id}: {str(e)}"
-        print(f"❌ {error_msg}")
+        print(f" {error_msg}")
         return {
             "statusCode": 200,  # Still return 200 to not block logout
             "body": json.dumps(
@@ -1859,7 +1892,8 @@ def scale_down_if_possible():
 
             if idle_instance_ids:
                 print(
-                    f"Stopping {len(idle_instance_ids)} idle instances: {idle_instance_ids} "
+                    f"Stopping {len(idle_instance_ids)} idle "
+                    f"instances: {idle_instance_ids} "
                     f"(min running needed: {min_running_needed})"
                 )
                 ec2.stop_instances(InstanceIds=idle_instance_ids)
@@ -1868,7 +1902,8 @@ def scale_down_if_possible():
 
         else:
             print(
-                f"No scale-down: running={len(running_instances)}, min_needed={min_running_needed}, "
+                f"No scale-down: running={len(running_instances)}, "
+                f"min_needed={min_running_needed}, "
                 f"idle={idle_instances}"
             )
 
@@ -1972,8 +2007,8 @@ def convert_running_instance_to_standby(instance_id: str):
             with connection.cursor() as cursor:
                 cursor.execute(
                     """UPDATE premium_user_assignments
-                       SET is_standby = 1, standby_created_at = NOW(), last_state_check = NOW()
-                       WHERE instance_id = %s""",
+                       SET is_standby = 1, standby_created_at = NOW(),
+                       last_state_check = NOW() WHERE instance_id = %s""",
                     (instance_id,),
                 )
 
@@ -2131,7 +2166,7 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
         ec2 = boto3.client("ec2")
         premium_instance_ids = get_required_env_var("PREMIUM_INSTANCE_IDS").split(",")
 
-        print("🔄 Checking for shared instance optimization opportunities")
+        print(" Checking for shared instance optimization opportunities")
 
         # Get all premium instances with detailed state information
         instances_response = ec2.describe_instances(InstanceIds=premium_instance_ids)
@@ -2179,14 +2214,16 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                 if migrate_user_to_dedicated_instance(user_id, new_instance_id):
                     migrations_performed += 1
                     print(
-                        f"✅ Optimized: Migrated user {user_id} to dedicated instance {new_instance_id}"
+                        f"Optimized: Migrated user {user_id} to "
+                        f"dedicated instance {new_instance_id}"
                     )
                 else:
                     # Return instance to available list if migration failed
                     available_instances.append(new_instance_id)
 
         print(
-            f"🔄 Shared instance optimization complete: {migrations_performed} users migrated"
+            f"Shared instance optimization complete: "
+            f"{migrations_performed} users migrated"
         )
 
         return {
@@ -2197,7 +2234,7 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
         }
 
     except Exception as e:
-        print(f"❌ Error during shared instance optimization: {str(e)}")
+        print(f" Error during shared instance optimization: {str(e)}")
         return {"error": str(e), "migrations_performed": 0}
 
 
@@ -2219,7 +2256,7 @@ def update_user_activity_timestamp(connection, user_id: str) -> bool:
 def handle_activity_update(user_id: str) -> Dict[str, Any]:
     """Handle heartbeat activity update for a premium user"""
     try:
-        print(f"💓 Processing activity update for user {user_id}")
+        print(f" Processing activity update for user {user_id}")
 
         # Update the user's activity timestamp using transaction-safe function
         success = update_user_activity_timestamp(user_id)
@@ -2254,7 +2291,8 @@ def handle_activity_update(user_id: str) -> Dict[str, Any]:
             "statusCode": 200,  # Don't fail heartbeats
             "body": json.dumps(
                 {
-                    "message": f"Activity update completed with warnings for user {user_id}",
+                    "message": f"Activity update completed with "
+                    f"warnings for user {user_id}",
                     "user_id": user_id,
                     "error": str(e),
                 }
@@ -2280,14 +2318,12 @@ def update_user_activity(user_id: str) -> bool:
                 )
 
                 if cursor.rowcount > 0:
-                    print(f"🔄 Updated activity timestamp for user {user_id}")
+                    print(f" Updated activity timestamp for user {user_id}")
                     return True
                 else:
-                    print(
-                        f"⚠️ No assignment found to update activity for user {user_id}"
-                    )
+                    print(f" No assignment found to update activity for user {user_id}")
                     return False
 
     except Exception as e:
-        print(f"❌ Error updating activity for user {user_id}: {str(e)}")
+        print(f" Error updating activity for user {user_id}: {str(e)}")
         return False

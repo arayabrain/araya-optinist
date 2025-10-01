@@ -70,9 +70,9 @@ if [ "$SKIP_TOKEN_GEN" = false ]; then
     echo "Running: $TOKEN_CMD" | tee -a "$LOG_FILE"
 
     if $TOKEN_CMD 2>&1 | tee -a "$LOG_FILE"; then
-        echo "✅ JWT tokens generated successfully!" | tee -a "$LOG_FILE"
+        echo " JWT tokens generated successfully!" | tee -a "$LOG_FILE"
     else
-        echo "❌ JWT token generation failed!" | tee -a "$LOG_FILE"
+        echo " JWT token generation failed!" | tee -a "$LOG_FILE"
         echo "Please check that:" | tee -a "$LOG_FILE"
         echo "1. Backend API server is running" | tee -a "$LOG_FILE"
         echo "2. Test users exist with correct passwords" | tee -a "$LOG_FILE"
@@ -81,7 +81,7 @@ if [ "$SKIP_TOKEN_GEN" = false ]; then
     fi
     echo "" | tee -a "$LOG_FILE"
 else
-    echo "⏭️  Skipping JWT token generation..." | tee -a "$LOG_FILE"
+    echo "Skipping JWT token generation..." | tee -a "$LOG_FILE"
     echo "" | tee -a "$LOG_FILE"
 fi
 
@@ -102,7 +102,7 @@ echo "Data directory: $DATA_DIR" | tee -a "$LOG_FILE"
 
 # Check if sample data exists
 if [ ! -d "$SAMPLE_DATA_DIR" ]; then
-    echo "❌ Sample data directory not found: $SAMPLE_DATA_DIR" | tee -a "$LOG_FILE"
+    echo " Sample data directory not found: $SAMPLE_DATA_DIR" | tee -a "$LOG_FILE"
     exit 1
 fi
 
@@ -117,21 +117,21 @@ for workspace_id in 1 2; do
     # Copy input data
     if [ -d "$SAMPLE_DATA_DIR/input" ]; then
         cp -r "$SAMPLE_DATA_DIR/input/"* "$DATA_DIR/input/$workspace_id/"
-        echo "✅ Copied input data to workspace $workspace_id" | tee -a "$LOG_FILE"
+        echo " Copied input data to workspace $workspace_id" | tee -a "$LOG_FILE"
     fi
 
     # Copy output data
     if [ -d "$SAMPLE_DATA_DIR/output" ]; then
         cp -r "$SAMPLE_DATA_DIR/output/"* "$DATA_DIR/output/$workspace_id/"
-        echo "✅ Copied output data to workspace $workspace_id" | tee -a "$LOG_FILE"
+        echo " Copied output data to workspace $workspace_id" | tee -a "$LOG_FILE"
     fi
 done
 
-echo "✅ Sample data setup completed!" | tee -a "$LOG_FILE"
+echo " Sample data setup completed!" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
 
 # Step 3: Create test workspaces
-echo "🏗️  Step 3: Creating test workspaces..." | tee -a "$LOG_FILE"
+echo "Step 3: Creating test workspaces..." | tee -a "$LOG_FILE"
 echo "====================================" | tee -a "$LOG_FILE"
 
 # Get JWT tokens from the tokens.json file (created by token generation step)
@@ -139,7 +139,7 @@ if [ -f "tokens.json" ]; then
     PREMIUM_TOKEN=$(python3 -c "import json; data=json.load(open('tokens.json')); print(data['premium']['access_token'])")
     FREE_TOKEN=$(python3 -c "import json; data=json.load(open('tokens.json')); print(data['free']['access_token'])")
 else
-    echo "❌ tokens.json not found. Token generation may have failed." | tee -a "$LOG_FILE"
+    echo " tokens.json not found. Token generation may have failed." | tee -a "$LOG_FILE"
     exit 1
 fi
 
@@ -161,9 +161,9 @@ PREMIUM_WORKSPACE_RESPONSE=$(curl -s -X POST "$BASE_URL/workspace" \
 
 if echo "$PREMIUM_WORKSPACE_RESPONSE" | grep -q '"id"'; then
     PREMIUM_WORKSPACE_ID=$(echo "$PREMIUM_WORKSPACE_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
-    echo "✅ Premium workspace created: ID $PREMIUM_WORKSPACE_ID" | tee -a "$LOG_FILE"
+    echo " Premium workspace created: ID $PREMIUM_WORKSPACE_ID" | tee -a "$LOG_FILE"
 else
-    echo "❌ Failed to create premium workspace: $PREMIUM_WORKSPACE_RESPONSE" | tee -a "$LOG_FILE"
+    echo " Failed to create premium workspace: $PREMIUM_WORKSPACE_RESPONSE" | tee -a "$LOG_FILE"
     exit 1
 fi
 
@@ -176,13 +176,13 @@ FREE_WORKSPACE_RESPONSE=$(curl -s -X POST "$BASE_URL/workspace" \
 
 if echo "$FREE_WORKSPACE_RESPONSE" | grep -q '"id"'; then
     FREE_WORKSPACE_ID=$(echo "$FREE_WORKSPACE_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
-    echo "✅ Free workspace created: ID $FREE_WORKSPACE_ID" | tee -a "$LOG_FILE"
+    echo " Free workspace created: ID $FREE_WORKSPACE_ID" | tee -a "$LOG_FILE"
 else
-    echo "❌ Failed to create free workspace: $FREE_WORKSPACE_RESPONSE" | tee -a "$LOG_FILE"
+    echo " Failed to create free workspace: $FREE_WORKSPACE_RESPONSE" | tee -a "$LOG_FILE"
     exit 1
 fi
 
-echo "✅ Test workspaces created successfully!" | tee -a "$LOG_FILE"
+echo " Test workspaces created successfully!" | tee -a "$LOG_FILE"
 echo "   Premium workspace: $PREMIUM_WORKSPACE_ID" | tee -a "$LOG_FILE"
 echo "   Free workspace: $FREE_WORKSPACE_ID" | tee -a "$LOG_FILE"
 
@@ -198,13 +198,13 @@ for workspace_id in $PREMIUM_WORKSPACE_ID $FREE_WORKSPACE_ID; do
     # Copy input data
     if [ -d "$SAMPLE_DATA_DIR/input" ]; then
         cp -r "$SAMPLE_DATA_DIR/input/"* "$DATA_DIR/input/$workspace_id/"
-        echo "✅ Copied input data to workspace $workspace_id" | tee -a "$LOG_FILE"
+        echo " Copied input data to workspace $workspace_id" | tee -a "$LOG_FILE"
     fi
 
     # Copy output data
     if [ -d "$SAMPLE_DATA_DIR/output" ]; then
         cp -r "$SAMPLE_DATA_DIR/output/"* "$DATA_DIR/output/$workspace_id/"
-        echo "✅ Copied output data to workspace $workspace_id" | tee -a "$LOG_FILE"
+        echo " Copied output data to workspace $workspace_id" | tee -a "$LOG_FILE"
     fi
 done
 
@@ -214,19 +214,19 @@ export FREE_WORKSPACE_ID
 export PREMIUM_URL="$BASE_URL/run/$PREMIUM_WORKSPACE_ID"
 export FREE_URL="$BASE_URL/run/$FREE_WORKSPACE_ID"
 
-echo "✅ Sample data copied to new workspaces!" | tee -a "$LOG_FILE"
+echo " Sample data copied to new workspaces!" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
 
 # Step 4: Update test script URL if cloud environment
 if [ "$ENVIRONMENT" = "cloud" ] && [ -n "$API_URL" ]; then
-    echo "🔧 Step 4: Updating test script for cloud environment..." | tee -a "$LOG_FILE"
+    echo "Step 4: Updating test script for cloud environment..." | tee -a "$LOG_FILE"
     echo "====================================================" | tee -a "$LOG_FILE"
 
     # Update URL in test script
     CLOUD_URL="${API_URL}/run/1"
     sed -i.bak "s|URL=\"[^\"]*\"|URL=\"$CLOUD_URL\"|g" test-workflow-tutorial1-post.sh
 
-    echo "✅ Updated test script URL to: $CLOUD_URL" | tee -a "$LOG_FILE"
+    echo " Updated test script URL to: $CLOUD_URL" | tee -a "$LOG_FILE"
     echo "" | tee -a "$LOG_FILE"
 fi
 
@@ -243,22 +243,22 @@ echo "" | tee -a "$LOG_FILE"
 
 # Check if we got "Operation is not available" errors (local environment issue)
 if grep -q "Operation is not available" "$LOG_FILE"; then
-    echo "⚠️  Priority queue tests completed with expected local limitations!" | tee -a "$LOG_FILE"
+    echo "Priority queue tests completed with expected local limitations!" | tee -a "$LOG_FILE"
     echo "" | tee -a "$LOG_FILE"
-    echo "💡 Note: 'Operation is not available' usually means:" | tee -a "$LOG_FILE"
+    echo "Note: 'Operation is not available' usually means:" | tee -a "$LOG_FILE"
     echo "   • AWS Batch is not configured (priority queues require cloud environment)" | tee -a "$LOG_FILE"
     echo "   • Local environment doesn't support batch execution" | tee -a "$LOG_FILE"
     echo "" | tee -a "$LOG_FILE"
     echo "To test priority queues properly:" | tee -a "$LOG_FILE"
     echo "   ./run_priority_queue_test.sh --cloud --api-url YOUR_CLOUD_URL" | tee -a "$LOG_FILE"
     echo "" | tee -a "$LOG_FILE"
-    echo "✅ Local environment setup is working correctly!" | tee -a "$LOG_FILE"
-    echo "✅ JWT tokens, sample data, and API calls are functioning" | tee -a "$LOG_FILE"
+    echo " Local environment setup is working correctly!" | tee -a "$LOG_FILE"
+    echo " JWT tokens, sample data, and API calls are functioning" | tee -a "$LOG_FILE"
     # Don't exit with error for this expected limitation
 elif [ $TEST_EXIT_CODE -eq 0 ]; then
-    echo "✅ Priority queue tests completed successfully!" | tee -a "$LOG_FILE"
+    echo " Priority queue tests completed successfully!" | tee -a "$LOG_FILE"
 else
-    echo "❌ Priority queue tests failed!" | tee -a "$LOG_FILE"
+    echo " Priority queue tests failed!" | tee -a "$LOG_FILE"
     echo "Check the log above for error details." | tee -a "$LOG_FILE"
     exit 1
 fi
@@ -266,13 +266,13 @@ fi
 # Step 6: Restore original test script if we modified it
 if [ "$ENVIRONMENT" = "cloud" ] && [ -f "test-workflow-tutorial1-post.sh.bak" ]; then
     echo "" | tee -a "$LOG_FILE"
-    echo "🔧 Step 6: Restoring original test script..." | tee -a "$LOG_FILE"
+    echo "Step 6: Restoring original test script..." | tee -a "$LOG_FILE"
     mv test-workflow-tutorial1-post.sh.bak test-workflow-tutorial1-post.sh
-    echo "✅ Original test script restored" | tee -a "$LOG_FILE"
+    echo " Original test script restored" | tee -a "$LOG_FILE"
 fi
 
 echo "" | tee -a "$LOG_FILE"
-echo "🎉 All steps completed successfully!" | tee -a "$LOG_FILE"
+echo "All steps completed successfully!" | tee -a "$LOG_FILE"
 echo "========================================" | tee -a "$LOG_FILE"
 echo "Next steps:" | tee -a "$LOG_FILE"
 echo "1. Check the workflow execution logs for priority assignments" | tee -a "$LOG_FILE"

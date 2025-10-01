@@ -172,7 +172,7 @@ async def main():
             print("No test users to create. Exiting.")
             return
 
-        print(f"📝 Found {len(test_users)} test users to create")
+        print(f"Found {len(test_users)} test users to create")
 
         # Create test users
         created_users = []
@@ -184,7 +184,7 @@ async def main():
                 )
 
                 if existing_user:
-                    print(f"⚠️  User already exists: {user_data['name']} (skipping)")
+                    print(f"  User already exists: {user_data['name']} (skipping)")
                     continue
 
                 user = await create_test_user_in_db(db, user_data, org.id)
@@ -196,7 +196,7 @@ async def main():
                 continue
 
         print(f"\nSuccessfully created {len(created_users)} test users!")
-        print("\n📋 Test User Credentials:")
+        print("\nTest User Credentials:")
         print("=" * 60)
         for user_data in test_users:
             plan_name = "Premium" if user_data["subscription_plan_id"] == 2 else "Free"
@@ -211,7 +211,7 @@ async def main():
     except Exception as e:
         print(f"Database connection error: {str(e)}")
         print(
-            "\n💡 Make sure your database is running and environment "
+            "\n Make sure your database is running and environment "
             "variables are set correctly."
         )
 

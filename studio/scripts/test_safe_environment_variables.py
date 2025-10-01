@@ -3,10 +3,10 @@
 Safe Environment Variable Tests
 
 RUNTIME ENVIRONMENT:
-✅ Can run locally (with mocked environment variables)
-✅ Can run on cloud (with mocked environment variables)
-❌ Does NOT require actual AWS services or database connection
-✅ Tests environment variable access robustness
+ Can run locally (with mocked environment variables)
+ Can run on cloud (with mocked environment variables)
+ Does NOT require actual AWS services or database connection
+ Tests environment variable access robustness
 
 Critical tests to verify that the premium manager handles missing environment variables
 gracefully instead of crashing with KeyError exceptions.
@@ -40,7 +40,7 @@ class TestSafeEnvironmentVariables:
 
     def test_get_required_env_var_success(self):
         """Test get_required_env_var with valid environment variables"""
-        print("🧪 Testing get_required_env_var with valid variables")
+        print(" Testing get_required_env_var with valid variables")
         print("=" * 50)
 
         # Mock the premium_manager module import
@@ -60,11 +60,11 @@ class TestSafeEnvironmentVariables:
 
             # Test successful retrieval
             assert get_required_env_var("TEST_VAR_1") == "value1"
-            print("   ✅ Valid environment variable retrieved successfully")
+            print("    Valid environment variable retrieved successfully")
 
             # Test with default value
             assert get_required_env_var("MISSING_VAR", "default") == "default"
-            print("   ✅ Default value returned for missing variable")
+            print("    Default value returned for missing variable")
 
             # Test empty variable fails
             try:
@@ -72,13 +72,13 @@ class TestSafeEnvironmentVariables:
                 assert False, "Should have raised ValueError for empty variable"
             except ValueError as e:
                 assert "EMPTY_VAR" in str(e)
-                print(f"   ✅ Empty variable correctly rejected: {str(e)}")
+                print(f"    Empty variable correctly rejected: {str(e)}")
 
-        print("\n✅ get_required_env_var function works correctly")
+        print("\n get_required_env_var function works correctly")
 
     def test_get_required_env_var_failures(self):
         """Test get_required_env_var with missing environment variables"""
-        print("\n🔬 Testing get_required_env_var failure cases")
+        print("\nTesting get_required_env_var failure cases")
         print("=" * 50)
 
         with patch.dict(os.environ, {}, clear=True):
@@ -98,13 +98,13 @@ class TestSafeEnvironmentVariables:
             except ValueError as e:
                 assert "MISSING_VAR" in str(e)
                 assert "Check your Terraform configuration" in str(e)
-                print(f"   ✅ Missing variable correctly rejected: {str(e)}")
+                print(f"    Missing variable correctly rejected: {str(e)}")
 
-        print("\n✅ Missing environment variables correctly handled")
+        print("\n Missing environment variables correctly handled")
 
     def test_database_connection_safe_env_access(self):
         """Test database connection with safe environment variable access"""
-        print("\n💾 Testing Database Connection Environment Safety")
+        print("\nTesting Database Connection Environment Safety")
         print("=" * 50)
 
         # Test with missing database environment variables
@@ -125,7 +125,7 @@ class TestSafeEnvironmentVariables:
                 except ValueError as e:
                     assert "RDS_HOST" in str(e)
                     print(
-                        f"✅ Database connection safely failed with "
+                        f" Database connection safely failed with "
                         f"missing env vars: {str(e)}"
                     )
 
@@ -144,7 +144,7 @@ class TestSafeEnvironmentVariables:
 
                 try:
                     get_db_connection()
-                    print("   ✅ Database connection works with valid env vars")
+                    print("    Database connection works with valid env vars")
 
                     # Verify the connection was called with correct parameters
                     assert (
@@ -156,19 +156,19 @@ class TestSafeEnvironmentVariables:
                     assert call_args[1]["password"] == "test_password"
                     assert call_args[1]["database"] == "test_db"
                     print(
-                        "   ✅ Database connection parameters "
+                        "    Database connection parameters "
                         "correctly extracted from env vars"
                     )
 
                 except Exception as e:
-                    print(f"   ❌ Unexpected error: {str(e)}")
+                    print(f"    Unexpected error: {str(e)}")
                     raise
 
-        print("\n✅ Database connection environment safety verified")
+        print("\n Database connection environment safety verified")
 
     def test_instance_creation_safe_env_access(self):
         """Test instance creation with safe environment variable access"""
-        print("\n🚀 Testing Instance Creation Environment Safety")
+        print("\n Testing Instance Creation Environment Safety")
         print("=" * 50)
 
         # Test with missing launch template environment variables
@@ -186,16 +186,16 @@ class TestSafeEnvironmentVariables:
                 try:
                     result = create_and_stop_standby_instance()
                     assert result is None, "Should return None when env vars missing"
-                    print("   ✅ Instance creation safely failed with missing env vars")
+                    print("    Instance creation safely failed with missing env vars")
                 except ValueError as e:
                     assert "PREMIUM_LAUNCH_TEMPLATE_ID" in str(e)
-                    print(f"   ✅ Instance creation safely failed: {str(e)}")
+                    print(f"    Instance creation safely failed: {str(e)}")
 
-        print("\n✅ Instance creation environment safety verified")
+        print("\n Instance creation environment safety verified")
 
     def test_assignment_function_safe_env_access(self):
         """Test assignment functions with safe environment variable access"""
-        print("\n🎯 Testing Assignment Function Environment Safety")
+        print("\n Testing Assignment Function Environment Safety")
         print("=" * 50)
 
         # Test with missing VPC/ALB environment variables
@@ -218,13 +218,13 @@ class TestSafeEnvironmentVariables:
                 assert (
                     "assigned" in result["body"] and "false" in result["body"].lower()
                 )
-                print(f"   ✅ Assignment safely failed with missing env vars: {result}")
+                print(f"    Assignment safely failed with missing env vars: {result}")
 
-        print("\n✅ Assignment function environment safety verified")
+        print("\n Assignment function environment safety verified")
 
     def test_readiness_check_safe_env_access(self):
         """Test instance readiness check with safe environment variable access"""
-        print("\n🔧 Testing Instance Readiness Check Environment Safety")
+        print("\nTesting Instance Readiness Check Environment Safety")
         print("=" * 50)
 
         # Test with missing CLUSTER_NAME environment variable
@@ -243,13 +243,13 @@ class TestSafeEnvironmentVariables:
 
                 # Should return False instead of crashing
                 assert result is False
-                print("   ✅ Readiness check safely failed with missing CLUSTER_NAME")
+                print("    Readiness check safely failed with missing CLUSTER_NAME")
 
-        print("\n✅ Instance readiness check environment safety verified")
+        print("\n Instance readiness check environment safety verified")
 
     def test_comprehensive_environment_variable_coverage(self):
         """Test that all critical environment variables are properly protected"""
-        print("\n📋 Testing Comprehensive Environment Variable Protection")
+        print("\nTesting Comprehensive Environment Variable Protection")
         print("=" * 50)
 
         critical_functions = [
@@ -275,10 +275,10 @@ class TestSafeEnvironmentVariables:
         for function_name, _, required_vars in critical_functions:
             print(f"\n   Testing {function_name}:")
             for var in required_vars:
-                print(f"     - {var}: Protected ✅")
+                print(f"     - {var}: Protected ")
 
         print(
-            f"\n✅ All {len(self.required_env_vars)} critical environment "
+            f"\n All {len(self.required_env_vars)} critical environment "
             f"variables are protected"
         )
 
@@ -302,19 +302,17 @@ class TestSafeEnvironmentVariables:
         )
 
         if unsafe_patterns and not helper_function_patterns:
-            print(f"   ⚠️ Found potential unsafe patterns: {unsafe_patterns}")
+            print(f"    Found potential unsafe patterns: {unsafe_patterns}")
         else:
-            print(
-                "✅ No unsafe os.environ['key'] patterns found outside helper function"
-            )
+            print(" No unsafe os.environ['key'] patterns found outside helper function")
 
-        print("\n✅ Comprehensive environment variable protection verified")
+        print("\n Comprehensive environment variable protection verified")
 
 
 def run_safe_environment_variable_tests():
     """Run all safe environment variable tests"""
 
-    print("🧪 Starting Safe Environment Variable Tests")
+    print(" Starting Safe Environment Variable Tests")
     print("=" * 60)
     print("These tests verify environment variables are accessed safely")
     print("=" * 60)
@@ -351,26 +349,26 @@ def run_safe_environment_variable_tests():
         try:
             test_func()
             passed += 1
-            print(f"\n🎯 PASSED: {test_name}")
+            print(f"\n PASSED: {test_name}")
         except Exception as e:
             failed += 1
-            print(f"\n💥 FAILED: {test_name}")
+            print(f"\n FAILED: {test_name}")
             print(f"   Error: {str(e)}")
             import traceback
 
             print(f"   Details: {traceback.format_exc()}")
 
-    print(f"\n📊 Test Results: {passed} passed, {failed} failed")
+    print(f"\n Test Results: {passed} passed, {failed} failed")
 
     if failed == 0:
-        print("\n🎉 All safe environment variable tests passed!")
-        print("✅ Environment variables are accessed safely")
-        print("✅ Missing env vars won't crash the Lambda")
-        print("✅ Helpful error messages provided for configuration issues")
+        print("\n All safe environment variable tests passed!")
+        print(" Environment variables are accessed safely")
+        print(" Missing env vars won't crash the Lambda")
+        print(" Helpful error messages provided for configuration issues")
         return True
     else:
-        print("\n⚠️ Some environment variable safety tests failed!")
-        print("❌ There may be unsafe environment variable accesses")
+        print("\n Some environment variable safety tests failed!")
+        print(" There may be unsafe environment variable accesses")
         return False
 
 
@@ -379,7 +377,7 @@ if __name__ == "__main__":
         success = run_safe_environment_variable_tests()
         sys.exit(0 if success else 1)
     except Exception as e:
-        print(f"❌ Environment variable safety test runner failed: {e}")
+        print(f" Environment variable safety test runner failed: {e}")
         import traceback
 
         traceback.print_exc()

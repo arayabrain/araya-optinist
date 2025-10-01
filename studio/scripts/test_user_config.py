@@ -69,10 +69,10 @@ def load_test_users_unified() -> Union[Dict[str, Dict], List[Dict], None]:
     if test_users_json:
         try:
             users = json.loads(test_users_json)
-            print("✅ Loaded test users from TEST_USERS_CONFIG environment variable")
+            print(" Loaded test users from TEST_USERS_CONFIG environment variable")
             return users
         except json.JSONDecodeError as e:
-            print(f"⚠️  Failed to parse TEST_USERS_CONFIG: {e}")
+            print(f"  Failed to parse TEST_USERS_CONFIG: {e}")
 
     # Method 2: Try terraform.tfvars
     terraform_path = (
@@ -82,10 +82,10 @@ def load_test_users_unified() -> Union[Dict[str, Dict], List[Dict], None]:
         try:
             users = parse_terraform_test_users(terraform_path)
             if users:
-                print("✅ Loaded test users from terraform.tfvars")
+                print(" Loaded test users from terraform.tfvars")
                 return users
         except Exception as e:
-            print(f"⚠️  Failed to parse terraform.tfvars: {e}")
+            print(f"  Failed to parse terraform.tfvars: {e}")
 
     # Method 3: Try .env file
     env_path = get_project_root() / ".env"
@@ -93,19 +93,19 @@ def load_test_users_unified() -> Union[Dict[str, Dict], List[Dict], None]:
         try:
             users = parse_env_test_users(env_path)
             if users:
-                print("✅ Loaded test users from .env")
+                print(" Loaded test users from .env")
                 return users
         except Exception as e:
-            print(f"⚠️  Failed to parse .env: {e}")
+            print(f"  Failed to parse .env: {e}")
 
     # Method 4: Try individual environment variables
     try:
         users = parse_env_vars_test_users()
         if users:
-            print("✅ Loaded test users from environment variables")
+            print(" Loaded test users from environment variables")
             return users
     except Exception as e:
-        print(f"⚠️  Failed to load from environment variables: {e}")
+        print(f"  Failed to load from environment variables: {e}")
 
     return None
 

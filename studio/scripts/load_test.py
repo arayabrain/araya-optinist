@@ -3,9 +3,9 @@
 OptiNiSt Autoscaling Load Test
 
 RUNTIME ENVIRONMENT:
-⚠️ Best run on cloud (requires AWS credentials and infrastructure)
-⚠️ Can run locally with --mock flag (limited functionality)
-✅ Requires AWS CLI configured or IAM role with appropriate permissions
+ Best run on cloud (requires AWS credentials and infrastructure)
+ Can run locally with --mock flag (limited functionality)
+Requires AWS CLI configured or IAM role with appropriate permissions
 
 This script tests autoscaling behavior by generating controlled load to trigger
 CPU and memory thresholds, then validates that the Auto Scaling Group responds
@@ -210,7 +210,7 @@ class CloudWatchMonitor:
 
     def monitor_metrics(self):
         """Continuously monitor metrics during load test"""
-        logging.info("🔍 Starting CloudWatch metrics monitoring...")
+        logging.info(" Starting CloudWatch metrics monitoring...")
 
         while self.monitoring:
             try:
@@ -229,7 +229,7 @@ class CloudWatchMonitor:
                 # Log current status
                 if asg_metrics and ecs_metrics:
                     logging.info(
-                        f"📊 Metrics - CPU: {ecs_metrics['cpu_utilization']}%, "
+                        f" Metrics - CPU: {ecs_metrics['cpu_utilization']}%, "
                         f"Memory: {ecs_metrics['memory_utilization']}%, "
                         f"Instances: {asg_metrics['in_service']}/"
                         f"{asg_metrics['desired_capacity']}"
@@ -241,7 +241,7 @@ class CloudWatchMonitor:
                         > self.config.target_cpu_threshold
                     ):
                         logging.warning(
-                            f"🔥 CPU threshold exceeded: "
+                            f"CPU threshold exceeded: "
                             f"{ecs_metrics['cpu_utilization']}% > "
                             f"{self.config.target_cpu_threshold}%"
                         )
@@ -251,7 +251,7 @@ class CloudWatchMonitor:
                         > self.config.target_memory_threshold
                     ):
                         logging.warning(
-                            f"💾 Memory threshold exceeded: "
+                            f"Memory threshold exceeded: "
                             f"{ecs_metrics['memory_utilization']}% > "
                             f"{self.config.target_memory_threshold}%"
                         )
@@ -265,7 +265,7 @@ class CloudWatchMonitor:
     def stop_monitoring(self):
         """Stop metrics monitoring"""
         self.monitoring = False
-        logging.info("⏹️ Stopped CloudWatch metrics monitoring")
+        logging.info("Stopped CloudWatch metrics monitoring")
 
 
 class WorkflowLoadGenerator:
@@ -283,10 +283,10 @@ class WorkflowLoadGenerator:
             try:
                 with open("tokens.json", "r") as f:
                     self.tokens = json.load(f)
-                logging.info("✅ Loaded existing JWT tokens from tokens.json")
+                logging.info("Loaded existing JWT tokens from tokens.json")
                 return True
             except FileNotFoundError:
-                logging.warning("⚠️ tokens.json not found, generating new tokens...")
+                logging.warning("tokens.json not found, generating new tokens...")
 
         logging.info("🔑 Generating JWT tokens for load testing...")
 
@@ -298,22 +298,22 @@ class WorkflowLoadGenerator:
                 )
                 if token_data:
                     self.tokens = token_data
-                    logging.info("✅ Successfully generated JWT tokens")
+                    logging.info("Successfully generated JWT tokens")
                     return True
 
             # Fallback to manual token generation
-            logging.warning("⚠️ Using fallback token generation method")
+            logging.warning("Using fallback token generation method")
             return self._generate_fallback_tokens()
 
         except Exception as e:
-            logging.error(f"❌ Failed to generate tokens: {e}")
+            logging.error(f"Failed to generate tokens: {e}")
             return False
 
     def _generate_fallback_tokens(self) -> bool:
         """Fallback method for token generation"""
         # This would implement a basic token generation
         # For now, return False to indicate authentication setup failed
-        logging.error("❌ Fallback token generation not implemented")
+        logging.error("Fallback token generation not implemented")
         return False
 
     def create_cpu_intensive_workflow(self) -> Dict:
@@ -392,19 +392,19 @@ class WorkflowLoadGenerator:
                     return workflow_id
             else:
                 logging.error(
-                    f"❌ Workflow submission failed: "
+                    f" Workflow submission failed: "
                     f"{response.status_code} - {response.text}"
                 )
 
         except Exception as e:
-            logging.error(f"❌ Error submitting workflow: {e}")
+            logging.error(f" Error submitting workflow: {e}")
 
         return None
 
     def generate_load(self):
         """Generate load through concurrent workflow submissions"""
         if not self.tokens:
-            logging.error("❌ No authentication tokens available")
+            logging.error(" No authentication tokens available")
             return False
 
         # Get a user token (prefer premium for load testing)
@@ -414,11 +414,11 @@ class WorkflowLoadGenerator:
         elif "free_token" in self.tokens:
             user_token = self.tokens["free_token"]
         else:
-            logging.error("❌ No user tokens found in token data")
+            logging.error(" No user tokens found in token data")
             return False
 
         logging.info(
-            f"🚀 Starting load generation with "
+            f"Starting load generation with "
             f"{self.config.concurrent_workflows} concurrent workflows..."
         )
 
@@ -461,12 +461,12 @@ class WorkflowLoadGenerator:
                 if workflow_id:
                     submitted_count += 1
                     logging.info(
-                        f"✅ Submitted workflow {submitted_count}"
+                        f"Submitted workflow {submitted_count}"
                         f"/{len(workflows_to_submit)}: {workflow_id}"
                     )
 
         logging.info(
-            f"📈 Load generation complete: {submitted_count}"
+            f"Load generation complete: {submitted_count}"
             f"/{self.config.concurrent_workflows} workflows submitted"
         )
         return submitted_count > 0
@@ -589,12 +589,12 @@ class LoadTestAnalyzer:
         """Generate a comprehensive test report"""
         report = []
         report.append("=" * 80)
-        report.append("🧪 OPTINIST AUTOSCALING LOAD TEST REPORT")
+        report.append(" OPTINIST AUTOSCALING LOAD TEST REPORT")
         report.append("=" * 80)
         report.append("")
 
         # Test configuration
-        report.append("📋 TEST CONFIGURATION:")
+        report.append("TEST CONFIGURATION:")
         report.append(f"   Environment: {self.config.environment}")
         report.append(f"   Duration: {self.config.duration} seconds")
         report.append(f"   Concurrent Workflows: {self.config.concurrent_workflows}")
@@ -610,7 +610,7 @@ class LoadTestAnalyzer:
         report.append("")
 
         # Workflow submission results
-        report.append("🚀 WORKFLOW SUBMISSION:")
+        report.append(" WORKFLOW SUBMISSION:")
         report.append(f"   Workflows Submitted: {analysis['workflows_submitted']}")
         submitted = analysis["workflows_submitted"]
         submission_rate = submitted / self.config.concurrent_workflows * 100
@@ -618,13 +618,13 @@ class LoadTestAnalyzer:
         report.append("")
 
         # Peak utilization
-        report.append("📊 PEAK UTILIZATION:")
+        report.append(" PEAK UTILIZATION:")
         report.append(f"   Peak CPU: {analysis['peak_utilization']['cpu']:.2f}%")
         report.append(f"   Peak Memory: {analysis['peak_utilization']['memory']:.2f}%")
         report.append("")
 
         # Threshold breaches
-        report.append("⚠️ THRESHOLD BREACHES:")
+        report.append(" THRESHOLD BREACHES:")
         cpu_breaches = len(analysis["threshold_breaches"]["cpu"])
         memory_breaches = len(analysis["threshold_breaches"]["memory"])
         report.append(f"   CPU Threshold Breaches: {cpu_breaches}")
@@ -642,7 +642,7 @@ class LoadTestAnalyzer:
         report.append("")
 
         # Scaling events
-        report.append("⚡ SCALING EVENTS:")
+        report.append("SCALING EVENTS:")
         scaling_events = analysis["scaling_events"]
         report.append(f"   Total Scaling Events: {len(scaling_events)}")
 
@@ -653,9 +653,9 @@ class LoadTestAnalyzer:
         report.append(f"   Scale-down Events: {len(scale_downs)}")
 
         for event in scaling_events:
-            direction_emoji = "📈" if event["direction"] == "scale_up" else "📉"
+            direction_indicator = "UP" if event["direction"] == "scale_up" else "DOWN"
             report.append(
-                f"{direction_emoji} {event['from_capacity']} → "
+                f"{direction_indicator}: {event['from_capacity']} → "
                 f"{event['to_capacity']} instances "
                 f"(CPU: {event['trigger_cpu']:.1f}%, "
                 f"Memory: {event['trigger_memory']:.1f}%)"
@@ -663,22 +663,20 @@ class LoadTestAnalyzer:
         report.append("")
 
         # Responsiveness analysis
-        report.append("⏱️ SCALING RESPONSIVENESS:")
+        report.append("SCALING RESPONSIVENESS:")
         responsiveness = analysis["scaling_responsiveness"]
         if "cpu_response_time_seconds" in responsiveness:
             response_time = responsiveness["cpu_response_time_seconds"]
             report.append(f"   CPU Threshold → Scale-up: {response_time:.1f} seconds")
 
             if response_time <= 300:  # Expected CloudWatch alarm evaluation period
-                report.append(
-                    "   ✅ Scaling response time within expected range (≤300s)"
-                )
+                report.append("   Scaling response time within expected range (≤300s)")
             else:
                 report.append(
-                    "   ⚠️ Scaling response time exceeded expected range (>300s)"
+                    "    Scaling response time exceeded expected range (>300s)"
                 )
         else:
-            report.append("   ❌ No scaling response detected")
+            report.append("    No scaling response detected")
         report.append("")
 
         # Final state
@@ -700,24 +698,24 @@ class LoadTestAnalyzer:
         report.append("")
 
         # Recommendations
-        report.append("💡 RECOMMENDATIONS:")
+        report.append(" RECOMMENDATIONS:")
 
         if cpu_breaches == 0 and memory_breaches == 0:
             report.append(
-                "   ⚠️ No thresholds breached - consider increasing load "
+                "    No thresholds breached - consider increasing load "
                 "or decreasing thresholds"
             )
 
         if len(scale_ups) == 0 and (cpu_breaches > 0 or memory_breaches > 0):
             report.append(
-                "   ❌ Thresholds breached but no scaling occurred - "
+                "    Thresholds breached but no scaling occurred - "
                 "check CloudWatch alarms"
             )
 
         if len(scale_ups) > 0 and "cpu_response_time_seconds" in responsiveness:
             if responsiveness["cpu_response_time_seconds"] > 600:
                 report.append(
-                    "   ⚠️ Slow scaling response - consider optimizing "
+                    "    Slow scaling response - consider optimizing "
                     "alarm evaluation periods"
                 )
 
@@ -726,7 +724,7 @@ class LoadTestAnalyzer:
             and analysis["peak_utilization"]["memory"] < 50
         ):
             report.append(
-                "   💡 Low resource utilization - consider more " "intensive workloads"
+                "    Low resource utilization - consider more " "intensive workloads"
             )
 
         report.append("")
@@ -855,9 +853,9 @@ def main():
         )
         config.output_file = f"load_test_{test_type}_{timestamp}.json"
 
-    logging.info("🧪 Starting OptiNiSt Autoscaling Load Test")
+    logging.info(" Starting OptiNiSt Autoscaling Load Test")
     logging.info(
-        f"📋 Configuration: {config.environment} "
+        f"Configuration: {config.environment} "
         f"environment, {config.duration}s duration, "
         f"{config.concurrent_workflows} workflows"
     )
@@ -871,7 +869,7 @@ def main():
         # Setup authentication
         if not generator.setup_authentication():
             logging.error(
-                "❌ Failed to setup authentication - cannot proceed with load test"
+                " Failed to setup authentication - cannot proceed with load test"
             )
             sys.exit(1)
 
@@ -885,11 +883,11 @@ def main():
         # Generate load
         load_success = generator.generate_load()
         if not load_success:
-            logging.error("❌ Failed to generate load - test incomplete")
+            logging.error(" Failed to generate load - test incomplete")
 
         # Continue monitoring for the specified duration
         logging.info(
-            f"⏱️ Monitoring autoscaling behavior for {config.duration} seconds..."
+            f"Monitoring autoscaling behavior for {config.duration} seconds..."
         )
         time.sleep(config.duration)
 
@@ -897,7 +895,7 @@ def main():
         monitor.stop_monitoring()
 
         # Analyze results
-        logging.info("📊 Analyzing test results...")
+        logging.info(" Analyzing test results...")
         analysis = analyzer.analyze_scaling_behavior()
 
         # Generate and display report
@@ -925,49 +923,49 @@ def main():
         with open(config.output_file, "w") as f:
             json.dump(detailed_results, f, indent=2, default=str)
 
-        logging.info(f"💾 Detailed results saved to: {config.output_file}")
+        logging.info(f"Detailed results saved to: {config.output_file}")
 
         # Test success criteria
         success_criteria = []
         if analysis["workflows_submitted"] >= config.concurrent_workflows * 0.8:
-            success_criteria.append("✅ Workflow submission success")
+            success_criteria.append("Workflow submission success")
         else:
-            success_criteria.append("❌ Workflow submission failed")
+            success_criteria.append(" Workflow submission failed")
 
         if (
             analysis["peak_utilization"]["cpu"] > config.target_cpu_threshold
             or analysis["peak_utilization"]["memory"] > config.target_memory_threshold
         ):
-            success_criteria.append("✅ Resource thresholds reached")
+            success_criteria.append("Resource thresholds reached")
         else:
-            success_criteria.append("⚠️ Resource thresholds not reached")
+            success_criteria.append(" Resource thresholds not reached")
 
         if len(analysis["scaling_events"]) > 0:
-            success_criteria.append("✅ Autoscaling events detected")
+            success_criteria.append("Autoscaling events detected")
         else:
-            success_criteria.append("❌ No autoscaling events detected")
+            success_criteria.append(" No autoscaling events detected")
 
         logging.info("🏆 Test Success Criteria:")
         for criteria in success_criteria:
             logging.info(f"   {criteria}")
 
         # Exit with appropriate code
-        failed_criteria = [c for c in success_criteria if c.startswith("❌")]
+        failed_criteria = [c for c in success_criteria if c.startswith("")]
         if failed_criteria:
             logging.warning(
-                "⚠️ Some test criteria failed - review configuration and try again"
+                " Some test criteria failed - review configuration and try again"
             )
             sys.exit(1)
         else:
-            logging.info("🎉 Load test completed successfully!")
+            logging.info(" Load test completed successfully!")
             sys.exit(0)
 
     except KeyboardInterrupt:
-        logging.info("⏹️ Load test interrupted by user")
+        logging.info(" Load test interrupted by user")
         monitor.stop_monitoring()
         sys.exit(130)
     except Exception as e:
-        logging.error(f"❌ Load test failed: {e}")
+        logging.error(f" Load test failed: {e}")
         monitor.stop_monitoring()
         sys.exit(1)
 
