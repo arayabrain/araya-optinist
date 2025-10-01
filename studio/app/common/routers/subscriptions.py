@@ -322,9 +322,8 @@ async def update_user_subscription(
         )
 
 
-@router.delete("/mgmts/cancel/{user_id}", response_model=CancelSubscriptionResponse)
+@router.delete("/mgmts/cancel", response_model=CancelSubscriptionResponse)
 async def cancel_user_subscription(
-    user_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -335,16 +334,10 @@ async def cancel_user_subscription(
     - Database updates handled via webhook
     """
     try:
-        # Verify user access
-        if current_user.id != user_id:
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied: Can only cancel your own subscription",
-            )
 
         # Get current user subscription
         current_subscription_result = SubscriptionService.get_user_subscription(
-            db, user_id
+            db, current_user.id
         )
         if not current_subscription_result:
             raise HTTPException(
@@ -372,9 +365,7 @@ async def cancel_user_subscription(
 
         stripe_subscription = stripe_subscriptions.data[0]
 
-        logger.info(
-            f"Scheduling subscription cancellation at period end for user {user_id}"
-        )
+        logger.info(f"Scheduling cancellation at period end for user {current_user.id}")
 
         current_period_end = stripe_subscription["items"]["data"][0][
             "current_period_end"
@@ -406,7 +397,7 @@ async def cancel_user_subscription(
             },
         )
 
-        SubscriptionService.update_scheduled_downgrade(db, user_id, True)
+        SubscriptionService.update_scheduled_downgrade(db, current_user.id, True)
 
         # Database will be updated via customer.subscription.updated webhook
 
@@ -418,7 +409,8 @@ async def cancel_user_subscription(
         )
 
         logger.info(
-            f"Successfully scheduled cancellation for user {user_id} at period end"
+            f"Successfully scheduled cancellation for user {current_user.id} "
+            f"at period end"
         )
 
         return CancelSubscriptionResponse(
@@ -436,7 +428,9 @@ async def cancel_user_subscription(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error cancelling subscription for user {user_id}: {str(e)}")
+        logger.error(
+            f"Error cancelling subscription for user {current_user.id}: {str(e)}"
+        )
         raise HTTPException(
             status_code=500, detail=f"Failed to cancel subscription: {str(e)}"
         )
@@ -599,11 +593,8 @@ async def get_user_payment_methods(
         )
 
 
-@router.get(
-    "/payment-methods/default/{user_id}", response_model=Optional[PaymentMethodResponse]
-)
+@router.get("/payment-methods/default", response_model=Optional[PaymentMethodResponse])
 async def get_user_default_payment_method(
-    user_id: int,
     current_user: User = Depends(get_current_user),
 ):
     """
@@ -616,7 +607,7 @@ async def get_user_default_payment_method(
             raise HTTPException(status_code=404, detail="User not found")
 
         logger.info(
-            f"Fetching default pymt method for user {user_id} with email {user.email}"
+            f"Fetching default pymt method for user {user.id} with email {user.email}"
         )
 
         # Find Stripe customer by email
@@ -652,7 +643,7 @@ async def get_user_default_payment_method(
     except stripe.error.StripeError as e:
         logger.error(
             f"Stripe error when fetching default payment method for user "
-            f"{user_id}: {str(e)}"
+            f"{user.id}: {str(e)}"
         )
         raise HTTPException(
             status_code=400,
@@ -660,7 +651,7 @@ async def get_user_default_payment_method(
         )
     except Exception as e:
         logger.error(
-            f"Error fetching default payment method for user {user_id}: {str(e)}"
+            f"Error fetching default payment method for user {user.id}: {str(e)}"
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

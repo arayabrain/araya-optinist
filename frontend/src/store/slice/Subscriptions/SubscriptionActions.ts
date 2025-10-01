@@ -128,9 +128,9 @@ export const validateCheckoutSession = createAsyncThunk(
 
 export const cancelSubscription = createAsyncThunk(
   `${SUBSCRIPTION_SLICE_NAME}/cancelSubscription`,
-  async (userId: number, thunkAPI) => {
+  async (_, thunkAPI) => {
     try {
-      const response = await cancelSubscriptionApi(userId)
+      const response = await cancelSubscriptionApi()
       return response
     } catch (error) {
       console.error("Error cancelling subscription:", error)
