@@ -496,11 +496,8 @@ async def get_user_payment_methods(
         )
 
 
-@router.get(
-    "/payment-methods/default/{user_id}", response_model=Optional[PaymentMethodResponse]
-)
+@router.get("/payment-methods/default", response_model=Optional[PaymentMethodResponse])
 async def get_user_default_payment_method(
-    user_id: int,
     current_user: User = Depends(get_current_user),
 ):
     """
@@ -513,7 +510,7 @@ async def get_user_default_payment_method(
             raise HTTPException(status_code=404, detail="User not found")
 
         logger.info(
-            f"Fetching default pymt method for user {user_id} with email {user.email}"
+            f"Fetching default pymt method for user {user.id} with email {user.email}"
         )
 
         # Find Stripe customer by email
@@ -549,7 +546,7 @@ async def get_user_default_payment_method(
     except stripe.error.StripeError as e:
         logger.error(
             f"Stripe error when fetching default payment method for user "
-            f"{user_id}: {str(e)}"
+            f"{user.id}: {str(e)}"
         )
         raise HTTPException(
             status_code=400,
@@ -557,7 +554,7 @@ async def get_user_default_payment_method(
         )
     except Exception as e:
         logger.error(
-            f"Error fetching default payment method for user {user_id}: {str(e)}"
+            f"Error fetching default payment method for user {user.id}: {str(e)}"
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
