@@ -427,6 +427,103 @@ async def cancel_user_subscription(
         )
 
 
+@router.post("/mgmts/reactivate/{user_id}", response_model=CancelSubscriptionResponse)
+async def reactivate_user_subscription(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Cancel the scheduled cancellation of user's subscription
+    - Removes the cancellation scheduled at period end
+    - User subscription will continue normally
+    """
+    try:
+        # Verify user access
+        if current_user.id != user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied: Can only manage your own subscription",
+            )
+
+        # Get current user subscription
+        current_subscription_result = SubscriptionService.get_user_subscription_plan(
+            db, user_id
+        )
+        if not current_subscription_result:
+            raise HTTPException(status_code=404, detail="No active subscription found")
+
+        sub_data, current_plan = current_subscription_result
+
+        # Get Stripe customer
+        customer = await _get_stripe_customer_by_email(current_user.email)
+        if not customer:
+            raise HTTPException(
+                status_code=404, detail="No Stripe customer found for user"
+            )
+
+        # Get active Stripe subscription
+        stripe_subscriptions = stripe.Subscription.list(
+            customer=customer.id, status="active", limit=1
+        )
+
+        if not stripe_subscriptions.data:
+            raise HTTPException(
+                status_code=404, detail="No active Stripe subscription found"
+            )
+
+        stripe_subscription = stripe_subscriptions.data[0]
+
+        # Check if subscription is scheduled for cancellation
+        if not stripe_subscription.cancel_at_period_end:
+            raise HTTPException(
+                status_code=400, detail="Subscription is not scheduled for cancellation"
+            )
+
+        logger.info(f"Cancelling scheduled cancellation for user {user_id}")
+
+        # Remove the scheduled cancellation
+        stripe.Subscription.modify(
+            stripe_subscription.id,
+            cancel_at_period_end=False,
+            metadata={
+                **stripe_subscription.metadata,
+                "cancellation_requested": "false",
+                "reactivation_requested_at": str(int(datetime.utcnow().timestamp())),
+            },
+        )
+
+        # Update database to remove scheduled downgrade
+        SubscriptionService.update_scheduled_downgrade(db, user_id, False)
+
+        message: str = (
+            "Subscription cancellation has been cancelled. "
+            "Your subscription will continue normally."
+        )
+
+        logger.info(f"Successfully cancelled cancellation for user {user_id}")
+
+        return CancelSubscriptionResponse(
+            success=True,
+            message=message,
+            cancellation_date="",
+            access_until="Subscription will continue normally",
+        )
+
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error cancelling cancellation: {str(e)}")
+        raise HTTPException(
+            status_code=400, detail=f"Payment processing error: {str(e)}"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error cancelling cancellation for user {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to cancel cancellation: {str(e)}"
+        )
+
+
 @router.get("/payment-methods", response_model=List[PaymentMethodResponse])
 async def get_user_payment_methods(
     current_user: User = Depends(get_current_user),

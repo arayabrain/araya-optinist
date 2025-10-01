@@ -7,6 +7,7 @@ import {
   createCheckoutSessionApi,
   getSubscriptionPlansApi,
   getUserSubscriptionApi,
+  reactivateSubscriptionApi,
   validateCheckoutSessionApi,
 } from "api/subscriptions/Subscriptions"
 import {
@@ -94,6 +95,21 @@ export const createCheckoutSession = createAsyncThunk<
     return rejectWithValue(message)
   }
 })
+
+export const reactivateSubscription = createAsyncThunk(
+  `${SUBSCRIPTION_SLICE_NAME}/reactivateSubscription`,
+  async (userId: number, thunkAPI) => {
+    try {
+      const response = await reactivateSubscriptionApi(userId)
+      return response
+    } catch (error) {
+      console.error("Error reactivating subscription:", error)
+      // Extract clean error message instead of passing entire error object
+      const errorMessage = extractErrorMessage(error)
+      return thunkAPI.rejectWithValue(errorMessage)
+    }
+  },
+)
 
 export const validateCheckoutSession = createAsyncThunk(
   `${SUBSCRIPTION_SLICE_NAME}/validateCheckoutSession`,

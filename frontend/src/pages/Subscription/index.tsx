@@ -23,6 +23,7 @@ import {
   getUserSubscription,
   createCheckoutSession,
   cancelSubscription,
+  reactivateSubscription,
 } from "store/slice/Subscriptions/SubscriptionActions"
 import {
   selectSubscriptionPlans,
@@ -93,6 +94,36 @@ const SubscriptionPlans = () => {
   enum SUBSCRIPTION_PLAN {
     FREE = "Free",
     PREMIUM = "Premium",
+  }
+
+  const handleReactivatePlan = async (planId: number) => {
+    if (!user?.id) {
+      // Handle case where user is not logged in
+      navigate("/login")
+      return
+    }
+
+    try {
+      setProcessingPlanId(planId)
+
+      // Dispatch the action to reactivate subscription
+      const resultAction = await dispatch(reactivateSubscription(user.id))
+
+      // Check if the action was fulfilled
+      if (reactivateSubscription.fulfilled.match(resultAction)) {
+        // Successfully reactivated
+        console.log("Subscription reactivated successfully")
+      } else {
+        // Handle error case
+        console.error("Failed to reactivate subscription:", resultAction.error)
+        // You might want to show an error message to the user here
+      }
+    } catch (error) {
+      console.error("Error reactivating subscription:", error)
+      // Handle error - maybe show a toast notification
+    } finally {
+      setProcessingPlanId(null)
+    }
   }
 
   const handleUpgradeClick = async (planId: number) => {
@@ -386,13 +417,7 @@ const SubscriptionPlans = () => {
                       variant="contained"
                       onClick={() => {
                         if (userSubscription?.scheduled_downgrade && !isFree) {
-                          // Handle "Continue Plan" - reactivate subscription
-                          // You'll need to implement this action in your store
-                          // dispatch(reactivateSubscription(user.id))
-                          console.log(
-                            "Reactivating subscription for plan:",
-                            plan.id,
-                          )
+                          handleReactivatePlan(plan.id)
                         } else {
                           handleUpgradeClick(plan.id)
                         }

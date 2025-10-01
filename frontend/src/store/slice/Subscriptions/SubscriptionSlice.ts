@@ -5,6 +5,7 @@ import {
   createCheckoutSession,
   getSubscriptionPlan,
   getUserSubscription,
+  reactivateSubscription,
 } from "store/slice/Subscriptions/SubscriptionActions"
 import {
   SUBSCRIPTION_SLICE_NAME,
@@ -161,6 +162,23 @@ const subscriptionSlice = createSlice({
         state.error = extractRejectedErrorMessage(
           action,
           "Failed to cancel subscription",
+        )
+      })
+      .addCase(reactivateSubscription.pending, (state) => {
+        state.loading = true
+        state.error = null
+      })
+      .addCase(reactivateSubscription.fulfilled, (state, action) => {
+        state.loading = false
+        if (state.userSubscription) {
+          state.userSubscription.scheduled_downgrade = false
+        }
+      })
+      .addCase(reactivateSubscription.rejected, (state, action) => {
+        state.loading = false
+        state.error = extractRejectedErrorMessage(
+          action,
+          "Failed to reactivate subscription",
         )
       })
   },
