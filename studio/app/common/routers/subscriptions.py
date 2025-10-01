@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import List, Optional
 
 import stripe
+from attrs import asdict
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
@@ -29,6 +30,7 @@ from studio.app.common.schemas.subscriptions import (
     UserSubscriptionResponse,
 )
 from studio.app.common.schemas.users import User
+from enum import Enum
 
 # Import your database models and dependencies
 
@@ -37,8 +39,21 @@ stripe.api_key = SubscriptionService.get_stripe_key()
 STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
 
 router = APIRouter(prefix="/api/subsc", tags=["Subscriptions"])
-webhook_router = APIRouter(prefix="/api/subsc/webhooks", tags=["Webhooks"])
+webhook_router = APIRouter(prefix="/api/subsc/webhooks", tags=["Subscription Webhooks"])
 logger = AppLogger.get_logger()
+
+
+class StripeSubscriptionStatus(Enum):
+    """Stripe subscription status values"""
+
+    INCOMPLETE = "incomplete"
+    INCOMPLETE_EXPIRED = "incomplete_expired"
+    TRIALING = "trialing"
+    ACTIVE = "active"
+    PAST_DUE = "past_due"
+    CANCELED = "canceled"
+    UNPAID = "unpaid"
+    PAUSED = "paused"
 
 
 @router.get("/mgmts/plans", response_model=List[SubscriptionPlanResponse])
@@ -47,13 +62,12 @@ def get_subscription_plans(db: Session = Depends(get_db)):
         plans = SubscriptionService.get_active_plans(db)
 
         if not plans:
-            logger.info("No subscription plans found")
+            logger.warning("No subscription plans found")
             return []
 
-        result = []
+        result: List[SubscriptionPlanResponse] = []
         for plan in plans:
             try:
-                # Create response object - let Pydantic validators handle conversion
                 plan_response = SubscriptionPlanResponse(
                     id=plan.id,
                     name=plan.name,
@@ -81,41 +95,30 @@ def get_subscription_plans(db: Session = Depends(get_db)):
 
 
 @router.get(
-    "/mgmts/{user_id}",
+    "/mgmts",
     response_model=Optional[UserSubscriptionResponse],
 )
 async def get_user_subscription(
-    user_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Get user's current active subscription
     """
     try:
         # Get the most recent active subscription
-        subscription = SubscriptionService.get_user_subscription_plan(db, user_id)
-        logger.info(f"Fetched subscription for user {user_id}: {subscription}")
+        subscription = SubscriptionService.get_user_subscription(db, current_user.id)
+        logger.info(f"Fetched subscription for user {current_user.id}: {subscription}")
 
         if subscription is None:
             # Check if user has any expired subscriptions
             expired_subscription = SubscriptionService.get_user_expired_subscription(
-                db, user_id
+                db, current_user.id
             )
 
             if expired_subscription:
                 sub_data, plan_data, user_data = expired_subscription
-                return UserSubscriptionResponse(
-                    id=sub_data.id,
-                    plan_id=sub_data.plan_id,
-                    user_id=sub_data.user_id,
-                    expiration=sub_data.expiration,
-                    is_expired=True,
-                    scheduled_downgrade=sub_data.scheduled_downgrade,
-                    plan_name=plan_data.name,
-                    plan_price=plan_data.price,
-                    created_at=sub_data.created_at,
-                    updated_at=sub_data.updated_at,
-                )
+                return UserSubscriptionResponse(**asdict(sub_data), **asdict(plan_data))
 
             return None
 
@@ -123,28 +126,24 @@ async def get_user_subscription(
         subscription, subscription_plans = subscription
         sub_data, plan_data = subscription, subscription_plans
         return UserSubscriptionResponse(
-            id=sub_data.id,
-            plan_id=sub_data.plan_id,
-            user_id=sub_data.user_id,
-            expiration=sub_data.expiration,
-            is_expired=False,
-            scheduled_downgrade=sub_data.scheduled_downgrade,
-            plan_name=plan_data.name,
-            plan_price=plan_data.price,
-            created_at=sub_data.created_at,
-            updated_at=sub_data.updated_at,
+            **{
+                **asdict(sub_data),
+                "plan_name": plan_data.name,
+                "plan_price": plan_data.price,
+            }
         )
     except Exception as e:
-        logger.error(f"Error fetching subscription for user {user_id}: {str(e)}")
+        logger.error(
+            f"Error fetching subscription for user {current_user.id}: {str(e)}"
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch user subscription: {str(e)}",
         )
 
 
-@router.put("/mgmts/{user_id}", response_model=UpdateSubscriptionResponse)
+@router.put("/mgmts", response_model=UpdateSubscriptionResponse)
 async def update_user_subscription(
-    user_id: int,
     request: UpdateSubscriptionRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -153,13 +152,6 @@ async def update_user_subscription(
     Update user's subscription to a different plan - webhook-driven database updates
     """
     try:
-        # Verify user access
-        if current_user.id != user_id:
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied: Can only update your own subscription",
-            )
-
         # Get the new plan details
         new_plan = SubscriptionService.get_plan_by_id(db, request.new_plan_id)
         if not new_plan:
@@ -168,8 +160,8 @@ async def update_user_subscription(
             )
 
         # Get current user subscription
-        current_subscription_result = SubscriptionService.get_user_subscription_plan(
-            db, user_id
+        current_subscription_result = SubscriptionService.get_user_subscription(
+            db, current_user.id
         )
         if not current_subscription_result:
             raise HTTPException(
@@ -194,7 +186,7 @@ async def update_user_subscription(
 
         # Get active Stripe subscription
         stripe_subscriptions = stripe.Subscription.list(
-            customer=customer.id, status="active", limit=1
+            customer=customer.id, status=StripeSubscriptionStatus.ACTIVE, limit=1
         )
 
         if not stripe_subscriptions.data:
@@ -222,7 +214,9 @@ async def update_user_subscription(
             },
         )
 
-        logger.info(f"Processing scheduled subscription change for user {user_id}")
+        logger.info(
+            f"Processing scheduled subscription change for user {current_user.id}"
+        )
 
         # Get the current period end from the subscription items
         current_period_end = stripe_subscription["items"]["data"][0][
@@ -259,7 +253,7 @@ async def update_user_subscription(
                 },
             ],
             metadata={
-                "user_id": str(user_id),
+                "user_id": str(current_user.id),
                 "new_plan_id": str(new_plan.id),
                 "old_plan_id": str(current_plan.id),
                 "scheduled_change": "true",
@@ -282,7 +276,7 @@ async def update_user_subscription(
         )
 
         logger.info(
-            f"subscription change for user {user_id} "
+            f"subscription change for user {current_user.id} "
             f"from plan {current_plan.id} to plan {new_plan.id} ({plan_change_type})"
         )
 
@@ -305,7 +299,9 @@ async def update_user_subscription(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error updating subscription for user {user_id}: {str(e)}")
+        logger.error(
+            f"Error updating subscription for user {current_user.id}: {str(e)}"
+        )
         raise HTTPException(
             status_code=500, detail=f"Failed to update subscription: {str(e)}"
         )
@@ -332,7 +328,7 @@ async def cancel_user_subscription(
             )
 
         # Get current user subscription
-        current_subscription_result = SubscriptionService.get_user_subscription_plan(
+        current_subscription_result = SubscriptionService.get_user_subscription(
             db, user_id
         )
         if not current_subscription_result:
@@ -351,7 +347,7 @@ async def cancel_user_subscription(
 
         # Get active Stripe subscription
         stripe_subscriptions = stripe.Subscription.list(
-            customer=customer.id, status="active", limit=1
+            customer=customer.id, status=StripeSubscriptionStatus.ACTIVE, limit=1
         )
 
         if not stripe_subscriptions.data:
@@ -644,7 +640,9 @@ async def update_default_payment_method(
         )
 
         # Update default payment method for active subscriptions
-        subscriptions = stripe.Subscription.list(customer=customer.id, status="active")
+        subscriptions = stripe.Subscription.list(
+            customer=customer.id, status=StripeSubscriptionStatus.ACTIVE
+        )
 
         updated_subscriptions = 0
         for subscription in subscriptions.data:
@@ -719,7 +717,9 @@ async def delete_payment_method(
             )
 
         # Check if this is the default payment method for any active subscriptions
-        subscriptions = stripe.Subscription.list(customer=customer.id, status="active")
+        subscriptions = stripe.Subscription.list(
+            customer=customer.id, status=StripeSubscriptionStatus.ACTIVE
+        )
 
         for subscription in subscriptions.data:
             if subscription.default_payment_method == payment_method_id:

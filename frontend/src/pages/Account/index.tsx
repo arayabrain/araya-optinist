@@ -91,7 +91,7 @@ const Account = () => {
 
     // Fetch user subscription when user is loaded
     if (user.id) {
-      dispatch(getUserSubscription(user.id))
+      dispatch(getUserSubscription())
     }
   }, [user, dispatch])
 
