@@ -1,4 +1,3 @@
-// store/slice/Subscriptions/SubscriptionActions.ts
 import _ from "lodash"
 
 import { createAsyncThunk } from "@reduxjs/toolkit"
@@ -69,9 +68,9 @@ export const getSubscriptionPlan = createAsyncThunk(
 
 export const getUserSubscription = createAsyncThunk(
   `${SUBSCRIPTION_SLICE_NAME}/getUserSubscription`,
-  async (userId: number, thunkAPI) => {
+  async (_, thunkAPI) => {
     try {
-      const response = await getUserSubscriptionApi(userId)
+      const response = await getUserSubscriptionApi()
       return response
     } catch (error) {
       console.error("Error fetching user subscription:", error)

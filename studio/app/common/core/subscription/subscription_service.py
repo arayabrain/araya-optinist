@@ -43,7 +43,7 @@ class SubscriptionService:
         )
 
     @staticmethod
-    def get_user_subscription_plan(
+    def get_user_subscription(
         db: Session, user_id: int
     ) -> Optional[Tuple[UserSubscription, SubscriptionPlans]]:
         return (
@@ -89,6 +89,7 @@ class SubscriptionService:
             )
             .filter(
                 common_model.UserSubscription.user_id == user_id,
+                common_model.UserSubscription.expiration <= datetime.now(),
                 common_model.User.active.is_(True),
             )
             .order_by(common_model.UserSubscription.expiration.desc())

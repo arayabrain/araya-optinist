@@ -69,7 +69,7 @@ const SubscriptionPlans = () => {
       dispatch(getSubscriptionPlan())
 
       if (user?.id) {
-        dispatch(getUserSubscription(user.id))
+        dispatch(getUserSubscription())
       }
     }
 
@@ -162,7 +162,7 @@ const SubscriptionPlans = () => {
     dispatch(clearError())
     dispatch(getSubscriptionPlan())
     if (user?.id) {
-      dispatch(getUserSubscription(user.id))
+      dispatch(getUserSubscription())
     }
   }
 
