@@ -116,8 +116,19 @@ async def get_user_subscription(
             )
 
             if expired_subscription:
-                sub_data, plan_data, user_data = expired_subscription
-                return UserSubscriptionResponse(**asdict(sub_data), **asdict(plan_data))
+                sub_data, plan_data, _ = expired_subscription
+                return UserSubscriptionResponse(
+                    id=sub_data.id,
+                    user_id=sub_data.user_id,
+                    plan_id=sub_data.plan_id,
+                    created_at=sub_data.created_at,
+                    updated_at=sub_data.updated_at,
+                    plan_name=plan_data.name,
+                    plan_price=plan_data.price,
+                    expiration=sub_data.expiration,
+                    is_expired=True,
+                    scheduled_downgrade=sub_data.scheduled_downgrade,
+                )
 
             return None
 
@@ -125,11 +136,16 @@ async def get_user_subscription(
         subscription, subscription_plans = subscription
         sub_data, plan_data = subscription, subscription_plans
         return UserSubscriptionResponse(
-            **{
-                **asdict(sub_data),
-                "plan_name": plan_data.name,
-                "plan_price": plan_data.price,
-            }
+            id=sub_data.id,
+            user_id=sub_data.user_id,
+            plan_id=sub_data.plan_id,
+            created_at=sub_data.created_at,
+            updated_at=sub_data.updated_at,
+            plan_name=plan_data.name,
+            plan_price=plan_data.price,
+            expiration=sub_data.expiration,
+            is_expired=False,
+            scheduled_downgrade=sub_data.scheduled_downgrade,
         )
     except Exception as e:
         logger.error(
