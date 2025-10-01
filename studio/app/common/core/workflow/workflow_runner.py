@@ -3,7 +3,6 @@ import uuid
 from dataclasses import asdict
 from typing import Dict, List, Optional
 
-from studio.app.common.core.cloud.cloud_utils import get_user_subscription_plan
 from studio.app.common.core.experiment.experiment_writer import ExptConfigWriter
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.rules.runner import Runner
@@ -159,70 +158,8 @@ class WorkflowRunner:
             snakemake_execute, self.workspace_id, self.unique_id, snakemake_params
         )
 
-    def _calculate_priority(self) -> int:
-        """Calculate priority based on user subscription tier."""
-        snakemake_priority = 1  # Default for free users
-        user_tier_info = None
-
-        if self.user_id:
-            try:
-                # Use async function properly
-                import asyncio
-
-                # Get user subscription plan using the established async-in-sync pattern
-                async def _get_user_subscription_async():
-                    return await get_user_subscription_plan(self.user_id)
-
-                try:
-                    # Try to get existing event loop
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # Create a new event loop in a thread for sync context
-                        import concurrent.futures
-
-                        with concurrent.futures.ThreadPoolExecutor() as executor:
-                            future = executor.submit(
-                                asyncio.run, _get_user_subscription_async()
-                            )
-                            user_tier_info = future.result()
-                    else:
-                        user_tier_info = loop.run_until_complete(
-                            _get_user_subscription_async()
-                        )
-                except RuntimeError:
-                    # No event loop, create new one
-                    user_tier_info = asyncio.run(_get_user_subscription_async())
-                tier = user_tier_info.get("tier", "free")
-                is_premium = user_tier_info.get("is_premium", False)
-
-                snakemake_priority = 10 if is_premium else 1
-
-                self.logger.info(
-                    f"PRIORITY ASSIGNMENT: Workflow {self.unique_id} "
-                    f"(User: {self.user_id}) - Tier: {tier}, Priority: "
-                    f"{snakemake_priority}, "
-                    f"Premium: {is_premium}, Plan: "
-                    f"{user_tier_info.get('plan_name', 'Unknown')}"
-                )
-            except Exception as e:
-                self.logger.warning(
-                    f"Failed to get user subscription tier for "
-                    f"user {self.user_id}: {e}. "
-                    f"Using default priority: {snakemake_priority}"
-                )
-        else:
-            self.logger.info(
-                f"PRIORITY ASSIGNMENT: Workflow {self.unique_id} - "
-                f"No user_id provided, using default priority: {snakemake_priority}"
-            )
-
-        return snakemake_priority
-
     def set_smk_config(self):
-        # Calculate priority based on user subscription tier first
-        snakemake_priority = self._calculate_priority()
-
-        rules, last_output = self.rulefile(snakemake_priority)
+        rules, last_output = self.rulefile()
 
         nwb_template = get_typecheck_params(self.runItem.nwbParam, "nwb")
 
@@ -230,14 +167,13 @@ class WorkflowRunner:
             rules=rules,
             last_output=last_output,
             nwb_template=nwb_template,
-            snakemake_priority=snakemake_priority,
         )
 
         SmkConfigWriter.write_raw(
             self.workspace_id, self.unique_id, asdict(flow_config)
         )
 
-    def rulefile(self, snakemake_priority: int = 1) -> Dict[str, Rule]:
+    def rulefile(self) -> Dict[str, Rule]:
         endNodeList = self.get_endNodeList()
 
         nwbfile = get_typecheck_params(self.runItem.nwbParam, "nwb")
@@ -254,7 +190,6 @@ class WorkflowRunner:
                     node=node,
                     edgeDict=self.edgeDict,
                     nwbfile=nwbfile,
-                    priority=snakemake_priority,
                 )
                 data_rule = None
 
@@ -281,7 +216,6 @@ class WorkflowRunner:
                     unique_id=self.unique_id,
                     node=node,
                     edgeDict=self.edgeDict,
-                    priority=snakemake_priority,
                 ).algo(nodeDict=self.nodeDict)
 
                 rule_dict[node.id] = algo_rule
@@ -308,7 +242,6 @@ class WorkflowRunner:
                 style=None,
             ),
             edgeDict={},
-            priority=snakemake_priority,
         ).post_process()
         rule_dict[ProcessType.POST_PROCESS.type] = post_process_rule
         last_outputs.append(post_process_rule.output)

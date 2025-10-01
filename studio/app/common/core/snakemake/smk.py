@@ -23,7 +23,6 @@ class FlowConfig:
     rules: Dict[str, Rule]
     last_output: list
     nwb_template: dict
-    snakemake_priority: int = 1
 
 
 class NormalRun(BaseModel):

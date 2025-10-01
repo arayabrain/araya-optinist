@@ -15,8 +15,14 @@ if config.get('type') == "EDIT_ROI":
         script:
             f"{DIRPATH.APP_DIR}/optinist/core/rules/edit_ROI.py"
 else:
+    # Compute paths outside rule definition to avoid Snakemake parsing issues
+    all_outputs = [
+        SmkUtils._make_relative_path(join_filepath([DIRPATH.OUTPUT_DIR, x]))
+        for x in config["last_output"]
+    ]
+
     rule all:
-        input: [join_filepath([DIRPATH.OUTPUT_DIR, x]) for x in config["last_output"]]
+        input: all_outputs
 
     for rule_name, details in config["rules"].items():
         # make rules of input node
@@ -30,8 +36,6 @@ else:
                     SmkUtils.output(details)
                 params:
                     name = details
-                priority:
-                    details.get("priority", config.get("snakemake_priority", 1))
                 script:
                     f"{DIRPATH.APP_DIR}/common/core/rules/data.py"
 
@@ -48,8 +52,6 @@ else:
                     SmkUtils.output(details)
                 params:
                     name = details
-                priority:
-                    details.get("priority", config.get("snakemake_priority", 1))
                 script:
                     f"{DIRPATH.APP_DIR}/common/core/rules/post_process.py"
 
@@ -64,8 +66,6 @@ else:
                     SmkUtils.output(details)
                 params:
                     name = details
-                priority:
-                    details.get("priority", config.get("snakemake_priority", 1))
                 conda:
                     SmkUtils.conda(details)
                 script:

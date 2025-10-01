@@ -82,7 +82,6 @@ class PriorityQueueTester:
         # Add priority and user context (this will be handled by the workflow runner)
         config["user_id"] = user_id
         config["user_type"] = user_type
-        config["snakemake_priority"] = priority
         config["workspace_id"] = workspace_id
         config["unique_id"] = workflow_id
 
@@ -105,9 +104,8 @@ class PriorityQueueTester:
 
         workflow_id = workflow_config["unique_id"]
         user_type = workflow_config["user_type"]
-        priority = workflow_config["snakemake_priority"]
 
-        print(f"Starting {user_type} workflow {workflow_id} (priority={priority})")
+        print(f"Starting {user_type} workflow {workflow_id}")
         start_time = time.time()
 
         try:
@@ -204,7 +202,6 @@ class PriorityQueueTester:
                     result = {
                         "workflow_id": workflow_id,
                         "user_type": config["user_type"],
-                        "priority": config["snakemake_priority"],
                         "success": success,
                         "duration": duration,
                         "completion_time": time.time(),
@@ -247,7 +244,6 @@ class PriorityQueueTester:
             result = {
                 "workflow_id": workflow_id,
                 "user_type": config["user_type"],
-                "priority": config["snakemake_priority"],
                 "success": success,
                 "duration": duration,
                 "completion_time": time.time(),
