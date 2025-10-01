@@ -5132,6 +5132,22 @@ anyio = ">=3.4.0,<5"
 full = ["httpx (>=0.22.0)", "itsdangerous", "jinja2", "python-multipart", "pyyaml"]
 
 [[package]]
+name = "stripe"
+version = "12.5.0"
+description = "Python bindings for the Stripe API"
+optional = false
+python-versions = ">=3.6"
+groups = ["main"]
+files = [
+    {file = "stripe-12.5.0-py2.py3-none-any.whl", hash = "sha256:9256226ed5c64282045a025687b34279af6227af21c954d0ddd9ff9d4b69a335"},
+    {file = "stripe-12.5.0.tar.gz", hash = "sha256:cd2b8e71216b6aed5dc1e9b5e6f658b5e21d69a60d44fb8c08f41e1f7bddedd0"},
+]
+
+[package.dependencies]
+requests = {version = ">=2.20", markers = "python_version >= \"3.0\""}
+typing_extensions = {version = ">=4.5.0", markers = "python_version >= \"3.7\""}
+
+[[package]]
 name = "sysrsync"
 version = "1.1.1"
 description = "Simple and safe python wrapper for calling system rsync"
@@ -5625,4 +5641,4 @@ pyyaml = ">=6.0,<7.0"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "b5e2ed08f6c0d1e251d76cd4fc8356b35b3de5e1cf2e57454da57d38b5d34d32"
+content-hash = "2e2af9686971ca95f0ba14e457a7bcd0b01b03bc0427a29647ed6574a18ded86"

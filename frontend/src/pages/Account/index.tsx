@@ -11,7 +11,7 @@ import { useNavigate } from "react-router-dom"
 
 import { useSnackbar, VariantType } from "notistack"
 
-import Edit from "@mui/icons-material/Edit"
+import { Edit } from "@mui/icons-material"
 import {
   Box,
   Button,
@@ -68,12 +68,18 @@ const Account = () => {
     enqueueSnackbar(mess, { variant })
   }
 
-  const MEMBERSHIP_STATUS = {
-    LOADING: "Loading...",
-    ERROR: "Error loading subscription",
-    FREE: "FREE",
-    EXPIRED: "EXPIRED",
-  } as const
+  enum SUBSCRIPTION_STATUS {
+    LOADING = "LOADING",
+    ERROR = "ERROR",
+    FREE = "FREE",
+    EXPIRED = "EXPIRED",
+    ACTIVE = "ACTIVE",
+  }
+
+  enum SUBSCRIPTION_PLAN {
+    FREE = "Free",
+    PREMIUM = "Premium",
+  }
 
   useEffect(() => {
     dispatch(getMe())
@@ -85,7 +91,7 @@ const Account = () => {
 
     // Fetch user subscription when user is loaded
     if (user.id) {
-      dispatch(getUserSubscription(user.id))
+      dispatch(getUserSubscription())
     }
   }, [user, dispatch])
 
@@ -165,6 +171,10 @@ const Account = () => {
     navigate("/console/subscription")
   }
 
+  const onClickManage = () => {
+    navigate("/console/subscription/manage")
+  }
+
   const getRole = (role?: number) => {
     if (!role) return
     let newRole = ""
@@ -191,49 +201,75 @@ const Account = () => {
     }
   }
 
-  const getMembershipStatus = () => {
+  const getSubscriptionStatus = () => {
     if (subscriptionLoading) {
-      return MEMBERSHIP_STATUS.LOADING
-    }
-
-    if (subscriptionError) {
-      return MEMBERSHIP_STATUS.ERROR
-    }
-
-    if (!userSubscription) {
-      return MEMBERSHIP_STATUS.FREE
-    }
-
-    if (isSubscriptionExpired) {
-      return MEMBERSHIP_STATUS.EXPIRED
-    }
-
-    return userSubscription.plan_name.toUpperCase()
-  }
-
-  // Helper function to get membership button text and action
-  const getMembershipButton = () => {
-    const status = getMembershipStatus()
-
-    if (status === "FREE" || status === "EXPIRED") {
-      return {
-        text: "Upgrade",
-        action: onClickUpgrade,
-        color: "primary" as const,
-      }
-    }
-
-    return {
-      text: "Manage",
-      action: onClickUpgrade,
-      color: "secondary" as const,
+      return SUBSCRIPTION_STATUS.LOADING
+    } else if (subscriptionError) {
+      return SUBSCRIPTION_STATUS.ERROR
+    } else if (!userSubscription) {
+      return SUBSCRIPTION_STATUS.FREE
+    } else if (isSubscriptionExpired) {
+      return SUBSCRIPTION_STATUS.EXPIRED
+    } else {
+      return SUBSCRIPTION_STATUS.ACTIVE
     }
   }
 
-  // Helper function to format expiration date
+  // Updated function to handle showing both buttons for users with subscription records
+  const renderSubscriptionButtons = () => {
+    const status = getSubscriptionStatus()
+
+    // For users who never had a subscription (completely free users)
+    if (status === SUBSCRIPTION_STATUS.FREE) {
+      return (
+        <Button
+          variant="contained"
+          color="primary"
+          sx={{ ml: 2 }}
+          onClick={onClickUpgrade}
+          disabled={subscriptionLoading}
+        >
+          Upgrade
+        </Button>
+      )
+    }
+
+    // For users with subscription records (active or expired)
+    if (
+      status === SUBSCRIPTION_STATUS.ACTIVE ||
+      status === SUBSCRIPTION_STATUS.EXPIRED
+    ) {
+      return (
+        <Box sx={{ ml: 2, display: "flex", gap: 1 }}>
+          {status === SUBSCRIPTION_STATUS.EXPIRED && (
+            <Button
+              variant="contained"
+              color="primary"
+              onClick={onClickUpgrade}
+              disabled={subscriptionLoading}
+            >
+              Upgrade
+            </Button>
+          )}
+          <Button
+            variant="contained"
+            color="secondary"
+            onClick={onClickManage}
+            disabled={subscriptionLoading}
+          >
+            Manage
+          </Button>
+        </Box>
+      )
+    }
+
+    // Fallback for loading/error states
+    return null
+  }
+
+  // Helper function to format expiration date with server-validated expiration status
   const getExpirationInfo = () => {
     if (!userSubscription) return null
-
     const expirationDate = new Date(userSubscription.expiration)
 
     if (isSubscriptionExpired) {
@@ -250,8 +286,6 @@ const Account = () => {
       </Typography>
     )
   }
-
-  const membershipButton = getMembershipButton()
 
   return (
     <AccountWrapper>
@@ -312,7 +346,7 @@ const Account = () => {
         <BoxData>{user?.attributes?.remote_bucket_name || "-"}</BoxData>
       </BoxFlex>
       <BoxFlex>
-        <TitleData>Membership</TitleData>
+        <TitleData>Subscription</TitleData>
         <Box
           sx={{
             display: "flex",
@@ -320,28 +354,14 @@ const Account = () => {
             alignItems: "flex-start",
           }}
         >
-          <BoxData>{getMembershipStatus()}</BoxData>
+          <BoxData>
+            {userSubscription?.plan_name && !isSubscriptionExpired
+              ? userSubscription.plan_name
+              : SUBSCRIPTION_PLAN.FREE}
+          </BoxData>
           {getExpirationInfo()}
         </Box>
-        <Button
-          variant="contained"
-          color={membershipButton.color}
-          sx={{ ml: 2 }}
-          onClick={membershipButton.action}
-          disabled={subscriptionLoading}
-        >
-          {membershipButton.text}
-        </Button>
-      </BoxFlex>
-      {/* TODO: Fix to be dynamic code */}
-      <BoxFlex>
-        <TitleData>Payment Method</TitleData>
-        <>
-          <Box>Credit Card</Box>
-          <IconButton sx={{ ml: 1 }}>
-            <Edit />
-          </IconButton>
-        </>
+        {renderSubscriptionButtons()}
       </BoxFlex>
       <BoxFlex sx={{ justifyContent: "space-between", mt: 10, maxWidth: 600 }}>
         <Button variant="contained" color="primary" onClick={onChangePwClick}>

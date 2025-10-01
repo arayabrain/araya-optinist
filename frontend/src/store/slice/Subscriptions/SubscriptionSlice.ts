@@ -1,9 +1,11 @@
-// store/slice/Subscriptions/SubscriptionSlice.ts
 import { createSlice, PayloadAction } from "@reduxjs/toolkit"
 
 import {
+  cancelSubscription,
+  createCheckoutSession,
   getSubscriptionPlan,
   getUserSubscription,
+  reactivateSubscription,
 } from "store/slice/Subscriptions/SubscriptionActions"
 import {
   SUBSCRIPTION_SLICE_NAME,
@@ -19,6 +21,7 @@ const initialState: SubscriptionState = {
   plans: [],
   userSubscription: null,
   loading: false,
+  checkoutLoading: false,
   error: null,
   plansLoading: false,
   userSubscriptionLoading: false,
@@ -62,8 +65,6 @@ const subscriptionSlice = createSlice({
             state.plans = action.payload.map((planData: unknown) =>
               safeConvertPlan(planData as Record<string, unknown>),
             )
-            // eslint-disable-next-line no-console
-            console.log("Successfully loaded plans:", state.plans)
           } else {
             // eslint-disable-next-line no-console
             console.warn("Invalid plans data received:", action.payload)
@@ -107,6 +108,10 @@ const subscriptionSlice = createSlice({
                 plan_id: Number(action.payload.plan_id) || 0,
                 user_id: Number(action.payload.user_id) || 0,
                 expiration: String(action.payload.expiration || ""),
+                is_expired: Boolean(action.payload.is_expired),
+                scheduled_downgrade: Boolean(
+                  action.payload.scheduled_downgrade,
+                ),
                 plan_name: String(action.payload.plan_name || ""),
                 plan_price: Number(action.payload.plan_price) || 0,
               }
@@ -133,6 +138,51 @@ const subscriptionSlice = createSlice({
         state.error = extractRejectedErrorMessage(
           action,
           "Failed to load user subscription",
+        )
+      })
+      .addCase(createCheckoutSession.pending, (state) => {
+        state.checkoutLoading = true
+        state.error = null
+      })
+      .addCase(createCheckoutSession.fulfilled, (state) => {
+        state.checkoutLoading = false
+      })
+      .addCase(createCheckoutSession.rejected, (state, action) => {
+        state.checkoutLoading = false
+        state.error = action.payload || "Failed to create checkout session"
+      })
+      .addCase(cancelSubscription.pending, (state) => {
+        state.loading = true
+        state.error = null
+      })
+      .addCase(cancelSubscription.fulfilled, (state) => {
+        state.loading = false
+        if (state.userSubscription) {
+          state.userSubscription.scheduled_downgrade = true
+        }
+      })
+      .addCase(cancelSubscription.rejected, (state, action) => {
+        state.loading = false
+        state.error = extractRejectedErrorMessage(
+          action,
+          "Failed to cancel subscription",
+        )
+      })
+      .addCase(reactivateSubscription.pending, (state) => {
+        state.loading = true
+        state.error = null
+      })
+      .addCase(reactivateSubscription.fulfilled, (state) => {
+        state.loading = false
+        if (state.userSubscription) {
+          state.userSubscription.scheduled_downgrade = false
+        }
+      })
+      .addCase(reactivateSubscription.rejected, (state, action) => {
+        state.loading = false
+        state.error = extractRejectedErrorMessage(
+          action,
+          "Failed to reactivate subscription",
         )
       })
   },

@@ -1062,8 +1062,8 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         )
         print(
             f"  - Least loaded: "
-            f"{least_loaded_instance['instance_id'] if least_loaded_instance else 'None'} "  # noqa: E501
-            f"({min_users} users)"
+            f"{least_loaded_instance['instance_id'] if least_loaded_instance else 'None'}"  # noqa: E501
+            f" ({min_users} users)"
         )
 
         # Use dedicated instance if available (PRIORITY 1)

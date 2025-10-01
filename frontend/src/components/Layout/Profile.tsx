@@ -5,7 +5,6 @@ import { useNavigate } from "react-router-dom"
 import AccountCircleIcon from "@mui/icons-material/AccountCircle"
 import Logout from "@mui/icons-material/Logout"
 import PortraitIcon from "@mui/icons-material/Portrait"
-import UpgradeIcon from "@mui/icons-material/Upgrade"
 import { Menu, MenuItem } from "@mui/material"
 import IconButton from "@mui/material/IconButton"
 
@@ -32,13 +31,6 @@ const Profile: FC = () => {
   const onClickAccount = () => {
     setAnchorEl(null)
     navigate("/console/account")
-  }
-
-  const onClickUpgrade = () => {
-    setAnchorEl(null)
-    navigate("/console/subscription")
-    // eslint-disable-next-line no-console
-    console.log("Upgrade clicked")
   }
 
   return (
@@ -72,10 +64,6 @@ const Profile: FC = () => {
         <MenuItem onClick={onClickLogout}>
           <Logout />
           Sign Out
-        </MenuItem>
-        <MenuItem onClick={onClickUpgrade}>
-          <UpgradeIcon />
-          Upgrade Plan
         </MenuItem>
       </Menu>
     </>

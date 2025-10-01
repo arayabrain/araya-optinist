@@ -1,7 +1,7 @@
 """add stripe integration tables
 
 Revision ID: af8c4144cd54
-Revises: 86201451bfdd
+Revises: 4df5949c42ef
 Create Date: 2025-07-22 14:45:36.895878
 
 """
@@ -56,6 +56,12 @@ def upgrade() -> None:
         sa.Column("plan_id", mysql.BIGINT(unsigned=True), nullable=False),
         sa.Column("user_id", mysql.BIGINT(unsigned=True), nullable=False),
         sa.Column("expiration", sa.DateTime(), nullable=False),
+        sa.Column(
+            "scheduled_downgrade",
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
         sa.Column(
             "sync_status",
             sa.Enum("pending", "synced", "failed", name="sync_status_enum"),
@@ -267,7 +273,7 @@ VALUES
                    'isPremium', false),
         JSON_OBJECT('text', 'Standard support through documentation and community',
                    'isPremium', false),
-        JSON_OBJECT('text', 'Basic data storage (5GB)', 'isPremium', false),
+        JSON_OBJECT('text', 'Basic data storage of 5GB', 'isPremium', false),
         JSON_OBJECT('text', 'Standard processing speed', 'isPremium', false)
     )
 ), 1, 1, NOW()),
@@ -277,11 +283,9 @@ VALUES
                    'isPremium', false),
         JSON_OBJECT('text', 'Standard support through documentation and community',
                    'isPremium', false),
-        JSON_OBJECT('text', 'Basic data storage (5GB)', 'isPremium', false),
-        JSON_OBJECT('text', 'Standard processing speed', 'isPremium', false),
         JSON_OBJECT('text', 'Priority compute access with guaranteed allocation',
                    'isPremium', true),
-        JSON_OBJECT('text', 'Extended data storage (200GB)', 'isPremium', true),
+        JSON_OBJECT('text', 'Upgraded data storage of 200GB', 'isPremium', true),
         JSON_OBJECT('text', 'Enhanced support including direct assistance',
                    'isPremium', true),
         JSON_OBJECT('text', 'Advanced features like extended job history',

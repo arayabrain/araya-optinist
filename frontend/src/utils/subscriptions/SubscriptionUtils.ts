@@ -1,8 +1,31 @@
-// store/slice/Subscriptions/SubscriptionUtils.ts
 import {
   PlanFeature,
   SubscriptionPlan,
 } from "store/slice/Subscriptions/SubscriptionType"
+
+// Enums for billing cycles
+export enum BillingCycle {
+  MONTHLY = 1,
+  YEARLY = 2,
+}
+
+// Enums for currency types
+export enum Currency {
+  USD = 1,
+  JPY = 2,
+}
+
+// Enum for billing cycle text mapping
+export enum BillingCycleText {
+  MONTHLY = "month",
+  YEARLY = "year",
+}
+
+// Enum for currency symbols
+export enum CurrencySymbol {
+  USD = "$",
+  JPY = "¥",
+}
 
 // Helper function to safely extract error message from rejected actions
 export const extractRejectedErrorMessage = (
@@ -67,8 +90,8 @@ export const safeConvertPlan = (
       id: Number(planData.id) || 0,
       name: String(planData.name || ""),
       price: Number(planData.price) || 0,
-      billing_cycle: Number(planData.billing_cycle) || 1,
-      currency: Number(planData.currency) || 1,
+      billing_cycle: Number(planData.billing_cycle) || BillingCycle.MONTHLY,
+      currency: Number(planData.currency) || Currency.USD,
       features: safeParseFeatures(planData.features),
       status: Boolean(planData.status),
       created_at: String(planData.created_at || ""),
@@ -80,8 +103,8 @@ export const safeConvertPlan = (
       id: 0,
       name: "Unknown Plan",
       price: 0,
-      billing_cycle: 1,
-      currency: 1,
+      billing_cycle: BillingCycle.MONTHLY,
+      currency: Currency.USD,
       features: {},
       status: false,
       created_at: "",
@@ -92,29 +115,29 @@ export const safeConvertPlan = (
 // Component utility functions
 export const getBillingCycleText = (billingCycle: number): string => {
   switch (billingCycle) {
-    case 1:
-      return "month"
-    case 2:
-      return "year"
+    case BillingCycle.MONTHLY:
+      return BillingCycleText.MONTHLY
+    case BillingCycle.YEARLY:
+      return BillingCycleText.YEARLY
     default:
-      return "month"
+      return BillingCycleText.MONTHLY
   }
 }
 
 export const getCurrencySymbol = (currency: number): string => {
   switch (currency) {
-    case 1:
-      return "$"
-    case 2:
-      return "¥"
+    case Currency.USD:
+      return CurrencySymbol.USD
+    case Currency.JPY:
+      return CurrencySymbol.JPY
     default:
-      return "$"
+      return CurrencySymbol.USD
   }
 }
 
 export const formatPrice = (
   priceInCents: number,
-  currency: number = 1,
+  currency: number = Currency.USD,
 ): string => {
   const symbol = getCurrencySymbol(currency)
   return `${symbol}${(priceInCents / 100).toFixed(2)}`
@@ -144,5 +167,15 @@ export const getPlanFeatures = (plan: SubscriptionPlan): PlanFeature[] => {
     // eslint-disable-next-line no-console
     console.error(`Error extracting features for plan ${plan.id}:`, error)
     return []
+  }
+}
+
+export const getAccurateTimeUTC = async () => {
+  try {
+    const response = await fetch("http://worldtimeapi.org/api/timezone/UTC")
+    const data = await response.json()
+    return new Date(data.utc_datetime)
+  } catch (error) {
+    return new Date() // JavaScript Date is UTC internally
   }
 }
