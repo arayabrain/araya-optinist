@@ -137,7 +137,7 @@ const SubscriptionPlans = () => {
   const handleConfirmDowngrade = () => {
     if (selectedPlanId) {
       if (user?.id) {
-        dispatch(cancelSubscription(user.id))
+        dispatch(cancelSubscription())
       } else {
         console.error("User not logged in")
       }

@@ -48,7 +48,7 @@ export const validateFailedCheckoutSessionApi = async (sessionId: string) => {
   return response.data
 }
 
-export const cancelSubscriptionApi = async (user_id: number) => {
-  const response = await axios.delete(`/api/subsc/mgmts/cancel/${user_id}`)
+export const cancelSubscriptionApi = async () => {
+  const response = await axios.delete("/api/subsc/mgmts/cancel")
   return response.data
 }
