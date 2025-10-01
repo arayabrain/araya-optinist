@@ -1,7 +1,5 @@
 import React from "react"
 
-import PropTypes from "prop-types"
-
 interface CardBrandIconProps {
   brand?: string
   size?: number
@@ -96,20 +94,6 @@ const CardBrandIcon: React.FC<CardBrandIconProps> = ({ brand, size = 32 }) => {
       />
     </div>
   )
-}
-
-// PropTypes validation
-// eslint-disable-next-line import/no-named-as-default-member
-CardBrandIcon.propTypes = {
-  brand: PropTypes.string,
-  // eslint-disable-next-line import/no-named-as-default-member
-  size: PropTypes.number,
-}
-
-// Default props
-CardBrandIcon.defaultProps = {
-  brand: undefined,
-  size: 32,
 }
 
 export default CardBrandIcon

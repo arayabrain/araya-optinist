@@ -1,8 +1,24 @@
+"""
+Integration tests for Stripe checkout API endpoints.
+
+These tests require a running server and valid Stripe credentials.
+They are skipped in CI by default.
+
+To run manually:
+1. Start the server: python -m studio
+2. Set STRIPE_SECRET_KEY and STRIPE_CALLBACK_URL in .env
+3. Run: pytest studio/tests/app/common/routers/test_checkout.py::test_checkout_api -v
+"""
+
+import pytest
 import requests
 
 STRIPE_CALLBACK_URL = "http://localhost:8000/api/v1/checkout"
 
 
+@pytest.mark.skip(
+    reason="Integration test - requires running server and Stripe credentials"
+)
 def test_checkout_api():
     """Test checkout API with realistic fake data"""
     print("Testing Checkout API...")
@@ -47,6 +63,9 @@ def test_checkout_api():
         print(f"Unexpected validation response: {response.status_code}")
 
 
+@pytest.mark.skip(
+    reason="Integration test - requires running server and Stripe credentials"
+)
 def test_webhook_api():
     """Test webhook API with different event types"""
     print("Testing Webhook API...")
@@ -74,6 +93,7 @@ def test_webhook_api():
         print(f"Webhook error: {response.status_code}")
 
 
+@pytest.mark.skip(reason="Integration test - requires running server and database")
 def test_subscription_status_api():
     """Test subscription status API"""
     print("Testing Subscription Status API...")
