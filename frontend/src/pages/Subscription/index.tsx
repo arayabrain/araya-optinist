@@ -543,7 +543,7 @@ const SubscriptionPlans = () => {
                   gap: 1,
                 }}
               >
-                ✅ <span>Data that will be preserved:</span>
+                <span>Data that will be preserved:</span>
               </Typography>
               <Box
                 sx={{

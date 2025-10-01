@@ -42,9 +42,9 @@ def test_checkout_api():
         # Expected - fake session ID should be rejected by Stripe
         data = response.json()
         print(f"Expected error: {data.get('detail', 'Unknown error')}")
-        print("✅ Checkout API properly validates session IDs")
+        print("Checkout API properly validates session IDs")
     elif response.status_code == 500:
-        print("✅ Checkout API attempted to process request (got to Stripe validation)")
+        print("Checkout API attempted to process request (got to Stripe validation)")
     else:
         print(f"Response: {response.json()}")
 
@@ -58,7 +58,7 @@ def test_checkout_api():
     )
 
     if response.status_code == 422:
-        print("✅ Checkout API properly validates required fields")
+        print("Checkout API properly validates required fields")
     else:
         print(f"Unexpected validation response: {response.status_code}")
 
@@ -86,7 +86,7 @@ def test_webhook_api():
     if response.status_code == 200:
         data = response.json()
         if data.get("processed") == "checkout.session.completed":
-            print("✅ Webhook API processes checkout.session.completed")
+            print("Webhook API processes checkout.session.completed")
         else:
             print(f"Webhook response: {data}")
     else:
@@ -104,7 +104,7 @@ def test_subscription_status_api():
         data = response.json()
         required_fields = ["user_id", "has_active_subscription", "subscription_details"]
         if all(field in data for field in required_fields):
-            print("✅ Subscription Status API returns correct structure")
+            print("Subscription Status API returns correct structure")
             print(f"User 1 has active subscription: {data['has_active_subscription']}")
         else:
             print(f"Missing fields in response: {data}")

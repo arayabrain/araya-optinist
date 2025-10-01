@@ -63,7 +63,7 @@ python priority_queue_test.py --test-free-only
 ## Expected Results
 
 - PRIORITY ASSIGNMENT - Shows tier (free/premium) and priority (1/10)
-- ✅ WORKFLOW COMPLETED - Shows completion with duration
+- WORKFLOW COMPLETED - Shows completion with duration
 
 ### AWS Batch Console
 - Premium workflows: Assigned to paid job queue, priority=10
