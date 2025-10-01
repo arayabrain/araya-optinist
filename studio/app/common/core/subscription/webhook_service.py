@@ -22,9 +22,20 @@ logger = AppLogger.get_logger()
 
 
 class WebhookService:
-    stripe.api_key = SubscriptionService.get_stripe_key()
-
     """Service class for handling Stripe webhooks"""
+
+    _stripe_initialized = False
+
+    @classmethod
+    def _ensure_stripe_initialized(cls):
+        """Lazy initialization of Stripe API key"""
+        if not cls._stripe_initialized:
+            try:
+                stripe.api_key = SubscriptionService.get_stripe_key()
+                cls._stripe_initialized = True
+            except ValueError as e:
+                logger.warning(f"Stripe not initialized: {e}")
+                # Don't raise here - allow module to load for tests
 
     @staticmethod
     def handle_checkout_completed(
@@ -278,14 +289,17 @@ class WebhookService:
 
                 logger.info(f"Cancelled subscription for user {user_account.user_id}")
 
-    @staticmethod
-    def handle_subscription_schedule_released(db: Session, data: dict):
+    @classmethod
+    def handle_subscription_schedule_released(cls, db: Session, data: dict):
         """
         Handle when a subscription schedule is released (plan change executed)
         Event: subscription_schedule.released
         """
         try:
             logger.info("Processing subscription_schedule.released webhook")
+
+            # Ensure Stripe is initialized
+            cls._ensure_stripe_initialized()
 
             # Get the subscription schedule data
             subscription_id = data.get("subscription")

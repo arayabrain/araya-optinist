@@ -34,11 +34,44 @@ from studio.app.common.schemas.users import User
 # Import your database models and dependencies
 
 
-stripe.api_key = SubscriptionService.get_stripe_key()
-STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
+# Lazy initialization of Stripe configuration
+_stripe_initialized = False
 
-router = APIRouter(prefix="/api/subsc", tags=["Subscriptions"])
-webhook_router = APIRouter(prefix="/api/subsc/webhooks", tags=["Subscription Webhooks"])
+
+def _ensure_stripe_initialized():
+    """Lazy initialization of Stripe API key"""
+    global _stripe_initialized
+    if not _stripe_initialized:
+        try:
+            stripe.api_key = SubscriptionService.get_stripe_key()
+            _stripe_initialized = True
+        except ValueError as e:
+            logger.warning(f"Stripe not initialized: {e}")
+            # Don't raise here - allow module to load for tests
+
+
+# Load callback URL at module level (doesn't require secrets for module import)
+try:
+    STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
+except ValueError:
+    STRIPE_CALLBACK_URL = None  # Will be set when needed
+
+
+def stripe_dependency():
+    """Dependency to ensure Stripe is initialized before handling requests"""
+    _ensure_stripe_initialized()
+
+
+router = APIRouter(
+    prefix="/api/subsc",
+    tags=["Subscriptions"],
+    dependencies=[Depends(stripe_dependency)],
+)
+webhook_router = APIRouter(
+    prefix="/api/subsc/webhooks",
+    tags=["Subscription Webhooks"],
+    dependencies=[Depends(stripe_dependency)],
+)
 logger = AppLogger.get_logger()
 
 

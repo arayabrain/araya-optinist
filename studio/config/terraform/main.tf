@@ -4029,6 +4029,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
           name  = "TEST_USERS_CONFIG"
           value = jsonencode(var.test_users)
         },
+        {
+          name  = "STRIPE_CALLBACK_URL"
+          value = "http://${aws_lb.autoscaling.dns_name}"
+        },
       ]
       secrets = [
         {
@@ -4287,6 +4291,10 @@ resource "aws_ecs_task_definition" "batch" {
           name  = "TEST_USERS_CONFIG"
           value = jsonencode(var.test_users)
         },
+        {
+          name  = "STRIPE_CALLBACK_URL"
+          value = "http://${aws_lb.batch.dns_name}"
+        },
       ]
       secrets = [
         {
@@ -4425,6 +4433,10 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "S3_DEFAULT_BUCKET_NAME"
           value = aws_s3_bucket.app_storage.id
+        },
+        {
+          name  = "STRIPE_CALLBACK_URL"
+          value = "http://${aws_lb.autoscaling.dns_name}"
         }
       ]
 

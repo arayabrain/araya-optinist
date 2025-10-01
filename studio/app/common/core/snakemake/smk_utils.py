@@ -44,6 +44,7 @@ class SmkUtils:
                 "S3_DEFAULT_BUCKET_NAME",
                 "OPTINIST_DIR",
                 "AWS_DEFAULT_REGION",
+                "EFS_MOUNT_TARGET",
             ]:
                 value = os.environ.get(key, "NOT_SET")
                 logger.debug(f"  {key}={value}")
@@ -51,20 +52,53 @@ class SmkUtils:
         return is_s3_mode
 
     @classmethod
+    def _is_remote_storage_mode(cls):
+        """Check if we're in remote storage mode (S3 or EFS with AWS Batch)
+
+        Both S3 and EFS storage modes in AWS Batch require relative paths
+        to work properly with Snakemake's storage settings.
+        """
+        import os
+
+        use_aws_batch = os.environ.get("USE_AWS_BATCH", "")
+        s3_bucket = os.environ.get("S3_DEFAULT_BUCKET_NAME")
+        efs_mount = os.environ.get("EFS_MOUNT_TARGET")
+
+        # S3 storage mode: AWS Batch + S3 bucket configured
+        is_s3_mode = use_aws_batch.lower() == "true" and s3_bucket is not None
+
+        # EFS storage mode: AWS Batch + EFS mount configured (but no S3)
+        is_efs_mode = (
+            use_aws_batch.lower() == "true"
+            and efs_mount is not None
+            and s3_bucket is None
+        )
+
+        is_remote_mode = is_s3_mode or is_efs_mode
+
+        logger.debug(
+            f"Remote storage mode check: USE_AWS_BATCH='{use_aws_batch}', "
+            f"S3_DEFAULT_BUCKET_NAME='{s3_bucket}', EFS_MOUNT_TARGET='{efs_mount}', "
+            f"is_s3_mode={is_s3_mode}, is_efs_mode={is_efs_mode}, "
+            f"is_remote_mode={is_remote_mode}"
+        )
+
+        return is_remote_mode
+
+    @classmethod
     def _make_relative_path(cls, absolute_path):
-        """Convert absolute path to relative path for S3 storage compatibility
+        """Convert absolute path to relative path for remote storage compatibility
 
-        For S3 storage, Snakemake expects relative paths that will be prefixed
-        with the storage prefix. Absolute paths cause double slash issues.
-
-        Example:
-        - Absolute: /app/studio_data/output/1/abc123/file.pkl
-        - Relative: output/1/abc123/file.pkl
+        For S3 and EFS storage in AWS Batch, Snakemake expects relative paths that
+        will be prefixed with the storage prefix.
+        Absolute paths cause double slash issues.
         """
         logger.debug(f"_make_relative_path called with: {absolute_path}")
 
-        if not cls._is_s3_storage_mode():
-            logger.debug(f"Not in S3 mode, returning absolute path: {absolute_path}")
+        if not cls._is_remote_storage_mode():
+            logger.debug(
+                f"Not in remote storage mode, returning absolute path: {absolute_path}"
+            )
             return absolute_path
 
         # Strip the DATA_DIR prefix to make paths relative
@@ -102,23 +136,31 @@ class SmkUtils:
         if NodeTypeUtil.check_nodetype_from_filetype(details["type"]) == NodeType.DATA:
             if details["type"] in [FILETYPE.IMAGE]:
                 paths = [
-                    join_filepath([DIRPATH.INPUT_DIR, x]) for x in details["input"]
+                    cls._make_relative_path(join_filepath([DIRPATH.INPUT_DIR, x]))
+                    for x in details["input"]
                 ]
                 logger.debug(f"Generated IMAGE input paths: {paths}")
                 return paths
             else:
-                path = join_filepath([DIRPATH.INPUT_DIR, details["input"]])
+                path = cls._make_relative_path(
+                    join_filepath([DIRPATH.INPUT_DIR, details["input"]])
+                )
                 logger.debug(f"Generated DATA input path: {path}")
                 return path
         else:
-            paths = [join_filepath([DIRPATH.OUTPUT_DIR, x]) for x in details["input"]]
+            paths = [
+                cls._make_relative_path(join_filepath([DIRPATH.OUTPUT_DIR, x]))
+                for x in details["input"]
+            ]
             logger.debug(f"Generated OUTPUT input paths: {paths}")
             return paths
 
     @classmethod
     def output(cls, details):
         logger.debug(f"SmkUtils.output() called with output: {details.get('output')}")
-        path = join_filepath([DIRPATH.OUTPUT_DIR, details["output"]])
+        path = cls._make_relative_path(
+            join_filepath([DIRPATH.OUTPUT_DIR, details["output"]])
+        )
         logger.debug(f"Generated output path: {path}")
         return path
 

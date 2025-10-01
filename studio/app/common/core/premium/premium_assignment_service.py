@@ -75,7 +75,6 @@ class PremiumAssignmentService:
 
     def clear_rate_limit_cache(self, user_id: int = None):
         """Manually clear rate limit cache for debugging"""
-        global _assignment_attempts
         if user_id:
             if user_id in _assignment_attempts:
                 del _assignment_attempts[user_id]

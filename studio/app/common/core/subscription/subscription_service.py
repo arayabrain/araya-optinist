@@ -108,7 +108,13 @@ class SubscriptionService:
     def get_base_url() -> str:
         base_url = os.getenv("STRIPE_CALLBACK_URL")
         if not base_url:
-            raise ValueError("STRIPE_CALLBACK_URL environment variable is not set")
+            # Fallback for development/testing/github tests
+            # Production: Set STRIPE_CALLBACK_URL to your ALB/domain URL in Terraform
+            logger.warning(
+                "STRIPE_CALLBACK_URL not set, using localhost fallback. "
+                "Set this environment variable in production!"
+            )
+            return "http://localhost:8000"
         return base_url
 
     @staticmethod
