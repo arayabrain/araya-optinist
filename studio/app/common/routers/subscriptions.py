@@ -1,8 +1,8 @@
 from datetime import datetime
+from enum import Enum
 from typing import List, Optional
 
 import stripe
-from attrs import asdict
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
@@ -30,7 +30,6 @@ from studio.app.common.schemas.subscriptions import (
     UserSubscriptionResponse,
 )
 from studio.app.common.schemas.users import User
-from enum import Enum
 
 # Import your database models and dependencies
 
