@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from typing import List, Optional
 
 import stripe
@@ -9,6 +10,10 @@ from sqlalchemy.orm import Session
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.checkout_service import CheckoutService
+from studio.app.common.core.subscription.stripe_service import (
+    get_default_payment_method,
+    get_stripe_customer_by_email,
+)
 from studio.app.common.core.subscription.subscription_service import (
     SubscriptionCurrencyType,
     SubscriptionService,
@@ -29,7 +34,6 @@ from studio.app.common.schemas.subscriptions import (
     UserSubscriptionResponse,
 )
 from studio.app.common.schemas.users import User
-from enum import Enum
 
 # Import your database models and dependencies
 
@@ -193,7 +197,7 @@ async def update_user_subscription(
             )
 
         # Get Stripe customer
-        customer = await _get_stripe_customer_by_email(current_user.email)
+        customer = await get_stripe_customer_by_email(current_user.email)
         if not customer:
             raise HTTPException(
                 status_code=404, detail="No Stripe customer found for user"
@@ -347,7 +351,7 @@ async def cancel_user_subscription(
         sub_data, current_plan = current_subscription_result
 
         # Get Stripe customer
-        customer = await _get_stripe_customer_by_email(current_user.email)
+        customer = await get_stripe_customer_by_email(current_user.email)
         if not customer:
             raise HTTPException(
                 status_code=404, detail="No Stripe customer found for user"
@@ -500,66 +504,8 @@ async def get_user_payment_methods(
 async def get_user_default_payment_method(
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Get user's default payment method
-    """
-    try:
-        # Get user email to find Stripe customer
-        user = current_user
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        logger.info(
-            f"Fetching default pymt method for user {user.id} with email {user.email}"
-        )
-
-        # Find Stripe customer by email
-        stripe_customer = await _get_stripe_customer_by_email(user.email)
-
-        if not stripe_customer:
-            logger.info(f"No Stripe customer found for user {user.id}")
-            return None
-
-        # Get default payment method
-        default_pm_id = stripe_customer.invoice_settings.default_payment_method
-        if not default_pm_id:
-            logger.info(f"No default payment method set for user {user.id}")
-            return None
-
-        # Retrieve the payment method details
-        payment_method = stripe.PaymentMethod.retrieve(default_pm_id)
-
-        if payment_method.type != "card":
-            logger.info(f"Default payment method is not a card for user {user.id}")
-            return None
-
-        card = payment_method.card
-        return PaymentMethodResponse(
-            id=payment_method.id,
-            last4=card.last4,
-            brand=card.brand,
-            exp_month=card.exp_month,
-            exp_year=card.exp_year,
-            is_default=True,
-        )
-
-    except stripe.error.StripeError as e:
-        logger.error(
-            f"Stripe error when fetching default payment method for user "
-            f"{user.id}: {str(e)}"
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=f"Failed to fetch default payment method from Stripe: {str(e)}",
-        )
-    except Exception as e:
-        logger.error(
-            f"Error fetching default payment method for user {user.id}: {str(e)}"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch default payment method: {str(e)}",
-        )
+    payment_method_response = await get_default_payment_method(current_user.email)
+    return payment_method_response
 
 
 @router.post("/payment-methods/setup-intent", response_model=CreateSetupIntentResponse)
@@ -573,7 +519,7 @@ async def create_setup_intent(
         user = current_user
 
         # Get or create Stripe customer
-        customer = await _get_stripe_customer_by_email(user.email)
+        customer = await get_stripe_customer_by_email(user.email)
 
         if not customer:
             # Create new Stripe customer
@@ -620,7 +566,7 @@ async def update_default_payment_method(
         user = current_user
 
         # Get Stripe customer
-        customer = await _get_stripe_customer_by_email(user.email)
+        customer = await get_stripe_customer_by_email(user.email)
         if not customer:
             raise HTTPException(
                 status_code=404, detail="No Stripe customer found for user"
@@ -695,7 +641,7 @@ async def delete_payment_method(
         user = current_user
 
         # Get Stripe customer
-        customer = await _get_stripe_customer_by_email(user.email)
+        customer = await get_stripe_customer_by_email(user.email)
         if not customer:
             raise HTTPException(
                 status_code=404, detail="No Stripe customer found for user"
@@ -978,13 +924,3 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Webhook processing error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Webhook processing failed")
-
-
-async def _get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
-    """Get Stripe customer by email"""
-    try:
-        stripe_customers = stripe.Customer.list(email=email, limit=1)
-        return stripe_customers.data[0] if stripe_customers.data else None
-    except stripe.error.StripeError as e:
-        logger.error(f"Error fetching Stripe customer: {str(e)}")
-        return None
