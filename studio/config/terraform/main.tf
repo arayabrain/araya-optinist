@@ -2314,9 +2314,9 @@ resource "aws_cloudwatch_event_target" "premium_cleanup_target" {
   })
 }
 
-=======
- Lambda
-=======
+# =======
+# Lambda
+# =======
 
 # Lambda Permission for Cleanup CloudWatch Events
 resource "aws_lambda_permission" "allow_cloudwatch_cleanup" {
