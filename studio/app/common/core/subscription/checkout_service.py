@@ -1,10 +1,15 @@
 from datetime import datetime, timedelta, timezone
+from http.client import HTTPException
 from typing import Any, Dict, Optional
 
 import stripe
 from sqlmodel import Enum, Session
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.subscription.subscription_service import (
+    SubscriptionCurrencyType,
+    SubscriptionService,
+)
 from studio.app.common.models.subscription import (
     SubscriptionPlans,
     SubscriptionProvider,
@@ -12,8 +17,10 @@ from studio.app.common.models.subscription import (
     SubscriptionUserPurchase,
     UserSubscription,
 )
+from studio.app.common.schemas.subscriptions import CreateCheckoutSessionResponse
 
 logger = AppLogger.get_logger()
+STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
 
 
 class SUBSCRIPTION_ACTIVE_STATUS(Enum):
@@ -353,3 +360,97 @@ class CheckoutService:
         db.add(purchase)
         db.flush()  # Get ID without committing
         return purchase
+
+    @staticmethod
+    async def handle_checkout_session(
+        db, request, current_user
+    ) -> CreateCheckoutSessionResponse:
+        try:
+            # Get subscription plan from database using plan_id as string
+            plan = SubscriptionService.get_plan_by_id(db, int(request.plan_id))
+
+            if not plan:
+                raise HTTPException(
+                    status_code=404, detail="Subscription plan not found"
+                )
+
+            # Get user details
+            user = current_user
+
+            # Use the price and currency from the request
+            price = plan.price
+            currency = plan.currency
+
+            if currency == SubscriptionCurrencyType.USD.value:
+                currency = "usd"
+            elif currency == SubscriptionCurrencyType.JPY.value:
+                currency = "jpy"
+
+            logger.info(f"Request details - price: {price}, currency: {currency}")
+
+            # Determine billing cycle for Stripe (default to monthly if not specified)
+            price_interval = "month"  # You can modify this based on your needs
+
+            # Create Stripe checkout session directly with price_data
+            try:
+                logger.info("Initializing Stripe")
+                subscription_account = CheckoutService.get_subscription_account(
+                    db, user.id
+                )
+                customer_id = (
+                    subscription_account.provider_customer_id
+                    if subscription_account
+                    else stripe.Customer.create(
+                        email=user.email,
+                        name=getattr(user, "name", ""),
+                        metadata={"user_id": str(user.id)},
+                    ).id
+                )
+
+                checkout_session = stripe.checkout.Session.create(
+                    payment_method_types=["card"],
+                    line_items=[
+                        {
+                            "price_data": {
+                                "currency": currency,
+                                "product_data": {
+                                    "name": plan.name,
+                                    "description": "Subscription Plan Purchase",
+                                },
+                                "unit_amount": price,
+                                "recurring": {"interval": price_interval},
+                            },
+                            "quantity": 1,
+                        }
+                    ],
+                    mode="subscription",
+                    success_url=(
+                        f"{STRIPE_CALLBACK_URL}/console/subscription/thanks"
+                        "?session_id={CHECKOUT_SESSION_ID}"
+                    ),
+                    cancel_url=(f"{STRIPE_CALLBACK_URL}/console/subscription"),
+                    customer=customer_id,
+                    client_reference_id=str(user.id),
+                    metadata={
+                        "user_id": str(user.id),
+                        "plan_id": request.plan_id,
+                        "plan_name": plan.name,
+                    },
+                )
+
+                return CreateCheckoutSessionResponse(
+                    checkout_url=checkout_session.url, session_id=checkout_session.id
+                )
+
+            except stripe.error.StripeError as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to create checkout session: {str(e)}",
+                )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=500, detail=f"Internal server error: {str(e)}"
+            )
