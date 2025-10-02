@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 import stripe
@@ -187,7 +187,7 @@ async def update_user_subscription(
 
         # Get active Stripe subscription
         stripe_subscriptions = stripe.Subscription.list(
-            customer=customer.id, status=StripeSubscriptionStatus.ACTIVE, limit=1
+            customer=customer.id, status=StripeSubscriptionStatus.ACTIVE.value, limit=1
         )
 
         if not stripe_subscriptions.data:
@@ -329,8 +329,6 @@ async def cancel_user_subscription(
                 status_code=404, detail="No active subscription found to cancel"
             )
 
-        sub_data, current_plan = current_subscription_result
-
         # Get Stripe customer
         customer = await get_stripe_customer_by_email(current_user.email)
         if not customer:
@@ -340,7 +338,7 @@ async def cancel_user_subscription(
 
         # Get active Stripe subscription
         stripe_subscriptions = stripe.Subscription.list(
-            customer=customer.id, status=StripeSubscriptionStatus.ACTIVE, limit=1
+            customer=customer.id, status=StripeSubscriptionStatus.ACTIVE.value, limit=1
         )
 
         if not stripe_subscriptions.data:
@@ -378,7 +376,9 @@ async def cancel_user_subscription(
             metadata={
                 **stripe_subscription.metadata,
                 "cancellation_requested": "true",
-                "cancellation_requested_at": str(int(datetime.utcnow().timestamp())),
+                "cancellation_requested_at": str(
+                    int(datetime.now(timezone.utc).timestamp())
+                ),
             },
         )
 

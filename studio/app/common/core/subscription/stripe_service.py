@@ -188,7 +188,7 @@ class StripeService:
 
             # Update default payment method for active subscriptions
             subscriptions = stripe.Subscription.list(
-                customer=customer.id, status=StripeSubscriptionStatus.ACTIVE
+                customer=customer.id, status=StripeSubscriptionStatus.ACTIVE.value
             )
 
             updated_subscriptions = 0
@@ -263,7 +263,7 @@ class StripeService:
 
             # Check if this is the default payment method for any active subscriptions
             subscriptions = stripe.Subscription.list(
-                customer=customer.id, status=StripeSubscriptionStatus.ACTIVE
+                customer=customer.id, status=StripeSubscriptionStatus.ACTIVE.value
             )
 
             for subscription in subscriptions.data:
@@ -295,7 +295,7 @@ class StripeService:
             )
 
     @staticmethod
-    def handle_checkout_session(
+    async def handle_checkout_session(
         db, request, current_user
     ) -> CreateCheckoutSessionResponse:
         try:
