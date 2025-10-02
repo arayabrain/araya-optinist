@@ -72,6 +72,12 @@ variable "optinist_secret_key" {
   sensitive   = true
 }
 
+variable "stripe_webhook_secret" {
+  description = "Stripe webhook secret for validating webhook events"
+  type        = string
+  sensitive   = true
+}
+
 variable "firebase_config_json" {
   description = "Firebase web configuration JSON"
   type        = string
@@ -106,6 +112,12 @@ variable "git_repo" {
 variable "git_branch" {
   description = "Git branch to checkout"
   type        = string
+}
+
+variable "git_commit_hash" {
+  description = "Git commit hash to trigger rebuilds on code changes"
+  type        = string
+  default     = ""
 }
 
 variable "ecr_repository_url" {
@@ -2410,11 +2422,28 @@ resource "aws_lambda_function" "premium_cleanup" {
   ]
 }
 
+# Install dependencies for premium cleanup Lambda
+resource "null_resource" "install_cleanup_dependencies" {
+  provisioner "local-exec" {
+    command = <<-EOT
+      mkdir -p ${path.module}/premium_cleanup_package
+      cp ${path.module}/premium_cleanup.py ${path.module}/premium_cleanup_package/
+      /usr/bin/python3 -m pip install pymysql -t ${path.module}/premium_cleanup_package/ --no-cache-dir
+    EOT
+  }
+
+  triggers = {
+    code_changes = filesha256("${path.module}/premium_cleanup.py")
+  }
+}
+
 # Create ZIP file for premium cleanup Lambda
 data "archive_file" "premium_cleanup_zip" {
   type        = "zip"
-  source_file = "${path.module}/premium_cleanup.py"
+  source_dir  = "${path.module}/premium_cleanup_package"
   output_path = "${path.module}/premium_cleanup.py.zip"
+
+  depends_on = [null_resource.install_cleanup_dependencies]
 }
 
 # CloudWatch Log Group for Premium Cleanup
@@ -3484,6 +3513,8 @@ resource "null_resource" "build_and_deploy" {
     git_branch = var.git_branch
     # Force rebuild when ECR repo changes
     ecr_repo = var.ecr_repository_url
+    # Force rebuild when code changes
+    git_commit = var.git_commit_hash
   }
 
   provisioner "local-exec" {
@@ -3527,6 +3558,8 @@ resource "null_resource" "build_and_deploy_batch" {
     git_branch = var.git_branch
     # Force rebuild when ECR repo changes
     ecr_repo = var.ecr_repository_url
+    # Force rebuild when code changes
+    git_commit = var.git_commit_hash
   }
 
   provisioner "local-exec" {
@@ -4012,6 +4045,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
           name  = "STRIPE_CALLBACK_URL"
           value = "http://${aws_lb.autoscaling.dns_name}"
         },
+        {
+          name  = "STRIPE_WEBHOOK_SECRET"
+          value = var.stripe_webhook_secret
+        },
       ]
       secrets = [
         {
@@ -4274,6 +4311,10 @@ resource "aws_ecs_task_definition" "batch" {
           name  = "STRIPE_CALLBACK_URL"
           value = "http://${aws_lb.batch.dns_name}"
         },
+        {
+          name  = "STRIPE_WEBHOOK_SECRET"
+          value = var.stripe_webhook_secret
+        },
       ]
       secrets = [
         {
@@ -4416,6 +4457,10 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "STRIPE_CALLBACK_URL"
           value = "http://${aws_lb.autoscaling.dns_name}"
+        },
+        {
+          name  = "STRIPE_WEBHOOK_SECRET"
+          value = var.stripe_webhook_secret
         }
       ]
 
@@ -4864,7 +4909,7 @@ resource "aws_batch_job_definition" "optinist" {
       },
       {
         name = "OPTINIST_DIR"
-        value = "/mnt/efs"
+        value = "/app/studio_data"
       },
     ]
   })

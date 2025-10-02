@@ -22,8 +22,8 @@ ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO_NAME}"
 
 echo "Building autoscaling image: $ECR_URI"
 
-# Authenticate Docker to ECR
-aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_URI
+# Authenticate Docker to ECR (ignore keychain errors on macOS)
+aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_URI 2>&1 | grep -v "error storing credentials" || true
 
 # Check if ECR repository exists, create if it doesn't
 if ! aws ecr describe-repositories --repository-names $REPO_NAME --region $REGION >/dev/null 2>&1; then
@@ -67,8 +67,8 @@ ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO_NAME}"
 
 echo "Building batch image: $ECR_URI"
 
-# Authenticate Docker to ECR
-aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_URI
+# Authenticate Docker to ECR (ignore keychain errors on macOS)
+aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_URI 2>&1 | grep -v "error storing credentials" || true
 
 # Check if ECR repository exists, create if it doesn't
 if ! aws ecr describe-repositories --repository-names $REPO_NAME --region $REGION >/dev/null 2>&1; then
@@ -112,8 +112,8 @@ ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO_NAME}"
 
 echo "Building snakemake batch image: $ECR_URI"
 
-# Authenticate Docker to ECR
-aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_URI
+# Authenticate Docker to ECR (ignore keychain errors on macOS)
+aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_URI 2>&1 | grep -v "error storing credentials" || true
 
 # Check if ECR repository exists, create if it doesn't
 if ! aws ecr describe-repositories --repository-names $REPO_NAME --region $REGION >/dev/null 2>&1; then

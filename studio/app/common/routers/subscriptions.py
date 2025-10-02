@@ -53,7 +53,8 @@ def _ensure_stripe_initialized():
 
 # Load callback URL at module level (doesn't require secrets for module import)
 try:
-    except ValueError:
+    STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
+except ValueError:
     STRIPE_CALLBACK_URL = None  # Will be set when needed
 
 
@@ -353,7 +354,6 @@ async def cancel_user_subscription(
     - Database updates handled via webhook
     """
     try:
-
         # Get current user subscription
         current_subscription_result = SubscriptionService.get_user_subscription(
             db, current_user.id
@@ -484,7 +484,7 @@ async def reactivate_user_subscription(
         sub_data, current_plan = current_subscription_result
 
         # Get Stripe customer
-        customer = await _get_stripe_customer_by_email(current_user.email)
+        customer = await get_stripe_customer_by_email(current_user.email)
         if not customer:
             raise HTTPException(
                 status_code=404, detail="No Stripe customer found for user"

@@ -92,26 +92,27 @@ async def create_test_user_in_db(db, user_data, organization_id):
         db, user_id=user_db.id, role_id=user_data["role_id"], auto_commit=False
     )
 
-    # Create subscription
-    # Set expiration based on subscription plan to test different scenarios
-    if user_data["subscription_plan_id"] == 2:  # Premium plan
-        if "expire" in user_data["email"]:
-            # Only the "expire" user gets expired subscription
-            # Expired 50 days ago (past grace period) to trigger warnings
-            expiration_date = datetime.now(timezone.utc) - timedelta(days=50)
+    # Create subscription only for non-free users
+    # Free users should not have entries in the subscription_users table
+    if user_data["subscription_plan_id"] != 1:  # Not free plan
+        if user_data["subscription_plan_id"] == 2:  # Premium plan
+            if "expire" in user_data["email"]:
+                # Only the "expire" user gets expired subscription
+                # Expired 50 days ago (past grace period) to trigger warnings
+                expiration_date = datetime.now(timezone.utc) - timedelta(days=50)
+            else:
+                # Other premium users get active subscriptions for priority testing
+                expiration_date = datetime.now(timezone.utc) + timedelta(days=365)
         else:
-            # Other premium users get active subscriptions for priority testing
+            # For other paid plans, set future expiration
             expiration_date = datetime.now(timezone.utc) + timedelta(days=365)
-    else:  # Free plan
-        # For free plan users, set future expiration (no need to test warnings)
-        expiration_date = datetime.now(timezone.utc) + timedelta(days=365)
 
-    subscription = UserSubscription(
-        plan_id=user_data["subscription_plan_id"],
-        user_id=user_db.id,
-        expiration=expiration_date,
-    )
-    db.add(subscription)
+        subscription = UserSubscription(
+            plan_id=user_data["subscription_plan_id"],
+            user_id=user_db.id,
+            expiration=expiration_date,
+        )
+        db.add(subscription)
 
     # Create storage usage record
     storage_usage = UserStorageUsage(
