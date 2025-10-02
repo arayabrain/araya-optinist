@@ -45,7 +45,6 @@ async def get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
 
 
 class StripeService:
-
     @staticmethod
     async def get_default_payment_method(
         current_user,

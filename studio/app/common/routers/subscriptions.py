@@ -168,7 +168,6 @@ async def cancel_user_subscription(
     - Database updates handled via webhook
     """
     try:
-
         # Get current user subscription
         current_subscription_result = SubscriptionService.get_user_subscription(
             db, current_user.id
