@@ -176,7 +176,7 @@ const SubscriptionPlans = () => {
   const handleConfirmDowngrade = () => {
     if (selectedPlanId) {
       if (user?.id) {
-        dispatch(cancelSubscription(user.id))
+        dispatch(cancelSubscription())
       } else {
         // eslint-disable-next-line no-console
         console.error("User not logged in")
