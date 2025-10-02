@@ -61,11 +61,12 @@ def snakemake_execute(workspace_id: str, unique_id: str, params: SmkParam):
     if BATCH_CONFIG.USE_AWS_BATCH:
         logger.info("Starting AWS Batch execution mode")
         future_result = _snakemake_execute_batch(workspace_id, unique_id, params)
-        # Handle S3 operations for batch execution (due to separate EFS systems)
+        # Handle S3 operations for batch execution
+        # Upload/download ensures results are in S3 and synced to local storage
         if future_result:
-            # First upload results from batch EFS to S3
+            # Upload final workflow results to S3 for persistence
             asyncio.run(upload_workflow_results_to_s3(workspace_id, unique_id))
-            # Then download them to main EFS for post-processing
+            # Download results from S3 to local storage for post-processing
             asyncio.run(download_workflow_results_from_s3(workspace_id, unique_id))
     else:
         logger.info("Starting local execution mode")
@@ -265,11 +266,10 @@ def _snakemake_execute_batch(
         batch_executor.prepare_batch_workspace()
 
         # Configure storage based on availability
-        # Force EFS usage instead of S3 to avoid Snakemake S3 configuration issues
+        # Try S3 first with simplified config (relies on _make_relative_path() fix)
+        # Falls back to EFS if S3 not available
         storage_settings = None
-        if (
-            False
-        ):  # Temporarily disable S3 to use EFS: RemoteStorageController.is_available():
+        if RemoteStorageController.is_available():
             # Use S3 when available
             s3_prefix = BATCH_CONFIG.AWS_DEFAULT_PROVIDER.lower()
             s3_bucket_name = os.environ.get(
@@ -392,24 +392,32 @@ def _snakemake_execute_batch(
             # final results in S3
             # This completely bypasses all the path duplication issues with
             # Snakemake's S3 storage
-            data_dir_path = (
-                Path(DIRPATH.DATA_DIR).resolve().as_posix().lstrip("/")
-            )  # Remove leading slash for S3 path
-            s3_storage = f"{s3_prefix}://{s3_bucket_name}/{data_dir_path}"
-
-            logger.debug(f"DIRPATH.DATA_DIR from OPTINIST_DIR: {DIRPATH.DATA_DIR}")
-            logger.debug(f"Stripped data_dir_path for S3: {data_dir_path}")
-            logger.debug(f"Constructed S3 storage prefix: {s3_storage}")
-            logger.debug(
-                f"Expected path mapping: output/1/abc/file.pkl -> "
-                f"{s3_storage}/output/1/abc/file.pkl"
-            )
+            # Result: Still had path duplication issues
+            # Tried 16:
+            # Simplified S3 config relying on _make_relative_path() fix in SmkUtils
+            # + SmkUtils._make_relative_path() now converts:
+            #   /app/studio_data/output/1/abc/file.pkl -> output/1/abc/file.pkl
+            # + S3 storage prefix is just the bucket root: s3://bucket
+            # + Snakemake combines: s3://bucket + output/1/abc/file.pkl
+            # + Expected result: s3://bucket/output/1/abc/file.pkl (no double slash!)
+            # + The key insight: let SmkUtils handle path stripping, not StorageSettings
+            # Tried 17:
+            # Fix OPTINIST_DIR mismatch between containers
+            # + Main Dockerfile changed from OPTINIST_DIR=/mnt/efs to /app/studio_data
+            # + Batch Dockerfile already uses OPTINIST_DIR=/app/studio_data
+            # + Both containers now use same OPTINIST_DIR value
+            # + S3 storage prefix includes full path: s3://bucket/app/studio_data
+            # + SmkUtils._make_relative_path() converts:
+            #   /app/studio_data/input/1/file.tiff -> input/1/file.tiff
+            # + Snakemake combines: s3://bucket/app/studio_data + input/1/file.tiff
+            # + Final path: s3://bucket/app/studio_data/input/1/file.tiff ✓
+            # + This matches where files are actually stored in S3
+            # + No EFS mounting complexity - pure S3 storage plugin usage
+            s3_storage = f"{s3_prefix}://{s3_bucket_name}/app/studio_data"
 
             storage_settings = StorageSettings(
                 default_storage_provider="s3",  # Use S3 storage plugin
                 default_storage_prefix=s3_storage,  # S3 prefix with bucket and path
-                # FIX: Use default storage prefixes to avoid path duplication
-                # Same approach as EFS fix - let Snakemake use its default paths
                 local_storage_prefix=Path(
                     ".snakemake/storage"
                 ),  # Use Snakemake default
@@ -420,16 +428,13 @@ def _snakemake_execute_batch(
                 retrieve_storage=True,
                 keep_storage_local=False,
             )
-            # Debug S3 storage configuration (uncomment to enable)
-            # BatchDebug.debug_s3_storage_config(s3_storage, s3_bucket_name, s3_prefix)
-
-            logger.debug(f"Using S3 storage: {s3_storage}")
             logger.debug(
                 f"S3 storage breakdown: provider='{s3_prefix}', "
                 f"bucket='{s3_bucket_name}', full_prefix='{s3_storage}'"
             )
             logger.debug(
-                "Local storage prefix: .snakemake/storage "
+                "local_storage_prefix: .snakemake/storage "
+                "remote_job_local_storage_prefix: .snakemake/storage "
                 "(using Snakemake default to prevent path duplication)"
             )
             logger.debug(f"DIRPATH.DATA_DIR: {DIRPATH.DATA_DIR}")
@@ -440,7 +445,7 @@ def _snakemake_execute_batch(
             )
         else:
             # Use optimized EFS configuration when S3 is not available
-            logger.info("S3 not available, configuring optimized EFS storage")
+            logger.debug("S3 not available, configuring optimized EFS storage")
             BatchUtils.prepare_efs_environment(workspace_id)
             storage_settings = BatchUtils.get_efs_optimized_storage_settings(
                 workspace_id, unique_id
@@ -503,9 +508,8 @@ def _snakemake_execute_batch(
 
                 # Prepare environment variables for dryrun (same as real execution)
                 dryrun_envvars = ["USE_AWS_BATCH", "OPTINIST_DIR"]
-                if (
-                    False
-                ):  # Temporarily disable S3 for dryrun, use EFS RemoteStorageController
+                if RemoteStorageController.is_available():
+                    # Use S3 storage for dryrun (matches execution config)
                     dryrun_envvars.extend(
                         [
                             "S3_DEFAULT_BUCKET_NAME",
@@ -583,8 +587,8 @@ def _snakemake_execute_batch(
                 try:
                     # Prepare environment variables for batch jobs
                     envvars = ["USE_AWS_BATCH", "OPTINIST_DIR"]
-                    if False:  # Temporarily disable S3 for batch jobs
-                        # use EFS RemoteStorageController
+                    if RemoteStorageController.is_available():
+                        # Use S3 storage for batch jobs
                         envvars.extend(
                             [
                                 "S3_DEFAULT_BUCKET_NAME",
@@ -601,11 +605,10 @@ def _snakemake_execute_batch(
                         envvars.extend(["EFS_MOUNT_TARGET", "TMPDIR", "TMP"])
                         logger.info("Using EFS storage for batch jobs")
 
-                    # Prepare container setup for EFS optimization
+                    # Prepare container setup for EFS optimization (only when using EFS)
                     contain_setup = []
-                    if (
-                        not False
-                    ):  # Temporarily disable S3 for, use EFS + RemoteStorageController
+                    if not RemoteStorageController.is_available():
+                        # Using EFS mode, need container setup commands
                         contain_setup = BatchUtils.get_container_setup_commands(
                             workspace_id, unique_id
                         )

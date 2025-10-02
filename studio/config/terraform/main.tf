@@ -304,7 +304,7 @@ resource "aws_eip" "nat_instance" {
   }
 }
 
-# NAT Instance
+# NAT Instance AMI
 data "aws_ami" "nat_instance" {
   most_recent = true
   owners      = ["amazon"]
@@ -317,6 +317,11 @@ data "aws_ami" "nat_instance" {
   filter {
     name   = "virtualization-type"
     values = ["hvm"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
   }
 }
 
@@ -481,9 +486,7 @@ resource "aws_db_subnet_group" "main" {
   name       = "subscr-optinist-rds-subnet-group"
   subnet_ids = [
     aws_subnet.private1.id,
-    aws_subnet.private2.id,
-    aws_subnet.public1.id,
-    aws_subnet.public2.id
+    aws_subnet.private2.id
   ]
 
   tags = {
@@ -539,10 +542,8 @@ resource "aws_db_instance" "main" {
 }
 
 # Create premium user assignments table in RDS
-# Premium user assignments table now managed via Alembic migration:
-# studio/alembic/versions/b301b4120016_add_premium_user_assignments_table.py
-#
-# To apply the migration:
+# Premium user assignments table now managed via Alembic migration
+# To apply the migration, ssh into an instance in the Auto Scaling Group and run:
 # cd studio && alembic upgrade head
 
 # RDS Instance for Batch Service (Isolated)
@@ -694,16 +695,6 @@ resource "aws_s3_bucket" "app_storage_batch" {
   }
 }
 
-resource "aws_s3_bucket" "user_data" {
-  bucket = "subscr-optinist-user-data"
-  force_destroy = true
-
-  tags = {
-    Name        = "Subscr OptiNiSt User Data Storage"
-    Environment = "Production"
-  }
-}
-
 resource "aws_s3_bucket_versioning" "app_storage" {
   bucket = aws_s3_bucket.app_storage.id
   versioning_configuration {
@@ -713,13 +704,6 @@ resource "aws_s3_bucket_versioning" "app_storage" {
 
 resource "aws_s3_bucket_versioning" "app_storage_batch" {
   bucket = aws_s3_bucket.app_storage_batch.id
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_versioning" "user_data" {
-  bucket = aws_s3_bucket.user_data.id
   versioning_configuration {
     status = "Enabled"
   }
@@ -736,14 +720,6 @@ resource "aws_s3_bucket_public_access_block" "app_storage" {
 
 resource "aws_s3_bucket_public_access_block" "app_storage_batch" {
   bucket = aws_s3_bucket.app_storage_batch.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_public_access_block" "user_data" {
-  bucket = aws_s3_bucket.user_data.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
@@ -836,7 +812,7 @@ resource "aws_autoscaling_group" "main" {
   vpc_zone_identifier = [aws_subnet.private1.id, aws_subnet.private2.id]
   target_group_arns   = [aws_lb_target_group.autoscaling.arn]
   health_check_type   = "ELB"
-  health_check_grace_period = 180
+  health_check_grace_period = 900
   default_cooldown = 300
 
   min_size         = var.asg_min_size
@@ -2080,9 +2056,9 @@ resource "aws_iam_role_policy" "ecs_task_ecr_access" {
   })
 }
 
-# =============================================================================
+# ======================
 # PREMIUM TIER IAM ROLES
-# =============================================================================
+# ======================
 
 
 # Premium Manager Lambda Role
@@ -2249,9 +2225,9 @@ resource "aws_iam_role_policy_attachment" "cost_controller_lambda_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-# =============================================================================
+# =============================
 # PREMIUM TIER LAMBDA FUNCTIONS
-# =============================================================================
+# =============================
 
 # Premium Manager Lambda Function
 resource "aws_lambda_function" "premium_manager" {
@@ -2337,6 +2313,10 @@ resource "aws_cloudwatch_event_target" "premium_cleanup_target" {
     }
   })
 }
+
+=======
+ Lambda
+=======
 
 # Lambda Permission for Cleanup CloudWatch Events
 resource "aws_lambda_permission" "allow_cloudwatch_cleanup" {
@@ -3788,7 +3768,6 @@ INSERT IGNORE INTO user_roles (user_id, role_id) VALUES (1, 1);
 
 UPDATE users SET attributes = JSON_MERGE_PATCH(IFNULL(attributes,'{}'), '{"remote_bucket_name": "${aws_s3_bucket.app_storage.id}"}') WHERE id = 1;
 
-
 INIT_SQL
 
 chmod 644 /tmp/init_optinist_db.sql
@@ -4535,7 +4514,7 @@ resource "aws_ecs_service" "autoscaling" {
     type = "distinctInstance"  # Force different instances
   }
 
-  health_check_grace_period_seconds = 300
+  health_check_grace_period_seconds = 900
 
   tags = {
     Name = "subscr-optinist-cloud-service"
@@ -5037,7 +5016,6 @@ output "aws_batch_config" {
   value = {
     AWS_BATCH_JOB_ROLE = aws_iam_role.batch_job.arn
     AWS_BATCH_S3_BUCKET_NAME = aws_s3_bucket.app_storage_batch.id
-    AWS_BATCH_S3_USER_DATA_BUCKET = aws_s3_bucket.user_data.id
     AWS_BATCH_FREE_QUEUE = aws_batch_job_queue.free_plan.name
     AWS_BATCH_PAID_QUEUE = aws_batch_job_queue.paid_plan.name
     AWS_BATCH_JOB_DEFINITION = aws_batch_job_definition.optinist.name
@@ -5096,8 +5074,6 @@ output "premium_instance_ids" {
   description = "IDs of the premium standby instances"
   value       = aws_instance.premium[*].id
 }
-
-
 
 output "premium_api_gateway_url" {
   description = "URL of the premium management API Gateway"

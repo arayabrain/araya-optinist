@@ -55,7 +55,7 @@ COPY studio /app/studio
 COPY sample_data /app/sample_data
 COPY main.py alembic.ini ./
 
-ENV OPTINIST_DIR=/mnt/efs
+ENV OPTINIST_DIR=/app/studio_data
 
 # Copy the cloud-startup.sh script
 COPY cloud-startup.sh ./

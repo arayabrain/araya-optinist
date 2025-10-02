@@ -2108,9 +2108,11 @@ class BatchDebug:
 
 async def download_workflow_results_from_s3(workspace_id: str, unique_id: str) -> bool:
     """
-    Download batch execution results from S3 for post-processing.
-    This is needed because AWS Batch execution uses a separate EFS system
-    from the main application, so results must be transferred via S3.
+    Download batch execution results from S3 to local storage for post-processing.
+
+    In S3 storage mode, batch jobs write results directly to S3. This function
+    downloads those results to the main application's local storage so they can
+    be accessed for post-processing tasks (visualization, analysis, etc.).
     """
     try:
         if RemoteStorageController.is_available():
@@ -2135,9 +2137,11 @@ async def upload_workflow_results_to_s3(workspace_id: str, unique_id: str) -> bo
     """
     Upload batch execution results to S3 for persistence.
 
-    This uploads final workflow results from the batch EFS to S3 storage
-    for long-term persistence and access by the main application.
+    In S3 storage mode, batch jobs already write results directly to S3.
+    This function ensures any locally-generated metadata or artifacts are
+    also uploaded to S3 for complete persistence.
 
+    In EFS storage mode, this function uploads results from local EFS to S3.
     """
     try:
         import asyncio
@@ -2184,9 +2188,8 @@ async def upload_snakemake_config_to_s3(workspace_id: str, unique_id: str) -> bo
     """
     Upload snakemake config to S3 for batch execution.
 
-    This uploads the snakemake.yaml config file from the main EFS to S3
-    so that batch jobs can access it from their separate EFS system.
-
+    This uploads the snakemake.yaml config file to S3 so that batch jobs
+    can download and use it during workflow execution.
     """
     try:
         if not RemoteStorageController.is_available():
@@ -2243,9 +2246,8 @@ async def upload_snakefile_to_s3(workspace_id: str, unique_id: str) -> bool:
     """
     Upload Snakefile to S3 for batch execution.
 
-    This uploads the Snakefile from the main EFS to S3
-    so that batch jobs can access it from their separate EFS system.
-
+    This uploads the Snakefile to S3 so that batch jobs can download
+    and use it during workflow execution.
     """
     try:
         if not RemoteStorageController.is_available():
