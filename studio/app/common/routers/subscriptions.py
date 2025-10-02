@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from enum import Enum
 from typing import List, Optional
 
 import stripe
@@ -36,6 +37,14 @@ stripe.api_key = SubscriptionService.get_stripe_key()
 router = APIRouter(prefix="/api/subsc", tags=["Subscriptions"])
 webhook_router = APIRouter(prefix="/api/subsc/webhooks", tags=["Subscription Webhooks"])
 logger = AppLogger.get_logger()
+
+
+class StripeWebhookEvent(Enum):
+    CHECKOUT_SESSION_COMPLETED = "checkout.session.completed"
+    INVOICE_PAYMENT_FAILED = "invoice.payment_failed"
+    CUSTOMER_SUBSCRIPTION_DELETED = "customer.subscription.deleted"
+    SUBSCRIPTION_SCHEDULE_RELEASED = "subscription_schedule.released"
+    INVOICE_PAYMENT_SUCCEEDED = "invoice.payment_succeeded"
 
 
 @router.get("/mgmts/plans", response_model=List[SubscriptionPlanResponse])
@@ -442,23 +451,23 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 
         logger.info(f"Processing event type: {event_type}")
 
-        if event_type == "checkout.session.completed":
+        if event_type == StripeWebhookEvent.CHECKOUT_SESSION_COMPLETED.value:
             logger.info("Handling checkout.session.completed")
             WebhookService.handle_checkout_completed(db, data)
 
-        elif event_type == "invoice.payment_failed":
+        elif event_type == StripeWebhookEvent.INVOICE_PAYMENT_FAILED.value:
             logger.info("Handling invoice.payment_failed")
             WebhookService.handle_payment_failed(db, data)
 
-        elif event_type == "customer.subscription.deleted":
+        elif event_type == StripeWebhookEvent.CUSTOMER_SUBSCRIPTION_DELETED.value:
             logger.info("Handling customer.subscription.deleted")
             WebhookService.handle_subscription_cancelled(db, data)
 
-        elif event_type == "subscription_schedule.released":
+        elif event_type == StripeWebhookEvent.SUBSCRIPTION_SCHEDULE_RELEASED.value:
             logger.info("Handling subscription_schedule.released")
             WebhookService.handle_subscription_schedule_released(db, data)
 
-        elif event_type == "invoice.payment_succeeded":
+        elif event_type == StripeWebhookEvent.INVOICE_PAYMENT_SUCCEEDED.value:
             logger.info("Handling invoice.payment_succeeded")
             WebhookService.handle_subscription_payment_succeeded(db, data)
 
