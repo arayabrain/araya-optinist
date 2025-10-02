@@ -27,6 +27,11 @@ class SubscriptionCurrencyType(Enum):
     JPY = 2
 
 
+class SubscriptionCurrency(Enum):
+    USD = "usd"
+    JPY = "jpy"
+
+
 class SubscriptionService:
     @staticmethod
     def get_active_plans(db: Session) -> List[SubscriptionPlans]:

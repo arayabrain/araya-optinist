@@ -1,20 +1,19 @@
 from datetime import datetime
-from enum import Enum
 from typing import List, Optional
 
 import stripe
-from attrs import asdict
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.stripe_service import (
-    get_default_payment_method,
+    StripeService,
+    StripeSubscriptionStatus,
     get_stripe_customer_by_email,
 )
 from studio.app.common.core.subscription.subscription_service import (
+    SubscriptionCurrency,
     SubscriptionCurrencyType,
     SubscriptionService,
 )
@@ -35,28 +34,11 @@ from studio.app.common.schemas.subscriptions import (
 )
 from studio.app.common.schemas.users import User
 
-# Import your database models and dependencies
-
-
 stripe.api_key = SubscriptionService.get_stripe_key()
-STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
 
 router = APIRouter(prefix="/api/subsc", tags=["Subscriptions"])
 webhook_router = APIRouter(prefix="/api/subsc/webhooks", tags=["Subscription Webhooks"])
 logger = AppLogger.get_logger()
-
-
-class StripeSubscriptionStatus(Enum):
-    """Stripe subscription status values"""
-
-    INCOMPLETE = "incomplete"
-    INCOMPLETE_EXPIRED = "incomplete_expired"
-    TRIALING = "trialing"
-    ACTIVE = "active"
-    PAST_DUE = "past_due"
-    CANCELED = "canceled"
-    UNPAID = "unpaid"
-    PAUSED = "paused"
 
 
 @router.get("/mgmts/plans", response_model=List[SubscriptionPlanResponse])
@@ -218,10 +200,9 @@ async def update_user_subscription(
         # Prepare currency for Stripe
         currency = new_plan.currency
         if currency == SubscriptionCurrencyType.USD.value:
-            currency = "usd"
+            currency = SubscriptionCurrency.USD.value
         elif currency == SubscriptionCurrencyType.JPY.value:
-            currency = "jpy"
-
+            currency = SubscriptionCurrency.JPY.value
         # Create new price in Stripe for the new plan
         stripe_price = stripe.Price.create(
             currency=currency,
@@ -504,54 +485,21 @@ async def get_user_payment_methods(
 async def get_user_default_payment_method(
     current_user: User = Depends(get_current_user),
 ):
-    payment_method_response = await get_default_payment_method(current_user.email)
-    return payment_method_response
+    return await StripeService.get_default_payment_method(current_user)
 
 
 @router.post("/payment-methods/setup-intent", response_model=CreateSetupIntentResponse)
-async def create_setup_intent(
+async def setup_intent(
     current_user: User = Depends(get_current_user),
 ):
+    # await StripeService.create_setup_intent(current_user)
     """
-    Create a SetupIntent for collecting payment method information
+    This endpoint is currently not in use
     """
-    try:
-        user = current_user
-
-        # Get or create Stripe customer
-        customer = await get_stripe_customer_by_email(user.email)
-
-        if not customer:
-            # Create new Stripe customer
-            customer = stripe.Customer.create(
-                email=user.email,
-                name=getattr(user, "name", ""),
-                metadata={"user_id": str(user.id)},
-            )
-            logger.info(f"Created new Stripe customer for user {user.id}")
-
-        # Create SetupIntent
-        setup_intent = stripe.SetupIntent.create(
-            customer=customer.id,
-            payment_method_types=["card"],
-            usage="off_session",  # For future payments
-        )
-
-        return CreateSetupIntentResponse(
-            success=True,
-            client_secret=setup_intent.client_secret,
-            setup_intent_id=setup_intent.id,
-            message="Setup intent created successfully",
-        )
-
-    except stripe.error.StripeError as e:
-        logger.error(f"Stripe error creating setup intent: {str(e)}")
-        raise HTTPException(
-            status_code=400, detail=f"Payment processing error: {str(e)}"
-        )
-    except Exception as e:
-        logger.error(f"Error creating setup intent: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to create setup intent")
+    raise HTTPException(
+        status_code=501,
+        detail="This API endpoint is not implemented and currently not in use",
+    )
 
 
 @router.put("/payment-methods", response_model=UpdatePaymentMethodResponse)
@@ -559,74 +507,16 @@ async def update_default_payment_method(
     payment_method_id: str,
     current_user: User = Depends(get_current_user),
 ):
+    # return await StripeService.update_default_payment_method(
+    #     current_user, payment_method_id
+    # )
     """
-    Update the default payment method for a user's subscription
+    This endpoint is currently not in use
     """
-    try:
-        user = current_user
-
-        # Get Stripe customer
-        customer = await get_stripe_customer_by_email(user.email)
-        if not customer:
-            raise HTTPException(
-                status_code=404, detail="No Stripe customer found for user"
-            )
-
-        # Verify the payment method exists and belongs to this customer
-        try:
-            payment_method = stripe.PaymentMethod.retrieve(payment_method_id)
-        except stripe.error.InvalidRequestError:
-            raise HTTPException(status_code=404, detail="Payment method not found")
-
-        # Attach payment method to customer if not already attached
-        if payment_method.customer != customer.id:
-            stripe.PaymentMethod.attach(
-                payment_method_id,
-                customer=customer.id,
-            )
-
-        # Set as default payment method for customer
-        stripe.Customer.modify(
-            customer.id,
-            invoice_settings={"default_payment_method": payment_method_id},
-        )
-
-        # Update default payment method for active subscriptions
-        subscriptions = stripe.Subscription.list(
-            customer=customer.id, status=StripeSubscriptionStatus.ACTIVE
-        )
-
-        updated_subscriptions = 0
-        for subscription in subscriptions.data:
-            stripe.Subscription.modify(
-                subscription.id, default_payment_method=payment_method_id
-            )
-            updated_subscriptions += 1
-
-        logger.info(
-            f"Updated payment method for user {user.id}, "
-            f"updated {updated_subscriptions} subscriptions"
-        )
-
-        return UpdatePaymentMethodResponse(
-            success=True,
-            message=(
-                f"Payment method updated successfully. "
-                f"Updated {updated_subscriptions} active subscriptions."
-            ),
-            payment_method_id=payment_method_id,
-        )
-
-    except stripe.error.StripeError as e:
-        logger.error(f"Stripe error updating payment method: {str(e)}")
-        raise HTTPException(
-            status_code=400, detail=f"Payment processing error: {str(e)}"
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating payment method: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to update payment method")
+    raise HTTPException(
+        status_code=501,
+        detail="This API endpoint is not implemented and currently not in use",
+    )
 
 
 @router.delete("/payment-methods/{payment_method_id}")
@@ -634,72 +524,14 @@ async def delete_payment_method(
     payment_method_id: str,
     current_user: User = Depends(get_current_user),
 ):
+    # return await StripeService.delete_payment_method(current_user, payment_method_id)
     """
-    Delete a payment method (cannot delete if it's the default for active subscriptions)
+    This endpoint is currently not in use
     """
-    try:
-        user = current_user
-
-        # Get Stripe customer
-        customer = await get_stripe_customer_by_email(user.email)
-        if not customer:
-            raise HTTPException(
-                status_code=404, detail="No Stripe customer found for user"
-            )
-
-        # Verify the payment method exists and belongs to this customer
-        try:
-            payment_method = stripe.PaymentMethod.retrieve(payment_method_id)
-            if payment_method.customer != customer.id:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Payment method does not belong to this user",
-                )
-        except stripe.error.InvalidRequestError:
-            raise HTTPException(status_code=404, detail="Payment method not found")
-
-        # Check if this is the default payment method for customer
-        if customer.invoice_settings.default_payment_method == payment_method_id:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Cannot delete the default payment method. "
-                    "Please set a new default first."
-                ),
-            )
-
-        # Check if this is the default payment method for any active subscriptions
-        subscriptions = stripe.Subscription.list(
-            customer=customer.id, status=StripeSubscriptionStatus.ACTIVE
-        )
-
-        for subscription in subscriptions.data:
-            if subscription.default_payment_method == payment_method_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Cannot delete payment method that is default for "
-                        "active subscription"
-                    ),
-                )
-
-        # Detach the payment method
-        stripe.PaymentMethod.detach(payment_method_id)
-
-        # logger.info(f"Deleted payment method {payment_method_id} for user {user.id}")
-
-        return {"success": True, "message": "Payment method deleted successfully"}
-
-    except stripe.error.StripeError as e:
-        logger.error(f"Stripe error deleting payment method: {str(e)}")
-        raise HTTPException(
-            status_code=400, detail=f"Payment processing error: {str(e)}"
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting payment method: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to delete payment method")
+    raise HTTPException(
+        status_code=501,
+        detail="This API endpoint is not implemented and currently not in use",
+    )
 
 
 @router.post(
@@ -710,91 +542,7 @@ async def create_checkout_session(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Create a Stripe checkout session for subscription"""
-    try:
-        # Get subscription plan from database using plan_id as string
-        logger.info(f"Creating checkout session for plan_id: {request.plan_id}")
-        plan = SubscriptionService.get_plan_by_id(db, int(request.plan_id))
-        logger.info(f"Retrieved plan: {plan}")
-
-        if not plan:
-            raise HTTPException(status_code=404, detail="Subscription plan not found")
-
-        # Get user details
-        user = current_user
-
-        # Use the price and currency from the request
-        price = plan.price
-        currency = plan.currency
-
-        if currency == SubscriptionCurrencyType.USD.value:
-            currency = "usd"
-        elif currency == SubscriptionCurrencyType.JPY.value:
-            currency = "jpy"
-
-        logger.info(f"Request details - price: {price}, currency: {currency}")
-
-        # Determine billing cycle for Stripe (default to monthly if not specified)
-        price_interval = "month"  # You can modify this based on your needs
-
-        # Create Stripe checkout session directly with price_data
-        try:
-            logger.info("Initializing Stripe")
-            subscription_account = CheckoutService.get_subscription_account(db, user.id)
-            customer_id = (
-                subscription_account.provider_customer_id
-                if subscription_account
-                else stripe.Customer.create(
-                    email=user.email,
-                    name=getattr(user, "name", ""),
-                    metadata={"user_id": str(user.id)},
-                ).id
-            )
-
-            checkout_session = stripe.checkout.Session.create(
-                payment_method_types=["card"],
-                line_items=[
-                    {
-                        "price_data": {
-                            "currency": currency,
-                            "product_data": {
-                                "name": plan.name,
-                                "description": "Subscription Plan Purchase",
-                            },
-                            "unit_amount": price,
-                            "recurring": {"interval": price_interval},
-                        },
-                        "quantity": 1,
-                    }
-                ],
-                mode="subscription",
-                success_url=(
-                    f"{STRIPE_CALLBACK_URL}/console/subscription/thanks"
-                    "?session_id={CHECKOUT_SESSION_ID}"
-                ),
-                cancel_url=(f"{STRIPE_CALLBACK_URL}/console/subscription"),
-                customer=customer_id,
-                client_reference_id=str(user.id),
-                metadata={
-                    "user_id": str(user.id),
-                    "plan_id": request.plan_id,
-                    "plan_name": plan.name,
-                },
-            )
-
-            return CreateCheckoutSessionResponse(
-                checkout_url=checkout_session.url, session_id=checkout_session.id
-            )
-
-        except stripe.error.StripeError as e:
-            raise HTTPException(
-                status_code=400, detail=f"Failed to create checkout session: {str(e)}"
-            )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    return await StripeService.handle_checkout_session(db, request, current_user)
 
 
 @router.post("/checkout/validate-checkout-session", response_model=bool)
