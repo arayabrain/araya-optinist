@@ -48,6 +48,12 @@ class StripeWebhookEvent(Enum):
     INVOICE_PAYMENT_SUCCEEDED = "invoice.payment_succeeded"
 
 
+class StripeCheckoutSessionStatus(Enum):
+    COMPLETE = "complete"
+    EXPIRED = "expired"
+    OPEN = "open"
+
+
 @router.get("/mgmts/plans", response_model=List[SubscriptionPlanResponse])
 def get_subscription_plans(db: Session = Depends(get_db)):
     try:
@@ -366,7 +372,10 @@ async def validate_checkout_session(
         session = stripe.checkout.Session.retrieve(request.session_id)
 
         # Check if the session is complete and paid
-        if session.payment_status == "paid" and session.status == "complete":
+        if (
+            session.payment_status == StripeCheckoutSessionStatus.PAID
+            and session.status == StripeCheckoutSessionStatus.COMPLETE
+        ):
             return True
         else:
             return False
@@ -395,8 +404,9 @@ async def validate_failed_checkout_session(
 
         # Check if the session exists and is in a legitimate failed state
         # Valid failed states: expired, open with unpaid status
-        if session.status == "expired" or (
-            session.status == "open" and session.payment_status == "unpaid"
+        if session.status == StripeCheckoutSessionStatus.EXPIRED or (
+            session.status == StripeCheckoutSessionStatus.OPEN
+            and session.payment_status == StripeCheckoutSessionStatus.PENDING
         ):
             return True
         else:

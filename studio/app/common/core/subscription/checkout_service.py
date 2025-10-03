@@ -379,12 +379,7 @@ class CheckoutService:
 
             # Use the price and currency from the request
             price = plan.price
-            currency = plan.currency
-
-            if currency == SubscriptionCurrencyType.USD.value:
-                currency = "usd"
-            elif currency == SubscriptionCurrencyType.JPY.value:
-                currency = "jpy"
+            currency = SubscriptionCurrencyType(plan.currency).get_currency_string()
 
             logger.info(f"Request details - price: {price}, currency: {currency}")
 

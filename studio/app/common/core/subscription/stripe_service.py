@@ -7,7 +7,6 @@ from fastapi import HTTPException, status
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.subscription_service import (
-    SubscriptionCurrency,
     SubscriptionCurrencyType,
     SubscriptionService,
 )
@@ -410,11 +409,8 @@ class StripeService:
             stripe_subscription = stripe_subscriptions.data[0]
 
             # Prepare currency for Stripe
-            currency = new_plan.currency
-            if currency == SubscriptionCurrencyType.USD.value:
-                currency = SubscriptionCurrency.USD.value
-            elif currency == SubscriptionCurrencyType.JPY.value:
-                currency = SubscriptionCurrency.JPY.value
+            currency = SubscriptionCurrencyType(new_plan.currency).get_currency_string()
+
             # Create new price in Stripe for the new plan
             stripe_price = stripe.Price.create(
                 currency=currency,

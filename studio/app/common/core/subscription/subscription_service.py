@@ -26,10 +26,13 @@ class SubscriptionCurrencyType(Enum):
     USD = 1
     JPY = 2
 
-
-class SubscriptionCurrency(Enum):
-    USD = "usd"
-    JPY = "jpy"
+    def get_currency_string(self):
+        """Get the string representation of the currency"""
+        if self == SubscriptionCurrencyType.USD:
+            return "usd"
+        elif self == SubscriptionCurrencyType.JPY:
+            return "jpy"
+        return None
 
 
 class SubscriptionService:
