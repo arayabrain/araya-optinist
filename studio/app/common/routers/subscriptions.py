@@ -17,6 +17,7 @@ from studio.app.common.core.subscription.stripe_service import (
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.db.database import get_db
+from studio.app.common.models.subscription import SubscriptionPlans
 from studio.app.common.schemas.checkouts import CheckoutSessionRequest
 from studio.app.common.schemas.subscriptions import (
     CancelSubscriptionResponse,
@@ -50,7 +51,7 @@ class StripeWebhookEvent(Enum):
 @router.get("/mgmts/plans", response_model=List[SubscriptionPlanResponse])
 def get_subscription_plans(db: Session = Depends(get_db)):
     try:
-        plans = SubscriptionService.get_active_plans(db)
+        plans: List[SubscriptionPlans] = SubscriptionService.get_active_plans(db)
 
         if not plans:
             logger.warning("No subscription plans found")
@@ -59,25 +60,14 @@ def get_subscription_plans(db: Session = Depends(get_db)):
         result: List[SubscriptionPlanResponse] = []
         for plan in plans:
             try:
-                plan_response = SubscriptionPlanResponse(
-                    id=plan.id,
-                    name=plan.name,
-                    price=plan.price,
-                    billing_cycle=plan.billing_cycle,
-                    features=plan.features,
-                    currency=plan.currency,
-                    status=plan.status,
-                    created_at=plan.created_at,
-                )
+                # SQLModel inherits from Pydantic, so .dict() should work
+                plan_dict = plan.dict()
+                plan_response = SubscriptionPlanResponse(**plan_dict)
                 result.append(plan_response)
-
             except Exception as plan_error:
                 logger.error(f"Error processing plan {plan.id}: {plan_error}")
-                # Skip this plan and continue with others
                 continue
-
         return result
-
     except Exception as e:
         logger.error(f"Error fetching subscription plans: {e}", exc_info=True)
         raise HTTPException(
@@ -108,37 +98,45 @@ async def get_user_subscription(
             )
 
             if expired_subscription:
-                sub_data, plan_data, _ = expired_subscription
-                return UserSubscriptionResponse(
-                    id=sub_data.id,
-                    user_id=sub_data.user_id,
-                    plan_id=sub_data.plan_id,
-                    created_at=sub_data.created_at,
-                    updated_at=sub_data.updated_at,
-                    plan_name=plan_data.name,
-                    plan_price=plan_data.price,
-                    expiration=sub_data.expiration,
-                    is_expired=True,
-                    scheduled_downgrade=sub_data.scheduled_downgrade,
-                )
+                try:
+                    sub_data, plan_data, _ = expired_subscription
+                    subscription_dict = {
+                        **sub_data.dict(),
+                        "plan_name": plan_data.name,
+                        "plan_price": plan_data.price,
+                        "is_expired": True,
+                    }
+                    subscription_response = UserSubscriptionResponse(
+                        **subscription_dict
+                    )
+                    return subscription_response
+                except Exception as sub_error:
+                    logger.error(
+                        f"Error processing expired subscription for user "
+                        f"{current_user.id}: {sub_error}"
+                    )
+                    return None
 
             return None
 
         # If we get here, result is not None, so we can safely unpack
-        subscription, subscription_plans = subscription
-        sub_data, plan_data = subscription, subscription_plans
-        return UserSubscriptionResponse(
-            id=sub_data.id,
-            user_id=sub_data.user_id,
-            plan_id=sub_data.plan_id,
-            created_at=sub_data.created_at,
-            updated_at=sub_data.updated_at,
-            plan_name=plan_data.name,
-            plan_price=plan_data.price,
-            expiration=sub_data.expiration,
-            is_expired=False,
-            scheduled_downgrade=sub_data.scheduled_downgrade,
-        )
+        try:
+            subscription, subscription_plans = subscription
+            sub_data, plan_data = subscription, subscription_plans
+            subscription_dict = {
+                **sub_data.dict(),
+                "plan_name": plan_data.name,
+                "plan_price": plan_data.price,
+                "is_expired": False,
+            }
+            subscription_response = UserSubscriptionResponse(**subscription_dict)
+            return subscription_response
+        except Exception as sub_error:
+            logger.error(
+                f"Error processing active subscription for user "
+                f"{current_user.id}: {sub_error}"
+            )
+            return None
     except Exception as e:
         logger.error(
             f"Error fetching subscription for user {current_user.id}: {str(e)}"
@@ -419,7 +417,6 @@ async def validate_failed_checkout_session(
 
 @webhook_router.post("/stripe")
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
-    """Handle Stripe webhooks for subscription events"""
     try:
         # Get raw body and signature header
         body = await request.body()
