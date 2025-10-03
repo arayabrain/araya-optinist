@@ -8,7 +8,10 @@ from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.checkout_service import CheckoutService
-from studio.app.common.core.subscription.subscription_service import SubscriptionService
+from studio.app.common.core.subscription.subscription_service import (
+    SubscriptionCurrencyType,
+    SubscriptionService,
+)
 from studio.app.common.models.subscription import (
     CancellationReason,
     SubscriptionCancellation,
@@ -28,6 +31,15 @@ class StripeWebhookEvent(Enum):
     CUSTOMER_SUBSCRIPTION_DELETED = "customer.subscription.deleted"
     SUBSCRIPTION_SCHEDULE_RELEASED = "subscription_schedule.released"
     INVOICE_PAYMENT_SUCCEEDED = "invoice.payment_succeeded"
+
+
+class BILLING_CYCLE(Enum):
+    MONTHLY = "1"
+    YEARLY = "2"
+
+
+class PaymentStatus(Enum):
+    PAID = "paid"
 
 
 class WebhookService:
@@ -132,7 +144,7 @@ class WebhookService:
                 }
 
             # 2. Verify payment status from webhook data
-            if payment_status != "paid":
+            if payment_status != PaymentStatus.PAID.value:
                 raise ValueError(f"Payment not completed. Status: {payment_status}")
 
             # 3. Get subscription plan
@@ -339,7 +351,9 @@ class WebhookService:
                     .filter(
                         SubscriptionPlans.price == price["unit_amount"],
                         SubscriptionPlans.currency
-                        == (1 if price["currency"] == "usd" else 2),
+                        == SubscriptionCurrencyType.get_currency_enum(
+                            price["currency"]
+                        ).value,
                     )
                     .first()
                 )
@@ -445,7 +459,7 @@ class WebhookService:
                 )
 
             # Verify payment was successful
-            if payment_status != "paid":
+            if payment_status != PaymentStatus.PAID.value:
                 raise ValueError(f"Payment not completed. Status: {payment_status}")
 
             # 1. Find user by Stripe customer ID
@@ -510,9 +524,9 @@ class WebhookService:
                 billing_cycle = plan.billing_cycle
 
                 # Calculate extension period
-                if billing_cycle == "1":
+                if billing_cycle == BILLING_CYCLE.MONTHLY.value:
                     new_expiration = current_expiration + timedelta(days=30)
-                elif billing_cycle == "2":
+                elif billing_cycle == BILLING_CYCLE.YEARLY.value:
                     new_expiration = current_expiration + timedelta(days=365)
                 else:
                     # Default to monthly if unknown

@@ -34,6 +34,14 @@ class SubscriptionCurrencyType(Enum):
             return "jpy"
         return None
 
+    def get_currency_enum(value: str):
+        """Get the enum representation of the currency"""
+        if value.lower() == "usd":
+            return SubscriptionCurrencyType.USD
+        elif value.lower() == "jpy":
+            return SubscriptionCurrencyType.JPY
+        return None
+
 
 class SubscriptionService:
     @staticmethod
