@@ -40,14 +40,6 @@ webhook_router = APIRouter(prefix="/api/subsc/webhooks", tags=["Subscription Web
 logger = AppLogger.get_logger()
 
 
-class StripeWebhookEvent(Enum):
-    CHECKOUT_SESSION_COMPLETED = "checkout.session.completed"
-    INVOICE_PAYMENT_FAILED = "invoice.payment_failed"
-    CUSTOMER_SUBSCRIPTION_DELETED = "customer.subscription.deleted"
-    SUBSCRIPTION_SCHEDULE_RELEASED = "subscription_schedule.released"
-    INVOICE_PAYMENT_SUCCEEDED = "invoice.payment_succeeded"
-
-
 class StripeCheckoutSessionStatus(Enum):
     COMPLETE = "complete"
     EXPIRED = "expired"
@@ -458,28 +450,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 
         logger.info(f"Processing event type: {event_type}")
 
-        if event_type == StripeWebhookEvent.CHECKOUT_SESSION_COMPLETED.value:
-            logger.info("Handling checkout.session.completed")
-            WebhookService.handle_checkout_completed(db, data)
-
-        elif event_type == StripeWebhookEvent.INVOICE_PAYMENT_FAILED.value:
-            logger.info("Handling invoice.payment_failed")
-            WebhookService.handle_payment_failed(db, data)
-
-        elif event_type == StripeWebhookEvent.CUSTOMER_SUBSCRIPTION_DELETED.value:
-            logger.info("Handling customer.subscription.deleted")
-            WebhookService.handle_subscription_cancelled(db, data)
-
-        elif event_type == StripeWebhookEvent.SUBSCRIPTION_SCHEDULE_RELEASED.value:
-            logger.info("Handling subscription_schedule.released")
-            WebhookService.handle_subscription_schedule_released(db, data)
-
-        elif event_type == StripeWebhookEvent.INVOICE_PAYMENT_SUCCEEDED.value:
-            logger.info("Handling invoice.payment_succeeded")
-            WebhookService.handle_subscription_payment_succeeded(db, data)
-
-        else:
-            logger.info(f"Unhandled webhook event type: {event_type}")
+        WebhookService.dispatch_webhook_event(db, event_type, data)
 
         logger.info(f"Successfully processed {event_type}")
         return {"received": True, "processed": event_type}

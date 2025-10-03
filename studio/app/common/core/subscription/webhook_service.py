@@ -1,3 +1,4 @@
+from enum import Enum
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
@@ -19,6 +20,14 @@ from studio.app.common.models.subscription import (
 )
 
 logger = AppLogger.get_logger()
+
+
+class StripeWebhookEvent(Enum):
+    CHECKOUT_SESSION_COMPLETED = "checkout.session.completed"
+    INVOICE_PAYMENT_FAILED = "invoice.payment_failed"
+    CUSTOMER_SUBSCRIPTION_DELETED = "customer.subscription.deleted"
+    SUBSCRIPTION_SCHEDULE_RELEASED = "subscription_schedule.released"
+    INVOICE_PAYMENT_SUCCEEDED = "invoice.payment_succeeded"
 
 
 class WebhookService:
@@ -587,3 +596,59 @@ class WebhookService:
         if not webhook_secret:
             raise ValueError("STRIPE_WEBHOOK_SECRET environment variable is not set")
         return webhook_secret
+
+    @staticmethod
+    def dispatch_webhook_event(
+        db: Session, event_type: str, data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Dispatch webhook events to appropriate handlers
+
+        Args:
+            db: Database session
+            event_type: The type of webhook event
+            data: Webhook event data
+
+        Returns:
+            Dict with processing results
+        """
+        try:
+            if event_type == StripeWebhookEvent.CHECKOUT_SESSION_COMPLETED.value:
+                logger.info("Handling checkout.session.completed")
+                return WebhookService.handle_checkout_completed(db, data)
+
+            elif event_type == StripeWebhookEvent.INVOICE_PAYMENT_FAILED.value:
+                logger.info("Handling invoice.payment_failed")
+                WebhookService.handle_payment_failed(db, data)
+                return {"success": True, "message": "Payment failed event processed"}
+
+            elif event_type == StripeWebhookEvent.CUSTOMER_SUBSCRIPTION_DELETED.value:
+                logger.info("Handling customer.subscription.deleted")
+                WebhookService.handle_subscription_cancelled(db, data)
+                return {
+                    "success": True,
+                    "message": "Subscription cancellation processed",
+                }
+
+            elif event_type == StripeWebhookEvent.SUBSCRIPTION_SCHEDULE_RELEASED.value:
+                logger.info("Handling subscription_schedule.released")
+                WebhookService.handle_subscription_schedule_released(db, data)
+                return {
+                    "success": True,
+                    "message": "Subscription schedule release processed",
+                }
+
+            elif event_type == StripeWebhookEvent.INVOICE_PAYMENT_SUCCEEDED.value:
+                logger.info("Handling invoice.payment_succeeded")
+                return WebhookService.handle_subscription_payment_succeeded(db, data)
+
+            else:
+                logger.info(f"Unhandled webhook event type: {event_type}")
+                return {
+                    "success": True,
+                    "message": f"Unhandled event type: {event_type}",
+                }
+
+        except Exception as e:
+            logger.error(f"Error dispatching webhook event {event_type}: {str(e)}")
+            raise
