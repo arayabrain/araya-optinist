@@ -613,41 +613,47 @@ class WebhookService:
             Dict with processing results
         """
         try:
-            if event_type == StripeWebhookEvent.CHECKOUT_SESSION_COMPLETED.value:
-                logger.info("Handling checkout.session.completed")
-                return WebhookService.handle_checkout_completed(db, data)
+            match event_type:
+                case StripeWebhookEvent.CHECKOUT_SESSION_COMPLETED.value:
+                    logger.info("Handling checkout.session.completed")
+                    return WebhookService.handle_checkout_completed(db, data)
 
-            elif event_type == StripeWebhookEvent.INVOICE_PAYMENT_FAILED.value:
-                logger.info("Handling invoice.payment_failed")
-                WebhookService.handle_payment_failed(db, data)
-                return {"success": True, "message": "Payment failed event processed"}
+                case StripeWebhookEvent.INVOICE_PAYMENT_FAILED.value:
+                    logger.info("Handling invoice.payment_failed")
+                    WebhookService.handle_payment_failed(db, data)
+                    return {
+                        "success": True,
+                        "message": "Payment failed event processed",
+                    }
 
-            elif event_type == StripeWebhookEvent.CUSTOMER_SUBSCRIPTION_DELETED.value:
-                logger.info("Handling customer.subscription.deleted")
-                WebhookService.handle_subscription_cancelled(db, data)
-                return {
-                    "success": True,
-                    "message": "Subscription cancellation processed",
-                }
+                case StripeWebhookEvent.CUSTOMER_SUBSCRIPTION_DELETED.value:
+                    logger.info("Handling customer.subscription.deleted")
+                    WebhookService.handle_subscription_cancelled(db, data)
+                    return {
+                        "success": True,
+                        "message": "Subscription cancellation processed",
+                    }
 
-            elif event_type == StripeWebhookEvent.SUBSCRIPTION_SCHEDULE_RELEASED.value:
-                logger.info("Handling subscription_schedule.released")
-                WebhookService.handle_subscription_schedule_released(db, data)
-                return {
-                    "success": True,
-                    "message": "Subscription schedule release processed",
-                }
+                case StripeWebhookEvent.SUBSCRIPTION_SCHEDULE_RELEASED.value:
+                    logger.info("Handling subscription_schedule.released")
+                    WebhookService.handle_subscription_schedule_released(db, data)
+                    return {
+                        "success": True,
+                        "message": "Subscription schedule release processed",
+                    }
 
-            elif event_type == StripeWebhookEvent.INVOICE_PAYMENT_SUCCEEDED.value:
-                logger.info("Handling invoice.payment_succeeded")
-                return WebhookService.handle_subscription_payment_succeeded(db, data)
+                case StripeWebhookEvent.INVOICE_PAYMENT_SUCCEEDED.value:
+                    logger.info("Handling invoice.payment_succeeded")
+                    return WebhookService.handle_subscription_payment_succeeded(
+                        db, data
+                    )
 
-            else:
-                logger.info(f"Unhandled webhook event type: {event_type}")
-                return {
-                    "success": True,
-                    "message": f"Unhandled event type: {event_type}",
-                }
+                case _:
+                    logger.info(f"Unhandled webhook event type: {event_type}")
+                    return {
+                        "success": True,
+                        "message": f"Unhandled event type: {event_type}",
+                    }
 
         except Exception as e:
             logger.error(f"Error dispatching webhook event {event_type}: {str(e)}")
