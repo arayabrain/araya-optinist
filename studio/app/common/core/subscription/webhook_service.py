@@ -1,9 +1,10 @@
-from enum import Enum
 import os
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from typing import Any, Dict
 
 import stripe
+from fastapi import HTTPException
 from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
@@ -62,8 +63,7 @@ class WebhookService:
             Dict with processing results
 
         Raises:
-            ValueError: If validation fails
-            Exception: For processing errors
+            HTTPException: If validation fails or processing errors occur
         """
         try:
             session_id = session_data.get("id")
@@ -80,8 +80,12 @@ class WebhookService:
 
             # Validate required data
             if not user_id or not plan_id:
-                raise ValueError(
-                    f"Missing user_id or plan_id in session metadata: {session_id}"
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Missing user_id or plan_id in session metadata: "
+                        f"{session_id}"
+                    ),
                 )
 
             # Convert to integers
@@ -89,9 +93,12 @@ class WebhookService:
                 user_id = int(user_id)
                 plan_id = int(plan_id)
             except (ValueError, TypeError):
-                raise ValueError(
-                    f"Invalid user_id or plan_id format in session metadata: "
-                    f"{session_id}"
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Invalid user_id or plan_id format in session metadata: "
+                        f"{session_id}"
+                    ),
                 )
 
             # 1. CHECK FOR DUPLICATE PROCESSING FIRST
@@ -145,12 +152,17 @@ class WebhookService:
 
             # 2. Verify payment status from webhook data
             if payment_status != PaymentStatus.PAID.value:
-                raise ValueError(f"Payment not completed. Status: {payment_status}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Payment not completed. Status: {payment_status}",
+                )
 
             # 3. Get subscription plan
             plan = CheckoutService.get_subscription_plan(db, plan_id)
             if not plan:
-                raise ValueError(f"Subscription plan not found: {plan_id}")
+                raise HTTPException(
+                    status_code=404, detail=f"Subscription plan not found: {plan_id}"
+                )
 
             # 4. Get or create Stripe provider
             stripe_provider_id = CheckoutService.get_or_create_stripe_provider(db)
@@ -194,13 +206,22 @@ class WebhookService:
                 "session_id": session_id,
             }
 
+        except HTTPException:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="Invalid webhook data")
         except Exception as e:
             logger.error(
                 f"Webhook: Error processing checkout success for session "
                 f"{session_id}: {str(e)}"
             )
             db.rollback()
-            raise
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Error processing checkout success for session "
+                    f"{session_id}: {str(e)}"
+                ),
+            )
 
     @staticmethod
     def handle_payment_failed(db: Session, invoice_data: Dict[str, Any]) -> None:
@@ -313,8 +334,10 @@ class WebhookService:
             customer_id = data.get("customer")
 
             if not subscription_id:
-                logger.error("No subscription ID in schedule released event")
-                return
+                raise HTTPException(
+                    status_code=400,
+                    detail="No subscription ID in schedule released event",
+                )
 
             # Get the subscription details from Stripe
             subscription = stripe.Subscription.retrieve(subscription_id)
@@ -325,8 +348,9 @@ class WebhookService:
             customer_email = customer.get("email")
 
             if not customer_email:
-                logger.error(f"No email found for customer {customer_id}")
-                return
+                raise HTTPException(
+                    status_code=400, detail=f"No email found for customer {customer_id}"
+                )
 
             # Find user by email
             from studio.app.common.models.user import User  # Adjust import as needed
@@ -334,8 +358,9 @@ class WebhookService:
             user = db.query(User).filter(User.email == customer_email).first()
 
             if not user:
-                logger.error(f"No user found with email {customer_email}")
-                return
+                raise HTTPException(
+                    status_code=404, detail=f"No user found with email {customer_email}"
+                )
 
             # Find the plan by matching the price or metadata
             new_plan_id = None
@@ -362,8 +387,10 @@ class WebhookService:
                     new_plan_id = plan.id
 
             if not new_plan_id:
-                logger.error(f"Could not determine new plan ID for user {user.id}")
-                return
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Could not determine new plan ID for user {user.id}",
+                )
 
             # Update the user's subscription in database
             # Find the active subscription for this user
@@ -384,8 +411,10 @@ class WebhookService:
                     current_period_end
                 )
             else:
-                logger.error(f"No active subscription found for user {user.id}")
-                return
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No active subscription found for user {user.id}",
+                )
 
             db.commit()
 
@@ -394,12 +423,21 @@ class WebhookService:
                 f"{new_plan_id} via webhook"
             )
 
+        except HTTPException:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="Invalid webhook data")
         except Exception as e:
             logger.error(
                 f"Error processing subscription_schedule.released webhook: {str(e)}"
             )
             db.rollback()
-            raise
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Error processing subscription_schedule.released webhook: "
+                    f"{str(e)}"
+                ),
+            )
 
     @staticmethod
     def handle_subscription_payment_succeeded(
@@ -416,8 +454,7 @@ class WebhookService:
             Dict with processing results
 
         Raises:
-            ValueError: If validation fails
-            Exception: For processing errors
+            HTTPException: If validation fails or processing errors occur
         """
         try:
             invoice_id = invoice_data.get("id")
@@ -454,13 +491,20 @@ class WebhookService:
 
             # Validate required data
             if not customer_id or not subscription_id:
-                raise ValueError(
-                    f"Missing customer_id or subscription_id in invoice: {invoice_id}"
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Missing customer_id or subscription_id in invoice: "
+                        f"{invoice_id}"
+                    ),
                 )
 
             # Verify payment was successful
             if payment_status != PaymentStatus.PAID.value:
-                raise ValueError(f"Payment not completed. Status: {payment_status}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Payment not completed. Status: {payment_status}",
+                )
 
             # 1. Find user by Stripe customer ID
             try:
@@ -472,14 +516,21 @@ class WebhookService:
                 )
 
                 if not user_account:
-                    raise ValueError(f"User not found for customer_id: {customer_id}")
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"User not found for customer_id: {customer_id}",
+                    )
 
                 user_id = user_account.user_id
                 logger.info(f"Webhook: Found user_id: {user_id}")
 
+            except HTTPException:
+                raise HTTPException(status_code=400, detail="Invalid webhook data")
             except Exception as e:
                 logger.error(f"Webhook: Error finding user: {str(e)}")
-                raise
+                raise HTTPException(
+                    status_code=500, detail=f"Error finding user: {str(e)}"
+                )
 
             # 2. Find active subscription by Stripe subscription ID
             try:
@@ -494,27 +545,39 @@ class WebhookService:
                 )
 
                 if not user_subscription:
-                    raise ValueError(
-                        f"Active subscription not found for user: {user_id}"
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Active subscription not found for user: {user_id}",
                     )
 
                 plan_id = user_subscription.plan_id
                 logger.info(f"Webhook: Found subscription plan_id: {plan_id}")
 
+            except HTTPException:
+                raise HTTPException(status_code=400, detail="Invalid webhook data")
             except Exception as e:
                 logger.error(f"Webhook: Error finding subscription: {str(e)}")
-                raise
+                raise HTTPException(
+                    status_code=500, detail=f"Error finding subscription: {str(e)}"
+                )
 
             # 3. Get subscription plan details
             try:
                 logger.info(f"Webhook: Getting subscription plan: {plan_id}")
                 plan = CheckoutService.get_subscription_plan(db, plan_id)
                 if not plan:
-                    raise ValueError(f"Subscription plan not found: {plan_id}")
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Subscription plan not found: {plan_id}",
+                    )
 
+            except HTTPException:
+                raise HTTPException(status_code=400, detail="Invalid webhook data")
             except Exception as e:
                 logger.error(f"Webhook: Error getting subscription plan: {str(e)}")
-                raise
+                raise HTTPException(
+                    status_code=500, detail=f"Error getting subscription plan: {str(e)}"
+                )
 
             # 4. Calculate new expiration date (extend from current expiration)
             try:
@@ -542,7 +605,9 @@ class WebhookService:
 
             except Exception as e:
                 logger.error(f"Webhook: Error calculating expiration: {str(e)}")
-                raise
+                raise HTTPException(
+                    status_code=500, detail=f"Error calculating expiration: {str(e)}"
+                )
 
             # 5. Update subscription expiration
             try:
@@ -552,7 +617,9 @@ class WebhookService:
 
             except Exception as e:
                 logger.error(f"Webhook: Error updating subscription: {str(e)}")
-                raise
+                raise HTTPException(
+                    status_code=500, detail=f"Error updating subscription: {str(e)}"
+                )
 
             # 6. Record the payment/purchase
             try:
@@ -572,7 +639,9 @@ class WebhookService:
 
             except Exception as e:
                 logger.error(f"Webhook: Error recording purchase: {str(e)}")
-                raise
+                raise HTTPException(
+                    status_code=500, detail=f"Error recording purchase: {str(e)}"
+                )
 
             # 7. Commit all changes
             db.commit()
@@ -596,19 +665,31 @@ class WebhookService:
                 "invoice_id": invoice_id,
             }
 
+        except HTTPException:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="Invalid webhook data")
         except Exception as e:
             logger.error(
                 f"Webhook: Error processing subscription payment for invoice "
                 f"{invoice_id}: {str(e)}"
             )
             db.rollback()
-            raise
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Error processing subscription payment for invoice "
+                    f"{invoice_id}: {str(e)}"
+                ),
+            )
 
     @staticmethod
     def get_webhook_secret() -> str:
         webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
         if not webhook_secret:
-            raise ValueError("STRIPE_WEBHOOK_SECRET environment variable is not set")
+            raise HTTPException(
+                status_code=500,
+                detail="STRIPE_WEBHOOK_SECRET environment variable is not set",
+            )
         return webhook_secret
 
     @staticmethod
@@ -669,6 +750,11 @@ class WebhookService:
                         "message": f"Unhandled event type: {event_type}",
                     }
 
+        except HTTPException:
+            raise HTTPException(status_code=400, detail="Invalid webhook data")
         except Exception as e:
             logger.error(f"Error dispatching webhook event {event_type}: {str(e)}")
-            raise
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error dispatching webhook event {event_type}: {str(e)}",
+            )
