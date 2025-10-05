@@ -2,14 +2,44 @@
 """
 Safe Environment Variable Tests
 
-RUNTIME ENVIRONMENT:
- Can run locally (with mocked environment variables)
- Can run on cloud (with mocked environment variables)
- Does NOT require actual AWS services or database connection
- Tests environment variable access robustness
+WHERE TO RUN:
+- Local development machine - Recommended
+- Cloud ECS container - Works perfectly
+- CI/CD pipeline - Excellent for regression testing
 
+REQUIREMENTS:
+- No actual AWS services needed (uses mocks)
+- No database connection required (uses mocks)
+- Requires premium_manager.py in config/terraform/premium_manager_package/
+- Python 3.7+ with unittest.mock
+
+WHAT IT TESTS:
 Critical tests to verify that the premium manager handles missing environment variables
 gracefully instead of crashing with KeyError exceptions.
+
+Verifies:
+1. get_required_env_var() helper function works correctly
+2. get_required_env_var() properly rejects missing/empty variables
+3. Database connection safely fails with helpful error messages
+4. Instance creation safely fails when env vars missing
+5. User assignment safely fails when env vars missing
+6. Instance readiness check safely handles missing CLUSTER_NAME
+7. All 10 critical environment variables are protected:
+   - RDS_HOST, RDS_USER, RDS_PASSWORD, RDS_DATABASE (database)
+   - PREMIUM_LAUNCH_TEMPLATE_ID, SUBNET_IDS (instance creation)
+   - VPC_ID, ALB_LISTENER_ARN (user assignment)
+   - CLUSTER_NAME (readiness check)
+   - PREMIUM_INSTANCE_IDS (optimization)
+
+IMPORTANCE:
+Without these protections, Lambda functions crash with KeyError instead of
+returning helpful error messages to users and CloudWatch logs.
+
+HOW TO RUN:
+  python test_safe_environment_variables.py
+
+EXPECTED RESULT:
+  All 7 tests should pass
 """
 
 import os

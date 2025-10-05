@@ -2,14 +2,47 @@
 """
 Lambda Integration Tests
 
-RUNTIME ENVIRONMENT:
- Can run locally (with mocked AWS services)
- Can run on cloud (with mocked AWS services)
- Requires Lambda function files to be available
- May require Terraform config directory access
+KNOWN ISSUE: Currently failing in ECS with ModuleNotFoundError: No module named 'config'
 
-Tests the Lambda functions end-to-end to verify they handle our fixes correctly.
-These tests simulate the actual API Gateway events and Lambda context.
+WHERE TO RUN:
+- Cloud ECS container - FAILS (import path issues)
+- Local development machine - Best option (with proper setup)
+- Requires special Lambda package structure
+
+REQUIREMENTS:
+- Lambda function code must be in config/terraform/premium_manager_package/
+- PYTHONPATH must include Lambda package directories
+- Mocked AWS services (boto3, pymysql)
+- Python 3.7+
+
+CURRENT FAILURE REASON:
+The test attempts to directly import Lambda handler code:
+  `from config.terraform.premium_manager_package.premium_manager import handler`
+
+This fails in ECS because:
+1. Lambda packages have different PYTHONPATH than ECS container
+2. The 'config' module is not in the container's Python path
+3. Lambda code is packaged separately for deployment
+
+WHAT IT TESTS:
+End-to-end Lambda function behavior with realistic API Gateway events:
+1. Premium manager assignment event handling
+2. Premium manager heartbeat event handling
+3. Premium manager release event handling
+4. Enum values work correctly in Lambda operations
+5. Lambda error handling for malformed requests
+6. Premium cleanup scheduled event handling
+
+HOW TO FIX:
+Option 1: Restructure tests to use subprocess to invoke Lambda locally
+Option 2: Add proper PYTHONPATH configuration for Lambda packages
+Option 3: Mock the Lambda functions entirely instead of importing actual code
+
+HOW TO RUN (when fixed):
+  python test_lambda_integration.py
+
+EXPECTED RESULT (when fixed):
+  6 tests should pass (currently 5 fail, 1 passes)
 """
 
 import json

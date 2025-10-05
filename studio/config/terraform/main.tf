@@ -114,12 +114,6 @@ variable "git_branch" {
   type        = string
 }
 
-variable "git_commit_hash" {
-  description = "Git commit hash to trigger rebuilds on code changes"
-  type        = string
-  default     = ""
-}
-
 variable "ecr_repository_url" {
   description = "ECR repository URL for OptiNiSt Docker image"
   type        = string
@@ -2165,6 +2159,13 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
       {
         Effect = "Allow"
         Action = [
+          "autoscaling:DescribeAutoScalingGroups"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
           "rds:DescribeDBInstances",
           "rds-data:BatchExecuteStatement",
           "rds-data:BeginTransaction",
@@ -2734,14 +2735,15 @@ resource "aws_cloudwatch_metric_alarm" "cpu_high" {
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "2"
   metric_name         = "CPUUtilization"
-  namespace           = "AWS/AutoScaling"
+  namespace           = "AWS/ECS"
   period              = "120"
   statistic           = "Average"
   threshold           = "60"
-  alarm_description   = "This metric monitors ec2 cpu utilization"
-  alarm_actions       = [aws_autoscaling_policy.scale_up.arn]  # Enabled: dual CPU+memory scaling
+  alarm_description   = "This metric monitors ECS CPU utilization"
+  alarm_actions       = [aws_autoscaling_policy.scale_up.arn]
   dimensions = {
-    AutoScalingGroupName = aws_autoscaling_group.main.name
+    ServiceName = aws_ecs_service.autoscaling.name
+    ClusterName = aws_ecs_cluster.main.name
   }
 }
 
@@ -2903,6 +2905,32 @@ resource "aws_lambda_function" "cost_tracker" {
   ]
 }
 
+# EventBridge rule to trigger cost tracker Lambda hourly
+resource "aws_cloudwatch_event_rule" "cost_tracker_schedule" {
+  name                = "subscr-cost-tracker-schedule"
+  description         = "Trigger cost tracker Lambda hourly to publish cost metrics"
+  schedule_expression = "rate(1 hour)"
+
+  tags = {
+    Name    = "Cost Tracker Schedule"
+    Service = "cost-monitoring"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "cost_tracker" {
+  rule      = aws_cloudwatch_event_rule.cost_tracker_schedule.name
+  target_id = "CostTrackerLambda"
+  arn       = aws_lambda_function.cost_tracker.arn
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_cost_tracker" {
+  statement_id  = "AllowExecutionFromEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.cost_tracker.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.cost_tracker_schedule.arn
+}
+
 # Essential CloudWatch Alarms for Premium Monitoring
 resource "aws_cloudwatch_metric_alarm" "premium_cost_high" {
   alarm_name          = "subscr-premium-monthly-cost-high"
@@ -3037,15 +3065,15 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Free Tier EC2 CPU" }],
-            ["CWAgent", "mem_used_percent", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Free Tier EC2 Memory" }],
-            ["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.premium[0].id, { "label": "Premium 1 CPU" }],
-            ["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.premium[1].id, { "label": "Premium 2 CPU" }]
+            ["AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.autoscaling.name, "ClusterName", aws_ecs_cluster.main.name, { "label": "Free Tier ECS CPU", "stat": "Average" }],
+            ["AWS/ECS", "MemoryUtilization", "ServiceName", aws_ecs_service.autoscaling.name, "ClusterName", aws_ecs_cluster.main.name, { "label": "Free Tier ECS Memory", "stat": "Average" }],
+            ["AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.premium.name, "ClusterName", aws_ecs_cluster.main.name, { "label": "Premium ECS CPU", "stat": "Average" }],
+            ["AWS/ECS", "MemoryUtilization", "ServiceName", aws_ecs_service.premium.name, "ClusterName", aws_ecs_cluster.main.name, { "label": "Premium ECS Memory", "stat": "Average" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
-          title   = "EC2 Host Metrics: CPU & Memory"
+          title   = "ECS Service Metrics: CPU & Memory"
           period  = 300
           yAxis = {
             left = {
@@ -3067,13 +3095,14 @@ resource "aws_cloudwatch_dashboard" "main" {
             ["AWS/Billing", "EstimatedCharges", "Currency", "USD", "ServiceName", "AmazonEC2", { "label": "EC2 Costs" }],
             ["AWS/Billing", "EstimatedCharges", "Currency", "USD", "ServiceName", "AmazonECS", { "label": "ECS Costs" }],
             ["AWS/Billing", "EstimatedCharges", "Currency", "USD", "ServiceName", "AmazonElasticLoadBalancing", { "label": "ALB Costs" }],
-            ["OptiNiSt/Cost", "PremiumSpotSavings", { "label": "Premium Spot Savings %" }],
-            ["OptiNiSt/Cost", "TotalMonthlyCost", { "label": "Total Monthly Cost" }]
+            ["Optinist/CostTracking", "PremiumInstanceCount", { "label": "Premium Instances", "yAxis": "right" }],
+            ["Optinist/CostTracking", "FreeInstanceCount", { "label": "Free Tier Instances", "yAxis": "right" }],
+            ["Optinist/CostTracking", "PremiumUtilization", { "label": "Premium Utilization %", "yAxis": "right" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
-          title   = "Cost Tracking & Savings"
+          title   = "Cost Tracking & Instance Counts"
           period  = 3600
           stat    = "Maximum"
         }
@@ -3514,7 +3543,6 @@ resource "null_resource" "build_and_deploy" {
     # Force rebuild when ECR repo changes
     ecr_repo = var.ecr_repository_url
     # Force rebuild when code changes
-    git_commit = var.git_commit_hash
   }
 
   provisioner "local-exec" {
@@ -3559,7 +3587,6 @@ resource "null_resource" "build_and_deploy_batch" {
     # Force rebuild when ECR repo changes
     ecr_repo = var.ecr_repository_url
     # Force rebuild when code changes
-    git_commit = var.git_commit_hash
   }
 
   provisioner "local-exec" {
@@ -4797,6 +4824,11 @@ resource "aws_batch_job_definition" "optinist" {
   name = "subscr-optinist-snakemake-batch-job-definition"
   type = "container"
 
+  # Force new revision when container properties change
+  lifecycle {
+    create_before_destroy = true
+  }
+
   container_properties = jsonencode({
     image = "${var.ecr_snakemake_batch_repository_url}:latest"
     vcpus = 2
@@ -5128,4 +5160,10 @@ output "premium_api_gateway_url" {
 output "premium_manager_lambda_arn" {
   description = "ARN of the premium manager Lambda function"
   value       = aws_lambda_function.premium_manager.arn
+}
+
+output "test_users" {
+  description = "Test user configuration for load testing (includes Firebase UIDs)"
+  value       = var.test_users
+  sensitive   = true
 }

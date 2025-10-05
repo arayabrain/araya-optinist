@@ -512,6 +512,7 @@ def _snakemake_execute_batch(
                     # Use S3 storage for dryrun (matches execution config)
                     dryrun_envvars.extend(
                         [
+                            "REMOTE_STORAGE_TYPE",
                             "S3_DEFAULT_BUCKET_NAME",
                             "AWS_DEFAULT_REGION",
                             "PYTHONPATH",
@@ -591,6 +592,7 @@ def _snakemake_execute_batch(
                         # Use S3 storage for batch jobs
                         envvars.extend(
                             [
+                                "REMOTE_STORAGE_TYPE",
                                 "S3_DEFAULT_BUCKET_NAME",
                                 "AWS_DEFAULT_REGION",
                                 "PYTHONPATH",

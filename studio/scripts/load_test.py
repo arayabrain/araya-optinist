@@ -2,14 +2,31 @@
 """
 OptiNiSt Autoscaling Load Test
 
-RUNTIME ENVIRONMENT:
- Best run on cloud (requires AWS credentials and infrastructure)
- Can run locally with --mock flag (limited functionality)
-Requires AWS CLI configured or IAM role with appropriate permissions
+IMPORTANT: This script should be run LOCALLY, NOT in the cloud ECS container.
 
-This script tests autoscaling behavior by generating controlled load to trigger
-CPU and memory thresholds, then validates that the Auto Scaling Group responds
-correctly according to the configured CloudWatch alarms.
+WHERE TO RUN:
+- Local development machine - RECOMMENDED (generates external load)
+- CI/CD runner - Works (for automated load testing)
+- Cloud ECS container - DO NOT RUN HERE (wrong environment)
+
+WHY RUN LOCALLY:
+This load test generates external load AGAINST your cloud infrastructure.
+Running it inside the ECS container would:
+1. Test the container against itself (incorrect)
+2. Consume resources that should be monitored (skews results)
+3. Not have proper IAM permissions for monitoring
+
+REQUIREMENTS:
+- AWS credentials configured (AWS CLI or environment variables)
+- IAM permissions: autoscaling:Describe*, cloudwatch:GetMetricStatistics, ecs:Describe*
+- Python 3.7+ with boto3, requests
+- Terraform state with deployed infrastructure
+- JWT tokens for authentication (auto-generated or from tokens.json)
+
+WHAT IT TESTS:
+Autoscaling behavior by generating controlled load to trigger CPU and memory
+thresholds, then validates that the Auto Scaling Group responds correctly
+according to configured CloudWatch alarms.
 
 Autoscaling Configuration:
 - Scale-up: CPU >60% or Memory >80% for 3 evaluation periods
@@ -18,12 +35,13 @@ Autoscaling Configuration:
 - Health check grace period: 180 seconds
 
 Usage:
-    python load_test.py                           # Full test with default settings
-    python load_test.py --cpu-only               # CPU stress test only
-    python load_test.py --memory-only            # Memory stress test only
-    python load_test.py --environment cloud      # Test cloud environment
-    python load_test.py --duration 600           # 10-minute test duration
-    python load_test.py --concurrent-workflows 10 # Custom workflow count
+    python load_test.py                                    # Full test with auto-detected settings
+    python load_test.py --cpu-only                         # CPU stress test only
+    python load_test.py --memory-only                      # Memory stress test only
+    python load_test.py --duration 600                     # 10-minute test duration
+    python load_test.py --concurrent-workflows 10          # Custom workflow count
+    python load_test.py --terraform-dir /path/to/terraform # Custom terraform directory
+    python load_test.py --api-url http://custom-lb.com     # Override API URL
 
 Features:
 - CPU stress testing via compute-intensive workflows
@@ -31,6 +49,7 @@ Features:
 - Real-time CloudWatch metrics monitoring
 - Autoscaling behavior validation
 - Detailed performance analysis and reporting
+- Automatic API URL detection from Terraform outputs
 """
 
 import argparse
@@ -38,6 +57,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -46,6 +66,7 @@ from typing import Dict, List, Optional
 
 import boto3
 import requests
+import yaml
 
 # Add the current directory to Python path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -57,11 +78,30 @@ except ImportError as e:
     print("Token generation functionality may be limited")
 
 
+def get_terraform_outputs(terraform_dir: str) -> Dict:
+    """Get Terraform outputs from the specified directory"""
+    try:
+        result = subprocess.run(
+            ["terraform", "output", "-json"],
+            cwd=terraform_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return json.loads(result.stdout)
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Failed to get Terraform outputs: {e.stderr}")
+        raise
+    except json.JSONDecodeError as e:
+        logging.error(f"Failed to parse Terraform outputs: {e}")
+        raise
+
+
 class LoadTestConfig:
     """Configuration for load testing parameters"""
 
     def __init__(self, args):
-        self.environment = args.environment
+        self.terraform_dir = args.terraform_dir
         self.api_url = args.api_url
         self.duration = args.duration
         self.concurrent_workflows = args.concurrent_workflows
@@ -72,15 +112,38 @@ class LoadTestConfig:
         self.cooldown_period = args.cooldown
         self.monitoring_interval = args.monitoring_interval
         self.aws_region = args.aws_region
-        self.asg_name = args.asg_name
-        self.cluster_name = args.cluster_name
-        self.service_name = args.service_name
-        self.output_file = args.output_file
         self.skip_token_gen = args.skip_token_gen
 
-        # Auto-detect API URL for local environment
-        if self.environment == "local" and not self.api_url:
-            self.api_url = "http://localhost:8000"
+        # Get configuration from Terraform outputs
+        terraform_outputs = get_terraform_outputs(self.terraform_dir)
+
+        # Auto-detect API URL from Terraform if not provided
+        if not self.api_url:
+            lb_dns = terraform_outputs.get("alb_dns_name", {}).get("value")
+            if not lb_dns:
+                raise ValueError(
+                    "Could not find alb_dns_name in Terraform outputs. "
+                    "Please ensure your infrastructure is deployed."
+                )
+            self.api_url = f"http://{lb_dns}"
+            logging.info(f"Detected API URL from Terraform: {self.api_url}")
+
+        # Get ASG name from Terraform
+        self.asg_name = args.asg_name or terraform_outputs.get("asg_name", {}).get("value")
+        if not self.asg_name:
+            raise ValueError("Could not find asg_name in Terraform outputs")
+
+        # Get ECS cluster name from Terraform
+        self.cluster_name = args.cluster_name or terraform_outputs.get("ecs_cluster_name", {}).get("value")
+        if not self.cluster_name:
+            raise ValueError("Could not find ecs_cluster_name in Terraform outputs")
+
+        # Get ECS service name from Terraform
+        self.service_name = args.service_name or terraform_outputs.get("ecs_service_name_autoscaling", {}).get("value")
+        if not self.service_name:
+            raise ValueError("Could not find ecs_service_name_autoscaling in Terraform outputs")
+
+        self.output_file = args.output_file
 
 
 class CloudWatchMonitor:
@@ -208,6 +271,67 @@ class CloudWatchMonitor:
             logging.error(f"Error getting scaling activities: {e}")
             return []
 
+    def get_task_instance_mapping(self) -> Dict[str, List[str]]:
+        """Get mapping of EC2 instances to running ECS tasks"""
+        try:
+            # List all tasks in the service
+            task_arns = []
+            paginator = self.ecs.get_paginator('list_tasks')
+            for page in paginator.paginate(
+                cluster=self.config.cluster_name,
+                serviceName=self.config.service_name,
+                desiredStatus='RUNNING'
+            ):
+                task_arns.extend(page['taskArns'])
+
+            if not task_arns:
+                return {}
+
+            # Describe tasks to get container instance ARNs
+            tasks_response = self.ecs.describe_tasks(
+                cluster=self.config.cluster_name,
+                tasks=task_arns
+            )
+
+            # Get container instance details
+            container_instance_arns = list(set(
+                task['containerInstanceArn']
+                for task in tasks_response['tasks']
+                if 'containerInstanceArn' in task
+            ))
+
+            if not container_instance_arns:
+                return {}
+
+            instances_response = self.ecs.describe_container_instances(
+                cluster=self.config.cluster_name,
+                containerInstances=container_instance_arns
+            )
+
+            # Build mapping: instance_id -> [task_ids]
+            container_to_instance = {
+                ci['containerInstanceArn']: ci['ec2InstanceId']
+                for ci in instances_response['containerInstances']
+            }
+
+            instance_tasks = {}
+            for task in tasks_response['tasks']:
+                if 'containerInstanceArn' in task:
+                    instance_id = container_to_instance.get(
+                        task['containerInstanceArn']
+                    )
+                    if instance_id:
+                        task_id = task['taskArn'].split('/')[-1]
+                        if instance_id not in instance_tasks:
+                            instance_tasks[instance_id] = []
+                        instance_tasks[instance_id].append(task_id)
+
+            return instance_tasks
+
+        except Exception as e:
+            logging.error(f"Error getting task-instance mapping: {e}")
+            return {}
+
     def monitor_metrics(self):
         """Continuously monitor metrics during load test"""
         logging.info(" Starting CloudWatch metrics monitoring...")
@@ -226,14 +350,27 @@ class CloudWatchMonitor:
 
                 self.metrics_data.append(current_metrics)
 
-                # Log current status
+                # Log current status with task distribution
                 if asg_metrics and ecs_metrics:
+                    # Get task-instance mapping every 5th iteration to reduce API calls
+                    task_mapping = {}
+                    if len(self.metrics_data) % 5 == 0:
+                        task_mapping = self.get_task_instance_mapping()
+
                     logging.info(
                         f" Metrics - CPU: {ecs_metrics['cpu_utilization']}%, "
                         f"Memory: {ecs_metrics['memory_utilization']}%, "
                         f"Instances: {asg_metrics['in_service']}/"
                         f"{asg_metrics['desired_capacity']}"
                     )
+
+                    # Display task distribution if we have multiple instances
+                    if task_mapping and len(task_mapping) > 1:
+                        for instance_id, tasks in task_mapping.items():
+                            logging.info(
+                                f"   Instance {instance_id[-8:]}: "
+                                f"{len(tasks)} tasks running"
+                            )
 
                     # Check for scaling thresholds
                     if (
@@ -276,6 +413,9 @@ class WorkflowLoadGenerator:
         self.tokens = {}
         self.submitted_workflows = []
         self.completed_workflows = []
+        self.continuous_submission = False
+        self.submission_interval = 30  # Submit new workflows every 30 seconds
+        self.shared_workspace_id = None  # Reuse same workspace for all workflows
 
     def setup_authentication(self):
         """Setup JWT authentication tokens"""
@@ -294,7 +434,7 @@ class WorkflowLoadGenerator:
             # Use existing token generation if available
             if "generate_jwt_tokens" in globals():
                 token_data = generate_jwt_tokens(
-                    environment=self.config.environment, api_url=self.config.api_url
+                    environment="cloud", api_url=self.config.api_url
                 )
                 if token_data:
                     self.tokens = token_data
@@ -316,52 +456,95 @@ class WorkflowLoadGenerator:
         logging.error("Fallback token generation not implemented")
         return False
 
-    def create_cpu_intensive_workflow(self) -> Dict:
-        """Create a CPU-intensive workflow payload"""
-        return {
-            "name": f"cpu_stress_test_{int(time.time())}",
-            "description": "CPU-intensive workflow for autoscaling load testing",
-            "algorithm": "suite2p_cell_extraction",
-            "params": {
-                "suite2p_file_path": "/tmp/sample_data/sample_mouse2p_image.tiff",
-                "suite2p_params": {
-                    "neuropil_basis": "dF/F",
-                    "neucoeff": 0.7,
-                    "allow_overlap": False,
-                    # CPU-intensive parameters
-                    "max_iterations": 1000,
-                    "high_pass": 100,
-                    "spatial_hp_reg": 100,
-                },
-            },
-        }
+    def create_workspace(self, user_token: str) -> Optional[int]:
+        """Create a new workspace for load testing"""
+        try:
+            headers = {
+                "Authorization": f"Bearer {user_token}",
+                "Content-Type": "application/json",
+            }
 
-    def create_memory_intensive_workflow(self) -> Dict:
-        """Create a memory-intensive workflow payload"""
-        return {
-            "name": f"memory_stress_test_{int(time.time())}",
-            "description": "Memory-intensive workflow for autoscaling load testing",
-            "algorithm": "caiman_motion_correction",
-            "params": {
-                "input_file": "/tmp/sample_data/sample_mouse2p_image.tiff",
-                "caiman_params": {
-                    # Memory-intensive parameters
-                    "max_shifts": (10, 10),
-                    "niter_rig": 3,
-                    "splits_rig": 28,
-                    "num_splits_to_process_rig": None,
-                    "strides": (96, 96),
-                    "overlaps": (32, 32),
-                    "splits_els": 28,
-                    "num_splits_to_process_els": [14, None],
-                    "upsample_factor_grid": 4,
-                    "max_deviation_rigid": 3,
-                },
-            },
-        }
+            workspace_name = f"load_test_workspace_{int(time.time())}"
+            response = requests.post(
+                f"{self.config.api_url}/workspace",
+                json={"name": workspace_name},
+                headers=headers,
+                timeout=30,
+            )
 
-    def submit_workflow(self, workflow_data: Dict, user_token: str) -> Optional[str]:
-        """Submit a single workflow"""
+            if response.status_code == 200:
+                workspace = response.json()
+                workspace_id = workspace.get("id")
+                logging.info(f"Created workspace: {workspace_id} ({workspace_name})")
+                return workspace_id
+            else:
+                logging.error(
+                    f"Workspace creation failed: {response.status_code} - {response.text}"
+                )
+
+        except Exception as e:
+            logging.error(f"Error creating workspace: {e}")
+
+        return None
+
+    def import_sample_data(self, workspace_id: int, user_token: str) -> bool:
+        """Import tutorial sample data into workspace"""
+        try:
+            headers = {
+                "Authorization": f"Bearer {user_token}",
+            }
+
+            response = requests.get(
+                f"{self.config.api_url}/workflow/sample_data/{workspace_id}/tutorial",
+                headers=headers,
+                timeout=120,  # Longer timeout for data import
+            )
+
+            if response.status_code == 200:
+                logging.info(f"Sample data imported for workspace {workspace_id}")
+                return True
+            else:
+                logging.error(
+                    f"Sample data import failed: {response.status_code} - {response.text}"
+                )
+
+        except Exception as e:
+            logging.error(f"Error importing sample data: {e}")
+
+        return False
+
+    def load_tutorial_workflow(self) -> Dict:
+        """Load Tutorial 1 workflow structure from sample data"""
+        # Path relative to scripts directory
+        tutorial_workflow_path = os.path.join(
+            os.path.dirname(__file__),
+            "../../sample_data/tutorial/output/tutorial1/workflow.yaml"
+        )
+        tutorial_workflow_path = os.path.abspath(tutorial_workflow_path)
+
+        try:
+            import yaml
+            with open(tutorial_workflow_path, 'r') as f:
+                workflow_data = yaml.safe_load(f)
+
+            # Add required fields if missing
+            if 'name' not in workflow_data:
+                workflow_data['name'] = 'tutorial1'
+            if 'snakemakeParam' not in workflow_data:
+                workflow_data['snakemakeParam'] = {}
+            if 'nwbParam' not in workflow_data:
+                workflow_data['nwbParam'] = {}
+            if 'forceRunList' not in workflow_data:
+                workflow_data['forceRunList'] = []
+
+            logging.info(f"Loaded tutorial workflow from {tutorial_workflow_path}")
+            return workflow_data
+        except Exception as e:
+            logging.error(f"Failed to load tutorial workflow: {e}")
+            raise RuntimeError(f"Cannot proceed without tutorial workflow: {e}")
+
+    def submit_workflow(self, workspace_id: int, workflow_data: Dict, user_token: str) -> Optional[str]:
+        """Submit a workflow run to a workspace"""
         try:
             headers = {
                 "Authorization": f"Bearer {user_token}",
@@ -369,107 +552,301 @@ class WorkflowLoadGenerator:
             }
 
             response = requests.post(
-                f"{self.config.api_url}/workflows/submit",
+                f"{self.config.api_url}/run/{workspace_id}",
                 json=workflow_data,
                 headers=headers,
-                timeout=30,
+                timeout=60,
             )
 
             if response.status_code == 200:
-                result = response.json()
-                workflow_id = result.get("workflow_id")
-                if workflow_id:
+                unique_id = response.text.strip('"')  # FastAPI returns string in quotes
+                if unique_id:
                     self.submitted_workflows.append(
                         {
-                            "id": workflow_id,
-                            "name": workflow_data["name"],
+                            "unique_id": unique_id,
+                            "workspace_id": workspace_id,
+                            "name": workflow_data.get("name", "tutorial1"),
                             "submitted_at": datetime.now(),
-                            "type": "cpu"
-                            if "cpu_stress" in workflow_data["name"]
-                            else "memory",
                         }
                     )
-                    return workflow_id
+                    return unique_id
             else:
                 logging.error(
-                    f" Workflow submission failed: "
+                    f"Workflow submission failed: "
                     f"{response.status_code} - {response.text}"
                 )
 
         except Exception as e:
-            logging.error(f" Error submitting workflow: {e}")
+            logging.error(f"Error submitting workflow: {e}")
 
         return None
 
     def generate_load(self):
         """Generate load through concurrent workflow submissions"""
         if not self.tokens:
-            logging.error(" No authentication tokens available")
+            logging.error("No authentication tokens available")
             return False
 
-        # Get a user token (prefer premium for load testing)
-        user_token = None
-        if "premium_token" in self.tokens:
-            user_token = self.tokens["premium_token"]
-        elif "free_token" in self.tokens:
-            user_token = self.tokens["free_token"]
-        else:
-            logging.error(" No user tokens found in token data")
+        # Use free user token only
+        user_token = self.tokens.get("free_token")
+        if not user_token:
+            logging.error("Free user token not found in token data")
             return False
+
+        logging.info("Using free user token for all load testing")
+
+        # Create a single shared workspace if not already created
+        if not self.shared_workspace_id:
+            logging.info("Creating shared workspace for all workflows...")
+            self.shared_workspace_id = self.create_workspace(user_token)
+            if not self.shared_workspace_id:
+                logging.error("Failed to create shared workspace")
+                return False
+
+            logging.info(f"Created shared workspace: {self.shared_workspace_id}")
+
+            # Import sample data once
+            if not self.import_sample_data(self.shared_workspace_id, user_token):
+                logging.error("Failed to import sample data")
+                return False
+
+            logging.info("Sample data imported successfully")
+
+        # Load Tutorial 1 workflow structure
+        tutorial_workflow = self.load_tutorial_workflow()
 
         logging.info(
             f"Starting load generation with "
             f"{self.config.concurrent_workflows} concurrent workflows..."
         )
 
-        # Determine workflow types based on test configuration
-        workflows_to_submit = []
+        # Keep submitting workflows until we reach 3 instances
+        target_instances = 3
+        max_workflows = 100  # Safety limit
+        submitted_count = 0
+        workflow_counter = 0
 
-        if self.config.cpu_only:
-            workflows_to_submit = ["cpu"] * self.config.concurrent_workflows
-        elif self.config.memory_only:
-            workflows_to_submit = ["memory"] * self.config.concurrent_workflows
-        else:
-            # Mixed load - alternate between CPU and memory intensive
-            for i in range(self.config.concurrent_workflows):
-                workflows_to_submit.append("cpu" if i % 2 == 0 else "memory")
+        while workflow_counter < max_workflows:
+            # Check current instance count
+            asg_metrics = self.get_asg_metrics()
+            current_instances = asg_metrics.get("in_service", 0)
 
-        # Submit workflows concurrently
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(10, self.config.concurrent_workflows)
-        ) as executor:
-            futures = []
-
-            for i, workflow_type in enumerate(workflows_to_submit):
-                if workflow_type == "cpu":
-                    workflow_data = self.create_cpu_intensive_workflow()
-                else:
-                    workflow_data = self.create_memory_intensive_workflow()
-
-                future = executor.submit(
-                    self.submit_workflow, workflow_data, user_token
+            if current_instances >= target_instances:
+                logging.info(
+                    f"✅ Target of {target_instances} instances reached! "
+                    f"(Current: {current_instances})"
                 )
-                futures.append(future)
+                break
 
-                # Stagger submissions slightly to avoid overwhelming the API
-                time.sleep(0.5)
+            # Submit batch of workflows
+            batch_size = min(
+                self.config.concurrent_workflows,
+                max_workflows - workflow_counter
+            )
 
-            # Wait for all submissions to complete
-            submitted_count = 0
-            for future in concurrent.futures.as_completed(futures):
-                workflow_id = future.result()
-                if workflow_id:
-                    submitted_count += 1
-                    logging.info(
-                        f"Submitted workflow {submitted_count}"
-                        f"/{len(workflows_to_submit)}: {workflow_id}"
+            logging.info(
+                f"Submitting batch of {batch_size} workflows "
+                f"(instances: {current_instances}/{target_instances})..."
+            )
+
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=batch_size
+            ) as executor:
+                futures = [
+                    executor.submit(
+                        self._submit_workflow_to_shared_workspace,
+                        workflow_counter + i,
+                        tutorial_workflow,
+                        user_token
                     )
+                    for i in range(batch_size)
+                ]
+
+                # Wait for all submissions to complete
+                batch_submitted = sum(
+                    1 for future in concurrent.futures.as_completed(futures)
+                    if future.result()
+                )
+                submitted_count += batch_submitted
+                workflow_counter += batch_size
+
+            logging.info(
+                f"Batch complete: {batch_submitted}/{batch_size} submitted "
+                f"(total: {submitted_count}/{workflow_counter})"
+            )
+
+            # Brief pause before checking again
+            time.sleep(5)
 
         logging.info(
-            f"Load generation complete: {submitted_count}"
-            f"/{self.config.concurrent_workflows} workflows submitted"
+            f"Load generation complete: {submitted_count}/{workflow_counter} "
+            f"workflows submitted"
         )
         return submitted_count > 0
+
+    def _submit_workflow_to_shared_workspace(
+        self, job_index: int, workflow_template: Dict, user_token: str
+    ) -> bool:
+        """Submit a workflow to the shared workspace with retry logic"""
+        max_retries = 3
+        retry_delay = 10  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                workflow_data = workflow_template.copy()
+                workflow_data["name"] = f"load_test_run_{job_index}_{int(time.time())}"
+
+                unique_id = self.submit_workflow(
+                    self.shared_workspace_id, workflow_data, user_token
+                )
+                if unique_id:
+                    if attempt > 0:
+                        logging.info(
+                            f"Job {job_index}: Successfully submitted workflow "
+                            f"{unique_id} (attempt {attempt + 1})"
+                        )
+                    else:
+                        logging.info(
+                            f"Job {job_index}: Successfully submitted workflow "
+                            f"{unique_id}"
+                        )
+                    return True
+                else:
+                    if attempt < max_retries - 1:
+                        logging.warning(
+                            f"Job {job_index}: Failed to submit workflow, "
+                            f"retrying in {retry_delay}s... "
+                            f"(attempt {attempt + 1}/{max_retries})"
+                        )
+                        time.sleep(retry_delay)
+                    else:
+                        logging.error(
+                            f"Job {job_index}: Failed to submit workflow after "
+                            f"{max_retries} attempts"
+                        )
+                        return False
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logging.warning(
+                        f"Job {job_index}: Error in workflow submission: {e}, "
+                        f"retrying in {retry_delay}s... "
+                        f"(attempt {attempt + 1}/{max_retries})"
+                    )
+                    time.sleep(retry_delay)
+                else:
+                    logging.error(
+                        f"Job {job_index}: Error in workflow submission after "
+                        f"{max_retries} attempts: {e}"
+                    )
+                    return False
+
+        return False
+
+    def _submit_single_workflow_job(self, job_index: int, workflow_template: Dict, user_token: str) -> bool:
+        """Create workspace, import data, and submit workflow for a single job (legacy method)"""
+        try:
+            # Step 1: Create workspace
+            workspace_id = self.create_workspace(user_token)
+            if not workspace_id:
+                logging.error(f"Job {job_index}: Failed to create workspace")
+                return False
+
+            # Step 2: Import sample data
+            if not self.import_sample_data(workspace_id, user_token):
+                logging.error(f"Job {job_index}: Failed to import sample data")
+                return False
+
+            # Step 3: Submit workflow
+            workflow_data = workflow_template.copy()
+            workflow_data["name"] = f"load_test_run_{job_index}_{int(time.time())}"
+
+            unique_id = self.submit_workflow(workspace_id, workflow_data, user_token)
+            if unique_id:
+                logging.info(
+                    f"Job {job_index}: Successfully submitted workflow {unique_id} "
+                    f"to workspace {workspace_id}"
+                )
+                return True
+            else:
+                logging.error(f"Job {job_index}: Failed to submit workflow")
+                return False
+
+        except Exception as e:
+            logging.error(f"Job {job_index}: Error in workflow submission: {e}")
+            return False
+
+    def generate_continuous_load(self, duration_seconds: int):
+        """Continuously submit workflows to maintain load"""
+        if not self.tokens:
+            logging.error("No authentication tokens available")
+            return
+
+        user_token = self.tokens.get("free_token")
+        if not user_token:
+            logging.error("Free user token not found")
+            return
+
+        if not self.shared_workspace_id:
+            logging.error("Shared workspace not created. Run generate_load() first.")
+            return
+
+        tutorial_workflow = self.load_tutorial_workflow()
+        self.continuous_submission = True
+
+        logging.info(
+            f"Starting continuous workflow submission for {duration_seconds}s"
+        )
+        logging.info(
+            f"Will submit {self.config.concurrent_workflows} workflows every "
+            f"{self.submission_interval}s to workspace {self.shared_workspace_id}"
+        )
+
+        start_time = time.time()
+        submission_round = 0
+
+        while self.continuous_submission and (time.time() - start_time) < duration_seconds:
+            submission_round += 1
+            logging.info(
+                f"Submission round {submission_round}: "
+                f"Submitting {self.config.concurrent_workflows} workflows"
+            )
+
+            # Submit a batch of workflows to the shared workspace
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(10, self.config.concurrent_workflows)
+            ) as executor:
+                futures = []
+                base_index = submission_round * self.config.concurrent_workflows
+
+                for i in range(self.config.concurrent_workflows):
+                    future = executor.submit(
+                        self._submit_workflow_to_shared_workspace,
+                        base_index + i,
+                        tutorial_workflow,
+                        user_token
+                    )
+                    futures.append(future)
+                    time.sleep(0.3)  # Small stagger
+
+                # Wait for batch to complete
+                submitted = sum(1 for f in concurrent.futures.as_completed(futures) if f.result())
+                logging.info(
+                    f"Round {submission_round}: {submitted}/"
+                    f"{self.config.concurrent_workflows} workflows submitted"
+                )
+
+            # Wait before next batch
+            if self.continuous_submission:
+                time.sleep(self.submission_interval)
+
+        logging.info(
+            f"Continuous submission stopped after {submission_round} rounds"
+        )
+
+    def stop_continuous_load(self):
+        """Stop continuous workflow submission"""
+        self.continuous_submission = False
 
 
 class LoadTestAnalyzer:
@@ -595,7 +972,7 @@ class LoadTestAnalyzer:
 
         # Test configuration
         report.append("TEST CONFIGURATION:")
-        report.append(f"   Environment: {self.config.environment}")
+        report.append(f"   API URL: {self.config.api_url}")
         report.append(f"   Duration: {self.config.duration} seconds")
         report.append(f"   Concurrent Workflows: {self.config.concurrent_workflows}")
         if self.config.cpu_only:
@@ -737,16 +1114,20 @@ def main():
     """Main load test execution"""
     parser = argparse.ArgumentParser(description="OptiNiSt Autoscaling Load Test")
 
+    # Infrastructure configuration
+    parser.add_argument(
+        "--terraform-dir",
+        type=str,
+        default="../config/terraform",
+        help="Path to Terraform directory (default: ../config/terraform)",
+    )
+    parser.add_argument(
+        "--api-url",
+        type=str,
+        help="API URL (auto-detected from Terraform if not provided)",
+    )
+
     # Test configuration
-    parser.add_argument(
-        "--environment",
-        choices=["local", "cloud"],
-        default="local",
-        help="Test environment (default: local)",
-    )
-    parser.add_argument(
-        "--api-url", type=str, help="API URL (auto-detected for local environment)"
-    )
     parser.add_argument(
         "--duration",
         type=int,
@@ -756,8 +1137,8 @@ def main():
     parser.add_argument(
         "--concurrent-workflows",
         type=int,
-        default=8,
-        help="Number of concurrent workflows to submit (default: 8)",
+        default=30,
+        help="Number of concurrent workflows to submit (default: 30)",
     )
 
     # Load test types
@@ -804,20 +1185,17 @@ def main():
     parser.add_argument(
         "--asg-name",
         type=str,
-        default="subscr-optinist-asg",
-        help="Auto Scaling Group name (default: subscr-optinist-asg)",
+        help="Auto Scaling Group name (auto-detected from Terraform if not provided)",
     )
     parser.add_argument(
         "--cluster-name",
         type=str,
-        default="subscr-optinist-cloud-cluster",
-        help="ECS cluster name (default: subscr-optinist-cloud-cluster)",
+        help="ECS cluster name (auto-detected from Terraform if not provided)",
     )
     parser.add_argument(
         "--service-name",
         type=str,
-        default="subscr-optinist-cloud-service",
-        help="ECS service name (default: subscr-optinist-cloud-service)",
+        help="ECS service name (auto-detected from Terraform if not provided)",
     )
 
     # Output configuration
@@ -855,10 +1233,13 @@ def main():
 
     logging.info(" Starting OptiNiSt Autoscaling Load Test")
     logging.info(
-        f"Configuration: {config.environment} "
-        f"environment, {config.duration}s duration, "
+        f"Configuration: {config.duration}s duration, "
         f"{config.concurrent_workflows} workflows"
     )
+    logging.info(f"API URL: {config.api_url}")
+    logging.info(f"ASG: {config.asg_name}")
+    logging.info(f"ECS Cluster: {config.cluster_name}")
+    logging.info(f"ECS Service: {config.service_name}")
 
     # Initialize components
     monitor = CloudWatchMonitor(config)
@@ -880,7 +1261,10 @@ def main():
         # Wait a moment for initial metrics
         time.sleep(5)
 
-        # Generate load
+        # Submit all workflows at once
+        logging.info(
+            f"Submitting {config.concurrent_workflows} workflows to run simultaneously..."
+        )
         load_success = generator.generate_load()
         if not load_success:
             logging.error(" Failed to generate load - test incomplete")
@@ -888,6 +1272,9 @@ def main():
         # Continue monitoring for the specified duration
         logging.info(
             f"Monitoring autoscaling behavior for {config.duration} seconds..."
+        )
+        logging.info(
+            f"Workflows are running... Watch for CPU/Memory to trigger autoscaling"
         )
         time.sleep(config.duration)
 
@@ -905,9 +1292,12 @@ def main():
         # Save detailed results
         detailed_results = {
             "config": {
-                "environment": config.environment,
+                "api_url": config.api_url,
                 "duration": config.duration,
                 "concurrent_workflows": config.concurrent_workflows,
+                "asg_name": config.asg_name,
+                "cluster_name": config.cluster_name,
+                "service_name": config.service_name,
                 "test_type": "cpu"
                 if config.cpu_only
                 else "memory"

@@ -2,14 +2,54 @@
 """
 Premium API Integration Tests
 
-RUNTIME ENVIRONMENT:
- Can run locally (with mocked dependencies)
- Can run on cloud (with mocked dependencies)
- Requires studio app modules to be available
+KNOWN ISSUE: Currently failing with async/await mocking errors
 
-Tests the critical premium management API endpoints,
-especially the new heartbeat endpoint.
-These tests verify that our fixes for the premium management system work end-to-end.
+WHERE TO RUN:
+- Cloud ECS container - Recommended (has studio app modules)
+- Local development machine - Works (if studio app is in PYTHONPATH)
+- Requires proper async mock configuration
+
+REQUIREMENTS:
+- studio.app modules must be available in PYTHONPATH
+- Python 3.7+ with asyncio support
+- unittest.mock with AsyncMock (Python 3.8+) or aiounittest
+- All dependencies from studio/app/common/
+
+CURRENT FAILURE REASON:
+The tests have async/await mocking issues:
+  `TypeError: object dict can't be used in 'await' expression`
+
+This fails because:
+1. Mock objects return regular dicts instead of coroutines
+2. Service methods like `update_user_activity()` are async but mocks aren't
+3. Need to use `AsyncMock` instead of regular `MagicMock` for async methods
+
+Example failure in test_heartbeat_endpoint_success:
+  - premium_assignment_service.update_user_activity() returns dict
+  - But code tries to `await` it, expecting a coroutine
+  - Solution: mock_service.update_user_activity = AsyncMock(return_value={...})
+
+WHAT IT TESTS:
+Critical premium management API endpoints with FastAPI integration:
+1. Heartbeat endpoint for premium users (keeps assignment alive)
+2. Heartbeat endpoint with FastAPI router simulation
+3. Heartbeat endpoint for non-premium users (graceful degradation)
+4. Heartbeat error handling (database failures, etc.)
+5. Assign/Release/Status endpoints end-to-end flow
+
+HOW TO FIX:
+Replace `MagicMock` with `AsyncMock` for all async service methods:
+  ```python
+  from unittest.mock import AsyncMock
+  mock_service.update_user_activity = AsyncMock(return_value={...})
+  mock_service.assign_premium_user = AsyncMock(return_value={...})
+  ```
+
+HOW TO RUN:
+  python test_premium_api_integration.py
+
+EXPECTED RESULT (when fixed):
+  5 tests should pass (currently 3 fail, 2 pass)
 """
 
 import json

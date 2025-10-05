@@ -23,9 +23,16 @@ try:
     from sqlalchemy.orm import sessionmaker
 
     from studio.app.common.models.experiment import ExperimentRecord
-    from studio.app.common.models.subscription import UserStorageUsage, UserSubscription
+    from studio.app.common.models.subscription import (
+        SubscriptionCancellation,
+        SubscriptionUserAccount,
+        SubscriptionUserPurchase,
+        UserStorageUsage,
+        UserSubscription,
+    )
     from studio.app.common.models.user import User as UserModel
-    from studio.app.common.models.workspace import Workspace
+    from studio.app.common.models.user import UserRole
+    from studio.app.common.models.workspace import Workspace, WorkspacesShareUser
 except ImportError as e:
     print(f"Import error: {e}")
     print("Make sure you're running from the studio directory")
@@ -104,32 +111,82 @@ async def delete_test_user_from_db(db, user_email):
             for experiment in experiments:
                 db.delete(experiment)
 
-        # 2. Delete workspaces (references users)
+        # 2. Delete workspace share records (references workspaces and users)
+        workspace_share_count = 0
+        if workspace_ids:
+            workspace_shares = (
+                db.query(WorkspacesShareUser)
+                .filter(WorkspacesShareUser.workspace_id.in_(workspace_ids))
+                .all()
+            )
+            workspace_share_count = len(workspace_shares)
+            for share in workspace_shares:
+                db.delete(share)
+
+        # 3. Delete workspaces (references users)
         workspace_count = len(workspaces)
         for workspace in workspaces:
             db.delete(workspace)
 
-        # 3. Delete storage usage (references users)
+        # 4. Delete storage usage (references users)
         storage_records = db.query(UserStorageUsage).filter_by(user_id=user_id).all()
         storage_count = len(storage_records)
         for storage in storage_records:
             db.delete(storage)
 
-        # 4. Delete subscriptions (references users)
+        # 5. Delete subscription user accounts (references users)
+        user_accounts = db.query(SubscriptionUserAccount).filter_by(user_id=user_id).all()
+        user_account_count = len(user_accounts)
+        for account in user_accounts:
+            db.delete(account)
+
+        # 6. Delete subscription cancellations (references purchases)
+        # First get all purchase IDs for this user
+        purchases = db.query(SubscriptionUserPurchase).filter_by(user_id=user_id).all()
+        purchase_ids = [p.id for p in purchases]
+
+        cancellation_count = 0
+        if purchase_ids:
+            cancellations = (
+                db.query(SubscriptionCancellation)
+                .filter(SubscriptionCancellation.purchases_id.in_(purchase_ids))
+                .all()
+            )
+            cancellation_count = len(cancellations)
+            for cancellation in cancellations:
+                db.delete(cancellation)
+
+        # 7. Delete subscription purchases (references users)
+        purchase_count = len(purchases)
+        for purchase in purchases:
+            db.delete(purchase)
+
+        # 8. Delete subscriptions (references users)
         subscriptions = db.query(UserSubscription).filter_by(user_id=user_id).all()
         subscription_count = len(subscriptions)
         for subscription in subscriptions:
             db.delete(subscription)
 
-        # 5. Finally delete the user
+        # 9. Delete user roles (references users)
+        user_roles = db.query(UserRole).filter_by(user_id=user_id).all()
+        user_role_count = len(user_roles)
+        for role in user_roles:
+            db.delete(role)
+
+        # 10. Finally delete the user
         db.delete(user_db)
 
         db.commit()
 
         print(f"   - Deleted {experiment_count} experiments")
+        print(f"   - Deleted {workspace_share_count} workspace shares")
         print(f"   - Deleted {workspace_count} workspaces")
         print(f"   - Deleted {storage_count} storage records")
+        print(f"   - Deleted {user_account_count} subscription user accounts")
+        print(f"   - Deleted {cancellation_count} subscription cancellations")
+        print(f"   - Deleted {purchase_count} subscription purchases")
         print(f"   - Deleted {subscription_count} subscriptions")
+        print(f"   - Deleted {user_role_count} user roles")
         print(f"Successfully deleted user: {user_name}")
 
         return True

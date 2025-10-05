@@ -2,15 +2,35 @@
 """
 Database Schema Tests
 
-RUNTIME ENVIRONMENT:
- Can run locally (with mocked database)
- Can run on cloud (with mocked database)
- Does NOT require actual database connection
- Tests alembic migration file directly
+WHERE TO RUN:
+- Local development machine - Recommended
+- Cloud ECS container - Works
+- CI/CD pipeline - Ideal for automation
 
+REQUIREMENTS:
+- No actual database connection needed (uses mocks)
+- No AWS credentials required
+- Tests alembic migration file directly
+- Python 3.7+ with unittest.mock
+
+WHAT IT TESTS:
 Critical tests to verify the database schema supports our fixes,
 especially the 'stopped' state in the instance_state enum. These tests
-prevent runtime SQL errors.
+prevent runtime SQL errors that would occur when premium instances
+transition to standby/stopped states.
+
+Tests verify:
+1. All enum values (launching, running, stopping, stopped, terminating) are supported
+2. Critical 'stopped' state operations work (lines 648, 1930 in premium_manager.py)
+3. Schema migration includes correct enum definition
+4. Transaction safety with new enum values
+5. Race condition handling for concurrent assignments
+
+HOW TO RUN:
+  python test_database_schema.py
+
+EXPECTED RESULT:
+  All 5 tests should pass
 """
 
 import os

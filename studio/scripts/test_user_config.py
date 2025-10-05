@@ -1,15 +1,51 @@
 #!/usr/bin/env python3
 """
-Shared test user configuration loader for priority queue testing scripts.
-- TEST_USERS_CONFIG environment variable (JSON from Terraform)
-- terraform.tfvars file
-- .env file
-- Individual environment variables
+Test User Configuration Loader (Utility Module)
 
-Used by:
-- get_jwt_tokens.py
-- create_test_users.py
-- priority_queue_test.py
+NOTE: This is NOT a test suite - it's a shared configuration utility module.
+      Running it directly will complete silently (no output = success).
+
+WHERE TO RUN:
+- Local development machine - Used by other test scripts
+- Cloud ECS container - Used by other test scripts
+- Imported by other testing scripts, not run standalone
+
+WHAT IT DOES:
+Provides centralized test user configuration loading from multiple sources:
+1. TEST_USERS_CONFIG environment variable (JSON format from Terraform)
+2. terraform.tfvars file (HCL format)
+3. .env file (key=value format)
+4. Individual environment variables (PREMIUM_USER_EMAIL, FREE_USER_EMAIL, etc.)
+
+USED BY:
+- get_jwt_tokens.py - Loads test users for JWT token generation
+- create_test_users.py - Loads test users for database creation
+- priority_queue_test.py - Loads test users for priority queue testing
+- Other testing and setup scripts
+
+CONFIGURATION SOURCES (in order of precedence):
+1. TEST_USERS_CONFIG env var (highest priority)
+2. terraform.tfvars
+3. .env file
+4. Individual env vars (lowest priority)
+
+FUNCTIONS:
+- load_test_users_unified() - Returns raw config (dict or list)
+- load_test_users_for_jwt() - Returns dict format {premium: {...}, free: {...}}
+- load_test_users_for_db() - Returns list format [{...}, {...}]
+- parse_terraform_test_users() - Parses terraform.tfvars
+- parse_env_test_users() - Parses .env file
+- parse_env_vars_test_users() - Parses environment variables
+- print_configuration_help() - Prints setup instructions
+
+HOW TO USE:
+  from test_user_config import load_test_users_for_jwt
+  users = load_test_users_for_jwt()
+  premium_user = users['premium']
+  free_user = users['free']
+
+EXPECTED RESULT when run directly:
+  No output (silent success)
 """
 
 import json
