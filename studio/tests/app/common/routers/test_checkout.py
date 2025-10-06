@@ -1,8 +1,7 @@
-import os
-
 import requests
+from stripe import SubscriptionService
 
-STRIPE_CALLBACK_URL = os.getenv("STRIPE_CALLBACK_URL", "http://localhost:8000")
+STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
 
 
 def test_checkout_session_validation():

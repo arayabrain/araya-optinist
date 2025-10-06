@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from http.client import HTTPException
 from typing import Any, Dict, Optional
 
@@ -55,7 +55,8 @@ class CheckoutService:
             db.query(UserSubscription)
             .filter(
                 UserSubscription.user_id == user_id,
-                UserSubscription.expiration > datetime.now(timezone.utc),
+                UserSubscription.expiration
+                > SubscriptionService.get_current_datetime(),
             )
             .first()
         )
@@ -144,7 +145,9 @@ class CheckoutService:
         Returns:
             Expiration datetime
         """
-        return datetime.now(timezone.utc) + timedelta(days=30 * billing_cycle)
+        return SubscriptionService.get_current_datetime() + timedelta(
+            days=30 * billing_cycle
+        )
 
     @staticmethod
     def create_or_update_user_account(
@@ -180,7 +183,7 @@ class CheckoutService:
             db.add(user_account)
         else:
             user_account.provider_customer_id = customer_id
-            user_account.updated_at = datetime.now(timezone.utc)
+            user_account.updated_at = SubscriptionService.get_current_datetime()
 
         return user_account
 
@@ -304,7 +307,9 @@ class CheckoutService:
             existing_subscription.sync_status = SUBSCRIPTION_SYNC_STATUS.SYNCED
             existing_subscription.expiration = expiration_date
             existing_subscription.scheduled_downgrade = False
-            existing_subscription.updated_at = datetime.now(timezone.utc)
+            existing_subscription.updated_at = (
+                SubscriptionService.get_current_datetime()
+            )
             return existing_subscription.id
         else:
             # Create new subscription

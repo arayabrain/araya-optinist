@@ -5,6 +5,7 @@ import {
   createCheckoutSession,
   getSubscriptionPlan,
   getUserSubscription,
+  validateCheckoutSession,
 } from "store/slice/Subscriptions/SubscriptionActions"
 import {
   SUBSCRIPTION_SLICE_NAME,
@@ -162,6 +163,24 @@ const subscriptionSlice = createSlice({
           action,
           "Failed to cancel subscription",
         )
+      })
+      .addCase(validateCheckoutSession.pending, (state) => {
+        state.loading = true
+        state.error = null
+      })
+      .addCase(validateCheckoutSession.fulfilled, (state, action) => {
+        state.loading = false
+        state.error = null
+        // Handle successful validation if needed
+      })
+      .addCase(validateCheckoutSession.rejected, (state, action) => {
+        state.loading = false
+        state.error = extractRejectedErrorMessage(
+          action,
+          "Payment validation failed",
+        )
+        // Show alert for payment failure
+        alert("Payment failed. Please try again or contact support.")
       })
   },
 })

@@ -37,18 +37,18 @@ class SubscriptionCurrencyType(Enum):
 
     def get_currency_string(self):
         """Get the string representation of the currency"""
-        if self == SubscriptionCurrencyType.USD:
+        if self == __class__.USD:
             return "usd"
-        elif self == SubscriptionCurrencyType.JPY:
+        elif self == __class__.JPY:
             return "jpy"
         return None
 
     def get_currency_enum(value: str):
         """Get the enum representation of the currency"""
         if value.lower() == "usd":
-            return SubscriptionCurrencyType.USD
+            return __class__.USD
         elif value.lower() == "jpy":
-            return SubscriptionCurrencyType.JPY
+            return __class__.JPY
         return None
 
 
@@ -136,7 +136,9 @@ class SubscriptionService:
     @staticmethod
     def get_plan_by_id(db: Session, plan_id: int) -> SubscriptionPlans:
         return (
-            db.query(SubscriptionPlans).filter(SubscriptionPlans.id == plan_id).first()
+            db.query(SubscriptionPlans)
+            .filter(SubscriptionPlans.id == plan_id, SubscriptionPlans.status.is_(True))
+            .first()
         )
 
     @staticmethod
@@ -157,7 +159,8 @@ class SubscriptionService:
             .filter(
                 and_(
                     common_model.UserSubscription.user_id == user_id,
-                    common_model.UserSubscription.expiration > datetime.now(),
+                    common_model.UserSubscription.expiration
+                    > __class__.get_current_datetime(),
                     common_model.User.active.is_(True),
                 )
             )
@@ -242,7 +245,7 @@ class SubscriptionService:
                 db.query(UserSubscription)
                 .filter(
                     UserSubscription.user_id == user_id,
-                    UserSubscription.expiration > datetime.now(timezone.utc),
+                    UserSubscription.expiration > __class__.get_current_datetime(),
                 )
                 .first()
             )
@@ -263,6 +266,17 @@ class SubscriptionService:
             db.rollback()
             logger.error(f"Error updating subscription for user {user_id}: {str(e)}")
             raise
+
+    @staticmethod
+    def get_current_datetime() -> datetime:
+        """
+        Get the current UTC date and time
+        """
+        try:
+            return datetime.now(timezone.utc)
+        except Exception as e:
+            logger.error(f"Error getting current datetime: {str(e)}")
+            return None
 
 
 class SyncService:
@@ -293,8 +307,8 @@ class SyncService:
 
             # Mark as synced
             subscription.sync_status = SyncStatus.SYNCED
-            subscription.last_synced = datetime.now(timezone.utc)
-            subscription.updated_at = datetime.now(timezone.utc)
+            subscription.last_synced = SubscriptionService.get_current_datetime()
+            subscription.updated_at = SubscriptionService.get_current_datetime()
             db.commit()
 
             logger.info(f"Successfully synced subscription {subscription_user_id}")
@@ -306,7 +320,7 @@ class SyncService:
             # Mark as failed
             if subscription:
                 subscription.sync_status = SyncStatus.FAILED
-                subscription.updated_at = datetime.now(timezone.utc)
+                subscription.updated_at = SubscriptionService.get_current_datetime()
                 db.commit()
 
             return False

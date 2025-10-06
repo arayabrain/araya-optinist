@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
@@ -47,6 +47,12 @@ class StripeCheckoutSessionStatus(Enum):
     COMPLETE = "complete"
     EXPIRED = "expired"
     OPEN = "open"
+
+
+class StripeCheckoutPaymentStatus(Enum):
+    PAID = "paid"
+    UNPAID = "unpaid"
+    NO_PAYMENT_REQUIRED = "no_payment_required"
 
 
 @router.get("/mgmts/plans", response_model=List[SubscriptionPlanResponse])
@@ -244,7 +250,7 @@ async def cancel_user_subscription(
                 **stripe_subscription.metadata,
                 "cancellation_requested": "true",
                 "cancellation_requested_at": str(
-                    int(datetime.now(timezone.utc).timestamp())
+                    int(SubscriptionService.get_current_datetime().timestamp())
                 ),
             },
         )
@@ -375,15 +381,18 @@ async def validate_checkout_session(
     """
     try:
         # Retrieve the session from Stripe
+        logger.info(f"Validating checkout session ID: {request.session_id}")
         session = stripe.checkout.Session.retrieve(request.session_id)
 
         # Check if the session is complete and paid
         if (
-            session.payment_status == StripeCheckoutSessionStatus.PAID
-            and session.status == StripeCheckoutSessionStatus.COMPLETE
+            session.payment_status == StripeCheckoutPaymentStatus.PAID.value
+            and session.status == StripeCheckoutSessionStatus.COMPLETE.value
         ):
+            logger.info(f"Checkout session {request.session_id} is valid")
             return True
         else:
+            logger.warning(f"Checkout session {request.session_id} is invalid")
             return False
 
     except stripe.error.StripeError as e:
@@ -410,9 +419,9 @@ async def validate_failed_checkout_session(
 
         # Check if the session exists and is in a legitimate failed state
         # Valid failed states: expired, open with unpaid status
-        if session.status == StripeCheckoutSessionStatus.EXPIRED or (
-            session.status == StripeCheckoutSessionStatus.OPEN
-            and session.payment_status == StripeCheckoutSessionStatus.PENDING
+        if session.status == StripeCheckoutSessionStatus.EXPIRED.value or (
+            session.status == StripeCheckoutSessionStatus.OPEN.value
+            and session.payment_status == StripeCheckoutPaymentStatus.UNPAID.value
         ):
             return True
         else:

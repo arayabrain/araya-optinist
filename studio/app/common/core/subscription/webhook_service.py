@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict
 
@@ -113,7 +113,7 @@ class WebhookService:
                     SubscriptionUserPurchase.user_id == user_id,
                     SubscriptionUserPurchase.plan_id == plan_id,
                     SubscriptionUserPurchase.created_at
-                    > datetime.now(timezone.utc)
+                    > SubscriptionService.get_current_datetime()
                     - timedelta(minutes=30),  # Within last 30 minutes
                 )
                 .first()
@@ -126,7 +126,8 @@ class WebhookService:
                     .filter(
                         UserSubscription.user_id == user_id,
                         UserSubscription.plan_id == plan_id,
-                        UserSubscription.expiration > datetime.now(timezone.utc),
+                        UserSubscription.expiration
+                        > SubscriptionService.get_current_datetime(),
                     )
                     .first()
                 )
@@ -248,14 +249,15 @@ class WebhookService:
                 db.query(UserSubscription)
                 .filter(
                     UserSubscription.user_id == user_account.user_id,
-                    UserSubscription.expiration > datetime.now(timezone.utc),
+                    UserSubscription.expiration
+                    > SubscriptionService.get_current_datetime(),
                 )
                 .first()
             )
 
             if subscription:
                 subscription.sync_status = SyncStatus.FAILED
-                subscription.updated_at = datetime.now(timezone.utc)
+                subscription.updated_at = SubscriptionService.get_current_datetime()
                 db.commit()
                 logger.info(
                     f"Marked subscription as failed for user {user_account.user_id}"
@@ -292,15 +294,16 @@ class WebhookService:
                 db.query(UserSubscription)
                 .filter(
                     UserSubscription.user_id == user_account.user_id,
-                    UserSubscription.expiration > datetime.now(timezone.utc),
+                    UserSubscription.expiration
+                    > SubscriptionService.get_current_datetime(),
                 )
                 .first()
             )
 
             if subscription:
                 # Expire subscription immediately
-                subscription.expiration = datetime.now(timezone.utc)
-                subscription.updated_at = datetime.now(timezone.utc)
+                subscription.expiration = SubscriptionService.get_current_datetime()
+                subscription.updated_at = SubscriptionService.get_current_datetime()
 
                 # Remove any scheduled downgrade
                 subscription.scheduled_downgrade = False
@@ -398,7 +401,8 @@ class WebhookService:
                 db.query(UserSubscription)
                 .filter(
                     UserSubscription.user_id == user.id,
-                    UserSubscription.expiration > datetime.now(timezone.utc),
+                    UserSubscription.expiration
+                    > SubscriptionService.get_current_datetime(),
                 )
                 .first()
             )
@@ -406,7 +410,9 @@ class WebhookService:
             if user_subscription:
                 # Update the subscription with new plan details
                 user_subscription.plan_id = new_plan_id
-                user_subscription.updated_at = datetime.now(timezone.utc)
+                user_subscription.updated_at = (
+                    SubscriptionService.get_current_datetime()
+                )
                 user_subscription.expiration = datetime.fromtimestamp(
                     current_period_end
                 )
@@ -538,7 +544,8 @@ class WebhookService:
                     db.query(UserSubscription)
                     .filter(
                         UserSubscription.user_id == user_id,
-                        UserSubscription.expiration > datetime.now(timezone.utc),
+                        UserSubscription.expiration
+                        > SubscriptionService.get_current_datetime(),
                     )
                     .order_by(UserSubscription.expiration.desc())
                     .first()
@@ -613,7 +620,9 @@ class WebhookService:
             try:
                 logger.info("Webhook: Updating subscription expiration...")
                 user_subscription.expiration = new_expiration
-                user_subscription.updated_at = datetime.now(timezone.utc)
+                user_subscription.updated_at = (
+                    SubscriptionService.get_current_datetime()
+                )
 
             except Exception as e:
                 logger.error(f"Webhook: Error updating subscription: {str(e)}")
@@ -629,7 +638,7 @@ class WebhookService:
                 purchase = SubscriptionUserPurchase(
                     user_id=user_id,
                     plan_id=plan_id,
-                    created_at=datetime.now(timezone.utc),
+                    created_at=SubscriptionService.get_current_datetime(),
                 )
 
                 db.add(purchase)
