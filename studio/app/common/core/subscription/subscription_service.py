@@ -9,12 +9,21 @@ from sqlmodel import Session
 from studio.app.common import models as common_model
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.models.subscription import (
+    SubscriptionCancellation,
     SubscriptionPlans,
+    SubscriptionUserPurchase,
     SyncStatus,
     UserSubscription,
 )
 
 logger = AppLogger.get_logger()
+
+
+class SubscriptionUserStatus(Enum):
+    FREE = 1
+    SUBSCRIBED = 2
+    EXPIRED = 3
+    CANCELED = 4
 
 
 class SubscriptionStatusType(Enum):
@@ -51,6 +60,78 @@ class SubscriptionService:
             .filter(SubscriptionPlans.status == SubscriptionStatusType.ACTIVE.value)
             .all()
         )
+
+    @staticmethod
+    def is_subscription_cancelled(db: Session, user_id: int) -> bool:
+        """
+        Check if a user's current active subscription is cancelled.
+
+        Args:
+            db: Database session
+            user_id: The user's ID
+
+        Returns:
+            bool: True if the user has an active cancelled subscription, False otherwise
+        """
+        from datetime import datetime
+
+        # Get the user's current active subscription (not expired)
+        active_subscription = (
+            db.query(UserSubscription)
+            .filter(
+                UserSubscription.user_id == user_id,
+                UserSubscription.expiration > datetime.utcnow(),
+            )
+            .order_by(UserSubscription.expiration.desc())
+            .first()
+        )
+
+        logger.info(f"Active subscription for user {user_id}: {active_subscription}")
+
+        # If no active subscription, it's not cancelled (it's expired or doesn't exist)
+        if not active_subscription:
+            return False
+
+        # Find the most recent purchase that matches or came before this subscription
+        latest_purchase = (
+            db.query(SubscriptionUserPurchase)
+            .filter(
+                SubscriptionUserPurchase.user_id == user_id,
+                SubscriptionUserPurchase.plan_id == active_subscription.plan_id,
+                SubscriptionUserPurchase.created_at <= active_subscription.created_at,
+            )
+            .order_by(SubscriptionUserPurchase.created_at.desc())
+            .first()
+        )
+
+        logger.info(f"Latest purchase for user {user_id}: {latest_purchase}")
+
+        if not latest_purchase:
+            return False
+
+        # Check if this purchase has a cancellation record
+        cancellation = (
+            db.query(SubscriptionCancellation)
+            .filter(SubscriptionCancellation.purchases_id == latest_purchase.id)
+            .first()
+        )
+
+        logger.info(f"Cancellation record for user {user_id}: {cancellation}")
+
+        return cancellation is not None
+
+    @staticmethod
+    def get_subscription_status(plan_data_id: int, is_cancelled: bool) -> int:
+        # Determine status based on plan ID and cancellation state
+        if is_cancelled:
+            subscription_status = SubscriptionUserStatus.CANCELED.value
+        elif plan_data_id == 1:
+            subscription_status = SubscriptionUserStatus.FREE.value
+        elif plan_data_id >= 2:
+            subscription_status = SubscriptionUserStatus.SUBSCRIBED.value
+        else:
+            subscription_status = SubscriptionUserStatus.FREE.value
+        return subscription_status
 
     @staticmethod
     def get_plan_by_id(db: Session, plan_id: int) -> SubscriptionPlans:

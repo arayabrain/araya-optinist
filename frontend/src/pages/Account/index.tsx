@@ -85,12 +85,23 @@ const useSubscriptionExpiration = (
   return { isExpired, isValidating }
 }
 
+enum SUBSCRIPTION_USER_STATUS {
+  FREE = 1,
+  SUBSCRIBED = 2,
+  EXPIRED = 3,
+  CANCELED = 4,
+}
+
+enum SUBSCRIPTION_PLAN {
+  FREE = "Free",
+  PREMIUM = "Premium",
+}
+
 const Account = () => {
   const user = useSelector(selectCurrentUser)
   const loading = useSelector(selectLoading)
   const userSubscription = useSelector(selectUserSubscription)
   const subscriptionLoading = useSelector(selectUserSubscriptionLoading)
-  const subscriptionError = useSelector(selectSubscriptionError)
 
   const {
     isExpired: isSubscriptionExpired,
@@ -112,20 +123,6 @@ const Account = () => {
 
   const handleClickVariant = (variant: VariantType, mess: string) => {
     enqueueSnackbar(mess, { variant })
-  }
-
-  enum SUBSCRIPTION_STATUS {
-    LOADING = "LOADING",
-    ERROR = "ERROR",
-    FREE = "FREE",
-    EXPIRED = "EXPIRED",
-    VALIDATING = "VALIDATING",
-    ACTIVE = "ACTIVE",
-  }
-
-  enum SUBSCRIPTION_PLAN {
-    FREE = "Free",
-    PREMIUM = "Premium",
   }
 
   useEffect(() => {
@@ -248,28 +245,36 @@ const Account = () => {
     }
   }
 
-  const getSubscriptionStatus = () => {
-    if (subscriptionLoading) {
-      return SUBSCRIPTION_STATUS.LOADING
-    } else if (isValidatingExpiration) {
-      return SUBSCRIPTION_STATUS.VALIDATING
-    } else if (subscriptionError) {
-      return SUBSCRIPTION_STATUS.ERROR
-    } else if (!userSubscription) {
-      return SUBSCRIPTION_STATUS.FREE
+  const determineSubscriptionButtonStatus = () => {
+    if (!userSubscription) {
+      return SUBSCRIPTION_USER_STATUS.FREE
     } else if (isSubscriptionExpired) {
-      return SUBSCRIPTION_STATUS.EXPIRED
+      return SUBSCRIPTION_USER_STATUS.EXPIRED
     } else {
-      return SUBSCRIPTION_STATUS.ACTIVE
+      return SUBSCRIPTION_USER_STATUS.SUBSCRIBED
+    }
+  }
+
+  const getUserSubscriptionStatus = () => {
+    if (!userSubscription) {
+      return SUBSCRIPTION_USER_STATUS.FREE
+    } else if (userSubscription.status === SUBSCRIPTION_USER_STATUS.FREE) {
+      return SUBSCRIPTION_USER_STATUS.FREE
+    } else if (userSubscription.status === SUBSCRIPTION_USER_STATUS.CANCELED) {
+      return SUBSCRIPTION_USER_STATUS.CANCELED
+    } else if (isSubscriptionExpired) {
+      return SUBSCRIPTION_USER_STATUS.EXPIRED
+    } else {
+      return SUBSCRIPTION_USER_STATUS.SUBSCRIBED
     }
   }
 
   const getSubscriptionButton = () => {
-    const status = getSubscriptionStatus()
+    const status = determineSubscriptionButtonStatus()
 
     if (
-      status === SUBSCRIPTION_STATUS.FREE ||
-      status === SUBSCRIPTION_STATUS.EXPIRED
+      status === SUBSCRIPTION_USER_STATUS.FREE ||
+      status === SUBSCRIPTION_USER_STATUS.EXPIRED
     ) {
       return {
         text: "Upgrade",
@@ -307,11 +312,18 @@ const Account = () => {
       )
     }
 
-    return (
-      <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-        (Expires on {expirationDate.toLocaleDateString()})
-      </Typography>
-    )
+    if (
+      userSubscription.status === SUBSCRIPTION_USER_STATUS.CANCELED &&
+      userSubscription.scheduled_downgrade
+    ) {
+      return (
+        <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+          (Expires on {expirationDate.toLocaleDateString()})
+        </Typography>
+      )
+    }
+
+    return null
   }
 
   const subscriptionButton = getSubscriptionButton()

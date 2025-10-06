@@ -3,7 +3,7 @@ from enum import Enum
 from typing import List, Optional
 
 import stripe
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
@@ -14,7 +14,10 @@ from studio.app.common.core.subscription.stripe_service import (
     StripeSubscriptionStatus,
     get_stripe_customer_by_email,
 )
-from studio.app.common.core.subscription.subscription_service import SubscriptionService
+from studio.app.common.core.subscription.subscription_service import (
+    SubscriptionService,
+    SubscriptionUserStatus,
+)
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.db.database import get_db
 from studio.app.common.models.subscription import SubscriptionPlans
@@ -102,7 +105,7 @@ async def get_user_subscription(
                         **sub_data.dict(),
                         "plan_name": plan_data.name,
                         "plan_price": plan_data.price,
-                        "is_expired": True,
+                        "status": SubscriptionUserStatus.EXPIRED.value,
                     }
                     subscription_response = UserSubscriptionResponse(
                         **subscription_dict
@@ -121,13 +124,24 @@ async def get_user_subscription(
         try:
             subscription, subscription_plans = subscription
             sub_data, plan_data = subscription, subscription_plans
+
+            # Check subscription status based on plan ID and cancellation state
+            is_cancelled = SubscriptionService.is_subscription_cancelled(
+                db, current_user.id
+            )
+
+            subscription_status = SubscriptionService.get_subscription_status(
+                plan_data.id, is_cancelled
+            )
+
             subscription_dict = {
                 **sub_data.dict(),
                 "plan_name": plan_data.name,
                 "plan_price": plan_data.price,
-                "is_expired": False,
+                "status": subscription_status,
             }
             subscription_response = UserSubscriptionResponse(**subscription_dict)
+            logger.info(f"Subscription response: {subscription_response}")
             return subscription_response
         except Exception as sub_error:
             logger.error(
@@ -140,7 +154,7 @@ async def get_user_subscription(
             f"Error fetching subscription for user {current_user.id}: {str(e)}"
         )
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=subscription_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch user subscription: {str(e)}",
         )
 
