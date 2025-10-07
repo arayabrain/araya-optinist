@@ -247,7 +247,10 @@ class CheckoutService:
                             f"to customer {customer_id}"
                         )
                     else:
-                        raise e
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Failed to attach payment method: {str(e)}",
+                        )
 
                 # Update customer's default payment method
                 stripe.Customer.modify(
