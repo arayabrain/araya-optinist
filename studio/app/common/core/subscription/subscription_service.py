@@ -189,7 +189,8 @@ class SubscriptionService:
             )
             .filter(
                 common_model.UserSubscription.user_id == user_id,
-                common_model.UserSubscription.expiration <= datetime.now(),
+                common_model.UserSubscription.expiration
+                <= __class__.get_current_datetime(),
                 common_model.User.active.is_(True),
             )
             .order_by(common_model.UserSubscription.expiration.desc())
