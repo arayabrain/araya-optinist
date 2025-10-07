@@ -1,3 +1,4 @@
+from datetime import datetime
 from enum import Enum
 from typing import Optional
 
@@ -5,20 +6,18 @@ import stripe
 from fastapi import HTTPException, status
 
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.subscription_service import (
     SubscriptionCurrencyType,
     SubscriptionService,
 )
 from studio.app.common.schemas.subscriptions import (
-    CreateCheckoutSessionResponse,
     CreateSetupIntentResponse,
     PaymentMethodResponse,
     UpdatePaymentMethodResponse,
+    UpdateSubscriptionResponse,
 )
 
 logger = AppLogger.get_logger()
-STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
 
 
 class StripeSubscriptionStatus(Enum):
@@ -45,7 +44,6 @@ async def get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
 
 
 class StripeService:
-
     @staticmethod
     async def get_default_payment_method(
         current_user,
@@ -188,7 +186,7 @@ class StripeService:
 
             # Update default payment method for active subscriptions
             subscriptions = stripe.Subscription.list(
-                customer=customer.id, status=StripeSubscriptionStatus.ACTIVE
+                customer=customer.id, status=StripeSubscriptionStatus.ACTIVE.value
             )
 
             updated_subscriptions = 0
@@ -263,7 +261,7 @@ class StripeService:
 
             # Check if this is the default payment method for any active subscriptions
             subscriptions = stripe.Subscription.list(
-                customer=customer.id, status=StripeSubscriptionStatus.ACTIVE
+                customer=customer.id, status=StripeSubscriptionStatus.ACTIVE.value
             )
 
             for subscription in subscriptions.data:
@@ -295,95 +293,226 @@ class StripeService:
             )
 
     @staticmethod
-    def handle_checkout_session(
-        db, request, current_user
-    ) -> CreateCheckoutSessionResponse:
+    async def handle_get_user_payment_methods(current_user):
+        """
+        Get user's payment methods with last 4 digits and card brand
+        """
         try:
-            # Get subscription plan from database using plan_id as string
-            plan = SubscriptionService.get_plan_by_id(db, int(request.plan_id))
-
-            if not plan:
-                raise HTTPException(
-                    status_code=404, detail="Subscription plan not found"
-                )
-
-            # Get user details
+            # Get user email to find Stripe customer
             user = current_user
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
 
-            # Use the price and currency from the request
-            price = plan.price
-            currency = plan.currency
+            logger.info(
+                f"Fetching payment methods for user {user.id} with email {user.email}"
+            )
 
-            if currency == SubscriptionCurrencyType.USD.value:
-                currency = "usd"
-            elif currency == SubscriptionCurrencyType.JPY.value:
-                currency = "jpy"
+            # Find Stripe customer by email
+            stripe_customers = stripe.Customer.list(email=user.email, limit=1)
 
-            logger.info(f"Request details - price: {price}, currency: {currency}")
+            if not stripe_customers.data:
+                logger.info(f"No Stripe customer found for user {user.email}")
+                return []
 
-            # Determine billing cycle for Stripe (default to monthly if not specified)
-            price_interval = "month"  # You can modify this based on your needs
+            customer = stripe_customers.data[0]
 
-            # Create Stripe checkout session directly with price_data
-            try:
-                logger.info("Initializing Stripe")
-                subscription_account = CheckoutService.get_subscription_account(
-                    db, user.id
+            # Get all payment methods for this customer
+            payment_methods = stripe.PaymentMethod.list(
+                customer=customer.id, type="card"
+            )
+
+            result = []
+            for pm in payment_methods.data:
+                card = pm.card
+                payment_method_response = PaymentMethodResponse(
+                    id=pm.id,
+                    last4=card.last4,
+                    brand=card.brand,
+                    exp_month=card.exp_month,
+                    exp_year=card.exp_year,
+                    is_default=pm.id
+                    == customer.invoice_settings.default_payment_method,
                 )
-                customer_id = (
-                    subscription_account.provider_customer_id
-                    if subscription_account
-                    else stripe.Customer.create(
-                        email=user.email,
-                        name=getattr(user, "name", ""),
-                        metadata={"user_id": str(user.id)},
-                    ).id
-                )
+                result.append(payment_method_response)
 
-                checkout_session = stripe.checkout.Session.create(
-                    payment_method_types=["card"],
-                    line_items=[
-                        {
-                            "price_data": {
-                                "currency": currency,
-                                "product_data": {
-                                    "name": plan.name,
-                                    "description": "Subscription Plan Purchase",
-                                },
-                                "unit_amount": price,
-                                "recurring": {"interval": price_interval},
-                            },
-                            "quantity": 1,
-                        }
-                    ],
-                    mode="subscription",
-                    success_url=(
-                        f"{STRIPE_CALLBACK_URL}/console/subscription/thanks"
-                        "?session_id={CHECKOUT_SESSION_ID}"
-                    ),
-                    cancel_url=(f"{STRIPE_CALLBACK_URL}/console/subscription"),
-                    customer=customer_id,
-                    client_reference_id=str(user.id),
-                    metadata={
-                        "user_id": str(user.id),
-                        "plan_id": request.plan_id,
-                        "plan_name": plan.name,
-                    },
-                )
+            return result
 
-                return CreateCheckoutSessionResponse(
-                    checkout_url=checkout_session.url, session_id=checkout_session.id
-                )
+        except stripe.error.StripeError as e:
+            logger.error(
+                f"Stripe error fetching payment methods for user {user.id}: {str(e)}"
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to fetch payment methods from Stripe: {str(e)}",
+            )
+        except Exception as e:
+            logger.error(f"Error fetching payment methods for user {user.id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to fetch payment methods: {str(e)}",
+            )
 
-            except stripe.error.StripeError as e:
+    @staticmethod
+    async def handle_update_user_subscription(db, current_user, request):
+        """
+        Update user's subscription to a different plan - webhook-driven database updates
+        """
+        try:
+            # Get the new plan details
+            new_plan = stripe.SubscriptionService.get_plan_by_id(
+                db, request.new_plan_id
+            )
+            if not new_plan:
                 raise HTTPException(
-                    status_code=400,
-                    detail=f"Failed to create checkout session: {str(e)}",
+                    status_code=404, detail="New subscription plan not found"
                 )
 
+            # Get current user subscription
+            current_subscription_result = SubscriptionService.get_user_subscription(
+                db, current_user.id
+            )
+            if not current_subscription_result:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        "No active subscription found. Please create a new subscription"
+                    ),
+                )
+
+            sub_data, current_plan = current_subscription_result
+
+            # Check if user is trying to "update" to the same plan
+            if current_plan.id == new_plan.id:
+                raise HTTPException(
+                    status_code=400, detail="User is already subscribed to this plan"
+                )
+
+            # Get Stripe customer
+            customer = await get_stripe_customer_by_email(current_user.email)
+            if not customer:
+                raise HTTPException(
+                    status_code=404, detail="No Stripe customer found for user"
+                )
+
+            # Get active Stripe subscription
+            stripe_subscriptions = stripe.Subscription.list(
+                customer=customer.id,
+                status=StripeSubscriptionStatus.ACTIVE.value,
+                limit=1,
+            )
+
+            if not stripe_subscriptions.data:
+                raise HTTPException(
+                    status_code=404, detail="No active Stripe subscription found"
+                )
+
+            stripe_subscription = stripe_subscriptions.data[0]
+
+            # Prepare currency for Stripe
+            currency = SubscriptionCurrencyType(new_plan.currency).get_currency_string()
+
+            # Create new price in Stripe for the new plan
+            stripe_price = stripe.Price.create(
+                currency=currency,
+                unit_amount=new_plan.price,
+                recurring={"interval": "month"},
+                product_data={
+                    "name": new_plan.name,
+                    "metadata": {"plan_id": str(new_plan.id)},
+                },
+            )
+
+            logger.info(
+                f"Processing scheduled subscription change for user {current_user.id}"
+            )
+
+            # Get the current period end from the subscription items
+            current_period_end = stripe_subscription["items"]["data"][0][
+                "current_period_end"
+            ]
+
+            logger.info(f"Current period end timestamp: {current_period_end}")
+            logger.info(
+                f"Current period end date: {datetime.fromtimestamp(current_period_end)}"
+            )
+
+            # Schedule change at period end using proper Stripe schedules
+            current_period_end = stripe_subscription["items"]["data"][0][
+                "current_period_end"
+            ]
+
+            # Cancel current subscription at period end
+            stripe.Subscription.modify(
+                stripe_subscription.id, cancel_at_period_end=True
+            )
+
+            # Create a new subscription schedule that starts when current ends
+            stripe.SubscriptionSchedule.create(
+                customer=stripe_subscription.customer,
+                start_date=current_period_end,  # Start when current subscription ends
+                phases=[
+                    {
+                        # New phase - switch to new plan
+                        "items": [
+                            {
+                                "price": stripe_price.id,
+                                "quantity": 1,
+                            }
+                        ],
+                        # This phase continues indefinitely
+                    },
+                ],
+                metadata={
+                    "user_id": str(current_user.id),
+                    "new_plan_id": str(new_plan.id),
+                    "old_plan_id": str(current_plan.id),
+                    "scheduled_change": "true",
+                },
+            )
+
+            change_date = datetime.fromtimestamp(current_period_end)
+            message = (
+                f"Subscription will change to {new_plan.name} on "
+                f"{change_date.strftime('%Y-%m-%d')}"
+            )
+            effective_date = int(current_period_end)
+
+            # Database will be updated via subscription_schedule.updated and
+            # subscription_schedule.released webhooks
+
+            # Determine if this is an upgrade or downgrade
+            plan_change_type = (
+                "upgrade" if new_plan.price > current_plan.price else "downgrade"
+            )
+
+            logger.info(
+                f"subscription change for user {current_user.id} "
+                f"from plan {current_plan.id} to plan {new_plan.id} "
+                f"({plan_change_type})"
+            )
+
+            return UpdateSubscriptionResponse(
+                success=True,
+                message=message,
+                old_plan_name=current_plan.name,
+                new_plan_name=new_plan.name,
+                change_type=plan_change_type,
+                effective_date=effective_date,
+                next_billing_date=int(current_period_end),
+                prorated_amount=("Check latest invoice for proration details"),
+            )
+
+        except stripe.error.StripeError as e:
+            logger.error(f"Stripe error updating subscription: {str(e)}")
+            raise HTTPException(
+                status_code=400, detail=f"Payment processing error: {str(e)}"
+            )
         except HTTPException:
             raise
         except Exception as e:
+            logger.error(
+                f"Error updating subscription for user {current_user.id}: {str(e)}"
+            )
             raise HTTPException(
-                status_code=500, detail=f"Internal server error: {str(e)}"
+                status_code=500, detail=f"Failed to update subscription: {str(e)}"
             )

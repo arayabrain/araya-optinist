@@ -1,120 +1,157 @@
 import requests
+from stripe import SubscriptionService
 
-STRIPE_CALLBACK_URL = "http://localhost:8000/api/v1/checkout"
+STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
 
 
-def test_checkout_api():
-    """Test checkout API with realistic fake data"""
-    print("Testing Checkout API...")
+def test_checkout_session_validation():
+    """Test checkout session validation endpoint"""
+    print("Testing Checkout Session Validation...")
 
-    # Test 1: Valid request structure but fake session ID
+    # Test 1: Valid checkout session structure
     payload = {
         "session_id": "cs_test_fake_session_for_testing",
-        "user_id": 999,  # Use non-existent user
-        "plan_id": 2,
     }
 
     response = requests.post(
-        f"{STRIPE_CALLBACK_URL}/stripe/checkout-success",
+        f"{STRIPE_CALLBACK_URL}/api/subsc/checkout/validate-checkout-session",
         json=payload,
         headers={"Content-Type": "application/json"},
     )
 
-    print(f"Checkout API Response: {response.status_code}")
+    print(f"Validation API Response: {response.status_code}")
 
     if response.status_code == 400:
-        # Expected - fake session ID should be rejected by Stripe
         data = response.json()
         print(f"Expected error: {data.get('detail', 'Unknown error')}")
-        print("✅ Checkout API properly validates session IDs")
-    elif response.status_code == 500:
-        print("✅ Checkout API attempted to process request (got to Stripe validation)")
+        print("✅ Checkout validation properly rejects invalid sessions")
     else:
         print(f"Response: {response.json()}")
 
-    # Test 2: Invalid request structure
-    invalid_payload = {"session_id": "test"}  # Missing user_id, plan_id
+
+def test_failed_checkout_validation():
+    """Test failed checkout session validation"""
+    print("Testing Failed Checkout Validation...")
+
+    payload = {
+        "session_id": "cs_test_fake_expired_session",
+    }
 
     response = requests.post(
-        f"{STRIPE_CALLBACK_URL}/stripe/checkout-success",
-        json=invalid_payload,
+        f"{STRIPE_CALLBACK_URL}/api/subsc/checkout/failed-checkout-session",
+        json=payload,
         headers={"Content-Type": "application/json"},
     )
 
-    if response.status_code == 422:
-        print("✅ Checkout API properly validates required fields")
+    print(f"Failed validation response: {response.status_code}")
+    if response.status_code == 200:
+        result = response.json()
+        print(f"Session is failed/expired: {result}")
+        print("✅ Failed checkout validation endpoint works")
     else:
-        print(f"Unexpected validation response: {response.status_code}")
+        print(f"Response: {response.json()}")
 
 
 def test_webhook_api():
-    """Test webhook API with different event types"""
+    """Test webhook API with Stripe signature verification"""
     print("Testing Webhook API...")
+    print("⚠️  Note: Real webhooks require valid Stripe signatures")
+    print("    This test will likely fail signature verification")
 
-    # Test checkout completed webhook
+    # Stripe webhooks require signature verification
+    # This test demonstrates the endpoint but won't work without real Stripe data
     payload = {
-        "event_type": "checkout.session.completed",
+        "type": "checkout.session.completed",
         "data": {
-            "id": "cs_test_fake_webhook_session",
-            "customer": "cus_fake_webhook_customer",
-            "payment_status": "paid",
-            "metadata": {"user_id": "999", "plan_id": "2"},
+            "object": {
+                "id": "cs_test_fake_webhook_session",
+                "customer": "cus_fake_webhook_customer",
+                "payment_status": "paid",
+                "metadata": {"user_id": "999", "plan_id": "2"},
+            }
         },
     }
 
-    response = requests.post(f"{STRIPE_CALLBACK_URL}/stripe/webhook", json=payload)
+    response = requests.post(
+        f"{STRIPE_CALLBACK_URL}/api/subsc/webhooks/stripe",
+        json=payload,
+        headers={"Content-Type": "application/json"},
+    )
+
+    if response.status_code == 400:
+        print("✅ Webhook properly requires signature verification")
+    elif response.status_code == 200:
+        data = response.json()
+        print(f"Webhook response: {data}")
+    else:
+        print(f"Webhook error: {response.status_code} - {response.text}")
+
+
+def test_get_subscription_plans():
+    """Test getting available subscription plans"""
+    print("Testing Get Subscription Plans...")
+
+    response = requests.get(f"{STRIPE_CALLBACK_URL}/api/subsc/mgmts/plans")
 
     if response.status_code == 200:
         data = response.json()
-        if data.get("processed") == "checkout.session.completed":
-            print("✅ Webhook API processes checkout.session.completed")
-        else:
-            print(f"Webhook response: {data}")
+        print(f"✅ Found {len(data)} subscription plans")
+        if data:
+            print(f"   Sample plan: {data[0].get('name', 'Unknown')}")
     else:
-        print(f"Webhook error: {response.status_code}")
+        print(f"Plans error: {response.status_code}")
 
 
-def test_subscription_status_api():
-    """Test subscription status API"""
-    print("Testing Subscription Status API...")
+def test_get_user_subscription():
+    """Test getting user subscription (requires authentication)"""
+    print("Testing Get User Subscription...")
+    print("⚠️  Note: This endpoint requires authentication")
 
-    response = requests.get(f"{STRIPE_CALLBACK_URL}/subscription/status/1")
+    response = requests.get(f"{STRIPE_CALLBACK_URL}/api/subsc/mgmts")
 
-    if response.status_code == 200:
+    if response.status_code == 401 or response.status_code == 403:
+        print("✅ Subscription endpoint properly requires authentication")
+    elif response.status_code == 200:
         data = response.json()
-        required_fields = ["user_id", "has_active_subscription", "subscription_details"]
-        if all(field in data for field in required_fields):
-            print("✅ Subscription Status API returns correct structure")
-            print(f"User 1 has active subscription: {data['has_active_subscription']}")
-        else:
-            print(f"Missing fields in response: {data}")
+        print(f"Subscription data: {data}")
     else:
-        print(f"Subscription status error: {response.status_code}")
+        print(f"Subscription error: {response.status_code}")
 
 
 def run_checkout_tests():
     """Run all checkout-related tests"""
     print("=" * 50)
-    print("CHECKOUT API INTEGRATION TESTS")
+    print("SUBSCRIPTION API INTEGRATION TESTS")
     print("=" * 50)
 
-    # Check API connectivity first
+    # Check API connectivity first - try docs endpoint
     try:
-        response = requests.get(f"{STRIPE_CALLBACK_URL}/health", timeout=3)
-        if response.status_code != 200:
-            print("API not responding properly")
-            return
-        print("API connectivity confirmed")
+        response = requests.get(f"{STRIPE_CALLBACK_URL}/docs", timeout=3)
+        if response.status_code == 200:
+            print("✅ API is reachable")
+        else:
+            # Try plans endpoint instead
+            response = requests.get(
+                f"{STRIPE_CALLBACK_URL}/api/subsc/mgmts/plans", timeout=3
+            )
+            if response.status_code in [200, 401, 403]:
+                print("✅ API is reachable")
+            else:
+                print(f"⚠️  API responded with status {response.status_code}")
     except Exception as e:
-        print(f"Cannot connect to API: {e}")
+        print(f"❌ Cannot connect to API: {e}")
         return
 
     print()
-    test_checkout_api()
+    test_get_subscription_plans()
+    print()
+    test_checkout_session_validation()
+    print()
+    test_failed_checkout_validation()
+    print()
+    test_get_user_subscription()
     print()
     test_webhook_api()
-    print()
-    test_subscription_status_api()
     print()
     print("=" * 50)
     print("TESTS COMPLETE")

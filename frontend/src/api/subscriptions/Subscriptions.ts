@@ -44,15 +44,18 @@ export const validateCheckoutSessionApi = createAsyncThunk(
   },
 )
 
-export const validateFailedCheckoutSessionApi = async (sessionId: string) => {
-  const response = await axios.post(
-    "/api/subsc/checkout/validate-failed-checkout-session",
-    {
-      session_id: sessionId,
-    },
-  )
-  return response.data
-}
+export const validateFailedCheckoutSessionApi = createAsyncThunk(
+  "subscription/validateFailedCheckoutSession",
+  async (sessionId: string) => {
+    const response = await axios.post(
+      "/api/subsc/checkout/validate-failed-checkout-session",
+      {
+        session_id: sessionId,
+      },
+    )
+    return response.data
+  },
+)
 
 export const cancelSubscriptionApi = async () => {
   const response = await axios.delete("/api/subsc/mgmts/cancel")

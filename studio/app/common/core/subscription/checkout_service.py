@@ -1,10 +1,15 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from http.client import HTTPException
 from typing import Any, Dict, Optional
 
 import stripe
 from sqlmodel import Enum, Session
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.subscription.subscription_service import (
+    SubscriptionCurrencyType,
+    SubscriptionService,
+)
 from studio.app.common.models.subscription import (
     SubscriptionPlans,
     SubscriptionProvider,
@@ -12,8 +17,10 @@ from studio.app.common.models.subscription import (
     SubscriptionUserPurchase,
     UserSubscription,
 )
+from studio.app.common.schemas.subscriptions import CreateCheckoutSessionResponse
 
 logger = AppLogger.get_logger()
+STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
 
 
 class SUBSCRIPTION_ACTIVE_STATUS(Enum):
@@ -48,7 +55,8 @@ class CheckoutService:
             db.query(UserSubscription)
             .filter(
                 UserSubscription.user_id == user_id,
-                UserSubscription.expiration > datetime.now(timezone.utc),
+                UserSubscription.expiration
+                > SubscriptionService.get_current_datetime(),
             )
             .first()
         )
@@ -137,7 +145,9 @@ class CheckoutService:
         Returns:
             Expiration datetime
         """
-        return datetime.now(timezone.utc) + timedelta(days=30 * billing_cycle)
+        return SubscriptionService.get_current_datetime() + timedelta(
+            days=30 * billing_cycle
+        )
 
     @staticmethod
     def create_or_update_user_account(
@@ -173,7 +183,7 @@ class CheckoutService:
             db.add(user_account)
         else:
             user_account.provider_customer_id = customer_id
-            user_account.updated_at = datetime.now(timezone.utc)
+            user_account.updated_at = SubscriptionService.get_current_datetime()
 
         return user_account
 
@@ -297,7 +307,9 @@ class CheckoutService:
             existing_subscription.sync_status = SUBSCRIPTION_SYNC_STATUS.SYNCED
             existing_subscription.expiration = expiration_date
             existing_subscription.scheduled_downgrade = False
-            existing_subscription.updated_at = datetime.now(timezone.utc)
+            existing_subscription.updated_at = (
+                SubscriptionService.get_current_datetime()
+            )
             return existing_subscription.id
         else:
             # Create new subscription
@@ -353,3 +365,92 @@ class CheckoutService:
         db.add(purchase)
         db.flush()  # Get ID without committing
         return purchase
+
+    @staticmethod
+    async def handle_checkout_session(
+        db, request, current_user
+    ) -> CreateCheckoutSessionResponse:
+        try:
+            # Get subscription plan from database using plan_id as string
+            plan = SubscriptionService.get_plan_by_id(db, int(request.plan_id))
+
+            if not plan:
+                raise HTTPException(
+                    status_code=404, detail="Subscription plan not found"
+                )
+
+            # Get user details
+            user = current_user
+
+            # Use the price and currency from the request
+            price = plan.price
+            currency = SubscriptionCurrencyType(plan.currency).get_currency_string()
+
+            logger.info(f"Request details - price: {price}, currency: {currency}")
+
+            # Determine billing cycle for Stripe (default to monthly if not specified)
+            price_interval = "month"  # You can modify this based on your needs
+
+            # Create Stripe checkout session directly with price_data
+            try:
+                logger.info("Initializing Stripe")
+                subscription_account = CheckoutService.get_subscription_account(
+                    db, user.id
+                )
+                customer_id = (
+                    subscription_account.provider_customer_id
+                    if subscription_account
+                    else stripe.Customer.create(
+                        email=user.email,
+                        name=getattr(user, "name", ""),
+                        metadata={"user_id": str(user.id)},
+                    ).id
+                )
+
+                checkout_session = stripe.checkout.Session.create(
+                    payment_method_types=["card"],
+                    line_items=[
+                        {
+                            "price_data": {
+                                "currency": currency,
+                                "product_data": {
+                                    "name": plan.name,
+                                    "description": "Subscription Plan Purchase",
+                                },
+                                "unit_amount": price,
+                                "recurring": {"interval": price_interval},
+                            },
+                            "quantity": 1,
+                        }
+                    ],
+                    mode="subscription",
+                    success_url=(
+                        f"{STRIPE_CALLBACK_URL}/console/subscription/thanks"
+                        "?session_id={CHECKOUT_SESSION_ID}"
+                    ),
+                    cancel_url=(f"{STRIPE_CALLBACK_URL}/console/subscription"),
+                    customer=customer_id,
+                    client_reference_id=str(user.id),
+                    metadata={
+                        "user_id": str(user.id),
+                        "plan_id": request.plan_id,
+                        "plan_name": plan.name,
+                    },
+                )
+
+                return CreateCheckoutSessionResponse(
+                    checkout_url=checkout_session.url, session_id=checkout_session.id
+                )
+
+            except stripe.error.StripeError as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to create checkout session: {str(e)}",
+                )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=500, detail=f"Internal server error: {str(e)}"
+            )

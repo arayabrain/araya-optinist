@@ -5,6 +5,7 @@ import {
   createCheckoutSession,
   getSubscriptionPlan,
   getUserSubscription,
+  validateCheckoutSession,
   reactivateSubscription,
 } from "store/slice/Subscriptions/SubscriptionActions"
 import {
@@ -106,6 +107,7 @@ const subscriptionSlice = createSlice({
                 plan_id: Number(action.payload.plan_id) || 0,
                 user_id: Number(action.payload.user_id) || 0,
                 expiration: String(action.payload.expiration || ""),
+                status: Number(action.payload.status) || 1,
                 is_expired: Boolean(action.payload.is_expired),
                 scheduled_downgrade: Boolean(
                   action.payload.scheduled_downgrade,
@@ -163,6 +165,24 @@ const subscriptionSlice = createSlice({
           action,
           "Failed to cancel subscription",
         )
+      })
+      .addCase(validateCheckoutSession.pending, (state) => {
+        state.loading = true
+        state.error = null
+      })
+      .addCase(validateCheckoutSession.fulfilled, (state, action) => {
+        state.loading = false
+        state.error = null
+        // Handle successful validation if needed
+      })
+      .addCase(validateCheckoutSession.rejected, (state, action) => {
+        state.loading = false
+        state.error = extractRejectedErrorMessage(
+          action,
+          "Payment validation failed",
+        )
+        // Show alert for payment failure
+        alert("Payment failed. Please try again or contact support.")
       })
       .addCase(reactivateSubscription.pending, (state) => {
         state.loading = true

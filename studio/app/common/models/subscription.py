@@ -194,7 +194,15 @@ class SubscriptionCancellation(SQLModel, table=True):
         sa_column=Column(TIMESTAMP, server_default=func.current_timestamp()),
     )
     reason: Optional[CancellationReason] = Field(
-        sa_column=Column(SQLEnum(CancellationReason), nullable=True),
+        sa_column=Column(
+            SQLEnum(
+                CancellationReason,
+                name="cancellation_reason_enum",
+                create_type=False,
+                values_callable=lambda x: [e.value for e in x],
+            ),
+            nullable=True,
+        ),
         default=None,
         description="Reason for cancellation",
     )

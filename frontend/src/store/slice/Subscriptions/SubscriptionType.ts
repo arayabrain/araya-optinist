@@ -25,6 +25,7 @@ export interface UserSubscription {
   expiration: string
   is_expired: boolean
   scheduled_downgrade: boolean
+  status: number
   plan_name: string
   plan_price: number
 }
