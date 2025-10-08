@@ -1,6 +1,7 @@
 import os
 import shutil
 
+from studio.app.common.core.auth.auth_dependencies import _get_user_remote_bucket_name
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.workflow.workflow import (
     Edge,
@@ -12,6 +13,7 @@ from studio.app.common.core.workflow.workflow import (
 from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
 from studio.app.dir_path import DIRPATH
 
+remote_bucket_name = _get_user_remote_bucket_name()
 workspace_id = "default"
 unique_id = "workflow_test"
 
@@ -63,7 +65,9 @@ def test_finish_workflow_without_run():
         forceRunList=[],
     )
 
-    WorkflowRunner(workspace_id, unique_id, runItem).finish_workflow_without_run()
+    WorkflowRunner(
+        remote_bucket_name, workspace_id, unique_id, runItem
+    ).finish_workflow_without_run()
 
     assert os.path.exists(f"{dirpath}/experiment.yaml")
     assert os.path.exists(f"{dirpath}/workflow.yaml")
