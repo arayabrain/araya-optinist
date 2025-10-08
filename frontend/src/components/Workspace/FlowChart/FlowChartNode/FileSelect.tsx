@@ -19,6 +19,7 @@ import { FILE_TREE_TYPE, FILE_TREE_TYPE_SET } from "api/files/Files"
 import { CsvParamSettingDialog } from "components/Workspace/FlowChart/Dialog/CsvParamSettingDialog"
 import { DialogContext } from "components/Workspace/FlowChart/Dialog/DialogContext"
 import { LinearProgressWithLabel } from "components/Workspace/FlowChart/FlowChartNode/LinerProgressWithLabel"
+import { getFileTypeConfig } from "config/fileTypes.config"
 import { FileNodeFactory } from "factories/FileNodeFactory"
 import { getFilesTree } from "store/slice/FilesTree/FilesTreeAction"
 import { useFileUploader } from "store/slice/FileUploader/FileUploaderHook"
@@ -62,6 +63,11 @@ export const FileSelect = memo(function FileSelect({
   const onUploadFileHandle = (formData: FormData, fileName: string) => {
     onUploadFile(formData, fileName)
   }
+
+  // Get displayName from config (priority: nameNode > config.displayName > fileType)
+  const config = getFileTypeConfig(fileType)
+  const displayLabel = nameNode || config?.displayName || fileType
+
   return (
     <>
       {!uninitialized && pending && progress != null && (
@@ -69,7 +75,7 @@ export const FileSelect = memo(function FileSelect({
           <LinearProgressWithLabel value={progress} />
         </div>
       )}
-      <Typography>{nameNode || fileType}</Typography>
+      <Typography>{displayLabel}</Typography>
       <FileSelectImple
         multiSelect={multiSelect}
         filePath={filePath}
