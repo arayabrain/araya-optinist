@@ -536,10 +536,10 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                 )
 
                 logger.info(f"User {user_id} subscription details:")
-                logger.info(f"  Subscription end: {subscription_end}")
-                logger.info(f"  Grace end: {grace_end}")
-                logger.info(f"  Deletion date: {deletion_date}")
-                logger.info(f"  Current time: {now}")
+                logger.info(f"Subscription end: {subscription_end}")
+                logger.info(f"Grace end: {grace_end}")
+                logger.info(f"Deletion date: {deletion_date}")
+                logger.info(f"Current time: {now}")
 
                 if subscription_end > now:
                     subscription_status = "active"
@@ -553,7 +553,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                     days_remaining = 0
 
                 logger.info(
-                    f"  Final status: {subscription_status}, "
+                    f"Final status: {subscription_status}, "
                     f"days_remaining: {days_remaining}"
                 )
             else:
@@ -567,10 +567,10 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
 
             # Step 3: Apply the 5 cases
             logger.info(f"User {user_id} warning analysis:")
-            logger.info(f"  Subscription status: {subscription_status}")
-            logger.info(f"  Storage exceeded: {storage_exceeded}")
+            logger.info(f"Subscription status: {subscription_status}")
+            logger.info(f"Storage exceeded: {storage_exceeded}")
             logger.info(
-                f"  Current usage: {current_usage_gb:.2f}GB / {storage_quota_gb:.1f}GB"
+                f"Current usage: {current_usage_gb:.2f}GB / {storage_quota_gb:.1f}GB"
             )
 
             # Case 1: Free user, no storage limit exceeded → No warning

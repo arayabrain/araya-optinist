@@ -102,21 +102,21 @@ class PremiumScalingTester:
         # Assign user
         success = self.assign_premium_user(user_id)
         if not success:
-            print(" Single user assignment failed")
+            print("Single user assignment failed")
             return False
 
         # Wait a moment and check status
         time.sleep(5)
         status = self.get_premium_status(user_id)
         if status:
-            print(f" User {user_id} status: {status}")
+            print(f"User {user_id} status: {status}")
 
         # Release user
         success = self.release_premium_user(user_id)
         if success:
-            print(" Single user test completed successfully")
+            print("Single user test completed successfully")
         else:
-            print(" Single user release failed")
+            print("Single user release failed")
 
         return success
 
@@ -147,9 +147,9 @@ class PremiumScalingTester:
                 user_id, success = future.result()
                 if success:
                     successful_assignments.append(user_id)
-                    print(f" Successfully assigned {user_id}")
+                    print(f"Successfully assigned {user_id}")
                 else:
-                    print(f" Failed to assign {user_id}")
+                    print(f"Failed to assign {user_id}")
 
         print(
             f"Successfully assigned {len(successful_assignments)} out of "
@@ -165,7 +165,7 @@ class PremiumScalingTester:
         for user_id in successful_assignments:
             status = self.get_premium_status(user_id)
             if status:
-                print(f"  {user_id}: {status}")
+                print(f"{user_id}: {status}")
 
         return successful_assignments
 
@@ -193,7 +193,7 @@ class PremiumScalingTester:
             # Print instance sharing status
             for instance_id, users in instance_assignments.items():
                 sharing_status = "SHARED" if len(users) > 1 else "DEDICATED"
-                print(f"  Instance {instance_id}: {sharing_status} - Users: {users}")
+                print(f"Instance {instance_id}: {sharing_status} - Users: {users}")
 
             if minute < 10:
                 time.sleep(60)  # Wait 1 minute
@@ -205,17 +205,17 @@ class PremiumScalingTester:
         for user_id in list(self.assigned_users.keys()):
             self.release_premium_user(user_id)
 
-        print(" Cleanup completed")
+        print("Cleanup completed")
 
     def run_full_test_suite(self):
         """Run the complete test suite"""
-        print(" Starting Premium Dynamic Scaling Test Suite")
+        print("Starting Premium Dynamic Scaling Test Suite")
         print(f"API URL: {self.api_url}")
 
         try:
             # Test 1: Single user assignment
             if not self.test_single_user_assignment():
-                print(" Basic assignment test failed, stopping")
+                print("Basic assignment test failed, stopping")
                 return False
 
             time.sleep(10)
@@ -224,7 +224,7 @@ class PremiumScalingTester:
             assigned_users = self.test_concurrent_user_assignment(3)
 
             if not assigned_users:
-                print(" No users were successfully assigned")
+                print("No users were successfully assigned")
                 return False
 
             # Test 3: Migration timing

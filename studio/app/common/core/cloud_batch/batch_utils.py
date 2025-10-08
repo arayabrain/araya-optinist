@@ -491,6 +491,44 @@ class BatchUtils:
         return commands
 
     @staticmethod
+    def get_s3_container_setup_commands(workspace_id: str, unique_id: str) -> List[str]:
+        """
+        Return setup commands for S3 storage mode batch containers.
+
+        Downloads config and Snakefile from S3 to the batch
+        container's local filesystem.
+        This is simpler than EFS mode since we don't need EFS mount
+        setup or scratch dirs.
+
+        Args:
+            workspace_id: Workspace ID for config download
+            unique_id: Unique experiment ID for config download
+        """
+        commands = []
+
+        # Add config download from S3
+        config_download_cmd = (
+            f'python -c "import asyncio; '
+            f"from studio.app.common.core.cloud_batch.batch_utils "
+            f"import download_snakemake_config_from_s3; "
+            f"asyncio.run(download_snakemake_config_from_s3("
+            f"'{workspace_id}', '{unique_id}'))\""
+        )
+        commands.append(config_download_cmd)
+
+        # Add Snakefile download from S3
+        snakefile_download_cmd = (
+            f'python -c "import asyncio; '
+            f"from studio.app.common.core.cloud_batch.batch_utils "
+            f"import download_snakefile_from_s3; "
+            f"asyncio.run(download_snakefile_from_s3("
+            f"'{workspace_id}', '{unique_id}'))\""
+        )
+        commands.append(snakefile_download_cmd)
+
+        return commands
+
+    @staticmethod
     def get_efs_optimized_storage_settings(
         workspace_id: str, unique_id: str
     ) -> StorageSettings:
@@ -2313,9 +2351,8 @@ async def download_snakemake_config_from_s3(workspace_id: str, unique_id: str) -
             return True  # Not an error if S3 is not available
 
         # Construct local config file path where it should be downloaded
-        local_config_path = join_filepath(
-            [DIRPATH.OUTPUT_DIR, workspace_id, unique_id, DIRPATH.SNAKEMAKE_CONFIG_YML]
-        )
+        # Use simple path for batch containers (each job gets isolated container)
+        local_config_path = "/app/snakemake.yaml"
 
         # Construct S3 key path
         s3_config_path = join_filepath(

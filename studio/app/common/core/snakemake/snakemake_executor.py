@@ -221,19 +221,29 @@ def _snakemake_execute_batch(
     """
 
     smk_logger = SmkStatusLogger(workspace_id, unique_id)
-    smk_workdir = (
-        Path(
-            join_filepath(
-                [
-                    DIRPATH.OUTPUT_DIR,
-                    workspace_id,
-                    unique_id,
-                ]
+
+    # Configure workdir based on storage mode
+    # The workdir is used for .snakemake metadata and as base for config/Snakefile paths
+    if RemoteStorageController.is_available():
+        # S3 mode: use /app as workdir so all source files (scripts at
+        # /app/studio/app/...) are within workdir and can be bundled by Snakemake
+        # for remote batch execution. Config downloaded to /app/snakemake.yaml.
+        smk_workdir = "/app"
+    else:
+        # EFS mode: use absolute path
+        smk_workdir = (
+            Path(
+                join_filepath(
+                    [
+                        DIRPATH.OUTPUT_DIR,
+                        workspace_id,
+                        unique_id,
+                    ]
+                )
             )
+            .resolve()
+            .as_posix()
         )
-        .resolve()
-        .as_posix()
-    )
 
     try:
         # Initialize BatchExecutor for AWS Batch specific operations
@@ -460,6 +470,9 @@ def _snakemake_execute_batch(
                 printshellcmds=True,  # Show shell commands
             ),
         ) as snakemake_api:
+            # Use the original Snakefile for DAG creation on the main container
+            # The batch executor will handle passing the S3-uploaded
+            # Snakefile to workers
             workflow_api = snakemake_api.workflow(
                 snakefile=Path(DIRPATH.SNAKEMAKE_FILEPATH),
                 workdir=Path(smk_workdir),
@@ -607,13 +620,21 @@ def _snakemake_execute_batch(
                         envvars.extend(["EFS_MOUNT_TARGET", "TMPDIR", "TMP"])
                         logger.info("Using EFS storage for batch jobs")
 
-                    # Prepare container setup for EFS optimization (only when using EFS)
-                    contain_setup = []
-                    if not RemoteStorageController.is_available():
-                        # Using EFS mode, need container setup commands
+                    # Prepare container setup commands based on storage mode
+                    if RemoteStorageController.is_available():
+                        # S3 mode: download config and Snakefile from S3
+                        contain_setup = BatchUtils.get_s3_container_setup_commands(
+                            workspace_id, unique_id
+                        )
+                        logger.info(
+                            "Using S3 container setup (config/Snakefile download)"
+                        )
+                    else:
+                        # EFS mode: full container setup with EFS mount and downloads
                         contain_setup = BatchUtils.get_container_setup_commands(
                             workspace_id, unique_id
                         )
+                        logger.info("Using EFS container setup (full environment)")
 
                     # Debug container command configuration (uncomment to enable)
                     BatchDebug.debug_container_command(batch_executor, contain_setup)

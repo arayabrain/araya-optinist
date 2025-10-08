@@ -36,16 +36,16 @@ def debug_batch_jobs():
         queues = batch_client.describe_job_queues(jobQueues=[job_queue])
         if queues.get("jobQueues"):
             queue = queues["jobQueues"][0]
-            print(f"   State: {queue.get('state')}, Status: {queue.get('status')}")
+            print(f"State: {queue.get('state')}, Status: {queue.get('status')}")
 
             # Compute environments summary
             compute_envs = queue.get("computeEnvironmentOrder", [])
-            print(f"   Compute Environments: {len(compute_envs)}")
+            print(f"Compute Environments: {len(compute_envs)}")
             for ce in compute_envs:
                 ce_name = ce["computeEnvironment"].split("/")[-1]  # Just the name
-                print(f"     - {ce_name}")
+                print(f"- {ce_name}")
         else:
-            print("   ERROR: Job queue not found!")
+            print("ERROR: Job queue not found!")
             return
         print()
 
@@ -57,7 +57,7 @@ def debug_batch_jobs():
                     jobQueue=job_queue, jobStatus=status, maxResults=10
                 )
                 job_count = len(jobs.get("jobList", []))
-                print(f"   {status}: {job_count} jobs")
+                print(f"{status}: {job_count} jobs")
 
                 # Show stuck STARTING jobs
                 if status == "STARTING" and job_count > 0:
@@ -66,9 +66,9 @@ def debug_batch_jobs():
                         if created_at:
                             created_time = datetime.fromtimestamp(created_at / 1000)
                             duration = datetime.now() - created_time
-                            print(f"     {job['jobName']}: stuck for {duration}")
+                            print(f"{job['jobName']}: stuck for {duration}")
             except Exception as e:
-                print(f"   {status}: Error checking - {e}")
+                print(f"{status}: Error checking - {e}")
         print()
 
         # 3. Recent failures (simplified)
@@ -89,8 +89,8 @@ def debug_batch_jobs():
                     status_reason = job_info.get("statusReason", "Unknown")
                     exit_code = job_info.get("container", {}).get("exitCode", "N/A")
 
-                    print(f"   {job_name}: exit_code={exit_code}")
-                    print(f"     Reason: {status_reason}")
+                    print(f"{job_name}: exit_code={exit_code}")
+                    print(f"Reason: {status_reason}")
 
                     # Quick log check for common issues
                     log_stream = job_info.get("container", {}).get("logStreamName")
@@ -115,13 +115,13 @@ def debug_batch_jobs():
                                         "oom",
                                     ]
                                 ):
-                                    print(f"     Issue: {event['message'][:80]}...")
+                                    print(f"Issue: {event['message'][:80]}...")
                                     break
                         except Exception:
-                            print("     (Could not access logs)")
+                            print("(Could not access logs)")
                     print()
         except Exception as e:
-            print(f"   Error checking failed jobs: {e}")
+            print(f"Error checking failed jobs: {e}")
 
     except Exception as e:
         print(f"Error during debugging: {e}")

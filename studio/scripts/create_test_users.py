@@ -128,11 +128,9 @@ async def create_test_user_in_db(db, user_data, organization_id):
     db.commit()
 
     print(f"Created user: {user_data['name']} ({user_data['email']})")
-    print(f"   - User ID: {user_db.id}")
-    print(
-        f"   - Plan: {'Premium' if user_data['subscription_plan_id'] == 2 else 'Free'}"
-    )
-    print(f"   - Storage: {user_data['storage_quota_gb']}GB")
+    print(f" - User ID: {user_db.id}")
+    print(f" - Plan: {'Premium' if user_data['subscription_plan_id'] == 2 else 'Free'}")
+    print(f" - Storage: {user_data['storage_quota_gb']}GB")
 
     return user_db
 
@@ -185,7 +183,7 @@ async def main():
                 )
 
                 if existing_user:
-                    print(f"  User already exists: {user_data['name']} (skipping)")
+                    print(f"User already exists: {user_data['name']} (skipping)")
                     continue
 
                 user = await create_test_user_in_db(db, user_data, org.id)

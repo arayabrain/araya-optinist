@@ -206,7 +206,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 }
 
             if action == "assign":
-                return assign_premium_user(user_id, body_data)
+                return assign_premium_user(user_id)
             elif action == "release":
                 return release_premium_user(user_id)
             else:
@@ -220,7 +220,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
 
 
-def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
+def assign_premium_user(user_id: str) -> Dict[str, Any]:
     """Assign premium user to available spot fleet instance with dynamic scaling"""
 
     ec2 = boto3.client("ec2")
@@ -333,9 +333,12 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         )
 
         # 4. Create ALB listener rule for user routing
+        # Get next available priority dynamically to avoid conflicts
+        priority = get_next_available_priority(alb_listener_arn, start_priority=100)
+
         rule_response = elbv2.create_rule(
             ListenerArn=alb_listener_arn,
-            Priority=10,  # All premium users get same base priority range
+            Priority=priority,
             Conditions=[
                 {
                     "Field": "http-header",
@@ -396,6 +399,61 @@ def create_additional_standby_if_needed():
         "instances via Terraform or Lambda."
     )
     return False
+
+
+def get_next_available_priority(listener_arn: str, start_priority: int = 100) -> int:
+    """
+    Find next available ALB rule priority by querying existing rules.
+
+    Args:
+        listener_arn: ALB listener ARN to check
+        start_priority: Starting priority to search from (default: 100)
+
+    Returns:
+        Next available priority number
+
+    Raises:
+        Exception: If no priorities available (all 1-50000 used)
+    """
+    elbv2 = boto3.client("elbv2")
+
+    try:
+        # Get all existing rules for this listener
+        response = elbv2.describe_rules(ListenerArn=listener_arn)
+        rules = response.get("Rules", [])
+
+        # Extract used priorities (excluding default rule which has priority "default")
+        used_priorities = set()
+        for rule in rules:
+            priority = rule.get("Priority")
+            if priority and priority != "default":
+                try:
+                    used_priorities.add(int(priority))
+                except (ValueError, TypeError):
+                    # Skip if priority is not a valid integer
+                    continue
+
+        print(
+            f"Found {len(used_priorities)} existing ALB rules "
+            f"with priorities: {sorted(used_priorities)}"
+        )
+
+        # Find first available priority starting from start_priority
+        priority = start_priority
+        while priority in used_priorities:
+            priority += 1
+            if priority > 50000:
+                raise Exception(
+                    f"No available ALB rule priorities. All priorities "
+                    f"from {start_priority} to 50000 are in use."
+                )
+
+        print(f"Allocated priority {priority} for new ALB rule")
+        return priority
+
+    except Exception as e:
+        print(f"Error finding available priority: {str(e)}")
+        raise
 
 
 def check_instance_readiness(instance_id: str) -> bool:

@@ -35,13 +35,19 @@ Autoscaling Configuration:
 - Health check grace period: 180 seconds
 
 Usage:
-    python load_test.py                                    # Full test with auto-detected settings
-    python load_test.py --cpu-only                         # CPU stress test only
-    python load_test.py --memory-only                      # Memory stress test only
-    python load_test.py --duration 600                     # 10-minute test duration
-    python load_test.py --concurrent-workflows 10          # Custom workflow count
-    python load_test.py --terraform-dir /path/to/terraform # Custom terraform directory
-    python load_test.py --api-url http://custom-lb.com     # Override API URL
+    python test_autoscaling.py                   # Full test with auto-detected settings
+    python test_autoscaling.py --cpu-only        # CPU stress test only
+    python test_autoscaling.py --memory-only     # Memory stress test only
+    python test_autoscaling.py --duration 600    # 10-minute test duration
+    python test_autoscaling.py --concurrent-workflows 10   # Custom workflow count
+    python test_autoscaling.py --terraform-dir /path/to/terraform # Custom terraform dir
+    python test_autoscaling.py --api-url http://custom-lb.com     # Override API URL
+
+    # Multi-user mode (simulates concurrent users)
+    python test_autoscaling.py --multi-user       # All available users, 1 workflow each
+    python test_autoscaling.py --multi-user --user-count 10  # 10 users, 1 workflow each
+    python test_autoscaling.py --multi-user --user-count 4 --workflows-per-user 5
+    # 4 users, 5 workflows each = 20 total workflows
 
 Features:
 - CPU stress testing via compute-intensive workflows
@@ -105,6 +111,7 @@ class LoadTestConfig:
         self.api_url = args.api_url
         self.duration = args.duration
         self.concurrent_workflows = args.concurrent_workflows
+        self.workflows_per_user = args.workflows_per_user
         self.cpu_only = args.cpu_only
         self.memory_only = args.memory_only
         self.target_cpu_threshold = args.target_cpu
@@ -113,6 +120,8 @@ class LoadTestConfig:
         self.monitoring_interval = args.monitoring_interval
         self.aws_region = args.aws_region
         self.skip_token_gen = args.skip_token_gen
+        self.multi_user = args.multi_user
+        self.user_count = args.user_count
 
         # Get configuration from Terraform outputs
         terraform_outputs = get_terraform_outputs(self.terraform_dir)
@@ -129,19 +138,27 @@ class LoadTestConfig:
             logging.info(f"Detected API URL from Terraform: {self.api_url}")
 
         # Get ASG name from Terraform
-        self.asg_name = args.asg_name or terraform_outputs.get("asg_name", {}).get("value")
+        self.asg_name = args.asg_name or terraform_outputs.get("asg_name", {}).get(
+            "value"
+        )
         if not self.asg_name:
             raise ValueError("Could not find asg_name in Terraform outputs")
 
         # Get ECS cluster name from Terraform
-        self.cluster_name = args.cluster_name or terraform_outputs.get("ecs_cluster_name", {}).get("value")
+        self.cluster_name = args.cluster_name or terraform_outputs.get(
+            "ecs_cluster_name", {}
+        ).get("value")
         if not self.cluster_name:
             raise ValueError("Could not find ecs_cluster_name in Terraform outputs")
 
         # Get ECS service name from Terraform
-        self.service_name = args.service_name or terraform_outputs.get("ecs_service_name_autoscaling", {}).get("value")
+        self.service_name = args.service_name or terraform_outputs.get(
+            "ecs_service_name_autoscaling", {}
+        ).get("value")
         if not self.service_name:
-            raise ValueError("Could not find ecs_service_name_autoscaling in Terraform outputs")
+            raise ValueError(
+                "Could not find ecs_service_name_autoscaling in Terraform outputs"
+            )
 
         self.output_file = args.output_file
 
@@ -195,7 +212,9 @@ class CloudWatchMonitor:
     def get_ecs_metrics(self) -> Dict:
         """Get current ECS service metrics"""
         try:
-            end_time = datetime.utcnow()
+            from datetime import timezone
+
+            end_time = datetime.now(timezone.utc)
             start_time = end_time - timedelta(minutes=5)
 
             # Get CPU utilization
@@ -276,52 +295,53 @@ class CloudWatchMonitor:
         try:
             # List all tasks in the service
             task_arns = []
-            paginator = self.ecs.get_paginator('list_tasks')
+            paginator = self.ecs.get_paginator("list_tasks")
             for page in paginator.paginate(
                 cluster=self.config.cluster_name,
                 serviceName=self.config.service_name,
-                desiredStatus='RUNNING'
+                desiredStatus="RUNNING",
             ):
-                task_arns.extend(page['taskArns'])
+                task_arns.extend(page["taskArns"])
 
             if not task_arns:
                 return {}
 
             # Describe tasks to get container instance ARNs
             tasks_response = self.ecs.describe_tasks(
-                cluster=self.config.cluster_name,
-                tasks=task_arns
+                cluster=self.config.cluster_name, tasks=task_arns
             )
 
             # Get container instance details
-            container_instance_arns = list(set(
-                task['containerInstanceArn']
-                for task in tasks_response['tasks']
-                if 'containerInstanceArn' in task
-            ))
+            container_instance_arns = list(
+                set(
+                    task["containerInstanceArn"]
+                    for task in tasks_response["tasks"]
+                    if "containerInstanceArn" in task
+                )
+            )
 
             if not container_instance_arns:
                 return {}
 
             instances_response = self.ecs.describe_container_instances(
                 cluster=self.config.cluster_name,
-                containerInstances=container_instance_arns
+                containerInstances=container_instance_arns,
             )
 
             # Build mapping: instance_id -> [task_ids]
             container_to_instance = {
-                ci['containerInstanceArn']: ci['ec2InstanceId']
-                for ci in instances_response['containerInstances']
+                ci["containerInstanceArn"]: ci["ec2InstanceId"]
+                for ci in instances_response["containerInstances"]
             }
 
             instance_tasks = {}
-            for task in tasks_response['tasks']:
-                if 'containerInstanceArn' in task:
+            for task in tasks_response["tasks"]:
+                if "containerInstanceArn" in task:
                     instance_id = container_to_instance.get(
-                        task['containerInstanceArn']
+                        task["containerInstanceArn"]
                     )
                     if instance_id:
-                        task_id = task['taskArn'].split('/')[-1]
+                        task_id = task["taskArn"].split("/")[-1]
                         if instance_id not in instance_tasks:
                             instance_tasks[instance_id] = []
                         instance_tasks[instance_id].append(task_id)
@@ -334,7 +354,7 @@ class CloudWatchMonitor:
 
     def monitor_metrics(self):
         """Continuously monitor metrics during load test"""
-        logging.info(" Starting CloudWatch metrics monitoring...")
+        logging.info("Starting CloudWatch metrics monitoring...")
 
         while self.monitoring:
             try:
@@ -342,35 +362,38 @@ class CloudWatchMonitor:
                 asg_metrics = self.get_asg_metrics()
                 ecs_metrics = self.get_ecs_metrics()
 
+                # Get task-instance mapping for every metric
+                task_mapping = self.get_task_instance_mapping()
+
                 current_metrics = {
                     "timestamp": timestamp.isoformat(),
                     "asg": asg_metrics,
                     "ecs": ecs_metrics,
+                    "task_mapping": task_mapping,  # Store for later analysis
                 }
 
                 self.metrics_data.append(current_metrics)
 
                 # Log current status with task distribution
                 if asg_metrics and ecs_metrics:
-                    # Get task-instance mapping every 5th iteration to reduce API calls
-                    task_mapping = {}
-                    if len(self.metrics_data) % 5 == 0:
-                        task_mapping = self.get_task_instance_mapping()
-
                     logging.info(
-                        f" Metrics - CPU: {ecs_metrics['cpu_utilization']}%, "
+                        f"Metrics - CPU: {ecs_metrics['cpu_utilization']}%, "
                         f"Memory: {ecs_metrics['memory_utilization']}%, "
                         f"Instances: {asg_metrics['in_service']}/"
                         f"{asg_metrics['desired_capacity']}"
                     )
 
-                    # Display task distribution if we have multiple instances
-                    if task_mapping and len(task_mapping) > 1:
-                        for instance_id, tasks in task_mapping.items():
-                            logging.info(
-                                f"   Instance {instance_id[-8:]}: "
-                                f"{len(tasks)} tasks running"
-                            )
+                    # Display task distribution across instances
+                    # Only log every 5th data point to reduce noise
+                    if task_mapping and len(self.metrics_data) % 5 == 0:
+                        # Always show distribution header if we have task data
+                        if len(task_mapping) > 0:
+                            logging.info("Task Distribution:")
+                            for instance_id, tasks in task_mapping.items():
+                                logging.info(
+                                    f"Instance {instance_id[-8:]}: "
+                                    f"{len(tasks)} tasks running"
+                                )
 
                     # Check for scaling thresholds
                     if (
@@ -417,28 +440,64 @@ class WorkflowLoadGenerator:
         self.submission_interval = 30  # Submit new workflows every 30 seconds
         self.shared_workspace_id = None  # Reuse same workspace for all workflows
 
-    def setup_authentication(self):
+    def setup_authentication(self, multi_user=False):
         """Setup JWT authentication tokens"""
         if self.config.skip_token_gen:
             try:
                 with open("tokens.json", "r") as f:
                     self.tokens = json.load(f)
                 logging.info("Loaded existing JWT tokens from tokens.json")
+
+                # Validate token structure for multi-user mode
+                if multi_user:
+                    # Check if we have multi-user tokens (free_0, free_1, etc.)
+                    free_tokens = {
+                        k: v for k, v in self.tokens.items() if k.startswith("free_")
+                    }
+                    if not free_tokens:
+                        logging.error(
+                            "Multi-user mode requested but no "
+                            "multi-user tokens found in tokens.json"
+                        )
+                        logging.error(
+                            "Please run: python get_jwt_tokens.py --multi-free"
+                        )
+                        return False
+                    logging.info(f"Found {len(free_tokens)} free user tokens")
+                else:
+                    # Single user mode - need free_token
+                    if "free_token" not in self.tokens:
+                        logging.error(
+                            "Single user mode but no 'free_token' found in tokens.json"
+                        )
+                        return False
+
                 return True
             except FileNotFoundError:
                 logging.warning("tokens.json not found, generating new tokens...")
 
-        logging.info("🔑 Generating JWT tokens for load testing...")
+        logging.info("Generating JWT tokens for load testing...")
 
         try:
             # Use existing token generation if available
             if "generate_jwt_tokens" in globals():
                 token_data = generate_jwt_tokens(
-                    environment="cloud", api_url=self.config.api_url
+                    environment="cloud",
+                    api_url=self.config.api_url,
+                    terraform_dir=self.config.terraform_dir,
+                    multi_free=multi_user,
                 )
                 if token_data:
                     self.tokens = token_data
-                    logging.info("Successfully generated JWT tokens")
+                    if multi_user:
+                        free_tokens = {
+                            k: v for k, v in token_data.items() if k.startswith("free_")
+                        }
+                        logging.info(
+                            f"Successfully generated {len(free_tokens)} JWT tokens"
+                        )
+                    else:
+                        logging.info("Successfully generated JWT tokens")
                     return True
 
             # Fallback to manual token generation
@@ -455,6 +514,55 @@ class WorkflowLoadGenerator:
         # For now, return False to indicate authentication setup failed
         logging.error("Fallback token generation not implemented")
         return False
+
+    def get_asg_metrics(self) -> Dict:
+        """Get current Auto Scaling Group metrics (delegated to monitor)"""
+        # This is used by the old generate_load method
+        # Import and use CloudWatchMonitor if needed
+        try:
+            import boto3
+
+            autoscaling = boto3.client("autoscaling", region_name="ap-northeast-1")
+
+            # Get ASG name from terraform outputs
+            terraform_outputs = get_terraform_outputs(self.config.terraform_dir)
+            asg_name = terraform_outputs.get("asg_name", {}).get("value")
+
+            if not asg_name:
+                return {}
+
+            response = autoscaling.describe_auto_scaling_groups(
+                AutoScalingGroupNames=[asg_name]
+            )
+
+            if not response["AutoScalingGroups"]:
+                return {}
+
+            asg = response["AutoScalingGroups"][0]
+            return {
+                "desired_capacity": asg["DesiredCapacity"],
+                "in_service": len(
+                    [i for i in asg["Instances"] if i["LifecycleState"] == "InService"]
+                ),
+            }
+        except Exception as e:
+            logging.error(f"Error getting ASG metrics: {e}")
+            return {}
+
+    def get_user_tokens(self):
+        """Get list of (user_index, token) tuples for multi-user testing"""
+        free_tokens = {}
+        for key, value in self.tokens.items():
+            if key.startswith("free_"):
+                # Extract index from "free_0", "free_1", etc.
+                try:
+                    idx = int(key.split("_")[1])
+                    free_tokens[idx] = value
+                except (IndexError, ValueError):
+                    logging.warning(f"Could not parse token key: {key}")
+
+        # Sort by index and return as list of tuples
+        return [(idx, token) for idx, token in sorted(free_tokens.items())]
 
     def create_workspace(self, user_token: str) -> Optional[int]:
         """Create a new workspace for load testing"""
@@ -479,7 +587,8 @@ class WorkflowLoadGenerator:
                 return workspace_id
             else:
                 logging.error(
-                    f"Workspace creation failed: {response.status_code} - {response.text}"
+                    f"Workspace creation failed: "
+                    f"{response.status_code} - {response.text}"
                 )
 
         except Exception as e:
@@ -505,7 +614,8 @@ class WorkflowLoadGenerator:
                 return True
             else:
                 logging.error(
-                    f"Sample data import failed: {response.status_code} - {response.text}"
+                    f"Sample data import failed: "
+                    f"{response.status_code} - {response.text}"
                 )
 
         except Exception as e:
@@ -518,24 +628,23 @@ class WorkflowLoadGenerator:
         # Path relative to scripts directory
         tutorial_workflow_path = os.path.join(
             os.path.dirname(__file__),
-            "../../sample_data/tutorial/output/tutorial1/workflow.yaml"
+            "../../sample_data/tutorial/output/tutorial1/workflow.yaml",
         )
         tutorial_workflow_path = os.path.abspath(tutorial_workflow_path)
 
         try:
-            import yaml
-            with open(tutorial_workflow_path, 'r') as f:
+            with open(tutorial_workflow_path, "r") as f:
                 workflow_data = yaml.safe_load(f)
 
             # Add required fields if missing
-            if 'name' not in workflow_data:
-                workflow_data['name'] = 'tutorial1'
-            if 'snakemakeParam' not in workflow_data:
-                workflow_data['snakemakeParam'] = {}
-            if 'nwbParam' not in workflow_data:
-                workflow_data['nwbParam'] = {}
-            if 'forceRunList' not in workflow_data:
-                workflow_data['forceRunList'] = []
+            if "name" not in workflow_data:
+                workflow_data["name"] = "tutorial1"
+            if "snakemakeParam" not in workflow_data:
+                workflow_data["snakemakeParam"] = {}
+            if "nwbParam" not in workflow_data:
+                workflow_data["nwbParam"] = {}
+            if "forceRunList" not in workflow_data:
+                workflow_data["forceRunList"] = []
 
             logging.info(f"Loaded tutorial workflow from {tutorial_workflow_path}")
             return workflow_data
@@ -543,7 +652,9 @@ class WorkflowLoadGenerator:
             logging.error(f"Failed to load tutorial workflow: {e}")
             raise RuntimeError(f"Cannot proceed without tutorial workflow: {e}")
 
-    def submit_workflow(self, workspace_id: int, workflow_data: Dict, user_token: str) -> Optional[str]:
+    def submit_workflow(
+        self, workspace_id: int, workflow_data: Dict, user_token: str
+    ) -> Optional[str]:
         """Submit a workflow run to a workspace"""
         try:
             headers = {
@@ -633,15 +744,14 @@ class WorkflowLoadGenerator:
 
             if current_instances >= target_instances:
                 logging.info(
-                    f"✅ Target of {target_instances} instances reached! "
+                    f"Target of {target_instances} instances reached! "
                     f"(Current: {current_instances})"
                 )
                 break
 
             # Submit batch of workflows
             batch_size = min(
-                self.config.concurrent_workflows,
-                max_workflows - workflow_counter
+                self.config.concurrent_workflows, max_workflows - workflow_counter
             )
 
             logging.info(
@@ -657,14 +767,15 @@ class WorkflowLoadGenerator:
                         self._submit_workflow_to_shared_workspace,
                         workflow_counter + i,
                         tutorial_workflow,
-                        user_token
+                        user_token,
                     )
                     for i in range(batch_size)
                 ]
 
                 # Wait for all submissions to complete
                 batch_submitted = sum(
-                    1 for future in concurrent.futures.as_completed(futures)
+                    1
+                    for future in concurrent.futures.as_completed(futures)
                     if future.result()
                 )
                 submitted_count += batch_submitted
@@ -683,6 +794,155 @@ class WorkflowLoadGenerator:
             f"workflows submitted"
         )
         return submitted_count > 0
+
+    def generate_load_multi_user(self, user_count: int = None):
+        """
+        Generate load using multiple users (simulating concurrent real users)
+
+        Each user:
+        1. Creates their own workspace
+        2. Imports sample data
+        3. Submits workflows
+
+        Args:
+            user_count: Number of users to simulate (default: all available tokens)
+
+        Returns:
+            True if any workflows submitted successfully
+        """
+        if not self.tokens:
+            logging.error("No authentication tokens available")
+            return False
+
+        # Get available user tokens
+        user_tokens = self.get_user_tokens()
+        if not user_tokens:
+            logging.error("No multi-user tokens found. Run with --multi-free mode")
+            return False
+
+        # Limit to specified user count
+        if user_count:
+            user_tokens = user_tokens[:user_count]
+
+        logging.info(f"Multi-user mode: Simulating {len(user_tokens)} concurrent users")
+
+        # Track workspaces per user
+        user_workspaces = {}  # {user_idx: workspace_id}
+
+        # Step 1: Each user creates their workspace and imports data
+        logging.info("\nStep 1: Creating workspaces for all users...")
+        for user_idx, user_token in user_tokens:
+            logging.info(f"User {user_idx}: Creating workspace...")
+            workspace_id = self.create_workspace(user_token)
+
+            if not workspace_id:
+                logging.error(
+                    f"User {user_idx}: Failed to create workspace, skipping user"
+                )
+                continue
+
+            # Import sample data
+            if not self.import_sample_data(workspace_id, user_token):
+                logging.error(
+                    f"User {user_idx}: Failed to import sample data, skipping user"
+                )
+                continue
+
+            user_workspaces[user_idx] = workspace_id
+            logging.info(f"User {user_idx}: Workspace {workspace_id} ready")
+
+        if not user_workspaces:
+            logging.error("Failed to create any workspaces")
+            return False
+
+        logging.info(f"\nCreated {len(user_workspaces)} workspaces successfully")
+
+        # Step 2: Load tutorial workflow template
+        tutorial_workflow = self.load_tutorial_workflow()
+
+        # Step 3: Submit workflows from each user concurrently
+        logging.info(
+            f"\nStep 2: Submitting workflows from {len(user_workspaces)} users..."
+        )
+
+        workflows_per_user = self.config.workflows_per_user
+        total_workflows = workflows_per_user * len(user_workspaces)
+
+        logging.info(
+            f"Each user will submit {workflows_per_user} workflow(s) "
+            f"(total: {total_workflows} workflows)"
+        )
+
+        total_submitted = 0
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=len(user_workspaces) * 2
+        ) as executor:
+            futures = []
+
+            # Each user submits their allocated workflows
+            for user_idx, workspace_id in user_workspaces.items():
+                user_token = dict(user_tokens)[user_idx]
+
+                for workflow_num in range(workflows_per_user):
+                    future = executor.submit(
+                        self._submit_workflow_for_user,
+                        user_idx,
+                        workspace_id,
+                        workflow_num,
+                        tutorial_workflow,
+                        user_token,
+                    )
+                    futures.append((user_idx, future))
+
+            # Wait for all submissions and track results
+            user_submission_counts = {}
+            for user_idx, future in futures:
+                if future.result():
+                    total_submitted += 1
+                    user_submission_counts[user_idx] = (
+                        user_submission_counts.get(user_idx, 0) + 1
+                    )
+
+        # Report results
+        logging.info("\nLoad generation summary:")
+        logging.info(f"Total workflows submitted: {total_submitted}/{len(futures)}")
+        logging.info("User breakdown:")
+        for user_idx in sorted(user_submission_counts.keys()):
+            count = user_submission_counts[user_idx]
+            logging.info(f"User {user_idx}: {count} workflows")
+
+        return total_submitted > 0
+
+    def _submit_workflow_for_user(
+        self,
+        user_idx: int,
+        workspace_id: int,
+        workflow_num: int,
+        workflow_template: Dict,
+        user_token: str,
+    ) -> bool:
+        """Submit a single workflow for a specific user"""
+        try:
+            workflow_data = workflow_template.copy()
+            workflow_data[
+                "name"
+            ] = f"user{user_idx}_workflow{workflow_num}_{int(time.time())}"
+
+            unique_id = self.submit_workflow(workspace_id, workflow_data, user_token)
+            if unique_id:
+                logging.info(f"User {user_idx}: Submitted workflow {unique_id[:12]}...")
+                return True
+            else:
+                logging.error(
+                    f"User {user_idx}: Failed to submit workflow {workflow_num}"
+                )
+                return False
+
+        except Exception as e:
+            logging.error(
+                f"User {user_idx}: Error submitting workflow {workflow_num}: {e}"
+            )
+            return False
 
     def _submit_workflow_to_shared_workspace(
         self, job_index: int, workflow_template: Dict, user_token: str
@@ -743,8 +1003,10 @@ class WorkflowLoadGenerator:
 
         return False
 
-    def _submit_single_workflow_job(self, job_index: int, workflow_template: Dict, user_token: str) -> bool:
-        """Create workspace, import data, and submit workflow for a single job (legacy method)"""
+    def _submit_single_workflow_job(
+        self, job_index: int, workflow_template: Dict, user_token: str
+    ) -> bool:
+        """Create workspace, import data, and submit workflow for a single job"""
         try:
             # Step 1: Create workspace
             workspace_id = self.create_workspace(user_token)
@@ -794,9 +1056,7 @@ class WorkflowLoadGenerator:
         tutorial_workflow = self.load_tutorial_workflow()
         self.continuous_submission = True
 
-        logging.info(
-            f"Starting continuous workflow submission for {duration_seconds}s"
-        )
+        logging.info(f"Starting continuous workflow submission for {duration_seconds}s")
         logging.info(
             f"Will submit {self.config.concurrent_workflows} workflows every "
             f"{self.submission_interval}s to workspace {self.shared_workspace_id}"
@@ -805,7 +1065,9 @@ class WorkflowLoadGenerator:
         start_time = time.time()
         submission_round = 0
 
-        while self.continuous_submission and (time.time() - start_time) < duration_seconds:
+        while (
+            self.continuous_submission and (time.time() - start_time) < duration_seconds
+        ):
             submission_round += 1
             logging.info(
                 f"Submission round {submission_round}: "
@@ -824,13 +1086,15 @@ class WorkflowLoadGenerator:
                         self._submit_workflow_to_shared_workspace,
                         base_index + i,
                         tutorial_workflow,
-                        user_token
+                        user_token,
                     )
                     futures.append(future)
                     time.sleep(0.3)  # Small stagger
 
                 # Wait for batch to complete
-                submitted = sum(1 for f in concurrent.futures.as_completed(futures) if f.result())
+                submitted = sum(
+                    1 for f in concurrent.futures.as_completed(futures) if f.result()
+                )
                 logging.info(
                     f"Round {submission_round}: {submitted}/"
                     f"{self.config.concurrent_workflows} workflows submitted"
@@ -840,9 +1104,7 @@ class WorkflowLoadGenerator:
             if self.continuous_submission:
                 time.sleep(self.submission_interval)
 
-        logging.info(
-            f"Continuous submission stopped after {submission_round} rounds"
-        )
+        logging.info(f"Continuous submission stopped after {submission_round} rounds")
 
     def stop_continuous_load(self):
         """Stop continuous workflow submission"""
@@ -861,6 +1123,45 @@ class LoadTestAnalyzer:
         self.config = config
         self.monitor = monitor
         self.generator = generator
+
+    def _analyze_instance_distribution(self) -> Optional[Dict]:
+        """Analyze task distribution across instances from metrics data"""
+        if not self.monitor.metrics_data:
+            return None
+
+        max_instances = 1
+        all_distributions = []
+
+        # First pass: find max instances
+        for metric in self.monitor.metrics_data:
+            asg = metric.get("asg", {})
+            desired = asg.get("desired_capacity", 1)
+            max_instances = max(max_instances, desired)
+
+        # Second pass: collect task distribution samples
+        # Sample every 5th metric to avoid overwhelming the report
+        for i, metric in enumerate(self.monitor.metrics_data):
+            if i % 5 != 0:  # Only sample every 5th metric
+                continue
+
+            timestamp = metric.get("timestamp", "")
+            task_mapping = metric.get("task_mapping", {})
+
+            if task_mapping:
+                all_distributions.append(
+                    {
+                        "timestamp": timestamp,
+                        "instances": {
+                            instance_id: len(tasks)
+                            for instance_id, tasks in task_mapping.items()
+                        },
+                    }
+                )
+
+        return {
+            "max_instances": max_instances,
+            "distributions": all_distributions,
+        }
 
     def analyze_scaling_behavior(self) -> Dict:
         """Analyze autoscaling behavior during the test"""
@@ -965,16 +1266,21 @@ class LoadTestAnalyzer:
     def generate_report(self, analysis: Dict) -> str:
         """Generate a comprehensive test report"""
         report = []
-        report.append("=" * 80)
-        report.append(" OPTINIST AUTOSCALING LOAD TEST REPORT")
-        report.append("=" * 80)
+        report.append("=" * 50)
+        report.append("OPTINIST AUTOSCALING LOAD TEST REPORT")
+        report.append("=" * 50)
         report.append("")
 
         # Test configuration
         report.append("TEST CONFIGURATION:")
-        report.append(f"   API URL: {self.config.api_url}")
-        report.append(f"   Duration: {self.config.duration} seconds")
-        report.append(f"   Concurrent Workflows: {self.config.concurrent_workflows}")
+        report.append(f"API URL: {self.config.api_url}")
+        report.append(f"Duration: {self.config.duration} seconds")
+        report.append(f"Concurrent Workflows: {self.config.concurrent_workflows}")
+        if self.config.multi_user:
+            user_count = self.config.user_count or "all available"
+            report.append(f"Mode: Multi-user ({user_count} users)")
+        else:
+            report.append("Mode: Single-user")
         if self.config.cpu_only:
             test_type = "CPU only"
         elif self.config.memory_only:
@@ -982,52 +1288,52 @@ class LoadTestAnalyzer:
         else:
             test_type = "Mixed load"
         report.append(f"Test Type: {test_type}")
-        report.append(f"   CPU Threshold: {self.config.target_cpu_threshold}%")
-        report.append(f"   Memory Threshold: {self.config.target_memory_threshold}%")
+        report.append(f"CPU Threshold: {self.config.target_cpu_threshold}%")
+        report.append(f"Memory Threshold: {self.config.target_memory_threshold}%")
         report.append("")
 
         # Workflow submission results
-        report.append(" WORKFLOW SUBMISSION:")
-        report.append(f"   Workflows Submitted: {analysis['workflows_submitted']}")
+        report.append("WORKFLOW SUBMISSION:")
+        report.append(f"Workflows Submitted: {analysis['workflows_submitted']}")
         submitted = analysis["workflows_submitted"]
         submission_rate = submitted / self.config.concurrent_workflows * 100
-        report.append(f"   Submission Success Rate: " f"{submission_rate:.1f}%")
+        report.append(f"Submission Success Rate: " f"{submission_rate:.1f}%")
         report.append("")
 
         # Peak utilization
-        report.append(" PEAK UTILIZATION:")
-        report.append(f"   Peak CPU: {analysis['peak_utilization']['cpu']:.2f}%")
-        report.append(f"   Peak Memory: {analysis['peak_utilization']['memory']:.2f}%")
+        report.append("PEAK UTILIZATION:")
+        report.append(f"Peak CPU: {analysis['peak_utilization']['cpu']:.2f}%")
+        report.append(f"Peak Memory: {analysis['peak_utilization']['memory']:.2f}%")
         report.append("")
 
         # Threshold breaches
-        report.append(" THRESHOLD BREACHES:")
+        report.append("THRESHOLD BREACHES:")
         cpu_breaches = len(analysis["threshold_breaches"]["cpu"])
         memory_breaches = len(analysis["threshold_breaches"]["memory"])
-        report.append(f"   CPU Threshold Breaches: {cpu_breaches}")
-        report.append(f"   Memory Threshold Breaches: {memory_breaches}")
+        report.append(f"CPU Threshold Breaches: {cpu_breaches}")
+        report.append(f"Memory Threshold Breaches: {memory_breaches}")
 
         if cpu_breaches > 0:
             max_cpu = max(b["value"] for b in analysis["threshold_breaches"]["cpu"])
-            report.append(f"   Max CPU During Breach: {max_cpu:.2f}%")
+            report.append(f"Max CPU During Breach: {max_cpu:.2f}%")
 
         if memory_breaches > 0:
             max_memory = max(
                 b["value"] for b in analysis["threshold_breaches"]["memory"]
             )
-            report.append(f"   Max Memory During Breach: {max_memory:.2f}%")
+            report.append(f"Max Memory During Breach: {max_memory:.2f}%")
         report.append("")
 
         # Scaling events
         report.append("SCALING EVENTS:")
         scaling_events = analysis["scaling_events"]
-        report.append(f"   Total Scaling Events: {len(scaling_events)}")
+        report.append(f"Total Scaling Events: {len(scaling_events)}")
 
         scale_ups = [e for e in scaling_events if e["direction"] == "scale_up"]
         scale_downs = [e for e in scaling_events if e["direction"] == "scale_down"]
 
-        report.append(f"   Scale-up Events: {len(scale_ups)}")
-        report.append(f"   Scale-down Events: {len(scale_downs)}")
+        report.append(f"Scale-up Events: {len(scale_ups)}")
+        report.append(f"Scale-down Events: {len(scale_downs)}")
 
         for event in scaling_events:
             direction_indicator = "UP" if event["direction"] == "scale_up" else "DOWN"
@@ -1044,20 +1350,62 @@ class LoadTestAnalyzer:
         responsiveness = analysis["scaling_responsiveness"]
         if "cpu_response_time_seconds" in responsiveness:
             response_time = responsiveness["cpu_response_time_seconds"]
-            report.append(f"   CPU Threshold → Scale-up: {response_time:.1f} seconds")
+            report.append(f"CPU Threshold → Scale-up: {response_time:.1f} seconds")
 
             if response_time <= 300:  # Expected CloudWatch alarm evaluation period
-                report.append("   Scaling response time within expected range (≤300s)")
+                report.append("Scaling response time within expected range (≤300s)")
             else:
-                report.append(
-                    "    Scaling response time exceeded expected range (>300s)"
-                )
+                report.append("Scaling response time exceeded expected range (>300s)")
         else:
-            report.append("    No scaling response detected")
+            report.append("No scaling response detected")
+        report.append("")
+
+        # Instance distribution analysis
+        report.append("INSTANCE DISTRIBUTION:")
+        instance_distribution = self._analyze_instance_distribution()
+        if instance_distribution:
+            report.append(
+                f"Peak instances observed: {instance_distribution['max_instances']}"
+            )
+
+            if instance_distribution["distributions"]:
+                report.append(
+                    f"Task distribution samples captured: "
+                    f"{len(instance_distribution['distributions'])}"
+                )
+                report.append("")
+
+                if instance_distribution["max_instances"] > 1:
+                    report.append("Distribution during multi-instance period:")
+                else:
+                    report.append("Distribution on single instance:")
+
+                # Show first 5 samples
+                for dist in instance_distribution["distributions"][:5]:
+                    timestamp = dist["timestamp"]
+                    report.append(f"{timestamp}:")
+                    for instance_id, task_count in dist["instances"].items():
+                        short_id = (
+                            instance_id[-8:] if len(instance_id) > 8 else instance_id
+                        )
+                        report.append(f"Instance {short_id}: {task_count} tasks")
+            else:
+                if instance_distribution["max_instances"] == 1:
+                    report.append(
+                        "Single instance throughout test "
+                        "(no task distribution data captured)"
+                    )
+                else:
+                    report.append(
+                        "Multiple instances detected but no task "
+                        "distribution data captured"
+                    )
+        else:
+            report.append("No instance data available")
         report.append("")
 
         # Final state
-        report.append("🏁 FINAL STATE:")
+        report.append("FINAL STATE:")
         final_capacity = analysis["final_capacity"]
         if final_capacity:
             report.append(
@@ -1068,31 +1416,31 @@ class LoadTestAnalyzer:
                 f"Final In-Service Instances: "
                 f"{final_capacity.get('in_service', 'Unknown')}"
             )
-            report.append(f"   Pending Instances: {final_capacity.get('pending', 0)}")
+            report.append(f"Pending Instances: {final_capacity.get('pending', 0)}")
             report.append(
                 f"Terminating Instances: {final_capacity.get('terminating', 0)}"
             )
         report.append("")
 
         # Recommendations
-        report.append(" RECOMMENDATIONS:")
+        report.append("RECOMMENDATIONS:")
 
         if cpu_breaches == 0 and memory_breaches == 0:
             report.append(
-                "    No thresholds breached - consider increasing load "
+                "No thresholds breached - consider increasing load "
                 "or decreasing thresholds"
             )
 
         if len(scale_ups) == 0 and (cpu_breaches > 0 or memory_breaches > 0):
             report.append(
-                "    Thresholds breached but no scaling occurred - "
+                "Thresholds breached but no scaling occurred - "
                 "check CloudWatch alarms"
             )
 
         if len(scale_ups) > 0 and "cpu_response_time_seconds" in responsiveness:
             if responsiveness["cpu_response_time_seconds"] > 600:
                 report.append(
-                    "    Slow scaling response - consider optimizing "
+                    "Slow scaling response - consider optimizing "
                     "alarm evaluation periods"
                 )
 
@@ -1101,11 +1449,11 @@ class LoadTestAnalyzer:
             and analysis["peak_utilization"]["memory"] < 50
         ):
             report.append(
-                "    Low resource utilization - consider more " "intensive workloads"
+                "Low resource utilization - consider more " "intensive workloads"
             )
 
         report.append("")
-        report.append("=" * 80)
+        report.append("=" * 50)
 
         return "\n".join(report)
 
@@ -1138,7 +1486,23 @@ def main():
         "--concurrent-workflows",
         type=int,
         default=30,
-        help="Number of concurrent workflows to submit (default: 30)",
+        help="Number of concurrent workflows for single-user mode (default: 30)",
+    )
+    parser.add_argument(
+        "--multi-user",
+        action="store_true",
+        help="Use multiple free users for load testing (requires multi-free tokens)",
+    )
+    parser.add_argument(
+        "--user-count",
+        type=int,
+        help="Number of users to simulate in multi-user mode (default: all available)",
+    )
+    parser.add_argument(
+        "--workflows-per-user",
+        type=int,
+        default=1,
+        help="Number of workflows each user submits in multi-user mode (default: 1)",
     )
 
     # Load test types
@@ -1231,11 +1595,14 @@ def main():
         )
         config.output_file = f"load_test_{test_type}_{timestamp}.json"
 
-    logging.info(" Starting OptiNiSt Autoscaling Load Test")
-    logging.info(
-        f"Configuration: {config.duration}s duration, "
-        f"{config.concurrent_workflows} workflows"
-    )
+    logging.info("Starting OptiNiSt Autoscaling Load Test")
+    if config.multi_user:
+        logging.info(f"Configuration: {config.duration}s duration, multi-user mode")
+    else:
+        logging.info(
+            f"Configuration: {config.duration}s duration, "
+            f"{config.concurrent_workflows} workflows"
+        )
     logging.info(f"API URL: {config.api_url}")
     logging.info(f"ASG: {config.asg_name}")
     logging.info(f"ECS Cluster: {config.cluster_name}")
@@ -1248,9 +1615,9 @@ def main():
 
     try:
         # Setup authentication
-        if not generator.setup_authentication():
+        if not generator.setup_authentication(multi_user=config.multi_user):
             logging.error(
-                " Failed to setup authentication - cannot proceed with load test"
+                "Failed to setup authentication - cannot proceed with load test"
             )
             sys.exit(1)
 
@@ -1261,20 +1628,32 @@ def main():
         # Wait a moment for initial metrics
         time.sleep(5)
 
-        # Submit all workflows at once
-        logging.info(
-            f"Submitting {config.concurrent_workflows} workflows to run simultaneously..."
-        )
-        load_success = generator.generate_load()
+        # Submit workflows based on mode
+        if config.multi_user:
+            user_count_display = config.user_count or "all"
+            logging.info(
+                f"Multi-user mode: Simulating {user_count_display} users, "
+                f"{config.workflows_per_user} workflow(s) per user"
+            )
+            load_success = generator.generate_load_multi_user(
+                user_count=config.user_count
+            )
+        else:
+            logging.info(
+                f"Single-user mode: Submitting "
+                f"{config.concurrent_workflows} workflows"
+            )
+            load_success = generator.generate_load()
+
         if not load_success:
-            logging.error(" Failed to generate load - test incomplete")
+            logging.error("Failed to generate load - test incomplete")
 
         # Continue monitoring for the specified duration
         logging.info(
             f"Monitoring autoscaling behavior for {config.duration} seconds..."
         )
         logging.info(
-            f"Workflows are running... Watch for CPU/Memory to trigger autoscaling"
+            "Workflows are running... Watch for CPU/Memory to trigger autoscaling"
         )
         time.sleep(config.duration)
 
@@ -1282,7 +1661,7 @@ def main():
         monitor.stop_monitoring()
 
         # Analyze results
-        logging.info(" Analyzing test results...")
+        logging.info("Analyzing test results...")
         analysis = analyzer.analyze_scaling_behavior()
 
         # Generate and display report
@@ -1320,7 +1699,7 @@ def main():
         if analysis["workflows_submitted"] >= config.concurrent_workflows * 0.8:
             success_criteria.append("Workflow submission success")
         else:
-            success_criteria.append(" Workflow submission failed")
+            success_criteria.append("Workflow submission failed")
 
         if (
             analysis["peak_utilization"]["cpu"] > config.target_cpu_threshold
@@ -1328,34 +1707,34 @@ def main():
         ):
             success_criteria.append("Resource thresholds reached")
         else:
-            success_criteria.append(" Resource thresholds not reached")
+            success_criteria.append("Resource thresholds not reached")
 
         if len(analysis["scaling_events"]) > 0:
             success_criteria.append("Autoscaling events detected")
         else:
-            success_criteria.append(" No autoscaling events detected")
+            success_criteria.append("No autoscaling events detected")
 
         logging.info("🏆 Test Success Criteria:")
         for criteria in success_criteria:
-            logging.info(f"   {criteria}")
+            logging.info(f"{criteria}")
 
         # Exit with appropriate code
         failed_criteria = [c for c in success_criteria if c.startswith("")]
         if failed_criteria:
             logging.warning(
-                " Some test criteria failed - review configuration and try again"
+                "Some test criteria failed - review configuration and try again"
             )
             sys.exit(1)
         else:
-            logging.info(" Load test completed successfully!")
+            logging.info("Load test completed successfully!")
             sys.exit(0)
 
     except KeyboardInterrupt:
-        logging.info(" Load test interrupted by user")
+        logging.info("Load test interrupted by user")
         monitor.stop_monitoring()
         sys.exit(130)
     except Exception as e:
-        logging.error(f" Load test failed: {e}")
+        logging.error(f"Load test failed: {e}")
         monitor.stop_monitoring()
         sys.exit(1)
 

@@ -18,7 +18,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 def test_standby_pool_logic():
     """Test the standby pool assignment logic"""
 
-    print(" Testing Premium Standby Pool System")
+    print("Testing Premium Standby Pool System")
     print("=" * 50)
 
     # Mock AWS and database calls
@@ -53,9 +53,9 @@ def test_standby_pool_logic():
         print("\n  Testing empty standby pool")
         mock_cursor.fetchall.return_value = []
         standby_instances = get_available_standby_instances()
-        print(f"   Empty standby pool: {len(standby_instances)} instances")
+        print(f"Empty standby pool: {len(standby_instances)} instances")
         assert len(standby_instances) == 0, "Empty pool should return 0 instances"
-        print("    Empty standby pool test passed")
+        print("Empty standby pool test passed")
 
         # Test 2: Standby pool with stopped instances
         print("\n  Testing standby pool with stopped instances")
@@ -64,11 +64,11 @@ def test_standby_pool_logic():
         ]
         mock_cursor.fetchall.return_value = mock_standby_data
         standby_instances = get_available_standby_instances()
-        print(f"   Standby pool with data: {len(standby_instances)} instances")
+        print(f"Standby pool with data: {len(standby_instances)} instances")
         if standby_instances:
-            print(f"   Instance: {standby_instances[0]['instance_id']}")
+            print(f"Instance: {standby_instances[0]['instance_id']}")
         assert len(standby_instances) == 1, "Should return 1 standby instance"
-        print("    Standby pool data test passed")
+        print("Standby pool data test passed")
 
         # Test 3: System status
         print("\n  Testing system status")
@@ -125,7 +125,7 @@ def test_standby_pool_logic():
 
         try:
             system_status = get_premium_system_status()
-            print(f"   System status: {json.dumps(system_status, indent=2)}")
+            print(f"System status: {json.dumps(system_status, indent=2)}")
 
             # Verify system status structure
             assert (
@@ -137,25 +137,25 @@ def test_standby_pool_logic():
             ), "System status should include standby_pool"
             assert "capacity" in system_status, "System status should include capacity"
 
-            print("    System status test passed")
+            print("System status test passed")
 
         except Exception as e:
-            print(f"    System status test failed: {e}")
+            print(f"System status test failed: {e}")
 
         # Test 4: Immediate cleanup logic
         print("\n  Testing immediate cleanup logic")
 
         # Test that cleanup function can be imported and called
         try:
-            print("   Testing immediate cleanup when idle_timeout_hours=0")
+            print("Testing immediate cleanup when idle_timeout_hours=0")
             mock_cursor.fetchall.return_value = []  # No assigned users (idle instances)
 
             # Test the stop idle instances function
             stop_idle_instances_if_needed()
-            print("   Cleanup function executed successfully")
-            print("    Immediate cleanup logic verified")
+            print("Cleanup function executed successfully")
+            print("Immediate cleanup logic verified")
         except Exception as e:
-            print(f"    Cleanup function test skipped: {e}")
+            print(f"Cleanup function test skipped: {e}")
 
         # Test 5: Corrected idle cleanup logic
         print("\n  Testing corrected idle cleanup logic")
@@ -177,7 +177,7 @@ def test_standby_pool_logic():
             mock_cursor.fetchall.return_value = []
 
             status = get_standby_pool_status()
-            print(f"   Standby pool status: {status}")
+            print(f"Standby pool status: {status}")
 
             # Verify correct idle state (0 running, 2 stopped)
             assert (
@@ -190,10 +190,10 @@ def test_standby_pool_logic():
                 status.get("idle_running", 0) == 0
             ), "Should have 0 idle running instances"
 
-            print("    Corrected idle cleanup logic verified")
+            print("Corrected idle cleanup logic verified")
 
         except Exception as e:
-            print(f"    Idle cleanup test warning: {e}")
+            print(f"Idle cleanup test warning: {e}")
 
         # Test 6: Assignment priority logic (updated)
         print("\n  Testing assignment priority logic")
@@ -205,9 +205,9 @@ def test_standby_pool_logic():
         ]
 
         for step in priority_logic:
-            print(f"   {step}")
+            print(f"{step}")
 
-        print("    Updated assignment priority logic verified")
+        print("Updated assignment priority logic verified")
 
         # Test 7: Environment variable configuration
         print("\n  Testing environment variable configuration")
@@ -224,9 +224,9 @@ def test_standby_pool_logic():
         }
 
         for var, value in config_vars.items():
-            print(f"   {var}: {value}")
+            print(f"{var}: {value}")
 
-        print("    Environment configuration test passed")
+        print("Environment configuration test passed")
 
         # Test 8: Standby pool capacity management
         print("\n  Testing standby pool capacity management")
@@ -234,13 +234,13 @@ def test_standby_pool_logic():
             # Reset mock state for capacity test
             mock_cursor.fetchall.return_value = mock_standby_data
             result = ensure_standby_pool_capacity()
-            print("    Standby pool capacity function executed successfully")
+            print("Standby pool capacity function executed successfully")
             # Verify function can be called without errors
             assert (
                 result is not None or result is None
             ), "Function should return without throwing exception"
         except Exception as e:
-            print(f"    Standby pool capacity test warning: {e}")
+            print(f"Standby pool capacity test warning: {e}")
 
         # Test 9: User assignment lookup
         print("\n  Testing user assignment lookup")
@@ -251,21 +251,21 @@ def test_standby_pool_logic():
                 {"user_id": 1, "username": "test_user", "status": "active"}
             ]
             assigned_users = get_assigned_users_for_instance(test_instance_id)
-            print(f"   Assigned users for {test_instance_id}: {assigned_users}")
-            print("    User assignment lookup function executed successfully")
+            print(f"Assigned users for {test_instance_id}: {assigned_users}")
+            print("User assignment lookup function executed successfully")
             # Verify function returns expected data structure
             assert isinstance(
                 assigned_users, (list, type(None))
             ), "Should return list or None"
         except Exception as e:
-            print(f"    User assignment lookup test warning: {e}")
+            print(f"User assignment lookup test warning: {e}")
 
     print("\n All tests completed successfully!")
     print("\nNext Steps:")
-    print("   1. Apply database migration: alembic upgrade e701e7250019")
-    print("   2. Deploy updated Lambda functions with new environment variables")
-    print("   3. Test with actual premium user login")
-    print("   4. Monitor CloudWatch logs for standby pool operations")
+    print(" 1. Apply database migration: alembic upgrade e701e7250019")
+    print(" 2. Deploy updated Lambda functions with new environment variables")
+    print(" 3. Test with actual premium user login")
+    print(" 4. Monitor CloudWatch logs for standby pool operations")
 
     return True
 
@@ -298,19 +298,15 @@ def test_cost_savings_calculation():
 
     print("\n    True Standby Pool (No Premium Users):")
     print(
-        f"     - {standby_count} stopped instances: "
+        f" - {standby_count} stopped instances: "
         f"${stopped_monthly * standby_count:.2f}/month"
     )
-    print("     - 0 running instances: $0.00/month")
-    print(f"     - Total cost: ${stopped_monthly * standby_count:.2f}/month")
-    print(f"     - Monthly savings vs running: ${total_monthly_savings:.2f}")
+    print(" - 0 running instances: $0.00/month")
+    print(f" - Total cost: ${stopped_monthly * standby_count:.2f}/month")
+    print(f" - Monthly savings vs running: ${total_monthly_savings:.2f}")
 
-    print(
-        f"     - 1 running + 1 stopped: ${running_monthly + stopped_monthly:.2f}/month"
-    )
-    print(
-        f"     - Fixed with NEW logic saves: ${running_monthly:.2f}/month additional!"
-    )
+    print(f" - 1 running + 1 stopped: ${running_monthly + stopped_monthly:.2f}/month")
+    print(f" - Fixed with NEW logic saves: ${running_monthly:.2f}/month additional!")
 
     print("\n    Maximum cost savings achieved with true standby pool!")
 
@@ -320,5 +316,5 @@ if __name__ == "__main__":
         test_standby_pool_logic()
         test_cost_savings_calculation()
     except Exception as e:
-        print(f" Test failed: {e}")
+        print(f"Test failed: {e}")
         sys.exit(1)

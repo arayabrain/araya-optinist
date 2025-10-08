@@ -96,7 +96,7 @@ def load_test_users_for_db() -> List[Dict]:
     return config or []
 
 
-def load_test_users_unified() -> Union[Dict[str, Dict], List[Dict], None]:
+def load_test_users_unified() -> Union[List[Dict], Dict[str, Dict], None]:
     """Load test user configuration from various sources,
     returning the raw format found."""
 
@@ -105,12 +105,12 @@ def load_test_users_unified() -> Union[Dict[str, Dict], List[Dict], None]:
     if test_users_json:
         try:
             users = json.loads(test_users_json)
-            print(" Loaded test users from TEST_USERS_CONFIG environment variable")
+            print("Loaded test users from TEST_USERS_CONFIG environment variable")
             return users
         except json.JSONDecodeError as e:
-            print(f"  Failed to parse TEST_USERS_CONFIG: {e}")
+            print(f"Failed to parse TEST_USERS_CONFIG: {e}")
 
-    # Method 2: Try terraform.tfvars
+    # Method 2: Try terraform.tfvars (returns list format)
     terraform_path = (
         get_project_root() / "studio" / "config" / "terraform" / "terraform.tfvars"
     )
@@ -118,10 +118,10 @@ def load_test_users_unified() -> Union[Dict[str, Dict], List[Dict], None]:
         try:
             users = parse_terraform_test_users(terraform_path)
             if users:
-                print(" Loaded test users from terraform.tfvars")
+                print("Loaded test users from terraform.tfvars")
                 return users
         except Exception as e:
-            print(f"  Failed to parse terraform.tfvars: {e}")
+            print(f"Failed to parse terraform.tfvars: {e}")
 
     # Method 3: Try .env file
     env_path = get_project_root() / ".env"
@@ -129,25 +129,25 @@ def load_test_users_unified() -> Union[Dict[str, Dict], List[Dict], None]:
         try:
             users = parse_env_test_users(env_path)
             if users:
-                print(" Loaded test users from .env")
+                print("Loaded test users from .env")
                 return users
         except Exception as e:
-            print(f"  Failed to parse .env: {e}")
+            print(f"Failed to parse .env: {e}")
 
     # Method 4: Try individual environment variables
     try:
         users = parse_env_vars_test_users()
         if users:
-            print(" Loaded test users from environment variables")
+            print("Loaded test users from environment variables")
             return users
     except Exception as e:
-        print(f"  Failed to load from environment variables: {e}")
+        print(f"Failed to load from environment variables: {e}")
 
     return None
 
 
-def parse_terraform_test_users(terraform_path: Path) -> Optional[Dict[str, Dict]]:
-    """Parse test users from terraform.tfvars file, return dict format."""
+def parse_terraform_test_users(terraform_path: Path) -> Optional[List[Dict]]:
+    """Parse test users from terraform.tfvars file, return list format."""
     with open(terraform_path, "r") as f:
         content = f.read()
 
@@ -163,7 +163,7 @@ def parse_terraform_test_users(terraform_path: Path) -> Optional[Dict[str, Dict]
     user_pattern = r"\{([^}]+)\}"
     user_matches = re.findall(user_pattern, test_users_block)
 
-    users = {}
+    users = []
     for user_block in user_matches:
         user_data = {}
 
@@ -187,13 +187,9 @@ def parse_terraform_test_users(terraform_path: Path) -> Optional[Dict[str, Dict]
                 user_data[field] = value
 
         if "email" in user_data:
-            # Determine user type based on email
-            if "premium" in user_data["email"]:
-                users["premium"] = user_data
-            elif "free" in user_data["email"]:
-                users["free"] = user_data
+            users.append(user_data)
 
-    return users if len(users) >= 2 else None
+    return users if users else None
 
 
 def parse_env_test_users(env_path: Path) -> Optional[Dict[str, Dict]]:

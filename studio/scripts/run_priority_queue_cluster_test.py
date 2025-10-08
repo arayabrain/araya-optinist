@@ -165,7 +165,7 @@ class PriorityQueueTester:
             end_time = time.time()
             duration = end_time - start_time
             print(
-                f" {user_type} workflow {workflow_id} "
+                f"{user_type} workflow {workflow_id} "
                 f"failed after {duration:.2f}s: {e}"
             )
             return False, duration, workflow_id
@@ -179,7 +179,7 @@ class PriorityQueueTester:
         """Run workflows in parallel to test true priority queue behavior"""
 
         print(
-            f" Running {len(premium_configs)} premium + {len(free_configs)} free "
+            f"Running {len(premium_configs)} premium + {len(free_configs)} free "
             f"workflows in parallel"
         )
         print(f"Max workers: {max_workers}")
@@ -208,12 +208,12 @@ class PriorityQueueTester:
                     }
                     results.append(result)
                     print(
-                        f" Completed: {result['user_type']} {workflow_id} - "
+                        f"Completed: {result['user_type']} {workflow_id} - "
                         f"Success: {success}, Duration: {duration:.2f}s"
                     )
 
                 except Exception as e:
-                    print(f" Workflow {config['unique_id']} generated exception: {e}")
+                    print(f"Workflow {config['unique_id']} generated exception: {e}")
 
         return results
 
@@ -222,7 +222,7 @@ class PriorityQueueTester:
     ) -> List[Dict]:
         """Run workflows sequentially to test execution order"""
 
-        print(" Running workflows sequentially")
+        print("Running workflows sequentially")
         print(f"Premium workflows: {len(premium_configs)}")
         print(f"Free workflows: {len(free_configs)}")
 
@@ -271,13 +271,13 @@ class PriorityQueueTester:
         report.append("")
 
         # Summary statistics
-        report.append(" EXECUTION SUMMARY:")
+        report.append("EXECUTION SUMMARY:")
         report.append(
-            f"   Premium workflows: {len(premium_results)} submitted, "
+            f"Premium workflows: {len(premium_results)} submitted, "
             f"{len(successful_premium)} successful"
         )
         report.append(
-            f"   Free workflows: {len(free_results)} submitted,"
+            f"Free workflows: {len(free_results)} submitted,"
             f" {len(successful_free)} successful"
         )
         report.append("")
@@ -288,20 +288,20 @@ class PriorityQueueTester:
                 successful_premium
             )
             report.append("TIMING ANALYSIS:")
-            report.append(f"   Average premium execution time: {avg_premium_time:.2f}s")
+            report.append(f"Average premium execution time: {avg_premium_time:.2f}s")
 
         if successful_free:
             avg_free_time = sum(r["duration"] for r in successful_free) / len(
                 successful_free
             )
             if successful_premium:
-                report.append(f"   Average free execution time: {avg_free_time:.2f}s")
+                report.append(f"Average free execution time: {avg_free_time:.2f}s")
                 speed_ratio = (
                     avg_free_time / avg_premium_time if avg_premium_time > 0 else 1
                 )
-                report.append(f"   Speed ratio (free/premium): {speed_ratio:.2f}x")
+                report.append(f"Speed ratio (free/premium): {speed_ratio:.2f}x")
             else:
-                report.append(f"   Average free execution time: {avg_free_time:.2f}s")
+                report.append(f"Average free execution time: {avg_free_time:.2f}s")
 
         report.append("")
 
@@ -309,10 +309,10 @@ class PriorityQueueTester:
         successful_results = [r for r in results if r["success"]]
         if successful_results:
             successful_results.sort(key=lambda x: x["completion_time"])
-            report.append("🏁 COMPLETION ORDER:")
+            report.append("COMPLETION ORDER:")
             for i, result in enumerate(successful_results, 1):
                 report.append(
-                    f"   {i}. {result['user_type'].upper()} {result['workflow_id']} "
+                    f"{i}. {result['user_type'].upper()} {result['workflow_id']} "
                     f"(priority={result['priority']}, {result['duration']:.2f}s)"
                 )
 
@@ -323,7 +323,7 @@ class PriorityQueueTester:
             first_result = successful_results[0]
             report.append("PRIORITY QUEUE EFFECTIVENESS:")
             report.append(
-                f"   First to complete: {first_result['user_type'].upper()} "
+                f"First to complete: {first_result['user_type'].upper()} "
                 f"(priority={first_result['priority']})"
             )
 
@@ -337,7 +337,7 @@ class PriorityQueueTester:
                     premium_completions
                 )
                 report.append(
-                    f"   Average premium completion position: "
+                    f"Average premium completion position: "
                     f"{avg_premium_position + 1:.1f}"
                 )
 
@@ -394,13 +394,13 @@ def main(args):
 
     if args.parallel:
         print(
-            f" Running workflows in PARALLEL mode " f"(max_workers={args.max_workers})"
+            f"Running workflows in PARALLEL mode " f"(max_workers={args.max_workers})"
         )
         results = tester.run_workflows_parallel(
             premium_configs, free_configs, args.max_workers
         )
     else:
-        print(" Running workflows in SEQUENTIAL mode")
+        print("Running workflows in SEQUENTIAL mode")
         results = tester.run_workflows_sequential(premium_configs, free_configs)
 
     total_time = time.time() - start_time

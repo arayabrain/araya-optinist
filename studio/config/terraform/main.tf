@@ -1988,8 +1988,8 @@ resource "aws_iam_role_policy" "batch_job_s3" {
           "s3:ListBucket"
         ]
         Resource = [
-          aws_s3_bucket.app_storage.arn,
-          "${aws_s3_bucket.app_storage.arn}/*"
+          aws_s3_bucket.app_storage_batch.arn,
+          "${aws_s3_bucket.app_storage_batch.arn}/*"
         ]
       }
     ]
@@ -4328,7 +4328,7 @@ resource "aws_ecs_task_definition" "batch" {
         },
         {
           name  = "OPTINIST_DIR"
-          value = "/mnt/efs"
+          value = "/app/studio_data"
         },
         {
           name  = "TEST_USERS_CONFIG"

@@ -83,14 +83,14 @@ async def delete_test_user_from_db(db, user_email):
 
     user_db = db.query(UserModel).filter_by(email=user_email).first()
     if not user_db:
-        print(f"  User not found: {user_email} (skipping)")
+        print(f"User not found: {user_email} (skipping)")
         return False
 
     user_id = user_db.id
     user_name = user_db.name
 
     print(f"Deleting user: {user_name} ({user_email})")
-    print(f"   - User ID: {user_id}")
+    print(f" - User ID: {user_id}")
 
     try:
         # Get workspaces for this user
@@ -135,7 +135,9 @@ async def delete_test_user_from_db(db, user_email):
             db.delete(storage)
 
         # 5. Delete subscription user accounts (references users)
-        user_accounts = db.query(SubscriptionUserAccount).filter_by(user_id=user_id).all()
+        user_accounts = (
+            db.query(SubscriptionUserAccount).filter_by(user_id=user_id).all()
+        )
         user_account_count = len(user_accounts)
         for account in user_accounts:
             db.delete(account)
@@ -178,15 +180,15 @@ async def delete_test_user_from_db(db, user_email):
 
         db.commit()
 
-        print(f"   - Deleted {experiment_count} experiments")
-        print(f"   - Deleted {workspace_share_count} workspace shares")
-        print(f"   - Deleted {workspace_count} workspaces")
-        print(f"   - Deleted {storage_count} storage records")
-        print(f"   - Deleted {user_account_count} subscription user accounts")
-        print(f"   - Deleted {cancellation_count} subscription cancellations")
-        print(f"   - Deleted {purchase_count} subscription purchases")
-        print(f"   - Deleted {subscription_count} subscriptions")
-        print(f"   - Deleted {user_role_count} user roles")
+        print(f" - Deleted {experiment_count} experiments")
+        print(f" - Deleted {workspace_share_count} workspace shares")
+        print(f" - Deleted {workspace_count} workspaces")
+        print(f" - Deleted {storage_count} storage records")
+        print(f" - Deleted {user_account_count} subscription user accounts")
+        print(f" - Deleted {cancellation_count} subscription cancellations")
+        print(f" - Deleted {purchase_count} subscription purchases")
+        print(f" - Deleted {subscription_count} subscriptions")
+        print(f" - Deleted {user_role_count} user roles")
         print(f"Successfully deleted user: {user_name}")
 
         return True

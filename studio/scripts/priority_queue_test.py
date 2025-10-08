@@ -48,7 +48,7 @@ try:
     import psutil
 except ImportError:
     psutil = None
-    print("  psutil not available - process checking will be limited")
+    print("psutil not available - process checking will be limited")
 
 
 class SimplePriorityQueueTester:
@@ -105,11 +105,11 @@ class SimplePriorityQueueTester:
                 ["poetry", "install"], capture_output=True, text=True, timeout=300
             )
             if result.returncode != 0:
-                print(f"  Poetry install warning: {result.stderr}")
+                print(f"Poetry install warning: {result.stderr}")
             else:
                 print("Poetry dependencies verified")
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            print(f"  Could not run poetry install: {e}")
+            print(f"Could not run poetry install: {e}")
 
         # Check conda environment (optional)
         try:
@@ -122,9 +122,9 @@ class SimplePriorityQueueTester:
                 # Check and install CBC solver if missing
                 # self.ensure_cbc_solver()
             else:
-                print("  snakemake_up conda environment not found - workflows may fail")
+                print("snakemake_up conda environment not found - workflows may fail")
         except (subprocess.TimeoutExpired, FileNotFoundError):
-            print("  Conda not available - using system environment")
+            print("Conda not available - using system environment")
 
     def load_tokens(self) -> Dict:
         """Load JWT tokens from tokens.json, generating fresh tokens if needed"""
@@ -160,12 +160,12 @@ class SimplePriorityQueueTester:
                 if result.returncode == 0:
                     print("Fresh tokens generated successfully")
                 else:
-                    print(f"  Token generation warning: {result.stderr}")
+                    print(f"Token generation warning: {result.stderr}")
                     print(f"Command output: {result.stdout}")
             except subprocess.TimeoutExpired:
-                print("  Token generation timed out")
+                print("Token generation timed out")
             except Exception as e:
-                print(f"  Token generation failed: {e}")
+                print(f"Token generation failed: {e}")
         else:
             print("Skipping JWT token generation, using existing tokens...")
 
@@ -202,11 +202,11 @@ class SimplePriorityQueueTester:
                         self.decode_jwt_token(token, user_type)
                         print()  # Empty line between user types
                     else:
-                        print(f"  No {user_type} access token found in tokens.json")
+                        print(f"No {user_type} access token found in tokens.json")
 
                 # Compare tokens and highlight differences
-                print("🔬 TOKEN COMPARISON:")
-                print("-" * 30)
+                print("TOKEN COMPARISON:")
+                print("-" * 50)
 
                 premium_token = None
                 free_token = None
@@ -276,7 +276,7 @@ class SimplePriorityQueueTester:
     def check_server_health(self) -> bool:
         """Check if the server is running and responding"""
         try:
-            print(f" Checking server connectivity at {self.base_url}...")
+            print(f"Checking server connectivity at {self.base_url}...")
 
             # Try a simple GET request to a health endpoint or root
             import requests
@@ -290,22 +290,22 @@ class SimplePriorityQueueTester:
                 print(f"Server is responding (HTTP {response.status_code})")
                 return True
             else:
-                print(f"  Server returned HTTP {response.status_code}")
+                print(f"Server returned HTTP {response.status_code}")
                 return True  # Still responding, might work
 
         except requests.exceptions.ConnectionError:
-            print(f" Cannot connect to server at {self.base_url}")
-            print("   → Is main.py running?")
-            print("   → Check if the server is started on the correct port")
+            print(f"Cannot connect to server at {self.base_url}")
+            print(" → Is main.py running?")
+            print(" → Check if the server is started on the correct port")
             return False
         except requests.exceptions.Timeout:
-            print(f" Server timeout at {self.base_url}")
-            print("   → Server is not responding within 5 seconds")
-            print("   → Check if the server is overloaded or stuck")
+            print(f"Server timeout at {self.base_url}")
+            print(" → Server is not responding within 5 seconds")
+            print(" → Check if the server is overloaded or stuck")
             return False
         except Exception as e:
-            print(f" Unexpected error checking server: {e}")
-            print("   → Check server configuration and network connectivity")
+            print(f"Unexpected error checking server: {e}")
+            print(" → Check server configuration and network connectivity")
             return False
 
     def create_test_workspaces(self):
@@ -314,9 +314,7 @@ class SimplePriorityQueueTester:
 
         # First, check if server is running
         if not self.check_server_health():
-            print(
-                "🚫 Server health check failed - cannot proceed with workspace creation"
-            )
+            print("Server health check failed - cannot proceed with workspace creation")
             self.premium_workspace_id = None
             self.free_workspace_id = None
             return
@@ -339,7 +337,7 @@ class SimplePriorityQueueTester:
                 self.premium_workspace_id = response_data["id"]
                 print(f"Premium workspace created: ID {self.premium_workspace_id}")
             else:
-                print(f" Failed to create premium workspace: {response.status_code}")
+                print(f"Failed to create premium workspace: {response.status_code}")
                 if response.status_code == 401:
                     print(
                         "→ Authentication failed: Check if premium user token is valid"
@@ -351,9 +349,9 @@ class SimplePriorityQueueTester:
                     )
                 elif response.status_code == 500:
                     print("→ Server error: Check main.py logs for details")
-                    print(f"→ Response: {response.text}")
+                    print(f" → Response: {response.text}")
                 else:
-                    print(f"   → Response: {response.text}")
+                    print(f" → Response: {response.text}")
                 self.premium_workspace_id = None
 
             # Create workspace for free user
@@ -373,19 +371,19 @@ class SimplePriorityQueueTester:
                 self.free_workspace_id = response_data["id"]
                 print(f"Free workspace created: ID {self.free_workspace_id}")
             else:
-                print(f" Failed to create free workspace: {response.status_code}")
+                print(f"Failed to create free workspace: {response.status_code}")
                 if response.status_code == 401:
-                    print("→Authentication failed: Check if free user token is valid")
+                    print(" → Authentication failed: Check if free user token is valid")
                 elif response.status_code == 403:
                     print(
-                        "→Permission denied: Free user lacks "
+                        " → Permission denied: Free user lacks "
                         "workspace creation rights"
                     )
                 elif response.status_code == 500:
-                    print("→Server error: Check main.py logs for details")
-                    print(f"→Response: {response.text}")
+                    print(" → Server error: Check main.py logs for details")
+                    print(f" → Response: {response.text}")
                 else:
-                    print(f"→Response: {response.text}")
+                    print(f" → Response: {response.text}")
                 self.free_workspace_id = None
 
             # Report results
@@ -399,30 +397,30 @@ class SimplePriorityQueueTester:
                 print("Workspace creation completed!")
                 print(f"Created: {', '.join(created_workspaces)}")
             else:
-                print("  No workspaces were created successfully - will use defaults")
+                print("No workspaces were created successfully - will use defaults")
 
         except requests.exceptions.ConnectionError as e:
-            print(f" Connection error during workspace creation: {e}")
-            print("   → Server appears to be down or unreachable")
-            print("   → Check if main.py is running and accessible")
+            print(f"Connection error during workspace creation: {e}")
+            print("→ Server appears to be down or unreachable")
+            print("→ Check if main.py is running and accessible")
             self.premium_workspace_id = None
             self.free_workspace_id = None
         except requests.exceptions.Timeout as e:
-            print(f" Timeout error during workspace creation: {e}")
-            print("   → Server is not responding in time")
-            print("   → Check server performance and load")
+            print(f"Timeout error during workspace creation: {e}")
+            print("→ Server is not responding in time")
+            print("→ Check server performance and load")
             self.premium_workspace_id = None
             self.free_workspace_id = None
         except Exception as e:
-            print(f" Unexpected error during workspace creation: {e}")
-            print("   → Check server logs for detailed error information")
+            print(f"Unexpected error during workspace creation: {e}")
+            print("→ Check server logs for detailed error information")
             # Ensure workspace IDs are None on exception
             self.premium_workspace_id = None
             self.free_workspace_id = None
 
     def setup_sample_data_for_workspaces(self):
         """Copy sample data to workspace directories to ensure workflows can run"""
-        print("📁 Setting up sample data...")
+        print("Setting up sample data...")
 
         try:
             # Get project root and sample data directories
@@ -437,7 +435,7 @@ class SimplePriorityQueueTester:
             print(f"Data directory: {data_dir}")
 
             if not sample_data_dir.exists():
-                print(f"  Sample data directory not found: {sample_data_dir}")
+                print(f"Sample data directory not found: {sample_data_dir}")
                 return False
 
             # Determine workspace IDs to setup - only use created workspaces
@@ -449,7 +447,7 @@ class SimplePriorityQueueTester:
 
             # If no workspaces were created, cannot set up sample data
             if not workspace_ids:
-                print("  No workspaces were created - cannot set up sample data")
+                print("No workspaces were created - cannot set up sample data")
                 print("Either workspace creation failed or was skipped")
                 print(f"Premium workspace ID: {self.premium_workspace_id}")
                 print(f"Free workspace ID: {self.free_workspace_id}")
@@ -477,9 +475,9 @@ class SimplePriorityQueueTester:
                                 shutil.copy2(sample_file, target_file)
                     print(f"Copied input data to workspace {workspace_id}")
                 else:
-                    print(f"  No input data found at {sample_input_dir}")
+                    print(f"No input data found at {sample_input_dir}")
 
-                print(f"📁 Prepared workspace {workspace_id} (input data only)")
+                print(f"Prepared workspace {workspace_id} (input data only)")
 
             print("Sample data setup completed!")
             return True
@@ -530,7 +528,7 @@ class SimplePriorityQueueTester:
                                 "(experiment.yaml)",
                             }
                         elif "success: running" in content:
-                            # Has finished_at but is still "running" - in progress
+                            # Has finished_at but is still "running"- in progress
                             return {
                                 "status": "running",
                                 "running": True,
@@ -568,7 +566,7 @@ class SimplePriorityQueueTester:
                                 "(experiment.yaml exists but no finished_at)",
                             }
                 except Exception as e:
-                    print(f"  Could not read experiment.yaml: {e}")
+                    print(f"Could not read experiment.yaml: {e}")
                     pass
 
             pid_json_file = workflow_dir / "pid.json"
@@ -800,7 +798,7 @@ class SimplePriorityQueueTester:
     ) -> Dict:
         """Wait for workflow to complete and return completion status"""
         print(
-            f"⏳ Waiting for {user_type} workflow {workflow_id} "
+            f"Waiting for {user_type} workflow {workflow_id} "
             f"to complete (timeout: {timeout}s)..."
         )
 
@@ -847,13 +845,13 @@ class SimplePriorityQueueTester:
                 if is_running:
                     elapsed = int(current_time - start_time)
                     print(
-                        f" {user_type} workflow {workflow_id} is "
+                        f"{user_type} workflow {workflow_id} is "
                         f"running ({elapsed}s elapsed)..."
                     )
                 elif is_completed:
                     elapsed = int(current_time - start_time)
                     print(
-                        f"🏁 {user_type} workflow {workflow_id} "
+                        f"{user_type} workflow {workflow_id} "
                         f"finished ({elapsed}s elapsed)"
                     )
                 last_status = is_running
@@ -914,12 +912,12 @@ class SimplePriorityQueueTester:
             data_dir = Path(os.environ.get("OPTINIST_DIR", "/tmp/studio"))
             input_dir = data_dir / "input" / str(workspace_id)
             if not input_dir.exists():
-                print(f"  Warning: Input directory does not exist: {input_dir}")
+                print(f"Warning: Input directory does not exist: {input_dir}")
             else:
                 input_files = list(input_dir.glob("*"))
-                print(f"📁 Workspace {workspace_id} has {len(input_files)} input files")
+                print(f"Workspace {workspace_id} has {len(input_files)} input files")
         except Exception as e:
-            print(f"  Could not validate workspace {workspace_id}: {e}")
+            print(f"Could not validate workspace {workspace_id}: {e}")
 
         # Get the appropriate token
         token = self.tokens[user_type]["access_token"]
@@ -939,7 +937,7 @@ class SimplePriorityQueueTester:
 
         # Enhanced debugging (only if debug flag is set)
         if self.debug_tokens:
-            print(f" Enhanced debugging for {user_type} user workflow submission:")
+            print(f"Enhanced debugging for {user_type} user workflow submission:")
             print(f"Token length: {len(token)} characters")
             print(f"Token starts: {token[:50]}...")
             print(f"Token ends: ...{token[-20:]}")
@@ -1005,12 +1003,12 @@ class SimplePriorityQueueTester:
 
                     if execution_result["success"]:
                         print(
-                            f" {user_type} workflow #{workflow_num} "
+                            f"{user_type} workflow #{workflow_num} "
                             f"completed successfully!"
                         )
                     else:
                         print(
-                            f" {user_type} workflow #{workflow_num} failed: "
+                            f"{user_type} workflow #{workflow_num} failed: "
                             f"{execution_result['error']}"
                         )
                 else:
@@ -1026,7 +1024,7 @@ class SimplePriorityQueueTester:
 
                 # Add detailed debugging for HTTP 500 errors
                 if response.status_code == 500:
-                    print(" Debug info for HTTP 500 error:")
+                    print("Debug info for HTTP 500 error:")
                     print(f"- Workspace ID: {workspace_id}")
                     print(f"- User type: {user_type}")
                     print(f"- Request URL: {url}")
@@ -1137,7 +1135,7 @@ class SimplePriorityQueueTester:
                 )
 
         if premium_count == 0:
-            print("🔬 Starting Free Workspace Isolation Test")
+            print("Starting Free Workspace Isolation Test")
             print("Testing ONLY free workspace workflows (no premium competition)")
         else:
             print("Starting Priority Queue API Test")
@@ -1171,13 +1169,13 @@ class SimplePriorityQueueTester:
             premium_valid = self.validate_workspace_setup(premium_workspace, "premium")
         else:
             premium_valid = True  # Skip premium validation in free-only mode
-            print("🔬 Skipping premium workspace validation (free-only test mode)")
+            print("Skipping premium workspace validation (free-only test mode)")
 
         free_valid = self.validate_workspace_setup(free_workspace, "free")
 
         if premium_count > 0:
             if not premium_valid or not free_valid:
-                print("  Some workspaces failed validation. Submissions may fail.")
+                print("Some workspaces failed validation. Submissions may fail.")
                 print(
                     "This may explain HTTP 500 errors if workspaces lack required data."
                 )
@@ -1185,7 +1183,7 @@ class SimplePriorityQueueTester:
                 print("Both workspaces validated successfully")
         else:
             if not free_valid:
-                print("  Free workspace failed validation. Submissions may fail.")
+                print("Free workspace failed validation. Submissions may fail.")
                 print(
                     "This may explain HTTP 500 errors if workspace lacks required data."
                 )
@@ -1198,7 +1196,7 @@ class SimplePriorityQueueTester:
 
         if parallel:
             # Submit all workflows in parallel
-            print(" Submitting workflows in PARALLEL...")
+            print("Submitting workflows in PARALLEL...")
 
             with ThreadPoolExecutor(
                 max_workers=min(premium_count + free_count, 8)
@@ -1235,7 +1233,7 @@ class SimplePriorityQueueTester:
 
         else:
             # Submit workflows sequentially (mixed order)
-            print(" Submitting workflows SEQUENTIALLY (mixed order)...")
+            print("Submitting workflows SEQUENTIALLY (mixed order)...")
 
             # Interleave premium and free for fair testing
             max_count = max(premium_count, free_count)
@@ -1276,7 +1274,7 @@ class SimplePriorityQueueTester:
             parts = token.split(".")
             if len(parts) != 3:
                 print(
-                    f"  Invalid JWT format for {user_type} user: "
+                    f"Invalid JWT format for {user_type} user: "
                     f"{len(parts)} parts instead of 3"
                 )
                 return None
@@ -1289,7 +1287,7 @@ class SimplePriorityQueueTester:
             payload_data = parts[1] + "=" * (4 - len(parts[1]) % 4)  # Add padding
             payload = json.loads(base64.urlsafe_b64decode(payload_data))
 
-            print(f" JWT Analysis for {user_type.upper()} user:")
+            print(f"JWT Analysis for {user_type.upper()} user:")
             print(f"Header: {json.dumps(header, indent=6)}")
             print("Payload key fields:")
 
@@ -1349,7 +1347,7 @@ class SimplePriorityQueueTester:
             input_dir = data_dir / "input" / str(workspace_id)
             output_dir = data_dir / "output" / str(workspace_id)
 
-            print(f" Validating {user_type} workspace {workspace_id}:")
+            print(f"Validating {user_type} workspace {workspace_id}:")
 
             # Check input directory
             if not input_dir.exists():
@@ -1357,9 +1355,9 @@ class SimplePriorityQueueTester:
                 return False
 
             input_files = list(input_dir.glob("*"))
-            print(f" Input directory exists with {len(input_files)} files")
+            print(f"Input directory exists with {len(input_files)} files")
             if input_files:
-                print(f"📁 Sample files: {[f.name for f in input_files[:3]]}")
+                print(f"Sample files: {[f.name for f in input_files[:3]]}")
 
             # Check output directory exists (should be created)
             if not output_dir.exists():
@@ -1392,11 +1390,11 @@ class SimplePriorityQueueTester:
 
         while True:
             report_count += 1
-            print("\n" + "=" * 70)
+            print("\n" + "=" * 50)
             print(
                 f"REPORT UPDATE #{report_count} - {datetime.now().strftime('%H:%M:%S')}"
             )
-            print("=" * 70)
+            print("=" * 50)
 
             # Update workflow statuses by checking experiment.yaml files
             still_running_count = 0
@@ -1438,7 +1436,7 @@ class SimplePriorityQueueTester:
                     result["execution_success"] = None  # Still running
                     result["overall_success"] = False  # Not complete yet
 
-            print(f" DEBUG: still_running_count = {still_running_count}")
+            print(f"DEBUG: still_running_count = {still_running_count}")
 
             # Generate fresh timing analysis
             timing_analysis = []
@@ -1482,12 +1480,12 @@ class SimplePriorityQueueTester:
             if len(still_running_from_timing) == 0:
                 print(
                     f"\nAll workflows completed! Final report generated"
-                    f" after {report_count} updates."
+                    f"after {report_count} updates."
                 )
                 break
             else:
                 print(
-                    f"\n⏳ {len(still_running_from_timing)} workflows still running "
+                    f"\n{len(still_running_from_timing)} workflows still running "
                     f"(from timing analysis). Next update in {check_interval} seconds"
                 )
                 time.sleep(check_interval)
@@ -1514,16 +1512,14 @@ class SimplePriorityQueueTester:
         free_successful = [r for r in free_results if r["overall_success"]]
 
         print()
-        print("=" * 70)
+        print("=" * 50)
         print("PRIORITY QUEUE API TEST RESULTS")
-        print("=" * 70)
+        print("=" * 50)
 
         # Check if this is a live update
         still_running_from_timing = []
         if timing_analysis:
-            print(
-                f" DEBUG: Timing analysis check for {len(timing_analysis)} workflows:"
-            )
+            print(f"DEBUG: Timing analysis check for {len(timing_analysis)} workflows:")
             for timing in timing_analysis:
                 workflow_id = timing["workflow_id"]
                 workflow_success = timing["workflow_success"]
@@ -1550,16 +1546,16 @@ class SimplePriorityQueueTester:
                 if is_running:
                     still_running_from_timing.append(workflow_id)
 
-        print(f" DEBUG: still_running_from_timing = {still_running_from_timing}")
+        print(f"DEBUG: still_running_from_timing = {still_running_from_timing}")
 
         if still_running_from_timing:
-            print("🔴 LIVE UPDATE - Some workflows still running")
+            print("LIVE UPDATE - Some workflows still running")
         else:
-            print("🟢 FINAL RESULTS - All workflows completed")
+            print("FINAL RESULTS - All workflows completed")
         print()
 
         # Summary
-        print(" SUBMISSION SUMMARY:")
+        print("SUBMISSION SUMMARY:")
         print(f"Total workflows submitted: {len(results)}")
         print(f"Successful submissions: {len(submission_successful)}")
         print(f"Failed submissions: {len(submission_failed)}")
@@ -1571,7 +1567,7 @@ class SimplePriorityQueueTester:
         print()
 
         if monitored_execution:
-            print("🏁 EXECUTION SUMMARY:")
+            print("EXECUTION SUMMARY:")
             print(f"Workflows completed successfully: {len(overall_successful)}")
             print(f"Workflows failed during execution: {len(overall_failed)}")
             print(
@@ -1614,11 +1610,11 @@ class SimplePriorityQueueTester:
                 exec_status = ""
                 if monitored_execution:
                     if result["execution_success"]:
-                        exec_status = f" ({result['execution_time']:.1f}s exec)"
+                        exec_status = f"({result['execution_time']:.1f}s exec)"
                     elif result["execution_success"] is False:
-                        exec_status = " (failed)"
+                        exec_status = "(failed)"
                     else:
-                        exec_status = " ⏳ (not monitored)"
+                        exec_status = "(not monitored)"
 
                 print(
                     f"{i}. {result['user_type'].upper()} #{result['workflow_num']} - "
@@ -1633,7 +1629,7 @@ class SimplePriorityQueueTester:
             for result in submission_failed:
                 print(
                     f"{result['user_type'].upper()} #{result['workflow_num']}: "
-                    f" {result['submission_error']}"
+                    f"{result['submission_error']}"
                 )
 
             # Add guidance for common HTTP 500 errors
@@ -1651,7 +1647,7 @@ class SimplePriorityQueueTester:
                 if r["submission_success"] and not r["execution_success"]
             ]
             if execution_failed:
-                print(" EXECUTION FAILURES:")
+                print("EXECUTION FAILURES:")
                 for result in execution_failed:
                     print(
                         f"{result['user_type'].upper()} #{result['workflow_num']} "
@@ -1678,11 +1674,9 @@ class SimplePriorityQueueTester:
                     for output_file in result["output_files"][
                         :3
                     ]:  # Show first 3 output files
-                        print(f" 📁 {output_file}")
+                        print(f"{output_file}")
                     if len(result["output_files"]) > 3:
-                        print(
-                            f" 📁 ... and {len(result['output_files']) - 3} more files"
-                        )
+                        print(f"... and {len(result['output_files']) - 3} more files")
             print()
 
         # Detailed timing analysis
@@ -1702,12 +1696,12 @@ class SimplePriorityQueueTester:
                     values = [t[field] for t in timings if t[field] is not None]
                     return sum(values) / len(values) if values else 0
 
-                print(" PRIORITY QUEUE EFFECTIVENESS COMPARISON:")
+                print("PRIORITY QUEUE EFFECTIVENESS COMPARISON:")
                 print(
                     f"{'Metric':<30} {'Premium Avg':<15} {'Free Avg':<15} "
                     f"{'Premium Advantage':<20}"
                 )
-                print("-" * 80)
+                print("-" * 50)
 
                 # Queue wait time comparison
                 prem_queue_wait = calc_avg(premium_timings, "queue_wait_time")
@@ -1843,14 +1837,14 @@ class SimplePriorityQueueTester:
             print()
 
         # Next steps - updated for continuous monitoring
-        print(" NEXT STEPS:")
+        print("NEXT STEPS:")
         if monitored_execution:
             if still_running_from_timing:
-                print("1. ⏳ Workflows still running - report will auto-update")
+                print("1. Workflows still running - report will auto-update")
                 print(
                     f"Running workflows: {', '.join(still_running_from_timing[:3])}"
                     + (
-                        f" and {len(still_running_from_timing)-3} more"
+                        f"and {len(still_running_from_timing)-3} more"
                         if len(still_running_from_timing) > 3
                         else ""
                     )
@@ -1879,7 +1873,7 @@ class SimplePriorityQueueTester:
                 print("2. Ensure JWT tokens are valid and workspaces exist")
 
         print()
-        print("=" * 70)
+        print("=" * 50)
 
         # Save detailed results - reuse same filename for continuous updates
         if not self.report_filename:
@@ -2037,7 +2031,7 @@ class SimplePriorityQueueTester:
             }
 
         except Exception as e:
-            print(f"  Could not analyze experiment timing for {workflow_id}: {e}")
+            print(f"Could not analyze experiment timing for {workflow_id}: {e}")
             return None
 
     def cleanup(self):
@@ -2132,7 +2126,7 @@ def main():
 
     # Handle free-only testing mode
     if args.test_free_only:
-        print("🔬 FREE WORKSPACE ISOLATION TEST MODE")
+        print("FREE WORKSPACE ISOLATION TEST MODE")
         print("=" * 50)
         print(
             "This mode tests ONLY free workspace workflows to "
@@ -2152,7 +2146,7 @@ def main():
     print(f"Premium workflows: {args.premium_count}")
     print(f"Free workflows: {args.free_count}")
     if args.test_free_only:
-        print("🔬 MODE: Free workspace isolation test (no premium competition)")
+        print("MODE: Free workspace isolation test (no premium competition)")
     print()
 
     try:
@@ -2198,7 +2192,7 @@ def main():
             exit(0)
         else:
             print(
-                f"  Test completed with issues "
+                f"Test completed with issues "
                 f"({success_rate:.1%} overall success rate)"
             )
             tester.cleanup()
@@ -2213,7 +2207,7 @@ def main():
         try:
             tester.cleanup()
         except Exception as e:
-            print(f"  Cleanup failed: {e}")
+            print(f"Cleanup failed: {e}")
         exit(2)
 
 

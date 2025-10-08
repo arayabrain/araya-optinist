@@ -28,17 +28,18 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 
 try:
     import firebase_admin
-    from firebase_admin import auth as firebase_auth, credentials
+    from firebase_admin import auth as firebase_auth
+    from firebase_admin import credentials
 except ImportError:
-    print("❌ Error: firebase_admin not installed")
-    print("   Run: pip install firebase-admin")
+    print("Error: firebase_admin not installed")
+    print("Run: pip install firebase-admin")
     sys.exit(1)
 
 try:
     from studio.app.common.core.auth import pyrebase_app
 except ImportError:
-    print("⚠️  Warning: Could not import pyrebase_app from studio")
-    print("   Attempting direct pyrebase initialization...")
+    print("Warning: Could not import pyrebase_app from studio")
+    print("Attempting direct pyrebase initialization...")
     pyrebase_app = None
 
 
@@ -54,33 +55,38 @@ def get_terraform_outputs(terraform_dir: str = "../config/terraform") -> Dict:
         )
         return json.loads(result.stdout)
     except subprocess.CalledProcessError as e:
-        print(f"❌ Failed to get Terraform outputs: {e.stderr}")
+        print(f"Error: Failed to get Terraform outputs: {e.stderr}")
         return {}
     except json.JSONDecodeError as e:
-        print(f"❌ Failed to parse Terraform outputs: {e}")
+        print(f"Error: Failed to parse Terraform outputs: {e}")
         return {}
     except FileNotFoundError:
-        print(f"❌ Terraform not found. Make sure terraform is installed and in PATH")
+        print(
+            "Error: Terraform not found. Make sure terraform is installed and in PATH"
+        )
         return {}
 
 
-def initialize_firebase_admin(service_account_path: Optional[str] = None, terraform_dir: str = "../config/terraform") -> bool:
+def initialize_firebase_admin(
+    service_account_path: Optional[str] = None,
+    terraform_dir: str = "../config/terraform",
+) -> bool:
     """Initialize Firebase Admin SDK"""
     if firebase_admin._apps:
-        print("✓ Firebase Admin SDK already initialized")
+        print("Firebase Admin SDK already initialized")
         return True
 
     # Try to get service account from various sources
     cred = None
 
     if service_account_path and os.path.exists(service_account_path):
-        print(f"🔑 Using service account from: {service_account_path}")
+        print(f"Using service account from: {service_account_path}")
         cred = credentials.Certificate(service_account_path)
     else:
         # Try environment variable
         service_account_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_KEY")
         if service_account_json:
-            print("🔑 Using service account from FIREBASE_SERVICE_ACCOUNT_KEY env var")
+            print("Using service account from FIREBASE_SERVICE_ACCOUNT_KEY env var")
             cred = credentials.Certificate(json.loads(service_account_json))
         else:
             # Try to get from Terraform tfvars file
@@ -88,25 +94,42 @@ def initialize_firebase_admin(service_account_path: Optional[str] = None, terraf
             if os.path.exists(tfvars_path):
                 try:
                     import re
-                    with open(tfvars_path, 'r') as f:
+
+                    with open(tfvars_path, "r") as f:
                         content = f.read()
 
                     # Look for firebase_private_json variable
-                    # Match: firebase_private_json = <<-EOT ... EOT or firebase_private_json = "..."
-                    heredoc_match = re.search(r'firebase_private_json\s*=\s*<<-?(\w+)\s*(.*?)\s*\1', content, re.DOTALL)
+                    # Match: firebase_private_json = <<-EOT ... EOT or
+                    # firebase_private_json = "..."
+                    heredoc_match = re.search(
+                        r"firebase_private_json\s*=\s*<<-?(\w+)\s*(.*?)\s*\1",
+                        content,
+                        re.DOTALL,
+                    )
                     if heredoc_match:
                         service_account_json = heredoc_match.group(2).strip()
-                        print("🔑 Using service account from terraform.tfvars (heredoc)")
+                        print("Using service account from terraform.tfvars (heredoc)")
                         cred = credentials.Certificate(json.loads(service_account_json))
                     else:
                         # Try regular string format
-                        string_match = re.search(r'firebase_private_json\s*=\s*["\'](.+?)["\']', content, re.DOTALL)
+                        string_match = re.search(
+                            r'firebase_private_json\s*=\s*["\'](.+?)["\']',
+                            content,
+                            re.DOTALL,
+                        )
                         if string_match:
                             service_account_json = string_match.group(1)
-                            print("🔑 Using service account from terraform.tfvars (string)")
-                            cred = credentials.Certificate(json.loads(service_account_json))
+                            print(
+                                "Using service account from terraform.tfvars (string)"
+                            )
+                            cred = credentials.Certificate(
+                                json.loads(service_account_json)
+                            )
                 except Exception as e:
-                    print(f"⚠️  Could not parse firebase_private_json from terraform.tfvars: {e}")
+                    print(
+                        f"Could not parse firebase_private_json "
+                        f"from terraform.tfvars: {e}"
+                    )
 
             # If still no cred, try default paths
             if not cred:
@@ -117,25 +140,25 @@ def initialize_firebase_admin(service_account_path: Optional[str] = None, terraf
                 ]
                 for path in default_paths:
                     if os.path.exists(path):
-                        print(f"🔑 Using service account from: {path}")
+                        print(f"Using service account from: {path}")
                         cred = credentials.Certificate(path)
                         break
 
     if not cred:
-        print("❌ Firebase service account credentials not found!")
-        print("   Please provide credentials via:")
-        print("   1. --service-account-path argument")
-        print("   2. FIREBASE_SERVICE_ACCOUNT_KEY environment variable")
-        print("   3. firebase_private_json in terraform.tfvars")
-        print("   4. Place firebase-service-account.json in studio/config/")
+        print("Error: Firebase service account credentials not found!")
+        print("Please provide credentials via:")
+        print(" 1. --service-account-path argument")
+        print(" 2. FIREBASE_SERVICE_ACCOUNT_KEY environment variable")
+        print(" 3. firebase_private_json in terraform.tfvars")
+        print(" 4. Place firebase-service-account.json in studio/config/")
         return False
 
     try:
         firebase_admin.initialize_app(cred)
-        print("✓ Firebase Admin SDK initialized")
+        print("Firebase Admin SDK initialized")
         return True
     except Exception as e:
-        print(f"❌ Failed to initialize Firebase Admin SDK: {e}")
+        print(f"Failed to initialize Firebase Admin SDK: {e}")
         return False
 
 
@@ -145,11 +168,14 @@ def get_test_users_from_terraform(terraform_dir: str) -> Optional[list]:
 
     if "test_users" in outputs:
         test_users_data = outputs["test_users"].get("value", [])
-        print(f"✓ Found {len(test_users_data)} test users from Terraform outputs")
+        print(f"Found {len(test_users_data)} test users from Terraform outputs")
         return test_users_data
 
-    print("⚠️  test_users not found in Terraform outputs")
-    print("   Make sure you've added the test_users output to main.tf and run 'terraform apply'")
+    print("test_users not found in Terraform outputs")
+    print(
+        "Make sure you've added the test_users output "
+        "to main.tf and run 'terraform apply'"
+    )
     return None
 
 
@@ -157,14 +183,15 @@ def get_test_users_from_config() -> Optional[list]:
     """Fallback: Get test users from test_user_config module"""
     try:
         from test_user_config import load_test_users_for_db
+
         users = load_test_users_for_db()
         if users:
-            print(f"✓ Found {len(users)} test users from test_user_config")
+            print(f"Found {len(users)} test users from test_user_config")
             return users
     except ImportError:
-        print("⚠️  Could not import test_user_config")
+        print("Warning: Could not import test_user_config")
     except Exception as e:
-        print(f"⚠️  Error loading test users from config: {e}")
+        print(f"Warning: Error loading test users from config: {e}")
 
     return None
 
@@ -180,51 +207,53 @@ def create_firebase_id_token(firebase_uid: str, email: str) -> Optional[str]:
     try:
         # Step 1: Create custom token (server-side, signed by our service account)
         custom_token = firebase_auth.create_custom_token(firebase_uid)
-        print(f"  ✓ Created custom token for {email}")
+        print(f"Created custom token for {email}")
 
         # Step 2: Exchange for ID token (signed by Google)
         if pyrebase_app:
             # Use existing pyrebase instance
             user = pyrebase_app.auth().sign_in_with_custom_token(custom_token.decode())
-            id_token = user['idToken']
-            print(f"  ✓ Exchanged for ID token (expires in 1 hour)")
+            id_token = user["idToken"]
+            print("Exchanged for ID token (expires in 1 hour)")
             return id_token
         else:
             # Direct Firebase REST API call as fallback
             import requests
 
-            # Get Firebase project ID from service account
-            firebase_app = firebase_admin.get_app()
-            project_id = firebase_app.project_id
-
             # Firebase REST API endpoint
-            url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken"
+            url = (
+                "https://identitytoolkit.googleapis.com/v1/accounts:"
+                "signInWithCustomToken"
+            )
             params = {"key": os.getenv("FIREBASE_API_KEY", "")}
 
             if not params["key"]:
-                print("  ⚠️  FIREBASE_API_KEY not set, trying without it...")
+                print("Warning: FIREBASE_API_KEY not set, trying without it...")
                 # Try the v1 endpoint which might not require API key
-                url = f"https://www.googleapis.com/identitytoolkit/v3/relyingparty/verifyCustomToken"
+                url = (
+                    "https://www.googleapis.com/identitytoolkit/v3/"
+                    "relyingparty/verifyCustomToken"
+                )
                 params = {"key": "AIzaSyDummyKey"}  # Some endpoints accept any value
 
             response = requests.post(
                 url,
                 params=params,
-                json={"token": custom_token.decode(), "returnSecureToken": True}
+                json={"token": custom_token.decode(), "returnSecureToken": True},
             )
 
             if response.status_code == 200:
                 data = response.json()
-                id_token = data['idToken']
-                print(f"  ✓ Exchanged for ID token (expires in 1 hour)")
+                id_token = data["idToken"]
+                print("Exchanged for ID token (expires in 1 hour)")
                 return id_token
             else:
-                print(f"  ❌ Failed to exchange custom token: {response.status_code}")
-                print(f"     Response: {response.text}")
+                print(f"Error: Failed to exchange custom token: {response.status_code}")
+                print(f"Response: {response.text}")
                 return None
 
     except Exception as e:
-        print(f"  ❌ Error creating ID token for {email}: {e}")
+        print(f"Error creating ID token for {email}: {e}")
         return None
 
 
@@ -233,6 +262,8 @@ def generate_jwt_tokens(
     api_url: str = None,
     terraform_dir: str = "../config/terraform",
     service_account_path: str = None,
+    user_type: str = "free",
+    multi_free: bool = False,
 ) -> Optional[Dict[str, str]]:
     """
     Generate Firebase ID tokens for load testing
@@ -242,14 +273,16 @@ def generate_jwt_tokens(
         api_url: API base URL (for reference only, not used in token generation)
         terraform_dir: Path to Terraform directory
         service_account_path: Path to Firebase service account JSON file
+        user_type: Which user tokens to generate ("free", "premium", or "all")
+        multi_free: If True, generate tokens for all free users (free_0 through free_9)
 
     Returns:
         Dict containing tokens for different user types
     """
-    print(f"🔑 Generating Firebase ID tokens for {environment} environment")
+    print(f"Generating Firebase ID tokens for {environment} environment")
 
     if api_url:
-        print(f"🌐 API URL: {api_url}")
+        print(f"API URL: {api_url}")
 
     # Initialize Firebase Admin SDK
     if not initialize_firebase_admin(service_account_path, terraform_dir):
@@ -258,42 +291,99 @@ def generate_jwt_tokens(
     # Get test users
     test_users = get_test_users_from_terraform(terraform_dir)
     if not test_users:
-        print("⚠️  Trying fallback: test_user_config module...")
+        print("Warning: Trying fallback: test_user_config module...")
         test_users = get_test_users_from_config()
 
     if not test_users:
-        print("❌ No test users found!")
+        print("Error: No test users found!")
         return None
 
-    # Generate token only for free user
+    # Generate tokens based on user_type
     tokens = {}
-    free_user = None
+    free_users = []
+    premium_user = None
 
-    # Find the free user
+    # Find the users
     for user_data in test_users:
         email = user_data.get("email", "")
         if "free" in email.lower() and "optinist_test_user_free" in email.lower():
-            free_user = user_data
-            break
+            free_users.append(user_data)
+        elif (
+            "premium" in email.lower() and "optinist_test_user_premium" in email.lower()
+        ):
+            # Skip "premium_expire"user, only use base premium user
+            if "expire" not in email.lower():
+                premium_user = user_data
 
-    if not free_user:
-        print("❌ Free user (optinist_test_user_free@araya.org) not found!")
-        return None
+    # Sort free users by email to ensure consistent ordering
+    free_users.sort(key=lambda u: u.get("email", ""))
 
-    email = free_user.get("email", "")
-    firebase_uid = free_user.get("firebase_uid", "")
+    # Generate free user token(s) if requested
+    if user_type in ["free", "all"]:
+        if not free_users:
+            print("Error: No free users found!")
+            if user_type == "free":
+                return None
+        elif multi_free:
+            # Generate tokens for all free users
+            print(f"\nInfo: Generating tokens for {len(free_users)} free users")
+            for idx, free_user in enumerate(free_users):
+                email = free_user.get("email", "")
+                firebase_uid = free_user.get("firebase_uid", "")
 
-    if not firebase_uid:
-        print(f"❌ Free user has no firebase_uid")
-        return None
+                if not firebase_uid:
+                    print(f"Warning: User {email} has no firebase_uid, skipping")
+                    continue
 
-    print(f"\n📝 Generating token for: {email}")
-    print(f"   Firebase UID: {firebase_uid}")
+                print(f"\n  Generating token for: {email}")
+                print(f"Firebase UID: {firebase_uid}")
 
-    id_token = create_firebase_id_token(firebase_uid, email)
+                id_token = create_firebase_id_token(firebase_uid, email)
+                if id_token:
+                    tokens[f"free_{idx}"] = id_token
+                else:
+                    print(f"Warning: Failed to generate token for {email}")
+        else:
+            # Original behavior: just the first free user
+            free_user = free_users[0]
+            email = free_user.get("email", "")
+            firebase_uid = free_user.get("firebase_uid", "")
 
-    if id_token:
-        tokens["free_token"] = id_token
+            if not firebase_uid:
+                print("Error: Free user has no firebase_uid")
+                if user_type == "free":
+                    return None
+            else:
+                print(f"\nInfo: Generating token for: {email}")
+                print(f"Firebase UID: {firebase_uid}")
+
+                id_token = create_firebase_id_token(firebase_uid, email)
+                if id_token:
+                    tokens["free_token"] = id_token
+
+    # Generate premium user token if requested
+    if user_type in ["premium", "all"]:
+        if not premium_user:
+            print(
+                "Error: Premium user (optinist_test_user_premium@araya.org) not found!"
+            )
+            if user_type == "premium":
+                return None
+        else:
+            email = premium_user.get("email", "")
+            firebase_uid = premium_user.get("firebase_uid", "")
+
+            if not firebase_uid:
+                print("Error: Premium user has no firebase_uid")
+                if user_type == "premium":
+                    return None
+            else:
+                print(f"\nInfo: Generating token for: {email}")
+                print(f"Firebase UID: {firebase_uid}")
+
+                id_token = create_firebase_id_token(firebase_uid, email)
+                if id_token:
+                    tokens["premium_token"] = id_token
 
     if tokens:
         # Save tokens to file for reuse
@@ -301,41 +391,57 @@ def generate_jwt_tokens(
         try:
             with open(tokens_file, "w") as f:
                 json.dump(tokens, f, indent=2)
-            print(f"\n✓ Tokens saved to {tokens_file}")
+            print(f"\nTokens saved to {tokens_file}")
         except Exception as e:
-            print(f"\n⚠️  Could not save tokens file: {e}")
+            print(f"\nWarning: Could not save tokens file: {e}")
 
-        print(f"\n✅ Generated token for free user successfully")
-        print("\n⚠️  Note: Firebase ID tokens expire after 1 hour")
-        print("   For long-running tests, you may need to regenerate tokens")
+        # Success message based on what was generated
+        if "free_token" in tokens and "premium_token" in tokens:
+            print("\nGenerated tokens for free and premium users successfully")
+        elif "free_token" in tokens:
+            print("\nGenerated token for free user successfully")
+        elif "premium_token" in tokens:
+            print("\nGenerated token for premium user successfully")
+
+        print("\nWarning: Firebase ID tokens expire after 1 hour")
+        print("For long-running tests, you may need to regenerate tokens")
         return tokens
     else:
-        print("\n❌ Failed to generate token")
+        print("\nError: Failed to generate tokens")
         return None
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Generate Firebase ID tokens for load testing")
+    parser = argparse.ArgumentParser(
+        description="Generate Firebase ID tokens for load testing"
+    )
     parser.add_argument(
         "--environment",
         choices=["local", "cloud"],
         default="cloud",
-        help="Environment type (default: cloud)"
+        help="Environment type (default: cloud)",
     )
-    parser.add_argument(
-        "--api-url",
-        help="API URL (optional, for reference)"
-    )
+    parser.add_argument("--api-url", help="API URL (optional, for reference)")
     parser.add_argument(
         "--terraform-dir",
         default="../config/terraform",
-        help="Path to Terraform directory (default: ../config/terraform)"
+        help="Path to Terraform directory (default: ../config/terraform)",
     )
     parser.add_argument(
-        "--service-account-path",
-        help="Path to Firebase service account JSON file"
+        "--service-account-path", help="Path to Firebase service account JSON file"
+    )
+    parser.add_argument(
+        "--user-type",
+        choices=["free", "premium", "all"],
+        default="free",
+        help="Which user tokens to generate (default: free)",
+    )
+    parser.add_argument(
+        "--multi-free",
+        action="store_true",
+        help="Generate tokens for all free users (free_0 through free_9)",
     )
 
     args = parser.parse_args()
@@ -345,10 +451,12 @@ if __name__ == "__main__":
         api_url=args.api_url,
         terraform_dir=args.terraform_dir,
         service_account_path=args.service_account_path,
+        user_type=args.user_type,
+        multi_free=args.multi_free,
     )
 
     if tokens:
-        print(f"\n📋 Available tokens: {list(tokens.keys())}")
+        print(f"\nInfo: Available tokens: {list(tokens.keys())}")
         sys.exit(0)
     else:
         sys.exit(1)

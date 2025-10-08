@@ -152,7 +152,7 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
                     "message": "No stale assignments to clean",
                 }
 
-            print(f" Found {len(stale_assignments)} stale assignments to clean")
+            print(f"Found {len(stale_assignments)} stale assignments to clean")
 
             # Clean up AWS resources for each stale assignment
             elbv2 = boto3.client("elbv2")
@@ -170,16 +170,16 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
                     if alb_rule_arn and alb_rule_arn != "STANDBY":
                         try:
                             elbv2.delete_rule(RuleArn=alb_rule_arn)
-                            print(f"   Deleted ALB rule: {alb_rule_arn}")
+                            print(f"Deleted ALB rule: {alb_rule_arn}")
                         except Exception as e:
-                            print(f"   Warning: Failed to delete ALB rule: {e}")
+                            print(f"Warning: Failed to delete ALB rule: {e}")
 
                     if target_group_arn and target_group_arn != "STANDBY":
                         try:
                             elbv2.delete_target_group(TargetGroupArn=target_group_arn)
-                            print(f"   Deleted target group: {target_group_arn}")
+                            print(f"Deleted target group: {target_group_arn}")
                         except Exception as e:
-                            print(f"   Warning: Failed to delete target group: {e}")
+                            print(f"Warning: Failed to delete target group: {e}")
 
                     # Remove from database
                     cursor.execute(
@@ -188,10 +188,10 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
                     )
 
                     cleaned_count += 1
-                    print(f"   Cleaned assignment for user {user_id}")
+                    print(f"Cleaned assignment for user {user_id}")
 
                 except Exception as e:
-                    print(f"    Error cleaning assignment for user {user_id}: {e}")
+                    print(f"Error cleaning assignment for user {user_id}: {e}")
                     # Continue with other assignments
 
             print(
@@ -206,8 +206,138 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
             }
 
     except Exception as e:
-        print(f" Error during stale assignment cleanup: {str(e)}")
+        print(f"Error during stale assignment cleanup: {str(e)}")
         raise e
+
+
+def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
+    """
+    Clean up orphaned ALB listener rules and target groups that have no database entry.
+
+    This handles cases where Lambda failed after creating ALB resources but before
+    storing the assignment in the database, leaving orphaned resources.
+    """
+    try:
+        print("🔍 Scanning for orphaned ALB resources...")
+
+        elbv2 = boto3.client("elbv2")
+        alb_listener_arn = get_required_env_var("ALB_LISTENER_ARN")
+
+        # Get all ALB listener rules
+        rules_response = elbv2.describe_rules(ListenerArn=alb_listener_arn)
+        alb_rules = rules_response.get("Rules", [])
+
+        # Filter for premium user rules (exclude default rule)
+        premium_rules = []
+        for rule in alb_rules:
+            if rule.get("Priority") == "default":
+                continue
+
+            # Check if rule has premium user conditions
+            # (X-User-ID and X-User-Tier headers)
+            conditions = rule.get("Conditions", [])
+            has_user_id = any(
+                c.get("Field") == "http-header"
+                and c.get("HttpHeaderConfig", {}).get("HttpHeaderName") == "X-User-ID"
+                for c in conditions
+            )
+            has_user_tier = any(
+                c.get("Field") == "http-header"
+                and c.get("HttpHeaderConfig", {}).get("HttpHeaderName") == "X-User-Tier"
+                for c in conditions
+            )
+
+            if has_user_id and has_user_tier:
+                premium_rules.append(rule)
+
+        print(f"Found {len(premium_rules)} premium user ALB rules")
+
+        # Get all active assignments from database
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """SELECT alb_rule_arn, target_group_arn, user_id
+                       FROM premium_user_assignments
+                       WHERE status = 'active' AND is_standby = 0"""
+                )
+                db_assignments = cursor.fetchall()
+
+        db_rule_arns = {
+            a["alb_rule_arn"] for a in db_assignments if a["alb_rule_arn"] != "STANDBY"
+        }
+        print(f"Found {len(db_rule_arns)} active assignments in database")
+
+        # Find orphaned rules (in ALB but not in database)
+        orphaned_rules = [
+            rule for rule in premium_rules if rule["RuleArn"] not in db_rule_arns
+        ]
+
+        if not orphaned_rules:
+            print("No orphaned ALB resources found")
+            return {
+                "orphaned_rules_deleted": 0,
+                "orphaned_target_groups_deleted": 0,
+                "message": "No orphaned resources to clean",
+            }
+
+        print(f"Found {len(orphaned_rules)} orphaned ALB rules to clean up")
+
+        # Clean up orphaned resources
+        rules_deleted = 0
+        target_groups_deleted = 0
+
+        for rule in orphaned_rules:
+            rule_arn = rule["RuleArn"]
+            priority = rule.get("Priority")
+
+            try:
+                # Get target group ARN from rule actions
+                target_group_arn = None
+                for action in rule.get("Actions", []):
+                    if action.get("Type") == "forward":
+                        target_group_arn = action.get("TargetGroupArn")
+                        break
+
+                print(f"Deleting orphaned rule (priority {priority}): {rule_arn}")
+
+                # Delete the ALB rule
+                elbv2.delete_rule(RuleArn=rule_arn)
+                rules_deleted += 1
+                print("Deleted ALB rule")
+
+                # Delete the target group if it exists
+                if target_group_arn:
+                    try:
+                        elbv2.delete_target_group(TargetGroupArn=target_group_arn)
+                        target_groups_deleted += 1
+                        print(f"Deleted target group: {target_group_arn}")
+                    except Exception as tg_error:
+                        print(f"Warning: Failed to delete target group: {tg_error}")
+
+            except Exception as e:
+                print(f"Error deleting orphaned rule {rule_arn}: {e}")
+                # Continue with other rules
+
+        print(
+            f"🧹 Orphaned resource cleanup complete: {rules_deleted} rules, "
+            f"{target_groups_deleted} target groups deleted"
+        )
+
+        return {
+            "orphaned_rules_deleted": rules_deleted,
+            "orphaned_target_groups_deleted": target_groups_deleted,
+            "total_orphaned": len(orphaned_rules),
+            "message": f"Cleaned {rules_deleted} orphaned ALB rules and "
+            f"{target_groups_deleted} target groups",
+        }
+
+    except Exception as e:
+        print(f"Error during orphaned resource cleanup: {str(e)}")
+        return {
+            "orphaned_rules_deleted": 0,
+            "orphaned_target_groups_deleted": 0,
+            "error": str(e),
+        }
 
 
 def stop_idle_instances_if_needed():
@@ -249,7 +379,7 @@ def stop_idle_instances_if_needed():
                 f"stopping all to save costs"
             )
             for inst in idle_instances:
-                print(f"   Stopping idle instance {inst['instance_id']} to save costs")
+                print(f"Stopping idle instance {inst['instance_id']} to save costs")
                 ec2.stop_instances(InstanceIds=[inst["instance_id"]])
 
                 # Update database to mark as standby
@@ -260,7 +390,7 @@ def stop_idle_instances_if_needed():
         return len(idle_instances)
 
     except Exception as e:
-        print(f" Error stopping idle instances: {str(e)}")
+        print(f"Error stopping idle instances: {str(e)}")
         return 0
 
 
@@ -282,7 +412,7 @@ def update_instance_as_standby(connection, instance_id: str):
             )
         print(f"Marked instance {instance_id} as standby in database")
     except Exception as e:
-        print(f" Error updating instance as standby: {str(e)}")
+        print(f"Error updating instance as standby: {str(e)}")
         raise e
 
 
@@ -332,7 +462,7 @@ def get_standby_pool_status() -> Dict[str, Any]:
         return status
 
     except Exception as e:
-        print(f" Error getting standby pool status: {str(e)}")
+        print(f"Error getting standby pool status: {str(e)}")
         return {"error": str(e)}
 
 
@@ -349,19 +479,19 @@ def ensure_standby_pool_capacity() -> Dict[str, Any]:
 
         # Log current status
         print(
-            f" Standby pool status: {status['running']} running, "
+            f"Standby pool status: {status['running']} running, "
             f"{status['stopped']} stopped, {status['failed']} failed"
         )
 
         # Check for capacity issues
         if status["stopped"] < target_stopped and status["idle_running"] == 0:
-            actions_taken.append(" Low standby capacity detected")
+            actions_taken.append("Low standby capacity detected")
 
         if status["failed"] > 0:
-            actions_taken.append(f" Found {status['failed']} failed instances")
+            actions_taken.append(f"Found {status['failed']} failed instances")
 
         if status["health_issues"]:
-            actions_taken.extend([f" {issue}" for issue in status["health_issues"]])
+            actions_taken.extend([f"{issue}" for issue in status["health_issues"]])
 
         return {
             "success": True,
@@ -375,7 +505,7 @@ def ensure_standby_pool_capacity() -> Dict[str, Any]:
         }
 
     except Exception as e:
-        print(f" Error ensuring standby pool capacity: {str(e)}")
+        print(f"Error ensuring standby pool capacity: {str(e)}")
         return {"success": False, "error": str(e)}
 
 
@@ -439,7 +569,7 @@ def reconcile_instance_states() -> Dict[str, Any]:
                         # Update database state to match AWS
                         aws_state = aws_instance["state"]
                         print(
-                            f" Updating instance state for user "
+                            f"Updating instance state for user "
                             f"{user_id}: {db_state} → {aws_state}"
                         )
                         cursor.execute(
@@ -459,7 +589,7 @@ def reconcile_instance_states() -> Dict[str, Any]:
         }
 
     except Exception as e:
-        print(f" Error reconciling instance states: {str(e)}")
+        print(f"Error reconciling instance states: {str(e)}")
         return {"error": str(e)}
 
 
@@ -497,7 +627,7 @@ def maintain_standby_pool() -> bool:
         # Target: 1 stopped standby instance (was target_standby = 1)
 
         print(
-            f" Standby pool status: {running_count} running ({assigned_count} "
+            f"Standby pool status: {running_count} running ({assigned_count} "
             f"assigned, {idle_running} idle), {stopped_count} stopped"
         )
 
@@ -510,7 +640,7 @@ def maintain_standby_pool() -> bool:
         return True
 
     except Exception as e:
-        print(f" Error maintaining standby pool: {str(e)}")
+        print(f"Error maintaining standby pool: {str(e)}")
         return False
 
 
@@ -545,7 +675,7 @@ def cleanup_idle_running_instances() -> int:
         return stopped_count
 
     except Exception as e:
-        print(f" Error cleaning up idle instances: {str(e)}")
+        print(f"Error cleaning up idle instances: {str(e)}")
         return 0
 
 
@@ -567,7 +697,7 @@ def convert_running_instance_to_standby(instance_id: str) -> bool:
         return True
 
     except Exception as e:
-        print(f" Error converting instance {instance_id} to standby: {str(e)}")
+        print(f"Error converting instance {instance_id} to standby: {str(e)}")
         return False
 
 
@@ -598,12 +728,16 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         print("🧹 Step 1: Cleaning up stale assignments...")
         results["cleanup_stats"] = cleanup_stale_assignments()
 
+        # 1.5. Cleanup orphaned ALB resources (no database entry)
+        print("🔍 Step 1.5: Cleaning up orphaned ALB resources...")
+        results["orphaned_cleanup_stats"] = cleanup_orphaned_alb_resources()
+
         # 2. Reconcile instance states with AWS
-        print(" Step 2: Reconciling instance states...")
+        print("Step 2: Reconciling instance states...")
         results["reconciliation_stats"] = reconcile_instance_states()
 
         # 3. Maintain standby pool
-        print(" Step 3: Maintaining standby pool...")
+        print("Step 3: Maintaining standby pool...")
         results["standby_maintenance"] = maintain_standby_pool()
 
         # 4. Stop idle instances for cost optimization
@@ -611,12 +745,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         results["idle_instances_stopped"] = cleanup_idle_running_instances()
 
         # 5. Ensure standby pool capacity
-        print(" Step 5: Checking standby pool capacity...")
+        print("Step 5: Checking standby pool capacity...")
         results["capacity_check"] = ensure_standby_pool_capacity()
 
         # Summary
         total_operations = (
             results["cleanup_stats"].get("cleaned_assignments", 0)
+            + results["orphaned_cleanup_stats"].get("orphaned_rules_deleted", 0)
             + results["reconciliation_stats"].get("cleanup_count", 0)
             + results["reconciliation_stats"].get("update_count", 0)
             + results["idle_instances_stopped"]
@@ -638,7 +773,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
 
     except Exception as e:
-        print(f" Error during premium cleanup: {str(e)}")
+        print(f"Error during premium cleanup: {str(e)}")
         return {
             "statusCode": 500,
             "body": json.dumps(
