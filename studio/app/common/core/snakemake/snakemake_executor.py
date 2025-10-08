@@ -275,6 +275,23 @@ def _snakemake_execute_batch(
         logger.info("Prepare batch workspace")
         batch_executor.prepare_batch_workspace()
 
+        # Create symlink to config file for DAG creation on main instance
+        # When workdir is /app, Snakefile expects config at /app/snakemake.yaml
+        config_source = join_filepath(
+            [DIRPATH.OUTPUT_DIR, workspace_id, unique_id, DIRPATH.SNAKEMAKE_CONFIG_YML]
+        )
+        config_symlink = "/app/snakemake.yaml"
+
+        # Remove existing symlink/file if present
+        if os.path.islink(config_symlink):
+            os.unlink(config_symlink)
+        elif os.path.exists(config_symlink):
+            os.remove(config_symlink)
+
+        # Create symlink so Snakefile can find config during DAG creation
+        os.symlink(config_source, config_symlink)
+        logger.info(f"Created config symlink: {config_symlink} -> {config_source}")
+
         # Configure storage based on availability
         # Try S3 first with simplified config (relies on _make_relative_path() fix)
         # Falls back to EFS if S3 not available
@@ -834,6 +851,12 @@ def _snakemake_execute_batch(
         logger.error(f"Failed to setup AWS Batch execution: {e}")
         snakemake_result = False
     finally:
+        # Clean up config symlink if it exists
+        config_symlink = "/app/snakemake.yaml"
+        if os.path.islink(config_symlink):
+            os.unlink(config_symlink)
+            logger.debug(f"Cleaned up config symlink: {config_symlink}")
+
         smk_logger.clean_up()
 
     # ------------------------------------------------------------

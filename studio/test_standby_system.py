@@ -24,7 +24,7 @@ def test_standby_pool_logic():
     # Mock AWS and database calls
     with patch("boto3.client") as mock_boto3, patch("pymysql.connect") as mock_pymysql:
         # Import the premium manager after mocking
-        from config.terraform.premium_manager import (
+        from config.terraform.premium_manager_package.premium_manager import (
             ensure_standby_pool_capacity,
             get_assigned_users_for_instance,
             get_standby_pool_status,

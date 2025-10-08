@@ -53,11 +53,9 @@ echo "Building autoscaling Docker image..."
 docker build -f studio/config/docker/Dockerfile -t $REPO_NAME:$IMAGE_TAG .
 
 # Tag and push to ECR
-docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:$IMAGE_TAG
 docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:latest
-docker push $ECR_URI:$IMAGE_TAG
 docker push $ECR_URI:latest
-echo "Successfully pushed autoscaling image: $ECR_URI:$IMAGE_TAG and $ECR_URI:latest"
+echo "Successfully pushed autoscaling image: $ECR_URI:latest"
 
 # ===========================================
 # 2. Build Batch Image with Frontend
@@ -98,11 +96,9 @@ echo "Building batch Docker image..."
 docker build -f studio/config/docker/Dockerfile -t $REPO_NAME:$IMAGE_TAG .
 
 # Tag and push to ECR
-docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:$IMAGE_TAG
 docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:latest
-docker push $ECR_URI:$IMAGE_TAG
 docker push $ECR_URI:latest
-echo "Successfully pushed batch image: $ECR_URI:$IMAGE_TAG and $ECR_URI:latest"
+echo "Successfully pushed batch image: $ECR_URI:latest"
 
 # ===========================================
 # 3. Build Snakemake Batch Image (No Frontend)
@@ -129,10 +125,8 @@ echo "Building snakemake batch Docker image..."
 docker build -f studio/config/docker/Dockerfile.batch -t $REPO_NAME:$IMAGE_TAG .
 
 # Tag and push to ECR
-docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:$IMAGE_TAG
 docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:latest
-docker push $ECR_URI:$IMAGE_TAG
 docker push $ECR_URI:latest
-echo "Successfully pushed snakemake batch image: $ECR_URI:$IMAGE_TAG and $ECR_URI:latest"
+echo "Successfully pushed snakemake batch image: $ECR_URI:latest"
 
 echo "All images built and pushed successfully!"

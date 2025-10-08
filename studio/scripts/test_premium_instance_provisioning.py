@@ -297,6 +297,128 @@ class PremiumInstanceTester:
             logging.error(f"Error calling premium assignment API: {e}")
             return None
 
+    def unassign_premium_user(self, id_token: str) -> bool:
+        """
+        Call premium unassignment API to release instance for user.
+        Returns True on success, False on failure.
+        """
+        try:
+            unassign_url = f"{self.api_url}/users/me/premium/assign"
+            headers = {
+                "Authorization": f"Bearer {id_token}",
+                "Content-Type": "application/json",
+            }
+            logging.info("Calling premium unassignment API for user...")
+            response = requests.delete(unassign_url, headers=headers, timeout=60)
+            logging.info(
+                f"Unassignment response: {response.status_code} {response.text}"
+            )
+            if response.status_code != 200:
+                logging.warning(f"Could not unassign user: {response.text}")
+            return response.status_code == 200
+        except Exception as e:
+            logging.error(f"Error calling premium unassignment API: {e}")
+            return False
+
+    def cleanup_and_reset_state(
+        self, test_users: List[Dict], terraform_dir: str, skip_token_gen: bool
+    ):
+        """Unassigns users and stops all premium instances to ensure a clean state."""
+        logging.info("\n" + "=" * 50)
+        logging.info("STEP 0: CLEANUP AND RESET")
+        logging.info("=" * 50)
+
+        # Unassign all known test users
+        users_to_unassign = [
+            {"email_keyword": "optinist_test_user_premium", "token_type": "premium"},
+            {
+                "email_keyword": "optinist_test_user_premium_over",
+                "token_type": "premium_over",
+            },
+        ]
+
+        for user_info in users_to_unassign:
+            # Find user
+            target_user = None
+            for user in test_users:
+                email = user.get("email", "")
+                if user_info["email_keyword"] in email.lower():
+                    if user_info["email_keyword"] == "optinist_test_user_premium" and (
+                        "expire" in email.lower() or "over" in email.lower()
+                    ):
+                        continue
+                    target_user = user
+                    break
+
+            if not target_user:
+                logging.warning(
+                    f"User for cleanup not found: {user_info['email_keyword']}"
+                )
+                continue
+
+            # Get token
+            id_token = None
+            token_key = f"{user_info['token_type']}_token"
+            if skip_token_gen:
+                tokens_file = os.path.join(os.path.dirname(__file__), "tokens.json")
+                if os.path.exists(tokens_file):
+                    with open(tokens_file, "r") as f:
+                        tokens = json.load(f)
+                        id_token = tokens.get(token_key)
+
+            if not id_token and generate_jwt_tokens:
+                logging.info(f"Generating token for cleanup: {user_info['token_type']}")
+                tokens = generate_jwt_tokens(
+                    environment="cloud",
+                    terraform_dir=terraform_dir,
+                    user_type=user_info["token_type"],
+                )
+                if tokens:
+                    id_token = tokens.get(token_key)
+
+            if id_token:
+                logging.info(f"Unassigning user: {target_user['email']}")
+                self.unassign_premium_user(id_token)
+            else:
+                logging.warning(
+                    f"Could not get token to unassign user: {target_user['email']}"
+                )
+
+        # Stop any running premium instances
+        logging.info("Stopping all premium instances...")
+        try:
+            initial_states = self.get_instance_states()
+            running_instances = initial_states.get("running", [])
+            if running_instances:
+                instance_ids = [inst["id"] for inst in running_instances]
+                logging.info(f"Found running instances to stop: {instance_ids}")
+                self.ec2.stop_instances(InstanceIds=instance_ids)
+                waiter = self.ec2.get_waiter("instance_stopped")
+                waiter.wait(InstanceIds=instance_ids)
+                logging.info("Successfully stopped instances.")
+            else:
+                logging.info("No running premium instances found to stop.")
+        except Exception as e:
+            logging.error(f"Failed to stop instances during cleanup: {e}")
+
+    def get_user_assignment_status(self, id_token: str) -> Optional[Dict]:
+        """Get the current premium assignment status for the user via the API."""
+        try:
+            status_url = f"{self.api_url}/users/me/premium/assignment/status"
+            headers = {"Authorization": f"Bearer {id_token}"}
+            response = requests.get(status_url, headers=headers, timeout=30)
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logging.warning(
+                    f"Failed to get user status: {response.status_code} {response.text}"
+                )
+                return None
+        except Exception as e:
+            logging.error(f"Error getting user assignment status: {e}")
+            return None
+
     def wait_for_instance_running(
         self, instance_id: str, timeout: int = 300, poll_interval: int = 10
     ) -> bool:
@@ -340,31 +462,30 @@ class PremiumInstanceTester:
         return False
 
     def wait_for_ecs_task(
-        self, instance_id: str, timeout: int = 180, poll_interval: int = 10
+        self, instance_id: str, timeout: int = 600, poll_interval: int = 20
     ) -> bool:
         """
         Poll ECS until a task is running on the specified instance
-
-        Returns True if task found, False on timeout
+        Returns True if task found and running, False on timeout
         """
         logging.info(f"Waiting for ECS task to start on instance {instance_id}...")
-
         start_time = time.time()
-
         while time.time() - start_time < timeout:
             tasks = self.get_premium_ecs_tasks()
-
             for task in tasks:
                 if task["ec2_instance_id"] == instance_id:
                     logging.info(
-                        f"ECS task {task['task_id'][:12]}... is running "
-                        f"on instance {instance_id}!"
+                        f"Found ECS task {task['task_id'][:12]}... on instance "
+                        f"{instance_id} with status: {task['last_status']}"
                     )
-                    return True
-
-            logging.info(f"No task found yet on {instance_id}")
+                    if task["last_status"] == "RUNNING":
+                        logging.info(
+                            f"ECS task {task['task_id'][:12]}... is RUNNING "
+                            f"on instance {instance_id}!"
+                        )
+                        return True
+            logging.info(f"No running task found yet on {instance_id}")
             time.sleep(poll_interval)
-
         logging.error(
             f"Timeout waiting for ECS task on {instance_id} " f"(waited {timeout}s)"
         )
@@ -373,7 +494,8 @@ class PremiumInstanceTester:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Test premium instance provisioning flow"
+        description="End-to-end test for premium instance provisioning, "
+        "sharing, and migration."
     )
     parser.add_argument(
         "--terraform-dir",
@@ -393,166 +515,162 @@ def main():
 
     args = parser.parse_args()
 
-    logging.info("=" * 50)
-    logging.info("Premium Instance Provisioning Test")
-    logging.info("=" * 50)
+    logging.info("=" * 60)
+    logging.info("Premium User Lifecycle Test (Assign, Share, Scale, Migrate)")
+    logging.info("=" * 60)
 
-    # Initialize tester
+    # Initialize tester and load users
     tester = PremiumInstanceTester(args.terraform_dir, args.aws_region)
+    if not load_test_users_for_db:
+        logging.error("Function 'load_test_users_for_db' not available!")
+        sys.exit(1)
+    test_users = load_test_users_for_db()
 
-    # Step 1: Get initial state
-    logging.info("\nSTEP 1: Checking initial instance state...")
+    # --- STEP 0: CLEANUP ---
+    logging.info("\nSTEP 0: Ensuring a clean environment...")
+    tester.cleanup_and_reset_state(test_users, args.terraform_dir, args.skip_token_gen)
     initial_states = tester.get_instance_states()
-    initial_tasks = tester.get_premium_ecs_tasks()
+    assert (
+        len(initial_states.get("running", [])) == 0
+    ), "Test must start with 0 running instances!"
 
-    tester.print_instance_summary(initial_states, "INITIAL INSTANCE STATE")
-    tester.print_task_summary(initial_tasks, "INITIAL ECS TASKS")
+    # --- Get Tokens for Both Users ---
+    user1_email_keyword = "optinist_test_user_premium"
+    user2_email_keyword = "optinist_test_user_premium_over"
 
-    # Step 2: Get premium user credentials and generate token
-    logging.info("\nSTEP 2: Getting premium user credentials...")
-
-    # Get premium user from test config
-    test_users = load_test_users_for_db() if load_test_users_for_db else []
-    premium_user = None
-
-    for user in test_users:
-        email = user.get("email", "")
-        if "premium" in email.lower() and "optinist_test_user_premium" in email.lower():
-            # Skip "premium_expire"and "premium_over"users
-            if "expire" not in email.lower() and "over" not in email.lower():
-                premium_user = user
-                break
-
-    if not premium_user:
-        logging.error("Premium test user not found!")
-        logging.error("Make sure test_users are configured in Terraform")
-        sys.exit(1)
-
-    firebase_uid = premium_user.get("firebase_uid")
-    email = premium_user.get("email")
-
-    if not firebase_uid:
-        logging.error("Premium user has no firebase_uid!")
-        sys.exit(1)
-
-    logging.info(f"Premium user: {email}")
-    logging.info(f"Firebase UID: {firebase_uid}")
-
-    # Generate JWT token
-    id_token = None
-
-    if args.skip_token_gen:
-        # Load from tokens.json
-        tokens_file = os.path.join(os.path.dirname(__file__), "tokens.json")
-        if os.path.exists(tokens_file):
-            with open(tokens_file, "r") as f:
-                tokens = json.load(f)
-                id_token = tokens.get("premium_token")
-                logging.info("Loaded premium token from tokens.json")
-        else:
-            logging.warning("tokens.json not found, will generate new token")
-
-    if not id_token and generate_jwt_tokens:
-        logging.info("Generating new Firebase ID token...")
-        tokens = generate_jwt_tokens(
-            environment="cloud", terraform_dir=args.terraform_dir, user_type="premium"
-        )
-        if tokens:
-            id_token = tokens.get("premium_token")
-
-    if not id_token:
-        logging.error("Failed to get Firebase ID token!")
-        sys.exit(1)
-
-    # Step 3: Assign premium user (trigger instance provisioning)
-    logging.info("\nSTEP 3: Assigning premium user (triggering provisioning)...")
-
-    assignment_result = tester.assign_premium_user(id_token)
-
-    if not assignment_result:
-        logging.error("Failed to assign premium user!")
-        sys.exit(1)
-
-    assigned_instance_id = assignment_result.get("instance_id")
-
-    if not assigned_instance_id:
-        logging.error("No instance_id in assignment result!")
-        logging.error(f"Result: {json.dumps(assignment_result, indent=2)}")
-        sys.exit(1)
-
-    logging.info(f"User assigned to instance: {assigned_instance_id}")
-
-    # Step 4: Wait for instance to start
-    logging.info("\nSTEP 4: Verifying instance provisioning...")
-
-    if not tester.wait_for_instance_running(assigned_instance_id, timeout=300):
-        logging.error("Instance failed to reach running state!")
-        sys.exit(1)
-
-    # Step 5: Wait for ECS task
-    logging.info("\nSTEP 5: Verifying ECS task deployment...")
-
-    if not tester.wait_for_ecs_task(assigned_instance_id, timeout=180):
-        logging.warning("ECS task not found (might still be starting)")
-
-    # Step 6: Get final state
-    logging.info("\nSTEP 6: Checking final instance state...")
-    final_states = tester.get_instance_states()
-    final_tasks = tester.get_premium_ecs_tasks()
-
-    tester.print_instance_summary(final_states, "FINAL INSTANCE STATE")
-    tester.print_task_summary(final_tasks, "FINAL ECS TASKS")
-
-    # Step 7: Compare states
-    logging.info("\n" + "=" * 50)
-    logging.info("STATE COMPARISON")
-    logging.info("=" * 50)
-
-    initial_running = len(initial_states.get("running", []))
-    final_running = len(final_states.get("running", []))
-    initial_stopped = len(initial_states.get("stopped", []))
-    final_stopped = len(final_states.get("stopped", []))
-
-    logging.info(
-        f"Running instances: {initial_running} -> {final_running} "
-        f"(change: {final_running - initial_running:+d})"
+    user1 = next(
+        (
+            u
+            for u in test_users
+            if user1_email_keyword in u.get("email", "")
+            and "over" not in u.get("email", "")
+        ),
+        None,
     )
-    logging.info(
-        f"Stopped instances: {initial_stopped} -> {final_stopped} "
-        f"(change: {final_stopped - initial_stopped:+d})"
-    )
-    logging.info(
-        f"ECS tasks: {len(initial_tasks)} -> {len(final_tasks)} "
-        f"(change: {len(final_tasks) - len(initial_tasks):+d})"
+    user2 = next(
+        (u for u in test_users if user2_email_keyword in u.get("email", "")), None
     )
 
-    # Verify expected changes
-    success = True
+    if not user1 or not user2:
+        logging.error("Could not find both test users!")
+        sys.exit(1)
 
-    if final_running <= initial_running:
-        logging.error("ERROR: No new instances started!")
-        success = False
+    logging.info(
+        f"Generating tokens for User 1 ({user1['email']}) "
+        f"and User 2 ({user2['email']})..."
+    )
+    tokens_all = generate_jwt_tokens(
+        environment="cloud", terraform_dir=args.terraform_dir, user_type="all"
+    )
+    user1_token = tokens_all.get("premium_token")
+    user2_token = tokens_all.get("premium_over_token")
 
-    if assigned_instance_id not in [i["id"] for i in final_states.get("running", [])]:
-        logging.error(
-            f"ERROR: Assigned instance {assigned_instance_id} is not running!"
-        )
-        success = False
+    if not user1_token or not user2_token:
+        logging.error("Failed to generate tokens for both users!")
+        sys.exit(1)
 
-    if success:
-        logging.info("\n" + "=" * 50)
-        logging.info("TEST PASSED!")
-        logging.info("=" * 50)
+    # --- STEP 1: Assign User 1 (Dedicated Instance) ---
+    logging.info(f"\nSTEP 1: Assigning User 1 ({user1['email']}) to a new instance...")
+    assign_result1 = tester.assign_premium_user(user1_token)
+    assert assign_result1 and "instance_id" in assign_result1, "Failed to assign User 1"
+    instance_A_id = assign_result1["instance_id"]
+    logging.info(f"User 1 assigned to instance {instance_A_id}. Verifying startup...")
+    assert tester.wait_for_instance_running(
+        instance_A_id
+    ), f"Instance {instance_A_id} failed to start!"
+    assert tester.wait_for_ecs_task(
+        instance_A_id
+    ), f"ECS task on {instance_A_id} failed to start!"
+    logging.info("STEP 1 PASSED: User 1 is running on a dedicated instance.")
+
+    # --- STEP 2: Assign User 2 (Shared Instance) ---
+    logging.info(
+        f"\nSTEP 2: Assigning User 2 ({user2['email']}) to trigger a shared assignment"
+    )
+    assign_result2 = tester.assign_premium_user(user2_token)
+    assert assign_result2 and "instance_id" in assign_result2, "Failed to assign User 2"
+    assert (
+        assign_result2.get("instance_id") == instance_A_id
+    ), "User 2 was not assigned to the same instance for sharing!"
+    assert (
+        assign_result2.get("is_shared") is True
+    ), "User 2 assignment was not marked as shared!"
+    logging.info(f"User 2 correctly assigned to shared instance {instance_A_id}.")
+    logging.info("STEP 2 PASSED: Temporary shared assignment verified.")
+
+    # --- STEP 3: Verify Background Scaling ---
+    logging.info(
+        "\nSTEP 3: Verifying that a new instance is being launched in the background..."
+    )
+    instance_B_id = None
+    for _ in range(24):  # Wait up to 4 minutes
+        all_instances = tester.get_instance_states()
+        all_instance_ids = {i["id"] for state in all_instances.values() for i in state}
+        if len(all_instance_ids) > 1:
+            new_ids = all_instance_ids - {instance_A_id}
+            instance_B_id = new_ids.pop()
+            logging.info(
+                f"New instance {instance_B_id} detected launching in the background."
+            )
+            break
+        time.sleep(10)
+    assert (
+        instance_B_id
+    ), "System did not launch a new instance after shared assignment!"
+    logging.info("STEP 3 PASSED: Background scaling verified.")
+
+    # --- STEP 4: Verify User 2 Migration ---
+    logging.info(
+        f"\nSTEP 4: Verifying User 2 is migrated to the new instance ({instance_B_id})"
+    )
+    migration_verified = False
+    for _ in range(60):  # Wait up to 10 minutes for migration
+        status_result = tester.get_user_assignment_status(user2_token)
+        if (
+            status_result
+            and status_result.get("assignment", {}).get("instance_id") == instance_B_id
+        ):
+            logging.info(
+                f"User 2 successfully migrated to dedicated instance {instance_B_id}!"
+            )
+            migration_verified = True
+            break
         logging.info(
-            f"Premium user {email} successfully assigned to "
-            f"instance {assigned_instance_id}"
+            f"Waiting for User 2 to be migrated... Current instance: "
+            f"{status_result.get('assignment', {}).get('instance_id')}"
         )
-        logging.info("Instance provisioned and ECS task deployed successfully")
-    else:
-        logging.error("\n" + "=" * 50)
-        logging.error("TEST FAILED!")
-        logging.error("=" * 50)
-        sys.exit(1)
+        time.sleep(10)
+    assert migration_verified, "User 2 was not migrated to the new dedicated instance!"
+    logging.info("STEP 4 PASSED: User migration to dedicated instance verified.")
+
+    # --- STEP 5: Final State Verification ---
+    logging.info("\nSTEP 5: Verifying final system state...")
+    final_states = tester.get_instance_states()
+    running_instances = final_states.get("running", [])
+    assert (
+        len(running_instances) == 2
+    ), f"Expected 2 running instances, but found {len(running_instances)}"
+
+    user1_final_status = tester.get_user_assignment_status(user1_token)
+    user2_final_status = tester.get_user_assignment_status(user2_token)
+
+    assert (
+        user1_final_status.get("assignment", {}).get("instance_id") == instance_A_id
+    ), "User 1 is not on the correct instance!"
+    assert (
+        user2_final_status.get("assignment", {}).get("instance_id") == instance_B_id
+    ), "User 2 is not on the correct instance!"
+
+    logging.info(
+        "Final state check complete. "
+        "All users are on their correct dedicated instances."
+    )
+    logging.info("STEP 5 PASSED: Final state verified.")
+
+    # --- TEST SUCCESS ---
+    logging.info("\n" + "=" * 60)
+    logging.info("FULL PREMIUM LIFECYCLE TEST PASSED!")
+    logging.info("=" * 60)
 
 
 if __name__ == "__main__":

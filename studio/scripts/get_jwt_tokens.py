@@ -301,7 +301,7 @@ def generate_jwt_tokens(
     # Generate tokens based on user_type
     tokens = {}
     free_users = []
-    premium_user = None
+    premium_users = []
 
     # Find the users
     for user_data in test_users:
@@ -311,9 +311,7 @@ def generate_jwt_tokens(
         elif (
             "premium" in email.lower() and "optinist_test_user_premium" in email.lower()
         ):
-            # Skip "premium_expire"user, only use base premium user
-            if "expire" not in email.lower():
-                premium_user = user_data
+            premium_users.append(user_data)
 
     # Sort free users by email to ensure consistent ordering
     free_users.sort(key=lambda u: u.get("email", ""))
@@ -361,29 +359,48 @@ def generate_jwt_tokens(
                 if id_token:
                     tokens["free_token"] = id_token
 
-    # Generate premium user token if requested
-    if user_type in ["premium", "all"]:
-        if not premium_user:
-            print(
-                "Error: Premium user (optinist_test_user_premium@araya.org) not found!"
-            )
-            if user_type == "premium":
-                return None
-        else:
-            email = premium_user.get("email", "")
-            firebase_uid = premium_user.get("firebase_uid", "")
+    # --- Premium User Token Generation ---
+    def generate_premium_token(user, token_key):
+        email = user.get("email", "")
+        firebase_uid = user.get("firebase_uid", "")
+        if not firebase_uid:
+            print(f"Error: User {email} has no firebase_uid")
+            return
 
-            if not firebase_uid:
-                print("Error: Premium user has no firebase_uid")
-                if user_type == "premium":
-                    return None
-            else:
-                print(f"\nInfo: Generating token for: {email}")
-                print(f"Firebase UID: {firebase_uid}")
+        print(f"\nInfo: Generating token for: {email}")
+        print(f"Firebase UID: {firebase_uid}")
+        id_token = create_firebase_id_token(firebase_uid, email)
+        if id_token:
+            tokens[token_key] = id_token
 
-                id_token = create_firebase_id_token(firebase_uid, email)
-                if id_token:
-                    tokens["premium_token"] = id_token
+    if user_type == "premium" or user_type == "all":
+        target_user = next(
+            (
+                u
+                for u in premium_users
+                if "over" not in u.get("email", "")
+                and "expire" not in u.get("email", "")
+            ),
+            None,
+        )
+        if target_user:
+            generate_premium_token(target_user, "premium_token")
+        elif user_type == "premium":
+            print("Error: Base premium user not found!")
+
+    if user_type == "premium_over" or user_type == "all":
+        target_user = next(
+            (
+                u
+                for u in premium_users
+                if "over" in u.get("email", "") and "expire" not in u.get("email", "")
+            ),
+            None,
+        )
+        if target_user:
+            generate_premium_token(target_user, "premium_over_token")
+        elif user_type == "premium_over":
+            print("Error: Premium over user not found!")
 
     if tokens:
         # Save tokens to file for reuse

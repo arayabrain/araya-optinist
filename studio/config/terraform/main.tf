@@ -2187,6 +2187,18 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
           aws_s3_bucket.app_storage.arn,
           "${aws_s3_bucket.app_storage.arn}/*"
         ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "iam:PassRole"
+        ]
+        Resource = aws_iam_role.ecs_instance_role.arn
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = "ec2.amazonaws.com"
+          }
+        }
       }
     ]
   })
@@ -3041,8 +3053,7 @@ resource "aws_cloudwatch_dashboard" "main" {
             ["AWS/AutoScaling", "GroupInServiceInstances", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Free Tier Running" }],
             ["AWS/AutoScaling", "GroupMinSize", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Free Tier Min" }],
             ["AWS/AutoScaling", "GroupMaxSize", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label": "Free Tier Max" }],
-            ["AWS/EC2", "InstanceCount", "InstanceId", aws_instance.premium[0].id, { "label": "Premium 1" }],
-            ["AWS/EC2", "InstanceCount", "InstanceId", aws_instance.premium[1].id, { "label": "Premium 2" }]
+            ["AWS/EC2", "InstanceCount", "InstanceId", aws_instance.premium[0].id, { "label": "Premium 1" }]
           ]
           view    = "timeSeries"
           stacked = false
@@ -3318,6 +3329,7 @@ user_data = base64encode(<<-EOF
     echo ECS_CLUSTER=${aws_ecs_cluster.main.name} >> /etc/ecs/ecs.config
     echo ECS_ENABLE_CONTAINER_METADATA=true >> /etc/ecs/ecs.config
     echo ECS_ENABLE_TASK_IAM_ROLE=true >> /etc/ecs/ecs.config
+    echo ECS_INSTANCE_ATTRIBUTES='{"tier":"free"}' >> /etc/ecs/ecs.config
 
     # Install packages
     yum update -y
@@ -3471,9 +3483,127 @@ resource "aws_launch_template" "premium" {
     enabled = true
   }
 
-  user_data = base64encode(templatefile("${path.module}/user_data_premium.sh", {
-    cluster_name = aws_ecs_cluster.main.name
-  }))
+  user_data = base64encode(<<-EOF
+    #!/bin/bash
+    set -e
+    exec > /var/log/ecs-setup.log 2>&1
+
+    echo "$(date): Starting ECS setup with OptiNiSt configuration"
+
+    # ECS Configuration
+    echo ECS_CLUSTER=${aws_ecs_cluster.main.name} >> /etc/ecs/ecs.config
+    echo ECS_ENABLE_CONTAINER_METADATA=true >> /etc/ecs/ecs.config
+    echo ECS_ENABLE_TASK_IAM_ROLE=true >> /etc/ecs/ecs.config
+    echo ECS_INSTANCE_ATTRIBUTES='{"tier":"premium"}' >> /etc/ecs/ecs.config
+
+    # Install packages
+    yum update -y
+    yum install -y amazon-ssm-agent mysql amazon-efs-utils nc mysql-client git docker amazon-cloudwatch-agent awscli
+
+    # Start SSM agent
+    if ! systemctl is-active --quiet amazon-ssm-agent; then
+        systemctl enable amazon-ssm-agent
+        systemctl start amazon-ssm-agent
+    fi
+
+    # Create CloudWatch agent config
+    cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CW_CONFIG'
+    {
+        "metrics": {
+            "namespace": "CWAgent",
+            "metrics_collected": {
+                "mem": {
+                    "measurement": [
+                        "mem_used_percent"
+                    ]
+                },
+                "cpu": {
+                    "measurement": [
+                        "cpu_usage_idle",
+                        "cpu_usage_iowait"
+                    ],
+                    "totalcpu": true
+                }
+            }
+        }
+    }
+    CW_CONFIG
+
+    # Start CloudWatch agent
+    /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+        -a fetch-config -m ec2 -s \
+        -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+
+    # Start Docker (using same safe approach)
+    if ! systemctl is-active --quiet docker; then
+        systemctl enable docker || echo "$(date): Docker enable failed"
+        systemctl start docker || echo "$(date): Docker start failed"
+    fi
+    for user in ec2-user ssm-user; do
+      if id "$user" &>/dev/null; then
+          usermod -a -G docker "$user" && echo "$(date): Added $user to docker group"
+          break
+      fi
+    done
+
+    # Clone and build OptiNiSt
+    echo "$(date): Cloning OptiNiSt repository"
+    cd /opt
+        git clone -b ${var.git_branch} ${var.git_repo} optinist-for-cloud || {
+        echo "$(date): ERROR: Git clone failed!"
+        exit 1
+    }
+    if [ ! -d "optinist-for-cloud" ]; then
+        echo "$(date): ERROR: Repository directory not created"
+        exit 1
+    }
+    cd optinist-for-cloud
+
+    # Create Firebase configuration files on the host
+    echo "$(date): Creating Firebase configuration files"
+    mkdir -p /opt/optinist-for-cloud/studio/config/auth
+
+    # Create firebase_config.json
+    cat > /opt/optinist-for-cloud/studio/config/auth/firebase_config.json << 'FIREBASE_CONFIG'
+    ${var.firebase_config_json}
+    FIREBASE_CONFIG
+
+    # Create firebase_private.json
+    cat > /opt/optinist-for-cloud/studio/config/auth/firebase_private.json << 'FIREBASE_PRIVATE'
+    ${var.firebase_private_json}
+    FIREBASE_PRIVATE
+
+    # Set proper permissions
+    chmod 644 /opt/optinist-for-cloud/studio/config/auth/firebase_*.json
+
+    # Add AWS Batch plugins to Dockerfile
+    echo "$(date): Adding AWS Batch plugins to Dockerfile"
+    # Build the Docker image
+    echo "$(date): Building OptiNiSt Docker image"
+    if [ ! -f "studio/config/docker/Dockerfile" ]; then
+        echo "ERROR: Dockerfile not found in repository"
+        ls -la
+        exit 1
+    }
+
+    # ECR login and pull pre-built image
+    echo "$(date): Logging into ECR and pulling pre-built image"
+    aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin ${split("/", var.ecr_repository_url)[0]}
+    echo "$(date): Pulling OptiNiSt Docker image from ECR"
+    docker pull "${var.ecr_repository_url}:latest" || {
+        echo "ERROR: Docker pull failed!"
+        exit 1
+    }
+
+    # EFS setup
+    mkdir -p /mnt/efs
+    echo "${aws_efs_file_system.snmk.id}.efs.ap-northeast-1.amazonaws.com:/ /mnt/efs efs tls,_netdev" >> /etc/fstab
+    mount -a || echo "EFS will retry"
+
+    # Test DB connection (non-blocking)
+    nc -z ${replace(aws_db_instance.main.endpoint, ":3306", "")} 3306 && echo "DB accessible" || echo "DB will be available"
+    EOF
+  )
 
   tag_specifications {
     resource_type = "instance"
@@ -3492,7 +3622,7 @@ resource "aws_launch_template" "premium" {
 
 # Premium On-Demand Instances - Start stopped, activated when users connect
 resource "aws_instance" "premium" {
-  count = 2  # Start with 2 premium instances
+  count = 1  # Start with 1 premium instance, create more on-demand
 
   launch_template {
     id      = aws_launch_template.premium.id
@@ -4462,24 +4592,100 @@ resource "aws_ecs_task_definition" "premium" {
           value = "premium"
         },
         {
-          name  = "MYSQL_SERVER"
-          value = aws_db_instance.main.endpoint
+          name  = "TZ"
+          value = "Asia/Tokyo"
         },
         {
-          name  = "MYSQL_USER"
+          name  = "DB_HOST"
+          value = split(":", aws_db_instance.main.endpoint)[0]
+        },
+        {
+          name  = "DB_PORT"
+          value = split(":", aws_db_instance.main.endpoint)[1]
+        },
+        {
+          name  = "DB_USER"
           value = var.mysql_user
         },
         {
-          name  = "MYSQL_PASSWORD"
+          name  = "DB_NAME"
+          value = var.mysql_database
+        },
+        {
+          name  = "DB_PASSWORD"
           value = var.mysql_password
         },
         {
-          name  = "MYSQL_DATABASE"
-          value = var.mysql_database
+          name  = "BACKEND_HOST"
+          value = "0.0.0.0"
+        },
+        {
+          name  = "BACKEND_PORT"
+          value = "8000"
+        },
+        {
+          name  = "FRONTEND_SERVER_HOST"
+          value = aws_lb.autoscaling.dns_name
+        },
+        {
+          name  = "FRONTEND_SERVER_PORT"
+          value = "80"
+        },
+        {
+          name  = "FRONTEND_SERVER_PROTO"
+          value = "http"
+        },
+        {
+          name  = "INITIAL_FIREBASE_UID"
+          value = var.optinist_admin_uid
+        },
+        {
+          name  = "INITIAL_USER_NAME"
+          value = var.optinist_admin_name
+        },
+        {
+          name  = "INITIAL_USER_EMAIL"
+          value = var.optinist_admin_email
+        },
+        {
+          name  = "ADMIN_STORAGE_QUOTA_BYTES"
+          value = "107374182400"
+        },
+        {
+          name  = "SECRET_KEY"
+          value = var.optinist_secret_key
         },
         {
           name  = "S3_DEFAULT_BUCKET_NAME"
           value = aws_s3_bucket.app_storage.id
+        },
+        {
+          name  = "REMOTE_STORAGE_TYPE"
+          value = "2"
+        },
+        {
+          name  = "USE_AWS_BATCH"
+          value = "false"
+        },
+        {
+          name  = "LOG_LEVEL"
+          value = "DEBUG"
+        },
+        {
+          name  = "UVICORN_ACCESS_LOG"
+          value = "1"
+        },
+        {
+          name  = "CORS_ORIGINS"
+          value = "*"
+        },
+        {
+          name  = "PYTHONUNBUFFERED"
+          value = "1"
+        },
+        {
+          name  = "OPTINIST_DIR"
+          value = "/app/studio_data"
         },
         {
           name  = "STRIPE_CALLBACK_URL"
@@ -4682,6 +4888,7 @@ user_data = base64encode(<<-EOF
     echo ECS_CLUSTER=${aws_ecs_cluster.main.name} >> /etc/ecs/ecs.config
     echo ECS_ENABLE_CONTAINER_METADATA=true >> /etc/ecs/ecs.config
     echo ECS_ENABLE_TASK_IAM_ROLE=true >> /etc/ecs/ecs.config
+    echo ECS_INSTANCE_ATTRIBUTES='{"tier":"free"}' >> /etc/ecs/ecs.config
 
     # Install packages
     yum update -y

@@ -142,6 +142,7 @@ def increment_assignment_attempts(user_id: str) -> int:
     return _increment_assignment_attempts_transaction(user_id)
 
 
+@with_transaction
 def _store_user_assignment_transaction(
     connection,
     user_id: str,
@@ -669,6 +670,7 @@ def register_orphaned_stopped_instances():
                                WHERE instance_id = %s""",
                             (instance_id,),
                         )
+                        connection.commit()  # Commit the standby registration
 
                 print(f"Registered orphaned instance {instance_id} as standby")
                 registered_count += 1
@@ -712,9 +714,10 @@ def create_and_stop_standby_instance():
                 {
                     "ResourceType": "instance",
                     "Tags": [
-                        {"Key": "Name", "Value": "subscr-optinist-premium-standby"},
-                        {"Key": "Type", "Value": "premium-standby"},
-                        {"Key": "Service", "Value": "optinist-premium"},
+                        {"Key": "Name", "Value": "subscr-premium-standby"},
+                        {"Key": "Type", "Value": "Premium-Instance"},
+                        {"Key": "Tier", "Value": "premium"},
+                        {"Key": "Service", "Value": "premium-tier"},
                     ],
                 }
             ],
@@ -756,6 +759,7 @@ def create_and_stop_standby_instance():
                        WHERE instance_id = %s""",
                     (instance_id,),
                 )
+                connection.commit()  # Commit the standby registration
 
         print(f"Successfully created and stopped standby instance {instance_id}")
         return instance_id
@@ -792,6 +796,7 @@ def start_standby_instance(instance_id: str):
                        WHERE instance_id = %s""",
                     (instance_id,),
                 )
+                connection.commit()  # Commit the state update
 
         print(f"Standby instance {instance_id} started successfully")
         return True
@@ -936,6 +941,61 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     except Exception as e:
         print(f"Error processing event: {str(e)}")
         return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+
+
+def get_next_available_priority(listener_arn: str, start_priority: int = 100) -> int:
+    """
+    Find next available ALB rule priority by querying existing rules.
+
+    Args:
+        listener_arn: ALB listener ARN to check
+        start_priority: Starting priority to search from (default: 100)
+
+    Returns:
+        Next available priority number
+
+    Raises:
+        Exception: If no priorities available (all 1-50000 used)
+    """
+    elbv2 = boto3.client("elbv2")
+
+    try:
+        # Get all existing rules for this listener
+        response = elbv2.describe_rules(ListenerArn=listener_arn)
+        rules = response.get("Rules", [])
+
+        # Extract used priorities (excluding default rule which has priority "default")
+        used_priorities = set()
+        for rule in rules:
+            priority = rule.get("Priority")
+            if priority and priority != "default":
+                try:
+                    used_priorities.add(int(priority))
+                except (ValueError, TypeError):
+                    # Skip if priority is not a valid integer
+                    continue
+
+        print(
+            f"Found {len(used_priorities)} existing ALB rules "
+            f"with priorities: {sorted(used_priorities)}"
+        )
+
+        # Find first available priority starting from start_priority
+        priority = start_priority
+        while priority in used_priorities:
+            priority += 1
+            if priority > 50000:
+                raise Exception(
+                    f"No available ALB rule priorities. All priorities "
+                    f"from {start_priority} to 50000 are in use."
+                )
+
+        print(f"Allocated priority {priority} for new ALB rule")
+        return priority
+
+    except Exception as e:
+        print(f"Error finding available priority: {str(e)}")
+        raise
 
 
 def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
@@ -1368,9 +1428,12 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         )
 
         # 9. Create ALB listener rule for user routing
+        # Get next available priority dynamically to avoid conflicts
+        priority = get_next_available_priority(alb_listener_arn, start_priority=100)
+
         rule_response = elbv2.create_rule(
             ListenerArn=alb_listener_arn,
-            Priority=10,  # All premium users get same base priority range
+            Priority=priority,
             Conditions=[
                 {
                     "Field": "http-header",
@@ -1392,28 +1455,36 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
 
         rule_arn = rule_response["Rules"][0]["RuleArn"]
 
+        # Clean up any standby placeholder assignment before storing new one
+        # This handles both standby instances and aws_fallback instances that were
+        # previously registered as standby
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM premium_user_assignments "
+                    "WHERE instance_id = %s AND is_standby = 1",
+                    (instance_id,),
+                )
+                deleted_count = cursor.rowcount
+                connection.commit()  # Commit the DELETE before the next transaction
+                if deleted_count > 0:
+                    print(
+                        f"Removed {deleted_count} standby placeholder assignment(s) "
+                        f"for instance {instance_id}"
+                    )
+
         # 10. Store assignment in RDS with state tracking
         store_user_assignment(
             user_id, instance_id, target_group_arn, rule_arn, instance_state, is_shared
         )
 
-        # 10.1. Initialize activity tracking for the new assignment
+        # Initialize activity tracking for the new assignment
         try:
             update_user_activity(user_id)
             print(f"Initialized activity tracking for user {user_id}")
         except Exception as activity_error:
             print(f" Failed to initialize activity tracking: {str(activity_error)}")
             # Don't fail the assignment for activity tracking errors
-
-        # If this was a standby instance, clean up the dummy standby assignment
-        if "assignment_source" in locals() and assignment_source == "standby":
-            with get_db_connection() as connection:
-                with connection.cursor() as cursor:
-                    # Remove the dummy standby assignment
-                    cursor.execute(
-                        "DELETE FROM premium_user_assignments WHERE user_id = %s",
-                        (f"standby-{instance_id}",),
-                    )
 
         # 11. Create replacement standby if needed
         if get_standby_count() < int(os.environ.get("PREMIUM_STANDBY_POOL_SIZE", "1")):
@@ -1713,6 +1784,7 @@ def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bo
                        WHERE user_id = %s""",
                     (new_instance_id, user_id),
                 )
+                connection.commit()  # Commit the migration
 
                 print(
                     f"Migrated user {user_id} from {old_instance_id} to "
@@ -2011,6 +2083,7 @@ def convert_running_instance_to_standby(instance_id: str):
                        last_state_check = NOW() WHERE instance_id = %s""",
                     (instance_id,),
                 )
+                connection.commit()  # Commit the standby conversion
 
         print(f"Successfully converted instance {instance_id} to standby")
         return True
