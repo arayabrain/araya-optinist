@@ -21,7 +21,7 @@ export const WORKSPACE_TYPE_HIERARCHY_MAPPING: Record<
 
 export interface FileTypeConfig {
   key: string
-  displayName: string
+  displayName?: string // Optional: If not provided, key will be used for display
   hasFilePath: boolean
   filePathType: "single" | "array"
   hasSpecialPath?: {
@@ -42,8 +42,12 @@ export interface FileTypeConfig {
 // Enhanced config with computed properties
 export interface EnhancedFileTypeConfig
   extends Required<
-    Omit<FileTypeConfig, "hasSpecialPath" | "stateFileType" | "treeHierarchy">
+    Omit<
+      FileTypeConfig,
+      "hasSpecialPath" | "stateFileType" | "treeHierarchy" | "displayName"
+    >
   > {
+  displayName: string // Required in enhanced config (defaults to key if not provided)
   hasSpecialPath?: FileTypeConfig["hasSpecialPath"]
   stateFileType?: string
   treeHierarchy: TreeHierarchyType // Required in enhanced config with default value
@@ -87,7 +91,6 @@ export const REACT_FLOW_NODE_TYPE_KEY = {
 export const FILE_TYPE_CONFIGS: Record<string, FileTypeConfig> = {
   IMAGE: {
     key: "image",
-    displayName: "imageData",
     hasFilePath: true,
     filePathType: "array",
     defaultParam: {},
@@ -95,7 +98,6 @@ export const FILE_TYPE_CONFIGS: Record<string, FileTypeConfig> = {
   },
   CSV: {
     key: "csv",
-    displayName: "csvData",
     hasFilePath: true,
     filePathType: "single",
     defaultParam: {
@@ -107,7 +109,6 @@ export const FILE_TYPE_CONFIGS: Record<string, FileTypeConfig> = {
   },
   HDF5: {
     key: "hdf5",
-    displayName: "hdf5Data",
     hasFilePath: true,
     filePathType: "single",
     hasSpecialPath: {
@@ -119,7 +120,6 @@ export const FILE_TYPE_CONFIGS: Record<string, FileTypeConfig> = {
   },
   FLUO: {
     key: "fluo",
-    displayName: "fluoData",
     hasFilePath: true,
     filePathType: "single",
     defaultParam: {
@@ -132,7 +132,6 @@ export const FILE_TYPE_CONFIGS: Record<string, FileTypeConfig> = {
   },
   BEHAVIOR: {
     key: "behavior",
-    displayName: "behaviorData",
     hasFilePath: true,
     filePathType: "single",
     defaultParam: {
@@ -145,7 +144,6 @@ export const FILE_TYPE_CONFIGS: Record<string, FileTypeConfig> = {
   },
   MATLAB: {
     key: "matlab",
-    displayName: "matlabData",
     hasFilePath: true,
     filePathType: "single",
     hasSpecialPath: {
@@ -157,7 +155,6 @@ export const FILE_TYPE_CONFIGS: Record<string, FileTypeConfig> = {
   },
   MICROSCOPE: {
     key: "microscope",
-    displayName: "microscopeData",
     hasFilePath: true,
     filePathType: "single",
     defaultParam: {},
@@ -166,7 +163,6 @@ export const FILE_TYPE_CONFIGS: Record<string, FileTypeConfig> = {
   },
   BATCH_IMAGE: {
     key: "batch_image",
-    displayName: "batchImageData",
     hasFilePath: true,
     filePathType: "array",
     defaultParam: {},
@@ -176,7 +172,6 @@ export const FILE_TYPE_CONFIGS: Record<string, FileTypeConfig> = {
   },
   BATCH_CSV: {
     key: "batch_csv",
-    displayName: "batchCsvData",
     hasFilePath: true,
     filePathType: "array",
     defaultParam: {
@@ -190,7 +185,6 @@ export const FILE_TYPE_CONFIGS: Record<string, FileTypeConfig> = {
   },
   BATCH_HDF5: {
     key: "batch_hdf5",
-    displayName: "batchHdf5Data",
     hasFilePath: true,
     filePathType: "array",
     hasSpecialPath: {
@@ -204,7 +198,6 @@ export const FILE_TYPE_CONFIGS: Record<string, FileTypeConfig> = {
   },
   BATCH_FLUO: {
     key: "batch_fluo",
-    displayName: "batchFluoData",
     hasFilePath: true,
     filePathType: "array",
     defaultParam: {
@@ -219,7 +212,6 @@ export const FILE_TYPE_CONFIGS: Record<string, FileTypeConfig> = {
   },
   BATCH_BEHAVIOR: {
     key: "batch_behavior",
-    displayName: "batchBehaviorData",
     hasFilePath: true,
     filePathType: "array",
     defaultParam: {
@@ -234,7 +226,6 @@ export const FILE_TYPE_CONFIGS: Record<string, FileTypeConfig> = {
   },
   BATCH_MATLAB: {
     key: "batch_matlab",
-    displayName: "batchMatlabData",
     hasFilePath: true,
     filePathType: "array",
     hasSpecialPath: {
@@ -248,7 +239,6 @@ export const FILE_TYPE_CONFIGS: Record<string, FileTypeConfig> = {
   },
   BATCH_MICROSCOPE: {
     key: "batch_microscope",
-    displayName: "batchMicroscopeData",
     hasFilePath: true,
     filePathType: "array",
     defaultParam: {},
@@ -272,6 +262,7 @@ const ENHANCED_FILE_TYPE_CONFIGS: Record<string, EnhancedFileTypeConfig> =
         {
           ...config,
           // Auto-generate missing properties
+          displayName: config.displayName || config.key, // Use key as fallback if displayName is not provided
           treeType: config.treeType || config.key,
           dataType: config.dataType || config.key,
           nodeType,
@@ -325,19 +316,3 @@ export function getFileTypeConfigsByHierarchy(): Record<
 
   return hierarchyGroups
 }
-
-// Auto-generated component mapping from ENHANCED_FILE_TYPE_CONFIGS
-export const COMPONENT_MAPPING = Object.fromEntries(
-  Object.values(ENHANCED_FILE_TYPE_CONFIGS).map((config) => [
-    config.nodeType,
-    config.nodeType,
-  ]),
-) as Record<string, string>
-
-// Auto-generated data type mapping from ENHANCED_FILE_TYPE_CONFIGS
-export const DATA_TYPE_MAPPING = Object.fromEntries(
-  Object.values(ENHANCED_FILE_TYPE_CONFIGS).map((config) => [
-    config.dataType,
-    config.dataType,
-  ]),
-) as Record<string, string>
