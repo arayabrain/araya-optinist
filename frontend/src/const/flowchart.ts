@@ -28,8 +28,5 @@ export const HANDLE_STYLE: CSSProperties = {
   top: 15,
 }
 
-// Re-export for backward compatibility
-export { REACT_FLOW_NODE_TYPE_KEY }
-
 export type REACT_FLOW_NODE_TYPE =
   (typeof REACT_FLOW_NODE_TYPE_KEY)[keyof typeof REACT_FLOW_NODE_TYPE_KEY]
