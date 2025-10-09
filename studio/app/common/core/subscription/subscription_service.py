@@ -46,9 +46,9 @@ class SubscriptionCurrencyType(Enum):
 
     def get_currency_enum(value: str):
         """Get the enum representation of the currency"""
-        if value.lower() == "usd":
+        if value == "usd":
             return __class__.USD
-        elif value.lower() == "jpy":
+        elif value == "jpy":
             return __class__.JPY
         return None
 
@@ -190,7 +190,8 @@ class SubscriptionService:
             )
             .filter(
                 common_model.UserSubscription.user_id == user_id,
-                common_model.UserSubscription.expiration <= datetime.now(),
+                common_model.UserSubscription.expiration
+                <= __class__.get_current_datetime(),
                 common_model.User.active.is_(True),
             )
             .order_by(common_model.UserSubscription.expiration.desc())

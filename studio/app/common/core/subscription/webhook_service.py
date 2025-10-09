@@ -4,6 +4,7 @@ from enum import Enum
 from typing import Any, Dict
 
 import stripe
+from dateutil.relativedelta import relativedelta
 from fastapi import HTTPException
 from sqlmodel import Session
 
@@ -380,7 +381,7 @@ class WebhookService:
                         SubscriptionPlans.price == price["unit_amount"],
                         SubscriptionPlans.currency
                         == SubscriptionCurrencyType.get_currency_enum(
-                            price["currency"]
+                            price["currency"].lower()
                         ).value,
                     )
                     .first()
@@ -595,12 +596,12 @@ class WebhookService:
 
                 # Calculate extension period
                 if billing_cycle == BILLING_CYCLE.MONTHLY.value:
-                    new_expiration = current_expiration + timedelta(days=30)
+                    new_expiration = current_expiration + relativedelta(months=1)
                 elif billing_cycle == BILLING_CYCLE.YEARLY.value:
-                    new_expiration = current_expiration + timedelta(days=365)
+                    new_expiration = current_expiration + relativedelta(years=1)
                 else:
                     # Default to monthly if unknown
-                    new_expiration = current_expiration + timedelta(days=30)
+                    new_expiration = current_expiration + relativedelta(months=1)
                     logger.warning(
                         f"Unknown billing cycle: {billing_cycle}, defaulting to monthly"
                     )
