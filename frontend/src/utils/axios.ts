@@ -3,6 +3,10 @@ import axiosLibrary from "axios"
 import { refreshTokenApi } from "api/auth/Auth"
 import { BASE_URL } from "const/API"
 import { getExToken, getToken, logout, saveToken } from "utils/auth/AuthUtils"
+import {
+  isDataviewPublicOutputsRequest,
+  DATAVIEW_PUBLIC_REQUEST_KEY,
+} from "utils/DataviewUtils"
 import { routingService } from "utils/routing/RoutingService"
 
 const axios = axiosLibrary.create({
@@ -22,6 +26,11 @@ axios.interceptors.request.use(
     // Add premium routing headers for ALB-based routing
     const routingHeaders = routingService.getRoutingHeaders()
     Object.assign(config.headers!, routingHeaders)
+
+    // Check whether the access is to public output data (HTTP header setting)
+    if (config.url && isDataviewPublicOutputsRequest(config.url)) {
+      config.headers![DATAVIEW_PUBLIC_REQUEST_KEY] = "true"
+    }
 
     return config
   },

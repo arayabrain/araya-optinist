@@ -8,7 +8,7 @@ RUN apt-get --allow-releaseinfo-change update && \
         default-mysql-client
 
 # install conda & packages and optimization solvers
-RUN apt-get install --no-install-recommends -y gcc g++ clang libgl1 libgl1-mesa-dev libopencv-dev coinor-cbc rsync && \
+RUN apt-get install --no-install-recommends -y gcc g++ clang clang libgl1 libgl1-mesa-dev libopencv-dev coinor-cbc rsync && \
     apt-get autoremove -y && apt-get clean
 
 # Specify compiler (use clang)

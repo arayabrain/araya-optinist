@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import Depends, HTTPException, Response, status
+from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from firebase_admin import auth as firebase_auth
 from pydantic import ValidationError
@@ -13,6 +13,7 @@ from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth_config import AUTH_CONFIG
 from studio.app.common.core.auth.security import validate_access_token
+from studio.app.common.core.dataview.dataview_services import DataviewService
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
 from studio.app.common.db.database import get_db
@@ -26,6 +27,36 @@ from studio.app.common.models.subscription import (
 )
 from studio.app.common.models.workspace import Workspace
 from studio.app.common.schemas.users import User
+
+
+async def get_current_user_with_dataview_outputs_check(
+    req: Request,
+    res: Response,
+    ex_token: Optional[str] = Depends(APIKeyHeader(name="ExToken", auto_error=False)),
+    credential: HTTPAuthorizationCredentials = Depends(HTTPBearer(auto_error=False)),
+    db: Session = Depends(get_db),
+) -> User:
+    """
+    Authentication process specialized for outputs requests from the dataview screen
+    """
+
+    # Checks whether public outputs are accessed from a dataview
+    if DataviewService.is_dataview_public_outputs_request(req):
+        is_allowed_access = DataviewService.validate_dataview_public_outputs_request(
+            req, db
+        )
+
+        if is_allowed_access:
+            # To access public resources, skip authentication (return)
+            return
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This resource is not publicly available.",
+            )
+
+    # Fallback to get_current_user()
+    return await get_current_user(res, ex_token, credential, db)
 
 
 async def get_current_user(

@@ -12,6 +12,7 @@ from starlette.middleware.cors import CORSMiddleware
 from studio.app.common.core.auth.auth_dependencies import (
     get_admin_user,
     get_current_user,
+    get_current_user_with_dataview_outputs_check,
 )
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
@@ -98,8 +99,8 @@ app.include_router(experiment.router, dependencies=[Depends(get_current_user)])
 app.include_router(files.router, dependencies=[Depends(get_current_user)])
 app.include_router(logs.router, dependencies=[Depends(get_current_user)])
 app.include_router(
-    outputs.router
-)  # NOTE: Deauthentication for for-cloud Dataview functionality.
+    outputs.router, dependencies=[Depends(get_current_user_with_dataview_outputs_check)]
+)  # NOTE: The outputs router uses the unique get_current_user.
 app.include_router(params.router, dependencies=[Depends(get_current_user)])
 app.include_router(run.router, dependencies=[Depends(get_current_user)])
 app.include_router(storage_alerts.router, dependencies=[Depends(get_current_user)])
@@ -126,6 +127,9 @@ def skip_dependencies():
 
 if MODE.IS_STANDALONE:
     app.dependency_overrides[get_current_user] = skip_dependencies
+    app.dependency_overrides[
+        get_current_user_with_dataview_outputs_check
+    ] = skip_dependencies
     app.dependency_overrides[get_admin_user] = skip_dependencies
     app.dependency_overrides[is_workspace_owner] = skip_dependencies
     app.dependency_overrides[is_workspace_available] = skip_dependencies
