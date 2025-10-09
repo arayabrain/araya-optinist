@@ -472,7 +472,9 @@ const InvoicesPage: React.FC = () => {
                         Your subscription{" "}
                         {new Date(subscription.expiration) < new Date()
                           ? "expired on"
-                          : "will expire on"}{" "}
+                          : subscription.scheduled_downgrade
+                            ? "will expire on"
+                            : "will renew on"}{" "}
                         {formatDate(subscription.expiration)}
                       </ExpirationText>
                     </>

@@ -112,6 +112,7 @@ async def get_user_subscription(
                         **sub_data.dict(),
                         "plan_name": plan_data.name,
                         "plan_price": plan_data.price,
+                        "is_expired": True,
                         "status": SubscriptionUserStatus.EXPIRED.value,
                     }
                     subscription_response = UserSubscriptionResponse(
@@ -141,10 +142,27 @@ async def get_user_subscription(
                 plan_data.id, is_cancelled
             )
 
+            # Ensure both datetimes are timezone-aware for comparison
+            current_time = SubscriptionService.get_current_datetime()
+            expiration_time = sub_data.expiration
+
+            # If expiration is naive, make it timezone-aware
+            if expiration_time.tzinfo is None:
+                from datetime import timezone
+
+                expiration_time = expiration_time.replace(tzinfo=timezone.utc)
+
+            # If current_time is naive, make it timezone-aware
+            if current_time.tzinfo is None:
+                from datetime import timezone
+
+                current_time = current_time.replace(tzinfo=timezone.utc)
+
             subscription_dict = {
                 **sub_data.dict(),
                 "plan_name": plan_data.name,
                 "plan_price": plan_data.price,
+                "is_expired": expiration_time < current_time,
                 "status": subscription_status,
             }
             subscription_response = UserSubscriptionResponse(**subscription_dict)
