@@ -96,6 +96,9 @@ export const inputNodeSlice = createSlice({
         if (isHDF5InputNode(targetNode)) {
           targetNode.hdf5Path = undefined
         }
+        if (isMatlabInputNode(targetNode)) {
+          targetNode.matPath = undefined
+        }
       })
       .addCase(addInputNode, (state, action) => {
         const { node, fileType } = action.payload

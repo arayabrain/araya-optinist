@@ -3,6 +3,7 @@ import sys
 
 from sqlmodel import select
 
+from studio.app.common.core.dataview.dataview_services import DataviewService
 from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
 )
@@ -80,7 +81,7 @@ def main(args):
         logger.info(f"Processing workspace: [{workspace_id_str}]")
 
         # Process ExperimentRecord sync (uses its own session scope internally)
-        success, errors = ExperimentRecordService.sync_dataview_records_for_workspace(
+        success, errors = DataviewService.sync_dataview_records_for_workspace(
             workspace_id_str, delete_existing=args.delete_existing
         )
         total_success += success
