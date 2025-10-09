@@ -2,9 +2,9 @@ import { FILE_TYPE_SET, FILE_TYPE } from "config/fileTypes.config"
 
 export const INPUT_NODE_SLICE_NAME = "inputNode"
 
-// Re-export for backward compatibility
-export { FILE_TYPE_SET }
+// Re-export for convenience
 export type { FILE_TYPE }
+export { FILE_TYPE_SET }
 
 export type InputNode = {
   [nodeId: string]: InputNodeType

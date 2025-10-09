@@ -105,8 +105,6 @@ export const AlgorithmTreeView = memo(function AlgorithmTreeView() {
           {configs.map((config) => (
             <InputNodeComponent
               key={config.key}
-              fileName={config.key}
-              nodeName={config.displayName}
               fileType={config.key as FILE_TYPE}
               config={config}
             />
@@ -130,15 +128,11 @@ export const AlgorithmTreeView = memo(function AlgorithmTreeView() {
 })
 
 interface InputNodeComponentProps {
-  fileName: string
-  nodeName: string
   fileType: FILE_TYPE
-  config: import("config/fileTypes.config").FileTypeConfig
+  config: import("config/fileTypes.config").EnhancedFileTypeConfig
 }
 
 const InputNodeComponent = memo(function InputNodeComponent({
-  fileName,
-  nodeName,
   fileType,
   config,
 }: InputNodeComponentProps) {
@@ -146,12 +140,12 @@ const InputNodeComponent = memo(function InputNodeComponent({
 
   const onAddDataNode = useCallback(
     (
-      nodeName: string,
+      displayName: string,
       fileType: FILE_TYPE,
       position?: { x: number; y: number },
     ) => {
       const newNode = FileNodeFactory.createReactFlowNode(
-        nodeName,
+        displayName,
         config,
         position,
       )
@@ -163,9 +157,9 @@ const InputNodeComponent = memo(function InputNodeComponent({
   const { isDragging, dragRef } = useLeafItemDrag(
     useCallback(
       (position) => {
-        onAddDataNode(nodeName, fileType, position)
+        onAddDataNode(config.displayName, fileType, position)
       },
-      [onAddDataNode, nodeName, fileType],
+      [onAddDataNode, config.displayName, fileType],
     ),
   )
 
@@ -176,11 +170,11 @@ const InputNodeComponent = memo(function InputNodeComponent({
         opacity: isDragging ? 0.6 : 1,
       }}
       onFocusCapture={(e) => e.stopPropagation()}
-      nodeId={fileName}
+      nodeId={config.key}
       label={
         <AddButton
-          name={fileName}
-          onClick={() => onAddDataNode(nodeName, fileType)}
+          name={config.displayName}
+          onClick={() => onAddDataNode(config.displayName, fileType)}
         />
       }
     />
