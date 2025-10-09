@@ -46,6 +46,7 @@ class SubscriptionCurrencyType(Enum):
 
     def get_currency_enum(value: str):
         """Get the enum representation of the currency"""
+        value = value.lower()
         if value == "usd":
             return __class__.USD
         elif value == "jpy":

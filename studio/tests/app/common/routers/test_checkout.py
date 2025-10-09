@@ -24,7 +24,7 @@ def test_checkout_session_validation():
     if response.status_code == 400:
         data = response.json()
         print(f"Expected error: {data.get('detail', 'Unknown error')}")
-        print("✅ Checkout validation properly rejects invalid sessions")
+        print("Checkout validation properly rejects invalid sessions")
     else:
         print(f"Response: {response.json()}")
 
@@ -47,7 +47,7 @@ def test_failed_checkout_validation():
     if response.status_code == 200:
         result = response.json()
         print(f"Session is failed/expired: {result}")
-        print("✅ Failed checkout validation endpoint works")
+        print("Failed checkout validation endpoint works")
     else:
         print(f"Response: {response.json()}")
 
@@ -55,7 +55,7 @@ def test_failed_checkout_validation():
 def test_webhook_api():
     """Test webhook API with Stripe signature verification"""
     print("Testing Webhook API...")
-    print("⚠️  Note: Real webhooks require valid Stripe signatures")
+    print("Note: Real webhooks require valid Stripe signatures")
     print("    This test will likely fail signature verification")
 
     # Stripe webhooks require signature verification
@@ -79,7 +79,7 @@ def test_webhook_api():
     )
 
     if response.status_code == 400:
-        print("✅ Webhook properly requires signature verification")
+        print("Webhook properly requires signature verification")
     elif response.status_code == 200:
         data = response.json()
         print(f"Webhook response: {data}")
@@ -95,7 +95,7 @@ def test_get_subscription_plans():
 
     if response.status_code == 200:
         data = response.json()
-        print(f"✅ Found {len(data)} subscription plans")
+        print(f"Found {len(data)} subscription plans")
         if data:
             print(f"   Sample plan: {data[0].get('name', 'Unknown')}")
     else:
@@ -105,12 +105,12 @@ def test_get_subscription_plans():
 def test_get_user_subscription():
     """Test getting user subscription (requires authentication)"""
     print("Testing Get User Subscription...")
-    print("⚠️  Note: This endpoint requires authentication")
+    print("Note: This endpoint requires authentication")
 
     response = requests.get(f"{STRIPE_CALLBACK_URL}/api/subsc/mgmts")
 
     if response.status_code == 401 or response.status_code == 403:
-        print("✅ Subscription endpoint properly requires authentication")
+        print("Subscription endpoint properly requires authentication")
     elif response.status_code == 200:
         data = response.json()
         print(f"Subscription data: {data}")
@@ -128,18 +128,18 @@ def run_checkout_tests():
     try:
         response = requests.get(f"{STRIPE_CALLBACK_URL}/docs", timeout=3)
         if response.status_code == 200:
-            print("✅ API is reachable")
+            print("API is reachable")
         else:
             # Try plans endpoint instead
             response = requests.get(
                 f"{STRIPE_CALLBACK_URL}/api/subsc/mgmts/plans", timeout=3
             )
             if response.status_code in [200, 401, 403]:
-                print("✅ API is reachable")
+                print("API is reachable")
             else:
-                print(f"⚠️  API responded with status {response.status_code}")
+                print(f"API responded with status {response.status_code}")
     except Exception as e:
-        print(f"❌ Cannot connect to API: {e}")
+        print(f"Cannot connect to API: {e}")
         return
 
     print()

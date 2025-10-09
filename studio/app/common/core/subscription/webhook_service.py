@@ -381,7 +381,7 @@ class WebhookService:
                         SubscriptionPlans.price == price["unit_amount"],
                         SubscriptionPlans.currency
                         == SubscriptionCurrencyType.get_currency_enum(
-                            price["currency"].lower()
+                            price["currency"]
                         ).value,
                     )
                     .first()
