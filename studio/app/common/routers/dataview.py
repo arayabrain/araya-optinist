@@ -7,6 +7,7 @@ from sqlmodel import Session, select
 
 from studio.app.common import models
 from studio.app.common.core.auth.auth_dependencies import get_current_user
+from studio.app.common.core.dataview.dataview_services import DataviewService
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.db.database import get_db
 from studio.app.common.routers.workflow import reproduce_experiment
@@ -198,18 +199,8 @@ async def public_reproduce_experiment(
     db: Session = Depends(get_db),
 ):
     # Check target record accessibility
-    record = (
-        db.query(models.ExperimentRecord)
-        .join(
-            models.Workspace,
-            models.Workspace.id == models.ExperimentRecord.workspace_id,
-        )
-        .filter(
-            models.Workspace.deleted.is_(False),
-            models.ExperimentRecord.uid == unique_id,
-            models.ExperimentRecord.publish_status == PublishStatus.on.value,
-        )
-        .first()
+    record = DataviewService.find_published_dataview_record(
+        db, int(workspace_id), unique_id
     )
 
     if not record:
@@ -231,23 +222,7 @@ async def publish_dataview_records(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    record = (
-        db.query(models.ExperimentRecord)
-        .join(
-            models.Workspace,
-            models.Workspace.id == models.ExperimentRecord.workspace_id,
-        )
-        .join(
-            models.User,
-            models.User.id == models.Workspace.user_id,
-        )
-        .filter(
-            models.ExperimentRecord.id == id,
-            models.User.id == current_user.id,
-            models.User.active.is_(True),
-        )
-        .first()
-    )
+    record = DataviewService.find_user_owned_dataview_record(db, id, current_user.id)
 
     if not record:
         raise HTTPException(status_code=404)
@@ -271,17 +246,6 @@ def multiple_publish_dataview_records(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    db.query(models.ExperimentRecord).filter(
-        models.Workspace.id == models.ExperimentRecord.workspace_id,
-        models.User.id == models.Workspace.user_id,
-        models.User.id == current_user.id,
-        models.User.active.is_(True),
-        models.ExperimentRecord.id.in_(ids),
-    ).update(
-        {models.ExperimentRecord.publish_status: int(flag == PublishFlags.on)},
-        synchronize_session=False,
-    )
-
-    db.commit()
+    DataviewService.multiple_publish_dataview_records(db, current_user.id, ids, flag)
 
     return True

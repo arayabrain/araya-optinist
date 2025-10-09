@@ -1,7 +1,6 @@
 import { Node } from "reactflow"
 
 import {
-  DATA_TYPE_MAPPING,
   EnhancedFileTypeConfig,
   FileTypeConfig,
   getFileTypeConfig,
@@ -148,18 +147,16 @@ export class FileNodeFactory {
   /**
    * Converts FILE_TYPE to DATA_TYPE
    * Used for converting InputNode file types to DisplayData types
-   * Uses config-driven approach via DATA_TYPE_MAPPING
+   * Uses config-driven approach
    */
   static toDataTypeFromFileType(fileType: FILE_TYPE): DATA_TYPE {
     const dataTypeString = FileNodeFactory.getDataType(fileType)
 
-    // Use mapping from config instead of hardcoded strings
-    const mappedType =
-      DATA_TYPE_MAPPING[dataTypeString as keyof typeof DATA_TYPE_MAPPING]
-    if (mappedType) {
-      return DATA_TYPE_SET[
-        mappedType.toUpperCase() as keyof typeof DATA_TYPE_SET
-      ]
+    // Map data type string to DATA_TYPE_SET
+    const upperDataType =
+      dataTypeString.toUpperCase() as keyof typeof DATA_TYPE_SET
+    if (upperDataType in DATA_TYPE_SET) {
+      return DATA_TYPE_SET[upperDataType]
     }
 
     // Fallback to CSV for unknown types
