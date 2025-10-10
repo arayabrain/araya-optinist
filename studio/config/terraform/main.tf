@@ -1413,6 +1413,19 @@ resource "aws_iam_role_policy" "batch_service_additional" {
           "ecs:DescribeClusters"
         ]
         Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = [
+            "s3:GetObject",
+            "s3:PutObject",
+            "s3:DeleteObject",
+            "s3:ListBucket"
+        ],
+        Resource = [
+            "arn:aws:s3:::subscr-optinist-batch-app-storage",
+            "arn:aws:s3:::subscr-optinist-batch-app-storage/*"
+        ]
       }
     ]
   })
@@ -1576,6 +1589,32 @@ resource "aws_iam_role_policy" "ecs_instance_ssm_complex" {
           "ssm:UpdateInstanceInformation"
         ]
         Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "ecs_instance_s3_access" {
+  name = "subscr-ecs-instance-s3-access"
+  role = aws_iam_role.ecs_instance_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.app_storage.arn,
+          "${aws_s3_bucket.app_storage.arn}/*",
+          aws_s3_bucket.app_storage_batch.arn,
+          "${aws_s3_bucket.app_storage_batch.arn}/*"
+        ]
       }
     ]
   })
@@ -1988,6 +2027,8 @@ resource "aws_iam_role_policy" "batch_job_s3" {
           "s3:ListBucket"
         ]
         Resource = [
+          aws_s3_bucket.app_storage.arn,
+          "${aws_s3_bucket.app_storage.arn}/*",
           aws_s3_bucket.app_storage_batch.arn,
           "${aws_s3_bucket.app_storage_batch.arn}/*"
         ]
@@ -2019,7 +2060,30 @@ resource "aws_iam_role_policy" "batch_job_ecr_access" {
     ]
   })
 }
+# Add S3 access to batch spot fleet role
+resource "aws_iam_role_policy" "batch_spot_fleet_s3" {
+  name = "subscr-batch-spot-fleet-s3-access"
+  role = aws_iam_role.batch_spot_fleet.id
 
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+            "s3:GetObject",
+            "s3:PutObject",
+            "s3:DeleteObject",
+            "s3:ListBucket"
+        ],
+        Resource = [
+            "arn:aws:s3:::subscr-optinist-batch-app-storage",
+            "arn:aws:s3:::subscr-optinist-batch-app-storage/*"
+        ]
+      }
+    ]
+  })
+}
 # Add CloudWatch logs permissions for batch jobs
 resource "aws_iam_role_policy" "batch_job_logs" {
   name = "subscr-batch-job-logs-access"
@@ -2363,7 +2427,10 @@ resource "null_resource" "install_dependencies" {
   }
 
   triggers = {
-    code_changes = filesha256("${path.module}/premium_manager_package/premium_manager.py")
+    code_changes = md5(join("", [
+      filesha256("${path.module}/premium_manager_package/premium_manager.py"),
+      filesha256("${path.module}/../../app/common/core/premium/premium_assignment_service.py")
+    ]))
   }
 }
 

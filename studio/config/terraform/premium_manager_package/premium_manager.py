@@ -1065,6 +1065,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         is_shared = False
         instance_state = None
         assignment_source = None
+        needs_scaling = False  # Track if shared assignment requires scaling
 
         # 2. PRIORITY 1: Available dedicated running instances (immediate assignment)
         available_dedicated = None
@@ -1236,14 +1237,10 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                     f"{instance_to_use['instance_id']} for user {user_id}"
                 )
 
-                # Trigger scaling if no instances are launching
-                # and no standby being created
+                # Defer scaling until after assignment is stored
                 if len(launching_instances) == 0:
-                    scaled = scale_premium_instances_if_needed()
-                    if scaled:
-                        print(
-                            "Triggered premium instance scaling for dedicated instance"
-                        )
+                    needs_scaling = True
+                    print("Flagged for scaling after assignment is stored")
 
         # 5. PRIORITY 4: Scale up (last resort)
         if not instance_to_use:
@@ -1477,6 +1474,11 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         store_user_assignment(
             user_id, instance_id, target_group_arn, rule_arn, instance_state, is_shared
         )
+
+        # If this was a shared assignment, trigger scaling now that the user is stored
+        if needs_scaling:
+            print("Triggering scaling for shared assignment...")
+            scale_premium_instances_if_needed()
 
         # Initialize activity tracking for the new assignment
         try:

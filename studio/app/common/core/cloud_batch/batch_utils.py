@@ -2377,13 +2377,27 @@ async def download_snakemake_config_from_s3(workspace_id: str, unique_id: str) -
 
         s3_client = boto3.client("s3")
 
-        try:
-            s3_client.download_file(
-                BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME, s3_key, local_config_path
+        # Get bucket name from environment variable (set by batch job executor)
+        # This is needed because BATCH_CONFIG is loaded at import time,
+        # but batch containers receive the bucket name as a runtime env var
+        batch_s3_bucket = os.environ.get(
+            "AWS_BATCH_S3_BUCKET_NAME", BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME
+        )
+
+        if not batch_s3_bucket:
+            logger.error(
+                "AWS_BATCH_S3_BUCKET_NAME not set in environment or config. "
+                "Cannot download snakemake config from S3."
             )
+            return False
+
+        logger.debug(f"Using S3 bucket for config download: {batch_s3_bucket}")
+
+        try:
+            s3_client.download_file(batch_s3_bucket, s3_key, local_config_path)
             logger.info(
                 f"Downloaded config from S3: "
-                f"s3://{BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME}/{s3_key} "
+                f"s3://{batch_s3_bucket}/{s3_key} "
                 f"-> {local_config_path}"
             )
             return True

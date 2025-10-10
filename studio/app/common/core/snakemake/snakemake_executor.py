@@ -540,10 +540,16 @@ def _snakemake_execute_batch(
                 dryrun_envvars = ["USE_AWS_BATCH", "OPTINIST_DIR"]
                 if RemoteStorageController.is_available():
                     # Use S3 storage for dryrun (matches execution config)
+                    # Set AWS_BATCH_S3_BUCKET_NAME from S3_DEFAULT_BUCKET_NAME
+                    # This is needed for S3 operations during dryrun
+                    os.environ["AWS_BATCH_S3_BUCKET_NAME"] = os.environ.get(
+                        "S3_DEFAULT_BUCKET_NAME", BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME
+                    )
                     dryrun_envvars.extend(
                         [
                             "REMOTE_STORAGE_TYPE",
                             "S3_DEFAULT_BUCKET_NAME",
+                            "AWS_BATCH_S3_BUCKET_NAME",
                             "AWS_DEFAULT_REGION",
                             "PYTHONPATH",
                         ]
@@ -620,10 +626,39 @@ def _snakemake_execute_batch(
                     envvars = ["USE_AWS_BATCH", "OPTINIST_DIR"]
                     if RemoteStorageController.is_available():
                         # Use S3 storage for batch jobs
+                        # Set AWS_BATCH_S3_BUCKET_NAME from S3_DEFAULT_BUCKET_NAME
+                        # Needed for download_snakemake_config_from_s3() and
+                        # download_snakefile_from_s3() functions inside
+                        # batch container. Jobs use AWS_BATCH_S3_BUCKET_NAME to
+                        # know which bucket contains the config/Snakefile
+                        batch_s3_bucket = os.environ.get(
+                            "S3_DEFAULT_BUCKET_NAME",
+                            BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME,
+                        )
+
+                        if not batch_s3_bucket:
+                            logger.error(
+                                "AWS Batch S3 bucket not configured. "
+                                "S3_DEFAULT_BUCKET_NAME environment "
+                                "variable is required."
+                            )
+                            raise ValueError(
+                                "S3_DEFAULT_BUCKET_NAME environment variable must "
+                                "be set for AWS Batch execution with S3 storage"
+                            )
+
+                        # Set the variable for the main process and batch jobs
+                        os.environ["AWS_BATCH_S3_BUCKET_NAME"] = batch_s3_bucket
+
+                        logger.info(
+                            f"Configured AWS Batch S3 bucket: {batch_s3_bucket}"
+                        )
+
                         envvars.extend(
                             [
                                 "REMOTE_STORAGE_TYPE",
                                 "S3_DEFAULT_BUCKET_NAME",
+                                "AWS_BATCH_S3_BUCKET_NAME",
                                 "AWS_DEFAULT_REGION",
                                 "PYTHONPATH",
                             ]

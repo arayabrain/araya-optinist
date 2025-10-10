@@ -79,12 +79,22 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
         # Call the premium assignment service
         result = await premium_assignment_service.assign_premium_user(current_user.id)
 
+        logger.info(f"Assignment service result: {result}")
+        logger.info(f"is_shared from service: {result.get('is_shared')}")
+        logger.info(
+            f"assignment_source from service: {result.get('assignment_source')}"
+        )
+
         if result["success"]:
-            return {
+            response = {
                 "message": result["message"],
                 "instance_id": result.get("instance_id"),
                 "assigned": True,
+                "is_shared": result.get("is_shared", False),
+                "assignment_source": result.get("assignment_source"),
             }
+            logger.info(f"API response: {response}")
+            return response
         elif result.get("requires_retry"):
             # Return 202 for scaling in progress
             return {

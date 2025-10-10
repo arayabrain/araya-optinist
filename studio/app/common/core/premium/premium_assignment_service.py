@@ -180,13 +180,22 @@ class PremiumAssignmentService:
                     f"Successfully assigned premium user {user_id} to "
                     f"instance {body.get('instance_id')}"
                 )
-                return {
+                logger.info(f"Lambda response body: {body}")
+                logger.info(f"is_shared from Lambda: {body.get('is_shared')}")
+                logger.info(
+                    f"assignment_source from Lambda: {body.get('assignment_source')}"
+                )
+                result = {
                     "success": True,
                     "message": body.get("message", "Assignment successful"),
                     "instance_id": body.get("instance_id"),
                     "target_group_arn": body.get("target_group_arn"),
                     "rule_arn": body.get("rule_arn"),
+                    "is_shared": body.get("is_shared", False),
+                    "assignment_source": body.get("assignment_source"),
                 }
+                logger.info(f"Returning result: {result}")
+                return result
 
             elif status_code == 202:
                 # Instance starting from stopped state, need to wait
