@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import List, Optional, Tuple
 
+from fastapi import HTTPException
 from sqlalchemy import and_
 from sqlmodel import Session
 
@@ -231,7 +232,9 @@ class SubscriptionService:
             logger.error(
                 f"Error updating scheduled downgrade for user {user_id}: {str(e)}"
             )
-            raise
+            raise HTTPException(
+                status_code=500, detail="Failed to update scheduled downgrade"
+            )
 
     @staticmethod
     def update_user_subscription(
@@ -266,7 +269,9 @@ class SubscriptionService:
         except Exception as e:
             db.rollback()
             logger.error(f"Error updating subscription for user {user_id}: {str(e)}")
-            raise
+            raise HTTPException(
+                status_code=500, detail="Failed to update user subscription"
+            )
 
     @staticmethod
     def get_current_datetime() -> datetime:
