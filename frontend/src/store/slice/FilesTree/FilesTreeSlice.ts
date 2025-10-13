@@ -8,6 +8,7 @@ import { getFilesTree, deleteFile } from "store/slice/FilesTree/FilesTreeAction"
 import {
   FilesTree,
   FILES_TREE_SLICE_NAME,
+  TreeNodeType,
 } from "store/slice/FilesTree/FilesTreeType"
 import { convertToTreeNodeType } from "store/slice/FilesTree/FilesTreeUtils"
 import { uploadFile } from "store/slice/FileUploader/FileUploaderActions"
@@ -53,8 +54,14 @@ export const filesTreeSlice = createSlice({
       })
       .addCase(deleteFile.fulfilled, (state, action) => {
         const { fileType, fileName } = action.meta.arg
-        const fileTree = state[fileType].tree
-        state[fileType].tree = fileTree.filter((node) => node.name !== fileName)
+        const filterTree = (nodes: TreeNodeType[]): TreeNodeType[] =>
+          nodes
+            .map((node) =>
+              node.isDir ? { ...node, nodes: filterTree(node.nodes) } : node,
+            )
+            .filter((node) => node.path !== fileName)
+
+        state[fileType].tree = filterTree(state[fileType].tree)
         state[fileType].isLoading = false
         state[fileType].isLatest = true
       })

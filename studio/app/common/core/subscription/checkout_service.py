@@ -86,7 +86,13 @@ class CheckoutService:
             }
         except stripe.error.StripeError as e:
             logger.error(f"Stripe API error: {str(e)}")
-            raise
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Error processing subscription_schedule.released webhook: "
+                    f"{str(e)}"
+                ),
+            )
 
     @staticmethod
     def get_or_create_stripe_provider(db: Session) -> int:
@@ -452,7 +458,10 @@ class CheckoutService:
                 )
 
         except HTTPException:
-            raise
+            raise HTTPException(
+                status_code=500,
+                detail=("Error processing handle chekckout session request"),
+            )
         except Exception as e:
             raise HTTPException(
                 status_code=500, detail=f"Internal server error: {str(e)}"

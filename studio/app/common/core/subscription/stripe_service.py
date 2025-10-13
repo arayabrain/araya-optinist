@@ -1,5 +1,5 @@
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Optional
 
 import stripe
@@ -20,7 +20,7 @@ from studio.app.common.schemas.subscriptions import (
 logger = AppLogger.get_logger()
 
 
-class StripeSubscriptionStatus(Enum):
+class StripeSubscriptionStatus(StrEnum):
     """Stripe subscription status values"""
 
     INCOMPLETE = "incomplete"
@@ -186,7 +186,7 @@ class StripeService:
 
             # Update default payment method for active subscriptions
             subscriptions = stripe.Subscription.list(
-                customer=customer.id, status=StripeSubscriptionStatus.ACTIVE.value
+                customer=customer.id, status=StripeSubscriptionStatus.ACTIVE
             )
 
             updated_subscriptions = 0
@@ -216,7 +216,9 @@ class StripeService:
                 status_code=400, detail=f"Payment processing error: {str(e)}"
             )
         except HTTPException:
-            raise
+            raise HTTPException(
+                status_code=500, detail="Failed to update payment method"
+            )
         except Exception as e:
             logger.error(f"Error updating payment method: {str(e)}")
             raise HTTPException(
@@ -261,7 +263,7 @@ class StripeService:
 
             # Check if this is the default payment method for any active subscriptions
             subscriptions = stripe.Subscription.list(
-                customer=customer.id, status=StripeSubscriptionStatus.ACTIVE.value
+                customer=customer.id, status=StripeSubscriptionStatus.ACTIVE
             )
 
             for subscription in subscriptions.data:
@@ -285,7 +287,9 @@ class StripeService:
                 status_code=400, detail=f"Payment processing error: {str(e)}"
             )
         except HTTPException:
-            raise
+            raise HTTPException(
+                status_code=400, detail="Failed to delete payment method"
+            )
         except Exception as e:
             logger.error(f"Error deleting payment method: {str(e)}")
             raise HTTPException(
@@ -397,7 +401,7 @@ class StripeService:
             # Get active Stripe subscription
             stripe_subscriptions = stripe.Subscription.list(
                 customer=customer.id,
-                status=StripeSubscriptionStatus.ACTIVE.value,
+                status=StripeSubscriptionStatus.ACTIVE,
                 limit=1,
             )
 
@@ -508,7 +512,7 @@ class StripeService:
                 status_code=400, detail=f"Payment processing error: {str(e)}"
             )
         except HTTPException:
-            raise
+            raise HTTPException(status_code=500, detail="Failed to update subscription")
         except Exception as e:
             logger.error(
                 f"Error updating subscription for user {current_user.id}: {str(e)}"

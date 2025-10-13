@@ -1,5 +1,5 @@
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import List, Optional
 
 import stripe
@@ -44,13 +44,13 @@ webhook_router = APIRouter(prefix="/api/subsc/webhooks", tags=["Subscription Web
 logger = AppLogger.get_logger()
 
 
-class StripeCheckoutSessionStatus(Enum):
+class StripeCheckoutSessionStatus(StrEnum):
     COMPLETE = "complete"
     EXPIRED = "expired"
     OPEN = "open"
 
 
-class StripeCheckoutPaymentStatus(Enum):
+class StripeCheckoutPaymentStatus(StrEnum):
     PAID = "paid"
     UNPAID = "unpaid"
     NO_PAYMENT_REQUIRED = "no_payment_required"
@@ -230,7 +230,7 @@ async def cancel_user_subscription(
 
         # Get active Stripe subscription
         stripe_subscriptions = stripe.Subscription.list(
-            customer=customer.id, status=StripeSubscriptionStatus.ACTIVE.value, limit=1
+            customer=customer.id, status=StripeSubscriptionStatus.ACTIVE, limit=1
         )
 
         if not stripe_subscriptions.data:
@@ -303,7 +303,7 @@ async def cancel_user_subscription(
             status_code=400, detail=f"Payment processing error: {str(e)}"
         )
     except HTTPException:
-        raise
+        raise HTTPException(status_code=404, detail="Subscription not found")
     except Exception as e:
         logger.error(
             f"Error cancelling subscription for user {current_user.id}: {str(e)}"
@@ -502,8 +502,8 @@ async def validate_checkout_session(
 
         # Check if the session is complete and paid
         if (
-            session.payment_status == StripeCheckoutPaymentStatus.PAID.value
-            and session.status == StripeCheckoutSessionStatus.COMPLETE.value
+            session.payment_status == StripeCheckoutPaymentStatus.PAID
+            and session.status == StripeCheckoutSessionStatus.COMPLETE
         ):
             logger.info(f"Checkout session {request.session_id} is valid")
             return True
@@ -535,9 +535,9 @@ async def validate_failed_checkout_session(
 
         # Check if the session exists and is in a legitimate failed state
         # Valid failed states: expired, open with unpaid status
-        if session.status == StripeCheckoutSessionStatus.EXPIRED.value or (
-            session.status == StripeCheckoutSessionStatus.OPEN.value
-            and session.payment_status == StripeCheckoutPaymentStatus.UNPAID.value
+        if session.status == StripeCheckoutSessionStatus.EXPIRED or (
+            session.status == StripeCheckoutSessionStatus.OPEN
+            and session.payment_status == StripeCheckoutPaymentStatus.UNPAID
         ):
             return True
         else:
@@ -685,7 +685,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 
     except HTTPException:
         # Re-raise HTTP exceptions
-        raise
+        raise HTTPException(status_code=400, detail="Webhook processing failed")
     except Exception as e:
         logger.error(f"Webhook processing error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Webhook processing failed")
