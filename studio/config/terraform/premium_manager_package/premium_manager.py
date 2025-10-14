@@ -689,6 +689,49 @@ def register_orphaned_stopped_instances():
         return 0
 
 
+def create_running_instance():
+    """Create a new instance and leave it running for immediate assignment"""
+    ec2 = boto3.client("ec2")
+
+    try:
+        # Get launch template ID from environment
+        launch_template_id = get_required_env_var("PREMIUM_LAUNCH_TEMPLATE_ID")
+
+        # Get subnet IDs from environment
+        subnet_ids = get_required_env_var("SUBNET_IDS").split(",")
+
+        # Launch instance using the premium launch template
+        response = ec2.run_instances(
+            LaunchTemplate={
+                "LaunchTemplateId": launch_template_id,
+                "Version": "$Latest",
+            },
+            InstanceType="t3.large",
+            SubnetId=subnet_ids[0],  # Use first private subnet
+            MinCount=1,
+            MaxCount=1,
+            TagSpecifications=[
+                {
+                    "ResourceType": "instance",
+                    "Tags": [
+                        {"Key": "Name", "Value": "subscr-premium-running"},
+                        {"Key": "Type", "Value": "Premium-Instance"},
+                        {"Key": "Tier", "Value": "premium"},
+                        {"Key": "Service", "Value": "premium-tier"},
+                    ],
+                }
+            ],
+        )
+
+        instance_id = response["Instances"][0]["InstanceId"]
+        print(f"Created instance {instance_id} (launching in background)")
+        return instance_id
+
+    except Exception as e:
+        print(f"Error creating running instance: {str(e)}")
+        return None
+
+
 def create_and_stop_standby_instance():
     """Create instance and immediately stop it for standby use"""
     ec2 = boto3.client("ec2")
@@ -1596,12 +1639,23 @@ def scale_premium_instances_if_needed():
                 if total_instances + needed_capacity <= max_capacity:
                     print(
                         f"No stopped instances available, need to create "
-                        f"{needed_capacity} new instances"
+                        f"{needed_capacity} new running instances"
                     )
                     for _ in range(needed_capacity):
-                        create_and_stop_standby_instance()
-                        # Note: New instances will be stopped,
-                        # will need another scaling cycle to start them
+                        # Create and start instances for immediate use
+                        # when scaling up for active users
+                        instance_id = create_running_instance()
+                        if instance_id:
+                            print(
+                                f"Successfully created and started "
+                                f"instance {instance_id}"
+                            )
+                        else:
+                            print(
+                                "Failed to create running instance, "
+                                "falling back to standby creation"
+                            )
+                            create_and_stop_standby_instance()
                     return True
                 else:
                     print(

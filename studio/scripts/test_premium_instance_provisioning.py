@@ -117,10 +117,19 @@ class PremiumInstanceTester:
         logging.info(f"API URL: {self.api_url}")
 
     def get_instance_states(self) -> Dict[str, List[Dict]]:
-        """Get current state of all premium instances"""
+        """Get current state of all premium instances (includes dynamically-created)"""
         try:
+            # Query ALL premium instances by tag, not just Terraform-managed ones
+            # This is crucial for detecting instances created by autoscaling
             response = self.ec2.describe_instances(
-                InstanceIds=self.premium_instance_ids
+                Filters=[
+                    {
+                        "Name": "instance-state-name",
+                        "Values": ["pending", "running", "stopping", "stopped"],
+                    },
+                    # Match instances with "Tier=premium" OR "premium" in Name tag
+                    {"Name": "tag:Tier", "Values": ["premium", "Premium"]},
+                ]
             )
 
             instances_by_state = {

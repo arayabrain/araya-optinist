@@ -250,6 +250,25 @@ def _snakemake_execute_batch(
         logger.info("Load BatchExecutor")
         batch_executor = BatchUtils(workspace_id, unique_id)
 
+        # Configure S3 bucket name EARLY for batch execution
+        # This must happen before any Snakemake APIs capture environment state
+        # to ensure it's available for batch job definitions created dynamically
+        if RemoteStorageController.is_available():
+            batch_s3_bucket = os.environ.get(
+                "S3_DEFAULT_BUCKET_NAME",
+                BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME,
+            )
+            if not batch_s3_bucket:
+                logger.error(
+                    "AWS Batch S3 bucket not configured. "
+                    "S3_DEFAULT_BUCKET_NAME environment variable is required."
+                )
+                return False
+
+            # Set early to ensure it's available for all subsequent operations
+            os.environ["AWS_BATCH_S3_BUCKET_NAME"] = batch_s3_bucket
+            logger.info(f"Set AWS_BATCH_S3_BUCKET_NAME early: {batch_s3_bucket}")
+
         # Debug AWS Batch environment status for immediate visibility
         # BatchDebug.debug_batch_environment(batch_executor)
         # if not BatchDebug.validate_batch_configuration(batch_executor):

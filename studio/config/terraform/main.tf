@@ -5217,6 +5217,14 @@ resource "aws_batch_job_definition" "optinist" {
         name = "OPTINIST_DIR"
         value = "/app/studio_data"
       },
+      {
+        name = "IN_SNAKEMAKE_BATCH"
+        value = "true"
+      },
+      {
+        name = "AWS_BATCH_S3_BUCKET_NAME"
+        value = aws_s3_bucket.app_storage.id
+      },
     ]
   })
 }

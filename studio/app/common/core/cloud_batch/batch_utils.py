@@ -29,7 +29,9 @@ class JobMonitoringThread(threading.Thread):
     Background thread to monitor AWS Batch job health and capture logs before failure.
     """
 
-    def __init__(self, batch_client, logs_client, monitoring_interval=10):
+    def __init__(
+        self, batch_client, logs_client, monitoring_interval=10, job_queue=None
+    ):
         super().__init__(daemon=True)
         self.batch_client = batch_client
         self.logs_client = logs_client
@@ -39,6 +41,7 @@ class JobMonitoringThread(threading.Thread):
         self.job_metadata_cache = {}
         self.job_logs_cache = {}
         self.job_start_times = {}
+        self.job_queue = job_queue  # Job queue to monitor for auto-discovery
         self._lock = threading.Lock()
 
     def add_job(self, job_id: str, job_name: str = None):
@@ -72,11 +75,51 @@ class JobMonitoringThread(threading.Thread):
         logger.info("Job monitoring thread running")
         while self.monitoring_active:
             try:
+                # Auto-discover new jobs from the queue
+                if self.job_queue:
+                    self._auto_discover_jobs()
+
+                # Monitor active jobs
                 self._monitor_jobs()
                 time.sleep(self.monitoring_interval)
             except Exception as e:
                 logger.error(f"Error in job monitoring thread: {e}")
                 time.sleep(self.monitoring_interval)
+
+    def _auto_discover_jobs(self):
+        """
+        Automatically discover and track jobs from the job queue.
+        This is essential since Snakemake submits jobs directly to AWS Batch,
+        bypassing our manual job tracking.
+        """
+        try:
+            # Query for RUNNING and RUNNABLE jobs (likely new jobs)
+            for status in ["RUNNING", "RUNNABLE", "STARTING", "SUBMITTED"]:
+                response = self.batch_client.list_jobs(
+                    jobQueue=self.job_queue,
+                    jobStatus=status,
+                    maxResults=50,  # Reasonable limit
+                )
+
+                for job in response.get("jobList", []):
+                    job_id = job["jobId"]
+                    job_name = job.get("jobName", "Unknown")
+
+                    # Add job to monitoring if not already tracked
+                    with self._lock:
+                        if (
+                            job_id not in self.active_jobs
+                            and job_id not in self.job_metadata_cache
+                        ):
+                            self.active_jobs.add(job_id)
+                            self.job_start_times[job_id] = datetime.now()
+                            logger.info(
+                                f"Auto-discovered job {job_id} ({job_name}) "
+                                f"in status {status}"
+                            )
+
+        except Exception as e:
+            logger.error(f"Failed to auto-discover jobs: {e}")
 
     def _monitor_jobs(self):
         """Monitor all active jobs for signs of distress."""
@@ -294,11 +337,21 @@ class BatchUtils:
         # Get current user info for subscription plan-based queue selection
         self.current_user = self._get_current_user()
 
-        # Initialize job monitoring thread
+        # Get job queue for monitoring (determined by user's subscription plan)
+        # This is needed for auto-discovery of Snakemake-submitted jobs
+        job_queue_for_monitoring = None
+        try:
+            job_queue_for_monitoring = self.get_job_queue_for_user()
+            logger.info(f"Job monitoring will track queue: {job_queue_for_monitoring}")
+        except Exception as e:
+            logger.warning(f"Could not determine job queue for monitoring: {e}")
+
+        # Initialize job monitoring thread with job queue for auto-discovery
         self.job_monitor = JobMonitoringThread(
             batch_client=self.batch_client,
             logs_client=self.logs_client,
             monitoring_interval=10,
+            job_queue=job_queue_for_monitoring,
         )
         self.monitoring_enabled = True
 
@@ -504,10 +557,24 @@ class BatchUtils:
             workspace_id: Workspace ID for config download
             unique_id: Unique experiment ID for config download
         """
+        import os
+
         commands = []
 
-        # Add config download from S3
+        # Get bucket name from environment to explicitly set in precommand
+        # This ensures the variable is available when Python subprocess starts
+        # Prefer AWS_BATCH_S3_BUCKET_NAME, fall back to S3_DEFAULT_BUCKET_NAME
+        batch_s3_bucket = os.environ.get(
+            "AWS_BATCH_S3_BUCKET_NAME",
+            os.environ.get(
+                "S3_DEFAULT_BUCKET_NAME", BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME
+            ),
+        )
+
+        # Add config download from S3 with explicit environment variable
+        # This bypasses any envvars propagation issues from AWS Batch job definition
         config_download_cmd = (
+            f"AWS_BATCH_S3_BUCKET_NAME={batch_s3_bucket} "
             f'python -c "import asyncio; '
             f"from studio.app.common.core.cloud_batch.batch_utils "
             f"import download_snakemake_config_from_s3; "
@@ -516,8 +583,9 @@ class BatchUtils:
         )
         commands.append(config_download_cmd)
 
-        # Add Snakefile download from S3
+        # Add Snakefile download from S3 with explicit environment variable
         snakefile_download_cmd = (
+            f"AWS_BATCH_S3_BUCKET_NAME={batch_s3_bucket} "
             f'python -c "import asyncio; '
             f"from studio.app.common.core.cloud_batch.batch_utils "
             f"import download_snakefile_from_s3; "
@@ -987,6 +1055,9 @@ class BatchUtils:
         Returns:
             List of dictionaries containing job IDs and failure context
         """
+        failed_jobs = []
+
+        # First, try to get jobs from AWS Batch API
         try:
             # List jobs in FAILED state
             response = self.batch_client.list_jobs(
@@ -995,7 +1066,6 @@ class BatchUtils:
                 maxResults=limit,
             )
 
-            failed_jobs = []
             for job in response.get("jobList", []):
                 job_id = job["jobId"]
 
@@ -1007,12 +1077,65 @@ class BatchUtils:
                     # Legacy behavior - return just job IDs
                     failed_jobs.append(job_id)
 
-            logger.info(f"Found {len(failed_jobs)} recent failed jobs")
-            return failed_jobs
+            logger.info(
+                f"Found {len(failed_jobs)} recent failed jobs from AWS Batch API"
+            )
 
         except ClientError as e:
-            logger.error(f"Failed to list recent failed jobs: {e}")
-            return []
+            logger.error(f"Failed to list recent failed jobs from AWS API: {e}")
+
+        # If no jobs found from API, check monitoring cache
+        # This handles the case where Snakemake quickly de-registers failed jobs
+        if not failed_jobs and hasattr(self, "job_monitor"):
+            logger.info("No failed jobs from API, checking monitoring cache...")
+            try:
+                # Get all cached jobs from the monitoring thread
+                cached_job_ids = list(self.job_monitor.job_metadata_cache.keys())
+                logger.info(f"Found {len(cached_job_ids)} jobs in monitoring cache")
+
+                # Filter for jobs that show FAILED status in cached metadata
+                for job_id in cached_job_ids[:limit]:
+                    cached_metadata = self.job_monitor.job_metadata_cache.get(
+                        job_id, {}
+                    )
+                    job_status = cached_metadata.get("status", "")
+
+                    logger.debug(f"Cached job {job_id} has status: {job_status}")
+
+                    # Include FAILED jobs or jobs with error indicators
+                    if (
+                        job_status in ["FAILED"]
+                        or cached_metadata.get("exit_code", 0) != 0
+                    ):
+                        if include_context:
+                            # Build context from cached data
+                            job_context = self._build_context_from_cache(job_id)
+                            if job_context:
+                                failed_jobs.append(job_context)
+                                logger.info(
+                                    f"Retrieved failed job {job_id} from cache "
+                                    f"(status: {job_status})"
+                                )
+                        else:
+                            failed_jobs.append(job_id)
+
+                if failed_jobs:
+                    logger.info(
+                        f"Retrieve {len(failed_jobs)} failed jobs from monitoring cache"
+                    )
+                else:
+                    logger.warning(
+                        "No failed jobs found in monitoring cache either. "
+                        "Jobs may not have been added to monitoring or "
+                        "were cleaned up before failure."
+                    )
+
+            except Exception as cache_error:
+                logger.error(
+                    f"Failed to retrieve jobs from monitoring cache: {cache_error}"
+                )
+
+        return failed_jobs
 
     def _get_enhanced_job_failure_context(self, job_id: str, job_summary: Dict) -> Dict:
         """
@@ -1084,6 +1207,82 @@ class BatchUtils:
             failure_context["context_error"] = str(e)
 
         return failure_context
+
+    def _build_context_from_cache(self, job_id: str) -> Dict:
+        """
+        Build job failure context from monitoring cache.
+
+        This is crucial for cases where Snakemake quickly de-registers failed jobs
+        before we can query the AWS Batch API.
+
+        Args:
+            job_id: AWS Batch job ID
+
+        Returns:
+            Dictionary with failure context built from cached data,
+            or None if insufficient data
+        """
+        try:
+            # Get cached data from monitoring thread
+            monitoring_context = self.job_monitor.get_job_failure_context(job_id)
+            cached_metadata = monitoring_context.get("metadata", {})
+
+            if not cached_metadata:
+                logger.warning(f"No cached metadata for job {job_id}")
+                return None
+
+            # Get job details from cached metadata
+            job_data = cached_metadata.get("job_data", {})
+            container = job_data.get("container", {})
+
+            # Build failure context similar to _get_enhanced_job_failure_context
+            failure_context = {
+                "job_id": job_id,
+                "job_name": job_data.get("jobName", "Unknown"),
+                "created_at": job_data.get("createdAt"),
+                "started_at": cached_metadata.get("started_at"),
+                "stopped_at": cached_metadata.get("stopped_at"),
+                "exit_code": container.get("exitCode"),
+                "exit_reason": container.get("reason", "Unknown"),
+                "status_reason": cached_metadata.get("status_reason", "Unknown"),
+                "log_stream_name": container.get("logStreamName"),
+                "job_definition": job_data.get("jobDefinition"),
+                "platform_capabilities": job_data.get("platformCapabilities", []),
+                "job_details": job_data,  # Full cached job data
+                "monitoring_context": monitoring_context,
+                "source": "monitoring_cache",  # Mark this as from cache
+            }
+
+            # Try to get logs from cache or AWS (if still available)
+            log_stream = container.get("logStreamName")
+            if log_stream:
+                try:
+                    failure_context["logs"] = self._get_job_logs_with_context(
+                        job_id, log_stream, limit=100
+                    )
+                except Exception as log_error:
+                    logger.warning(
+                        f"Could not fetch logs for cached job {job_id}: {log_error}"
+                    )
+                    # Use cached log snapshots if available
+                    log_snapshots = monitoring_context.get("log_snapshots", [])
+                    if log_snapshots:
+                        failure_context["logs"] = {
+                            "message": "Logs from monitoring snapshots",
+                            "snapshots": log_snapshots,
+                        }
+
+            # Analyze failure patterns
+            failure_context["failure_analysis"] = self._analyze_job_failure(
+                failure_context
+            )
+
+            logger.info(f"Built failure context for job {job_id} from monitoring cache")
+            return failure_context
+
+        except Exception as e:
+            logger.error(f"Failed to build context from cache for job {job_id}: {e}")
+            return None
 
     def _get_job_logs_with_context(
         self, job_id: str, log_stream_name: str, limit: int = 100
@@ -2378,15 +2577,30 @@ async def download_snakemake_config_from_s3(workspace_id: str, unique_id: str) -
         s3_client = boto3.client("s3")
 
         # Get bucket name from environment variable (set by batch job executor)
-        # This is needed because BATCH_CONFIG is loaded at import time,
-        # but batch containers receive the bucket name as a runtime env var
-        batch_s3_bucket = os.environ.get(
-            "AWS_BATCH_S3_BUCKET_NAME", BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME
-        )
+        # Try multiple sources for maximum reliability:
+        # 1. AWS_BATCH_S3_BUCKET_NAME (primary, set by precommand)
+        # 2. S3_DEFAULT_BUCKET_NAME (fallback, AWS Batch environment)
+        # 3. BATCH_CONFIG (last resort, configuration file)
+        batch_s3_bucket = os.environ.get("AWS_BATCH_S3_BUCKET_NAME")
+        if not batch_s3_bucket:
+            batch_s3_bucket = os.environ.get("S3_DEFAULT_BUCKET_NAME")
+            if batch_s3_bucket:
+                logger.info(
+                    "AWS_BATCH_S3_BUCKET_NAME not set, using S3_DEFAULT_BUCKET_NAME "
+                    f"as fallback: {batch_s3_bucket}"
+                )
+        if not batch_s3_bucket:
+            batch_s3_bucket = BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME
+            if batch_s3_bucket:
+                logger.info(
+                    "Using AWS_BATCH_S3_BUCKET_NAME from BATCH_CONFIG "
+                    f"as last resort: {batch_s3_bucket}"
+                )
 
         if not batch_s3_bucket:
             logger.error(
-                "AWS_BATCH_S3_BUCKET_NAME not set in environment or config. "
+                "No S3 bucket configured. Tried: AWS_BATCH_S3_BUCKET_NAME, "
+                "S3_DEFAULT_BUCKET_NAME, BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME. "
                 "Cannot download snakemake config from S3."
             )
             return False
@@ -2459,13 +2673,42 @@ async def download_snakefile_from_s3(workspace_id: str, unique_id: str) -> bool:
 
         s3_client = boto3.client("s3")
 
-        try:
-            s3_client.download_file(
-                BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME, s3_key, local_snakefile_path
+        # Get bucket name from environment variable (set by batch job executor)
+        # Try multiple sources for maximum reliability:
+        # 1. AWS_BATCH_S3_BUCKET_NAME (primary, set by precommand)
+        # 2. S3_DEFAULT_BUCKET_NAME (fallback, AWS Batch environment)
+        # 3. BATCH_CONFIG (last resort, configuration file)
+        batch_s3_bucket = os.environ.get("AWS_BATCH_S3_BUCKET_NAME")
+        if not batch_s3_bucket:
+            batch_s3_bucket = os.environ.get("S3_DEFAULT_BUCKET_NAME")
+            if batch_s3_bucket:
+                logger.info(
+                    "AWS_BATCH_S3_BUCKET_NAME not set, using S3_DEFAULT_BUCKET_NAME "
+                    f"as fallback: {batch_s3_bucket}"
+                )
+        if not batch_s3_bucket:
+            batch_s3_bucket = BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME
+            if batch_s3_bucket:
+                logger.info(
+                    "Using AWS_BATCH_S3_BUCKET_NAME from BATCH_CONFIG "
+                    f"as last resort: {batch_s3_bucket}"
+                )
+
+        if not batch_s3_bucket:
+            logger.error(
+                "No S3 bucket configured. Tried: AWS_BATCH_S3_BUCKET_NAME, "
+                "S3_DEFAULT_BUCKET_NAME, BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME. "
+                "Cannot download Snakefile from S3."
             )
+            return False
+
+        logger.debug(f"Using S3 bucket for Snakefile download: {batch_s3_bucket}")
+
+        try:
+            s3_client.download_file(batch_s3_bucket, s3_key, local_snakefile_path)
             logger.info(
                 f"Downloaded Snakefile from S3: "
-                f"s3://{BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME}/{s3_key} "
+                f"s3://{batch_s3_bucket}/{s3_key} "
                 f"-> {local_snakefile_path}"
             )
             return True
@@ -2474,7 +2717,7 @@ async def download_snakefile_from_s3(workspace_id: str, unique_id: str) -> bool:
             if error_code == "NoSuchKey":
                 logger.warning(
                     f"Snakefile not found in S3: "
-                    f"s3://{BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME}/{s3_key}. "
+                    f"s3://{batch_s3_bucket}/{s3_key}. "
                     f"This may be expected if Snakefile was not uploaded."
                 )
                 return True  # Don't fail if Snakefile wasn't uploaded

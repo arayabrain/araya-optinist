@@ -33,6 +33,18 @@ class BatchConfig(BaseSettings):
 
     @root_validator
     def validate_aws_config(cls, values):
+        import os
+
+        # Skip validation if running inside a snakemake batch job
+        # These jobs don't need orchestration-level AWS Batch configuration
+        if os.environ.get("IN_SNAKEMAKE_BATCH") == "true":
+            logger = AppLogger.get_logger()
+            logger.debug(
+                "Running inside snakemake batch job, skipping AWS Batch "
+                "configuration validation"
+            )
+            return values
+
         if values.get("USE_AWS_BATCH"):
             logger = AppLogger.get_logger()
             required_fields = [
