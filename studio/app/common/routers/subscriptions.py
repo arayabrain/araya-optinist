@@ -200,6 +200,12 @@ async def update_user_subscription(
     )
 
 
+@router.get("/mgmts/server-time")
+async def get_server_time():
+    utc_time = datetime.utcnow()
+    return {"server_time": utc_time.isoformat()}
+
+
 @router.delete("/mgmts/cancel", response_model=CancelSubscriptionResponse)
 async def cancel_user_subscription(
     db: Session = Depends(get_db),

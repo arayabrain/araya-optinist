@@ -3,7 +3,6 @@ import { RootState } from "store/store"
 export const selectSubscriptionPlans = (state: RootState) =>
   state.subscription.plans
 export const selectUserSubscription = (state: RootState) => {
-  console.log(state.subscription.userSubscription)
   return state.subscription.userSubscription
 }
 export const selectSubscriptionLoading = (state: RootState) =>
@@ -18,6 +17,8 @@ export const selectCheckoutLoading = (state: RootState) =>
   state.subscription.checkoutLoading
 export const selectIsSubscriptionExpired = (state: RootState) =>
   state.subscription.userSubscription?.is_expired
+export const selectServerTime = (state: RootState) =>
+  state.subscription.serverTime
 
 export const selectSubscriptionExpirationDate = (state: RootState) => {
   const userSubscription = selectUserSubscription(state)

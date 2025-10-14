@@ -7,6 +7,7 @@ import {
   getUserSubscription,
   validateCheckoutSession,
   reactivateSubscription,
+  getUTCServerTime,
 } from "store/slice/Subscriptions/SubscriptionActions"
 import {
   SUBSCRIPTION_SLICE_NAME,
@@ -26,6 +27,7 @@ const initialState: SubscriptionState = {
   error: null,
   plansLoading: false,
   userSubscriptionLoading: false,
+  serverTime: null,
 }
 
 const subscriptionSlice = createSlice({
@@ -200,6 +202,22 @@ const subscriptionSlice = createSlice({
           action,
           "Failed to reactivate subscription",
         )
+      })
+      .addCase(getUTCServerTime.pending, (state) => {
+        state.loading = true
+        state.error = null
+      })
+      .addCase(getUTCServerTime.fulfilled, (state, action) => {
+        state.loading = false
+        state.serverTime = action.payload || null
+      })
+      .addCase(getUTCServerTime.rejected, (state, action) => {
+        state.loading = false
+        state.error = extractRejectedErrorMessage(
+          action,
+          "Failed to fetch server time",
+        )
+        state.serverTime = null
       })
   },
 })

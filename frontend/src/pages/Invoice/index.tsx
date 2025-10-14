@@ -27,7 +27,10 @@ import {
   selectInvoicesLoading,
   selectFirstPaymentMethodsError,
 } from "store/slice/PaymentMethod/PaymentMethodSelector"
-import { getUserSubscription } from "store/slice/Subscriptions/SubscriptionActions"
+import {
+  getUserSubscription,
+  getUTCServerTime,
+} from "store/slice/Subscriptions/SubscriptionActions"
 import {
   selectUserSubscription,
   selectUserSubscriptionLoading,
@@ -310,6 +313,7 @@ const InvoicesPage: React.FC = () => {
   // Local state for loading management
   const [isInitialLoading, setIsInitialLoading] = useState(true)
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [serverTimeDate, setServerTimeDate] = useState<Date>(new Date())
 
   const userId = useSelector(selectCurrentUserId)
 
@@ -342,6 +346,29 @@ const InvoicesPage: React.FC = () => {
       loadData()
     }
   }, [dispatch, userId])
+
+  useEffect(() => {
+    const fetchServerTime = async (): Promise<void> => {
+      try {
+        const response = await dispatch(getUTCServerTime())
+        // Get current UTC time from server
+        if (
+          !response.payload ||
+          !(response.payload as { server_time: string }).server_time
+        ) {
+          throw new Error("Server time not available")
+        }
+        const fetchedServerTime = new Date(
+          (response.payload as { server_time: string }).server_time,
+        )
+        setServerTimeDate(fetchedServerTime)
+      } catch (err) {
+        console.error("Error fetching server time:", err)
+      }
+    }
+
+    fetchServerTime()
+  }, [dispatch])
 
   // Refresh data function
   const refreshData = async (): Promise<void> => {
@@ -470,7 +497,7 @@ const InvoicesPage: React.FC = () => {
                       <PlanType>Monthly</PlanType>
                       <ExpirationText>
                         Your subscription{" "}
-                        {new Date(subscription.expiration) < new Date()
+                        {new Date(subscription.expiration) < serverTimeDate
                           ? "expired on"
                           : subscription.scheduled_downgrade
                             ? "will expire on"
@@ -495,7 +522,7 @@ const InvoicesPage: React.FC = () => {
                 disabled={shouldShowLoader}
               >
                 {subscription
-                  ? new Date(subscription.expiration) < new Date()
+                  ? new Date(subscription.expiration) < serverTimeDate
                     ? "Upgrade"
                     : "Downgrade"
                   : "Subscribe Now"}

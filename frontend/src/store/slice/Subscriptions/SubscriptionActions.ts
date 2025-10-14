@@ -5,6 +5,7 @@ import { createAsyncThunk } from "@reduxjs/toolkit"
 import {
   cancelSubscriptionApi,
   createCheckoutSessionApi,
+  getServerTimeApi as getUTCServerTimeApi,
   getSubscriptionPlansApi,
   getUserSubscriptionApi,
   reactivateSubscriptionApi,
@@ -60,6 +61,21 @@ export const getSubscriptionPlan = createAsyncThunk(
       return response
     } catch (error) {
       console.error("Error fetching subscription plans:", error)
+      // Extract clean error message instead of passing entire error object
+      const errorMessage = extractErrorMessage(error)
+      return thunkAPI.rejectWithValue(errorMessage)
+    }
+  },
+)
+
+export const getUTCServerTime = createAsyncThunk(
+  `${SUBSCRIPTION_SLICE_NAME}/getServerTime`,
+  async (_, thunkAPI) => {
+    try {
+      const response = await getUTCServerTimeApi()
+      return response
+    } catch (error) {
+      console.error("Error fetching server time:", error)
       // Extract clean error message instead of passing entire error object
       const errorMessage = extractErrorMessage(error)
       return thunkAPI.rejectWithValue(errorMessage)

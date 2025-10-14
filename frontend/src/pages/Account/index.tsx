@@ -26,12 +26,14 @@ import { ROLE } from "@types"
 import ChangePasswordModal from "components/Account/ChangePasswordModal"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
-import { getUserSubscription } from "store/slice/Subscriptions/SubscriptionActions"
+import {
+  getUTCServerTime,
+  getUserSubscription,
+} from "store/slice/Subscriptions/SubscriptionActions"
 import {
   selectUserSubscription,
   selectUserSubscriptionLoading,
   selectSubscriptionError,
-  selectIsSubscriptionExpired,
 } from "store/slice/Subscriptions/SubscriptionSelector"
 import {
   deleteMe,
@@ -42,11 +44,11 @@ import {
 import { selectCurrentUser, selectLoading } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
-import { getAccurateTimeUTC } from "utils/subscriptions/SubscriptionUtils"
 
 const useSubscriptionExpiration = (
   userSubscription: ReturnType<typeof selectUserSubscription>,
 ) => {
+  const dispatch = useDispatch<AppDispatch>()
   const [isExpired, setIsExpired] = useState(false)
   const [isValidating, setIsValidating] = useState(false)
 
@@ -59,13 +61,23 @@ const useSubscriptionExpiration = (
     const validateExpiration = async () => {
       setIsValidating(true)
       try {
+        const response = await dispatch(getUTCServerTime())
         // Get current UTC time from server
-        const accurateTime = await getAccurateTimeUTC()
+        if (
+          !response.payload ||
+          !(response.payload as { server_time: string }).server_time
+        ) {
+          throw new Error("Server time not available")
+        }
+        const serverTimeDate = new Date(
+          (response.payload as { server_time: string }).server_time,
+        )
         const expirationDate = new Date(userSubscription.expiration)
 
         // Ensure expiration is treated as UTC
         const expirationUTC = new Date(expirationDate.getTime())
-        setIsExpired(expirationUTC <= accurateTime)
+
+        setIsExpired(expirationUTC <= serverTimeDate)
       } catch (error) {
         console.warn(
           "Failed to get accurate time, falling back to client UTC:",

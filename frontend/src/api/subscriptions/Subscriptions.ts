@@ -10,6 +10,11 @@ export const getSubscriptionPlansApi = async (): Promise<
   return response.data
 }
 
+export const getServerTimeApi = async (): Promise<string> => {
+  const response = await axios.get("/api/subsc/mgmts/server-time")
+  return response.data
+}
+
 export const getUserSubscriptionApi = async () => {
   const response = await axios.get("/api/subsc/mgmts")
   return response.data
