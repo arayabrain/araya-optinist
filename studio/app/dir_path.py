@@ -45,6 +45,7 @@ class DIRPATH:
     SNAKEMAKE_CONDA_ENV_DIR = f"{ROOT_DIR}/.snakemake/conda"
 
     SNAKEMAKE_FILEPATH = f"{APP_DIR}/Snakefile"
+    SNAKEMAKE_EDIT_ROI_FILEPATH = f"{APP_DIR}/Snakefile_edit_ROI"
     EXPERIMENT_YML = "experiment.yaml"
     SNAKEMAKE_CONFIG_YML = "snakemake.yaml"
     WORKFLOW_YML = "workflow.yaml"
