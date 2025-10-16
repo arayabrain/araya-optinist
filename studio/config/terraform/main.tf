@@ -5,9 +5,30 @@ provider "aws" {
 
 terraform {
   backend "s3" {
-    bucket = "subscr-optinist-for-cloud-tfstate"
-    key    = "terraform.tfstate"
-    region = "ap-northeast-1"
+    bucket         = "subscr-optinist-for-cloud-tfstate"
+    key            = "terraform.tfstate"
+    region         = "ap-northeast-1"
+    # dynamodb_table = "terraform-state-lock"  # Uncomment after initial bootstrap
+    # encrypt        = true                     # Uncomment after initial bootstrap
+  }
+}
+
+# DynamoDB Table for Terraform State Locking
+# This table must be created first before enabling locking in the backend config above
+resource "aws_dynamodb_table" "terraform_state_lock" {
+  name           = "terraform-state-lock"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "LockID"
+
+  attribute {
+    name = "LockID"
+    type = "S"
+  }
+
+  tags = {
+    Name        = "Terraform State Lock Table"
+    ManagedBy   = "Terraform"
+    Description = "Prevents concurrent terraform operations"
   }
 }
 
