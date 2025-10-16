@@ -12,7 +12,6 @@ class RuleBuilder:
         self._hdf5Path = None
         self._matPath = None
         self._path = None
-        self._priority = 0
 
     def set_input(self, input, workspace_id=None) -> "RuleBuilder":
         if workspace_id:
@@ -56,10 +55,6 @@ class RuleBuilder:
         self._path = path
         return self
 
-    def set_priority(self, priority) -> "RuleBuilder":
-        self._priority = priority
-        return self
-
     def build(self) -> Rule:
         return Rule(
             input=self._input,
@@ -71,5 +66,4 @@ class RuleBuilder:
             hdf5Path=self._hdf5Path,
             matPath=self._matPath,
             path=self._path,
-            priority=self._priority,
         )

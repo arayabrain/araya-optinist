@@ -15,7 +15,6 @@ class Rule:
     hdf5Path: str = None
     matPath: str = None
     path: str = None
-    priority: int = 0
 
 
 @dataclass

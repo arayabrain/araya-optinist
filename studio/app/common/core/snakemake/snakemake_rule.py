@@ -18,14 +18,12 @@ class SmkRule:
         node: Node,
         edgeDict: Dict[str, Edge],
         nwbfile=None,
-        priority=0,
     ) -> None:
         self._workspace_id = workspace_id
         self._unique_id = unique_id
         self._node = node
         self._edgeDict = edgeDict
         self._nwbfile = nwbfile
-        self._priority = priority
 
         _return_name = self.get_return_name()
 
@@ -45,7 +43,6 @@ class SmkRule:
             .set_params(self._node.data.param)
             .set_output(_output_file)
             .set_nwbfile(self._nwbfile)
-            .set_priority(self._priority)
         )
 
     def image(self) -> Rule:
@@ -112,7 +109,6 @@ class SmkRule:
             .set_path(self._node.data.path)
             .set_type(self._node.data.label)
             .set_nwbfile(self._nwbfile)
-            .set_priority(self._priority)
             .build()
         )
 
@@ -124,7 +120,6 @@ class SmkRule:
         return (
             self.builder.set_input(pp_input)
             .set_type(ProcessType.POST_PROCESS.type)
-            .set_priority(self._priority)
             .build()
         )
 
