@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timedelta
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Any, Dict
 
 import stripe
@@ -27,7 +27,7 @@ from studio.app.common.models.subscription import (
 logger = AppLogger.get_logger()
 
 
-class StripeWebhookEvent(Enum):
+class StripeWebhookEvent(StrEnum):
     CHECKOUT_SESSION_COMPLETED = "checkout.session.completed"
     INVOICE_PAYMENT_FAILED = "invoice.payment_failed"
     CUSTOMER_SUBSCRIPTION_DELETED = "customer.subscription.deleted"
@@ -40,7 +40,7 @@ class BILLING_CYCLE(Enum):
     YEARLY = "2"
 
 
-class PaymentStatus(Enum):
+class PaymentStatus(StrEnum):
     PAID = "paid"
 
 
@@ -153,7 +153,7 @@ class WebhookService:
                 }
 
             # 2. Verify payment status from webhook data
-            if payment_status != PaymentStatus.PAID.value:
+            if payment_status != PaymentStatus.PAID:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Payment not completed. Status: {payment_status}",
@@ -507,7 +507,7 @@ class WebhookService:
                 )
 
             # Verify payment was successful
-            if payment_status != PaymentStatus.PAID.value:
+            if payment_status != PaymentStatus.PAID:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Payment not completed. Status: {payment_status}",
@@ -516,11 +516,12 @@ class WebhookService:
             # 1. Find user by Stripe customer ID
             try:
                 logger.info(f"Webhook: Finding user by customer_id: {customer_id}")
-                user_account = (
-                    db.query(SubscriptionUserAccount)
-                    .filter(SubscriptionUserAccount.provider_customer_id == customer_id)
-                    .first()
+                from sqlmodel import select
+
+                user_account_stmt = select(SubscriptionUserAccount).where(
+                    SubscriptionUserAccount.provider_customer_id == customer_id
                 )
+                user_account = db.exec(user_account_stmt).first()
 
                 if not user_account:
                     raise HTTPException(
@@ -541,16 +542,17 @@ class WebhookService:
 
             # 2. Find active subscription by Stripe subscription ID
             try:
-                user_subscription = (
-                    db.query(UserSubscription)
-                    .filter(
+                user_subscription_stmt = (
+                    select(UserSubscription)
+                    .where(
                         UserSubscription.user_id == user_id,
                         UserSubscription.expiration
                         > SubscriptionService.get_current_datetime(),
                     )
                     .order_by(UserSubscription.expiration.desc())
-                    .first()
                 )
+
+                user_subscription = db.exec(user_subscription_stmt).first()
 
                 if not user_subscription:
                     raise HTTPException(
@@ -719,11 +721,11 @@ class WebhookService:
         """
         try:
             match event_type:
-                case StripeWebhookEvent.CHECKOUT_SESSION_COMPLETED.value:
+                case StripeWebhookEvent.CHECKOUT_SESSION_COMPLETED:
                     logger.info("Handling checkout.session.completed")
                     return WebhookService.handle_checkout_completed(db, data)
 
-                case StripeWebhookEvent.INVOICE_PAYMENT_FAILED.value:
+                case StripeWebhookEvent.INVOICE_PAYMENT_FAILED:
                     logger.info("Handling invoice.payment_failed")
                     WebhookService.handle_payment_failed(db, data)
                     return {
@@ -731,7 +733,7 @@ class WebhookService:
                         "message": "Payment failed event processed",
                     }
 
-                case StripeWebhookEvent.CUSTOMER_SUBSCRIPTION_DELETED.value:
+                case StripeWebhookEvent.CUSTOMER_SUBSCRIPTION_DELETED:
                     logger.info("Handling customer.subscription.deleted")
                     WebhookService.handle_subscription_cancelled(db, data)
                     return {
@@ -739,7 +741,7 @@ class WebhookService:
                         "message": "Subscription cancellation processed",
                     }
 
-                case StripeWebhookEvent.SUBSCRIPTION_SCHEDULE_RELEASED.value:
+                case StripeWebhookEvent.SUBSCRIPTION_SCHEDULE_RELEASED:
                     logger.info("Handling subscription_schedule.released")
                     WebhookService.handle_subscription_schedule_released(db, data)
                     return {
@@ -747,7 +749,7 @@ class WebhookService:
                         "message": "Subscription schedule release processed",
                     }
 
-                case StripeWebhookEvent.INVOICE_PAYMENT_SUCCEEDED.value:
+                case StripeWebhookEvent.INVOICE_PAYMENT_SUCCEEDED:
                     logger.info("Handling invoice.payment_succeeded")
                     return WebhookService.handle_subscription_payment_succeeded(
                         db, data
