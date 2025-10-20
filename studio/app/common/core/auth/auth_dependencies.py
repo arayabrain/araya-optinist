@@ -3,16 +3,19 @@ import os
 from datetime import datetime, timezone
 from typing import Optional
 
+import sqlalchemy
 from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
-from firebase_admin import auth as firebase_auth
 from pydantic import ValidationError
 from sqlalchemy import func
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth_config import AUTH_CONFIG
-from studio.app.common.core.auth.security import validate_access_token
+from studio.app.common.core.auth.auth_helper import (
+    extract_uid_from_firebase_credential,
+    extract_uid_from_jwt_token,
+)
 from studio.app.common.core.dataview.dataview_services import DataviewService
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
@@ -70,68 +73,19 @@ async def get_current_user(
         assert credential is not None if use_firebase_auth else True
         assert ex_token is not None if not use_firebase_auth else True
 
+        # Extract uid using helper functions
         uid = None
+        err = None
         if use_firebase_auth:
-            user = firebase_auth.verify_id_token(credential.credentials)
-            uid = user["uid"]
+            uid, err = extract_uid_from_firebase_credential(credential)
         else:
-            payload, err = validate_access_token(ex_token)
-            assert err is None, str(err)
-            uid = payload["sub"]
+            uid, err = extract_uid_from_jwt_token(ex_token)
 
-        workspace_capacity_subq = (
-            select(
-                Workspace.user_id,
-                func.coalesce(func.sum(Workspace.input_data_usage), 0).label(
-                    "input_workspace_capacity"
-                ),
-            )
-            .where(Workspace.deleted.is_(False))
-            .group_by(Workspace.user_id)
-            .subquery()
-        )
-        experiment_capacity_subq = (
-            select(
-                Workspace.user_id,
-                func.coalesce(func.sum(ExperimentRecord.data_usage), 0).label(
-                    "experiment_capacity"
-                ),
-            )
-            .join(ExperimentRecord, ExperimentRecord.workspace_id == Workspace.id)
-            .where(Workspace.deleted.is_(False))
-            .group_by(Workspace.user_id)
-            .subquery()
-        )
+        assert err is None, str(err)
+        assert uid is not None, "Failed to extract user ID"
 
-        WorkspaceCapacity = aliased(workspace_capacity_subq)
-        ExperimentCapacity = aliased(experiment_capacity_subq)
-
-        user_data = (
-            db.query(
-                UserModel,
-                func.min(UserRoleModel.role_id),
-                func.coalesce(WorkspaceCapacity.c.input_workspace_capacity, 0)
-                + func.coalesce(ExperimentCapacity.c.experiment_capacity, 0).label(
-                    "data_usage"
-                ),
-                func.max(SubscriptionPlans.name).label("subscription_plan_name"),
-                UserStorageUsage.storage_usage_bytes,
-                UserStorageUsage.storage_quota_bytes,
-                func.max(UserSubscription.expiration).label("subscription_expiration"),
-                func.max(UserSubscription.plan_id).label("subscription_plan_id"),
-            )
-            .outerjoin(WorkspaceCapacity, WorkspaceCapacity.c.user_id == UserModel.id)
-            .outerjoin(ExperimentCapacity, ExperimentCapacity.c.user_id == UserModel.id)
-            .outerjoin(UserRoleModel, UserRoleModel.user_id == UserModel.id)
-            .outerjoin(UserSubscription, UserSubscription.user_id == UserModel.id)
-            .outerjoin(
-                SubscriptionPlans, SubscriptionPlans.id == UserSubscription.plan_id
-            )
-            .outerjoin(UserStorageUsage, UserStorageUsage.user_id == UserModel.id)
-            .filter(UserModel.uid == uid)
-            .group_by(UserModel.id)
-            .first()
-        )
+        # Query user record
+        user_data = __get_current_user_record(db, uid)
         assert user_data is not None, "Invalid user data"
         (
             authed_user,
@@ -204,6 +158,64 @@ async def get_current_user(
             headers={"WWW-Authenticate": 'Bearer realm="auth_required"'},
             detail=str(e) or "Could not validate credentials",
         )
+
+
+def __get_current_user_record(db: Session, uid: str) -> sqlalchemy.engine.row.Row:
+    # Make query (calc workspace capacity)
+    workspace_capacity_subq = (
+        select(
+            Workspace.user_id,
+            func.coalesce(func.sum(Workspace.input_data_usage), 0).label(
+                "input_workspace_capacity"
+            ),
+        )
+        .where(Workspace.deleted.is_(False))
+        .group_by(Workspace.user_id)
+        .subquery()
+    )
+    WorkspaceCapacity = aliased(workspace_capacity_subq)
+
+    # Make query (calc experient capacity)
+    experiment_capacity_subq = (
+        select(
+            Workspace.user_id,
+            func.coalesce(func.sum(ExperimentRecord.data_usage), 0).label(
+                "experiment_capacity"
+            ),
+        )
+        .join(ExperimentRecord, ExperimentRecord.workspace_id == Workspace.id)
+        .where(Workspace.deleted.is_(False))
+        .group_by(Workspace.user_id)
+        .subquery()
+    )
+    ExperimentCapacity = aliased(experiment_capacity_subq)
+
+    user_data = (
+        db.query(
+            UserModel,
+            func.min(UserRoleModel.role_id),
+            func.coalesce(WorkspaceCapacity.c.input_workspace_capacity, 0)
+            + func.coalesce(ExperimentCapacity.c.experiment_capacity, 0).label(
+                "data_usage"
+            ),
+            func.max(SubscriptionPlans.name).label("subscription_plan_name"),
+            UserStorageUsage.storage_usage_bytes,
+            UserStorageUsage.storage_quota_bytes,
+            func.max(UserSubscription.expiration).label("subscription_expiration"),
+            func.max(UserSubscription.plan_id).label("subscription_plan_id"),
+        )
+        .outerjoin(WorkspaceCapacity, WorkspaceCapacity.c.user_id == UserModel.id)
+        .outerjoin(ExperimentCapacity, ExperimentCapacity.c.user_id == UserModel.id)
+        .outerjoin(UserRoleModel, UserRoleModel.user_id == UserModel.id)
+        .outerjoin(UserSubscription, UserSubscription.user_id == UserModel.id)
+        .outerjoin(SubscriptionPlans, SubscriptionPlans.id == UserSubscription.plan_id)
+        .outerjoin(UserStorageUsage, UserStorageUsage.user_id == UserModel.id)
+        .filter(UserModel.uid == uid)
+        .group_by(UserModel.id)
+        .first()
+    )
+
+    return user_data
 
 
 async def get_admin_user(current_user: User = Depends(get_current_user)) -> User:

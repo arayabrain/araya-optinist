@@ -34,6 +34,10 @@ from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
 )
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.logger_context_helpers import (
+    get_client_id_for_subprocess,
+    with_client_id_context,
+)
 from studio.app.common.core.snakemake.smk import ForceRun, SmkParam
 from studio.app.common.core.snakemake.smk_status_logger import SmkStatusLogger
 from studio.app.common.core.storage.remote_storage_controller import (
@@ -58,9 +62,13 @@ def snakemake_execute(workspace_id: str, unique_id: str, params: SmkParam):
     Main entry point for Snakemake execution.
     Determines whether to use local or AWS Batch execution based on configuration.
     """
+    client_id = get_client_id_for_subprocess()
+
     if BATCH_CONFIG.USE_AWS_BATCH:
         logger.info("Starting AWS Batch execution mode")
-        future_result = _snakemake_execute_batch(workspace_id, unique_id, params)
+        future_result = _snakemake_execute_batch(
+            workspace_id, unique_id, params, client_id=client_id
+        )
         # Handle S3 operations for batch execution
         # Upload/download ensures results are in S3 and synced to local storage
         if future_result:
@@ -74,7 +82,11 @@ def snakemake_execute(workspace_id: str, unique_id: str, params: SmkParam):
             logger.info("start snakemake running process.")
 
             future = executor.submit(
-                _snakemake_execute_process, workspace_id, unique_id, params
+                _snakemake_execute_process,
+                workspace_id,
+                unique_id,
+                params,
+                client_id=client_id,
             )
             future_result = future.result()
 
@@ -84,8 +96,12 @@ def snakemake_execute(workspace_id: str, unique_id: str, params: SmkParam):
     return future_result
 
 
+@with_client_id_context  # Automatically set client_id for logging
 def _snakemake_execute_process(
-    workspace_id: str, unique_id: str, params: SmkParam
+    workspace_id: str,
+    unique_id: str,
+    params: SmkParam,
+    client_id: str = None,
 ) -> bool:
     # ------------------------------------------------------------
     # Snakemake execution process
@@ -213,8 +229,9 @@ def _snakemake_execute_process(
     return snakemake_result
 
 
+@with_client_id_context  # Automatically set client_id for logging
 def _snakemake_execute_batch(
-    workspace_id: str, unique_id: str, params: SmkParam
+    workspace_id: str, unique_id: str, params: SmkParam, client_id: str = None
 ) -> bool:
     """
     Execute Snakemake workflow using AWS Batch executor.

@@ -10,6 +10,9 @@ ROOT_DIRPATH = dirname(dirname(dirname(dirname(dirname(dirname(abspath(__file__)
 sys.path.append(ROOT_DIRPATH)
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.logger_context_helpers import (
+    init_client_id_from_snakemake_config,
+)
 
 logger = AppLogger.get_logger()
 
@@ -25,13 +28,8 @@ def main():
         from studio.app.common.core.workflow.workflow import NodeType, NodeTypeUtil
         from studio.app.const import FILETYPE
 
-        logger.info(f"=== DATA RULE DEBUG INFO ===")
-        logger.info(f"Current working directory: {os.getcwd()}")
-        logger.info(f"Snakemake config keys: {list(snakemake.config.keys())}")
-        logger.info(f"Snakemake params: {snakemake.params}")
-        logger.info(
-            f"Environment variables: AWS_BATCH_JOB_ID={os.environ.get('AWS_BATCH_JOB_ID')}"
-        )
+        # Initialize client_id from snakemake config
+        init_client_id_from_snakemake_config(snakemake.config)
 
         last_output = snakemake.config["last_output"]
 
