@@ -23,7 +23,7 @@ class Workspace(BaseModel):
 
 class WorkspaceCreate(BaseModel):
     name: str
-    type: int
+    type: Optional[int]
 
 
 class WorkspaceUpdate(WorkspaceCreate):
