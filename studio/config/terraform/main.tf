@@ -764,7 +764,7 @@ resource "aws_lb" "autoscaling" {
   subnets           = [aws_subnet.public1.id, aws_subnet.public2.id]
 
   enable_deletion_protection = false
-  idle_timeout              = 60
+  idle_timeout              = 180  # Increased to accommodate premium instance cold starts
 
   # Enable access logs for detailed monitoring
   access_logs {
@@ -2199,7 +2199,8 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
           "ec2:StopInstances",
           "ec2:StartInstances",
           "ec2:TerminateInstances",
-          "ec2:RunInstances"
+          "ec2:RunInstances",
+          "ec2:CreateTags"
         ]
         Resource = "*"
       },
@@ -3708,9 +3709,11 @@ resource "aws_launch_template" "premium" {
   }
 }
 
-# Premium On-Demand Instances - Start stopped, activated when users connect
+# Premium Instances - Base instances managed by Terraform
+# Note: Lambda (premium_manager.py) handles dynamic scaling by creating additional
+# standby instances and managing instance lifecycle based on user demand
 resource "aws_instance" "premium" {
-  count = 1  # Start with 1 premium instance, create more on-demand
+  count = 1  # Start with 1 premium instance as base capacity
 
   launch_template {
     id      = aws_launch_template.premium.id
@@ -3720,10 +3723,10 @@ resource "aws_instance" "premium" {
   instance_type = "t3.large"
   subnet_id     = aws_subnet.private1.id
 
-  # Start in stopped state for cost savings
+  # On shutdown, stop instance instead of terminating
   instance_initiated_shutdown_behavior = "stop"
 
-  # Prevent termination
+  # Prevent accidental termination
   disable_api_termination = false
 
   tags = {
@@ -3734,7 +3737,8 @@ resource "aws_instance" "premium" {
     InstanceIndex = count.index + 1
   }
 
-  # Ensure instances are stopped on creation
+  # Stop instance on creation to reduce costs when not in use
+  # Lambda will start instances when users request premium access
   provisioner "local-exec" {
     command = "aws ec2 stop-instances --instance-ids ${self.id} --region ${var.aws_region} || true"
   }

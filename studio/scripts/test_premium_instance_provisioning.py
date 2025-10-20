@@ -34,6 +34,7 @@ import time
 from typing import Dict, List, Optional
 
 import boto3
+import pymysql
 import requests
 
 # Add current directory to path for imports
@@ -55,6 +56,99 @@ except ImportError as e:
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
+
+def cleanup_test_user_assignments(
+    test_user_emails: List[str], terraform_dir: str
+) -> int:
+    """
+    Clean up database assignments for test users without touching AWS resources.
+
+    This is a lightweight cleanup that only removes database entries for specified
+    test users, ensuring a clean state for test execution.
+
+    Args:
+        test_user_emails: List of user emails to clean up
+        (e.g., ["user1@test.com", "user2@test.com"])
+        terraform_dir: Path to terraform directory to get RDS connection details
+
+    Returns:
+        Number of assignments deleted
+    """
+    try:
+        # Get Terraform outputs for RDS connection details
+        terraform_outputs = get_terraform_outputs(terraform_dir)
+
+        # Extract RDS connection details
+        rds_endpoint = terraform_outputs.get("rds_endpoint", {}).get("value", "")
+        rds_host = (
+            rds_endpoint.split(":")[0]
+            if rds_endpoint
+            else os.environ.get("RDS_HOST", "localhost")
+        )
+        rds_user = os.environ.get("RDS_USER", "admin")
+        rds_password = os.environ.get("RDS_PASSWORD", "")
+        rds_database = os.environ.get("RDS_DATABASE", "optinist")
+
+        logging.info(
+            f"Connecting to RDS database at "
+            f"{rds_host} to clean up test user assignments"
+        )
+
+        # Connect to database
+        connection = pymysql.connect(
+            host=rds_host,
+            port=3306,
+            user=rds_user,
+            password=rds_password,
+            database=rds_database,
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+        )
+
+        deleted_count = 0
+        with connection.cursor() as cursor:
+            # First, get user IDs from emails
+            email_placeholders = ", ".join(["%s"] * len(test_user_emails))
+            cursor.execute(
+                f"SELECT id FROM users WHERE email IN ({email_placeholders})",
+                test_user_emails,
+            )
+            user_rows = cursor.fetchall()
+            user_ids = [str(row["id"]) for row in user_rows]
+
+            if not user_ids:
+                logging.info("No test users found in database to clean up")
+                connection.close()
+                return 0
+
+            logging.info(f"Found {len(user_ids)} test user(s) in database: {user_ids}")
+
+            # Delete assignments for these users
+            id_placeholders = ", ".join(["%s"] * len(user_ids))
+            query = (
+                f"DELETE FROM premium_user_assignments "
+                f"WHERE user_id IN ({id_placeholders})"
+            )
+            cursor.execute(query, user_ids)
+            deleted_count = cursor.rowcount
+            connection.commit()
+
+        connection.close()
+
+        if deleted_count > 0:
+            logging.info(
+                f"Cleaned up {deleted_count} stale test user "
+                f"assignment(s) from database"
+            )
+        else:
+            logging.info("No stale test user assignments found in database")
+
+        return deleted_count
+
+    except Exception as e:
+        logging.warning(f"Database cleanup failed (non-fatal): {e}")
+        return 0
 
 
 def get_terraform_outputs(terraform_dir: str) -> Dict:
@@ -287,7 +381,9 @@ class PremiumInstanceTester:
             logging.info(f"Calling premium assignment API: {assign_url}")
             logging.info("Using Firebase ID token for authentication")
 
-            response = requests.post(assign_url, headers=headers, timeout=60)
+            # Timeout increased to 180s to accommodate cold starts
+            # (stopped instance startup)
+            response = requests.post(assign_url, headers=headers, timeout=180)
 
             logging.info(f"Response status: {response.status_code}")
             logging.info(f"Response body: {response.text}")
@@ -392,6 +488,27 @@ class PremiumInstanceTester:
                 logging.warning(
                     f"Could not get token to unassign user: {target_user['email']}"
                 )
+
+        # Force cleanup database assignments for test users
+        # This ensures a clean state even if API unassignment failed
+        # Extract emails from test users that were being unassigned
+        test_user_emails = []
+        for user_info in users_to_unassign:
+            for user in test_users:
+                email = user.get("email", "")
+                if user_info["email_keyword"] in email.lower():
+                    if user_info["email_keyword"] == "optinist_test_user_premium" and (
+                        "expire" in email.lower() or "over" in email.lower()
+                    ):
+                        continue
+                    test_user_emails.append(email)
+                    break
+
+        if test_user_emails:
+            logging.info(f"Forcing database cleanup for test users: {test_user_emails}")
+            cleanup_test_user_assignments(test_user_emails, terraform_dir)
+        else:
+            logging.warning("No test user emails found for database cleanup")
 
         # Stop any running premium instances
         logging.info("Stopping all premium instances...")

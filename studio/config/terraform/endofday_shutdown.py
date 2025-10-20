@@ -640,7 +640,6 @@ def cleanup_orphaned_batch_instances() -> bool:
             "ec2",
             "describe-instances",
             "--filters",
-            "Name=instance-state-name,Values=running",
             "Name=tag:Name,Values=*Batch*",
             "--query",
             "Reservations[].Instances[].InstanceId",
@@ -688,7 +687,6 @@ def terminate_dedicated_batch_instance() -> bool:
             "ec2",
             "describe-instances",
             "--filters",
-            "Name=instance-state-name,Values=running",
             "Name=tag:Name,Values=subscr-optinist-batch-instance",
             "--query",
             "Reservations[].Instances[].InstanceId",
@@ -742,7 +740,6 @@ def shutdown_premium_instances() -> bool:
             "ec2",
             "describe-instances",
             "--filters",
-            "Name=instance-state-name,Values=running,stopped",
             "Name=tag:Type,Values=premium",
             "--query",
             "Reservations[].Instances[].[InstanceId,State.Name,"
@@ -770,10 +767,16 @@ def shutdown_premium_instances() -> bool:
                     f"State: {state}{Colors.NC}"
                 )
 
-                if state == "running":
+                # Terminate instances in any state except already terminated/terminating
+                if state in ["terminated", "terminating"]:
                     print(
-                        f"{Colors.YELLOW}Terminating running premium "
-                        f"instance: {instance_id}{Colors.NC}"
+                        f"{Colors.GREEN}Premium instance {instance_id} "
+                        f"already {state}{Colors.NC}"
+                    )
+                else:
+                    print(
+                        f"{Colors.YELLOW}Terminating premium instance "
+                        f"{instance_id} (state: {state}){Colors.NC}"
                     )
                     result = run_command(
                         [
@@ -794,11 +797,6 @@ def shutdown_premium_instances() -> bool:
                         print(
                             f"{Colors.RED}Failed to terminate {instance_id}{Colors.NC}"
                         )
-                elif state == "stopped":
-                    print(
-                        f"{Colors.GREEN}Premium instance {instance_id} "
-                        f"already stopped{Colors.NC}"
-                    )
     else:
         print(f"{Colors.GREEN}No premium instances found{Colors.NC}")
 
@@ -809,7 +807,6 @@ def shutdown_premium_instances() -> bool:
             "ec2",
             "describe-instances",
             "--filters",
-            "Name=instance-state-name,Values=running",
             "Name=tag:Name,Values=*premium*,*Premium*",
             "--query",
             "Reservations[].Instances[].InstanceId",

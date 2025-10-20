@@ -38,11 +38,37 @@ class SmkParamReader:
 
 class SmkConfigReader:
     @classmethod
+    def get_batch_config_path(cls) -> str:
+        """
+        Get config path for batch mode execution.
+        Tries primary location first, then fallback.
+        """
+        # Try primary location first
+        if os.path.exists("/app/snakemake.yaml"):
+            return "/app/snakemake.yaml"
+        # Fallback if deploy-sources overwrote /app version
+        elif os.path.exists("/tmp/snakemake_config.yaml"):
+            return "/tmp/snakemake_config.yaml"
+        else:
+            # Return expected path for clear error
+            return "/app/snakemake.yaml"
+
+    @classmethod
     def get_config_yaml_path(cls, workspace_id: str, unique_id: str) -> str:
-        path = join_filepath(
-            [DIRPATH.OUTPUT_DIR, workspace_id, unique_id, DIRPATH.SNAKEMAKE_CONFIG_YML]
-        )
-        return path
+        # Check if running in batch mode
+        if os.environ.get("IN_SNAKEMAKE_BATCH") == "true":
+            return cls.get_batch_config_path()
+        else:
+            # Local mode: use workspace-specific path
+            path = join_filepath(
+                [
+                    DIRPATH.OUTPUT_DIR,
+                    workspace_id,
+                    unique_id,
+                    DIRPATH.SNAKEMAKE_CONFIG_YML,
+                ]
+            )
+            return path
 
     @classmethod
     def read(cls, workspace_id: str, unique_id: str) -> dict:
@@ -66,5 +92,12 @@ class SmkConfigReader:
 
     @classmethod
     def read_from_path(cls, filepath: str) -> dict:
-        ids = ExptOutputPathIds(os.path.dirname(filepath))
-        return cls.read(ids.workspace_id, ids.unique_id)
+        # In batch mode, ignore the filepath and use batch config location
+        if os.environ.get("IN_SNAKEMAKE_BATCH") == "true":
+            # Extract IDs for logging but use batch config path
+            ids = ExptOutputPathIds(os.path.dirname(filepath))
+            return cls.read(ids.workspace_id, ids.unique_id)
+        else:
+            # Local mode: extract IDs from path
+            ids = ExptOutputPathIds(os.path.dirname(filepath))
+            return cls.read(ids.workspace_id, ids.unique_id)

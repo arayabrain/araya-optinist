@@ -8,15 +8,19 @@ that are not part of the current active premium instances.
 
 import os
 import sys
+from pathlib import Path
 from typing import Dict, List
 
 import boto3
 import pymysql
 
-# Add the studio directory to the path so we can import from it
-sys.path.append("/Users/milesd/GitRepos/optinist-for-cloud/studio")
+# Add the project root to the Python path to allow for absolute imports
+# The project root is 2 parent directories up from this script's directory.
+project_root = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(project_root))
 
-from app.common.core.logger import AppLogger  # noqa: E402
+
+from studio.app.common.core.logger import AppLogger  # noqa: E402
 
 logger = AppLogger.get_logger()
 

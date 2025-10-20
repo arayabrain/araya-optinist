@@ -521,13 +521,13 @@ class BatchUtils:
             "export SNAKEMAKE_RSYNC_OPTS='-av --inplace --no-sparse'",
         ]
 
-        # Add config download
+        # Download config to /tmp to avoid being overwritten by --deploy-sources
         config_download_cmd = (
             f'python -c "import asyncio; '
             f"from studio.app.common.core.cloud_batch.batch_utils "
             f"import download_snakemake_config_from_s3; "
             f"asyncio.run(download_snakemake_config_from_s3("
-            f"'{workspace_id}', '{unique_id}'))\""
+            f"'{workspace_id}', '{unique_id}', '/tmp/snakemake_config.yaml'))\""
         )
         commands.append(config_download_cmd)
 
@@ -540,6 +540,10 @@ class BatchUtils:
             f"'{workspace_id}', '{unique_id}'))\""
         )
         commands.append(snakefile_download_cmd)
+
+        # Copy config from /tmp to /app after deploy-sources completes
+        copy_config_cmd = "cp /tmp/snakemake_config.yaml /app/snakemake.yaml"
+        commands.append(copy_config_cmd)
 
         return commands
 
@@ -571,15 +575,15 @@ class BatchUtils:
             ),
         )
 
-        # Add config download from S3 with explicit environment variable
-        # This bypasses any envvars propagation issues from AWS Batch job definition
+        # Download config to /tmp/snakemake_config.yaml to avoid being overwritten
+        # by --deploy-sources tarball extraction
         config_download_cmd = (
             f"AWS_BATCH_S3_BUCKET_NAME={batch_s3_bucket} "
             f'python -c "import asyncio; '
             f"from studio.app.common.core.cloud_batch.batch_utils "
             f"import download_snakemake_config_from_s3; "
             f"asyncio.run(download_snakemake_config_from_s3("
-            f"'{workspace_id}', '{unique_id}'))\""
+            f"'{workspace_id}', '{unique_id}', '/tmp/snakemake_config.yaml'))\""
         )
         commands.append(config_download_cmd)
 
@@ -594,11 +598,24 @@ class BatchUtils:
         )
         commands.append(snakefile_download_cmd)
 
+        # Copy config from /tmp to /app
+        # Use -f to force overwrite in case file exists
+        copy_config_cmd = "cp -f /tmp/snakemake_config.yaml /app/snakemake.yaml"
+        commands.append(copy_config_cmd)
+
+        # IMPORTANT: The above commands run in precommand (before --deploy-sources).
+        # If --deploy-sources overwrites /app/snakemake.yaml, we rely on:
+        # 1. IN_SNAKEMAKE_BATCH env var to tell Snakefile the correct path
+        # 2. The /tmp copy as backup - if needed, add post-deploy copy here
+
+        # Note: We keep the config in /tmp as a backup. If deploy-sources causes issues,
+        # the Snakefile can be modified to check /tmp/snakemake_config.yaml as fallback
+
         return commands
 
     @staticmethod
     def get_efs_optimized_storage_settings(
-        workspace_id: str, unique_id: str
+        workspace_id: str, unique_id: str  # noqa: ARG004
     ) -> StorageSettings:
         """
         Configure optimized storage settings for EFS shared filesystem.
@@ -2266,6 +2283,106 @@ class BatchDebug:
         logger.debug("=== END S3 STORAGE DEBUG ===")
 
     @staticmethod
+    def debug_dryrun_validation(
+        dag_api, storage_mode: str, dryrun_envvars: list = None
+    ) -> bool:
+        """
+        Perform verbose dryrun validation before batch execution.
+
+        Args:
+            dag_api: Snakemake DAG API instance
+            storage_mode: Either "s3" or "efs" to determine env var setup
+            dryrun_envvars: Optional list of environment variables to pass to dryrun
+
+        Returns:
+            bool: True if dryrun validation passed, False otherwise
+
+        Raises:
+            Exception: If dryrun validation fails and fail-fast is enabled
+        """
+        from snakemake.api import ExecutionSettings
+
+        from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
+        from studio.app.common.core.storage.remote_storage_controller import (
+            RemoteStorageController,
+        )
+        from studio.app.dir_path import DIRPATH
+
+        logger.info("=" * 60)
+        logger.info("DRYRUN VALIDATION OUTPUT:")
+        logger.info("=" * 60)
+
+        try:
+            logger.info("Starting dryrun validation with existing DAG")
+
+            # Prepare environment variables for dryrun if not provided
+            if dryrun_envvars is None:
+                dryrun_envvars = ["USE_AWS_BATCH", "OPTINIST_DIR"]
+
+                if storage_mode == "s3" and RemoteStorageController.is_available():
+                    # Use S3 storage for dryrun (matches execution config)
+                    os.environ["AWS_BATCH_S3_BUCKET_NAME"] = os.environ.get(
+                        "S3_DEFAULT_BUCKET_NAME", BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME
+                    )
+                    dryrun_envvars.extend(
+                        [
+                            "REMOTE_STORAGE_TYPE",
+                            "S3_DEFAULT_BUCKET_NAME",
+                            "AWS_BATCH_S3_BUCKET_NAME",
+                            "AWS_DEFAULT_REGION",
+                            "PYTHONPATH",
+                        ]
+                    )
+                    logger.info("Using S3 storage for dryrun validation")
+                elif storage_mode == "efs":
+                    # Set environment variables for EFS storage before adding to envvars
+                    os.environ["EFS_MOUNT_TARGET"] = DIRPATH.DATA_DIR
+                    os.environ["TMPDIR"] = "/tmp"
+                    os.environ["TMP"] = "/tmp"
+                    dryrun_envvars.extend(["EFS_MOUNT_TARGET", "TMPDIR", "TMP"])
+                    logger.info("Using EFS storage for dryrun validation")
+
+            # Execute verbose dryrun validation
+            dag_api.execute_workflow(
+                executor="dryrun",
+                execution_settings=ExecutionSettings(
+                    retries=0,  # No retries needed for dryrun
+                    keep_going=True,  # Continue validation even if some rules fail
+                    latency_wait=0,  # Reduce latency wait for faster dryrun
+                ),
+            )
+
+            logger.info("=" * 60)
+            logger.info("Dryrun validation passed - workflow structure is valid")
+            logger.info("=" * 60)
+            return True
+
+        except Exception as dryrun_error:
+            logger.error("=" * 60)
+            logger.error("Dryrun validation failed")
+            logger.error(f"Dryrun error: {dryrun_error}")
+
+            # Enhanced error reporting with full traceback
+            import traceback
+
+            logger.error("Full traceback:")
+            logger.error(traceback.format_exc())
+            logger.error("=" * 60)
+
+            # Decision point: fail fast or continue with warning
+            logger.error("  Dryrun validation failed - batch execution may also fail")
+            logger.error(
+                "This indicates workflow configuration issues (likely S3 path mapping)"
+            )
+            logger.error("Consider fixing workflow issues before proceeding")
+
+            # Fail fast on dryrun errors (can be commented to continue with warning)
+            raise Exception(
+                f"Batch execution aborted due to dryrun validation failure: "
+                f"{dryrun_error}"
+            )
+
+    @staticmethod
     def debug_batch_failure(batch_executor, smk_logger, smk_workdir: str) -> None:
         """
         Debug batch execution failures by retrieving enhanced job logs and analysis.
@@ -2534,13 +2651,24 @@ async def upload_snakefile_to_s3(workspace_id: str, unique_id: str) -> bool:
         return False
 
 
-async def download_snakemake_config_from_s3(workspace_id: str, unique_id: str) -> bool:
+async def download_snakemake_config_from_s3(
+    workspace_id: str, unique_id: str, target_path: str = "/app/snakemake.yaml"
+) -> bool:
     """
     Download snakemake config from S3 for batch execution.
 
-    This downloads the snakemake.yaml config file from S3 to the batch EFS
-    so that batch jobs can access the config created by the main application.
+    This downloads the snakemake.yaml config file from S3 to the batch container's
+    local filesystem so that batch jobs can access the config created by the main
+    application.
 
+    Args:
+        workspace_id: Workspace ID
+        unique_id: Unique experiment ID
+        target_path: Target path where config should be downloaded
+        (default: /app/snakemake.yaml)
+
+    Returns:
+        bool: True if download succeeded, False otherwise
     """
     try:
         if not RemoteStorageController.is_available():
@@ -2549,9 +2677,8 @@ async def download_snakemake_config_from_s3(workspace_id: str, unique_id: str) -
             )
             return True  # Not an error if S3 is not available
 
-        # Construct local config file path where it should be downloaded
-        # Use simple path for batch containers (each job gets isolated container)
-        local_config_path = "/app/snakemake.yaml"
+        # Use target_path parameter for config file location
+        local_config_path = target_path
 
         # Construct S3 key path
         s3_config_path = join_filepath(

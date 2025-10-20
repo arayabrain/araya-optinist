@@ -111,6 +111,7 @@ async def create_test_user_in_db(db, user_data, organization_id):
             plan_id=user_data["subscription_plan_id"],
             user_id=user_db.id,
             expiration=expiration_date,
+            sync_status="synced",
         )
         db.add(subscription)
 
