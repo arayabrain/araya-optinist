@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timedelta
-from enum import Enum, StrEnum
+from enum import StrEnum
 from typing import Any, Dict
 
 import stripe
@@ -35,7 +35,7 @@ class StripeWebhookEvent(StrEnum):
     INVOICE_PAYMENT_SUCCEEDED = "invoice.payment_succeeded"
 
 
-class BILLING_CYCLE(Enum):
+class BILLING_CYCLE(StrEnum):
     MONTHLY = "1"
     YEARLY = "2"
 
@@ -471,7 +471,11 @@ class WebhookService:
 
             # Extract data from webhook payload
             customer_id = invoice_data.get("customer")
-            subscription_id = invoice_data.get("subscription")
+            subscription_id = (
+                invoice_data.get("parent", {})
+                .get("subscription_details", {})
+                .get("subscription")
+            )
             payment_status = invoice_data.get("status")
             amount_paid = invoice_data.get("amount_paid", 0)
             billing_reason = invoice_data.get("billing_reason")
@@ -516,12 +520,14 @@ class WebhookService:
             # 1. Find user by Stripe customer ID
             try:
                 logger.info(f"Webhook: Finding user by customer_id: {customer_id}")
-                from sqlmodel import select
 
-                user_account_stmt = select(SubscriptionUserAccount).where(
-                    SubscriptionUserAccount.provider_customer_id == customer_id
+                user_account = (
+                    db.query(SubscriptionUserAccount)
+                    .filter(SubscriptionUserAccount.provider_customer_id == customer_id)
+                    .first()
                 )
-                user_account = db.exec(user_account_stmt).first()
+
+                logger.info(f"Webhook: Query result: {user_account}")
 
                 if not user_account:
                     raise HTTPException(
@@ -532,8 +538,9 @@ class WebhookService:
                 user_id = user_account.user_id
                 logger.info(f"Webhook: Found user_id: {user_id}")
 
-            except HTTPException:
-                raise HTTPException(status_code=400, detail="Invalid webhook data")
+            except HTTPException as http_exc:
+                logger.error(f"Webhook: HTTPException finding user: {http_exc.detail}")
+                raise  # Re-raise the original exception
             except Exception as e:
                 logger.error(f"Webhook: Error finding user: {str(e)}")
                 raise HTTPException(
@@ -542,17 +549,19 @@ class WebhookService:
 
             # 2. Find active subscription by Stripe subscription ID
             try:
-                user_subscription_stmt = (
-                    select(UserSubscription)
-                    .where(
+                logger.info(
+                    f"Webhook: Finding active subscription for user_id: {user_id}"
+                )
+                user_subscription = (
+                    db.query(UserSubscription)
+                    .filter(
                         UserSubscription.user_id == user_id,
                         UserSubscription.expiration
                         > SubscriptionService.get_current_datetime(),
                     )
                     .order_by(UserSubscription.expiration.desc())
+                    .first()
                 )
-
-                user_subscription = db.exec(user_subscription_stmt).first()
 
                 if not user_subscription:
                     raise HTTPException(
@@ -597,9 +606,9 @@ class WebhookService:
                 billing_cycle = plan.billing_cycle
 
                 # Calculate extension period
-                if billing_cycle == BILLING_CYCLE.MONTHLY.value:
+                if billing_cycle == BILLING_CYCLE.MONTHLY:
                     new_expiration = current_expiration + relativedelta(months=1)
-                elif billing_cycle == BILLING_CYCLE.YEARLY.value:
+                elif billing_cycle == BILLING_CYCLE.YEARLY:
                     new_expiration = current_expiration + relativedelta(years=1)
                 else:
                     # Default to monthly if unknown

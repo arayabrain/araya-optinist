@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timezone
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import List, Optional, Tuple
 
 from fastapi import HTTPException
@@ -20,11 +20,16 @@ from studio.app.common.models.subscription import (
 logger = AppLogger.get_logger()
 
 
-class SubscriptionUserStatus(Enum):
+class SubscriptionUserStatus(IntEnum):
     FREE = 1
     SUBSCRIBED = 2
     EXPIRED = 3
     CANCELED = 4
+
+
+class SubscriptionPlanType(IntEnum):
+    MONTHLY = 1
+    YEARLY = 2
 
 
 class SubscriptionStatusType(Enum):
@@ -126,13 +131,13 @@ class SubscriptionService:
     def get_subscription_status(plan_data_id: int, is_cancelled: bool) -> int:
         # Determine status based on plan ID and cancellation state
         if is_cancelled:
-            subscription_status = SubscriptionUserStatus.CANCELED.value
-        elif plan_data_id == 1:
-            subscription_status = SubscriptionUserStatus.FREE.value
-        elif plan_data_id >= 2:
-            subscription_status = SubscriptionUserStatus.SUBSCRIBED.value
+            subscription_status = SubscriptionUserStatus.CANCELED
+        elif plan_data_id == SubscriptionPlanType.MONTHLY:
+            subscription_status = SubscriptionUserStatus.FREE
+        elif plan_data_id >= SubscriptionPlanType.YEARLY:
+            subscription_status = SubscriptionUserStatus.SUBSCRIBED
         else:
-            subscription_status = SubscriptionUserStatus.FREE.value
+            subscription_status = SubscriptionUserStatus.FREE
         return subscription_status
 
     @staticmethod

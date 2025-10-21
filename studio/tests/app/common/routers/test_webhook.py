@@ -1,6 +1,7 @@
-import pytest
 from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
+
+import pytest
 from sqlmodel import Session
 
 from studio.app.common.core.subscription.checkout_service import CheckoutService
@@ -105,7 +106,6 @@ class TestInvoicePaymentSucceeded:
         ), patch.object(
             SubscriptionService, "get_current_datetime", return_value=datetime.now()
         ):
-
             # Execute
             result = WebhookService.handle_subscription_payment_succeeded(
                 mock_db, invoice_data_subscription_cycle
@@ -249,7 +249,6 @@ class TestInvoicePaymentSucceeded:
         ), patch.object(
             SubscriptionService, "get_current_datetime", return_value=datetime.now()
         ):
-
             with pytest.raises(Exception):
                 WebhookService.handle_subscription_payment_succeeded(
                     mock_db, invoice_data_subscription_cycle

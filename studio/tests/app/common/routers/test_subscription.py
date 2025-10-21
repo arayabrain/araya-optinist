@@ -4,6 +4,7 @@ Run directly: python quick_test.py
 """
 
 from datetime import datetime
+
 from dateutil.relativedelta import relativedelta
 
 
