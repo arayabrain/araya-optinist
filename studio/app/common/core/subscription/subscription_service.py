@@ -134,7 +134,7 @@ class SubscriptionService:
             subscription_status = SubscriptionUserStatus.CANCELED
         elif plan_data_id == SubscriptionPlanType.MONTHLY:
             subscription_status = SubscriptionUserStatus.FREE
-        elif plan_data_id >= SubscriptionPlanType.YEARLY:
+        elif plan_data_id == SubscriptionPlanType.YEARLY:
             subscription_status = SubscriptionUserStatus.SUBSCRIBED
         else:
             subscription_status = SubscriptionUserStatus.FREE
