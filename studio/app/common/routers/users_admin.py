@@ -4,6 +4,7 @@ from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_admin_user
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.subscription.stripe_service import StripeService
 from studio.app.common.core.users import crud_users
 from studio.app.common.db.database import get_db
 from studio.app.common.schemas.base import SortOptions
@@ -73,6 +74,11 @@ async def delete_user(
     db: Session = Depends(get_db),
     current_admin: User = Depends(get_admin_user),
 ):
+    # delete user subscription
+    await StripeService.handle_cancel_user_subscription_by_admin(
+        db, user_id, current_admin.organization.id
+    )
+
     return await crud_users.delete_user(
         db, user_id, organization_id=current_admin.organization.id
     )
