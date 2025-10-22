@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import List, Optional
 
@@ -8,7 +9,10 @@ from sqlalchemy.orm import Session
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.checkout_service import CheckoutService
-from studio.app.common.core.subscription.stripe_service import StripeService
+from studio.app.common.core.subscription.stripe_service import (
+    StripeService,
+    get_stripe_customer_by_email,
+)
 from studio.app.common.core.subscription.subscription_service import (
     SubscriptionService,
     SubscriptionUserStatus,
@@ -143,14 +147,10 @@ async def get_user_subscription(
 
             # If expiration is naive, make it timezone-aware
             if expiration_time.tzinfo is None:
-                from datetime import timezone
-
                 expiration_time = expiration_time.replace(tzinfo=timezone.utc)
 
             # If current_time is naive, make it timezone-aware
             if current_time.tzinfo is None:
-                from datetime import timezone
-
                 current_time = current_time.replace(tzinfo=timezone.utc)
 
             subscription_dict = {
