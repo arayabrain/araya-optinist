@@ -8,9 +8,7 @@ from sqlalchemy.orm import Session
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.checkout_service import CheckoutService
-from studio.app.common.core.subscription.stripe_service import (
-    StripeService,
-)
+from studio.app.common.core.subscription.stripe_service import StripeService
 from studio.app.common.core.subscription.subscription_service import (
     SubscriptionService,
     SubscriptionUserStatus,

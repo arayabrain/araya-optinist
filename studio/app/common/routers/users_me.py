@@ -44,7 +44,6 @@ async def delete_me(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-
     # Delete user subscription first
     await StripeService.handle_cancel_user_subscription(db, current_user)
 
