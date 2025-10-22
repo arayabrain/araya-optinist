@@ -45,58 +45,6 @@ import { selectCurrentUser, selectLoading } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
 
-const useSubscriptionExpiration = (
-  userSubscription: ReturnType<typeof selectUserSubscription>,
-) => {
-  const dispatch = useDispatch<AppDispatch>()
-  const [isExpired, setIsExpired] = useState(false)
-  const [isValidating, setIsValidating] = useState(false)
-
-  useEffect(() => {
-    if (!userSubscription) {
-      setIsExpired(false)
-      return
-    }
-
-    const validateExpiration = async () => {
-      setIsValidating(true)
-      try {
-        const response = await dispatch(getUTCServerTime())
-        // Get current UTC time from server
-        if (
-          !response.payload ||
-          !(response.payload as { server_time: string }).server_time
-        ) {
-          throw new Error("Server time not available")
-        }
-        const serverTimeDate = new Date(
-          (response.payload as { server_time: string }).server_time,
-        )
-        const expirationDate = new Date(userSubscription.expiration)
-
-        // Ensure expiration is treated as UTC
-        const expirationUTC = new Date(expirationDate.getTime())
-
-        setIsExpired(expirationUTC <= serverTimeDate)
-      } catch (error) {
-        console.warn(
-          "Failed to get accurate time, falling back to client UTC:",
-          error,
-        )
-        const clientTimeUTC = new Date() // This is already UTC internally
-        const expirationDate = new Date(userSubscription.expiration)
-        setIsExpired(expirationDate <= clientTimeUTC)
-      } finally {
-        setIsValidating(false)
-      }
-    }
-
-    validateExpiration()
-  }, [userSubscription])
-
-  return { isExpired, isValidating }
-}
-
 enum SUBSCRIPTION_USER_STATUS {
   FREE = 1,
   SUBSCRIBED = 2,
@@ -114,12 +62,6 @@ const Account = () => {
   const loading = useSelector(selectLoading)
   const userSubscription = useSelector(selectUserSubscription)
   const subscriptionLoading = useSelector(selectUserSubscriptionLoading)
-
-  const {
-    isExpired: isSubscriptionExpired,
-    isValidating: isValidatingExpiration,
-  } = useSubscriptionExpiration(userSubscription)
-  const subscriptionError = useSelector(selectSubscriptionError)
 
   const dispatch = useDispatch<AppDispatch>()
   const navigate = useNavigate()
@@ -261,7 +203,7 @@ const Account = () => {
   const determineSubscriptionButtonStatus = () => {
     if (!userSubscription) {
       return SUBSCRIPTION_USER_STATUS.FREE
-    } else if (isSubscriptionExpired) {
+    } else if (userSubscription.is_expired) {
       return SUBSCRIPTION_USER_STATUS.EXPIRED
     } else {
       return SUBSCRIPTION_USER_STATUS.SUBSCRIBED
@@ -339,7 +281,7 @@ const Account = () => {
     if (!userSubscription) return null
     const expirationDate = new Date(userSubscription.expiration)
 
-    if (isSubscriptionExpired) {
+    if (userSubscription.is_expired) {
       return (
         <Typography variant="caption" color="error" sx={{ ml: 1 }}>
           (Expired on {expirationDate.toLocaleDateString()})
@@ -429,7 +371,7 @@ const Account = () => {
           }}
         >
           <BoxData>
-            {userSubscription?.plan_name && !isSubscriptionExpired
+            {userSubscription?.plan_name && !userSubscription.is_expired
               ? userSubscription.plan_name
               : SUBSCRIPTION_PLAN.FREE}
           </BoxData>
