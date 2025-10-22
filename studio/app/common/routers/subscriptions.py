@@ -252,7 +252,7 @@ async def reactivate_user_subscription(
             )
 
         # Get current user subscription
-        current_subscription_result = SubscriptionService.get_user_subscription_plan(
+        current_subscription_result = SubscriptionService.get_user_subscription(
             db, user_id
         )
         if not current_subscription_result:
