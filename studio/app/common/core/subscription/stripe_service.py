@@ -11,6 +11,7 @@ from studio.app.common.core.subscription.subscription_service import (
     SubscriptionService,
 )
 from studio.app.common.core.users import crud_users
+from studio.app.common.models.user import User
 from studio.app.common.schemas.subscriptions import (
     CancelSubscriptionResponse,
     CreateSetupIntentResponse,
@@ -528,7 +529,8 @@ class StripeService:
         db, user_id, organization_id
     ) -> CancelSubscriptionResponse:
         # Get user by user_id and organization_id
-        user = crud_users.get_user(db, user_id, organization_id)
+        user: User = await crud_users.get_user(db, user_id, organization_id)
+
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
