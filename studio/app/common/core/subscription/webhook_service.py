@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timedelta
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Dict
 
 import stripe
@@ -27,7 +27,7 @@ from studio.app.common.models.subscription import (
 logger = AppLogger.get_logger()
 
 
-class StripeWebhookEvent(Enum):
+class StripeWebhookEvent(StrEnum):
     CHECKOUT_SESSION_COMPLETED = "checkout.session.completed"
     INVOICE_PAYMENT_FAILED = "invoice.payment_failed"
     CUSTOMER_SUBSCRIPTION_DELETED = "customer.subscription.deleted"
@@ -35,12 +35,12 @@ class StripeWebhookEvent(Enum):
     INVOICE_PAYMENT_SUCCEEDED = "invoice.payment_succeeded"
 
 
-class BILLING_CYCLE(Enum):
+class BILLING_CYCLE(StrEnum):
     MONTHLY = "1"
     YEARLY = "2"
 
 
-class PaymentStatus(Enum):
+class PaymentStatus(StrEnum):
     PAID = "paid"
 
 
@@ -153,7 +153,7 @@ class WebhookService:
                 }
 
             # 2. Verify payment status from webhook data
-            if payment_status != PaymentStatus.PAID.value:
+            if payment_status != PaymentStatus.PAID:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Payment not completed. Status: {payment_status}",
@@ -471,7 +471,11 @@ class WebhookService:
 
             # Extract data from webhook payload
             customer_id = invoice_data.get("customer")
-            subscription_id = invoice_data.get("subscription")
+            subscription_id = (
+                invoice_data.get("parent", {})
+                .get("subscription_details", {})
+                .get("subscription")
+            )
             payment_status = invoice_data.get("status")
             amount_paid = invoice_data.get("amount_paid", 0)
             billing_reason = invoice_data.get("billing_reason")
@@ -507,7 +511,7 @@ class WebhookService:
                 )
 
             # Verify payment was successful
-            if payment_status != PaymentStatus.PAID.value:
+            if payment_status != PaymentStatus.PAID:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Payment not completed. Status: {payment_status}",
@@ -516,11 +520,14 @@ class WebhookService:
             # 1. Find user by Stripe customer ID
             try:
                 logger.info(f"Webhook: Finding user by customer_id: {customer_id}")
+
                 user_account = (
                     db.query(SubscriptionUserAccount)
                     .filter(SubscriptionUserAccount.provider_customer_id == customer_id)
                     .first()
                 )
+
+                logger.info(f"Webhook: Query result: {user_account}")
 
                 if not user_account:
                     raise HTTPException(
@@ -531,8 +538,9 @@ class WebhookService:
                 user_id = user_account.user_id
                 logger.info(f"Webhook: Found user_id: {user_id}")
 
-            except HTTPException:
-                raise HTTPException(status_code=400, detail="Invalid webhook data")
+            except HTTPException as http_exc:
+                logger.error(f"Webhook: HTTPException finding user: {http_exc.detail}")
+                raise  # Re-raise the original exception
             except Exception as e:
                 logger.error(f"Webhook: Error finding user: {str(e)}")
                 raise HTTPException(
@@ -541,6 +549,9 @@ class WebhookService:
 
             # 2. Find active subscription by Stripe subscription ID
             try:
+                logger.info(
+                    f"Webhook: Finding active subscription for user_id: {user_id}"
+                )
                 user_subscription = (
                     db.query(UserSubscription)
                     .filter(
@@ -595,9 +606,9 @@ class WebhookService:
                 billing_cycle = plan.billing_cycle
 
                 # Calculate extension period
-                if billing_cycle == BILLING_CYCLE.MONTHLY.value:
+                if billing_cycle == BILLING_CYCLE.MONTHLY:
                     new_expiration = current_expiration + relativedelta(months=1)
-                elif billing_cycle == BILLING_CYCLE.YEARLY.value:
+                elif billing_cycle == BILLING_CYCLE.YEARLY:
                     new_expiration = current_expiration + relativedelta(years=1)
                 else:
                     # Default to monthly if unknown
@@ -719,11 +730,11 @@ class WebhookService:
         """
         try:
             match event_type:
-                case StripeWebhookEvent.CHECKOUT_SESSION_COMPLETED.value:
+                case StripeWebhookEvent.CHECKOUT_SESSION_COMPLETED:
                     logger.info("Handling checkout.session.completed")
                     return WebhookService.handle_checkout_completed(db, data)
 
-                case StripeWebhookEvent.INVOICE_PAYMENT_FAILED.value:
+                case StripeWebhookEvent.INVOICE_PAYMENT_FAILED:
                     logger.info("Handling invoice.payment_failed")
                     WebhookService.handle_payment_failed(db, data)
                     return {
@@ -731,7 +742,7 @@ class WebhookService:
                         "message": "Payment failed event processed",
                     }
 
-                case StripeWebhookEvent.CUSTOMER_SUBSCRIPTION_DELETED.value:
+                case StripeWebhookEvent.CUSTOMER_SUBSCRIPTION_DELETED:
                     logger.info("Handling customer.subscription.deleted")
                     WebhookService.handle_subscription_cancelled(db, data)
                     return {
@@ -739,7 +750,7 @@ class WebhookService:
                         "message": "Subscription cancellation processed",
                     }
 
-                case StripeWebhookEvent.SUBSCRIPTION_SCHEDULE_RELEASED.value:
+                case StripeWebhookEvent.SUBSCRIPTION_SCHEDULE_RELEASED:
                     logger.info("Handling subscription_schedule.released")
                     WebhookService.handle_subscription_schedule_released(db, data)
                     return {
@@ -747,7 +758,7 @@ class WebhookService:
                         "message": "Subscription schedule release processed",
                     }
 
-                case StripeWebhookEvent.INVOICE_PAYMENT_SUCCEEDED.value:
+                case StripeWebhookEvent.INVOICE_PAYMENT_SUCCEEDED:
                     logger.info("Handling invoice.payment_succeeded")
                     return WebhookService.handle_subscription_payment_succeeded(
                         db, data
