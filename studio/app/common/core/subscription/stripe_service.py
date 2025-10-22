@@ -10,6 +10,7 @@ from studio.app.common.core.subscription.subscription_service import (
     SubscriptionCurrencyType,
     SubscriptionService,
 )
+from studio.app.common.core.users import crud_users
 from studio.app.common.schemas.subscriptions import (
     CancelSubscriptionResponse,
     CreateSetupIntentResponse,
@@ -521,6 +522,17 @@ class StripeService:
             raise HTTPException(
                 status_code=500, detail=f"Failed to update subscription: {str(e)}"
             )
+
+    @staticmethod
+    async def handle_cancel_user_subscription_by_admin(
+        db, user_id, organization_id
+    ) -> CancelSubscriptionResponse:
+        # Get user by user_id and organization_id
+        user = crud_users.get_user(db, user_id, organization_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        return await StripeService.handle_cancel_user_subscription(db, user)
 
     @staticmethod
     async def handle_cancel_user_subscription(
