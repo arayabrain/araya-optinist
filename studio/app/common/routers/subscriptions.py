@@ -1,4 +1,3 @@
-from datetime import datetime
 from enum import StrEnum
 from typing import List, Optional
 
@@ -11,8 +10,6 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.stripe_service import (
     StripeService,
-    StripeSubscriptionStatus,
-    get_stripe_customer_by_email,
 )
 from studio.app.common.core.subscription.subscription_service import (
     SubscriptionService,
@@ -193,90 +190,8 @@ async def cancel_user_subscription(
     - Database updates handled via webhook
     """
     try:
-        # Get current user subscription
-        current_subscription_result = SubscriptionService.get_user_subscription(
-            db, current_user.id
-        )
-        if not current_subscription_result:
-            raise HTTPException(
-                status_code=404, detail="No active subscription found to cancel"
-            )
-
-        # Get Stripe customer
-        customer = await get_stripe_customer_by_email(current_user.email)
-        if not customer:
-            raise HTTPException(
-                status_code=404, detail="No Stripe customer found for user"
-            )
-
-        # Get active Stripe subscription
-        stripe_subscriptions = stripe.Subscription.list(
-            customer=customer.id, status=StripeSubscriptionStatus.ACTIVE, limit=1
-        )
-
-        if not stripe_subscriptions.data:
-            raise HTTPException(
-                status_code=404, detail="No active Stripe subscription found"
-            )
-
-        stripe_subscription = stripe_subscriptions.data[0]
-
-        logger.info(f"Scheduling cancellation at period end for user {current_user.id}")
-
-        current_period_end = stripe_subscription["items"]["data"][0][
-            "current_period_end"
-        ]
-
-        # Handle existing schedule if present
-        existing_schedule_id = stripe_subscription.get("schedule")
-        if existing_schedule_id:
-            try:
-                # Cancel any existing schedule
-                stripe.SubscriptionSchedule.cancel(existing_schedule_id)
-                logger.info(f"Cancelled existing schedule: {existing_schedule_id}")
-
-                # Get the subscription again after cancelling schedule
-                stripe_subscription = stripe.Subscription.retrieve(
-                    stripe_subscription.id
-                )
-            except Exception as e:
-                logger.warning(f"Could not cancel schedule: {e}")
-
-        # Set subscription to cancel at period end
-        stripe.Subscription.modify(
-            stripe_subscription.id,
-            cancel_at_period_end=True,
-            metadata={
-                **stripe_subscription.metadata,
-                "cancellation_requested": "true",
-                "cancellation_requested_at": str(
-                    int(SubscriptionService.get_current_datetime().timestamp())
-                ),
-            },
-        )
-
-        SubscriptionService.update_scheduled_downgrade(db, current_user.id, True)
-
-        # Database will be updated via customer.subscription.updated webhook
-
-        access_until_date = datetime.fromtimestamp(current_period_end)
-        message = (
-            f"Subscription will be cancelled on "
-            f"{access_until_date.strftime('%Y-%m-%d')}. "
-            f"You will retain access until then."
-        )
-
-        logger.info(
-            f"Successfully scheduled cancellation for user {current_user.id} "
-            f"at period end"
-        )
-
-        return CancelSubscriptionResponse(
-            success=True,
-            message=message,
-            cancellation_date=access_until_date.strftime("%Y-%m-%d"),
-            access_until=access_until_date.strftime("%Y-%m-%d %H:%M:%S"),
-        )
+        result = await StripeService.handle_cancel_user_subscription(db, current_user)
+        return CancelSubscriptionResponse(success=result)
 
     except stripe.error.StripeError as e:
         logger.error(f"Stripe error cancelling subscription: {str(e)}")
