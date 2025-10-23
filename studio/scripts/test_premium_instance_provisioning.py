@@ -62,93 +62,148 @@ def cleanup_test_user_assignments(
     test_user_emails: List[str], terraform_dir: str
 ) -> int:
     """
-    Clean up database assignments for test users without touching AWS resources.
+    Clean up database assignments for test users by invoking the premium_cleanup Lambda.
 
-    This is a lightweight cleanup that only removes database entries for specified
-    test users, ensuring a clean state for test execution.
+    This function uses a two-tier cleanup approach:
+
+    1. PRIMARY METHOD (Lambda invocation):
+       - Invokes the premium_cleanup Lambda with action="cleanup_test_users"
+       - Lambda has VPC access to RDS and can connect from anywhere
+       - Works from local machines, CI/CD, or any environment with AWS credentials
+       - Also cleans up AWS resources (ALB rules, target groups)
+
+    2. FALLBACK METHOD (Direct RDS connection):
+       - Only used if Lambda invocation fails
+       - Attempts direct pymysql connection to RDS (5 second timeout)
+       - Will timeout from local machines (RDS is VPC-isolated)
+       - May succeed if running from within VPC (e.g., from ECS task)
+       - Only cleans database records, not AWS resources
+
+    Usage:
+        # Before running tests, clean up any stale assignments
+        cleanup_test_user_assignments(
+            test_user_emails=["user1@test.com", "user2@test.com"],
+            terraform_dir="/path/to/terraform"
+        )
 
     Args:
         test_user_emails: List of user emails to clean up
         (e.g., ["user1@test.com", "user2@test.com"])
-        terraform_dir: Path to terraform directory to get RDS connection details
+        terraform_dir: Path to terraform directory to get Lambda function name
+            and RDS connection details from Terraform outputs
 
     Returns:
-        Number of assignments deleted
+        Number of assignments deleted (0 if both methods fail)
+
+    Note:
+        This function is non-fatal - if cleanup fails, it logs a warning and returns 0.
+        The test can still proceed with potentially stale data.
     """
     try:
-        # Get Terraform outputs for RDS connection details
+        # Get Terraform outputs to find Lambda function name
         terraform_outputs = get_terraform_outputs(terraform_dir)
+        cleanup_lambda_name = terraform_outputs.get(
+            "premium_cleanup_lambda_name", {}
+        ).get("value", "")
 
-        # Extract RDS connection details
-        rds_endpoint = terraform_outputs.get("rds_endpoint", {}).get("value", "")
-        rds_host = (
-            rds_endpoint.split(":")[0]
-            if rds_endpoint
-            else os.environ.get("RDS_HOST", "localhost")
-        )
-        rds_user = os.environ.get("RDS_USER", "admin")
-        rds_password = os.environ.get("RDS_PASSWORD", "")
-        rds_database = os.environ.get("RDS_DATABASE", "optinist")
+        if not cleanup_lambda_name:
+            logging.error(
+                "Could not find premium_cleanup_lambda_name in Terraform outputs"
+            )
+            return 0
 
         logging.info(
-            f"Connecting to RDS database at "
-            f"{rds_host} to clean up test user assignments"
+            f"Invoking Lambda {cleanup_lambda_name} to clean up "
+            f"{len(test_user_emails)} test users"
         )
 
-        # Connect to database
-        connection = pymysql.connect(
-            host=rds_host,
-            port=3306,
-            user=rds_user,
-            password=rds_password,
-            database=rds_database,
-            charset="utf8mb4",
-            cursorclass=pymysql.cursors.DictCursor,
+        # Invoke the Lambda function with cleanup_test_users action
+        lambda_client = boto3.client("lambda")
+        payload = {"action": "cleanup_test_users", "user_emails": test_user_emails}
+
+        response = lambda_client.invoke(
+            FunctionName=cleanup_lambda_name,
+            InvocationType="RequestResponse",  # Synchronous invocation
+            Payload=json.dumps(payload),
         )
 
-        deleted_count = 0
-        with connection.cursor() as cursor:
-            # First, get user IDs from emails
-            email_placeholders = ", ".join(["%s"] * len(test_user_emails))
-            cursor.execute(
-                f"SELECT id FROM users WHERE email IN ({email_placeholders})",
-                test_user_emails,
+        # Parse the response
+        response_payload = json.loads(response["Payload"].read())
+        status_code = response_payload.get("statusCode", 500)
+
+        if status_code != 200:
+            logging.error(
+                f"Lambda cleanup failed with status {status_code}: {response_payload}"
             )
-            user_rows = cursor.fetchall()
-            user_ids = [str(row["id"]) for row in user_rows]
+            return 0
 
-            if not user_ids:
-                logging.info("No test users found in database to clean up")
-                connection.close()
-                return 0
+        # Parse the body (which is JSON string)
+        body = json.loads(response_payload.get("body", "{}"))
+        result = body.get("result", {})
+        deleted_count = result.get("assignments_deleted", 0)
+        message = result.get("message", "No message")
 
-            logging.info(f"Found {len(user_ids)} test user(s) in database: {user_ids}")
-
-            # Delete assignments for these users
-            id_placeholders = ", ".join(["%s"] * len(user_ids))
-            query = (
-                f"DELETE FROM premium_user_assignments "
-                f"WHERE user_id IN ({id_placeholders})"
-            )
-            cursor.execute(query, user_ids)
-            deleted_count = cursor.rowcount
-            connection.commit()
-
-        connection.close()
-
-        if deleted_count > 0:
-            logging.info(
-                f"Cleaned up {deleted_count} stale test user "
-                f"assignment(s) from database"
-            )
-        else:
-            logging.info("No stale test user assignments found in database")
+        logging.info(f"Lambda cleanup result: {message}")
+        logging.info(f"Deleted {deleted_count} assignment(s)")
 
         return deleted_count
 
     except Exception as e:
-        logging.warning(f"Database cleanup failed (non-fatal): {e}")
-        return 0
+        logging.warning(f"Lambda cleanup failed (non-fatal): {e}")
+        # Fallback: try direct RDS connection (may not work from local machine)
+        logging.info("Attempting fallback direct RDS connection...")
+        try:
+            terraform_outputs = get_terraform_outputs(terraform_dir)
+            rds_endpoint = terraform_outputs.get("rds_endpoint", {}).get("value", "")
+            rds_host = (
+                rds_endpoint.split(":")[0]
+                if rds_endpoint
+                else os.environ.get("RDS_HOST", "localhost")
+            )
+            rds_user = os.environ.get("RDS_USER", "admin")
+            rds_password = os.environ.get("RDS_PASSWORD", "")
+            rds_database = os.environ.get("RDS_DATABASE", "optinist")
+
+            connection = pymysql.connect(
+                host=rds_host,
+                port=3306,
+                user=rds_user,
+                password=rds_password,
+                database=rds_database,
+                charset="utf8mb4",
+                cursorclass=pymysql.cursors.DictCursor,
+                connect_timeout=5,
+            )
+
+            deleted_count = 0
+            with connection.cursor() as cursor:
+                email_placeholders = ", ".join(["%s"] * len(test_user_emails))
+                cursor.execute(
+                    f"SELECT id FROM users WHERE email IN ({email_placeholders})",
+                    test_user_emails,
+                )
+                user_rows = cursor.fetchall()
+                user_ids = [str(row["id"]) for row in user_rows]
+
+                if user_ids:
+                    id_placeholders = ", ".join(["%s"] * len(user_ids))
+                    query = (
+                        f"DELETE FROM premium_user_assignments "
+                        f"WHERE user_id IN ({id_placeholders})"
+                    )
+                    cursor.execute(query, user_ids)
+                    deleted_count = cursor.rowcount
+                    connection.commit()
+
+            connection.close()
+            logging.info(
+                f"Fallback RDS cleanup succeeded: {deleted_count} assignments deleted"
+            )
+            return deleted_count
+
+        except Exception as fallback_error:
+            logging.warning(f"Fallback RDS cleanup also failed: {fallback_error}")
+            return 0
 
 
 def get_terraform_outputs(terraform_dir: str) -> Dict:
@@ -429,7 +484,7 @@ class PremiumInstanceTester:
         self, test_users: List[Dict], terraform_dir: str, skip_token_gen: bool
     ):
         """Unassigns users and stops all premium instances to ensure a clean state."""
-        logging.info("\n" + "=" * 50)
+        logging.info("=" * 50)
         logging.info("STEP 0: CLEANUP AND RESET")
         logging.info("=" * 50)
 
@@ -530,11 +585,15 @@ class PremiumInstanceTester:
     def get_user_assignment_status(self, id_token: str) -> Optional[Dict]:
         """Get the current premium assignment status for the user via the API."""
         try:
-            status_url = f"{self.api_url}/users/me/premium/assignment/status"
+            status_url = f"{self.api_url}/users/me/premium/status"
             headers = {"Authorization": f"Bearer {id_token}"}
             response = requests.get(status_url, headers=headers, timeout=30)
 
             if response.status_code == 200:
+                # Check if response has content before parsing JSON
+                if not response.text or response.text.strip() == "":
+                    logging.warning("API returned 200 but empty response body")
+                    return None
                 return response.json()
             else:
                 logging.warning(
@@ -761,9 +820,16 @@ def main():
             )
             migration_verified = True
             break
+
+        # Handle None result or missing data
+        current_instance = "unknown"
+        if status_result:
+            current_instance = status_result.get("assignment", {}).get(
+                "instance_id", "unknown"
+            )
+
         logging.info(
-            f"Waiting for User 2 to be migrated... Current instance: "
-            f"{status_result.get('assignment', {}).get('instance_id')}"
+            f"Waiting for User 2 to be migrated... Current instance: {current_instance}"
         )
         time.sleep(10)
     assert migration_verified, "User 2 was not migrated to the new dedicated instance!"
@@ -773,19 +839,32 @@ def main():
     logging.info("\nSTEP 5: Verifying final system state...")
     final_states = tester.get_instance_states()
     running_instances = final_states.get("running", [])
+
+    # Check we have at least 2 running instances (allow for standby/extra instances)
     assert (
-        len(running_instances) == 2
-    ), f"Expected 2 running instances, but found {len(running_instances)}"
+        len(running_instances) >= 2
+    ), f"Expected at least 2 running instances, but found {len(running_instances)}"
+
+    logging.info(f"Found {len(running_instances)} running premium instance(s)")
 
     user1_final_status = tester.get_user_assignment_status(user1_token)
     user2_final_status = tester.get_user_assignment_status(user2_token)
 
-    assert (
-        user1_final_status.get("assignment", {}).get("instance_id") == instance_A_id
-    ), "User 1 is not on the correct instance!"
-    assert (
-        user2_final_status.get("assignment", {}).get("instance_id") == instance_B_id
-    ), "User 2 is not on the correct instance!"
+    # Verify User 1 assignment
+    assert user1_final_status is not None, "Failed to get User 1 status"
+    user1_instance = user1_final_status.get("assignment", {}).get("instance_id")
+    assert user1_instance == instance_A_id, (
+        f"User 1 is not on the correct instance! "
+        f"Expected {instance_A_id}, got {user1_instance}"
+    )
+
+    # Verify User 2 assignment
+    assert user2_final_status is not None, "Failed to get User 2 status"
+    user2_instance = user2_final_status.get("assignment", {}).get("instance_id")
+    assert user2_instance == instance_B_id, (
+        f"User 2 is not on the correct instance! "
+        f"Expected {instance_B_id}, got {user2_instance}"
+    )
 
     logging.info(
         "Final state check complete. "

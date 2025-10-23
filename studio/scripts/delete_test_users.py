@@ -19,7 +19,7 @@ sys.path.insert(0, str(project_root))
 
 # Import after path modification to avoid E402 linting errors
 try:
-    from sqlalchemy import create_engine
+    from sqlalchemy import create_engine, text
     from sqlalchemy.orm import sessionmaker
 
     from studio.app.common.models.experiment import ExperimentRecord
@@ -175,7 +175,14 @@ async def delete_test_user_from_db(db, user_email):
         for role in user_roles:
             db.delete(role)
 
-        # 10. Finally delete the user
+        # 10. Delete premium user assignments (stored in separate table, not ORM)
+        assignment_result = db.execute(
+            text("DELETE FROM premium_user_assignments WHERE user_id = :user_id"),
+            {"user_id": user_id},
+        )
+        assignment_count = assignment_result.rowcount
+
+        # 11. Finally delete the user
         db.delete(user_db)
 
         db.commit()
@@ -189,6 +196,7 @@ async def delete_test_user_from_db(db, user_email):
         print(f" - Deleted {purchase_count} subscription purchases")
         print(f" - Deleted {subscription_count} subscriptions")
         print(f" - Deleted {user_role_count} user roles")
+        print(f" - Deleted {assignment_count} premium assignments")
         print(f"Successfully deleted user: {user_name}")
 
         return True
@@ -236,6 +244,25 @@ async def main():
                 continue
 
         print(f"\nSuccessfully deleted {deleted_count} test users!")
+
+        # Clean up any orphaned premium assignments (for users that no longer exist)
+        print("\nCleaning up orphaned premium assignments...")
+        try:
+            orphan_result = db.execute(
+                text(
+                    """DELETE FROM premium_user_assignments
+                        WHERE user_id NOT IN (SELECT id FROM users)"""
+                )
+            )
+            orphan_count = orphan_result.rowcount
+            db.commit()
+            if orphan_count > 0:
+                print(f"Cleaned up {orphan_count} orphaned premium assignment(s)")
+            else:
+                print("No orphaned premium assignments found")
+        except Exception as orphan_error:
+            print(f"Warning: Could not clean up orphaned assignments: {orphan_error}")
+            db.rollback()
 
         db.close()
 

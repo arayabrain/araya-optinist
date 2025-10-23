@@ -30,7 +30,12 @@ class JobMonitoringThread(threading.Thread):
     """
 
     def __init__(
-        self, batch_client, logs_client, monitoring_interval=10, job_queue=None
+        self,
+        batch_client,
+        logs_client,
+        monitoring_interval=10,
+        job_queue=None,
+        client_id=None,
     ):
         super().__init__(daemon=True)
         self.batch_client = batch_client
@@ -42,6 +47,7 @@ class JobMonitoringThread(threading.Thread):
         self.job_logs_cache = {}
         self.job_start_times = {}
         self.job_queue = job_queue  # Job queue to monitor for auto-discovery
+        self.client_id = client_id  # Client ID for logging context
         self._lock = threading.Lock()
 
     def add_job(self, job_id: str, job_name: str = None):
@@ -72,7 +78,23 @@ class JobMonitoringThread(threading.Thread):
 
     def run(self):
         """Main monitoring loop."""
+        print(
+            f"DIAGNOSTIC: JobMonitoringThread.run() "
+            f"started with client_id={self.client_id}",
+            flush=True,
+        )
+        # Set client_id context for this thread's logging
+        if self.client_id is not None:
+            AppLogger.set_client_id(self.client_id)
+            print(f"DIAGNOSTIC: Set client_id context to {self.client_id}", flush=True)
+        else:
+            print(
+                "DIAGNOSTIC: WARNING - No client_id set for monitoring thread!",
+                flush=True,
+            )
+
         logger.info("Job monitoring thread running")
+        print("DIAGNOSTIC: After logger.info in monitoring thread", flush=True)
         while self.monitoring_active:
             try:
                 # Auto-discover new jobs from the queue
@@ -321,39 +343,91 @@ class BatchUtils:
     """
 
     def __init__(self, workspace_id: str, unique_id: str):
+        print(
+            f"DIAGNOSTIC: BatchUtils.__init__ ENTRY for {workspace_id}/{unique_id}",
+            flush=True,
+        )
         self.workspace_id = workspace_id
         self.unique_id = unique_id
+
+        print("DIAGNOSTIC: Creating batch_client...", flush=True)
         self.batch_client = boto3.client(
             "batch", region_name=BATCH_CONFIG.AWS_DEFAULT_REGION
         )
+        print("DIAGNOSTIC: batch_client created successfully", flush=True)
+
+        print("DIAGNOSTIC: Creating ecr_client...", flush=True)
         self.ecr_client = boto3.client(
             "ecr", region_name=BATCH_CONFIG.AWS_DEFAULT_REGION
         )
+        print("DIAGNOSTIC: ecr_client created successfully", flush=True)
+
+        print("DIAGNOSTIC: Creating s3_client...", flush=True)
         self.s3_client = boto3.client("s3", region_name=BATCH_CONFIG.AWS_DEFAULT_REGION)
+        print("DIAGNOSTIC: s3_client created successfully", flush=True)
+
+        print("DIAGNOSTIC: Creating logs_client...", flush=True)
         self.logs_client = boto3.client(
             "logs", region_name=BATCH_CONFIG.AWS_DEFAULT_REGION
         )
+        print("DIAGNOSTIC: logs_client created successfully", flush=True)
 
         # Get current user info for subscription plan-based queue selection
+        print("DIAGNOSTIC: Calling _get_current_user()...", flush=True)
         self.current_user = self._get_current_user()
+        print(
+            f"DIAGNOSTIC: _get_current_user() returned: {self.current_user}", flush=True
+        )
 
         # Get job queue for monitoring (determined by user's subscription plan)
         # This is needed for auto-discovery of Snakemake-submitted jobs
         job_queue_for_monitoring = None
+        print("DIAGNOSTIC: About to call get_job_queue_for_user()...", flush=True)
         try:
             job_queue_for_monitoring = self.get_job_queue_for_user()
+            print(
+                f"DIAGNOSTIC: get_job_queue_for_user() returned: "
+                f"{job_queue_for_monitoring}",
+                flush=True,
+            )
             logger.info(f"Job monitoring will track queue: {job_queue_for_monitoring}")
         except Exception as e:
+            print(
+                f"DIAGNOSTIC: get_job_queue_for_user() raised exception: {e}",
+                flush=True,
+            )
             logger.warning(f"Could not determine job queue for monitoring: {e}")
 
         # Initialize job monitoring thread with job queue for auto-discovery
+        # Get current client_id for the monitoring thread
+        print("DIAGNOSTIC: About to get client_id...", flush=True)
+        current_client_id = AppLogger.get_client_id()
+        print(f"DIAGNOSTIC: Got client_id={current_client_id}", flush=True)
+        print(
+            f"DIAGNOSTIC: Creating JobMonitoringThread with client_id="
+            f"{current_client_id}, queue={job_queue_for_monitoring}",
+            flush=True,
+        )
+
+        print("DIAGNOSTIC: About to create JobMonitoringThread...", flush=True)
         self.job_monitor = JobMonitoringThread(
             batch_client=self.batch_client,
             logs_client=self.logs_client,
             monitoring_interval=10,
             job_queue=job_queue_for_monitoring,
+            client_id=current_client_id,
         )
+        print("DIAGNOSTIC: JobMonitoringThread instance created", flush=True)
         self.monitoring_enabled = True
+        print(
+            f"DIAGNOSTIC: JobMonitoringThread created, "
+            f"monitoring_enabled={self.monitoring_enabled}",
+            flush=True,
+        )
+        print(
+            f"DIAGNOSTIC: BatchUtils.__init__ COMPLETE for {workspace_id}/{unique_id}",
+            flush=True,
+        )
 
     def _get_current_user(self) -> Optional[User]:
         """

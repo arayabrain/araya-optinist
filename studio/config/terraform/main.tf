@@ -5469,6 +5469,11 @@ output "premium_manager_lambda_arn" {
   value       = aws_lambda_function.premium_manager.arn
 }
 
+output "premium_cleanup_lambda_name" {
+  description = "Name of the premium cleanup Lambda function"
+  value       = aws_lambda_function.premium_cleanup.function_name
+}
+
 output "test_users" {
   description = "Test user configuration for load testing (includes Firebase UIDs)"
   value       = var.test_users

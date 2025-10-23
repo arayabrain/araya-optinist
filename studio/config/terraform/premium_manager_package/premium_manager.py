@@ -151,6 +151,7 @@ def _store_user_assignment_transaction(
     rule_arn: str,
     instance_state: str = "launching",
     is_shared: bool = False,
+    is_standby: bool = False,
 ):
     """Internal function: Store user assignment with transaction safety"""
     with connection.cursor() as cursor:
@@ -183,13 +184,16 @@ def _store_user_assignment_transaction(
                 f"assignment (attempt #{new_attempts})"
             )
 
-        # Insert new assignment with enhanced tracking
+        # Insert new assignment with enhanced tracking including is_standby
+        # Use CASE to set standby_created_at to NOW() only if is_standby is true
         cursor.execute(
             """
             INSERT INTO premium_user_assignments
             (user_id, instance_id, target_group_arn, alb_rule_arn, status,
-             instance_state, is_shared, assignment_attempts, last_state_check)
-            VALUES (%s, %s, %s, %s, 'active', %s, %s, 1, NOW())
+             instance_state, is_shared, is_standby,
+             assignment_attempts, last_state_check, standby_created_at)
+            VALUES (%s, %s, %s, %s, 'active', %s, %s, %s, 1, NOW(),
+                    CASE WHEN %s = 1 THEN NOW() ELSE NULL END)
         """,
             (
                 user_id,
@@ -198,12 +202,14 @@ def _store_user_assignment_transaction(
                 rule_arn,
                 instance_state,
                 is_shared,
+                is_standby,
+                is_standby,  # For the CASE WHEN
             ),
         )
 
     print(
         f"Stored assignment in RDS: user {user_id} -> instance {instance_id} "
-        f"(state: {instance_state}, shared: {is_shared})"
+        f"(state: {instance_state}, shared: {is_shared}, standby: {is_standby})"
     )
 
 
@@ -214,10 +220,17 @@ def store_user_assignment(
     rule_arn: str,
     instance_state: str = "launching",
     is_shared: bool = False,
+    is_standby: bool = False,
 ):
     """Store user assignment in RDS with proper transaction isolation and locking"""
     return _store_user_assignment_transaction(
-        user_id, instance_id, target_group_arn, rule_arn, instance_state, is_shared
+        user_id,
+        instance_id,
+        target_group_arn,
+        rule_arn,
+        instance_state,
+        is_shared,
+        is_standby,
     )
 
 
@@ -804,7 +817,7 @@ def register_orphaned_stopped_instances():
         for instance in orphaned_instances:
             instance_id = instance["instance_id"]
             try:
-                # Store as standby assignment
+                # Store as standby assignment with is_standby flag
                 store_user_assignment(
                     user_id=f"standby-{instance_id}",
                     instance_id=instance_id,
@@ -812,19 +825,8 @@ def register_orphaned_stopped_instances():
                     rule_arn="standby",
                     instance_state="launching",  # Use valid enum value
                     is_shared=False,
+                    is_standby=True,
                 )
-
-                # Mark as standby
-                with get_db_connection() as connection:
-                    with connection.cursor() as cursor:
-                        cursor.execute(
-                            """UPDATE premium_user_assignments
-                               SET is_standby = 1, standby_created_at = NOW(),
-                                   last_state_check = NOW()
-                               WHERE instance_id = %s""",
-                            (instance_id,),
-                        )
-                        connection.commit()  # Commit the standby registration
 
                 print(f"Registered orphaned instance {instance_id} as standby")
                 registered_count += 1
@@ -1062,7 +1064,7 @@ def create_and_stop_standby_instance():
             InstanceIds=[instance_id], WaiterConfig={"Delay": 15, "MaxAttempts": 20}
         )
 
-        # Store in assignments table as standby
+        # Store in assignments table as standby with is_standby flag
         store_user_assignment(
             user_id=f"standby-{instance_id}",
             instance_id=instance_id,
@@ -1070,19 +1072,8 @@ def create_and_stop_standby_instance():
             rule_arn="standby",
             instance_state="stopped",
             is_shared=False,
+            is_standby=True,
         )
-
-        # Mark as standby
-        with get_db_connection() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """UPDATE premium_user_assignments
-                       SET is_standby = 1, standby_created_at = NOW(),
-                           last_state_check = NOW()
-                       WHERE instance_id = %s""",
-                    (instance_id,),
-                )
-                connection.commit()  # Commit the standby registration
 
         # Release lock before returning success
         if lock_acquired:
@@ -1158,17 +1149,23 @@ def start_standby_instance(instance_id: str):
 
 def get_premium_user_status(user_id: str) -> Dict[str, Any]:
     """Get premium user assignment status"""
+    print(f"DIAGNOSTIC: get_premium_user_status called for user_id={user_id}")
     try:
+        print("DIAGNOSTIC: Opening database connection...")
         with get_db_connection() as connection:
+            print("DIAGNOSTIC: Database connection established")
             with connection.cursor() as cursor:
+                print(f"DIAGNOSTIC: Executing query for user_id={user_id}")
                 cursor.execute(
                     """SELECT instance_id, target_group_arn, alb_rule_arn, status,
                     assigned_at FROM premium_user_assignments WHERE user_id = %s""",
                     (user_id,),
                 )
                 assignment = cursor.fetchone()
+                print(f"DIAGNOSTIC: Query result: {assignment}")
 
                 if not assignment:
+                    print(f"DIAGNOSTIC: No assignment found for user {user_id}")
                     return {
                         "statusCode": 404,
                         "body": json.dumps(
@@ -1176,6 +1173,11 @@ def get_premium_user_status(user_id: str) -> Dict[str, Any]:
                         ),
                     }
 
+                print(
+                    f"DIAGNOSTIC: Found assignment - "
+                    f"instance_id={assignment['instance_id']}, "
+                    f"status={assignment['status']}"
+                )
                 return {
                     "statusCode": 200,
                     "body": json.dumps(
@@ -1194,6 +1196,10 @@ def get_premium_user_status(user_id: str) -> Dict[str, Any]:
 
     except Exception as e:
         print(f"Error getting premium user status: {str(e)}")
+        print(f"DIAGNOSTIC: Full exception details: {type(e).__name__}: {e}")
+        import traceback
+
+        print(f"DIAGNOSTIC: Traceback: {traceback.format_exc()}")
         return {
             "statusCode": 500,
             "body": json.dumps({"error": str(e)}),
@@ -1484,7 +1490,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             # Check instance readiness with retry (instances may be starting)
             print(f"Checking readiness for instance {instance_id}...")
             is_ready = check_instance_readiness_with_retry(
-                instance_id, max_wait_seconds=180, retry_interval=10
+                instance_id, max_wait_seconds=600, retry_interval=10
             )
             print(f"     Readiness result: {is_ready}")
 
@@ -1636,22 +1642,26 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                     )
 
         # 4. PRIORITY 3: Use existing running instances with sharing
-        if not instance_to_use:
-            if least_loaded_instance and len(running_instances) < active_users + 1:
-                # Temporary sharing during scale-up
-                instance_to_use = least_loaded_instance
-                is_shared = True
-                instance_state = "running"
-                assignment_source = "shared"
-                print(
-                    f"Temporarily sharing instance "
-                    f"{instance_to_use['instance_id']} for user {user_id}"
-                )
+        if not instance_to_use and least_loaded_instance:
+            # Share with least loaded instance when no dedicated or standby available
+            # This handles cases where all instances are occupied or
+            # have standby reservations
+            instance_to_use = least_loaded_instance
+            is_shared = True
+            instance_state = "running"
+            assignment_source = "shared"
+            print(
+                f"Sharing instance {instance_to_use['instance_id']} "
+                f"for user {user_id} (least loaded with {min_users} users)"
+            )
 
-                # Defer scaling until after assignment is stored
-                if len(launching_instances) == 0:
-                    needs_scaling = True
-                    print("Flagged for scaling after assignment is stored")
+            # Trigger scaling if we're under-provisioned (more users than instances)
+            if (
+                len(launching_instances) == 0
+                and len(running_instances) < active_users + 1
+            ):
+                needs_scaling = True
+                print("Flagged for scaling after assignment is stored")
 
         # 5. PRIORITY 4: Scale up (last resort)
         if not instance_to_use:
@@ -1974,7 +1984,7 @@ def invoke_migration_async():
         payload = json.dumps(
             {
                 "action": "migrate_shared_users",
-                "max_wait_seconds": 180,
+                "max_wait_seconds": 600,
                 "retry_interval": 10,
             }
         )
@@ -2279,18 +2289,18 @@ def check_instance_readiness(instance_id: str) -> bool:
 
 
 def check_instance_readiness_with_retry(
-    instance_id: str, max_wait_seconds: int = 180, retry_interval: int = 10
+    instance_id: str, max_wait_seconds: int = 600, retry_interval: int = 10
 ) -> bool:
     """
     Check if an instance has a running ECS task with retry logic.
 
     Retries every retry_interval seconds for up to max_wait_seconds.
     This is useful when instances are in 'running' state but ECS tasks
-    are still launching (typically 10-40 seconds after EC2 reaches running).
+    are still launching (can take 7-10 minutes for cold starts with RDS connection).
 
     Args:
         instance_id: EC2 instance ID to check
-        max_wait_seconds: Maximum time to retry (default 180s / 3 minutes)
+        max_wait_seconds: Maximum time to retry (default 600s / 10 minutes)
         retry_interval: Seconds between retry attempts (default 10s)
 
     Returns:
@@ -2656,7 +2666,7 @@ def convert_running_instance_to_standby(instance_id: str):
             InstanceIds=[instance_id], WaiterConfig={"Delay": 15, "MaxAttempts": 20}
         )
 
-        # Add to standby pool in database
+        # Add to standby pool in database with is_standby flag
         store_user_assignment(
             user_id=f"standby-{instance_id}",
             instance_id=instance_id,
@@ -2664,18 +2674,8 @@ def convert_running_instance_to_standby(instance_id: str):
             rule_arn="standby",
             instance_state="stopped",
             is_shared=False,
+            is_standby=True,  # Set standby flag in initial INSERT
         )
-
-        # Mark as standby
-        with get_db_connection() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """UPDATE premium_user_assignments
-                       SET is_standby = 1, standby_created_at = NOW(),
-                       last_state_check = NOW() WHERE instance_id = %s""",
-                    (instance_id,),
-                )
-                connection.commit()  # Commit the standby conversion
 
         print(f"Successfully converted instance {instance_id} to standby")
         return True
@@ -2848,7 +2848,7 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                     assigned_users = get_assigned_users_for_instance(instance_id)
 
                     if not assigned_users and check_instance_readiness_with_retry(
-                        instance_id, max_wait_seconds=180, retry_interval=10
+                        instance_id, max_wait_seconds=600, retry_interval=10
                     ):
                         available_instances.append(instance_id)
                     elif len(assigned_users) > 1:  # Shared instance

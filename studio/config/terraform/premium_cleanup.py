@@ -701,6 +701,151 @@ def convert_running_instance_to_standby(instance_id: str) -> bool:
         return False
 
 
+@with_transaction
+def cleanup_test_user_assignments(connection, user_emails: List[str]) -> Dict[str, Any]:
+    """
+    Clean up premium assignments for specific test users by email.
+    Designed to be called by test scripts that need to clean up test data.
+
+    This function performs complete cleanup of premium user assignments:
+    1. Looks up user IDs from email addresses
+    2. Finds all premium assignments for those users
+    3. Deletes AWS resources (ALB rules, target groups)
+    4. Removes database records from premium_user_assignments table
+
+    Usage (from test scripts):
+        # Invoke this Lambda with:
+        lambda_client = boto3.client('lambda')
+        response = lambda_client.invoke(
+            FunctionName='subscr-premium-cleanup',
+            InvocationType='RequestResponse',
+            Payload=json.dumps({
+                "action": "cleanup_test_users",
+                "user_emails": ["user1@test.com", "user2@test.com"]
+            })
+        )
+
+    Args:
+        connection: Database connection (provided by @with_transaction decorator)
+        user_emails: List of user email addresses to clean up assignments for
+
+    Returns:
+        Dict with cleanup statistics:
+        {
+            "success": True/False,
+            "message": "Description of what happened",
+            "assignments_deleted": 3,
+            "users_cleaned": 2
+        }
+
+    Note:
+        - This is a transactional operation (uses @with_transaction)
+        - AWS resource deletion is best-effort (continues on errors)
+        - Database changes are rolled back if any critical error occurs
+    """
+    try:
+        if not user_emails:
+            return {
+                "success": False,
+                "message": "No user emails provided",
+                "assignments_deleted": 0,
+            }
+
+        print(f"🧹 Cleaning up premium assignments for {len(user_emails)} test users")
+
+        with connection.cursor() as cursor:
+            # First, get user IDs for the given emails
+            placeholders = ", ".join(["%s"] * len(user_emails))
+            cursor.execute(
+                f"""SELECT id, email FROM users
+                    WHERE email IN ({placeholders})""",
+                user_emails,
+            )
+            users = cursor.fetchall()
+
+            if not users:
+                return {
+                    "success": True,
+                    "message": "No users found with provided emails",
+                    "assignments_deleted": 0,
+                }
+
+            user_ids = [user["id"] for user in users]
+            print(f"Found {len(user_ids)} users to clean up")
+
+            # Get assignments for these users (including ALB resources to clean)
+            user_id_placeholders = ", ".join(["%s"] * len(user_ids))
+            cursor.execute(
+                f"""SELECT user_id, instance_id, target_group_arn, alb_rule_arn
+                    FROM premium_user_assignments
+                    WHERE user_id IN ({user_id_placeholders})""",
+                user_ids,
+            )
+            assignments = cursor.fetchall()
+
+            if not assignments:
+                return {
+                    "success": True,
+                    "message": "No assignments found for these users",
+                    "assignments_deleted": 0,
+                }
+
+            print(f"Found {len(assignments)} assignments to clean up")
+
+            # Clean up AWS resources for each assignment
+            elbv2 = boto3.client("elbv2")
+            cleaned_count = 0
+
+            for assignment in assignments:
+                user_id = assignment["user_id"]
+                target_group_arn = assignment["target_group_arn"]
+                alb_rule_arn = assignment["alb_rule_arn"]
+
+                try:
+                    # Delete ALB rule and target group (skip STANDBY markers)
+                    if alb_rule_arn and alb_rule_arn != "STANDBY":
+                        try:
+                            elbv2.delete_rule(RuleArn=alb_rule_arn)
+                            print(f"Deleted ALB rule for user {user_id}")
+                        except Exception as e:
+                            print(f"Warning: Failed to delete ALB rule: {e}")
+
+                    if target_group_arn and target_group_arn != "STANDBY":
+                        try:
+                            elbv2.delete_target_group(TargetGroupArn=target_group_arn)
+                            print(f"Deleted target group for user {user_id}")
+                        except Exception as e:
+                            print(f"Warning: Failed to delete target group: {e}")
+
+                    # Remove from database
+                    cursor.execute(
+                        "DELETE FROM premium_user_assignments WHERE user_id = %s",
+                        (user_id,),
+                    )
+                    cleaned_count += 1
+                    print(f"Deleted assignment for user {user_id}")
+
+                except Exception as e:
+                    print(f"Error cleaning assignment for user {user_id}: {e}")
+                    # Continue with other assignments
+
+            print(
+                f"Test cleanup complete: "
+                f"{cleaned_count}/{len(assignments)} assignments cleaned"
+            )
+
+            return {
+                "success": True,
+                "message": f"Cleaned {cleaned_count} test user assignments",
+                "assignments_deleted": cleaned_count,
+                "users_cleaned": len(user_ids),
+            }
+
+    except Exception as e:
+        print(f"Error during test user cleanup: {str(e)}")
+        raise e
+
+
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Premium Cleanup Lambda Handler
@@ -710,12 +855,31 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     - Stop idle instances
     - Process migration queue
     - Ensure standby pool capacity
+
+    Also supports manual invocations:
+    - cleanup_test_users: Clean up premium assignments for specific test users
+      Event format:
+      {"action": "cleanup_test_users", "user_emails": ["email1@example.com", ...]}
     """
 
     print(f"🧹 Premium cleanup triggered by event: {json.dumps(event)}")
     print(f"Lambda context: {context.function_name if context else 'No context'}")
 
     try:
+        # Check if this is a manual test cleanup invocation
+        action = event.get("action")
+        if action == "cleanup_test_users":
+            user_emails = event.get("user_emails", [])
+            print(f"Manual test cleanup invocation for {len(user_emails)} users")
+            cleanup_result = cleanup_test_user_assignments(user_emails)
+            return {
+                "statusCode": 200,
+                "body": json.dumps(
+                    {"message": cleanup_result.get("message"), "result": cleanup_result}
+                ),
+            }
+
+        # Otherwise, proceed with normal scheduled cleanup
         # Initialize results
         results = {
             "cleanup_stats": {},

@@ -65,7 +65,10 @@ def snakemake_execute(workspace_id: str, unique_id: str, params: SmkParam):
     client_id = get_client_id_for_subprocess()
 
     if BATCH_CONFIG.USE_AWS_BATCH:
+        # DIAGNOSTIC: This should ALWAYS appear if batch mode is enabled
+        print(f"DIAGNOSTIC: USE_AWS_BATCH=True, client_id={client_id}", flush=True)
         logger.info("Starting AWS Batch execution mode")
+        logger.error("DIAGNOSTIC: If you see this, optinist logging works!")
         future_result = _snakemake_execute_batch(
             workspace_id, unique_id, params, client_id=client_id
         )
@@ -264,8 +267,20 @@ def _snakemake_execute_batch(
 
     try:
         # Initialize BatchExecutor for AWS Batch specific operations
+        print(
+            f"DIAGNOSTIC: Inside _snakemake_execute_batch "
+            f"for {workspace_id}/{unique_id}",
+            flush=True,
+        )
         logger.info("Load BatchExecutor")
+        logger.error("DIAGNOSTIC: Entered _snakemake_execute_batch successfully")
+        print(
+            f"DIAGNOSTIC: About to create BatchUtils({workspace_id}, {unique_id})...",
+            flush=True,
+        )
         batch_executor = BatchUtils(workspace_id, unique_id)
+        print("DIAGNOSTIC: BatchUtils created successfully", flush=True)
+        logger.info("DIAGNOSTIC: BatchUtils object created successfully")
 
         # Configure S3 bucket name EARLY for batch execution
         # This must happen before any Snakemake APIs capture environment state
@@ -696,7 +711,16 @@ def _snakemake_execute_batch(
                     smk_logger.extract_errors_from_snakemake_log(smk_workdir)
 
     except Exception as e:
+        print(
+            f"DIAGNOSTIC: Exception caught in _snakemake_execute_batch: "
+            f"{type(e).__name__}: {e}",
+            flush=True,
+        )
         logger.error(f"Failed to setup AWS Batch execution: {e}")
+        logger.error(f"DIAGNOSTIC: Exception type: {type(e).__name__}")
+        import traceback
+
+        print(f"DIAGNOSTIC: Full traceback:\n{traceback.format_exc()}", flush=True)
         snakemake_result = False
     finally:
         # Clean up config symlink if it exists
