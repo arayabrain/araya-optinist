@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+from enum import IntEnum
 from fastapi import HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
 from firebase_admin import auth as firebase_auth
@@ -17,6 +19,7 @@ from studio.app.common.models import Role as RoleModel
 from studio.app.common.models import User as UserModel
 from studio.app.common.models import UserRole as UserRoleModel
 from studio.app.common.models.experiment import ExperimentRecord
+from studio.app.common.models.subscription import UserSubscription
 from studio.app.common.models.workspace import Workspace
 from studio.app.common.schemas.auth import UserAuth
 from studio.app.common.schemas.base import SortOptions
@@ -29,6 +32,11 @@ from studio.app.common.schemas.users import (
 )
 
 logger = AppLogger.get_logger()
+
+
+class SubscriptionType(IntEnum):
+    FREE = 1
+    BASIC = 2
 
 
 async def set_role(db: Session, user_id: int, role_id: int, auto_commit=True):
@@ -181,6 +189,15 @@ async def create_user(db: Session, data: UserCreate, organization_id: int):
             user_db.attributes = {"remote_bucket_name": new_bucket_name}
             db.flush()
             db.commit()
+        # create subscription user record
+        subscription = UserSubscription(
+            plan_id=SubscriptionType.FREE,  # Default to free plan
+            user_id=user_db.id,
+            expiration=datetime.now() - timedelta(days=1),
+        )
+        db.add(subscription)
+        db.flush()
+        db.commit()
 
         return User.from_orm(user_db)
     except Exception as e:

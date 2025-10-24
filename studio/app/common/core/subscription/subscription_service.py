@@ -177,6 +177,17 @@ class SubscriptionService:
         )
 
     @staticmethod
+    def get_user_subscription_purchase(
+        db: Session, user_id: int
+    ) -> Optional[SubscriptionUserPurchase]:
+        return (
+            db.query(SubscriptionUserPurchase)
+            .filter(SubscriptionUserPurchase.user_id == user_id)
+            .order_by(SubscriptionUserPurchase.created_at.desc())
+            .first()
+        )
+
+    @staticmethod
     def get_user_expired_subscription(
         db: Session, user_id: int
     ) -> common_model.UserSubscription:
