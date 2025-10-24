@@ -158,7 +158,7 @@ async def create_user(db: Session, data: UserCreate, organization_id: int):
 
     try:
         # Create Firebase user
-        firebase_user = firebase_auth.create_user(
+        firebase_user: UserRecord = firebase_auth.create_user(
             email=data.email, password=data.password
         )
 
