@@ -1,5 +1,6 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import IntEnum
+
 from fastapi import HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
 from firebase_admin import auth as firebase_auth
@@ -153,28 +154,28 @@ async def list_user(
 
 
 async def create_user(db: Session, data: UserCreate, organization_id: int):
+    firebase_user = None
+
     try:
-        # create firebase user
-        user: UserRecord = firebase_auth.create_user(
+        # Create Firebase user
+        firebase_user = firebase_auth.create_user(
             email=data.email, password=data.password
         )
 
-        # create application db user
+        # Create application DB user
         user_db = UserModel(
-            uid=user.uid,
-            email=user.email,
+            uid=firebase_user.uid,
+            email=firebase_user.email,
             name=data.name,
             organization_id=organization_id,
             active=True,
         )
-        # it may be possible to specify the organization_id externally in the future
         db.add(user_db)
-        db.flush()
-        await set_role(db, user_id=user_db.id, role_id=data.role_id, auto_commit=False)
-        db.commit()
-        user_db.__dict__["role_id"] = data.role_id
+        db.flush()  # Get user_db.id
 
-        # create remote_storage bucket
+        await set_role(db, user_id=user_db.id, role_id=data.role_id, auto_commit=False)
+
+        # Create remote storage bucket
         if RemoteStorageController.is_available():
             new_bucket_name = RemoteStorageController.create_user_bucket_name(
                 id=user_db.id
@@ -185,24 +186,42 @@ async def create_user(db: Session, data: UserCreate, organization_id: int):
             ) as remote_storage_controller:
                 await remote_storage_controller.create_bucket()
 
-            # store bucket info in user record
             user_db.attributes = {"remote_bucket_name": new_bucket_name}
-            db.flush()
-            db.commit()
-        # create subscription user record
+
+        # Create subscription user record
         subscription = UserSubscription(
-            plan_id=SubscriptionType.FREE,  # Default to free plan
+            plan_id=SubscriptionType.FREE,
             user_id=user_db.id,
-            expiration=datetime.now() - timedelta(days=1),
+            expiration=datetime.now(timezone.utc) + timedelta(days=30),  # Fixed!
         )
         db.add(subscription)
-        db.flush()
+
+        # Commit all changes
         db.commit()
 
+        # Add role_id for response (if needed)
+        user_db.__dict__["role_id"] = data.role_id
+
         return User.from_orm(user_db)
+
     except Exception as e:
-        logger.error(e, exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Failed to create user: {e}", exc_info=True)
+
+        # Rollback database
+        db.rollback()
+
+        # Cleanup Firebase user if created
+        if firebase_user:
+            try:
+                firebase_auth.delete_user(firebase_user.uid)
+                logger.info(f"Cleaned up Firebase user: {firebase_user.uid}")
+            except Exception as cleanup_error:
+                logger.error(f"Failed to cleanup Firebase user: {cleanup_error}")
+
+        # Return appropriate error
+        if isinstance(e, ValueError):
+            raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to create user")
 
 
 async def update_user(
