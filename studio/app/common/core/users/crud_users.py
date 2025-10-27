@@ -259,12 +259,6 @@ async def delete_user(db: Session, current_user: User, organization_id: int) -> 
         assert user_db is not None, "User not found"
 
         # ----------------------------------------
-        # Cancel a User subscription
-        # ----------------------------------------
-
-        await StripeService.handle_cancel_user_subscription(db, current_user)
-
-        # ----------------------------------------
         # Delete a User workspace contents
         # ----------------------------------------
 
@@ -294,6 +288,12 @@ async def delete_user(db: Session, current_user: User, organization_id: int) -> 
                 user_db.remote_bucket_name
             ) as remote_storage_controller:
                 await remote_storage_controller.delete_bucket(force_delete=True)
+
+        # ----------------------------------------
+        # Cancel a User subscription
+        # ----------------------------------------
+
+        await StripeService.handle_cancel_user_subscription(db, current_user)
 
         # ----------------------------------------
         # Delete a User database record
