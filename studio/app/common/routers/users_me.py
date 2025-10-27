@@ -3,7 +3,6 @@ from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.subscription.stripe_service import StripeService
 from studio.app.common.core.users import crud_users
 from studio.app.common.db.database import get_db
 from studio.app.common.schemas.users import SelfUserUpdate, User, UserPasswordUpdate
@@ -44,9 +43,6 @@ async def delete_me(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Delete user subscription first
-    await StripeService.handle_cancel_user_subscription(db, current_user)
-
     return await crud_users.delete_user(
-        db, current_user.id, organization_id=current_user.organization.id
+        db, current_user, organization_id=current_user.organization.id
     )

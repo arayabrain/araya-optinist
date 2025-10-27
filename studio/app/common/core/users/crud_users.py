@@ -12,6 +12,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageSimpleWriter,
 )
+from studio.app.common.core.subscription.stripe_service import StripeService
 from studio.app.common.core.workspace.workspace_services import WorkspaceService
 from studio.app.common.models import Role as RoleModel
 from studio.app.common.models import User as UserModel
@@ -243,19 +244,25 @@ async def update_password(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
+async def delete_user(db: Session, current_user: User, organization_id: int) -> bool:
     try:
         # delete application db user
         user_db: User = (
             db.query(UserModel)
             .filter(
                 UserModel.active.is_(True),
-                UserModel.id == user_id,
+                UserModel.id == current_user.id,
                 UserModel.organization_id == organization_id,
             )
             .first()
         )
         assert user_db is not None, "User not found"
+
+        # ----------------------------------------
+        # Cancel a User subscription
+        # ----------------------------------------
+
+        await StripeService.handle_cancel_user_subscription(db, current_user)
 
         # ----------------------------------------
         # Delete a User workspace contents
@@ -264,7 +271,7 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
         workspaces = (
             db.query(Workspace)
             .filter(
-                Workspace.user_id == user_id,
+                Workspace.user_id == current_user.id,
                 Workspace.deleted.is_(False),
             )
             .all()
@@ -274,7 +281,7 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
         # Delete owned workspaces
         for workspace_id in workspace_ids:
             await WorkspaceService.process_workspace_deletion(
-                db, user_db.remote_bucket_name, workspace_id, user_id
+                db, user_db.remote_bucket_name, workspace_id, current_user.id
             )
 
         # ----------------------------------------
