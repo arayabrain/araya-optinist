@@ -33,6 +33,7 @@ from typing import Any, Dict
 
 import boto3
 import pymysql
+from botocore.exceptions import ClientError
 
 
 def get_required_env_var(var_name: str, default_value: str = None) -> str:
@@ -186,6 +187,7 @@ def _store_user_assignment_transaction(
 
         # Insert new assignment with enhanced tracking including is_standby
         # Use CASE to set standby_created_at to NOW() only if is_standby is true
+        # Convert Python booleans to integers (1/0) for MySQL compatibility
         cursor.execute(
             """
             INSERT INTO premium_user_assignments
@@ -201,9 +203,9 @@ def _store_user_assignment_transaction(
                 target_group_arn,
                 rule_arn,
                 instance_state,
-                is_shared,
-                is_standby,
-                is_standby,  # For the CASE WHEN
+                1 if is_shared else 0,  # Explicit int conversion for MySQL
+                1 if is_standby else 0,  # Explicit int conversion for MySQL
+                1 if is_standby else 0,  # For the CASE WHEN
             ),
         )
 
@@ -856,32 +858,63 @@ def create_running_instance():
         # Get subnet IDs from environment
         subnet_ids = get_required_env_var("SUBNET_IDS").split(",")
 
-        # Launch instance using the premium launch template
-        response = ec2.run_instances(
-            LaunchTemplate={
-                "LaunchTemplateId": launch_template_id,
-                "Version": "$Latest",
-            },
-            InstanceType="t3.large",
-            SubnetId=subnet_ids[0],  # Use first private subnet
-            MinCount=1,
-            MaxCount=1,
-            TagSpecifications=[
-                {
-                    "ResourceType": "instance",
-                    "Tags": [
-                        {"Key": "Name", "Value": "subscr-premium-running"},
-                        {"Key": "Type", "Value": "Premium-Instance"},
-                        {"Key": "Tier", "Value": "premium"},
-                        {"Key": "Service", "Value": "premium-tier"},
-                    ],
-                }
-            ],
-        )
+        # Try each subnet (different AZ) until one succeeds
+        for i, subnet_id in enumerate(subnet_ids):
+            try:
+                print(
+                    f"Attempting to launch instance in subnet "
+                    f"{subnet_id} (attempt {i + 1}/{len(subnet_ids)})"
+                )
 
-        instance_id = response["Instances"][0]["InstanceId"]
-        print(f"Created instance {instance_id} (launching in background)")
-        return instance_id
+                # Launch instance using the premium launch template
+                response = ec2.run_instances(
+                    LaunchTemplate={
+                        "LaunchTemplateId": launch_template_id,
+                        "Version": "$Latest",
+                    },
+                    InstanceType="t3.large",
+                    SubnetId=subnet_id,
+                    MinCount=1,
+                    MaxCount=1,
+                    TagSpecifications=[
+                        {
+                            "ResourceType": "instance",
+                            "Tags": [
+                                {"Key": "Name", "Value": "subscr-premium-running"},
+                                {"Key": "Type", "Value": "Premium-Instance"},
+                                {"Key": "Tier", "Value": "premium"},
+                                {"Key": "Service", "Value": "premium-tier"},
+                            ],
+                        }
+                    ],
+                )
+
+                instance_id = response["Instances"][0]["InstanceId"]
+                print(
+                    f"Successfully created instance {instance_id} in subnet "
+                    f"{subnet_id} (launching in background)"
+                )
+                return instance_id
+
+            except ClientError as e:
+                error_code = e.response["Error"]["Code"]
+                if error_code == "InsufficientInstanceCapacity":
+                    print(
+                        f"InsufficientInstanceCapacity in subnet {subnet_id}, "
+                        f"trying next subnet..."
+                    )
+                    continue
+                else:
+                    # For other errors, don't retry - fail immediately
+                    print(f"Non-capacity error ({error_code}), not retrying: {str(e)}")
+                    raise
+
+        # All subnets exhausted
+        print(
+            f"Failed to launch instance in all {len(subnet_ids)} "
+            f"available subnets due to insufficient capacity"
+        )
+        return None
 
     except Exception as e:
         print(f"Error creating running instance: {str(e)}")
@@ -1025,31 +1058,64 @@ def create_and_stop_standby_instance():
         # Get subnet IDs from environment
         subnet_ids = get_required_env_var("SUBNET_IDS").split(",")
 
-        # Launch instance using the premium launch template
-        response = ec2.run_instances(
-            LaunchTemplate={
-                "LaunchTemplateId": launch_template_id,
-                "Version": "$Latest",
-            },
-            InstanceType="t3.large",
-            SubnetId=subnet_ids[0],  # Use first private subnet
-            MinCount=1,
-            MaxCount=1,
-            TagSpecifications=[
-                {
-                    "ResourceType": "instance",
-                    "Tags": [
-                        {"Key": "Name", "Value": "subscr-premium-standby"},
-                        {"Key": "Type", "Value": "Premium-Instance"},
-                        {"Key": "Tier", "Value": "premium"},
-                        {"Key": "Service", "Value": "premium-tier"},
-                    ],
-                }
-            ],
-        )
+        # Try each subnet (different AZ) until one succeeds
+        instance_id = None
+        for i, subnet_id in enumerate(subnet_ids):
+            try:
+                print(
+                    f"Attempting to launch standby instance in subnet {subnet_id} "
+                    f"(attempt {i + 1}/{len(subnet_ids)})"
+                )
 
-        instance_id = response["Instances"][0]["InstanceId"]
-        print(f"Created standby instance {instance_id}, waiting to stop...")
+                # Launch instance using the premium launch template
+                response = ec2.run_instances(
+                    LaunchTemplate={
+                        "LaunchTemplateId": launch_template_id,
+                        "Version": "$Latest",
+                    },
+                    InstanceType="t3.large",
+                    SubnetId=subnet_id,
+                    MinCount=1,
+                    MaxCount=1,
+                    TagSpecifications=[
+                        {
+                            "ResourceType": "instance",
+                            "Tags": [
+                                {"Key": "Name", "Value": "subscr-premium-standby"},
+                                {"Key": "Type", "Value": "Premium-Instance"},
+                                {"Key": "Tier", "Value": "premium"},
+                                {"Key": "Service", "Value": "premium-tier"},
+                            ],
+                        }
+                    ],
+                )
+
+                instance_id = response["Instances"][0]["InstanceId"]
+                print(
+                    f"Successfully created standby instance {instance_id} in "
+                    f"subnet {subnet_id}, waiting to stop..."
+                )
+                break  # Success, exit retry loop
+
+            except ClientError as e:
+                error_code = e.response["Error"]["Code"]
+                if error_code == "InsufficientInstanceCapacity":
+                    print(
+                        f"InsufficientInstanceCapacity in subnet {subnet_id}, "
+                        f"trying next subnet..."
+                    )
+                    continue
+                else:
+                    # For other errors, don't retry - fail immediately
+                    print(f"Non-capacity error ({error_code}), not retrying: {str(e)}")
+                    raise
+
+        # Check if instance was created
+        if not instance_id:
+            raise Exception(
+                f"Failed to launch standby instance in all {len(subnet_ids)} "
+                f"available subnets due to insufficient capacity"
+            )
 
         # Wait for running then stop
         waiter = ec2.get_waiter("instance_running")
@@ -1127,14 +1193,14 @@ def start_standby_instance(instance_id: str):
             WaiterConfig={"Delay": 5, "MaxAttempts": 24},  # 2 minutes max
         )
 
-        # Update state in database
+        # Update state in database (only for non-standby assignments)
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """UPDATE premium_user_assignments
-                       SET instance_state = 'running', is_standby = 0,
+                       SET instance_state = 'running',
                            last_state_check = NOW()
-                       WHERE instance_id = %s""",
+                       WHERE instance_id = %s AND is_standby = 0""",
                     (instance_id,),
                 )
                 connection.commit()  # Commit the state update
@@ -1557,7 +1623,45 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         else:
             print(" PRIORITY 1 FAILED: No dedicated instances available")
 
-        # 3. PRIORITY 2: Start standby instance (5-15 second assignment)
+        # 2. PRIORITY 2: Share with least loaded instance (immediate assignment)
+        # This provides the fastest user experience when no dedicated instance available
+        if not instance_to_use and least_loaded_instance:
+            # Share with least loaded instance for immediate assignment
+            instance_to_use = least_loaded_instance
+            is_shared = True
+            instance_state = "running"
+            assignment_source = "shared"
+            print(
+                f"✓ PRIORITY 2: Sharing instance {instance_to_use['instance_id']} "
+                f"for user {user_id} (least loaded with {min_users} users)"
+            )
+
+            # Trigger scaling if we're under-provisioned (more users than instances)
+            if (
+                len(launching_instances) == 0
+                and len(running_instances) < active_users + 1
+            ):
+                needs_scaling = True
+                print("   → Flagged for background scaling after assignment")
+
+        # 2.5. PRIORITY 2.5: Temporary assignment to autoscaling pool (immediate login)
+        # If NO premium instances are running, allow immediate login via shared pool
+        # then migrate to dedicated premium instance when ready
+        if not instance_to_use and len(running_instances) == 0:
+            print("✓ PRIORITY 2.5: No premium instances running - using autoscaling pool for immediate login")
+
+            # Use special marker for autoscaling pool assignment
+            instance_to_use = {"instance_id": "autoscaling-pool"}
+            is_shared = True  # This is a temporary shared assignment
+            instance_state = "running"
+            assignment_source = "autoscaling_temp"
+            needs_scaling = True  # Always trigger scaling for premium instance
+
+            print(f"   → User {user_id} will login via autoscaling pool")
+            print("   → Scaling premium instances in background")
+            print("   → User will be migrated to dedicated instance once ready")
+
+        # 3. PRIORITY 3: Start standby instance (5-15 second assignment)
         if not instance_to_use and standby_instances:
             print("No dedicated instances available, starting standby instance")
 
@@ -1587,7 +1691,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                     f"falling back to other options"
                 )
 
-        # 3.5 PRIORITY 2.5: Fallback to AWS stopped instances not in database
+        # 4. PRIORITY 4: Fallback to AWS stopped instances not in database
         if not instance_to_use:
             # Find stopped instances directly from AWS that
             # are not in our standby database
@@ -1641,29 +1745,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                         f"{fallback_instance_id}: {str(start_error)}"
                     )
 
-        # 4. PRIORITY 3: Use existing running instances with sharing
-        if not instance_to_use and least_loaded_instance:
-            # Share with least loaded instance when no dedicated or standby available
-            # This handles cases where all instances are occupied or
-            # have standby reservations
-            instance_to_use = least_loaded_instance
-            is_shared = True
-            instance_state = "running"
-            assignment_source = "shared"
-            print(
-                f"Sharing instance {instance_to_use['instance_id']} "
-                f"for user {user_id} (least loaded with {min_users} users)"
-            )
-
-            # Trigger scaling if we're under-provisioned (more users than instances)
-            if (
-                len(launching_instances) == 0
-                and len(running_instances) < active_users + 1
-            ):
-                needs_scaling = True
-                print("Flagged for scaling after assignment is stored")
-
-        # 5. PRIORITY 4: Scale up (last resort)
+        # 5. PRIORITY 5: Scale up - create new instance (last resort, slowest)
         if not instance_to_use:
             if len(launching_instances) > 0:
                 # Already scaling - track retry attempt
@@ -1807,7 +1889,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                 "body": json.dumps(error_details),
             }
 
-        # 6. Create target group for the user
+        # 6. Create target group for the user (or use existing autoscaling pool)
         print("=== ASSIGNMENT SUCCESS ===")
         print(f"Assigning user {user_id} to instance {instance_to_use['instance_id']}")
         print("Assignment details:")
@@ -1819,31 +1901,42 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         print()
 
         instance_id = instance_to_use["instance_id"]
-        target_group_response = elbv2.create_target_group(
-            Name=f"premium-{user_id}-tg",
-            Protocol="HTTP",
-            Port=8000,
-            VpcId=vpc_id,
-            HealthCheckPath="/health",
-            HealthCheckProtocol="HTTP",
-            HealthCheckIntervalSeconds=30,
-            HealthyThresholdCount=2,
-            UnhealthyThresholdCount=3,
-            Tags=[
-                {"Key": "UserID", "Value": user_id},
-                {"Key": "Type", "Value": "premium-user"},
-                {"Key": "Service", "Value": "optinist-premium"},
-                {"Key": "Shared", "Value": str(is_shared)},
-                {"Key": "Source", "Value": assignment_source},
-            ],
-        )
 
-        target_group_arn = target_group_response["TargetGroups"][0]["TargetGroupArn"]
+        # Special handling for autoscaling pool assignment
+        if instance_id == "autoscaling-pool":
+            print("   Using existing autoscaling target group for temporary assignment")
+            # Use the autoscaling target group instead of creating a new one
+            target_group_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
+            if not target_group_arn:
+                raise ValueError("AUTOSCALING_TARGET_GROUP_ARN environment variable not set")
+            print(f"   Autoscaling target group: {target_group_arn}")
+        else:
+            # Normal path: create a dedicated target group for the premium instance
+            target_group_response = elbv2.create_target_group(
+                Name=f"premium-{user_id}-tg",
+                Protocol="HTTP",
+                Port=8000,
+                VpcId=vpc_id,
+                HealthCheckPath="/health",
+                HealthCheckProtocol="HTTP",
+                HealthCheckIntervalSeconds=30,
+                HealthyThresholdCount=2,
+                UnhealthyThresholdCount=3,
+                Tags=[
+                    {"Key": "UserID", "Value": user_id},
+                    {"Key": "Type", "Value": "premium-user"},
+                    {"Key": "Service", "Value": "optinist-premium"},
+                    {"Key": "Shared", "Value": str(is_shared)},
+                    {"Key": "Source", "Value": assignment_source},
+                ],
+            )
 
-        # 8. Register instance to target group
-        elbv2.register_targets(
-            TargetGroupArn=target_group_arn, Targets=[{"Id": instance_id, "Port": 8000}]
-        )
+            target_group_arn = target_group_response["TargetGroups"][0]["TargetGroupArn"]
+
+            # 8. Register instance to target group
+            elbv2.register_targets(
+                TargetGroupArn=target_group_arn, Targets=[{"Id": instance_id, "Port": 8000}]
+            )
 
         # 9. Create ALB listener rule for user routing
         # Get next available priority dynamically to avoid conflicts
@@ -2435,7 +2528,9 @@ def release_premium_user(user_id: str) -> Dict[str, Any]:
                 errors.append(error_msg)
 
         # 3. Delete target group (if it exists)
-        if target_group_arn and target_group_arn != "standby":
+        # Skip deletion for special target groups (standby placeholder, autoscaling pool)
+        autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
+        if target_group_arn and target_group_arn != "standby" and target_group_arn != autoscaling_tg_arn:
             try:
                 elbv2.delete_target_group(TargetGroupArn=target_group_arn)
                 print(f"Deleted target group: {target_group_arn}")
@@ -2443,6 +2538,8 @@ def release_premium_user(user_id: str) -> Dict[str, Any]:
                 error_msg = f"Error deleting target group: {str(tg_error)}"
                 print(error_msg)
                 errors.append(error_msg)
+        elif target_group_arn == autoscaling_tg_arn:
+            print(f"Skipping deletion of shared autoscaling target group: {target_group_arn}")
 
         # Note: Stale assignment cleanup is now handled by premium_cleanup Lambda
         # running on scheduled basis (hourly)
@@ -2826,33 +2923,43 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
     """
     Optimize shared instances by migrating users to available dedicated instances.
     Called during assignment operations to improve resource allocation.
+
+    Uses dynamic instance discovery by tags instead of hardcoded PREMIUM_INSTANCE_IDS,
+    ensuring newly created/started instances are included in migration checks.
     """
     try:
-        ec2 = boto3.client("ec2")
-        premium_instance_ids = get_required_env_var("PREMIUM_INSTANCE_IDS").split(",")
-
         print(" Checking for shared instance optimization opportunities")
 
-        # Get all premium instances with detailed state information
-        instances_response = ec2.describe_instances(InstanceIds=premium_instance_ids)
+        # Get all premium instances dynamically by tags (not hardcoded list)
+        # This ensures newly created/started instances are included
+        all_instances = get_all_premium_instances_with_states()
+
+        print(f"   Discovered {len(all_instances)} total premium instances by tags")
 
         available_instances = []
         shared_instances = []
 
-        for reservation in instances_response["Reservations"]:
-            for instance in reservation["Instances"]:
-                instance_id = instance["InstanceId"]
-                instance_state = instance["State"]["Name"]
+        # Check for users temporarily assigned to autoscaling pool
+        autoscaling_users = get_assigned_users_for_instance("autoscaling-pool")
+        if autoscaling_users:
+            print(f"   Found {len(autoscaling_users)} users on autoscaling pool needing migration")
+            shared_instances.append(("autoscaling-pool", autoscaling_users))
 
-                if instance_state == "running":
-                    assigned_users = get_assigned_users_for_instance(instance_id)
+        for instance in all_instances:
+            instance_id = instance["instance_id"]
+            instance_state = instance["state"]
 
-                    if not assigned_users and check_instance_readiness_with_retry(
-                        instance_id, max_wait_seconds=600, retry_interval=10
-                    ):
-                        available_instances.append(instance_id)
-                    elif len(assigned_users) > 1:  # Shared instance
-                        shared_instances.append((instance_id, assigned_users))
+            print(f"   Checking instance {instance_id} (state: {instance_state})")
+
+            if instance_state == "running":
+                assigned_users = get_assigned_users_for_instance(instance_id)
+
+                if not assigned_users and check_instance_readiness_with_retry(
+                    instance_id, max_wait_seconds=600, retry_interval=10
+                ):
+                    available_instances.append(instance_id)
+                elif len(assigned_users) > 1:  # Shared instance
+                    shared_instances.append((instance_id, assigned_users))
 
         # Only migrate if we have available instances
         if not available_instances or not shared_instances:
@@ -2870,8 +2977,14 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
             if not available_instances:
                 break
 
-            # Migrate all but one user from shared instance
-            users_to_migrate = users[1:]  # Keep first user, migrate others
+            # For autoscaling pool, migrate ALL users (it's a temporary assignment)
+            # For premium instances, migrate all but one user (keep first user, migrate others)
+            if instance_id == "autoscaling-pool":
+                users_to_migrate = users  # Migrate all users from autoscaling pool
+                print(f"   Migrating ALL {len(users)} users from autoscaling pool")
+            else:
+                users_to_migrate = users[1:]  # Keep first user, migrate others
+                print(f"   Migrating {len(users_to_migrate)} users from shared premium instance")
 
             for user_dict in users_to_migrate:
                 # Extract user_id from the dictionary returned by

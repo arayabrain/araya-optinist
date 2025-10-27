@@ -218,6 +218,7 @@ class WorkflowRunner:
             )
 
     def set_smk_config(self):
+        logger = AppLogger.get_logger()
         rules, last_output = self.rulefile()
 
         nwb_template = get_typecheck_params(self.runItem.nwbParam, "nwb")
@@ -228,6 +229,10 @@ class WorkflowRunner:
         )
 
         client_id = get_client_id_for_subprocess()
+        logger.debug(
+            f"INVESTIGATION: client_id captured in workflow_runner: {client_id}"
+        )
+        logger.debug(f"INVESTIGATION: client_id type: {type(client_id)}")
 
         flow_config = FlowConfig(
             rules=rules,

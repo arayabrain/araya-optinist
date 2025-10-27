@@ -2285,6 +2285,13 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
             "iam:PassedToService" = "ec2.amazonaws.com"
           }
         }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "lambda:InvokeFunction"
+        ]
+        Resource = aws_lambda_function.premium_manager.arn
       }
     ]
   })
@@ -2347,7 +2354,7 @@ resource "aws_lambda_function" "premium_manager" {
   role          = aws_iam_role.premium_manager_lambda.arn
   handler       = "premium_manager.handler"
   runtime       = "python3.9"
-  timeout       = 300
+  timeout       = 600
 
   source_code_hash = data.archive_file.premium_manager_zip.output_base64sha256
 
@@ -2358,6 +2365,7 @@ resource "aws_lambda_function" "premium_manager" {
       SECURITY_GROUP_ID     = aws_security_group.ecs.id
       ALB_ARN               = aws_lb.autoscaling.arn
       ALB_LISTENER_ARN      = aws_lb_listener.autoscaling.arn
+      AUTOSCALING_TARGET_GROUP_ARN = aws_lb_target_group.autoscaling.arn
       PREMIUM_INSTANCE_IDS  = join(",", aws_instance.premium[*].id)
       PREMIUM_LAUNCH_TEMPLATE_ID = aws_launch_template.premium.id
       CLUSTER_NAME          = aws_ecs_cluster.main.name
@@ -5251,6 +5259,19 @@ resource "aws_batch_job_definition" "optinist" {
         value = aws_s3_bucket.app_storage.id
       },
     ]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = "/aws/batch/job"
+        "mode"                  = "non-blocking"
+        "awslogs-multiline-pattern" = "^\\[\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
+        "max-buffer-size"       = "25m"
+        "awslogs-region"        = "ap-northeast-1"
+        "awslogs-create-group"  = "true"
+        "awslogs-stream-prefix" = "batch"
+      }
+    }
   })
 }
 
