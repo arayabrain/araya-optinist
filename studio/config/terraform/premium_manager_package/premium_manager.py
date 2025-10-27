@@ -283,12 +283,12 @@ def _get_assigned_users_for_instance_transaction(connection, instance_id: str):
         )
         all_assignments = cursor.fetchall()
 
-        print(f"    All assignments for instance {instance_id}:")
+        print(f" All assignments for instance {instance_id}:")
         for assignment in all_assignments:
             user_id = assignment.get("user_id", "N/A")
             is_standby = assignment.get("is_standby", 0)
             status = assignment.get("status", "N/A")
-            print(f"      - User: {user_id}, Standby: {is_standby}, Status: {status}")
+            print(f"- User: {user_id}, Standby: {is_standby}, Status: {status}")
 
         # Now get only real user assignments (exclude standby entries) with lock
         cursor.execute(
@@ -302,7 +302,7 @@ def _get_assigned_users_for_instance_transaction(connection, instance_id: str):
 
         print(f"Real user assignments (excluding standby): {len(real_users)}")
         for user in real_users:
-            print(f"      - Real user: {user.get('user_id', 'N/A')}")
+            print(f"- Real user: {user.get('user_id', 'N/A')}")
 
         return real_users
 
@@ -312,7 +312,7 @@ def get_assigned_users_for_instance(instance_id: str):
     try:
         return _get_assigned_users_for_instance_transaction(instance_id)
     except Exception as e:
-        print(f"     Error getting assigned users for {instance_id}: {str(e)}")
+        print(f"Error getting assigned users for {instance_id}: {str(e)}")
         return []
 
 
@@ -345,13 +345,13 @@ def get_all_premium_instances_with_states():
 
             # Debug logging for tag matching
             print(f"Instance {instance_id} tag analysis:")
-            print(f"  - Name: '{tags.get('Name', '')}' -> name_match: {name_match}")
-            print(f"  - Tier: '{tags.get('Tier', '')}' -> tier_match: {tier_match}")
-            print(f"  - Type: '{tags.get('Type', '')}' -> type_match: {type_match}")
-            print(f"  - All tags: {tags}")
+            print(f"- Name: '{tags.get('Name', '')}' -> name_match: {name_match}")
+            print(f"- Tier: '{tags.get('Tier', '')}' -> tier_match: {tier_match}")
+            print(f"- Type: '{tags.get('Type', '')}' -> type_match: {type_match}")
+            print(f"- All tags: {tags}")
 
             result = name_match or tier_match or type_match
-            print(f"  - Final match result: {result}")
+            print(f"- Final match result: {result}")
             return result
 
         instances = []
@@ -379,10 +379,10 @@ def get_all_premium_instances_with_states():
                     print(f" Skipped non-premium instance: {instance_id}")
 
         print("Instance discovery summary:")
-        print(f"  - Total instances found in AWS: {all_instances_found}")
-        print(f"  - Premium instances matched: {len(instances)}")
-        print(f"  - Premium instance IDs: {[i['instance_id'] for i in instances]}")
-        print(f"  - States: {[(i['instance_id'], i['state']) for i in instances]}")
+        print(f"- Total instances found in AWS: {all_instances_found}")
+        print(f"- Premium instances matched: {len(instances)}")
+        print(f"- Premium instance IDs: {[i['instance_id'] for i in instances]}")
+        print(f"- States: {[(i['instance_id'], i['state']) for i in instances]}")
 
         return instances
     except Exception as e:
@@ -413,9 +413,9 @@ def _count_active_premium_users_transaction(connection):
         real_user_count = result["count"] if result else 0
 
         print(" User count analysis:")
-        print(f"  - Total active assignments: {total_count}")
-        print(f"  - Standby assignments: {standby_count}")
-        print(f"  - Real user assignments: {real_user_count}")
+        print(f"- Total active assignments: {total_count}")
+        print(f"- Standby assignments: {standby_count}")
+        print(f"- Real user assignments: {real_user_count}")
 
         return real_user_count
 
@@ -524,18 +524,18 @@ def get_dynamic_max_capacity():
         max_capacity = min(total_premium_subscribers + EXTRA_CAPACITY, ABSOLUTE_MAX)
 
     print("🏗️ Dynamic capacity calculation:")
-    print(f"  - Premium subscribers: {total_premium_subscribers}")
-    print(f"  - Extra capacity (buffer + standby): {EXTRA_CAPACITY}")
-    print(f"  - Current standby count: {standby_count}")
-    print(f"  - Calculated max capacity: {max_capacity}")
-    print(f"  - Absolute maximum: {ABSOLUTE_MAX}")
+    print(f"- Premium subscribers: {total_premium_subscribers}")
+    print(f"- Extra capacity (buffer + standby): {EXTRA_CAPACITY}")
+    print(f"- Current standby count: {standby_count}")
+    print(f"- Calculated max capacity: {max_capacity}")
+    print(f"- Absolute maximum: {ABSOLUTE_MAX}")
     calculated_capacity = (
         total_premium_subscribers + EXTRA_CAPACITY
         if total_premium_subscribers > 0
         else 3
     )
     print(
-        f"  - Logic: {total_premium_subscribers} subscribers + "
+        f"- Logic: {total_premium_subscribers} subscribers + "
         f"{EXTRA_CAPACITY} extra = {calculated_capacity} (capped at {ABSOLUTE_MAX})"
     )
 
@@ -1510,15 +1510,15 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         print(" === PREMIUM USER ASSIGNMENT START ===")
         print(f"Target user: {user_id}")
         print(" Assignment context:")
-        print(f"  - Running instances: {len(running_instances)}")
-        print(f"  - Launching instances: {len(launching_instances)}")
-        print(f"  - Active users: {active_users}")
-        print(f"  - Standby available: {standby_count}")
-        print(f"  - Total instances: {len(all_instances)}")
+        print(f"- Running instances: {len(running_instances)}")
+        print(f"- Launching instances: {len(launching_instances)}")
+        print(f"- Active users: {active_users}")
+        print(f"- Standby available: {standby_count}")
+        print(f"- Total instances: {len(all_instances)}")
 
         print("Instance details:")
         for instance in all_instances:
-            print(f"  - {instance['instance_id']}: {instance['state']}")
+            print(f"- {instance['instance_id']}: {instance['state']}")
 
         stopped_instances = [i for i in all_instances if i["state"] == "stopped"]
         print(
@@ -1558,7 +1558,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             is_ready = check_instance_readiness_with_retry(
                 instance_id, max_wait_seconds=600, retry_interval=10
             )
-            print(f"     Readiness result: {is_ready}")
+            print(f"Readiness result: {is_ready}")
 
             if not is_ready:
                 print(f"Skipping {instance_id} - not ready")
@@ -1591,21 +1591,17 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                 # Track least loaded for sharing
                 least_loaded_instance = instance
                 min_users = user_count
-                print(
-                    f"     Tracking as least loaded: {instance_id} ({user_count} users)"
-                )
+                print(f"Tracking as least loaded: {instance_id} ({user_count} users)")
             else:
-                print(
-                    f"     Instance {instance_id} has {user_count} users (not optimal)"
-                )
+                print(f"Instance {instance_id} has {user_count} users (not optimal)")
 
         print(" PRIORITY 1 Results:")
         print(
-            f"  - Available dedicated: "
+            f"- Available dedicated: "
             f"{available_dedicated['instance_id'] if available_dedicated else 'None'}"  # noqa: E501
         )
         print(
-            f"  - Least loaded: "
+            f"- Least loaded: "
             f"{least_loaded_instance['instance_id'] if least_loaded_instance else 'None'}"  # noqa: E501
             f" ({min_users} users)"
         )
@@ -1632,7 +1628,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             instance_state = "running"
             assignment_source = "shared"
             print(
-                f"✓ PRIORITY 2: Sharing instance {instance_to_use['instance_id']} "
+                f"PRIORITY 2: Sharing instance {instance_to_use['instance_id']} "
                 f"for user {user_id} (least loaded with {min_users} users)"
             )
 
@@ -1642,13 +1638,16 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                 and len(running_instances) < active_users + 1
             ):
                 needs_scaling = True
-                print("   → Flagged for background scaling after assignment")
+                print("→ Flagged for background scaling after assignment")
 
         # 2.5. PRIORITY 2.5: Temporary assignment to autoscaling pool (immediate login)
         # If NO premium instances are running, allow immediate login via shared pool
         # then migrate to dedicated premium instance when ready
         if not instance_to_use and len(running_instances) == 0:
-            print("✓ PRIORITY 2.5: No premium instances running - using autoscaling pool for immediate login")
+            print(
+                "PRIORITY 2.5: No premium instances running "
+                "- using autoscaling pool for immediate login"
+            )
 
             # Use special marker for autoscaling pool assignment
             instance_to_use = {"instance_id": "autoscaling-pool"}
@@ -1657,9 +1656,9 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             assignment_source = "autoscaling_temp"
             needs_scaling = True  # Always trigger scaling for premium instance
 
-            print(f"   → User {user_id} will login via autoscaling pool")
-            print("   → Scaling premium instances in background")
-            print("   → User will be migrated to dedicated instance once ready")
+            print(f"→ User {user_id} will login via autoscaling pool")
+            print("→ Scaling premium instances in background")
+            print("→ User will be migrated to dedicated instance once ready")
 
         # 3. PRIORITY 3: Start standby instance (5-15 second assignment)
         if not instance_to_use and standby_instances:
@@ -1852,7 +1851,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
 
             print(" Failure analysis:")
             for reason in failure_reasons:
-                print(f"  {reason}")
+                print(f"{reason}")
 
             error_details = {
                 "error": "Could not assign premium instance - "
@@ -1893,10 +1892,10 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         print("=== ASSIGNMENT SUCCESS ===")
         print(f"Assigning user {user_id} to instance {instance_to_use['instance_id']}")
         print("Assignment details:")
-        print(f"  - Instance ID: {instance_to_use['instance_id']}")
-        print(f"  - Assignment source: {assignment_source}")
-        print(f"  - Instance state: {instance_state}")
-        print(f"  - Is shared: {is_shared}")
+        print(f"- Instance ID: {instance_to_use['instance_id']}")
+        print(f"- Assignment source: {assignment_source}")
+        print(f"- Instance state: {instance_state}")
+        print(f"- Is shared: {is_shared}")
         print("=== PROCEEDING WITH TARGET GROUP CREATION ===")
         print()
 
@@ -1904,12 +1903,14 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
 
         # Special handling for autoscaling pool assignment
         if instance_id == "autoscaling-pool":
-            print("   Using existing autoscaling target group for temporary assignment")
+            print("Using existing autoscaling target group for temporary assignment")
             # Use the autoscaling target group instead of creating a new one
             target_group_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
             if not target_group_arn:
-                raise ValueError("AUTOSCALING_TARGET_GROUP_ARN environment variable not set")
-            print(f"   Autoscaling target group: {target_group_arn}")
+                raise ValueError(
+                    "AUTOSCALING_TARGET_GROUP_ARN environment variable not set"
+                )
+            print(f"Autoscaling target group: {target_group_arn}")
         else:
             # Normal path: create a dedicated target group for the premium instance
             target_group_response = elbv2.create_target_group(
@@ -1931,11 +1932,14 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                 ],
             )
 
-            target_group_arn = target_group_response["TargetGroups"][0]["TargetGroupArn"]
+            target_group_arn = target_group_response["TargetGroups"][0][
+                "TargetGroupArn"
+            ]
 
             # 8. Register instance to target group
             elbv2.register_targets(
-                TargetGroupArn=target_group_arn, Targets=[{"Id": instance_id, "Port": 8000}]
+                TargetGroupArn=target_group_arn,
+                Targets=[{"Id": instance_id, "Port": 8000}],
             )
 
         # 9. Create ALB listener rule for user routing
@@ -2132,15 +2136,15 @@ def scale_premium_instances_if_needed():
         effective_capacity = running_count + launching_count + pending_running_count
 
         print("Enhanced premium instance analysis:")
-        print(f"  - Running instances: {running_count}")
-        print(f"  - Launching instances: {launching_count}")
-        print(f"  - Pending standby creations: {pending_standby_count}")
-        print(f"  - Pending running creations: {pending_running_count}")
-        print(f"  - Effective capacity: {effective_capacity}")
-        print(f"  - Total instances: {total_instances}")
-        print(f"  - Maximum capacity: {max_capacity}")
-        print(f"  - Active assignments (logged-in users): {active_users}")
-        print(f"  - Premium subscribers (capacity planning): {total_subscribers}")
+        print(f"- Running instances: {running_count}")
+        print(f"- Launching instances: {launching_count}")
+        print(f"- Pending standby creations: {pending_standby_count}")
+        print(f"- Pending running creations: {pending_running_count}")
+        print(f"- Effective capacity: {effective_capacity}")
+        print(f"- Total instances: {total_instances}")
+        print(f"- Maximum capacity: {max_capacity}")
+        print(f"- Active assignments (logged-in users): {active_users}")
+        print(f"- Premium subscribers (capacity planning): {total_subscribers}")
 
         # NO SCALING CONDITIONS:
         if launching_count > 0:
@@ -2170,7 +2174,7 @@ def scale_premium_instances_if_needed():
                 f"{active_users} active assignments"
             )
             print(
-                f"   (Note: {total_subscribers} total subscribers, "
+                f"(Note: {total_subscribers} total subscribers, "
                 f"but only {active_users} currently logged in)"
             )
             return False
@@ -2276,12 +2280,10 @@ def get_ecs_container_instance_id(ec2_instance_id: str, cluster_name: str) -> st
         container_instance_arns = response.get("containerInstanceArns", [])
 
         if not container_instance_arns:
-            print(f"     No container instances found in cluster {cluster_name}")
+            print(f"No container instances found in cluster {cluster_name}")
             return None
 
-        print(
-            f"    Found {len(container_instance_arns)} container instances in cluster"
-        )
+        print(f" Found {len(container_instance_arns)} container instances in cluster")
 
         # Describe container instances to find the one matching our EC2 instance
         describe_response = ecs.describe_container_instances(
@@ -2291,17 +2293,14 @@ def get_ecs_container_instance_id(ec2_instance_id: str, cluster_name: str) -> st
         for container_instance in describe_response.get("containerInstances", []):
             if container_instance.get("ec2InstanceId") == ec2_instance_id:
                 container_instance_id = container_instance.get("containerInstanceArn")
-                print(f"    Found ECS container instance: {container_instance_id}")
+                print(f" Found ECS container instance: {container_instance_id}")
                 return container_instance_id
 
-        print(
-            f"     No ECS container instance found for EC2 instance "
-            f"{ec2_instance_id}"
-        )
+        print(f"No ECS container instance found for EC2 instance " f"{ec2_instance_id}")
         return None
 
     except Exception as e:
-        print(f"     Error mapping EC2 to ECS container instance: {str(e)}")
+        print(f"Error mapping EC2 to ECS container instance: {str(e)}")
         return None
 
 
@@ -2318,7 +2317,7 @@ def check_instance_readiness(instance_id: str) -> bool:
         )
         return False
 
-    print(f"     Checking readiness for EC2 instance {instance_id}")
+    print(f"Checking readiness for EC2 instance {instance_id}")
 
     try:
         # First, get the ECS container instance ID from the EC2 instance ID
@@ -2328,28 +2327,27 @@ def check_instance_readiness(instance_id: str) -> bool:
 
         if not ecs_container_instance_id:
             print(
-                f"     Cannot find ECS container instance for EC2 instance "
-                f"{instance_id}"
+                f"Cannot find ECS container instance for EC2 instance " f"{instance_id}"
             )
-            print("     Instance not ready: No ECS container instance mapping")
+            print("Instance not ready: No ECS container instance mapping")
             return False
 
         # Get ECS tasks running on this container instance
-        print("     Listing tasks on ECS container instance...")
+        print("Listing tasks on ECS container instance...")
         tasks_response = ecs.list_tasks(
             cluster=cluster_name, containerInstance=ecs_container_instance_id
         )
 
         task_arns = tasks_response.get("taskArns", [])
-        print(f"    Found {len(task_arns)} tasks on container instance")
+        print(f" Found {len(task_arns)} tasks on container instance")
 
         if not task_arns:
             print(f"No tasks running on container instance {ecs_container_instance_id}")
-            print("     Instance not ready: No ECS tasks running")
+            print("Instance not ready: No ECS tasks running")
             return False
 
         # Check task status
-        print(f"     Describing {len(task_arns)} tasks...")
+        print(f"Describing {len(task_arns)} tasks...")
         task_details = ecs.describe_tasks(cluster=cluster_name, tasks=task_arns)
 
         premium_tasks_running = 0
@@ -2358,26 +2356,26 @@ def check_instance_readiness(instance_id: str) -> bool:
             last_status = task.get("lastStatus", "")
             desired_status = task.get("desiredStatus", "")
 
-            print(f"      - Task: {task_def_arn}")
-            print(f"        Status: {last_status} (desired: {desired_status})")
+            print(f"- Task: {task_def_arn}")
+            print(f"Status: {last_status} (desired: {desired_status})")
 
             if "premium" in task_def_arn.lower() and last_status == "RUNNING":
                 premium_tasks_running += 1
-                print("        Premium task running!")
+                print("Premium task running!")
 
-        print(f"     Found {premium_tasks_running} running premium tasks")
+        print(f"Found {premium_tasks_running} running premium tasks")
 
         if premium_tasks_running > 0:
-            print(f"    Instance {instance_id} is ready (has running premium tasks)")
+            print(f" Instance {instance_id} is ready (has running premium tasks)")
             return True
         else:
-            print("     No running premium tasks found")
-            print("     Instance not ready: No premium ECS tasks running")
+            print("No running premium tasks found")
+            print("Instance not ready: No premium ECS tasks running")
             return False
 
     except Exception as e:
-        print(f"     Error checking instance readiness for {instance_id}: {str(e)}")
-        print("     Instance not ready: Error during readiness check")
+        print(f"Error checking instance readiness for {instance_id}: {str(e)}")
+        print("Instance not ready: Error during readiness check")
         return False
 
 
@@ -2410,26 +2408,26 @@ def check_instance_readiness_with_retry(
 
     while elapsed < max_wait_seconds:
         attempt += 1
-        print(f"  Attempt {attempt}/{max_attempts} for instance {instance_id}")
+        print(f"Attempt {attempt}/{max_attempts} for instance {instance_id}")
 
         is_ready = check_instance_readiness(instance_id)
 
         if is_ready:
             print(
-                f"  Instance {instance_id} became ready after {elapsed}s "
+                f"Instance {instance_id} became ready after {elapsed}s "
                 f"({attempt} attempts)"
             )
             return True
 
         if elapsed + retry_interval >= max_wait_seconds:
             print(
-                f"  Instance {instance_id} not ready after {elapsed}s "
+                f"Instance {instance_id} not ready after {elapsed}s "
                 f"({attempt} attempts), giving up"
             )
             break
 
         print(
-            f"  Instance {instance_id} not ready yet, waiting {retry_interval}s "
+            f"Instance {instance_id} not ready yet, waiting {retry_interval}s "
             f"before retry..."
         )
         time.sleep(retry_interval)
@@ -2528,9 +2526,14 @@ def release_premium_user(user_id: str) -> Dict[str, Any]:
                 errors.append(error_msg)
 
         # 3. Delete target group (if it exists)
-        # Skip deletion for special target groups (standby placeholder, autoscaling pool)
+        # Skip deletion for special target groups
+        # (standby placeholder, autoscaling pool)
         autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
-        if target_group_arn and target_group_arn != "standby" and target_group_arn != autoscaling_tg_arn:
+        if (
+            target_group_arn
+            and target_group_arn != "standby"
+            and target_group_arn != autoscaling_tg_arn
+        ):
             try:
                 elbv2.delete_target_group(TargetGroupArn=target_group_arn)
                 print(f"Deleted target group: {target_group_arn}")
@@ -2539,7 +2542,10 @@ def release_premium_user(user_id: str) -> Dict[str, Any]:
                 print(error_msg)
                 errors.append(error_msg)
         elif target_group_arn == autoscaling_tg_arn:
-            print(f"Skipping deletion of shared autoscaling target group: {target_group_arn}")
+            print(
+                f"Skipping deletion of shared autoscaling "
+                f"target group: {target_group_arn}"
+            )
 
         # Note: Stale assignment cleanup is now handled by premium_cleanup Lambda
         # running on scheduled basis (hourly)
@@ -2934,7 +2940,7 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
         # This ensures newly created/started instances are included
         all_instances = get_all_premium_instances_with_states()
 
-        print(f"   Discovered {len(all_instances)} total premium instances by tags")
+        print(f"Discovered {len(all_instances)} total premium instances by tags")
 
         available_instances = []
         shared_instances = []
@@ -2942,14 +2948,17 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
         # Check for users temporarily assigned to autoscaling pool
         autoscaling_users = get_assigned_users_for_instance("autoscaling-pool")
         if autoscaling_users:
-            print(f"   Found {len(autoscaling_users)} users on autoscaling pool needing migration")
+            print(
+                f"Found {len(autoscaling_users)} users on autoscaling pool "
+                f"needing migration"
+            )
             shared_instances.append(("autoscaling-pool", autoscaling_users))
 
         for instance in all_instances:
             instance_id = instance["instance_id"]
             instance_state = instance["state"]
 
-            print(f"   Checking instance {instance_id} (state: {instance_state})")
+            print(f"Checking instance {instance_id} (state: {instance_state})")
 
             if instance_state == "running":
                 assigned_users = get_assigned_users_for_instance(instance_id)
@@ -2978,13 +2987,17 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                 break
 
             # For autoscaling pool, migrate ALL users (it's a temporary assignment)
-            # For premium instances, migrate all but one user (keep first user, migrate others)
+            # For premium instances, migrate all but one user
+            # (keep first user, migrate others)
             if instance_id == "autoscaling-pool":
                 users_to_migrate = users  # Migrate all users from autoscaling pool
-                print(f"   Migrating ALL {len(users)} users from autoscaling pool")
+                print(f"Migrating ALL {len(users)} users from autoscaling pool")
             else:
                 users_to_migrate = users[1:]  # Keep first user, migrate others
-                print(f"   Migrating {len(users_to_migrate)} users from shared premium instance")
+                print(
+                    f"Migrating {len(users_to_migrate)} users from "
+                    f"shared premium instance"
+                )
 
             for user_dict in users_to_migrate:
                 # Extract user_id from the dictionary returned by
