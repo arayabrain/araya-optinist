@@ -1,6 +1,7 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from enum import IntEnum
 
+from dateutil.relativedelta import relativedelta
 from fastapi import HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
 from firebase_admin import auth as firebase_auth
@@ -193,7 +194,10 @@ async def create_user(db: Session, data: UserCreate, organization_id: int):
         subscription = UserSubscription(
             plan_id=SubscriptionType.FREE,
             user_id=user_db.id,
-            expiration=datetime.now(timezone.utc) + timedelta(days=30),  # Fixed!
+            expiration=datetime.now(timezone.utc)
+            + relativedelta(
+                months=1
+            ),  # 1 month is fixed since it just a new created user
         )
         db.add(subscription)
 
