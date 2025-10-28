@@ -45,6 +45,42 @@ async def get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
 
 
 class StripeService:
+    # A service class that handles Stripe payment and subscription operations.
+
+    # This service provides comprehensive payment method and subscription management
+    # functionality using the Stripe API, including:
+
+    # Features:
+    # - Payment Method Management:
+    #     * Retrieve user's default payment method with card details
+    #     * Create setup intents for adding new payment methods
+    #     * Update default payment method for customer and subscriptions
+    #     * Delete payment methods with validation checks
+    #     * List all payment methods for a user
+
+    # - Subscription Management:
+    #     * Update user subscriptions to different plans with scheduled changes
+    #     * Cancel subscriptions with period-end scheduling
+    #     * Handle subscription plan upgrades and downgrades
+    #     * Manage subscription schedules and metadata
+
+    # - Customer Management:
+    #     * Retrieve Stripe customers by email
+    #     * Create new Stripe customers when needed
+    #     * Associate payment methods with customers
+
+    # - Error Handling:
+    #     * Comprehensive Stripe API error handling
+    #     * HTTP exception mapping for API responses
+    #     * Detailed logging for debugging and monitoring
+
+    # The service integrates with Stripe webhooks for real-time subscription updates
+    # and ensures data consistency between Stripe and the local database.
+
+    # All methods are async and handle both successful operations and various
+    # error scenarios including missing customers, invalid payment methods,
+    # and Stripe API errors.
+
     @staticmethod
     async def get_default_payment_method(
         user,
