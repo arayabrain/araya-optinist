@@ -49,14 +49,13 @@ async def get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
 class StripeService:
     @staticmethod
     async def get_default_payment_method(
-        current_user,
+        user,
     ) -> Optional[PaymentMethodResponse]:
         """
         Get user's default payment method
         """
         try:
             # Get user email to find Stripe customer
-            user = current_user
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")
 
@@ -114,10 +113,8 @@ class StripeService:
             )
 
     @staticmethod
-    async def create_setup_intent(current_user):
+    async def create_setup_intent(user):
         try:
-            user = current_user
-
             # Get or create Stripe customer
             customer = await get_stripe_customer_by_email(user.email)
 
@@ -154,13 +151,11 @@ class StripeService:
             raise HTTPException(status_code=500, detail="Failed to create setup intent")
 
     @staticmethod
-    async def update_default_payment_method(current_user, payment_method_id: str):
+    async def update_default_payment_method(user, payment_method_id: str):
         """
         Update the default payment method for a user's subscription
         """
         try:
-            user = current_user
-
             # Get Stripe customer
             customer = await get_stripe_customer_by_email(user.email)
             if not customer:
@@ -229,13 +224,11 @@ class StripeService:
             )
 
     @staticmethod
-    async def delete_payment_method(current_user, payment_method_id: str):
+    async def delete_payment_method(user, payment_method_id: str):
         """
         Delete a payment method (cannot delete if it's default for active subscriptions)
         """
         try:
-            user = current_user
-
             # Get Stripe customer
             customer = await get_stripe_customer_by_email(user.email)
             if not customer:
@@ -300,13 +293,12 @@ class StripeService:
             )
 
     @staticmethod
-    async def handle_get_user_payment_methods(current_user):
+    async def handle_get_user_payment_methods(user):
         """
         Get user's payment methods with last 4 digits and card brand
         """
         try:
             # Get user email to find Stripe customer
-            user = current_user
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")
 
@@ -360,7 +352,7 @@ class StripeService:
             )
 
     @staticmethod
-    async def handle_update_user_subscription(db, current_user, request):
+    async def handle_update_user_subscription(db, user, request):
         """
         Update user's subscription to a different plan - webhook-driven database updates
         """
@@ -376,7 +368,7 @@ class StripeService:
 
             # Get current user subscription
             current_subscription_result = SubscriptionService.get_user_subscription(
-                db, current_user.id
+                db, user.id
             )
             if not current_subscription_result:
                 raise HTTPException(
@@ -395,7 +387,7 @@ class StripeService:
                 )
 
             # Get Stripe customer
-            customer = await get_stripe_customer_by_email(current_user.email)
+            customer = await get_stripe_customer_by_email(user.email)
             if not customer:
                 raise HTTPException(
                     status_code=404, detail="No Stripe customer found for user"
@@ -429,9 +421,7 @@ class StripeService:
                 },
             )
 
-            logger.info(
-                f"Processing scheduled subscription change for user {current_user.id}"
-            )
+            logger.info(f"Processing scheduled subscription change for user {user.id}")
 
             # Get the current period end from the subscription items
             current_period_end = stripe_subscription["items"]["data"][0][
@@ -470,7 +460,7 @@ class StripeService:
                     },
                 ],
                 metadata={
-                    "user_id": str(current_user.id),
+                    "user_id": str(user.id),
                     "new_plan_id": str(new_plan.id),
                     "old_plan_id": str(current_plan.id),
                     "scheduled_change": "true",
@@ -493,7 +483,7 @@ class StripeService:
             )
 
             logger.info(
-                f"subscription change for user {current_user.id} "
+                f"subscription change for user {user.id} "
                 f"from plan {current_plan.id} to plan {new_plan.id} "
                 f"({plan_change_type})"
             )
@@ -517,9 +507,7 @@ class StripeService:
         except HTTPException:
             raise HTTPException(status_code=500, detail="Failed to update subscription")
         except Exception as e:
-            logger.error(
-                f"Error updating subscription for user {current_user.id}: {str(e)}"
-            )
+            logger.error(f"Error updating subscription for user {user.id}: {str(e)}")
             raise HTTPException(
                 status_code=500, detail=f"Failed to update subscription: {str(e)}"
             )
@@ -537,12 +525,10 @@ class StripeService:
         return await StripeService.handle_cancel_user_subscription(db, user)
 
     @staticmethod
-    async def handle_cancel_user_subscription(
-        db, current_user
-    ) -> CancelSubscriptionResponse:
+    async def handle_cancel_user_subscription(db, user) -> CancelSubscriptionResponse:
         # Get current user subscription
         current_subscription_result = SubscriptionService.get_user_subscription(
-            db, current_user.id
+            db, user.id
         )
         if not current_subscription_result:
             raise HTTPException(
@@ -550,7 +536,7 @@ class StripeService:
             )
 
         # Get Stripe customer
-        customer = await get_stripe_customer_by_email(current_user.email)
+        customer = await get_stripe_customer_by_email(user.email)
         if not customer:
             raise HTTPException(
                 status_code=404, detail="No Stripe customer found for user"
@@ -568,7 +554,7 @@ class StripeService:
 
         stripe_subscription = stripe_subscriptions.data[0]
 
-        logger.info(f"Scheduling cancellation at period end for user {current_user.id}")
+        logger.info(f"Scheduling cancellation at period end for user {user.id}")
 
         current_period_end = stripe_subscription["items"]["data"][0][
             "current_period_end"
@@ -602,7 +588,7 @@ class StripeService:
             },
         )
 
-        SubscriptionService.update_scheduled_downgrade(db, current_user.id, True)
+        SubscriptionService.update_scheduled_downgrade(db, user.id, True)
 
         # Database will be updated via customer.subscription.updated webhook
 
@@ -614,8 +600,7 @@ class StripeService:
         )
 
         logger.info(
-            f"Successfully scheduled cancellation for user {current_user.id} "
-            f"at period end"
+            f"Successfully scheduled cancellation for user {user.id} " f"at period end"
         )
 
         return CancelSubscriptionResponse(

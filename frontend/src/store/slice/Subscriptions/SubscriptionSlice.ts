@@ -1,5 +1,6 @@
 import { createSlice, PayloadAction } from "@reduxjs/toolkit"
 
+import { SUBSCRIPTION_USER_STATUS } from "pages/Account"
 import {
   cancelSubscription,
   createCheckoutSession,
@@ -69,11 +70,9 @@ const subscriptionSlice = createSlice({
               safeConvertPlan(planData as Record<string, unknown>),
             )
           } else {
-            console.warn("Invalid plans data received:", action.payload)
             state.plans = []
           }
         } catch (error) {
-          console.error("Error processing subscription plans:", error)
           state.plans = []
           state.error = "Failed to process subscription plans data"
         }
@@ -109,7 +108,9 @@ const subscriptionSlice = createSlice({
                 plan_id: Number(action.payload.plan_id) || 0,
                 user_id: Number(action.payload.user_id) || 0,
                 expiration: String(action.payload.expiration || ""),
-                status: Number(action.payload.status) || 1,
+                status:
+                  Number(action.payload.status) ||
+                  SUBSCRIPTION_USER_STATUS.FREE,
                 is_expired: Boolean(action.payload.is_expired),
                 scheduled_downgrade: Boolean(
                   action.payload.scheduled_downgrade,
@@ -118,14 +119,9 @@ const subscriptionSlice = createSlice({
                 plan_price: Number(action.payload.plan_price) || 0,
               }
             } else {
-              console.warn(
-                "Invalid user subscription data received:",
-                action.payload,
-              )
               state.userSubscription = null
             }
           } catch (error) {
-            console.error("Error processing user subscription:", error)
             state.userSubscription = null
             state.error = "Failed to process user subscription data"
           }
@@ -144,7 +140,7 @@ const subscriptionSlice = createSlice({
         state.checkoutLoading = true
         state.error = null
       })
-      .addCase(createCheckoutSession.fulfilled, (state, action) => {
+      .addCase(createCheckoutSession.fulfilled, (state) => {
         state.checkoutLoading = false
       })
       .addCase(createCheckoutSession.rejected, (state, action) => {
@@ -155,7 +151,7 @@ const subscriptionSlice = createSlice({
         state.loading = true
         state.error = null
       })
-      .addCase(cancelSubscription.fulfilled, (state, action) => {
+      .addCase(cancelSubscription.fulfilled, (state) => {
         state.loading = false
         if (state.userSubscription) {
           state.userSubscription.scheduled_downgrade = true
@@ -172,7 +168,7 @@ const subscriptionSlice = createSlice({
         state.loading = true
         state.error = null
       })
-      .addCase(validateCheckoutSession.fulfilled, (state, action) => {
+      .addCase(validateCheckoutSession.fulfilled, (state) => {
         state.loading = false
         state.error = null
         // Handle successful validation if needed

@@ -1,3 +1,4 @@
+import React from "react"
 import { NavigateFunction } from "react-router-dom"
 
 import {
@@ -24,10 +25,8 @@ export const validateSession = async (
     // Dispatch the validation action
     let result
     if (isThanksPage) {
-      console.log("Validating session on Thanks page")
       result = await dispatch(validateCheckoutSessionApi(sessionId))
     } else {
-      console.log("Validating session on Failed page")
       result = await dispatch(validateFailedCheckoutSessionApi(sessionId))
     }
 

@@ -75,7 +75,6 @@ export const safeParseFeatures = (
     // Fallback to empty object
     return {}
   } catch (error) {
-    console.warn("Failed to parse features:", error)
     return {}
   }
 }
@@ -96,7 +95,6 @@ export const safeConvertPlan = (
       created_at: String(planData.created_at || ""),
     }
   } catch (error) {
-    console.warn("Failed to convert plan data:", error)
     return {
       id: 0,
       name: "Unknown Plan",
@@ -145,7 +143,6 @@ export const formatPrice = (
 export const getPlanFeatures = (plan: SubscriptionPlan): PlanFeature[] => {
   try {
     if (!plan.features || typeof plan.features !== "object") {
-      console.warn(`No features found for plan ${plan.id}:`, plan.features)
       return []
     }
 
@@ -154,13 +151,11 @@ export const getPlanFeatures = (plan: SubscriptionPlan): PlanFeature[] => {
     const featuresData = plan.features[planName]
 
     if (!Array.isArray(featuresData)) {
-      console.warn(`Invalid features data for plan ${planName}:`, featuresData)
       return []
     }
 
     return featuresData
   } catch (error) {
-    console.error(`Error extracting features for plan ${plan.id}:`, error)
     return []
   }
 }

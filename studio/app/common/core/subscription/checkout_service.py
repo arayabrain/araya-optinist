@@ -1,8 +1,9 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 from http.client import HTTPException
 from typing import Any, Dict, Optional
 
 import stripe
+from dateutil.relativedelta import relativedelta
 from sqlmodel import Enum, Session
 
 from studio.app.common.core.logger import AppLogger
@@ -151,8 +152,8 @@ class CheckoutService:
         Returns:
             Expiration datetime
         """
-        return SubscriptionService.get_current_datetime() + timedelta(
-            days=30 * billing_cycle
+        return SubscriptionService.get_current_datetime() + relativedelta(
+            months=billing_cycle
         )
 
     @staticmethod

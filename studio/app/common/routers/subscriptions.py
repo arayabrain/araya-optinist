@@ -214,7 +214,7 @@ async def cancel_user_subscription(
     """
     try:
         result = await StripeService.handle_cancel_user_subscription(db, current_user)
-        return CancelSubscriptionResponse(success=result)
+        return result
 
     except stripe.error.StripeError as e:
         logger.error(f"Stripe error cancelling subscription: {str(e)}")
