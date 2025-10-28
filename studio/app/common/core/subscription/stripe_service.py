@@ -513,18 +513,6 @@ class StripeService:
             )
 
     @staticmethod
-    async def handle_cancel_user_subscription_by_admin(
-        db, user_id, organization_id
-    ) -> CancelSubscriptionResponse:
-        # Get user by user_id and organization_id
-        user: User = await crud_users.get_user(db, user_id, organization_id)
-
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        return await StripeService.handle_cancel_user_subscription(db, user)
-
-    @staticmethod
     async def handle_cancel_user_subscription(db, user) -> CancelSubscriptionResponse:
         # Get current user subscription
         current_subscription_result = SubscriptionService.get_user_subscription(
