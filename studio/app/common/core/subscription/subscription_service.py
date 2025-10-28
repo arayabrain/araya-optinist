@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timezone
-from enum import Enum, IntEnum
+from enum import IntEnum
 from typing import List, Optional, Tuple
 
 from fastapi import HTTPException
@@ -33,30 +33,31 @@ class SubscriptionPlanType(IntEnum):
     YEARLY = 2
 
 
-class SubscriptionStatusType(Enum):
-    ACTIVE = "1"
-    INACTIVE = "0"
+class SubscriptionStatusType(IntEnum):
+    ACTIVE = 1
+    INACTIVE = 0
 
 
-class SubscriptionCurrencyType(Enum):
+class SubscriptionCurrencyType(IntEnum):
     USD = 1
     JPY = 2
 
     def get_currency_string(self):
         """Get the string representation of the currency"""
-        if self == __class__.USD:
+        if self == self.__class__.USD:
             return "usd"
-        elif self == __class__.JPY:
+        elif self == self.__class__.JPY:
             return "jpy"
         return None
 
+    @staticmethod
     def get_currency_enum(value: str):
         """Get the enum representation of the currency"""
         value = value.lower()
         if value == "usd":
-            return __class__.USD
+            return SubscriptionCurrencyType.USD
         elif value == "jpy":
-            return __class__.JPY
+            return SubscriptionCurrencyType.JPY
         return None
 
 
@@ -65,7 +66,7 @@ class SubscriptionService:
     def get_active_plans(db: Session) -> List[SubscriptionPlans]:
         return (
             db.query(SubscriptionPlans)
-            .filter(SubscriptionPlans.status == SubscriptionStatusType.ACTIVE.value)
+            .filter(SubscriptionPlans.status == SubscriptionStatusType.ACTIVE)
             .all()
         )
 

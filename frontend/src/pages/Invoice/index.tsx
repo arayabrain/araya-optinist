@@ -84,6 +84,7 @@ const FlexContainer = styled(Box)(() => ({
 const FlexRow = styled(Box)(() => ({
   display: "flex",
   alignItems: "center",
+  gap: "16px",
 }))
 
 const PlanTitle = styled(Typography)(() => ({

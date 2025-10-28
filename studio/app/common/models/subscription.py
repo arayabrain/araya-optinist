@@ -1,5 +1,5 @@
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Dict, Optional
 
 from sqlalchemy import BIGINT, JSON, TIMESTAMP, Boolean, DateTime
@@ -11,13 +11,13 @@ from sqlmodel import Column, Field, SQLModel
 
 
 # Enums for subscription management
-class SyncStatus(str, Enum):
+class SyncStatus(StrEnum):
     PENDING = "pending"
     SYNCED = "synced"
     FAILED = "failed"
 
 
-class CancellationReason(str, Enum):
+class CancellationReason(StrEnum):
     USER_REQUEST = "user_request"
     PAYMENT_FAILED = "payment_failed"
     ADMIN_ACTION = "admin_action"
