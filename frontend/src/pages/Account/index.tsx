@@ -33,7 +33,6 @@ import {
 import {
   selectUserSubscription,
   selectUserSubscriptionLoading,
-  selectSubscriptionError,
 } from "store/slice/Subscriptions/SubscriptionSelector"
 import {
   deleteMe,
@@ -45,7 +44,7 @@ import { selectCurrentUser, selectLoading } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
 
-enum SUBSCRIPTION_USER_STATUS {
+export enum SUBSCRIPTION_USER_STATUS {
   FREE = 1,
   SUBSCRIBED = 2,
   EXPIRED = 3,
@@ -204,20 +203,6 @@ const Account = () => {
     if (!userSubscription) {
       return SUBSCRIPTION_USER_STATUS.FREE
     } else if (userSubscription.is_expired) {
-      return SUBSCRIPTION_USER_STATUS.EXPIRED
-    } else {
-      return SUBSCRIPTION_USER_STATUS.SUBSCRIBED
-    }
-  }
-
-  const getUserSubscriptionStatus = () => {
-    if (!userSubscription) {
-      return SUBSCRIPTION_USER_STATUS.FREE
-    } else if (userSubscription.status === SUBSCRIPTION_USER_STATUS.FREE) {
-      return SUBSCRIPTION_USER_STATUS.FREE
-    } else if (userSubscription.status === SUBSCRIPTION_USER_STATUS.CANCELED) {
-      return SUBSCRIPTION_USER_STATUS.CANCELED
-    } else if (userSubscription.status === SUBSCRIPTION_USER_STATUS.EXPIRED) {
       return SUBSCRIPTION_USER_STATUS.EXPIRED
     } else {
       return SUBSCRIPTION_USER_STATUS.SUBSCRIBED
