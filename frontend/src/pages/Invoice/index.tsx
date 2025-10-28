@@ -42,50 +42,6 @@ const FlexRow = styled(Box)(() => ({
   gap: "16px",
 }))
 
-const Logo = styled(Box)(() => ({
-  width: "64px",
-  height: "64px",
-  background: "black",
-  borderRadius: "50%",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  position: "relative",
-}))
-
-const LogoDollar = styled(Typography)(() => ({
-  color: "#ef4444",
-  fontSize: "24px",
-  fontWeight: "bold",
-}))
-
-const LogoDot1 = styled(Box)(() => ({
-  position: "absolute",
-  top: "-4px",
-  right: "-4px",
-  width: "16px",
-  height: "16px",
-  background: "#ef4444",
-  borderRadius: "50%",
-}))
-
-const LogoDot2 = styled(Box)(() => ({
-  position: "absolute",
-  bottom: "-4px",
-  left: "-4px",
-  width: "12px",
-  height: "12px",
-  background: "#ef4444",
-  borderRadius: "50%",
-}))
-
-const BrandText = styled(Typography)(() => ({
-  color: "#16a34a",
-  fontSize: "36px",
-  fontWeight: "bold",
-  fontFamily: "Arial, sans-serif",
-}))
-
 const PlanTitle = styled(Typography)(() => ({
   fontSize: "24px",
   fontWeight: "bold",

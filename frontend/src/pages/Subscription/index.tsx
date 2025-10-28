@@ -30,7 +30,6 @@ import {
   selectSubscriptionError,
   selectIsSubscriptionExpired,
   selectCurrentPlanId,
-  selectCheckoutLoading,
 } from "store/slice/Subscriptions/SubscriptionSelector"
 import { clearError } from "store/slice/Subscriptions/SubscriptionSlice"
 import type {
@@ -119,6 +118,7 @@ const SubscriptionPlans = () => {
           window.location.href = checkout_url
         } else {
           // Handle error case
+          // eslint-disable-next-line no-console
           console.error(
             "Failed to create checkout session:",
             resultAction.error,
@@ -126,6 +126,7 @@ const SubscriptionPlans = () => {
           // You might want to show an error message to the user here
         }
       } catch (error) {
+        // eslint-disable-next-line no-console
         console.error("Error creating checkout session:", error)
         // Handle error - maybe show a toast notification
       } finally {
@@ -139,6 +140,7 @@ const SubscriptionPlans = () => {
       if (user?.id) {
         dispatch(cancelSubscription())
       } else {
+        // eslint-disable-next-line no-console
         console.error("User not logged in")
       }
     }

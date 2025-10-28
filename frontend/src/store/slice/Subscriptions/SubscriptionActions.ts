@@ -52,12 +52,14 @@ export const getSubscriptionPlan = createAsyncThunk(
 
       // Validate response structure
       if (!Array.isArray(response)) {
+        // eslint-disable-next-line no-console
         console.warn("Invalid subscription plans response:", response)
         return []
       }
 
       return response
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error("Error fetching subscription plans:", error)
       // Extract clean error message instead of passing entire error object
       const errorMessage = extractErrorMessage(error)
@@ -73,7 +75,6 @@ export const getUserSubscription = createAsyncThunk(
       const response = await getUserSubscriptionApi()
       return response
     } catch (error) {
-      console.error("Error fetching user subscription:", error)
       // Extract clean error message instead of passing entire error object
       const errorMessage = extractErrorMessage(error)
       return thunkAPI.rejectWithValue(errorMessage)
@@ -102,6 +103,7 @@ export const validateCheckoutSession = createAsyncThunk(
       const response = await validateCheckoutSessionApi(sessionId)
       return response
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error("Error validating checkout session:", error)
       // Extract clean error message instead of passing entire error object
       const errorMessage = extractErrorMessage(error)
@@ -117,6 +119,7 @@ export const cancelSubscription = createAsyncThunk(
       const response = await cancelSubscriptionApi()
       return response
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error("Error cancelling subscription:", error)
       // Extract clean error message instead of passing entire error object
       const errorMessage = extractErrorMessage(error)

@@ -30,7 +30,6 @@ import { getUserSubscription } from "store/slice/Subscriptions/SubscriptionActio
 import {
   selectUserSubscription,
   selectUserSubscriptionLoading,
-  selectSubscriptionError,
 } from "store/slice/Subscriptions/SubscriptionSelector"
 import { UserSubscription } from "store/slice/Subscriptions/SubscriptionType"
 import {
@@ -67,10 +66,6 @@ const useSubscriptionExpiration = (
         const expirationUTC = new Date(expirationDate.getTime())
         setIsExpired(expirationUTC <= accurateTime)
       } catch (error) {
-        console.warn(
-          "Failed to get accurate time, falling back to client UTC:",
-          error,
-        )
         const clientTimeUTC = new Date() // This is already UTC internally
         const expirationDate = new Date(userSubscription.expiration)
         setIsExpired(expirationDate <= clientTimeUTC)
@@ -85,7 +80,7 @@ const useSubscriptionExpiration = (
   return { isExpired, isValidating }
 }
 
-enum SUBSCRIPTION_USER_STATUS {
+export enum SUBSCRIPTION_USER_STATUS {
   FREE = 1,
   SUBSCRIBED = 2,
   EXPIRED = 3,
@@ -248,20 +243,6 @@ const Account = () => {
   const determineSubscriptionButtonStatus = () => {
     if (!userSubscription) {
       return SUBSCRIPTION_USER_STATUS.FREE
-    } else if (isSubscriptionExpired) {
-      return SUBSCRIPTION_USER_STATUS.EXPIRED
-    } else {
-      return SUBSCRIPTION_USER_STATUS.SUBSCRIBED
-    }
-  }
-
-  const getUserSubscriptionStatus = () => {
-    if (!userSubscription) {
-      return SUBSCRIPTION_USER_STATUS.FREE
-    } else if (userSubscription.status === SUBSCRIPTION_USER_STATUS.FREE) {
-      return SUBSCRIPTION_USER_STATUS.FREE
-    } else if (userSubscription.status === SUBSCRIPTION_USER_STATUS.CANCELED) {
-      return SUBSCRIPTION_USER_STATUS.CANCELED
     } else if (isSubscriptionExpired) {
       return SUBSCRIPTION_USER_STATUS.EXPIRED
     } else {

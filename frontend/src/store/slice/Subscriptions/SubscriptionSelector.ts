@@ -3,7 +3,6 @@ import { RootState } from "store/store"
 export const selectSubscriptionPlans = (state: RootState) =>
   state.subscription.plans
 export const selectUserSubscription = (state: RootState) => {
-  console.log(state.subscription.userSubscription)
   return state.subscription.userSubscription
 }
 export const selectSubscriptionLoading = (state: RootState) =>
