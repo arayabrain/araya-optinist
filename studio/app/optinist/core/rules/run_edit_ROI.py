@@ -11,6 +11,9 @@ ROOT_DIRPATH = dirname(dirname(dirname(dirname(dirname(dirname(abspath(__file__)
 sys.path.append(ROOT_DIRPATH)
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.logger_context_helpers import (
+    init_client_id_from_snakemake_config,
+)
 
 logger = AppLogger.get_logger()
 
@@ -18,6 +21,9 @@ logger = AppLogger.get_logger()
 def main():
     try:
         from studio.app.optinist.core.edit_ROI import EditROI
+
+        # Initialize client_id from snakemake config
+        init_client_id_from_snakemake_config(snakemake.config)
 
         config = snakemake.config
         asyncio.run(EditROI(file_path=config["file_path"]).commit())

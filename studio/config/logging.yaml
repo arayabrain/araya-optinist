@@ -3,10 +3,10 @@ disable_existing_loggers: false
 formatters:
   default:
     (): "uvicorn.logging.DefaultFormatter"
-    fmt: "%(asctime)s %(levelprefix)s [%(name)s] (%(process)d) %(funcName)s():%(lineno)d - %(message)s"
+    fmt: "%(asctime)s %(levelprefix)s [%(name)s] (pid:%(process)d) (client:%(client_id)s) %(funcName)s():%(lineno)d - %(message)s"
   access:
     (): "uvicorn.logging.AccessFormatter"
-    fmt: "%(asctime)s %(levelprefix)s [%(name)s] (%(process)d) %(funcName)s():%(lineno)d - %(message)s"
+    fmt: "%(asctime)s %(levelprefix)s [%(name)s] (pid:%(process)d) (client:%(client_id)s) %(funcName)s():%(lineno)d - %(message)s"
 handlers:
   console:
     class: logging.StreamHandler

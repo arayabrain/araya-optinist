@@ -1,13 +1,24 @@
+import hashlib
 import logging
 import logging.config
 import os
 import platform
 import traceback
+from contextvars import ContextVar
+from datetime import datetime
+from typing import Optional
 
 import yaml
 
 from studio.app.common.core.mode import MODE
 from studio.app.dir_path import DIRPATH
+
+LOGGING_CLIENT_ID_KEY = "client_id"
+
+# Context variable for storing client_id per request/context
+_client_id_context: ContextVar[Optional[str]] = ContextVar(
+    LOGGING_CLIENT_ID_KEY, default=None
+)
 
 
 class AppLogger:
@@ -16,6 +27,24 @@ class AppLogger:
     """
 
     LOGGER_NAME = "optinist"
+
+    class ClientIdFilter(logging.Filter):
+        """
+        Logging filter to inject client_id from context into log records
+        """
+
+        # Alternate text to log if client_id is not obtained
+        NO_CLIENT_ID_DEFAULT_VALUE = "default"
+
+        def filter(self, record):
+            # Get client_id from context, default to "none" if not set
+            client_id = _client_id_context.get()
+            record.client_id = (
+                client_id
+                if client_id is not None
+                else __class__.NO_CLIENT_ID_DEFAULT_VALUE
+            )
+            return True
 
     @classmethod
     def init_logger(cls):
@@ -91,6 +120,21 @@ class AppLogger:
             log_file = f"{DIRPATH.DATA_DIR}/{log_file}"
             logging_config["handlers"]["rotating_file"]["filename"] = log_file
 
+        # Add ClientIdFilter configuration to filters section
+        CLIENT_ID_FILTER_NAME = "client_id_filter"
+        if "filters" not in logging_config:
+            logging_config["filters"] = {}
+        logging_config["filters"][CLIENT_ID_FILTER_NAME] = {
+            "()": "studio.app.common.core.logger.AppLogger.ClientIdFilter"
+        }
+
+        # Add client_id_filter to all handlers
+        for handler_config in logging_config.get("handlers", {}).values():
+            if "filters" not in handler_config:
+                handler_config["filters"] = []
+            if CLIENT_ID_FILTER_NAME not in handler_config["filters"]:
+                handler_config["filters"].append(CLIENT_ID_FILTER_NAME)
+
         return logging_config
 
     @staticmethod
@@ -102,6 +146,48 @@ class AppLogger:
             __class__.init_logger()
 
         return logger
+
+    @staticmethod
+    def set_client_id(client_id: Optional[str]):
+        """
+        Set client_id in the current context for logging
+        """
+        _client_id_context.set(client_id)
+
+    @staticmethod
+    def get_client_id() -> Optional[str]:
+        """
+        Get client_id from the current context
+        """
+        return _client_id_context.get()
+
+    @staticmethod
+    def generate_client_id(uid: str, auto_refresh: bool = False) -> str:
+        """
+        Generate a client_id for logging based on the specified uid.
+
+        Args:
+            uid: User ID to generate client_id from
+            auto_refresh: If true, refresh id at period interval (weekly)
+
+        Returns:
+            Generated client_id (16 character hash)
+        """
+        if not uid:
+            return uid
+
+        if auto_refresh:
+            datetime_str = datetime.now().strftime(
+                "%Y-%m-%d-%w"
+            )  # Refresh by period (weekly)
+            hash_source = f"{uid}-{datetime_str}"
+        else:
+            hash_source = uid
+
+        client_id = hashlib.md5(hash_source.encode()).hexdigest()
+        client_id = client_id[0:16]
+
+        return client_id
 
     @staticmethod
     def format_exc_traceback(e: Exception):
