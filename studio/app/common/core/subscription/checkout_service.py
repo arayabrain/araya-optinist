@@ -18,7 +18,11 @@ from studio.app.common.models.subscription import (
     SubscriptionUserPurchase,
     UserSubscription,
 )
-from studio.app.common.schemas.subscriptions import CreateCheckoutSessionResponse
+from studio.app.common.models.user import User
+from studio.app.common.schemas.subscriptions import (
+    CreateCheckoutSessionRequest,
+    CreateCheckoutSessionResponse,
+)
 
 logger = AppLogger.get_logger()
 STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
@@ -378,7 +382,7 @@ class CheckoutService:
 
     @staticmethod
     async def handle_checkout_session(
-        db, request, user
+        db: Session, request: CreateCheckoutSessionRequest, user: User
     ) -> CreateCheckoutSessionResponse:
         try:
             # Get subscription plan from database using plan_id as string

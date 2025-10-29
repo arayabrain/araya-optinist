@@ -2,9 +2,9 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Optional
 
-from sqlmodel import Session
 import stripe
 from fastapi import HTTPException, status
+from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.subscription_service import (
