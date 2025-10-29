@@ -1,7 +1,3 @@
-from datetime import datetime, timezone
-from enum import IntEnum
-
-from dateutil.relativedelta import relativedelta
 from fastapi import HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
 from firebase_admin import auth as firebase_auth
@@ -16,7 +12,11 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageSimpleWriter,
 )
+from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.stripe_service import StripeService
+from studio.app.common.core.subscription.subscription_service import (
+    SubscriptionUserStatus,
+)
 from studio.app.common.core.workspace.workspace_services import WorkspaceService
 from studio.app.common.models import Role as RoleModel
 from studio.app.common.models import User as UserModel
@@ -35,11 +35,6 @@ from studio.app.common.schemas.users import (
 )
 
 logger = AppLogger.get_logger()
-
-
-class SubscriptionType(IntEnum):
-    FREE = 1
-    BASIC = 2
 
 
 async def set_role(db: Session, user_id: int, role_id: int, auto_commit=True):
@@ -192,11 +187,10 @@ async def create_user(db: Session, data: UserCreate, organization_id: int):
 
         # Create subscription user record
         subscription = UserSubscription(
-            plan_id=SubscriptionType.FREE,
+            plan_id=SubscriptionUserStatus.FREE,
             user_id=user_db.id,
-            expiration=datetime.now(timezone.utc)
-            + relativedelta(
-                months=1
+            expiration=CheckoutService.calculate_expiration_date(
+                1
             ),  # 1 month is fixed since it just a new created user
         )
         db.add(subscription)
