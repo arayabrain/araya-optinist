@@ -2,6 +2,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Optional
 
+from sqlmodel import Session
 import stripe
 from fastapi import HTTPException, status
 
@@ -15,8 +16,10 @@ from studio.app.common.schemas.subscriptions import (
     CreateSetupIntentResponse,
     PaymentMethodResponse,
     UpdatePaymentMethodResponse,
+    UpdateSubscriptionRequest,
     UpdateSubscriptionResponse,
 )
+from studio.app.common.schemas.users import User
 
 logger = AppLogger.get_logger()
 
@@ -83,7 +86,7 @@ class StripeService:
 
     @staticmethod
     async def get_default_payment_method(
-        user,
+        user: User,
     ) -> Optional[PaymentMethodResponse]:
         """
         Get user's default payment method
@@ -147,7 +150,7 @@ class StripeService:
             )
 
     @staticmethod
-    async def create_setup_intent(user):
+    async def create_setup_intent(user: User) -> CreateSetupIntentResponse:
         try:
             # Get or create Stripe customer
             customer = await get_stripe_customer_by_email(user.email)
@@ -185,7 +188,9 @@ class StripeService:
             raise HTTPException(status_code=500, detail="Failed to create setup intent")
 
     @staticmethod
-    async def update_default_payment_method(user, payment_method_id: str):
+    async def update_default_payment_method(
+        user: User, payment_method_id: str
+    ) -> UpdatePaymentMethodResponse:
         """
         Update the default payment method for a user's subscription
         """
@@ -258,7 +263,7 @@ class StripeService:
             )
 
     @staticmethod
-    async def delete_payment_method(user, payment_method_id: str):
+    async def delete_payment_method(user: User, payment_method_id: str):
         """
         Delete a payment method (cannot delete if it's default for active subscriptions)
         """
@@ -327,7 +332,7 @@ class StripeService:
             )
 
     @staticmethod
-    async def handle_get_user_payment_methods(user):
+    async def handle_get_user_payment_methods(user: User):
         """
         Get user's payment methods with last 4 digits and card brand
         """
@@ -386,7 +391,9 @@ class StripeService:
             )
 
     @staticmethod
-    async def handle_update_user_subscription(db, user, request):
+    async def handle_update_user_subscription(
+        db: Session, user: User, request: UpdateSubscriptionRequest
+    ):
         """
         Update user's subscription to a different plan - webhook-driven database updates
         """
@@ -547,7 +554,9 @@ class StripeService:
             )
 
     @staticmethod
-    async def handle_cancel_user_subscription(db, user) -> CancelSubscriptionResponse:
+    async def handle_cancel_user_subscription(
+        db: Session, user: User
+    ) -> CancelSubscriptionResponse:
         # Get current user subscription
         current_subscription_result = SubscriptionService.get_user_subscription(
             db, user.id
