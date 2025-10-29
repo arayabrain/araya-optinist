@@ -378,7 +378,7 @@ class CheckoutService:
 
     @staticmethod
     async def handle_checkout_session(
-        db, request, current_user
+        db, request, user
     ) -> CreateCheckoutSessionResponse:
         try:
             # Get subscription plan from database using plan_id as string
@@ -388,9 +388,6 @@ class CheckoutService:
                 raise HTTPException(
                     status_code=404, detail="Subscription plan not found"
                 )
-
-            # Get user details
-            user = current_user
 
             # Use the price and currency from the request
             price = plan.price
