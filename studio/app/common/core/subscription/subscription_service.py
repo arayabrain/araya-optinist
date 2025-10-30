@@ -61,28 +61,38 @@ class SubscriptionCurrencyType(IntEnum):
 
 
 class SubscriptionService:
-    # Service class for managing subscription-related operations.
+    """Service class for managing internal subscription logic and database operations.
 
-    # This service provides comprehensive functionality for handling user subscriptions,
-    # including subscription plans, user subscription status, cancellations, and Stripe
-    # payment integration. It manages the complete subscription lifecycle from plan
-    # retrieval to subscription updates and cancellation tracking.
+    This service acts as the primary business logic layer for subscription management,
+    handling all subscription-related data in the application's database and
+    orchestrating subscription workflows. It serves as the single source of truth
+    for subscription state within the application.
 
-    # Key Features:
-    # - Retrieve active subscription plans
-    # - Check subscription cancellation status
-    # - Determine subscription status based on plan type and cancellation state
-    # - Manage user subscription data and expiration
-    # - Handle Stripe payment configuration
-    # - Update subscription plans and scheduled downgrades
-    # - Track subscription purchases and cancellations
+    Primary Responsibilities:
+    - Manage subscription data persistence in the application database
+    - Implement business rules and validation for subscription operations
+    - Track subscription lifecycle states (active, expired, cancelled)
+    - Handle subscription plan retrieval and user subscription status
+    - Coordinate with StripeService for payment provider operations
+    - Process subscription updates, downgrades, and cancellation tracking
+    - Maintain user subscription metadata and expiration dates
 
-    # The service integrates with:
-    # - Database session management for subscription data
-    # - Stripe payment processing
-    # - User authentication and status tracking
-    # - Subscription plan types (monthly, yearly)
-    # - Cancellation and purchase tracking systems
+    Key Features:
+    - Retrieve active subscription plans from database
+    - Check subscription cancellation status and history
+    - Determine subscription status based on plan type and cancellation state
+    - Update subscription plans and manage scheduled downgrades
+    - Track subscription purchases and cancellation events
+
+    Integration Points:
+    - Database session management for subscription data persistence
+    - User authentication and authorization
+    - Subscription plan types (monthly, yearly)
+    - StripeService for payment processing and Stripe API interactions
+
+    Note: This service focuses on internal business logic. For Stripe-specific
+    operations (payment methods, Stripe customer management, Stripe API calls),
+    use StripeService."""
 
     @staticmethod
     def get_active_plans(db: Session) -> List[SubscriptionPlans]:

@@ -48,41 +48,55 @@ async def get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
 
 
 class StripeService:
-    # A service class that handles Stripe payment and subscription operations.
+    """Service class for Stripe API integration and payment provider operations.
 
-    # This service provides comprehensive payment method and subscription management
-    # functionality using the Stripe API, including:
+    This service acts as the integration layer between the application and Stripe's
+    payment processing platform. It handles all direct communication with Stripe's
+    API for payment methods, customer management, and subscription operations
+    within the Stripe ecosystem.
 
-    # Features:
-    # - Payment Method Management:
-    #     * Retrieve user's default payment method with card details
-    #     * Create setup intents for adding new payment methods
-    #     * Update default payment method for customer and subscriptions
-    #     * Delete payment methods with validation checks
-    #     * List all payment methods for a user
+    Primary Responsibilities:
+    - Interface with Stripe API for all payment-related operations
+    - Synchronize payment and subscription data between Stripe and application
+    - Handle Stripe-specific payment method and customer operations
+    - Process Stripe webhook events for real-time updates
+    - Manage Stripe subscription schedules and metadata
 
-    # - Subscription Management:
-    #     * Update user subscriptions to different plans with scheduled changes
-    #     * Cancel subscriptions with period-end scheduling
-    #     * Handle subscription plan upgrades and downgrades
-    #     * Manage subscription schedules and metadata
+    Features:
+    - Payment Method Management:
+        * Retrieve user's default payment method with card details
+        * Create setup intents for adding new payment methods
+        * Update default payment method for customer and subscriptions
+        * Delete payment methods with validation checks
+        * List all payment methods for a user
 
-    # - Customer Management:
-    #     * Retrieve Stripe customers by email
-    #     * Create new Stripe customers when needed
-    #     * Associate payment methods with customers
+    - Stripe Subscription Operations:
+        * Update subscriptions to different Stripe plans with scheduling
+        * Cancel subscriptions with period-end scheduling on Stripe
+        * Handle subscription plan upgrades and downgrades in Stripe
+        * Manage subscription schedules and metadata on Stripe platform
 
-    # - Error Handling:
-    #     * Comprehensive Stripe API error handling
-    #     * HTTP exception mapping for API responses
-    #     * Detailed logging for debugging and monitoring
+    - Stripe Customer Management:
+        * Retrieve Stripe customers by email
+        * Create new Stripe customers
+        * Associate payment methods with Stripe customers
 
-    # The service integrates with Stripe webhooks for real-time subscription updates
-    # and ensures data consistency between Stripe and the local database.
+    - Error Handling:
+        * Comprehensive Stripe API error handling
+        * HTTP exception mapping for API responses
+        * Detailed logging for debugging and monitoring
 
-    # All methods are async and handle both successful operations and various
-    # error scenarios including missing customers, invalid payment methods,
-    # and Stripe API errors.
+    Integration Points:
+    - Stripe API for payment processing
+    - Stripe webhooks for real-time subscription updates
+    - SubscriptionService for business logic and database operations
+
+    All methods are async and handle both successful operations and various
+    error scenarios including missing customers, invalid payment methods,
+    and Stripe API errors.
+
+    Note: This service focuses on Stripe-specific operations. For internal
+    subscription business logic and database operations, use SubscriptionService."""
 
     @staticmethod
     async def get_default_payment_method(
