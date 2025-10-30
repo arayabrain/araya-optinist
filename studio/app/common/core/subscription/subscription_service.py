@@ -62,6 +62,39 @@ class SubscriptionCurrencyType(IntEnum):
 
 
 class SubscriptionService:
+    """Service class for managing internal subscription logic and database operations.
+
+    This service acts as the primary business logic layer for subscription management,
+    handling all subscription-related data in the application's database and
+    orchestrating subscription workflows. It serves as the single source of truth
+    for subscription state within the application.
+
+    Primary Responsibilities:
+    - Manage subscription data persistence in the application database
+    - Implement business rules and validation for subscription operations
+    - Track subscription lifecycle states (active, expired, cancelled)
+    - Handle subscription plan retrieval and user subscription status
+    - Coordinate with StripeService for payment provider operations
+    - Process subscription updates, downgrades, and cancellation tracking
+    - Maintain user subscription metadata and expiration dates
+
+    Key Features:
+    - Retrieve active subscription plans from database
+    - Check subscription cancellation status and history
+    - Determine subscription status based on plan type and cancellation state
+    - Update subscription plans and manage scheduled downgrades
+    - Track subscription purchases and cancellation events
+
+    Integration Points:
+    - Database session management for subscription data persistence
+    - User authentication and authorization
+    - Subscription plan types (monthly, yearly)
+    - StripeService for payment processing and Stripe API interactions
+
+    Note: This service focuses on internal business logic. For Stripe-specific
+    operations (payment methods, Stripe customer management, Stripe API calls),
+    use StripeService."""
+
     @staticmethod
     def get_active_plans(db: Session) -> List[SubscriptionPlans]:
         return (
