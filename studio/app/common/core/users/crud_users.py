@@ -189,9 +189,7 @@ async def create_user(db: Session, data: UserCreate, organization_id: int):
         subscription = UserSubscription(
             plan_id=SubscriptionUserStatus.FREE,
             user_id=user_db.id,
-            expiration=CheckoutService.calculate_expiration_date(
-                1
-            ),  # 1 month is fixed since it just a new created user
+            expiration=CheckoutService.calculate_expiration_date(),
         )
         db.add(subscription)
 
