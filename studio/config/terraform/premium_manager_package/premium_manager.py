@@ -1312,6 +1312,10 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 time.sleep(retry_interval)
                 elapsed += retry_interval
 
+                # Update ECS service desired count before checking for migrations
+                # This ensures tasks are being placed on new instances
+                update_premium_service_desired_count()
+
                 migration_result = process_shared_instance_optimization()
                 migrations_performed = migration_result.get("migrations_performed", 0)
 
@@ -1554,9 +1558,11 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             print(f"[{i+1}/{len(running_instances)}] Evaluating instance {instance_id}")
 
             # Check instance readiness with retry (instances may be starting)
+            # Use short timeout during assignment - if not ready quickly,
+            # fall through to autoscaling pool
             print(f"Checking readiness for instance {instance_id}...")
             is_ready = check_instance_readiness_with_retry(
-                instance_id, max_wait_seconds=600, retry_interval=10
+                instance_id, max_wait_seconds=30, retry_interval=10
             )
             print(f"Readiness result: {is_ready}")
 
@@ -1643,9 +1649,10 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         # 2.5. PRIORITY 2.5: Temporary assignment to autoscaling pool (immediate login)
         # If NO premium instances are running, allow immediate login via shared pool
         # then migrate to dedicated premium instance when ready
-        if not instance_to_use and len(running_instances) == 0:
+        no_premium_available = len(running_instances) == 0 or not available_dedicated
+        if not instance_to_use and no_premium_available:
             print(
-                "PRIORITY 2.5: No premium instances running "
+                "PRIORITY 2.5: No premium instances ready "
                 "- using autoscaling pool for immediate login"
             )
 
@@ -2204,6 +2211,9 @@ def scale_premium_instances_if_needed():
                 # after instances are ready (avoids blocking the user's request)
                 invoke_migration_async()
 
+                # Update ECS service desired count to match instance count
+                update_premium_service_desired_count()
+
                 return True
             else:
                 # No stopped instances available, check if we can create new ones
@@ -2241,6 +2251,9 @@ def scale_premium_instances_if_needed():
                     # Invoke this Lambda asynchronously to handle migration
                     # after instances are ready (avoids blocking the user's request)
                     invoke_migration_async()
+
+                    # Update ECS service desired count to match instance count
+                    update_premium_service_desired_count()
 
                     return True
                 else:
@@ -2436,6 +2449,87 @@ def check_instance_readiness_with_retry(
     return False
 
 
+def update_premium_service_desired_count():
+    """
+    Update the ECS premium service desired count to match the number of
+    running premium instances.
+
+    This ensures that each premium instance has an ECS task running on it,
+    which is required for the instance to be considered "ready" for user assignments.
+
+    The function:
+    1. Counts running premium EC2 instances (by Tier=premium tag)
+    2. Updates the ECS service desired count to match
+    3. ECS will then place one task per instance (with tier=premium
+        placement constraint)
+    """
+    try:
+        cluster_name = get_required_env_var("CLUSTER_NAME")
+        service_name = get_required_env_var("PREMIUM_SERVICE_NAME")
+
+        ecs = boto3.client("ecs")
+        ec2 = boto3.client("ec2")
+
+        # Get current service status
+        service_response = ecs.describe_services(
+            cluster=cluster_name, services=[service_name]
+        )
+
+        if not service_response.get("services"):
+            print(
+                f"⚠ Premium service {service_name} not found in cluster {cluster_name}"
+            )
+            return
+
+        current_desired_count = service_response["services"][0]["desiredCount"]
+        current_running_count = service_response["services"][0]["runningCount"]
+
+        # Count running premium instances
+        response = ec2.describe_instances(
+            Filters=[
+                {"Name": "instance-state-name", "Values": ["running"]},
+                {"Name": "tag:Tier", "Values": ["premium", "Premium"]},
+            ]
+        )
+
+        running_premium_count = sum(
+            len(reservation["Instances"]) for reservation in response["Reservations"]
+        )
+
+        print(
+            f"ECS Service Status: desired={current_desired_count}, "
+            f"running={current_running_count}"
+        )
+        print(f"Premium EC2 Instances: {running_premium_count} running")
+
+        # Update service desired count if different from instance count
+        if running_premium_count != current_desired_count:
+            print(
+                f"Updating ECS service desired count: {current_desired_count} "
+                f"→ {running_premium_count}"
+            )
+            ecs.update_service(
+                cluster=cluster_name,
+                service=service_name,
+                desiredCount=running_premium_count,
+            )
+            print(
+                f"ECS service {service_name} updated to desired count "
+                f"{running_premium_count}"
+            )
+        else:
+            print(
+                f"ECS service desired count already matches instance count "
+                f"({running_premium_count})"
+            )
+
+    except Exception as e:
+        print(f"⚠ Error updating premium service desired count: {str(e)}")
+        import traceback
+
+        traceback.print_exc()
+
+
 def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bool:
     """Migrate user from shared instance to dedicated instance"""
     elbv2 = boto3.client("elbv2")
@@ -2456,27 +2550,76 @@ def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bo
                     return False
 
                 old_instance_id = assignment["instance_id"]
-                target_group_arn = assignment["target_group_arn"]
+                old_target_group_arn = assignment["target_group_arn"]
+                old_rule_arn = assignment["alb_rule_arn"]
 
-                # Deregister from old instance
-                elbv2.deregister_targets(
-                    TargetGroupArn=target_group_arn,
-                    Targets=[{"Id": old_instance_id, "Port": 8000}],
-                )
+                # Special handling for autoscaling-pool migration
+                if old_instance_id == "autoscaling-pool":
+                    # Create new dedicated target group for this user
+                    vpc_id = os.environ.get("VPC_ID")
+                    target_group_response = elbv2.create_target_group(
+                        Name=f"premium-{user_id}-tg",
+                        Protocol="HTTP",
+                        Port=8000,
+                        VpcId=vpc_id,
+                        HealthCheckPath="/health",
+                        HealthCheckProtocol="HTTP",
+                        HealthCheckIntervalSeconds=30,
+                        HealthyThresholdCount=2,
+                        UnhealthyThresholdCount=3,
+                        Tags=[
+                            {"Key": "UserID", "Value": user_id},
+                            {"Key": "Type", "Value": "premium-user"},
+                            {"Key": "Service", "Value": "optinist-premium"},
+                        ],
+                    )
+                    new_target_group_arn = target_group_response["TargetGroups"][0][
+                        "TargetGroupArn"
+                    ]
 
-                # Register to new instance
-                elbv2.register_targets(
-                    TargetGroupArn=target_group_arn,
-                    Targets=[{"Id": new_instance_id, "Port": 8000}],
-                )
+                    # Register new instance to new target group
+                    elbv2.register_targets(
+                        TargetGroupArn=new_target_group_arn,
+                        Targets=[{"Id": new_instance_id, "Port": 8000}],
+                    )
 
-                # Update RDS assignment
-                cursor.execute(
-                    """UPDATE premium_user_assignments SET instance_id = %s,
-                    last_state_check = NOW()
-                       WHERE user_id = %s""",
-                    (new_instance_id, user_id),
-                )
+                    # Update ALB rule to point to new target group
+                    elbv2.modify_rule(
+                        RuleArn=old_rule_arn,
+                        Actions=[
+                            {"Type": "forward", "TargetGroupArn": new_target_group_arn}
+                        ],
+                    )
+
+                    # Update assignment with new target group
+                    cursor.execute(
+                        """UPDATE premium_user_assignments
+                           SET instance_id = %s, target_group_arn = %s,
+                               last_state_check = NOW()
+                           WHERE user_id = %s""",
+                        (new_instance_id, new_target_group_arn, user_id),
+                    )
+                else:
+                    # Normal migration: deregister from old, register to new
+                    elbv2.deregister_targets(
+                        TargetGroupArn=old_target_group_arn,
+                        Targets=[{"Id": old_instance_id, "Port": 8000}],
+                    )
+
+                    # Register to new instance (same target group)
+                    elbv2.register_targets(
+                        TargetGroupArn=old_target_group_arn,
+                        Targets=[{"Id": new_instance_id, "Port": 8000}],
+                    )
+
+                    # Update RDS assignment
+                    cursor.execute(
+                        """UPDATE premium_user_assignments SET instance_id = %s,
+                        last_state_check = NOW()
+                           WHERE user_id = %s""",
+                        (new_instance_id, user_id),
+                    )
+
                 connection.commit()  # Commit the migration
 
                 print(
@@ -2674,6 +2817,9 @@ def scale_down_if_possible():
                     f"(min running needed: {min_running_needed})"
                 )
                 ec2.stop_instances(InstanceIds=idle_instance_ids)
+
+                # Update ECS service desired count to match remaining running instances
+                update_premium_service_desired_count()
             else:
                 print("No idle instances found to stop")
 
@@ -2963,10 +3109,13 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
             if instance_state == "running":
                 assigned_users = get_assigned_users_for_instance(instance_id)
 
+                # Use short timeout for migration checks - don't block waiting
+                # If instance not ready quickly, skip it and use ready ones
                 if not assigned_users and check_instance_readiness_with_retry(
-                    instance_id, max_wait_seconds=600, retry_interval=10
+                    instance_id, max_wait_seconds=30, retry_interval=10
                 ):
                     available_instances.append(instance_id)
+                    print(f"Instance {instance_id} is available for migration")
                 elif len(assigned_users) > 1:  # Shared instance
                     shared_instances.append((instance_id, assigned_users))
 
@@ -2978,6 +3127,30 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                 "shared_instances_found": len(shared_instances),
                 "message": "No optimization opportunities found",
             }
+
+        # Check if we have enough instances for all users needing migration
+        total_users_needing_migration = 0
+        for instance_id, users in shared_instances:
+            if instance_id == "autoscaling-pool":
+                total_users_needing_migration += len(users)  # All autoscaling users
+            else:
+                total_users_needing_migration += len(users) - 1  # Shared, keep one
+
+        print(
+            f"Need to migrate {total_users_needing_migration} users, "
+            f"have {len(available_instances)} available instances"
+        )
+
+        # If insufficient capacity, trigger scaling for additional instances
+        if len(available_instances) < total_users_needing_migration:
+            shortage = total_users_needing_migration - len(available_instances)
+            print(
+                f"⚠ Insufficient capacity: need {shortage} more instances. "
+                f"Triggering scaling..."
+            )
+            scale_premium_instances_if_needed()
+            # Note: New instances will be picked up on next migration run
+            # For now, migrate as many users as possible with available capacity
 
         migrations_performed = 0
 

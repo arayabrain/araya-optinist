@@ -166,6 +166,12 @@ class S3StorageController(BaseRemoteStorageController):
                     f"{s3_file_path} ({file_size:,} bytes)"
                 )
 
+                # Create local directory before downloading
+                input_data_local_dir = os.path.dirname(input_data_local_path)
+                if not os.path.exists(input_data_local_dir):
+                    os.makedirs(input_data_local_dir, exist_ok=True)
+                    logger.debug(f"Created directory: {input_data_local_dir}")
+
                 await __s3_client.download_file(
                     self.bucket_name, s3_file_path, input_data_local_path
                 )
@@ -356,6 +362,12 @@ class S3StorageController(BaseRemoteStorageController):
                         flie_local_path = os.path.join(
                             DIRPATH.DATA_DIR, experiment_dir, metadata_filename
                         )
+
+                        if "app/studio_data/app/studio_data/" in flie_local_path:
+                            flie_local_path = flie_local_path.replace(
+                                "/app/studio_data/app/studio_data/", "/app/studio_data/"
+                            )
+                            logger.debug(f"Fixed duplicate path: {flie_local_path}")
 
                         if not os.path.isfile(flie_local_path):
                             try:
@@ -570,6 +582,13 @@ class S3StorageController(BaseRemoteStorageController):
                 local_abs_path = os.path.join(
                     os.path.dirname(DIRPATH.OUTPUT_DIR), s3_file_path
                 )
+
+                if "app/studio_data/app/studio_data/" in local_abs_path:
+                    local_abs_path = local_abs_path.replace(
+                        "/app/studio_data/app/studio_data/", "/app/studio_data/"
+                    )
+                    logger.debug(f"Fixed duplicate path: {local_abs_path}")
+
                 local_abs_dir = os.path.dirname(local_abs_path)
 
                 logger.debug(

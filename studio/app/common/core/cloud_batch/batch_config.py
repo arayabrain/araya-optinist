@@ -44,6 +44,12 @@ class BatchConfig(BaseSettings):
                 "configuration validation"
             )
             return values
+        else:
+            logger = AppLogger.get_logger()
+            logger.debug(
+                f"IN_SNAKEMAKE_BATCH not set or not 'true': "
+                f"{os.environ.get('IN_SNAKEMAKE_BATCH', 'NOT_SET')}"
+            )
 
         if values.get("USE_AWS_BATCH"):
             logger = AppLogger.get_logger()

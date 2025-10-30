@@ -444,7 +444,10 @@ def _snakemake_execute_batch(
                 # Execute workflow - Snakemake will handle job submission to AWS Batch
                 # Get user-appropriate job queue (free or paid plan)
                 selected_job_queue = batch_executor.get_job_queue_for_user()
-                logger.info(f"Using AWS Batch job queue: {selected_job_queue}")
+                logger.info(
+                    f"BATCH_VAR_DEBUG: Using AWS Batch job queue: "
+                    f"{selected_job_queue}"
+                )
 
                 # Temporarily remove AWS credentials from environment for batch jobs
                 # Forces batch jobs to use IAM roles instead of hardcoded credentials
@@ -452,11 +455,22 @@ def _snakemake_execute_batch(
                 aws_secret_key = os.environ.pop("AWS_SECRET_ACCESS_KEY", None)
 
                 try:
-                    # Set IN_SNAKEMAKE_BATCH so batch containers can find config
-                    os.environ["IN_SNAKEMAKE_BATCH"] = "true"
-
                     # Prepare environment variables for batch jobs
+                    # IN_SNAKEMAKE_BATCH must be passed so Snakemake's dynamically
+                    # created job definitions inherit it (terraform parent job def
+                    # isn't used directly) Set IN_SNAKEMAKE_BATCH so it can be passed
+                    # to batch jobs via envvars
+                    logger.info(
+                        "BATCH_VAR_DEBUG: Setting IN_SNAKEMAKE_BATCH in main "
+                        "instance environment"
+                    )
+                    os.environ["IN_SNAKEMAKE_BATCH"] = "true"
+                    logger.info(
+                        f"BATCH_VAR_DEBUG: IN_SNAKEMAKE_BATCH set to: "
+                        f"{os.environ.get('IN_SNAKEMAKE_BATCH')}"
+                    )
                     envvars = ["USE_AWS_BATCH", "OPTINIST_DIR", "IN_SNAKEMAKE_BATCH"]
+                    logger.info(f"BATCH_VAR_DEBUG: envvars list: {envvars}")
                     if RemoteStorageController.is_available():
                         # Use S3 storage for batch jobs
                         # Set AWS_BATCH_S3_BUCKET_NAME from S3_DEFAULT_BUCKET_NAME
@@ -484,7 +498,8 @@ def _snakemake_execute_batch(
                         os.environ["AWS_BATCH_S3_BUCKET_NAME"] = batch_s3_bucket
 
                         logger.info(
-                            f"Configured AWS Batch S3 bucket: {batch_s3_bucket}"
+                            f"BATCH_VAR_DEBUG: Configured AWS Batch S3 bucket: "
+                            f"{batch_s3_bucket}"
                         )
 
                         envvars.extend(
@@ -556,6 +571,20 @@ def _snakemake_execute_batch(
                     batch_executor.start_job_monitoring()
 
                     snakemake_result = False
+
+                    # Debug: Check environment right before execution
+                    logger.info(
+                        f"BATCH_VAR_DEBUG: About to execute workflow with "
+                        f"envvars: {envvars}"
+                    )
+                    logger.info(
+                        f"BATCH_VAR_DEBUG: Current IN_SNAKEMAKE_BATCH "
+                        f"value: {os.environ.get('IN_SNAKEMAKE_BATCH', 'NOT_SET')}"
+                    )
+                    logger.info(
+                        f"BATCH_VAR_DEBUG: All envvars in os.environ: "
+                        f"{[(var, os.environ.get(var, 'NOT_SET')) for var in envvars]}"
+                    )
 
                     try:
                         dag_api.execute_workflow(
@@ -691,6 +720,8 @@ def _snakemake_execute_batch(
                         os.environ["AWS_ACCESS_KEY_ID"] = aws_access_key
                     if aws_secret_key is not None:
                         os.environ["AWS_SECRET_ACCESS_KEY"] = aws_secret_key
+                    if "IN_SNAKEMAKE_BATCH" in os.environ:
+                        del os.environ["IN_SNAKEMAKE_BATCH"]
 
             except Exception as e:
                 snakemake_result = False

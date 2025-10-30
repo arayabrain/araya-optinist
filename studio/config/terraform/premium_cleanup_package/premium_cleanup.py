@@ -115,6 +115,81 @@ def check_instance_readiness(instance_id: str) -> bool:
         return False
 
 
+def update_premium_service_desired_count():
+    """
+    Update the ECS premium service desired count to match the number
+    of running premium instances.
+
+    This ensures that each premium instance has an ECS task running on it,
+    which is required for the instance to be considered "ready" for user assignments.
+    """
+    try:
+        cluster_name = get_required_env_var("CLUSTER_NAME")
+        service_name = get_required_env_var("PREMIUM_SERVICE_NAME")
+
+        ecs = boto3.client("ecs")
+        ec2 = boto3.client("ec2")
+
+        # Get current service status
+        service_response = ecs.describe_services(
+            cluster=cluster_name, services=[service_name]
+        )
+
+        if not service_response.get("services"):
+            print(
+                f"⚠ Premium service {service_name} not found in cluster {cluster_name}"
+            )
+            return
+
+        current_desired_count = service_response["services"][0]["desiredCount"]
+        current_running_count = service_response["services"][0]["runningCount"]
+
+        # Count running premium instances
+        response = ec2.describe_instances(
+            Filters=[
+                {"Name": "instance-state-name", "Values": ["running"]},
+                {"Name": "tag:Tier", "Values": ["premium", "Premium"]},
+            ]
+        )
+
+        running_premium_count = sum(
+            len(reservation["Instances"]) for reservation in response["Reservations"]
+        )
+
+        print(
+            f"ECS Service Status: desired={current_desired_count}, "
+            f"running={current_running_count}"
+        )
+        print(f"Premium EC2 Instances: {running_premium_count} running")
+
+        # Update service desired count if different from instance count
+        if running_premium_count != current_desired_count:
+            print(
+                f"Updating ECS service desired count: "
+                f"{current_desired_count} → {running_premium_count}"
+            )
+            ecs.update_service(
+                cluster=cluster_name,
+                service=service_name,
+                desiredCount=running_premium_count,
+            )
+            print(
+                f"ECS service {service_name} updated to desired count "
+                f"{running_premium_count}"
+            )
+        else:
+            print(
+                f"ECS service desired count already matches instance count "
+                f"({running_premium_count})"
+            )
+
+    except Exception as e:
+        print(f"⚠ Error updating premium service desired count: {str(e)}")
+        import traceback
+
+        traceback.print_exc()
+
+
 @with_transaction
 def cleanup_stale_assignments(connection) -> Dict[str, Any]:
     """
@@ -126,7 +201,7 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
             get_required_env_var("PREMIUM_IDLE_TIMEOUT_HOURS", "2")
         )
 
-        print(f"🧹 Starting cleanup of assignments idle for >{stale_threshold_hours}h")
+        print(f"Starting cleanup of assignments idle for >{stale_threshold_hours}h")
 
         with connection.cursor() as cursor:
             # Use SELECT FOR UPDATE to prevent race conditions
@@ -195,7 +270,7 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
                     # Continue with other assignments
 
             print(
-                f"🧹 Cleanup complete: {cleaned_count}/{len(stale_assignments)} "
+                f"Cleanup complete: {cleaned_count}/{len(stale_assignments)} "
                 f"assignments cleaned"
             )
 
@@ -218,7 +293,7 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
     storing the assignment in the database, leaving orphaned resources.
     """
     try:
-        print("🔍 Scanning for orphaned ALB resources...")
+        print("Scanning for orphaned ALB resources...")
 
         elbv2 = boto3.client("elbv2")
         alb_listener_arn = get_required_env_var("ALB_LISTENER_ARN")
@@ -319,7 +394,7 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
                 # Continue with other rules
 
         print(
-            f"🧹 Orphaned resource cleanup complete: {rules_deleted} rules, "
+            f"Orphaned resource cleanup complete: {rules_deleted} rules, "
             f"{target_groups_deleted} target groups deleted"
         )
 
@@ -375,7 +450,7 @@ def stop_idle_instances_if_needed():
 
         if len(idle_instances) > 0:
             print(
-                f"💤 Found {len(idle_instances)} idle premium instances, "
+                f"Found {len(idle_instances)} idle premium instances, "
                 f"stopping all to save costs"
             )
             for inst in idle_instances:
@@ -509,13 +584,6 @@ def ensure_standby_pool_capacity() -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-# Migration functionality moved back to premium_manager Lambda
-# Cleanup Lambda focuses only on cleanup tasks, not optimization
-
-
-# migrate_user_to_dedicated_instance moved back to premium_manager Lambda
-
-
 def reconcile_instance_states() -> Dict[str, Any]:
     """
     Reconcile database instance states with actual AWS instance states
@@ -556,7 +624,7 @@ def reconcile_instance_states() -> Dict[str, Any]:
                     if not aws_instance:
                         # Instance no longer exists in AWS - cleanup
                         print(
-                            f"🧹 Cleaning up assignment for terminated instance "
+                            f"Cleaning up assignment for terminated instance "
                             f"{instance_id} (user {user_id})"
                         )
                         cursor.execute(
@@ -624,7 +692,6 @@ def maintain_standby_pool() -> bool:
                     stopped_count += 1
 
         idle_running = running_count - assigned_count
-        # Target: 1 stopped standby instance (was target_standby = 1)
 
         print(
             f"Standby pool status: {running_count} running ({assigned_count} "
@@ -633,7 +700,7 @@ def maintain_standby_pool() -> bool:
 
         # If we have no stopped instances and idle running instances, stop one
         if stopped_count == 0 and idle_running > 0:
-            print("💤 Converting idle running instance to stopped standby")
+            print("Converting idle running instance to stopped standby")
             converted = stop_idle_instances_if_needed()
             return converted > 0
 
@@ -666,12 +733,12 @@ def cleanup_idle_running_instances() -> int:
                     users = get_assigned_users_for_instance(instance_id)
 
                     if not users:
-                        print(f"💤 Stopping idle instance {instance_id}")
+                        print(f"Stopping idle instance {instance_id}")
                         ec2.stop_instances(InstanceIds=[instance_id])
                         update_instance_as_standby(instance_id)
                         stopped_count += 1
 
-        print(f"💤 Stopped {stopped_count} idle instances for cost savings")
+        print(f"Stopped {stopped_count} idle instances for cost savings")
         return stopped_count
 
     except Exception as e:
@@ -688,7 +755,7 @@ def convert_running_instance_to_standby(instance_id: str) -> bool:
         ec2 = boto3.client("ec2")
 
         # Stop the instance
-        print(f"💤 Converting instance {instance_id} to standby (stopping)")
+        print(f"Converting instance {instance_id} to standby (stopping)")
         ec2.stop_instances(InstanceIds=[instance_id])
 
         # Update database
@@ -751,7 +818,7 @@ def cleanup_test_user_assignments(connection, user_emails: List[str]) -> Dict[st
                 "assignments_deleted": 0,
             }
 
-        print(f"🧹 Cleaning up premium assignments for {len(user_emails)} test users")
+        print(f"Cleaning up premium assignments for {len(user_emails)} test users")
 
         with connection.cursor() as cursor:
             # First, get user IDs for the given emails
@@ -862,7 +929,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
       {"action": "cleanup_test_users", "user_emails": ["email1@example.com", ...]}
     """
 
-    print(f"🧹 Premium cleanup triggered by event: {json.dumps(event)}")
+    print(f"Premium cleanup triggered by event: {json.dumps(event)}")
     print(f"Lambda context: {context.function_name if context else 'No context'}")
 
     try:
@@ -889,11 +956,11 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
 
         # 1. Cleanup stale assignments
-        print("🧹 Step 1: Cleaning up stale assignments...")
+        print("Step 1: Cleaning up stale assignments...")
         results["cleanup_stats"] = cleanup_stale_assignments()
 
         # 1.5. Cleanup orphaned ALB resources (no database entry)
-        print("🔍 Step 1.5: Cleaning up orphaned ALB resources...")
+        print("Step 1.5: Cleaning up orphaned ALB resources...")
         results["orphaned_cleanup_stats"] = cleanup_orphaned_alb_resources()
 
         # 2. Reconcile instance states with AWS
@@ -905,8 +972,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         results["standby_maintenance"] = maintain_standby_pool()
 
         # 4. Stop idle instances for cost optimization
-        print("💤 Step 4: Stopping idle instances...")
+        print("Step 4: Stopping idle instances...")
         results["idle_instances_stopped"] = cleanup_idle_running_instances()
+
+        # 4.5. Update ECS service desired count after stopping instances
+        print("🔄 Step 4.5: Updating ECS service desired count...")
+        update_premium_service_desired_count()
 
         # 5. Ensure standby pool capacity
         print("Step 5: Checking standby pool capacity...")

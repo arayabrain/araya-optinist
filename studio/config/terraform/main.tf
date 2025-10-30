@@ -2369,6 +2369,7 @@ resource "aws_lambda_function" "premium_manager" {
       PREMIUM_INSTANCE_IDS  = join(",", aws_instance.premium[*].id)
       PREMIUM_LAUNCH_TEMPLATE_ID = aws_launch_template.premium.id
       CLUSTER_NAME          = aws_ecs_cluster.main.name
+      PREMIUM_SERVICE_NAME  = aws_ecs_service.premium.name
       RDS_HOST              = aws_db_instance.main.endpoint
       RDS_USER              = var.mysql_user
       RDS_PASSWORD          = var.mysql_password
@@ -2505,6 +2506,7 @@ resource "aws_lambda_function" "premium_cleanup" {
       PREMIUM_INSTANCE_IDS  = join(",", aws_instance.premium[*].id)
       PREMIUM_LAUNCH_TEMPLATE_ID = aws_launch_template.premium.id
       CLUSTER_NAME          = aws_ecs_cluster.main.name
+      PREMIUM_SERVICE_NAME  = aws_ecs_service.premium.name
       RDS_HOST              = aws_db_instance.main.endpoint
       RDS_USER              = var.mysql_user
       RDS_PASSWORD          = var.mysql_password
@@ -2536,14 +2538,12 @@ resource "aws_lambda_function" "premium_cleanup" {
 resource "null_resource" "install_cleanup_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
-      mkdir -p ${path.module}/premium_cleanup_package
-      cp ${path.module}/premium_cleanup.py ${path.module}/premium_cleanup_package/
       /usr/bin/python3 -m pip install pymysql -t ${path.module}/premium_cleanup_package/ --no-cache-dir
     EOT
   }
 
   triggers = {
-    code_changes = filesha256("${path.module}/premium_cleanup.py")
+    code_changes = filesha256("${path.module}/premium_cleanup_package/premium_cleanup.py")
   }
 }
 
