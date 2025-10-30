@@ -183,9 +183,9 @@ async def get_user_subscription(
 async def update_user_subscription(
     request: UpdateSubscriptionRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    # return await StripeService.update_user_subscription(db, current_user, request)
+    # return await StripeService.update_user_subscription(db, user, request)
     """
     This endpoint is currently not in use
     """
@@ -204,7 +204,7 @@ async def get_server_time():
 @router.delete("/mgmts/cancel", response_model=CancelSubscriptionResponse)
 async def cancel_user_subscription(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
     """
     Cancel user's subscription at period end
@@ -213,7 +213,7 @@ async def cancel_user_subscription(
     - Database updates handled via webhook
     """
     try:
-        result = await StripeService.handle_cancel_user_subscription(db, current_user)
+        result = await StripeService.handle_cancel_user_subscription(db, user)
         return result
 
     except stripe.error.StripeError as e:
@@ -224,9 +224,7 @@ async def cancel_user_subscription(
     except HTTPException:
         raise HTTPException(status_code=404, detail="Subscription not found")
     except Exception as e:
-        logger.error(
-            f"Error cancelling subscription for user {current_user.id}: {str(e)}"
-        )
+        logger.error(f"Error cancelling subscription for user {user.id}: {str(e)}")
         raise HTTPException(
             status_code=500, detail=f"Failed to cancel subscription: {str(e)}"
         )
@@ -331,16 +329,16 @@ async def reactivate_user_subscription(
 
 @router.get("/payment-methods/default", response_model=Optional[PaymentMethodResponse])
 async def get_user_default_payment_method(
-    current_user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    return await StripeService.get_default_payment_method(current_user)
+    return await StripeService.get_default_payment_method(user)
 
 
 @router.get("/payment-methods", response_model=List[PaymentMethodResponse])
 async def get_user_payment_methods(
-    current_user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    # return await StripeService.handle_get_user_payment_methods(current_user)
+    # return await StripeService.handle_get_user_payment_methods(user)
     """
     This endpoint is currently not in use
     """
@@ -352,9 +350,9 @@ async def get_user_payment_methods(
 
 @router.post("/payment-methods/setup-intent", response_model=CreateSetupIntentResponse)
 async def setup_intent(
-    current_user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    # await StripeService.create_setup_intent(current_user)
+    # await StripeService.create_setup_intent(user)
     """
     This endpoint is currently not in use
     """
@@ -367,10 +365,10 @@ async def setup_intent(
 @router.put("/payment-methods", response_model=UpdatePaymentMethodResponse)
 async def update_default_payment_method(
     payment_method_id: str,
-    current_user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
     # return await StripeService.update_default_payment_method(
-    #     current_user, payment_method_id
+    #     user, payment_method_id
     # )
     """
     This endpoint is currently not in use
@@ -384,9 +382,9 @@ async def update_default_payment_method(
 @router.delete("/payment-methods/{payment_method_id}")
 async def delete_payment_method(
     payment_method_id: str,
-    current_user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    # return await StripeService.delete_payment_method(current_user, payment_method_id)
+    # return await StripeService.delete_payment_method(user, payment_method_id)
     """
     This endpoint is currently not in use
     """
@@ -402,9 +400,9 @@ async def delete_payment_method(
 async def create_checkout_session(
     request: CreateCheckoutSessionRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    return await CheckoutService.handle_checkout_session(db, request, current_user)
+    return await CheckoutService.handle_checkout_session(db, request, user)
 
 
 @router.post("/checkout/validate-checkout-session", response_model=bool)
