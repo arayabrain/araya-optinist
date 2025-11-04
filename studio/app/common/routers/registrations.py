@@ -1,22 +1,22 @@
 # studio/app/common/core/users/registration_router.py
 
-from fastapi import APIRouter, Depends, HTTPException, Header
-from pydantic import BaseModel, EmailStr, validator
+from fastapi import APIRouter, Depends, Header, HTTPException
 from firebase_admin import auth as firebase_auth
+from pydantic import BaseModel, EmailStr, validator
 from sqlmodel import Session
 
-from studio.app.common.db.database import get_db
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.models import User as UserModel
-from studio.app.common.core.subscription.checkout_service import CheckoutService
-from studio.app.common.core.subscription.subscription_service import (
-    SubscriptionUserStatus,
-)
-from studio.app.common.models.subscription import UserSubscription
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageSimpleWriter,
 )
+from studio.app.common.core.subscription.checkout_service import CheckoutService
+from studio.app.common.core.subscription.subscription_service import (
+    SubscriptionUserStatus,
+)
+from studio.app.common.db.database import get_db
+from studio.app.common.models import User as UserModel
+from studio.app.common.models.subscription import UserSubscription
 
 router = APIRouter(prefix="/api/register", tags=["registration"])
 logger = AppLogger.get_logger()
@@ -60,7 +60,6 @@ async def complete_registration(
     db: Session = Depends(get_db),
     authorization: str = Header(None),
 ):
-
     logger.info(f"Registration request received for: {request.email}")
 
     # トークン検証

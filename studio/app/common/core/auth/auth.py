@@ -44,7 +44,6 @@ async def authenticate_user(db: Session, data: UserAuth) -> Tuple[Token, UserMod
             # If registration_source is not "firebase_email_verification",
             # it's an old user, so automatically mark email as verified
             if user_db.registration_source != "firebase_client_sdk":
-
                 # Mark email as verified in Firebase
                 if not firebase_user.email_verified:
                     try:
