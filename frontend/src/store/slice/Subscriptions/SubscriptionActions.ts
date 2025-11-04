@@ -5,8 +5,10 @@ import { createAsyncThunk } from "@reduxjs/toolkit"
 import {
   cancelSubscriptionApi,
   createCheckoutSessionApi,
+  getServerTimeApi as getUTCServerTimeApi,
   getSubscriptionPlansApi,
   getUserSubscriptionApi,
+  reactivateSubscriptionApi,
   validateCheckoutSessionApi,
 } from "api/subscriptions/Subscriptions"
 import {
@@ -68,6 +70,21 @@ export const getSubscriptionPlan = createAsyncThunk(
   },
 )
 
+export const getUTCServerTime = createAsyncThunk(
+  `${SUBSCRIPTION_SLICE_NAME}/getServerTime`,
+  async (_, thunkAPI) => {
+    try {
+      const response = await getUTCServerTimeApi()
+      return response
+    } catch (error) {
+      console.error("Error fetching server time:", error)
+      // Extract clean error message instead of passing entire error object
+      const errorMessage = extractErrorMessage(error)
+      return thunkAPI.rejectWithValue(errorMessage)
+    }
+  },
+)
+
 export const getUserSubscription = createAsyncThunk(
   `${SUBSCRIPTION_SLICE_NAME}/getUserSubscription`,
   async (_, thunkAPI) => {
@@ -95,6 +112,21 @@ export const createCheckoutSession = createAsyncThunk<
     return rejectWithValue(message)
   }
 })
+
+export const reactivateSubscription = createAsyncThunk(
+  `${SUBSCRIPTION_SLICE_NAME}/reactivateSubscription`,
+  async (userId: number, thunkAPI) => {
+    try {
+      const response = await reactivateSubscriptionApi(userId)
+      return response
+    } catch (error) {
+      console.error("Error reactivating subscription:", error)
+      // Extract clean error message instead of passing entire error object
+      const errorMessage = extractErrorMessage(error)
+      return thunkAPI.rejectWithValue(errorMessage)
+    }
+  },
+)
 
 export const validateCheckoutSession = createAsyncThunk(
   `${SUBSCRIPTION_SLICE_NAME}/validateCheckoutSession`,

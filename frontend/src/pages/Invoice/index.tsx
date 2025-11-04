@@ -1,13 +1,58 @@
+import { useState, useEffect } from "react"
+import { useDispatch, useSelector } from "react-redux"
 import { useNavigate } from "react-router-dom"
 
 import ArrowBackIcon from "@mui/icons-material/ArrowBack"
-import { Box, Typography, Button, IconButton } from "@mui/material"
+import {
+  Box,
+  Typography,
+  Button,
+  IconButton,
+  Alert,
+  Skeleton,
+} from "@mui/material"
 import { styled } from "@mui/material/styles"
 
-// Styled Components
+import { InvoiceDTO } from "api/paymentMethod/PaymentMethodApiDTO"
+import Loading from "components/common/Loading"
+import CardBrandIcon from "pages/Invoice/CardBrandIcon"
+import {
+  getDefaultPaymentMethod,
+  getUserInvoices,
+} from "store/slice/PaymentMethod/PaymentMethodActions"
+import {
+  selectDefaultPaymentMethod,
+  selectDefaultPaymentMethodLoading,
+  selectInvoices,
+  selectInvoicesLoading,
+  selectFirstPaymentMethodsError,
+} from "store/slice/PaymentMethod/PaymentMethodSelector"
+import {
+  getUserSubscription,
+  getUTCServerTime,
+} from "store/slice/Subscriptions/SubscriptionActions"
+import {
+  selectUserSubscription,
+  selectUserSubscriptionLoading,
+  selectSubscriptionError,
+} from "store/slice/Subscriptions/SubscriptionSelector"
+import { selectCurrentUserId } from "store/slice/User/UserSelector"
+import { AppDispatch } from "store/store"
+
+type CardBrand =
+  | "visa"
+  | "mastercard"
+  | "amex"
+  | "discover"
+  | "jcb"
+  | "diners"
+  | "unionpay"
+
+// Styled Components (keeping all existing styles)
 const Container = styled(Box)(() => ({
   minHeight: "100vh",
   padding: "24px",
+  position: "relative", // Added for Loading component positioning
 }))
 
 const MainWrapper = styled(Box)(() => ({
@@ -72,6 +117,10 @@ const PrimaryButton = styled(Button)(() => ({
   "&:hover": {
     background: "#1d4ed8",
   },
+  "&:disabled": {
+    background: "#9ca3af",
+    cursor: "not-allowed",
+  },
 }))
 
 const PaymentTitle = styled(Typography)(() => ({
@@ -81,18 +130,21 @@ const PaymentTitle = styled(Typography)(() => ({
   marginBottom: "16px",
 }))
 
-const VisaIcon = styled(Box)(() => ({
+interface CardIconProps {
+  brand?: string
+}
+
+const CardIcon = styled(Box, {
+  shouldForwardProp: (prop) => prop !== "brand",
+})<CardIconProps>(({ brand }) => ({
   width: "32px",
-  height: "24px",
-  background: "#1e40af",
   borderRadius: "4px",
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  marginRight: "12px",
 }))
 
-const VisaText = styled(Typography)(() => ({
+const CardText = styled(Typography)(() => ({
   color: "white",
   fontSize: "12px",
   fontWeight: "bold",
@@ -142,14 +194,14 @@ const TableCell = styled("td")(() => ({
 }))
 
 const TableRow = styled("tr")(() => ({
-  "&:first-of-type td": {
+  "&:not(:last-child) td": {
     borderBottom: "1px solid #e5e7eb",
   },
 }))
 
 const BackButton = styled(IconButton)(() => ({
   position: "absolute",
-  top: "80px",
+  top: "20px",
   left: "24px",
   backgroundColor: "white",
   border: "1px solid #e5e7eb",
@@ -161,6 +213,11 @@ const BackButton = styled(IconButton)(() => ({
   "&:hover": {
     backgroundColor: "#f9fafb",
     borderColor: "#d1d5db",
+  },
+  "&:disabled": {
+    backgroundColor: "#f3f4f6",
+    color: "#9ca3af",
+    cursor: "not-allowed",
   },
 }))
 
@@ -178,23 +235,234 @@ const ViewButton = styled(Button)(() => ({
   "&:hover": {
     background: "#1d4ed8",
   },
+  "&:disabled": {
+    background: "#9ca3af",
+    cursor: "not-allowed",
+  },
 }))
 
-const InvoicesPage = () => {
-  const navigate = useNavigate()
-
-  const handleGoBack = () => {
-    navigate("/console/account")
+// Helper functions
+function getCardBrandColor(brand?: string): string {
+  const colors: Record<CardBrand, string> = {
+    visa: "#1e40af",
+    mastercard: "#eb1c26",
+    amex: "#006fcf",
+    discover: "#ff6000",
+    jcb: "#0e4c96",
+    diners: "#0079be",
+    unionpay: "#e21836",
   }
 
-  const handleAdjustPlan = () => {
-    navigate("/console/subscription")
+  if (!brand) return "#6b7280"
+
+  const normalizedBrand = brand.toLowerCase() as CardBrand
+  return colors[normalizedBrand] || "#6b7280"
+}
+
+function getCardBrandText(brand?: string): string {
+  const brandMap: Record<CardBrand, string> = {
+    visa: "V",
+    mastercard: "MC",
+    amex: "AX",
+    discover: "D",
+    jcb: "JCB",
+    diners: "DC",
+    unionpay: "UP",
+  }
+
+  if (!brand) return "?"
+
+  const normalizedBrand = brand.toLowerCase() as CardBrand
+  return brandMap[normalizedBrand] || brand.charAt(0).toUpperCase() || "?"
+}
+
+function formatCardBrand(brand?: string): string {
+  const brandNames: Record<CardBrand, string> = {
+    visa: "Visa",
+    mastercard: "Mastercard",
+    amex: "American Express",
+    discover: "Discover",
+    jcb: "JCB",
+    diners: "Diners Club",
+    unionpay: "UnionPay",
+  }
+
+  if (!brand) return "Unknown"
+
+  const normalizedBrand = brand.toLowerCase() as CardBrand
+  return brandNames[normalizedBrand] || brand
+}
+
+const InvoicesPage: React.FC = () => {
+  const navigate = useNavigate()
+
+  const dispatch = useDispatch<AppDispatch>()
+
+  // Redux selectors - separate slices
+  const subscription = useSelector(selectUserSubscription)
+  const subscriptionLoading = useSelector(selectUserSubscriptionLoading)
+  const subscriptionError = useSelector(selectSubscriptionError)
+
+  const paymentMethod = useSelector(selectDefaultPaymentMethod)
+  const paymentMethodLoading = useSelector(selectDefaultPaymentMethodLoading)
+
+  const invoices = useSelector(selectInvoices)
+  const invoicesLoading = useSelector(selectInvoicesLoading)
+
+  const paymentMethodsError = useSelector(selectFirstPaymentMethodsError)
+
+  // Local state for loading management
+  const [isInitialLoading, setIsInitialLoading] = useState(true)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [serverTimeDate, setServerTimeDate] = useState<Date>(new Date())
+
+  const userId = useSelector(selectCurrentUserId)
+
+  // Combined loading states
+  const isAnyLoading =
+    subscriptionLoading || paymentMethodLoading || invoicesLoading
+  const shouldShowLoader = isInitialLoading || isRefreshing
+  const error = subscriptionError || paymentMethodsError
+
+  // Load data on component mount
+  useEffect(() => {
+    const loadData = async (): Promise<void> => {
+      try {
+        setIsInitialLoading(true)
+
+        // Dispatch all actions concurrently
+        await Promise.all([
+          dispatch(getUserSubscription()),
+          dispatch(getDefaultPaymentMethod()),
+          dispatch(getUserInvoices(userId)),
+        ])
+      } catch (err) {
+        console.error("Error loading data:", err)
+      } finally {
+        setIsInitialLoading(false)
+      }
+    }
+
+    if (userId) {
+      loadData()
+    }
+  }, [dispatch, userId])
+
+  useEffect(() => {
+    const fetchServerTime = async (): Promise<void> => {
+      try {
+        const response = await dispatch(getUTCServerTime())
+        // Get current UTC time from server
+        if (
+          !response.payload ||
+          !(response.payload as { server_time: string }).server_time
+        ) {
+          throw new Error("Server time not available")
+        }
+        const fetchedServerTime = new Date(
+          (response.payload as { server_time: string }).server_time,
+        )
+        setServerTimeDate(fetchedServerTime)
+      } catch (err) {
+        console.error("Error fetching server time:", err)
+      }
+    }
+
+    fetchServerTime()
+  }, [dispatch])
+
+  // Refresh data function
+  const refreshData = async (): Promise<void> => {
+    try {
+      setIsRefreshing(true)
+
+      await Promise.all([
+        dispatch(getUserSubscription()),
+        dispatch(getDefaultPaymentMethod()),
+        dispatch(getUserInvoices(userId)),
+      ])
+    } catch (err) {
+      console.error("Error refreshing data:", err)
+    } finally {
+      setIsRefreshing(false)
+    }
+  }
+
+  const handleGoBack = (): void => {
+    if (!shouldShowLoader) {
+      navigate("/console/account")
+    }
+  }
+
+  const handleAdjustPlan = (): void => {
+    if (!shouldShowLoader) {
+      navigate("/console/subscription")
+    }
+  }
+
+  const handleManageBilling = async (): Promise<void> => {
+    if (!shouldShowLoader) {
+      window.open(
+        "https://billing.stripe.com/p/login/test_5kQ9ATdaS2TbdknghI2wU00",
+        "_blank",
+      )
+    }
+  }
+
+  const handleViewInvoice = (invoice: InvoiceDTO): void => {
+    if (!shouldShowLoader && invoice.invoice_url) {
+      window.open(invoice.invoice_url, "_blank")
+    }
+  }
+
+  const formatDate = (dateString: string): string => {
+    const date = new Date(dateString)
+    return date.toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    })
+  }
+
+  if (error && !shouldShowLoader) {
+    return (
+      <Container>
+        <BackButton onClick={handleGoBack} aria-label="Go back">
+          <ArrowBackIcon />
+        </BackButton>
+        <MainWrapper>
+          <Alert
+            severity="error"
+            sx={{ mt: 4 }}
+            action={
+              <Button
+                color="inherit"
+                size="small"
+                onClick={refreshData}
+                disabled={isRefreshing}
+              >
+                {isRefreshing ? "Retrying..." : "Retry"}
+              </Button>
+            }
+          >
+            {error}
+          </Alert>
+        </MainWrapper>
+        <Loading loading={isRefreshing} position="fixed" />
+      </Container>
+    )
   }
 
   return (
     <Container>
-      {/* Go Back Button */}
-      <BackButton onClick={handleGoBack} aria-label="Go back">
+      {/* Loading Component */}
+      <Loading loading={shouldShowLoader} position="fixed" />
+
+      <BackButton
+        onClick={handleGoBack}
+        aria-label="Go back"
+        disabled={shouldShowLoader}
+      >
         <ArrowBackIcon />
       </BackButton>
 
@@ -204,7 +472,6 @@ const InvoicesPage = () => {
           <Section>
             <FlexContainer>
               <FlexRow>
-                {/* Logo */}
                 <Box
                   component="img"
                   src="/static/optinist_logo.png"
@@ -213,19 +480,53 @@ const InvoicesPage = () => {
                     width: "84px",
                     height: "84px",
                     marginRight: "16px",
+                    opacity: shouldShowLoader ? 0.5 : 1,
                   }}
                 />
                 <Box>
-                  <PlanTitle>Premium Plan</PlanTitle>
-                  <PlanType>Monthly</PlanType>
-                  <ExpirationText>
-                    You subscription will expire on 2025/08/25
-                  </ExpirationText>
+                  {subscriptionLoading && !shouldShowLoader ? (
+                    <>
+                      <Skeleton variant="text" width={200} height={32} />
+                      <Skeleton variant="text" width={100} height={24} />
+                      <Skeleton variant="text" width={300} height={20} />
+                    </>
+                  ) : subscription ? (
+                    <>
+                      <PlanTitle>
+                        {subscription.plan_name || "Premium Plan"}
+                      </PlanTitle>
+                      <PlanType>Monthly</PlanType>
+                      <ExpirationText>
+                        Your subscription{" "}
+                        {new Date(subscription.expiration) < serverTimeDate
+                          ? "expired on"
+                          : subscription.scheduled_downgrade
+                            ? "will expire on"
+                            : "will renew on"}{" "}
+                        {formatDate(subscription.expiration)}
+                      </ExpirationText>
+                    </>
+                  ) : (
+                    <>
+                      <PlanTitle>No Active Subscription</PlanTitle>
+                      <PlanType>-</PlanType>
+                      <ExpirationText>
+                        No active subscription found
+                      </ExpirationText>
+                    </>
+                  )}
                 </Box>
               </FlexRow>
 
-              <PrimaryButton onClick={handleAdjustPlan}>
-                Adjust Plan
+              <PrimaryButton
+                onClick={handleAdjustPlan}
+                disabled={shouldShowLoader}
+              >
+                {subscription
+                  ? new Date(subscription.expiration) < serverTimeDate
+                    ? "Upgrade"
+                    : "Downgrade"
+                  : "Subscribe Now"}
               </PrimaryButton>
             </FlexContainer>
           </Section>
@@ -234,16 +535,38 @@ const InvoicesPage = () => {
           <Section>
             <FlexContainer>
               <Box>
-                <PaymentTitle>Payment</PaymentTitle>
-                <FlexRow>
-                  <VisaIcon>
-                    <VisaText>V</VisaText>
-                  </VisaIcon>
-                  <CardNumber>Visa ******1999</CardNumber>
-                </FlexRow>
+                <PaymentTitle>Payment Method</PaymentTitle>
+                {paymentMethodLoading && !shouldShowLoader ? (
+                  <FlexRow>
+                    <Skeleton
+                      variant="rectangular"
+                      width={32}
+                      height={24}
+                      sx={{ borderRadius: "4px", mr: 1.5 }}
+                    />
+                    <Skeleton variant="text" width={150} height={24} />
+                  </FlexRow>
+                ) : paymentMethod ? (
+                  <FlexRow>
+                    <CardIcon brand={paymentMethod.brand}>
+                      <CardBrandIcon brand={paymentMethod.brand} size={32} />
+                    </CardIcon>
+                    <CardNumber>
+                      {formatCardBrand(paymentMethod.brand)} ••••••
+                      {paymentMethod.last4}
+                    </CardNumber>
+                  </FlexRow>
+                ) : (
+                  <CardNumber>No payment method on file</CardNumber>
+                )}
               </Box>
 
-              <PrimaryButton>Update</PrimaryButton>
+              <PrimaryButton
+                onClick={handleManageBilling}
+                disabled={shouldShowLoader}
+              >
+                Manage Billing
+              </PrimaryButton>
             </FlexContainer>
           </Section>
 
@@ -262,22 +585,52 @@ const InvoicesPage = () => {
                   </tr>
                 </TableHeader>
                 <tbody>
-                  <TableRow>
-                    <TableCell>July 25 2025</TableCell>
-                    <TableCell>$20</TableCell>
-                    <TableCell>Paid</TableCell>
-                    <TableCell>
-                      <ViewButton>View</ViewButton>
-                    </TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>June 25 2025</TableCell>
-                    <TableCell>$20</TableCell>
-                    <TableCell>Paid</TableCell>
-                    <TableCell>
-                      <ViewButton>View</ViewButton>
-                    </TableCell>
-                  </TableRow>
+                  {invoicesLoading && !shouldShowLoader ? (
+                    Array.from({ length: 3 }, (_, index) => (
+                      <TableRow key={`loading-${index}`}>
+                        <TableCell>
+                          <Skeleton variant="text" />
+                        </TableCell>
+                        <TableCell>
+                          <Skeleton variant="text" />
+                        </TableCell>
+                        <TableCell>
+                          <Skeleton variant="text" />
+                        </TableCell>
+                        <TableCell>
+                          <Skeleton
+                            variant="rectangular"
+                            width={60}
+                            height={32}
+                          />
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  ) : invoices.length > 0 ? (
+                    invoices.map((invoice: InvoiceDTO) => (
+                      <TableRow key={invoice.id}>
+                        <TableCell>{formatDate(invoice.date)}</TableCell>
+                        <TableCell>{invoice.total}</TableCell>
+                        <TableCell>{invoice.status}</TableCell>
+                        <TableCell>
+                          <ViewButton
+                            onClick={() => handleViewInvoice(invoice)}
+                            disabled={shouldShowLoader}
+                          >
+                            View
+                          </ViewButton>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={4}>
+                        <Typography color="text.secondary">
+                          No invoices found
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </tbody>
               </Table>
             </TableContainer>

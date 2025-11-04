@@ -139,7 +139,7 @@ def run_checkout_tests():
             else:
                 print(f"API responded with status {response.status_code}")
     except Exception as e:
-        print(f"❌ Cannot connect to API: {e}")
+        print(f"Cannot connect to API: {e}")
         return
 
     print()

@@ -3,6 +3,7 @@ import { useDispatch, useSelector } from "react-redux"
 import { useNavigate } from "react-router-dom"
 
 import CheckIcon from "@mui/icons-material/Check"
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined"
 import {
   Box,
   Button,
@@ -22,6 +23,7 @@ import {
   getUserSubscription,
   createCheckoutSession,
   cancelSubscription,
+  reactivateSubscription,
 } from "store/slice/Subscriptions/SubscriptionActions"
 import {
   selectSubscriptionPlans,
@@ -61,6 +63,9 @@ const SubscriptionPlans = () => {
   const [selectedPlanId, setSelectedPlanId] = useState<number | null>(null)
   const [processingPlanId, setProcessingPlanId] = useState<number | null>(null) // Track which plan is being processed
 
+  // State for data storage info dialog
+  const [showDataStorageDialog, setShowDataStorageDialog] = useState(false)
+
   // Fetch data on component mount
   useEffect(() => {
     const loadData = async () => {
@@ -89,6 +94,36 @@ const SubscriptionPlans = () => {
   enum SUBSCRIPTION_PLAN {
     FREE = "Free",
     PREMIUM = "Premium",
+  }
+
+  const handleReactivatePlan = async (planId: number) => {
+    if (!user?.id) {
+      // Handle case where user is not logged in
+      navigate("/login")
+      return
+    }
+
+    try {
+      setProcessingPlanId(planId)
+
+      // Dispatch the action to reactivate subscription
+      const resultAction = await dispatch(reactivateSubscription(user.id))
+
+      // Check if the action was fulfilled
+      if (reactivateSubscription.fulfilled.match(resultAction)) {
+        // Successfully reactivated
+        console.log("Subscription reactivated successfully")
+      } else {
+        // Handle error case
+        console.error("Failed to reactivate subscription:", resultAction.error)
+        // You might want to show an error message to the user here
+      }
+    } catch (error) {
+      console.error("Error reactivating subscription:", error)
+      // Handle error - maybe show a toast notification
+    } finally {
+      setProcessingPlanId(null)
+    }
   }
 
   const handleUpgradeClick = async (planId: number) => {
@@ -151,6 +186,14 @@ const SubscriptionPlans = () => {
   const handleCancelDowngrade = () => {
     setShowDowngradeDialog(false)
     setSelectedPlanId(null)
+  }
+
+  const handleDataStorageDialogOpen = () => {
+    setShowDataStorageDialog(true)
+  }
+
+  const handleDataStorageDialogClose = () => {
+    setShowDataStorageDialog(false)
   }
 
   const getExpirationDate = () => {
@@ -239,15 +282,6 @@ const SubscriptionPlans = () => {
     <BoxWrapper>
       <SubscriptionTitle variant="h3">Subscription Plans</SubscriptionTitle>
 
-      {/* Tax information notice */}
-      <TaxNotice severity="info" sx={{ mb: 3, maxWidth: "600px" }}>
-        <Typography variant="body2">
-          <strong>Tax Information:</strong> Applicable taxes will be calculated
-          automatically based on your location during checkout. Final price may
-          include consumption tax.
-        </Typography>
-      </TaxNotice>
-
       {/* Scheduled downgrade notification */}
       {userSubscription?.scheduled_downgrade && (
         <Alert severity="warning" sx={{ mb: 3, maxWidth: "600px" }}>
@@ -259,6 +293,48 @@ const SubscriptionPlans = () => {
           </Typography>
         </Alert>
       )}
+
+      {/* Tax information notice */}
+      <TaxNotice severity="info" sx={{ mb: 2, maxWidth: "600px" }}>
+        <Typography variant="body2">
+          <strong>Tax Information:</strong> Applicable taxes will be calculated
+          automatically based on your location during checkout. Final price may
+          include consumption tax.
+        </Typography>
+      </TaxNotice>
+
+      {/* Data storage policy info button */}
+      <Box
+        sx={{
+          display: "flex",
+          justifyContent: "center",
+          mb: 3,
+          maxWidth: "600px",
+        }}
+      >
+        <Button
+          onClick={handleDataStorageDialogOpen}
+          variant="outlined"
+          startIcon={<InfoOutlinedIcon />}
+          sx={{
+            borderColor: "#e3f2fd",
+            color: "#1976d2",
+            backgroundColor: "#f8faff",
+            textTransform: "none",
+            borderRadius: "0.5rem",
+            px: 2,
+            py: 1,
+            "&:hover": {
+              backgroundColor: "#e3f2fd",
+              borderColor: "#bbdefb",
+            },
+          }}
+        >
+          <Typography variant="body2" sx={{ fontWeight: 500 }}>
+            Data Storage Policy
+          </Typography>
+        </Button>
+      </Box>
 
       {/* Current subscription status */}
       {userSubscription &&
@@ -337,15 +413,23 @@ const SubscriptionPlans = () => {
                 </FeaturesList>
 
                 <ButtonWrapper>
-                  {isCurrent ? (
-                    <CurrentPlanButton disabled>
-                      {isSubscriptionExpired ? "Expired Plan" : "Current Plan"}
-                    </CurrentPlanButton>
+                  {isCurrent && !userSubscription?.scheduled_downgrade ? (
+                    <CurrentPlanButton disabled>Current Plan</CurrentPlanButton>
                   ) : (
                     <UpgradeButton
                       variant="contained"
-                      onClick={() => handleUpgradeClick(plan.id)}
-                      disabled={!user || isProcessing}
+                      onClick={() => {
+                        if (userSubscription?.scheduled_downgrade && !isFree) {
+                          handleReactivatePlan(plan.id)
+                        } else {
+                          handleUpgradeClick(plan.id)
+                        }
+                      }}
+                      disabled={
+                        !user ||
+                        isProcessing ||
+                        (isFree && userSubscription?.scheduled_downgrade)
+                      }
                       startIcon={
                         isProcessing ? <CircularProgress size={16} /> : null
                       }
@@ -354,7 +438,9 @@ const SubscriptionPlans = () => {
                         ? "Processing..."
                         : isFree
                           ? "Downgrade"
-                          : "Upgrade"}
+                          : userSubscription?.scheduled_downgrade
+                            ? "Continue Plan"
+                            : "Upgrade"}
                     </UpgradeButton>
                   )}
                 </ButtonWrapper>
@@ -364,7 +450,134 @@ const SubscriptionPlans = () => {
         </SubscriptionContent>
       </SubscriptionWrapper>
 
-      {/* Downgrade Confirmation Dialog */}
+      {/* Data Storage Information Dialog */}
+      <Dialog
+        open={showDataStorageDialog}
+        onClose={handleDataStorageDialogClose}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <InfoOutlinedIcon color="primary" />
+            <Typography
+              variant="h6"
+              component="div"
+              sx={{ fontWeight: "bold" }}
+            >
+              Data Storage Policy
+            </Typography>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
+            <Typography
+              variant="body2"
+              sx={{ fontWeight: 600, fontSize: "1rem" }}
+            >
+              What happens to your data after subscription cancellation?
+            </Typography>
+
+            <Box>
+              <Typography
+                variant="body2"
+                sx={{
+                  mb: 1,
+                  fontWeight: 500,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 1,
+                }}
+              >
+                📅 <span>Data Retention Period:</span>
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ ml: 3 }}>
+                Your data will be stored for <strong>30 days</strong> after
+                subscription cancellation.
+              </Typography>
+            </Box>
+
+            <Box>
+              <Typography
+                variant="body2"
+                sx={{
+                  mb: 1.5,
+                  fontWeight: 500,
+                  color: "#dc2626",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 1,
+                }}
+              >
+                🗑️ <span>Data that will be deleted after 30 days:</span>
+              </Typography>
+              <Box
+                sx={{
+                  ml: 3,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 0.8,
+                }}
+              >
+                <Typography variant="body2" color="text.secondary">
+                  • Premium project files and documents
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  • Export/import data beyond basic limits
+                </Typography>
+              </Box>
+            </Box>
+
+            <Box>
+              <Typography
+                variant="body2"
+                sx={{
+                  mb: 1.5,
+                  fontWeight: 500,
+                  color: "#16a34a",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 1,
+                }}
+              >
+                ✅ <span>Data that will be preserved:</span>
+              </Typography>
+              <Box
+                sx={{
+                  ml: 3,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 0.8,
+                }}
+              >
+                <Typography variant="body2" color="text.secondary">
+                  • Basic account information and profile
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  • Essential project data (up to free plan limits)
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  • Basic usage history and preferences
+                </Typography>
+              </Box>
+            </Box>
+
+            <Alert severity="warning" sx={{ mt: 1 }}>
+              <Typography variant="body2">
+                <strong>Important:</strong> We recommend downloading and backing
+                up your important data before cancellation. You can reactivate
+                your subscription anytime within the 30-day period to restore
+                full access to your premium data.
+              </Typography>
+            </Alert>
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={handleDataStorageDialogClose} variant="contained">
+            I Understand
+          </Button>
+        </DialogActions>
+      </Dialog>
       <Dialog
         open={showDowngradeDialog}
         onClose={handleCancelDowngrade}
@@ -381,9 +594,24 @@ const SubscriptionPlans = () => {
             Are you sure you want to cancel your subscription? Your subscription
             will be canceled at <strong>{getExpirationDate()}</strong>.
           </Typography>
+
+          {/* Data Storage Warning in Dialog */}
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
+              ⚠️ Data Storage Notice:
+            </Typography>
+            <Typography variant="body2">
+              Your premium data will be stored for <strong>30 days</strong>{" "}
+              after cancellation. After this period, premium content including
+              project files, advanced reports, and custom templates will be
+              permanently deleted.
+            </Typography>
+          </Alert>
+
           <Typography variant="body2" color="text.secondary">
             You will lose access to premium features after this date, but you
-            can resubscribe at any time.
+            can resubscribe at any time within 30 days to restore full access to
+            your data.
           </Typography>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
@@ -400,7 +628,7 @@ const SubscriptionPlans = () => {
             color="error"
             autoFocus
           >
-            Yes
+            Yes, Cancel Subscription
           </Button>
         </DialogActions>
       </Dialog>
@@ -408,7 +636,7 @@ const SubscriptionPlans = () => {
   )
 }
 
-// Styled Components remain the same...
+// Styled Components
 const BoxWrapper = styled(Box)({
   display: "flex",
   flexDirection: "column",

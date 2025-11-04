@@ -16,6 +16,7 @@ from studio.app.common.models.subscription import (
     SyncStatus,
     UserSubscription,
 )
+from studio.app.common.models.user import User
 
 logger = AppLogger.get_logger()
 
@@ -323,6 +324,23 @@ class SubscriptionService:
         except Exception as e:
             logger.error(f"Error getting current datetime: {str(e)}")
             return None
+
+    @staticmethod
+    def get_user_subscription_by_user_id(
+        db: Session, user_id: int
+    ) -> Optional[Tuple[UserSubscription, User]]:
+        """
+        Get user subscription by user ID with user details
+        """
+        return (
+            db.query(UserSubscription, User)
+            .join(
+                User,
+                UserSubscription.user_id == User.id,
+            )
+            .filter(UserSubscription.user_id == user_id)
+            .first()
+        )
 
 
 class SyncService:

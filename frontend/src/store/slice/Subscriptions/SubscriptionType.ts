@@ -23,6 +23,7 @@ export interface UserSubscription {
   plan_id: number
   user_id: number
   expiration: string
+  is_expired: boolean
   scheduled_downgrade: boolean
   status: number
   plan_name: string
@@ -37,6 +38,7 @@ export interface SubscriptionState {
   error: string | null
   plansLoading: boolean
   userSubscriptionLoading: boolean
+  serverTime: string | null
 }
 
 // API Error types

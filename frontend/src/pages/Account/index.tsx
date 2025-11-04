@@ -11,7 +11,7 @@ import { useNavigate } from "react-router-dom"
 
 import { useSnackbar, VariantType } from "notistack"
 
-import Edit from "@mui/icons-material/Edit"
+import { Edit } from "@mui/icons-material"
 import {
   Box,
   Button,
@@ -26,12 +26,14 @@ import { ROLE } from "@types"
 import ChangePasswordModal from "components/Account/ChangePasswordModal"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
-import { getUserSubscription } from "store/slice/Subscriptions/SubscriptionActions"
+import {
+  getUTCServerTime,
+  getUserSubscription,
+} from "store/slice/Subscriptions/SubscriptionActions"
 import {
   selectUserSubscription,
   selectUserSubscriptionLoading,
 } from "store/slice/Subscriptions/SubscriptionSelector"
-import { UserSubscription } from "store/slice/Subscriptions/SubscriptionType"
 import {
   deleteMe,
   getMe,
@@ -41,44 +43,6 @@ import {
 import { selectCurrentUser, selectLoading } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
-import { getAccurateTimeUTC } from "utils/subscriptions/SubscriptionUtils"
-
-const useSubscriptionExpiration = (
-  userSubscription: UserSubscription | null,
-) => {
-  const [isExpired, setIsExpired] = useState(false)
-  const [isValidating, setIsValidating] = useState(false)
-
-  useEffect(() => {
-    if (!userSubscription) {
-      setIsExpired(false)
-      return
-    }
-
-    const validateExpiration = async () => {
-      setIsValidating(true)
-      try {
-        // Get current UTC time from server
-        const accurateTime = await getAccurateTimeUTC()
-        const expirationDate = new Date(userSubscription.expiration)
-
-        // Ensure expiration is treated as UTC
-        const expirationUTC = new Date(expirationDate.getTime())
-        setIsExpired(expirationUTC <= accurateTime)
-      } catch (error) {
-        const clientTimeUTC = new Date() // This is already UTC internally
-        const expirationDate = new Date(userSubscription.expiration)
-        setIsExpired(expirationDate <= clientTimeUTC)
-      } finally {
-        setIsValidating(false)
-      }
-    }
-
-    validateExpiration()
-  }, [userSubscription])
-
-  return { isExpired, isValidating }
-}
 
 export enum SUBSCRIPTION_USER_STATUS {
   FREE = 1,
@@ -97,11 +61,6 @@ const Account = () => {
   const loading = useSelector(selectLoading)
   const userSubscription = useSelector(selectUserSubscription)
   const subscriptionLoading = useSelector(selectUserSubscriptionLoading)
-
-  const {
-    isExpired: isSubscriptionExpired,
-    isValidating: isValidatingExpiration,
-  } = useSubscriptionExpiration(userSubscription)
 
   const dispatch = useDispatch<AppDispatch>()
   const navigate = useNavigate()
@@ -243,49 +202,71 @@ const Account = () => {
   const determineSubscriptionButtonStatus = () => {
     if (!userSubscription) {
       return SUBSCRIPTION_USER_STATUS.FREE
-    } else if (isSubscriptionExpired) {
+    } else if (userSubscription.is_expired) {
       return SUBSCRIPTION_USER_STATUS.EXPIRED
     } else {
       return SUBSCRIPTION_USER_STATUS.SUBSCRIBED
     }
   }
 
-  const getSubscriptionButton = () => {
+  // Updated function to handle showing both buttons for users with subscription records
+  const renderSubscriptionButtons = () => {
     const status = determineSubscriptionButtonStatus()
 
-    if (
-      status === SUBSCRIPTION_USER_STATUS.FREE ||
-      status === SUBSCRIPTION_USER_STATUS.EXPIRED
-    ) {
-      return {
-        text: "Upgrade",
-        action: onClickUpgrade,
-        color: "primary" as const,
-      }
+    // For users who never had a subscription (completely free users)
+    if (status === SUBSCRIPTION_USER_STATUS.FREE) {
+      return (
+        <Button
+          variant="contained"
+          color="primary"
+          sx={{ ml: 2 }}
+          onClick={onClickUpgrade}
+          disabled={subscriptionLoading}
+        >
+          Upgrade
+        </Button>
+      )
     }
 
-    return {
-      text: "Manage",
-      action: onClickManage,
-      color: "secondary" as const,
+    // For users with subscription records (active or expired)
+    if (
+      status === SUBSCRIPTION_USER_STATUS.SUBSCRIBED ||
+      status === SUBSCRIPTION_USER_STATUS.EXPIRED
+    ) {
+      return (
+        <Box sx={{ ml: 2, display: "flex", gap: 1 }}>
+          {status === SUBSCRIPTION_USER_STATUS.EXPIRED && (
+            <Button
+              variant="contained"
+              color="primary"
+              onClick={onClickUpgrade}
+              disabled={subscriptionLoading}
+            >
+              Upgrade
+            </Button>
+          )}
+          <Button
+            variant="contained"
+            color="secondary"
+            onClick={onClickManage}
+            disabled={subscriptionLoading}
+          >
+            Manage
+          </Button>
+        </Box>
+      )
     }
+
+    // Fallback for loading/error states
+    return null
   }
 
   // Helper function to format expiration date with server-validated expiration status
   const getExpirationInfo = () => {
     if (!userSubscription) return null
-
     const expirationDate = new Date(userSubscription.expiration)
 
-    if (isValidatingExpiration) {
-      return (
-        <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-          (Validating expiration...)
-        </Typography>
-      )
-    }
-
-    if (isSubscriptionExpired) {
+    if (userSubscription.is_expired) {
       return (
         <Typography variant="caption" color="error" sx={{ ml: 1 }}>
           (Expired on {expirationDate.toLocaleDateString()})
@@ -306,8 +287,6 @@ const Account = () => {
 
     return null
   }
-
-  const subscriptionButton = getSubscriptionButton()
 
   return (
     <AccountWrapper>
@@ -377,21 +356,13 @@ const Account = () => {
           }}
         >
           <BoxData>
-            {userSubscription?.plan_name && !isSubscriptionExpired
+            {userSubscription?.plan_name && !userSubscription.is_expired
               ? userSubscription.plan_name
               : SUBSCRIPTION_PLAN.FREE}
           </BoxData>
           {getExpirationInfo()}
         </Box>
-        <Button
-          variant="contained"
-          color={subscriptionButton.color}
-          sx={{ ml: 2 }}
-          onClick={subscriptionButton.action}
-          disabled={subscriptionLoading || isValidatingExpiration}
-        >
-          {subscriptionButton.text}
-        </Button>
+        {renderSubscriptionButtons()}
       </BoxFlex>
       <BoxFlex sx={{ justifyContent: "space-between", mt: 10, maxWidth: 600 }}>
         <Button variant="contained" color="primary" onClick={onChangePwClick}>

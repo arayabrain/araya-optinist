@@ -273,7 +273,7 @@ VALUES
                    'isPremium', false),
         JSON_OBJECT('text', 'Standard support through documentation and community',
                    'isPremium', false),
-        JSON_OBJECT('text', 'Basic data storage (5GB)', 'isPremium', false),
+        JSON_OBJECT('text', 'Basic data storage of 5GB', 'isPremium', false),
         JSON_OBJECT('text', 'Standard processing speed', 'isPremium', false)
     )
 ), 1, 1, NOW()),
@@ -283,11 +283,9 @@ VALUES
                    'isPremium', false),
         JSON_OBJECT('text', 'Standard support through documentation and community',
                    'isPremium', false),
-        JSON_OBJECT('text', 'Basic data storage (5GB)', 'isPremium', false),
-        JSON_OBJECT('text', 'Standard processing speed', 'isPremium', false),
         JSON_OBJECT('text', 'Priority compute access with guaranteed allocation',
                    'isPremium', true),
-        JSON_OBJECT('text', 'Extended data storage (200GB)', 'isPremium', true),
+        JSON_OBJECT('text', 'Upgraded data storage of 200GB', 'isPremium', true),
         JSON_OBJECT('text', 'Enhanced support including direct assistance',
                    'isPremium', true),
         JSON_OBJECT('text', 'Advanced features like extended job history',

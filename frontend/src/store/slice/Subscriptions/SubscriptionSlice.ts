@@ -7,6 +7,8 @@ import {
   getSubscriptionPlan,
   getUserSubscription,
   validateCheckoutSession,
+  reactivateSubscription,
+  getUTCServerTime,
 } from "store/slice/Subscriptions/SubscriptionActions"
 import {
   SUBSCRIPTION_SLICE_NAME,
@@ -26,6 +28,7 @@ const initialState: SubscriptionState = {
   error: null,
   plansLoading: false,
   userSubscriptionLoading: false,
+  serverTime: null,
 }
 
 const subscriptionSlice = createSlice({
@@ -108,6 +111,7 @@ const subscriptionSlice = createSlice({
                 status:
                   Number(action.payload.status) ||
                   SUBSCRIPTION_USER_STATUS.FREE,
+                is_expired: Boolean(action.payload.is_expired),
                 scheduled_downgrade: Boolean(
                   action.payload.scheduled_downgrade,
                 ),
@@ -177,6 +181,39 @@ const subscriptionSlice = createSlice({
         )
         // Show alert for payment failure
         alert("Payment failed. Please try again or contact support.")
+      })
+      .addCase(reactivateSubscription.pending, (state) => {
+        state.loading = true
+        state.error = null
+      })
+      .addCase(reactivateSubscription.fulfilled, (state, action) => {
+        state.loading = false
+        if (state.userSubscription) {
+          state.userSubscription.scheduled_downgrade = false
+        }
+      })
+      .addCase(reactivateSubscription.rejected, (state, action) => {
+        state.loading = false
+        state.error = extractRejectedErrorMessage(
+          action,
+          "Failed to reactivate subscription",
+        )
+      })
+      .addCase(getUTCServerTime.pending, (state) => {
+        state.loading = true
+        state.error = null
+      })
+      .addCase(getUTCServerTime.fulfilled, (state, action) => {
+        state.loading = false
+        state.serverTime = action.payload || null
+      })
+      .addCase(getUTCServerTime.rejected, (state, action) => {
+        state.loading = false
+        state.error = extractRejectedErrorMessage(
+          action,
+          "Failed to fetch server time",
+        )
+        state.serverTime = null
       })
   },
 })
