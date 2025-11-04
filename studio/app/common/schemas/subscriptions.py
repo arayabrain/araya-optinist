@@ -79,8 +79,11 @@ class UserSubscriptionResponse(BaseModel):
     plan_id: int
     user_id: int
     expiration: datetime
+    is_expired: bool
+    scheduled_downgrade: bool
     plan_name: str
     plan_price: int
+    status: int = Field(..., description="1=Active, 2=Cancelled, 3=Expired, 4=CANCELED")
     created_at: datetime
     updated_at: datetime
 
@@ -107,3 +110,122 @@ class CreateCheckoutSessionRequest(BaseModel):
 class CreateCheckoutSessionResponse(BaseModel):
     checkout_url: str
     session_id: str
+
+
+class PaymentMethodResponse(BaseModel):
+    id: str
+    last4: str
+    brand: str  # visa, mastercard, amex, etc.
+    exp_month: int
+    exp_year: int
+    is_default: bool
+
+    class Config:
+        from_attributes = True
+        json_encoders = {
+            # Add any custom encoders if needed
+        }
+
+    @property
+    def card_logo_url(self) -> str:
+        """
+        Return a URL or identifier for the card brand logo
+        You can customize this based on where you store your card logos
+        """
+        brand_logos = {
+            "visa": "/static/images/cards/visa.png",
+            "mastercard": "/static/images/cards/mastercard.png",
+            "amex": "/static/images/cards/amex.png",
+            "discover": "/static/images/cards/discover.png",
+            "jcb": "/static/images/cards/jcb.png",
+            "diners": "/static/images/cards/diners.png",
+            "unionpay": "/static/images/cards/unionpay.png",
+        }
+        return brand_logos.get(self.brand.lower(), "/static/images/cards/default.png")
+
+    @property
+    def display_name(self) -> str:
+        """
+        Return a user-friendly display name for the payment method
+        """
+        brand_name = self.brand.title()
+        return f"{brand_name} ending in {self.last4}"
+
+
+class InvoiceResponse(BaseModel):
+    id: str
+    date: str  # ISO format date string
+    total: str  # Formatted total amount (e.g., "$20.00")
+    status: str  # Invoice status (Paid, Open, Draft, etc.)
+    invoice_url: str  # URL to view/download the invoice
+    amount_paid: int  # Amount paid in cents
+    amount_due: int  # Amount due in cents
+    currency: str  # Currency code (USD, JPY, etc.)
+    description: Optional[str] = None  # Invoice description
+    period_start: Optional[str] = None  # Billing period start (ISO format)
+    period_end: Optional[str] = None  # Billing period end (ISO format)
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda v: v.isoformat()}
+
+
+# You might also want a simpler version for basic display
+class InvoiceBasicResponse(BaseModel):
+    id: str
+    date: str
+    total: str
+    status: str
+    invoice_url: str
+
+    class Config:
+        from_attributes = True
+
+
+class CreateSetupIntentRequest(BaseModel):
+    pass  # No additional fields needed, user_id comes from auth
+
+
+class CreateSetupIntentResponse(BaseModel):
+    success: bool
+    client_secret: str
+    setup_intent_id: str
+    message: Optional[str] = None
+
+
+class UpdatePaymentMethodResponse(BaseModel):
+    success: bool
+    message: str
+    payment_method_id: Optional[str] = None
+
+
+class UpdateSubscriptionRequest(BaseModel):
+    """Request model for updating user subscription"""
+
+    new_plan_id: int = Field(..., description="ID of the new subscription plan")
+    proration_behavior: Optional[str] = Field(
+        default="create_prorations",
+        description=(
+            "How to handle prorations: 'create_prorations', 'none', " "'always_invoice'"
+        ),
+    )
+
+
+class UpdateSubscriptionResponse(BaseModel):
+    """Response model for subscription updates"""
+
+    success: bool
+    message: str
+    old_plan_name: str
+    new_plan_name: str
+    change_type: str  # "upgrade" or "downgrade"
+    effective_date: Optional[int] = None
+    next_billing_date: Optional[int] = None
+    prorated_amount: Optional[str] = None
+
+
+class CancelSubscriptionResponse(BaseModel):
+    success: bool
+    message: str
+    cancellation_date: str
+    access_until: str

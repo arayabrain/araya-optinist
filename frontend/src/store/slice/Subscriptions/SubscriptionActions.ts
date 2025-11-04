@@ -1,12 +1,15 @@
-// store/slice/Subscriptions/SubscriptionActions.ts
 import _ from "lodash"
 
 import { createAsyncThunk } from "@reduxjs/toolkit"
 
 import {
+  cancelSubscriptionApi,
   createCheckoutSessionApi,
+  getServerTimeApi as getUTCServerTimeApi,
   getSubscriptionPlansApi,
   getUserSubscriptionApi,
+  reactivateSubscriptionApi,
+  validateCheckoutSessionApi,
 } from "api/subscriptions/Subscriptions"
 import {
   CreateCheckoutSessionResponse,
@@ -51,13 +54,30 @@ export const getSubscriptionPlan = createAsyncThunk(
 
       // Validate response structure
       if (!Array.isArray(response)) {
+        // eslint-disable-next-line no-console
         console.warn("Invalid subscription plans response:", response)
         return []
       }
 
       return response
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error("Error fetching subscription plans:", error)
+      // Extract clean error message instead of passing entire error object
+      const errorMessage = extractErrorMessage(error)
+      return thunkAPI.rejectWithValue(errorMessage)
+    }
+  },
+)
+
+export const getUTCServerTime = createAsyncThunk(
+  `${SUBSCRIPTION_SLICE_NAME}/getServerTime`,
+  async (_, thunkAPI) => {
+    try {
+      const response = await getUTCServerTimeApi()
+      return response
+    } catch (error) {
+      console.error("Error fetching server time:", error)
       // Extract clean error message instead of passing entire error object
       const errorMessage = extractErrorMessage(error)
       return thunkAPI.rejectWithValue(errorMessage)
@@ -67,12 +87,11 @@ export const getSubscriptionPlan = createAsyncThunk(
 
 export const getUserSubscription = createAsyncThunk(
   `${SUBSCRIPTION_SLICE_NAME}/getUserSubscription`,
-  async (userId: number, thunkAPI) => {
+  async (_, thunkAPI) => {
     try {
-      const response = await getUserSubscriptionApi(userId)
+      const response = await getUserSubscriptionApi()
       return response
     } catch (error) {
-      console.error("Error fetching user subscription:", error)
       // Extract clean error message instead of passing entire error object
       const errorMessage = extractErrorMessage(error)
       return thunkAPI.rejectWithValue(errorMessage)
@@ -93,3 +112,50 @@ export const createCheckoutSession = createAsyncThunk<
     return rejectWithValue(message)
   }
 })
+
+export const reactivateSubscription = createAsyncThunk(
+  `${SUBSCRIPTION_SLICE_NAME}/reactivateSubscription`,
+  async (userId: number, thunkAPI) => {
+    try {
+      const response = await reactivateSubscriptionApi(userId)
+      return response
+    } catch (error) {
+      console.error("Error reactivating subscription:", error)
+      // Extract clean error message instead of passing entire error object
+      const errorMessage = extractErrorMessage(error)
+      return thunkAPI.rejectWithValue(errorMessage)
+    }
+  },
+)
+
+export const validateCheckoutSession = createAsyncThunk(
+  `${SUBSCRIPTION_SLICE_NAME}/validateCheckoutSession`,
+  async (sessionId: string, thunkAPI) => {
+    try {
+      const response = await validateCheckoutSessionApi(sessionId)
+      return response
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error("Error validating checkout session:", error)
+      // Extract clean error message instead of passing entire error object
+      const errorMessage = extractErrorMessage(error)
+      return thunkAPI.rejectWithValue(errorMessage)
+    }
+  },
+)
+
+export const cancelSubscription = createAsyncThunk(
+  `${SUBSCRIPTION_SLICE_NAME}/cancelSubscription`,
+  async (_, thunkAPI) => {
+    try {
+      const response = await cancelSubscriptionApi()
+      return response
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error("Error cancelling subscription:", error)
+      // Extract clean error message instead of passing entire error object
+      const errorMessage = extractErrorMessage(error)
+      return thunkAPI.rejectWithValue(errorMessage)
+    }
+  },
+)

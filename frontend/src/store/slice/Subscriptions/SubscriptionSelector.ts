@@ -2,8 +2,9 @@ import { RootState } from "store/store"
 
 export const selectSubscriptionPlans = (state: RootState) =>
   state.subscription.plans
-export const selectUserSubscription = (state: RootState) =>
-  state.subscription.userSubscription
+export const selectUserSubscription = (state: RootState) => {
+  return state.subscription.userSubscription
+}
 export const selectSubscriptionLoading = (state: RootState) =>
   state.subscription.loading
 export const selectSubscriptionError = (state: RootState) =>
@@ -12,21 +13,16 @@ export const selectPlansLoading = (state: RootState) =>
   state.subscription.plansLoading
 export const selectUserSubscriptionLoading = (state: RootState) =>
   state.subscription.userSubscriptionLoading
+export const selectCheckoutLoading = (state: RootState) =>
+  state.subscription.checkoutLoading
+export const selectIsSubscriptionExpired = (state: RootState) =>
+  state.subscription.userSubscription?.is_expired
+export const selectServerTime = (state: RootState) =>
+  state.subscription.serverTime
 
 export const selectSubscriptionExpirationDate = (state: RootState) => {
   const userSubscription = selectUserSubscription(state)
   return userSubscription?.expiration
-}
-
-// Derived selectors
-export const selectIsSubscriptionExpired = (state: RootState) => {
-  const userSubscription = selectUserSubscription(state)
-  if (!userSubscription) return false
-
-  // Use client time for selector - validation happens elsewhere
-  const now = new Date()
-  const expirationDate = new Date(userSubscription.expiration)
-  return expirationDate <= now
 }
 
 export const selectCurrentPlanId = (state: RootState) => {
@@ -40,6 +36,3 @@ export const selectCurrentPlanId = (state: RootState) => {
 
   return userSubscription.plan_id
 }
-
-export const selectCheckoutLoading = (state: RootState) =>
-  state.subscription.checkoutLoading
