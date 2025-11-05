@@ -16,7 +16,8 @@ class TestInvoicePaymentSucceeded:
     def mock_db(self):
         """Create a mock database session"""
         db = Mock(spec=Session)
-        db.exec = Mock()
+        # Setup query chain to return mocked objects properly
+        db.query = Mock()
         db.add = Mock()
         db.flush = Mock()
         db.commit = Mock()
@@ -38,6 +39,7 @@ class TestInvoicePaymentSucceeded:
         subscription.id = "sub_123"
         subscription.user_id = "user_123"
         subscription.plan_id = "plan_123"
+        # IMPORTANT: Set to real datetime, not Mock
         subscription.expiration = datetime.now() + timedelta(days=5)
         subscription.updated_at = None
         return subscription
@@ -48,7 +50,9 @@ class TestInvoicePaymentSucceeded:
         plan = Mock()
         plan.id = "plan_123"
         plan.name = "Premium Plan"
-        plan.billing_cycle = "monthly"
+        plan.billing_cycle = (
+            "monthly"  # This should match BILLING_CYCLE.MONTHLY from your code
+        )
         return plan
 
     @pytest.fixture
@@ -86,10 +90,38 @@ class TestInvoicePaymentSucceeded:
         invoice_data_subscription_cycle,
     ):
         """Test successful monthly subscription renewal"""
-        # Setup mocks
-        mock_db.exec.return_value.first.side_effect = [
-            mock_user_account,
-            mock_subscription,
+        # Setup query chain for db.query()
+        mock_query = Mock()
+        mock_filter = Mock()
+        mock_order = Mock()
+
+        # First query returns user_account
+        mock_filter.first.return_value = mock_user_account
+        mock_query.filter.return_value = mock_filter
+
+        # Second query returns subscription
+        mock_filter2 = Mock()
+        mock_order.first.return_value = mock_subscription
+        mock_filter2.order_by.return_value = mock_order
+
+        # Setup the query chain to return different results
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(
+                        order_by=Mock(
+                            return_value=Mock(
+                                first=Mock(return_value=mock_subscription)
+                            )
+                        )
+                    )
+                )
+            ),
         ]
 
         with patch.object(
@@ -163,7 +195,9 @@ class TestInvoicePaymentSucceeded:
             "billing_reason": "subscription_cycle",
         }
 
-        mock_db.exec.return_value.first.return_value = mock_user_account
+        mock_db.query.return_value.filter.return_value.first.return_value = (
+            mock_user_account
+        )
 
         with pytest.raises(Exception):  # Should raise HTTPException
             WebhookService.handle_subscription_payment_succeeded(mock_db, invoice_data)
@@ -173,7 +207,7 @@ class TestInvoicePaymentSucceeded:
     def test_user_not_found(self, mock_db, invoice_data_subscription_cycle):
         """Test error handling when user is not found"""
         # Mock user not found
-        mock_db.exec.return_value.first.return_value = None
+        mock_db.query.return_value.filter.return_value.first.return_value = None
 
         with pytest.raises(Exception):  # Should raise HTTPException
             WebhookService.handle_subscription_payment_succeeded(
@@ -187,9 +221,19 @@ class TestInvoicePaymentSucceeded:
     ):
         """Test error handling when active subscription is not found"""
         # Mock user found but no active subscription
-        mock_db.exec.return_value.first.side_effect = [
-            mock_user_account,
-            None,  # No subscription found
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(
+                        order_by=Mock(return_value=Mock(first=Mock(return_value=None)))
+                    )
+                )
+            ),
         ]
 
         with pytest.raises(Exception):  # Should raise HTTPException
@@ -207,9 +251,23 @@ class TestInvoicePaymentSucceeded:
         invoice_data_subscription_cycle,
     ):
         """Test error handling when subscription plan is not found"""
-        mock_db.exec.return_value.first.side_effect = [
-            mock_user_account,
-            mock_subscription,
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(
+                        order_by=Mock(
+                            return_value=Mock(
+                                first=Mock(return_value=mock_subscription)
+                            )
+                        )
+                    )
+                )
+            ),
         ]
 
         with patch.object(CheckoutService, "get_subscription_plan", return_value=None):
@@ -229,9 +287,23 @@ class TestInvoicePaymentSucceeded:
         invoice_data_subscription_cycle,
     ):
         """Test error handling when database commit fails"""
-        mock_db.exec.return_value.first.side_effect = [
-            mock_user_account,
-            mock_subscription,
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(
+                        order_by=Mock(
+                            return_value=Mock(
+                                first=Mock(return_value=mock_subscription)
+                            )
+                        )
+                    )
+                )
+            ),
         ]
         mock_db.commit.side_effect = Exception("Database error")
 
