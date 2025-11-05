@@ -15,6 +15,11 @@ from studio.app.common.core.premium.premium_assignment_service import (
 )
 from studio.app.common.core.users import crud_users
 from studio.app.common.db.database import get_db
+from studio.app.common.models.subscription import (
+    PlanName,
+    SubscriptionStatus,
+    SubscriptionType,
+)
 from studio.app.common.schemas.users import SelfUserUpdate, User, UserPasswordUpdate
 
 router = APIRouter(prefix="/users/me", tags=["users/me"])
@@ -38,7 +43,7 @@ async def get_routing_info(current_user: User = Depends(get_current_user)):
     Get routing information for ALB header-based routing.
     Returns the headers that should be sent with requests for premium users.
     """
-    is_premium = current_user.subscription_type == "premium"
+    is_premium = current_user.subscription_type == SubscriptionType.PREMIUM.value
 
     routing_info = {
         "user_id": str(current_user.id),
@@ -50,7 +55,7 @@ async def get_routing_info(current_user: User = Depends(get_current_user)):
     # Add routing headers if user is premium
     if is_premium:
         routing_info["routing_headers"] = {
-            "X-User-Tier": "premium",
+            "X-User-Tier": SubscriptionType.PREMIUM.value,
             "X-User-ID": str(current_user.id),
         }
 
@@ -69,7 +74,7 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
     This endpoint triggers the premium assignment process.
     """
     # Check if user is premium
-    if current_user.subscription_type != "premium":
+    if current_user.subscription_type != SubscriptionType.PREMIUM.value:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Premium subscription required for dedicated instance assignment",
@@ -170,7 +175,8 @@ async def get_premium_assignment_status(current_user: User = Depends(get_current
         return {
             "user_id": current_user.id,
             "subscription_type": current_user.subscription_type,
-            "is_premium": current_user.subscription_type == "premium",
+            "is_premium": current_user.subscription_type
+            == SubscriptionType.PREMIUM.value,
             "assignment": status_info,
         }
 
@@ -179,7 +185,8 @@ async def get_premium_assignment_status(current_user: User = Depends(get_current
         return {
             "user_id": current_user.id,
             "subscription_type": current_user.subscription_type,
-            "is_premium": current_user.subscription_type == "premium",
+            "is_premium": current_user.subscription_type
+            == SubscriptionType.PREMIUM.value,
             "assignment": None,
             "error": str(e),
         }
@@ -192,13 +199,13 @@ async def send_premium_heartbeat(current_user: User = Depends(get_current_user))
     Prevents stale assignment cleanup for active users.
     """
     # Check if user is premium
-    is_premium = current_user.subscription_type == "premium"
+    is_premium = current_user.subscription_type == SubscriptionType.PREMIUM.value
 
     if not is_premium:
         return {
             "message": "Heartbeat received (non-premium user)",
             "user_id": current_user.id,
-            "user_tier": "free",
+            "user_tier": SubscriptionType.FREE.value,
             "assignment_active": False,
             "updated": False,
         }
@@ -213,7 +220,7 @@ async def send_premium_heartbeat(current_user: User = Depends(get_current_user))
             else "No active assignment found",
             "updated": result["success"],
             "user_id": current_user.id,
-            "user_tier": "premium",
+            "user_tier": SubscriptionType.PREMIUM.value,
             "assignment_active": result["success"],
             "activity_update": result.get("timestamp"),
         }
@@ -225,7 +232,7 @@ async def send_premium_heartbeat(current_user: User = Depends(get_current_user))
             "message": f"Heartbeat processed with warnings: {str(e)}",
             "updated": False,
             "user_id": current_user.id,
-            "user_tier": "premium",
+            "user_tier": SubscriptionType.PREMIUM.value,
             "assignment_active": False,
             "error": str(e),
         }
@@ -260,7 +267,7 @@ async def premium_heartbeat(current_user: User = Depends(get_current_user)):
     Should be called every 2-5 minutes by frontend for premium users.
     """
     # Only premium users need heartbeat tracking
-    if current_user.subscription_type != "premium":
+    if current_user.subscription_type != SubscriptionType.PREMIUM.value:
         return {
             "message": "Heartbeat not needed for non-premium users",
             "updated": False,
@@ -355,8 +362,10 @@ async def get_my_cloud_details(
         user_with_details = await crud_users.get_user_with_context(db, current_user.id)
         if user_with_details:
             result["subscription_details"] = {
-                "plan_name": user_with_details.subscription_plan_name or "Free",
-                "status": user_with_details.subscription_status or "Free",
+                "plan_name": user_with_details.subscription_plan_name
+                or PlanName.FREE.value,
+                "status": user_with_details.subscription_status
+                or SubscriptionStatus.FREE.value,
                 "storage_usage_bytes": user_with_details.storage_usage_bytes or 0,
                 "storage_quota_bytes": user_with_details.storage_quota_bytes or 0,
             }

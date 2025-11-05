@@ -19,8 +19,6 @@ logger = AppLogger.get_logger()
 
 def main():
     try:
-        import os
-
         from studio.app.common.core.rules.file_writer import FileWriter
         from studio.app.common.core.snakemake.smk_utils import SmkUtils
         from studio.app.common.core.snakemake.snakemake_reader import RuleConfigReader

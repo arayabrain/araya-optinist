@@ -1,5 +1,5 @@
 """
-Storage Alerts API Router.
+Storage Limit Alerts API Router.
 Provides endpoints for checking and managing S3 storage alerts.
 """
 from typing import Dict, List, Optional
@@ -19,7 +19,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.db.database import get_db
 from studio.app.common.schemas.users import User
 
-router = APIRouter(prefix="/storage-alerts", tags=["storage-alerts"])
+router = APIRouter(prefix="/storage-limit-alerts", tags=["storage-limit-alerts"])
 logger = AppLogger.get_logger()
 
 

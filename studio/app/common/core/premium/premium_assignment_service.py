@@ -14,6 +14,7 @@ from typing import Dict, Optional
 import boto3
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.models.subscription import SubscriptionType
 
 logger = AppLogger.get_logger()
 
@@ -149,7 +150,11 @@ class PremiumAssignmentService:
             payload = {
                 "httpMethod": "POST",
                 "body": json.dumps(
-                    {"action": "assign", "user_id": str(user_id), "tier": "premium"}
+                    {
+                        "action": "assign",
+                        "user_id": str(user_id),
+                        "tier": SubscriptionType.PREMIUM.value,
+                    }
                 ),
             }
 
@@ -267,7 +272,11 @@ class PremiumAssignmentService:
             payload = {
                 "httpMethod": "POST",
                 "body": json.dumps(
-                    {"action": "release", "user_id": str(user_id), "tier": "premium"}
+                    {
+                        "action": "release",
+                        "user_id": str(user_id),
+                        "tier": SubscriptionType.PREMIUM.value,
+                    }
                 ),
             }
 
@@ -425,7 +434,7 @@ class PremiumAssignmentService:
                     {
                         "action": "update_activity",
                         "user_id": str(user_id),
-                        "tier": "premium",
+                        "tier": SubscriptionType.PREMIUM.value,
                     }
                 ),
             }

@@ -17,6 +17,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from studio.app.common.models.subscription import StorageSize
+
 # Add the project root directory to the Python path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -119,10 +121,7 @@ async def create_test_user_in_db(db, user_data, organization_id):
     storage_usage = UserStorageUsage(
         user_id=user_db.id,
         storage_usage_bytes=0,
-        storage_quota_bytes=user_data["storage_quota_gb"]
-        * 1024
-        * 1024
-        * 1024,  # Convert GB to bytes
+        storage_quota_bytes=user_data["storage_quota_gb"] * StorageSize.GB,
     )
     db.add(storage_usage)
 

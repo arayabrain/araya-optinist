@@ -17,6 +17,12 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.users import crud_users
 from studio.app.common.db.database import session_scope
+from studio.app.common.models.subscription import (
+    PlanName,
+    StorageSize,
+    SubscriptionStatus,
+    SubscriptionType,
+)
 
 logger = AppLogger.get_logger()
 
@@ -38,8 +44,8 @@ class S3StorageMonitor:
         # Storage quotas by plan (in bytes)
         # These should match the values in your subscription plan features
         self.PLAN_QUOTAS = {
-            "free": 5 * 1024 * 1024 * 1024,  # 5GB
-            "premium": 100 * 1024 * 1024 * 1024,  # 100GB
+            SubscriptionType.FREE.value: 5 * StorageSize.GB,  # 5GB
+            SubscriptionType.PREMIUM.value: 100 * StorageSize.GB,  # 100GB
         }
 
     async def get_user_s3_storage_size(self, user_id: int) -> int:
@@ -188,7 +194,7 @@ class S3StorageMonitor:
                 if user_with_context:
                     subscription_plan = user_with_context.subscription_type
                     storage_quota = self.PLAN_QUOTAS.get(
-                        subscription_plan, self.PLAN_QUOTAS["free"]
+                        subscription_plan, self.PLAN_QUOTAS[SubscriptionType.FREE.value]
                     )
                     logger.info(
                         f"Using plan-based quota for user {user_id} "
@@ -212,7 +218,8 @@ class S3StorageMonitor:
                     if user_with_context:
                         subscription_plan = user_with_context.subscription_type
                         storage_quota = self.PLAN_QUOTAS.get(
-                            subscription_plan, self.PLAN_QUOTAS["free"]
+                            subscription_plan,
+                            self.PLAN_QUOTAS[SubscriptionType.FREE.value],
                         )
                         logger.warning(
                             f"Invalid quota in database for user {user_id}, "
@@ -266,15 +273,20 @@ class S3StorageMonitor:
                 # Filter for users with active subscriptions
                 active_users = []
                 for user in all_users:
-                    if user.subscription_status and user.subscription_status != "Free":
+                    if (
+                        user.subscription_status
+                        and user.subscription_status != SubscriptionStatus.FREE.value
+                    ):
                         active_users.append(
                             {
                                 "id": user.id,
                                 "name": user.name,
                                 "email": str(user.email),
                                 "subscription_plan": user.subscription_type,
-                                "plan_name": user.subscription_plan_name or "Free",
-                                "status": user.subscription_status or "Free",
+                                "plan_name": user.subscription_plan_name
+                                or PlanName.FREE.value,
+                                "status": user.subscription_status
+                                or SubscriptionStatus.FREE.value,
                             }
                         )
 
@@ -296,7 +308,7 @@ class S3StorageMonitor:
                             "user_name": user["name"],
                             "user_email": user["email"],
                             "subscription_plan": user["subscription_plan"],
-                            "plan_name": user.get("plan_name", "Unknown"),
+                            "plan_name": user.get("plan_name", PlanName.UNKNOWN.value),
                             "subscription_status": user.get("status", "unknown"),
                         }
                     )
@@ -315,9 +327,9 @@ class S3StorageMonitor:
     def format_bytes(self, bytes_size: int) -> str:
         """Format bytes into human readable format."""
         for unit in ["B", "KB", "MB", "GB", "TB"]:
-            if bytes_size < 1024.0:
+            if bytes_size < StorageSize.KB:
                 return f"{bytes_size:.1f} {unit}"
-            bytes_size /= 1024.0
+            bytes_size /= StorageSize.KB
         return f"{bytes_size:.1f} PB"
 
     def get_alert_message(self, alert: Dict) -> str:
@@ -362,7 +374,7 @@ class S3StorageMonitor:
 
             # Create new storage record with plan-based quota
             storage_quota_bytes = self.PLAN_QUOTAS.get(
-                subscription_plan, self.PLAN_QUOTAS["free"]
+                subscription_plan, self.PLAN_QUOTAS[SubscriptionType.FREE.value]
             )
 
             from sqlmodel import select

@@ -18,6 +18,11 @@ from studio.app.common.core.storage.remote_storage_controller import (
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.db.database import session_scope
+from studio.app.common.models.subscription import (
+    PlanName,
+    StorageSize,
+    SubscriptionType,
+)
 from studio.app.common.models.user import User
 from studio.app.dir_path import DIRPATH
 
@@ -529,7 +534,7 @@ class BatchUtils:
             # Simplified logic using has_active_subscription property
             if user_obj:
                 user_name = user_obj.name
-                plan_name = user_obj.subscription_plan_name or "Free"
+                plan_name = user_obj.subscription_plan_name or PlanName.FREE.value
 
                 logger.info(
                     f"User {user_name} has plan: {plan_name}, "
@@ -1054,14 +1059,14 @@ class BatchUtils:
         Get resource limits based on subscription plan.
         """
         limits = {
-            "free": {
+            SubscriptionType.FREE.value: {
                 "max_vcpus": 2,
                 "max_memory_mb": 4096,
                 "max_runtime_minutes": 60,
                 "max_parallel_jobs": 2,
                 "priority": 1,
             },
-            "premium": {
+            SubscriptionType.PREMIUM.value: {
                 "max_vcpus": 8,
                 "max_memory_mb": 16384,
                 "max_runtime_minutes": 360,
@@ -1070,7 +1075,7 @@ class BatchUtils:
             },
         }
 
-        return limits.get(subscription_plan, limits["free"])
+        return limits.get(subscription_plan, limits[SubscriptionType.FREE.value])
 
     @staticmethod
     def validate_job_resources(
@@ -2118,7 +2123,7 @@ class BatchDebug:
                                     pushed_at = image_detail.get("imagePushedAt")
                                     logger.info(
                                         f"Image {image_tag}: "
-                                        f"{image_size/1024/1024:.1f}MB, "
+                                        f"{image_size/StorageSize.MB:.1f}MB, "
                                         f"pushed: {pushed_at}"
                                     )
                                 else:

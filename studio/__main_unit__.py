@@ -32,7 +32,7 @@ from studio.app.common.routers import (
     outputs,
     params,
     run,
-    storage_alerts,
+    storage_limit_alerts,
     subscriptions,
     users_admin,
     users_me,
@@ -104,7 +104,9 @@ app.include_router(
 )  # NOTE: The outputs router uses the unique get_current_user.
 app.include_router(params.router, dependencies=[Depends(get_current_user)])
 app.include_router(run.router, dependencies=[Depends(get_current_user)])
-app.include_router(storage_alerts.router, dependencies=[Depends(get_current_user)])
+app.include_router(
+    storage_limit_alerts.router, dependencies=[Depends(get_current_user)]
+)
 app.include_router(users_admin.router, dependencies=[Depends(get_admin_user)])
 app.include_router(users_me.router, dependencies=[Depends(get_current_user)])
 app.include_router(users_search.router, dependencies=[Depends(get_current_user)])

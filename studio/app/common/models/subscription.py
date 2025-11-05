@@ -10,11 +10,49 @@ from sqlalchemy.sql.functions import current_timestamp
 from sqlmodel import Column, Field, SQLModel
 
 
+# Storage size constants (in bytes)
+class StorageSize:
+    """Constants for storage size calculations"""
+
+    KB = 1024  # 1 Kilobyte
+    MB = 1024 * 1024  # 1 Megabyte
+    GB = 1024 * 1024 * 1024  # 1 Gigabyte
+    TB = 1024 * 1024 * 1024 * 1024  # 1 Terabyte
+
+
 # Enums for subscription management
 class SyncStatus(str, Enum):
     PENDING = "pending"
     SYNCED = "synced"
     FAILED = "failed"
+
+
+class SubscriptionType(str, Enum):
+    PREMIUM = "premium"
+    FREE = "free"
+
+
+class PlanName(str, Enum):
+    PREMIUM = "Premium"
+    FREE = "Free"
+    UNKNOWN = "Unknown"  # Fallback for when plan cannot be determined
+
+
+class SubscriptionStatus(str, Enum):
+    FREE = "Free"  # User on free plan
+    PREMIUM = "Premium"  # Active premium subscription
+    LIMIT_GRACE = "Limit Grace"  # Premium expired, in grace period
+    EXPIRED = "Expired"  # Grace period ended
+
+
+class SubscriptionLifecycleStatus(str, Enum):
+    """Lifecycle status for subscription expiration checking in limit warnings"""
+
+    ACTIVE = "active"  # Subscription has not expired yet
+    GRACE = "grace"  # In grace period after expiration
+    WARNING = "warning"  # In warning period (after grace, before deletion)
+    OVERDUE = "overdue"  # Past warning period
+    FREE = "free"  # Never had premium subscription
 
 
 class CancellationReason(str, Enum):

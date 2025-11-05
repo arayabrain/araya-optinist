@@ -21,6 +21,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
 )
 from studio.app.common.core.workspace.workspace_services import WorkspaceService
 from studio.app.common.db.database import get_db
+from studio.app.common.models.subscription import StorageSize
 from studio.app.common.schemas.base import SortOptions
 from studio.app.common.schemas.users import User
 from studio.app.common.schemas.workspace import (
@@ -485,7 +486,7 @@ async def refresh_all_workspaces_storage(
             )
             logger.info(
                 f"Updated user {current_user.id} total storage usage "
-                f"to {total_usage} bytes ({total_usage/(1024**3):.2f}GB)"
+                f"to {total_usage} bytes ({total_usage/StorageSize.GB:.2f}GB)"
             )
         except Exception as e:
             logger.warning(f"Failed to update user total storage usage: {e}")

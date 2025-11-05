@@ -20,7 +20,9 @@ from studio.app.common.models import User as UserModel
 from studio.app.common.models import UserRole as UserRoleModel
 from studio.app.common.models.experiment import ExperimentRecord
 from studio.app.common.models.subscription import (
+    PlanName,
     SubscriptionPlans,
+    SubscriptionStatus,
     UserStorageUsage,
     UserSubscription,
 )
@@ -94,7 +96,7 @@ async def get_user_with_context(db: Session, user_id: int) -> User:
                 user.__dict__["role_id"] = role_id
                 user.__dict__["data_usage"] = data_usage
                 user.__dict__["subscription_plan_name"] = (
-                    subscription_plan_name or "Free"
+                    subscription_plan_name or PlanName.FREE.value
                 )
                 user.__dict__["storage_usage_bytes"] = storage_usage_bytes or 0
                 user.__dict__["storage_quota_bytes"] = storage_quota_bytes or 0
@@ -114,33 +116,41 @@ async def get_user_with_context(db: Session, user_id: int) -> User:
                     days_remaining = (subscription_expiration - now).days
 
                     if subscription_plan_id == 1:  # Free plan
-                        user.__dict__["subscription_status"] = "Free"
+                        user.__dict__[
+                            "subscription_status"
+                        ] = SubscriptionStatus.FREE.value
                         user.__dict__["subscription_days_remaining"] = None
                     elif subscription_plan_id == 2:  # Premium plan
                         if days_remaining > 0:
-                            user.__dict__["subscription_status"] = "Premium"
+                            user.__dict__[
+                                "subscription_status"
+                            ] = SubscriptionStatus.PREMIUM.value
                             user.__dict__[
                                 "subscription_days_remaining"
                             ] = days_remaining
                         elif (
                             days_remaining >= -30
                         ):  # Grace period (30 days after expiration)
-                            user.__dict__["subscription_status"] = "Limit Grace"
+                            user.__dict__[
+                                "subscription_status"
+                            ] = SubscriptionStatus.LIMIT_GRACE.value
                             user.__dict__["subscription_days_remaining"] = (
                                 30 + days_remaining
                             )  # Days left in grace period
                         else:
-                            user.__dict__["subscription_status"] = "Expired"
+                            user.__dict__[
+                                "subscription_status"
+                            ] = SubscriptionStatus.EXPIRED.value
                             user.__dict__["subscription_days_remaining"] = None
                     else:
                         user.__dict__["subscription_status"] = (
-                            subscription_plan_name or "Unknown"
+                            subscription_plan_name or PlanName.UNKNOWN.value
                         )
                         user.__dict__["subscription_days_remaining"] = (
                             days_remaining if days_remaining > 0 else None
                         )
                 else:
-                    user.__dict__["subscription_status"] = "Free"
+                    user.__dict__["subscription_status"] = SubscriptionStatus.FREE.value
                     user.__dict__["subscription_days_remaining"] = None
 
                 users.append(user)
@@ -240,7 +250,9 @@ async def list_user(
             ) = item
             user.__dict__["role_id"] = role_id
             user.__dict__["data_usage"] = data_usage
-            user.__dict__["subscription_plan_name"] = subscription_plan_name or "Free"
+            user.__dict__["subscription_plan_name"] = (
+                subscription_plan_name or PlanName.FREE.value
+            )
             user.__dict__["storage_usage_bytes"] = storage_usage_bytes or 0
             user.__dict__["storage_quota_bytes"] = storage_quota_bytes or 0
             user.__dict__["storage_usage_percent"] = round(
@@ -259,31 +271,37 @@ async def list_user(
                 days_remaining = (subscription_expiration - now).days
 
                 if subscription_plan_id == 1:  # Free plan
-                    user.__dict__["subscription_status"] = "Free"
+                    user.__dict__["subscription_status"] = SubscriptionStatus.FREE.value
                     user.__dict__["subscription_days_remaining"] = None
                 elif subscription_plan_id == 2:  # Premium plan
                     if days_remaining > 0:
-                        user.__dict__["subscription_status"] = "Premium"
+                        user.__dict__[
+                            "subscription_status"
+                        ] = SubscriptionStatus.PREMIUM.value
                         user.__dict__["subscription_days_remaining"] = days_remaining
                     elif (
                         days_remaining >= -30
                     ):  # Grace period (30 days after expiration)
-                        user.__dict__["subscription_status"] = "Limit Grace"
+                        user.__dict__[
+                            "subscription_status"
+                        ] = SubscriptionStatus.LIMIT_GRACE.value
                         user.__dict__["subscription_days_remaining"] = (
                             30 + days_remaining
                         )  # Days left in grace period
                     else:
-                        user.__dict__["subscription_status"] = "Expired"
+                        user.__dict__[
+                            "subscription_status"
+                        ] = SubscriptionStatus.EXPIRED.value
                         user.__dict__["subscription_days_remaining"] = None
                 else:
                     user.__dict__["subscription_status"] = (
-                        subscription_plan_name or "Unknown"
+                        subscription_plan_name or PlanName.UNKNOWN.value
                     )
                     user.__dict__["subscription_days_remaining"] = (
                         days_remaining if days_remaining > 0 else None
                     )
             else:
-                user.__dict__["subscription_status"] = "Free"
+                user.__dict__["subscription_status"] = SubscriptionStatus.FREE.value
                 user.__dict__["subscription_days_remaining"] = None
 
             users.append(user)

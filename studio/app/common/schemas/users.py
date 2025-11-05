@@ -5,6 +5,12 @@ from typing import Optional
 from fastapi import Query
 from pydantic import BaseModel, EmailStr, Field
 
+from studio.app.common.models.subscription import (
+    PlanName,
+    SubscriptionStatus,
+    SubscriptionType,
+)
+
 password_regex = r"^(?=.*\d)(?=.*[!#$%&()*+,-./@_|])(?=.*[a-zA-Z]).{6,255}$"
 
 
@@ -50,14 +56,19 @@ class User(BaseModel):
     def has_active_subscription(self) -> bool:
         """Check if user has an active paid subscription."""
         return (
-            self.subscription_plan_name == "Premium"
-            and self.subscription_status in ["Premium", "Limit Grace"]
+            self.subscription_plan_name == PlanName.PREMIUM.value
+            and self.subscription_status
+            in [SubscriptionStatus.PREMIUM.value, SubscriptionStatus.LIMIT_GRACE.value]
         )
 
     @property
     def subscription_type(self) -> str:
         """Get current effective Subscription Type: 'premium' or 'free'."""
-        return "premium" if self.has_active_subscription else "free"
+        return (
+            SubscriptionType.PREMIUM.value
+            if self.has_active_subscription
+            else SubscriptionType.FREE.value
+        )
 
     @property
     def remote_bucket_name(self) -> str:

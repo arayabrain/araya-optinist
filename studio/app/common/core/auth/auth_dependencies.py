@@ -24,7 +24,9 @@ from studio.app.common.models import User as UserModel
 from studio.app.common.models import UserRole as UserRoleModel
 from studio.app.common.models.experiment import ExperimentRecord
 from studio.app.common.models.subscription import (
+    PlanName,
     SubscriptionPlans,
+    SubscriptionStatus,
     UserStorageUsage,
     UserSubscription,
 )
@@ -101,7 +103,7 @@ async def get_current_user(
         authed_user.__dict__["role_id"] = role_id
         authed_user.__dict__["data_usage"] = data_usage
         authed_user.__dict__["subscription_plan_name"] = (
-            subscription_plan_name or "Free"
+            subscription_plan_name or PlanName.FREE.value
         )
         authed_user.__dict__["storage_usage_bytes"] = storage_usage_bytes or 0
         authed_user.__dict__["storage_quota_bytes"] = storage_quota_bytes or 0
@@ -121,29 +123,37 @@ async def get_current_user(
             days_remaining = (subscription_expiration - now).days
 
             if subscription_plan_id == 1:  # Free plan
-                authed_user.__dict__["subscription_status"] = "Free"
+                authed_user.__dict__[
+                    "subscription_status"
+                ] = SubscriptionStatus.FREE.value
                 authed_user.__dict__["subscription_days_remaining"] = None
             elif subscription_plan_id == 2:  # Premium plan
                 if days_remaining > 0:
-                    authed_user.__dict__["subscription_status"] = "Premium"
+                    authed_user.__dict__[
+                        "subscription_status"
+                    ] = SubscriptionStatus.PREMIUM.value
                     authed_user.__dict__["subscription_days_remaining"] = days_remaining
                 elif days_remaining >= -30:  # Grace period (30 days after expiration)
-                    authed_user.__dict__["subscription_status"] = "Limit Grace"
+                    authed_user.__dict__[
+                        "subscription_status"
+                    ] = SubscriptionStatus.LIMIT_GRACE.value
                     authed_user.__dict__["subscription_days_remaining"] = (
                         30 + days_remaining
                     )  # Days left in grace period
                 else:
-                    authed_user.__dict__["subscription_status"] = "Expired"
+                    authed_user.__dict__[
+                        "subscription_status"
+                    ] = SubscriptionStatus.EXPIRED.value
                     authed_user.__dict__["subscription_days_remaining"] = None
             else:
                 authed_user.__dict__["subscription_status"] = (
-                    subscription_plan_name or "Unknown"
+                    subscription_plan_name or PlanName.UNKNOWN.value
                 )
                 authed_user.__dict__["subscription_days_remaining"] = (
                     days_remaining if days_remaining > 0 else None
                 )
         else:
-            authed_user.__dict__["subscription_status"] = "Free"
+            authed_user.__dict__["subscription_status"] = SubscriptionStatus.FREE.value
             authed_user.__dict__["subscription_days_remaining"] = None
 
         return User.from_orm(authed_user)
