@@ -9,6 +9,16 @@ WHERE TO RUN:
 - Local development machine - Works (if studio app is in PYTHONPATH)
 - Requires proper async mock configuration
 
+It is recommended to test on the cloud instance.
+To do so, log in to the ECS container using the AWS CLI:
+aws ecs execute-command \
+    --cluster subscr-optinist-cloud-cluster \
+    --task {TASK ARN NUMBER} \
+    --container subscr-optinist-cloud-container \
+    --interactive \
+    --command "/bin/bash" \
+    --region ap-northeast-1
+
 REQUIREMENTS:
 - studio.app modules must be available in PYTHONPATH
 - Python 3.7+ with asyncio support

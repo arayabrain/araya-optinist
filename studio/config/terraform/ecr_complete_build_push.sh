@@ -96,38 +96,39 @@ echo "  Account ID: $AWS_ACCOUNT_ID"
 echo "  Region: $REGION"
 echo ""
 
-# Get load balancer DNS name from Terraform outputs or user input
-echo "Getting load balancer DNS name..."
+# Get frontend configuration from Terraform outputs or user input
+echo "Getting frontend configuration..."
 
 # Try to get from terraform first
 if command -v terraform >/dev/null 2>&1 && [ -f "main.tf" ]; then
-    echo "Attempting to get DNS name from Terraform outputs..."
-    AUTOSCALING_DNS=$(terraform output -raw alb_dns_name 2>/dev/null || echo "")
+    echo "Attempting to get configuration from Terraform outputs..."
+    AUTOSCALING_HOST=$(terraform output -raw domain_name)
+    AUTOSCALING_PORT=$(terraform output -raw domain_port)
+    AUTOSCALING_PROTO=$(terraform output -raw domain_protocol)
 fi
 
 # If terraform outputs not available, prompt user
-if [ -z "$AUTOSCALING_DNS" ]; then
+if [ -z "$AUTOSCALING_HOST" ]; then
     echo ""
     echo "=========================================="
     echo "TERRAFORM OUTPUTS NOT AVAILABLE"
     echo "=========================================="
-    echo "Please get the Load Balancer DNS name from AWS Console:"
+    echo "Please provide the frontend configuration:"
     echo ""
-    echo "1. Go to AWS Console > EC2 > Load Balancers"
-    echo "2. Find your OptiNiSt load balancer (usually named something like 'subscr-alb-*')"
-    echo "3. Copy the DNS name from the 'DNS name' column"
-    echo ""
-    echo "Enter the Load Balancer DNS name:"
-    read -p "Load Balancer DNS: " AUTOSCALING_DNS
+    read -p "Frontend Host (e.g., araya-optinist.com): " AUTOSCALING_HOST
+    read -p "Frontend Protocol (http or https): " AUTOSCALING_PROTO
+    read -p "Frontend Port (80 or 443): " AUTOSCALING_PORT
 fi
 
-# Validate DNS name
-if [ -z "$AUTOSCALING_DNS" ]; then
-    echo "Error: Load Balancer DNS is required!"
+# Validate configuration
+if [ -z "$AUTOSCALING_HOST" ] || [ -z "$AUTOSCALING_PROTO" ] || [ -z "$AUTOSCALING_PORT" ]; then
+    echo "Error: Frontend configuration is required!"
     exit 1
 fi
 
-echo "Load Balancer DNS: $AUTOSCALING_DNS"
+echo "Frontend Host: $AUTOSCALING_HOST"
+echo "Frontend Protocol: $AUTOSCALING_PROTO"
+echo "Frontend Port: $AUTOSCALING_PORT"
 
 # ===========================================
 # 1. Build Complete All-in-One Image with Conda Environments
@@ -151,13 +152,13 @@ fi
 # Authenticate Docker to ECR
 aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_URI
 
-# Build frontend with load balancer DNS
-echo "Building frontend for all-in-one with DNS: $AUTOSCALING_DNS"
+# Build frontend with configuration
+echo "Building frontend for all-in-one with ${AUTOSCALING_PROTO}://${AUTOSCALING_HOST}:${AUTOSCALING_PORT}"
 cd ../../../frontend
 cat > .env.production << ENV_EOF
-REACT_APP_SERVER_HOST=${AUTOSCALING_DNS}
-REACT_APP_SERVER_PORT=80
-REACT_APP_SERVER_PROTO=http
+REACT_APP_SERVER_HOST=${AUTOSCALING_HOST}
+REACT_APP_SERVER_PORT=${AUTOSCALING_PORT}
+REACT_APP_SERVER_PROTO=${AUTOSCALING_PROTO}
 REACT_APP_EXPDB_METADATA_EDITABLE=true
 ENV_EOF
 

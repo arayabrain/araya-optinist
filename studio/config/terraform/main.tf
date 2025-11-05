@@ -168,6 +168,25 @@ variable "asg_desired_capacity" {
   default     = 1
 }
 
+# Frontend domain configuration
+variable "frontend_domain" {
+  description = "Custom domain name for the frontend application"
+  type        = string
+  default     = "araya-optinist.com"
+}
+
+variable "frontend_protocol" {
+  description = "Protocol for frontend access (http or https)"
+  type        = string
+  default     = "https"
+}
+
+variable "frontend_port" {
+  description = "Port for frontend access (80 for http, 443 for https)"
+  type        = string
+  default     = "443"
+}
+
 # Data sources
 data "aws_caller_identity" "current" {}
 
@@ -808,15 +827,20 @@ resource "aws_lb" "batch" {
   }
 }
 
-# Load Balancer Listener
+# Load Balancer Listener - HTTP to HTTPS Redirect
 resource "aws_lb_listener" "autoscaling" {
   load_balancer_arn = aws_lb.autoscaling.arn
   port              = "80"
   protocol          = "HTTP"
 
   default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.autoscaling.arn
+    type = "redirect"
+
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
   }
 }
 
@@ -828,6 +852,105 @@ resource "aws_lb_listener" "batch" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.batch.arn
+  }
+}
+
+# =====================
+# Route53 & DNS
+# =====================
+# Reference to existing Route53 hosted zone
+data "aws_route53_zone" "main" {
+  name         = var.frontend_domain
+  private_zone = false
+}
+
+# =====================
+# ACM Certificate
+# =====================
+# SSL/TLS certificate for HTTPS support
+resource "aws_acm_certificate" "main" {
+  domain_name       = var.frontend_domain
+  validation_method = "DNS"
+
+  subject_alternative_names = [
+    "*.${var.frontend_domain}"  # Support subdomains
+  ]
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  tags = {
+    Name = "${var.frontend_domain} certificate"
+  }
+}
+
+# DNS validation record for ACM certificate
+resource "aws_route53_record" "cert_validation" {
+  for_each = {
+    for dvo in aws_acm_certificate.main.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  }
+
+  allow_overwrite = true
+  name            = each.value.name
+  records         = [each.value.record]
+  ttl             = 60
+  type            = each.value.type
+  zone_id         = data.aws_route53_zone.main.zone_id
+}
+
+# Wait for certificate validation to complete
+resource "aws_acm_certificate_validation" "main" {
+  certificate_arn         = aws_acm_certificate.main.arn
+  validation_record_fqdns = [for record in aws_route53_record.cert_validation : record.fqdn]
+}
+
+# =====================
+# HTTPS Listener
+# =====================
+# HTTPS listener for autoscaling ALB
+resource "aws_lb_listener" "autoscaling_https" {
+  load_balancer_arn = aws_lb.autoscaling.arn
+  port              = "443"
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = aws_acm_certificate.main.arn
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.autoscaling.arn
+  }
+
+  depends_on = [aws_acm_certificate_validation.main]
+}
+
+# Route53 A record pointing to ALB
+resource "aws_route53_record" "main" {
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = var.frontend_domain
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.autoscaling.dns_name
+    zone_id                = aws_lb.autoscaling.zone_id
+    evaluate_target_health = true
+  }
+}
+
+# Route53 A record for www subdomain (redirects to main domain)
+resource "aws_route53_record" "www" {
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = "www.${var.frontend_domain}"
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.autoscaling.dns_name
+    zone_id                = aws_lb.autoscaling.zone_id
+    evaluate_target_health = true
   }
 }
 
@@ -2364,7 +2487,7 @@ resource "aws_lambda_function" "premium_manager" {
       SUBNET_IDS            = "${aws_subnet.private1.id},${aws_subnet.private2.id}"
       SECURITY_GROUP_ID     = aws_security_group.ecs.id
       ALB_ARN               = aws_lb.autoscaling.arn
-      ALB_LISTENER_ARN      = aws_lb_listener.autoscaling.arn
+      ALB_LISTENER_ARN      = aws_lb_listener.autoscaling_https.arn
       AUTOSCALING_TARGET_GROUP_ARN = aws_lb_target_group.autoscaling.arn
       PREMIUM_INSTANCE_IDS  = join(",", aws_instance.premium[*].id)
       PREMIUM_LAUNCH_TEMPLATE_ID = aws_launch_template.premium.id
@@ -2502,7 +2625,7 @@ resource "aws_lambda_function" "premium_cleanup" {
       SUBNET_IDS            = "${aws_subnet.private1.id},${aws_subnet.private2.id}"
       SECURITY_GROUP_ID     = aws_security_group.ecs.id
       ALB_ARN               = aws_lb.autoscaling.arn
-      ALB_LISTENER_ARN      = aws_lb_listener.autoscaling.arn
+      ALB_LISTENER_ARN      = aws_lb_listener.autoscaling_https.arn
       PREMIUM_INSTANCE_IDS  = join(",", aws_instance.premium[*].id)
       PREMIUM_LAUNCH_TEMPLATE_ID = aws_launch_template.premium.id
       CLUSTER_NAME          = aws_ecs_cluster.main.name
@@ -4232,15 +4355,15 @@ resource "aws_ecs_task_definition" "autoscaling" {
         },
         {
           name  = "FRONTEND_SERVER_HOST"
-          value = aws_lb.autoscaling.dns_name
+          value = var.frontend_domain
         },
         {
           name  = "FRONTEND_SERVER_PORT"
-          value = "80"
+          value = var.frontend_port
         },
         {
           name  = "FRONTEND_SERVER_PROTO"
-          value = "http"
+          value = var.frontend_protocol
         },
         {
           name  = "INITIAL_FIREBASE_UID"
@@ -4725,15 +4848,15 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "FRONTEND_SERVER_HOST"
-          value = aws_lb.autoscaling.dns_name
+          value = var.frontend_domain
         },
         {
           name  = "FRONTEND_SERVER_PORT"
-          value = "80"
+          value = var.frontend_port
         },
         {
           name  = "FRONTEND_SERVER_PROTO"
-          value = "http"
+          value = var.frontend_protocol
         },
         {
           name  = "INITIAL_FIREBASE_UID"
@@ -5471,8 +5594,8 @@ output "alb_arn" {
 }
 
 output "alb_listener_arn" {
-  description = "ARN of the main ALB listener for premium routing rules"
-  value       = aws_lb_listener.autoscaling.arn
+  description = "ARN of the main ALB HTTPS listener for premium routing rules"
+  value       = aws_lb_listener.autoscaling_https.arn
 }
 
 output "premium_instance_ids" {
@@ -5499,4 +5622,45 @@ output "test_users" {
   description = "Test user configuration for load testing (includes Firebase UIDs)"
   value       = var.test_users
   sensitive   = true
+}
+
+# Route53 and SSL outputs
+output "domain_name" {
+  description = "Custom domain name for the application"
+  value       = var.frontend_domain
+}
+
+output "domain_url" {
+  description = "Full URL for the application"
+  value       = "${var.frontend_protocol}://${var.frontend_domain}"
+}
+
+output "domain_protocol" {
+  description = "Protocol for the application (http or https)"
+  value       = var.frontend_protocol
+}
+
+output "domain_port" {
+  description = "Port for the application"
+  value       = var.frontend_port
+}
+
+output "acm_certificate_arn" {
+  description = "ARN of the ACM certificate for HTTPS"
+  value       = aws_acm_certificate.main.arn
+}
+
+output "acm_certificate_status" {
+  description = "Validation status of the ACM certificate"
+  value       = aws_acm_certificate.main.status
+}
+
+output "route53_zone_id" {
+  description = "Route53 hosted zone ID for araya-optinist.com"
+  value       = data.aws_route53_zone.main.zone_id
+}
+
+output "alb_listener_https_arn" {
+  description = "ARN of the HTTPS ALB listener"
+  value       = aws_lb_listener.autoscaling_https.arn
 }

@@ -7,6 +7,16 @@ WHERE TO RUN:
 - Cloud ECS container - Works
 - CI/CD pipeline - Ideal for automation
 
+It is recommended to test on the cloud instance.
+To do so, log in to the ECS container using the AWS CLI:
+aws ecs execute-command \
+    --cluster subscr-optinist-cloud-cluster \
+    --task {TASK ARN NUMBER} \
+    --container subscr-optinist-cloud-container \
+    --interactive \
+    --command "/bin/bash" \
+    --region ap-northeast-1
+
 REQUIREMENTS:
 - No actual database connection needed (uses mocks)
 - No AWS credentials required

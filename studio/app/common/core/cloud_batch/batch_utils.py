@@ -2541,22 +2541,61 @@ async def download_workflow_results_from_s3(workspace_id: str, unique_id: str) -
     In S3 storage mode, batch jobs write results directly to S3. This function
     downloads those results to the main application's local storage so they can
     be accessed for post-processing tasks (visualization, analysis, etc.).
+
+    Includes retry logic to handle race conditions where batch containers are
+    still uploading final results (especially experiment.yaml) when download
+    starts.
     """
+    import asyncio
+
+    max_retries = 3
+    retry_delay = 3  # seconds
+
     try:
         if RemoteStorageController.is_available():
             logger.info("Downloading experiment results from S3 for post-processing")
+
+            # Add a small initial delay to let batch container finish uploading
+            # This helps avoid downloading stale experiment.yaml files
+            logger.debug(
+                "Waiting 2s for batch container to complete final S3 uploads..."
+            )
+            await asyncio.sleep(2)
+
             remote_controller = RemoteStorageController(
                 BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME
             )
-            await remote_controller.download_experiment(workspace_id, unique_id)
-            logger.info(f"Downloaded experiment results for {workspace_id}/{unique_id}")
+
+            # Retry download to ensure we get the latest files
+            for attempt in range(max_retries):
+                try:
+                    await remote_controller.download_experiment(workspace_id, unique_id)
+                    logger.info(
+                        f"Downloaded experiment results for "
+                        f"{workspace_id}/{unique_id} "
+                        f"(attempt {attempt + 1}/{max_retries})"
+                    )
+                    return True
+                except Exception as download_error:
+                    if attempt < max_retries - 1:
+                        logger.warning(
+                            f"Download attempt {attempt + 1} failed: "
+                            f"{download_error}. Retrying in {retry_delay}s..."
+                        )
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        raise  # Re-raise on final attempt
+
             return True
         else:
             logger.debug("RemoteStorageController not available, skipping S3 download")
             return True  # Not an error if S3 is not available
 
     except Exception as e:
-        logger.error(f"Failed to download experiment results from S3: {e}")
+        logger.error(
+            f"Failed to download experiment results from S3 after "
+            f"{max_retries} attempts: {e}"
+        )
         logger.warning("Post-processing may fail due to missing local files")
         return False
 

@@ -4,6 +4,16 @@ Test script for Premium Standby Pool System
 
 This script tests the standby pool functionality without requiring
 actual AWS credentials or database connections.
+
+It is recommended to test on the cloud instance.
+To do so, log in to the ECS container using the AWS CLI:
+aws ecs execute-command \
+    --cluster subscr-optinist-cloud-cluster \
+    --task {TASK ARN NUMBER} \
+    --container subscr-optinist-cloud-container \
+    --interactive \
+    --command "/bin/bash" \
+    --region ap-northeast-1
 """
 
 import json

@@ -12,6 +12,10 @@ import { routingService } from "utils/routing/RoutingService"
 const axios = axiosLibrary.create({
   baseURL: BASE_URL,
   timeout: 600000,
+  headers: {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  },
 })
 
 axios.interceptors.request.use(

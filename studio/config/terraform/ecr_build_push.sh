@@ -5,13 +5,24 @@ set -e
 REGION="ap-northeast-1"
 AWS_ACCOUNT_ID="637423646530"
 
-# Get load balancer DNS names from Terraform outputs
-echo "Getting load balancer DNS names from Terraform..."
-AUTOSCALING_DNS=$(terraform output -raw alb_dns_name)
+# Get configuration from Terraform outputs
+echo "Getting configuration from Terraform outputs..."
+AUTOSCALING_HOST=$(terraform output -raw domain_name)
+AUTOSCALING_PORT=$(terraform output -raw domain_port)
+AUTOSCALING_PROTO=$(terraform output -raw domain_protocol)
 BATCH_DNS=$(terraform output -raw alb_dns_name_batch)
 
-echo "Autoscaling DNS: $AUTOSCALING_DNS"
+echo "Autoscaling Host: $AUTOSCALING_HOST"
+echo "Autoscaling Protocol: $AUTOSCALING_PROTO"
+echo "Autoscaling Port: $AUTOSCALING_PORT"
 echo "Batch DNS: $BATCH_DNS"
+
+# Validate batch DNS (required)
+if [ -z "$BATCH_DNS" ]; then
+    echo "Error: Could not get batch ALB DNS from Terraform outputs."
+    echo "Please run 'terraform apply' first to create the infrastructure."
+    exit 1
+fi
 
 # ===========================================
 # 1. Build Autoscaling Image with Frontend
@@ -34,13 +45,13 @@ else
     echo "Repository $REPO_NAME already exists."
 fi
 
-# Build frontend with autoscaling DNS
-echo "Building frontend for autoscaling with DNS: $AUTOSCALING_DNS"
+# Build frontend with custom domain for autoscaling
+echo "Building frontend for autoscaling with ${AUTOSCALING_PROTO}://${AUTOSCALING_HOST}:${AUTOSCALING_PORT}"
 cd ../../../frontend
 cat > .env.production << ENV_EOF
-REACT_APP_SERVER_HOST=${AUTOSCALING_DNS}
-REACT_APP_SERVER_PORT=80
-REACT_APP_SERVER_PROTO=http
+REACT_APP_SERVER_HOST=${AUTOSCALING_HOST}
+REACT_APP_SERVER_PORT=${AUTOSCALING_PORT}
+REACT_APP_SERVER_PROTO=${AUTOSCALING_PROTO}
 REACT_APP_EXPDB_METADATA_EDITABLE=true
 ENV_EOF
 

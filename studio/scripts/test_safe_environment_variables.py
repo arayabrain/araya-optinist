@@ -7,6 +7,16 @@ WHERE TO RUN:
 - Cloud ECS container - Works perfectly
 - CI/CD pipeline - Excellent for regression testing
 
+It is recommended to test on the cloud instance.
+To do so, log in to the ECS container using the AWS CLI:
+aws ecs execute-command \
+    --cluster subscr-optinist-cloud-cluster \
+    --task {TASK ARN NUMBER} \
+    --container subscr-optinist-cloud-container \
+    --interactive \
+    --command "/bin/bash" \
+    --region ap-northeast-1
+
 REQUIREMENTS:
 - No actual AWS services needed (uses mocks)
 - No database connection required (uses mocks)

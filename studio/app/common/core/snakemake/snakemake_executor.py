@@ -79,6 +79,20 @@ def snakemake_execute(workspace_id: str, unique_id: str, params: SmkParam):
             asyncio.run(upload_workflow_results_to_s3(workspace_id, unique_id))
             # Download results from S3 to local storage for post-processing
             asyncio.run(download_workflow_results_from_s3(workspace_id, unique_id))
+
+            # Now that files are downloaded locally, observe workflow results
+            # This must happen AFTER S3 download to ensure pickle files exist
+            try:
+                asyncio.run(WorkflowResult(workspace_id, unique_id).observe_overall())
+                logger.info(
+                    "Workflow observation completed after "
+                    "S3 download for batch execution"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Workflow observation failed after batch execution: {e}",
+                    exc_info=True,
+                )
     else:
         logger.info("Starting local execution mode")
         with ProcessPoolExecutor(max_workers=1) as executor:
@@ -776,13 +790,10 @@ def _snakemake_execute_batch(
 
     try:
         # Update workflow processing results
-        try:
-            asyncio.run(WorkflowResult(workspace_id, unique_id).observe_overall())
-        except Exception as e:
-            logger.error(
-                f"snakemake_execute post process (WorkflowResult) failed: {e}",
-                exc_info=True,
-            )
+        # NOTE: In batch mode, observe_overall() is deferred until AFTER S3 download
+        # completes (see line ~82-85 in caller). This ensures pickle files exist
+        # locally before observation. Observing here would cause false errors because
+        # files are still in S3.
 
         # Update experiment database record
         if ExperimentRecordService.is_available():

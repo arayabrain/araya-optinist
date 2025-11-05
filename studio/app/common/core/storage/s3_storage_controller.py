@@ -9,6 +9,8 @@ import boto3
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     BaseRemoteStorageController,
+    RemoteSyncLockFileUtil,
+    RemoteSyncStatusFileUtil,
     StorageDirectoryType,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
@@ -570,12 +572,27 @@ class S3StorageController(BaseRemoteStorageController):
 
             # do download data from remote storage
             target_files_count = len(s3_list_objects["Contents"])
+
+            # Coordination files that should not be downloaded from S3
+            coordination_files = {
+                RemoteSyncLockFileUtil.REMOTE_SYNC_LOCK_FILE,
+                RemoteSyncStatusFileUtil.REMOTE_SYNC_STATUS_FILE,
+            }
+
             for index, s3_object in enumerate(s3_list_objects["Contents"]):
                 s3_file_path = s3_object["Key"]
                 file_size = s3_object["Size"]
 
                 # skip directory on s3
                 if s3_file_path.endswith("/"):
+                    continue
+
+                # skip coordination files - they are local-only
+                filename = os.path.basename(s3_file_path)
+                if filename in coordination_files:
+                    logger.debug(
+                        f"Skipping coordination file from S3 download: {filename}"
+                    )
                     continue
 
                 # make paths
@@ -636,8 +653,19 @@ class S3StorageController(BaseRemoteStorageController):
         if target_files:  # Target specified files.
             target_abs_paths = [f"{experiment_local_path}/{f}" for f in target_files]
         else:  # Target all files.
+            # Exclude coordination files - they are local-only and should not be in S3
+            coordination_files = {
+                RemoteSyncLockFileUtil.REMOTE_SYNC_LOCK_FILE,
+                RemoteSyncStatusFileUtil.REMOTE_SYNC_STATUS_FILE,
+            }
             for root, _, files in os.walk(experiment_local_path):
                 for filename in files:
+                    # Skip coordination files
+                    if filename in coordination_files:
+                        logger.debug(
+                            f"Skipping coordination file from S3 upload: {filename}"
+                        )
+                        continue
                     local_abs_path = os.path.join(root, filename)
                     target_abs_paths.append(local_abs_path)
 
