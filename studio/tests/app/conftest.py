@@ -1,4 +1,3 @@
-import os
 import shutil
 from typing import Generator
 
@@ -16,10 +15,6 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_owner,
 )
 from studio.app.dir_path import DIRPATH
-
-os.environ.setdefault("STRIPE_CALLBACK_URL", "http://localhost:8000")
-os.environ.setdefault("STRIPE_SECRET_KEY", "sk_test_dummy_123")
-os.environ.setdefault("STRIPE_WEBHOOK_SECRET", "whsec_dummy_123")
 
 
 @pytest.fixture(scope="session", autouse=True)

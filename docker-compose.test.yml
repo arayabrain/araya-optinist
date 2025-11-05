@@ -9,6 +9,8 @@ services:
       PYTHONPATH: .
       TZ: Asia/Tokyo
       STRIPE_CALLBACK_URL: http://localhost:8000
+      STRIPE_SECRET_KEY: sk_test_dummy_123
+      STRIPE_WEBHOOK_SECRET: whsec_dummy_123
     volumes:
       - .:/app
 
