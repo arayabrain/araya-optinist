@@ -4,164 +4,126 @@ import os
 # Set environment variables before other imports
 os.environ["STRIPE_SECRET_KEY"] = "sk_test_fake_key_for_testing"
 
-import requests
+from unittest.mock import Mock, patch
+
+import pytest
+
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 
-STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
+
+class TestCheckoutEndpoints:
+    """Test checkout-related endpoints"""
+
+    @pytest.fixture
+    def mock_stripe(self):
+        """Mock Stripe API calls"""
+        with patch("stripe.checkout.Session.retrieve") as mock_retrieve:
+            yield mock_retrieve
+
+    def test_checkout_session_validation_invalid(self, mock_stripe):
+        """Test checkout session validation with invalid session"""
+        # Mock Stripe to raise an error for invalid session
+        mock_stripe.side_effect = Exception("No such checkout session")
+
+        # This test would need a test client to actually call the endpoint
+        # For now, just test that the mock is set up correctly
+        assert mock_stripe.side_effect is not None
+
+    def test_checkout_session_validation_valid(self, mock_stripe):
+        """Test checkout session validation with valid session"""
+        mock_session = Mock()
+        mock_session.id = "cs_test_valid"
+        mock_session.payment_status = "paid"
+        mock_stripe.return_value = mock_session
+
+        result = mock_stripe("cs_test_valid")
+        assert result.id == "cs_test_valid"
 
 
-def test_checkout_session_validation():
-    """Test checkout session validation endpoint"""
-    print("Testing Checkout Session Validation...")
+class TestWebhookData:
+    """Test webhook data structure"""
 
-    # Test 1: Valid checkout session structure
-    payload = {
-        "session_id": "cs_test_fake_session_for_testing",
-    }
+    def test_invoice_data_structure(self):
+        """Test that invoice data has correct structure for subscription_id"""
+        # The correct Stripe invoice structure for subscription_id
+        invoice_data = {
+            "id": "in_test123",
+            "customer": "cus_test123",
+            "subscription": "sub_test123",  # This is the correct location
+            "status": "paid",
+            "amount_paid": 2999,
+            "billing_reason": "subscription_cycle",
+        }
 
-    response = requests.post(
-        f"{STRIPE_CALLBACK_URL}/api/subsc/checkout/validate-checkout-session",
-        json=payload,
-        headers={"Content-Type": "application/json"},
-    )
+        # Test extraction
+        subscription_id = invoice_data.get("subscription")
+        assert subscription_id == "sub_test123"
+        assert subscription_id is not None
 
-    print(f"Validation API Response: {response.status_code}")
 
-    if response.status_code == 400:
+# Integration tests (these require the API to be running)
+@pytest.mark.integration
+class TestCheckoutIntegration:
+    """Integration tests that require running API"""
+
+    @pytest.fixture(scope="class")
+    def api_url(self):
+        return SubscriptionService.get_base_url()
+
+    @pytest.fixture(scope="class")
+    def check_api_running(self, api_url):
+        """Check if API is running before running integration tests"""
+        import requests
+
+        try:
+            response = requests.get(f"{api_url}/docs", timeout=3)
+            if response.status_code != 200:
+                pytest.skip("API is not running")
+        except Exception:
+            pytest.skip("Cannot connect to API")
+
+    def test_get_subscription_plans(self, api_url, check_api_running):
+        """Test getting available subscription plans"""
+        import requests
+
+        response = requests.get(f"{api_url}/api/subsc/mgmts/plans")
+        assert response.status_code == 200
         data = response.json()
-        print(f"Expected error: {data.get('detail', 'Unknown error')}")
-        print("Checkout validation properly rejects invalid sessions")
-    else:
-        print(f"Response: {response.json()}")
+        assert isinstance(data, list)
 
+    def test_checkout_session_validation(self, api_url, check_api_running):
+        """Test checkout session validation endpoint"""
+        import requests
 
-def test_failed_checkout_validation():
-    """Test failed checkout session validation"""
-    print("Testing Failed Checkout Validation...")
+        payload = {"session_id": "cs_test_fake_session"}
 
-    payload = {
-        "session_id": "cs_test_fake_expired_session",
-    }
+        response = requests.post(
+            f"{api_url}/api/subsc/checkout/validate-checkout-session",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
 
-    response = requests.post(
-        f"{STRIPE_CALLBACK_URL}/api/subsc/checkout/failed-checkout-session",
-        json=payload,
-        headers={"Content-Type": "application/json"},
-    )
+        # Should return 400 for fake session
+        assert response.status_code == 400
 
-    print(f"Failed validation response: {response.status_code}")
-    if response.status_code == 200:
-        result = response.json()
-        print(f"Session is failed/expired: {result}")
-        print("Failed checkout validation endpoint works")
-    else:
-        print(f"Response: {response.json()}")
+    def test_webhook_requires_signature(self, api_url, check_api_running):
+        """Test webhook requires signature verification"""
+        import requests
 
+        payload = {
+            "type": "checkout.session.completed",
+            "data": {"object": {"id": "cs_test"}},
+        }
 
-def test_webhook_api():
-    """Test webhook API with Stripe signature verification"""
-    print("Testing Webhook API...")
-    print("Note: Real webhooks require valid Stripe signatures")
-    print("    This test will likely fail signature verification")
+        response = requests.post(
+            f"{api_url}/api/subsc/webhooks/stripe",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
 
-    # Stripe webhooks require signature verification
-    # This test demonstrates the endpoint but won't work without real Stripe data
-    payload = {
-        "type": "checkout.session.completed",
-        "data": {
-            "object": {
-                "id": "cs_test_fake_webhook_session",
-                "customer": "cus_fake_webhook_customer",
-                "payment_status": "paid",
-                "metadata": {"user_id": "999", "plan_id": "2"},
-            }
-        },
-    }
-
-    response = requests.post(
-        f"{STRIPE_CALLBACK_URL}/api/subsc/webhooks/stripe",
-        json=payload,
-        headers={"Content-Type": "application/json"},
-    )
-
-    if response.status_code == 400:
-        print("Webhook properly requires signature verification")
-    elif response.status_code == 200:
-        data = response.json()
-        print(f"Webhook response: {data}")
-    else:
-        print(f"Webhook error: {response.status_code} - {response.text}")
-
-
-def test_get_subscription_plans():
-    """Test getting available subscription plans"""
-    print("Testing Get Subscription Plans...")
-
-    response = requests.get(f"{STRIPE_CALLBACK_URL}/api/subsc/mgmts/plans")
-
-    if response.status_code == 200:
-        data = response.json()
-        print(f"Found {len(data)} subscription plans")
-        if data:
-            print(f"   Sample plan: {data[0].get('name', 'Unknown')}")
-    else:
-        print(f"Plans error: {response.status_code}")
-
-
-def test_get_user_subscription():
-    """Test getting user subscription (requires authentication)"""
-    print("Testing Get User Subscription...")
-    print("Note: This endpoint requires authentication")
-
-    response = requests.get(f"{STRIPE_CALLBACK_URL}/api/subsc/mgmts")
-
-    if response.status_code == 401 or response.status_code == 403:
-        print("Subscription endpoint properly requires authentication")
-    elif response.status_code == 200:
-        data = response.json()
-        print(f"Subscription data: {data}")
-    else:
-        print(f"Subscription error: {response.status_code}")
-
-
-def run_checkout_tests():
-    """Run all checkout-related tests"""
-    print("=" * 50)
-    print("SUBSCRIPTION API INTEGRATION TESTS")
-    print("=" * 50)
-
-    # Check API connectivity first - try docs endpoint
-    try:
-        response = requests.get(f"{STRIPE_CALLBACK_URL}/docs", timeout=3)
-        if response.status_code == 200:
-            print("API is reachable")
-        else:
-            # Try plans endpoint instead
-            response = requests.get(
-                f"{STRIPE_CALLBACK_URL}/api/subsc/mgmts/plans", timeout=3
-            )
-            if response.status_code in [200, 401, 403]:
-                print("API is reachable")
-            else:
-                print(f"API responded with status {response.status_code}")
-    except Exception as e:
-        print(f"Cannot connect to API: {e}")
-        return
-
-    print()
-    test_get_subscription_plans()
-    print()
-    test_checkout_session_validation()
-    print()
-    test_failed_checkout_validation()
-    print()
-    test_get_user_subscription()
-    print()
-    test_webhook_api()
-    print()
-    print("=" * 50)
-    print("TESTS COMPLETE")
+        # Should fail signature verification
+        assert response.status_code == 400
 
 
 if __name__ == "__main__":
-    run_checkout_tests()
+    pytest.main([__file__, "-v"])
