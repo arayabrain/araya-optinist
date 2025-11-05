@@ -8,15 +8,6 @@ from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.webhook_service import WebhookService
 
-# Import your models and services
-# from your_app.models import (
-#     SubscriptionUserAccount,
-#     UserSubscription,
-#     SubscriptionUserPurchase
-# )
-# from your_app.services import WebhookService, CheckoutService, SubscriptionService
-# from your_app.enums import BILLING_CYCLE, PaymentStatus
-
 
 class TestInvoicePaymentSucceeded:
     """Test suite for invoice.payment_succeeded webhook handler"""
@@ -66,7 +57,7 @@ class TestInvoicePaymentSucceeded:
         return {
             "id": "in_test123",
             "customer": "cus_test123",
-            "subscription": "sub_stripe123",
+            "parent": {"subscription_details": {"subscription": "sub_stripe123"}},
             "status": "paid",
             "amount_paid": 2999,  # $29.99 in cents
             "billing_reason": "subscription_cycle",
@@ -80,7 +71,7 @@ class TestInvoicePaymentSucceeded:
         return {
             "id": "in_test456",
             "customer": "cus_test123",
-            "subscription": "sub_stripe123",
+            "parent": {"subscription_details": {"subscription": "sub_stripe123"}},
             "status": "paid",
             "amount_paid": 2999,
             "billing_reason": "subscription_create",  # This should be skipped
@@ -148,7 +139,7 @@ class TestInvoicePaymentSucceeded:
         """Test error handling for missing customer_id"""
         invoice_data = {
             "id": "in_test789",
-            "subscription": "sub_stripe123",
+            "parent": {"subscription_details": {"subscription": "sub_stripe123"}},
             "status": "paid",
             "amount_paid": 2999,
             "billing_reason": "subscription_cycle",
@@ -166,7 +157,7 @@ class TestInvoicePaymentSucceeded:
         invoice_data = {
             "id": "in_test789",
             "customer": "cus_test123",
-            "subscription": "sub_stripe123",
+            "parent": {"subscription_details": {"subscription": "sub_stripe123"}},
             "status": "open",  # Not paid
             "amount_paid": 2999,
             "billing_reason": "subscription_cycle",
@@ -309,15 +300,25 @@ def test_full_webhook_payload():
         "period_end": 1702678399,
         "period_start": 1699999999,
         "status": "paid",
-        "subscription": "sub_1QLzTh2eZvKYlo2C2222",
+        "parent": {
+            "subscription_details": {"subscription": "sub_1QLzTh2eZvKYlo2C2222"}
+        },
         "subtotal": 2999,
         "total": 2999,
     }
 
-    # This payload structure matches what Stripe actually sends
+    # This payload structure matches what your webhook service expects
     assert full_invoice_payload["billing_reason"] == "subscription_cycle"
     assert full_invoice_payload["status"] == "paid"
     assert full_invoice_payload["amount_paid"] == 2999
+
+    # Test extraction using the same logic as webhook_service.py
+    subscription_id = (
+        full_invoice_payload.get("parent", {})
+        .get("subscription_details", {})
+        .get("subscription")
+    )
+    assert subscription_id == "sub_1QLzTh2eZvKYlo2C2222"
 
 
 if __name__ == "__main__":

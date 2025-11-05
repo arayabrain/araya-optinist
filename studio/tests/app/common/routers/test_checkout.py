@@ -46,7 +46,7 @@ class TestWebhookData:
     def test_invoice_data_structure(self):
         """Test that invoice data has correct structure for subscription_id"""
         # The correct Stripe invoice structure for subscription_id
-        return {
+        invoice_data = {
             "id": "in_test123",
             "customer": "cus_test123",
             "parent": {"subscription_details": {"subscription": "sub_test123"}},
@@ -55,8 +55,12 @@ class TestWebhookData:
             "billing_reason": "subscription_cycle",
         }
 
-        # Test extraction
-        subscription_id = invoice_data.get("subscription")
+        # Test extraction using the same logic as webhook_service.py
+        subscription_id = (
+            invoice_data.get("parent", {})
+            .get("subscription_details", {})
+            .get("subscription")
+        )
         assert subscription_id == "sub_test123"
         assert subscription_id is not None
 
