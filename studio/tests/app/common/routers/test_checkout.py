@@ -2,7 +2,6 @@ import requests
 
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 
-
 STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
 
 
