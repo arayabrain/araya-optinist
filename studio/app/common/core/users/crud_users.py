@@ -168,7 +168,7 @@ async def create_user(db: Session, data: UserCreate, organization_id: int):
             active=True,
         )
         db.add(user_db)
-        db.flush()  # Get user_db.id
+        db.flush()
 
         await set_role(db, user_id=user_db.id, role_id=data.role_id, auto_commit=False)
 

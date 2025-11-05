@@ -135,12 +135,20 @@ class SubscriptionService:
             return False
 
         # Find the most recent purchase that matches or came before this subscription
-        latest_purchase = (
-            db.query(SubscriptionUserPurchase)
+        latest_purchase, user = (
+            db.query(SubscriptionUserPurchase, User)
+            .join(
+                User,
+                SubscriptionUserPurchase.user_id == User.id,
+            )
             .filter(
-                SubscriptionUserPurchase.user_id == user_id,
-                SubscriptionUserPurchase.plan_id == active_subscription.plan_id,
-                SubscriptionUserPurchase.created_at <= active_subscription.created_at,
+                and_(
+                    SubscriptionUserPurchase.user_id == user_id,
+                    SubscriptionUserPurchase.plan_id == active_subscription.plan_id,
+                    SubscriptionUserPurchase.created_at
+                    <= active_subscription.created_at,
+                    User.active.is_(True),
+                )
             )
             .order_by(SubscriptionUserPurchase.created_at.desc())
             .first()
@@ -213,40 +221,45 @@ class SubscriptionService:
     @staticmethod
     def get_user_subscription_purchase(
         db: Session, user_id: int
-    ) -> Optional[SubscriptionUserPurchase]:
+    ) -> Optional[Tuple[SubscriptionUserPurchase, User]]:
         return (
-            db.query(SubscriptionUserPurchase)
-            .filter(SubscriptionUserPurchase.user_id == user_id)
+            db.query(SubscriptionUserPurchase, User)
+            .join(
+                User,
+                SubscriptionUserPurchase.user_id == User.id,
+            )
+            .filter(
+                and_(
+                    SubscriptionUserPurchase.user_id == user_id,
+                    User.active.is_(True),
+                )
+            )
             .order_by(SubscriptionUserPurchase.created_at.desc())
             .first()
         )
 
     @staticmethod
-    def get_user_expired_subscription(
-        db: Session, user_id: int
-    ) -> common_model.UserSubscription:
+    def get_user_expired_subscription(db: Session, user_id: int) -> UserSubscription:
         return (
             db.query(
-                common_model.UserSubscription,
-                common_model.SubscriptionPlans,
-                common_model.User,
+                UserSubscription,
+                SubscriptionPlans,
+                User,
             )
             .join(
-                common_model.SubscriptionPlans,
-                common_model.UserSubscription.plan_id
-                == common_model.SubscriptionPlans.id,
+                SubscriptionPlans,
+                UserSubscription.plan_id == SubscriptionPlans.id,
             )
             .join(
-                common_model.User,
-                common_model.UserSubscription.user_id == common_model.User.id,
+                User,
+                UserSubscription.user_id == User.id,
             )
             .filter(
-                common_model.UserSubscription.user_id == user_id,
-                common_model.UserSubscription.expiration
-                <= __class__.get_current_datetime(),
-                common_model.User.active.is_(True),
+                UserSubscription.user_id == user_id,
+                UserSubscription.expiration <= __class__.get_current_datetime(),
+                User.active.is_(True),
             )
-            .order_by(common_model.UserSubscription.expiration.desc())
+            .order_by(UserSubscription.expiration.desc())
             .first()
         )
 
@@ -272,13 +285,19 @@ class SubscriptionService:
         try:
             subscription = (
                 db.query(UserSubscription)
-                .filter(UserSubscription.user_id == user_id)
+                .join(User, UserSubscription.user_id == User.id)
+                .filter(
+                    and_(
+                        UserSubscription.user_id == user_id,
+                        User.active.is_(True),
+                    )
+                )
                 .first()
             )
 
             if subscription:
                 subscription.scheduled_downgrade = scheduled
-                db.commit()
+            db.commit()
         except Exception as e:
             db.rollback()
             logger.error(
@@ -299,9 +318,13 @@ class SubscriptionService:
             # Get existing subscription
             subscription = (
                 db.query(UserSubscription)
+                .join(User, UserSubscription.user_id == User.id)
                 .filter(
-                    UserSubscription.user_id == user_id,
-                    UserSubscription.expiration > __class__.get_current_datetime(),
+                    and_(
+                        UserSubscription.user_id == user_id,
+                        UserSubscription.expiration > __class__.get_current_datetime(),
+                        User.active.is_(True),
+                    )
                 )
                 .first()
             )
