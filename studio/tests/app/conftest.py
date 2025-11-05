@@ -1,3 +1,4 @@
+import os
 import shutil
 from typing import Generator
 
@@ -16,14 +17,18 @@ from studio.app.common.core.workspace.workspace_dependencies import (
 )
 from studio.app.dir_path import DIRPATH
 
+os.environ.setdefault("STRIPE_CALLBACK_URL", "http://localhost:8000")
+os.environ.setdefault("STRIPE_SECRET_KEY", "sk_test_dummy_123")
+os.environ.setdefault("STRIPE_WEBHOOK_SECRET", "whsec_dummy_123")
+
 
 @pytest.fixture(scope="session", autouse=True)
 def session_fixture():
     app.dependency_overrides[get_admin_user] = skip_dependencies
     app.dependency_overrides[get_current_user] = skip_dependencies
-    app.dependency_overrides[
-        get_current_user_with_dataview_outputs_check
-    ] = skip_dependencies
+    app.dependency_overrides[get_current_user_with_dataview_outputs_check] = (
+        skip_dependencies
+    )
     app.dependency_overrides[is_workspace_available] = skip_dependencies
     app.dependency_overrides[is_workspace_owner] = skip_dependencies
 
