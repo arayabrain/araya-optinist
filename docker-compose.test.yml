@@ -8,6 +8,7 @@ services:
     environment:
       PYTHONPATH: .
       TZ: Asia/Tokyo
+      STRIPE_CALLBACK_URL: http://localhost:8000
     volumes:
       - .:/app
 
