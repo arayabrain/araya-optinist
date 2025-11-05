@@ -68,7 +68,7 @@ def snakemake_execute(workspace_id: str, unique_id: str, params: SmkParam):
         # DIAGNOSTIC: This should ALWAYS appear if batch mode is enabled
         print(f"DIAGNOSTIC: USE_AWS_BATCH=True, client_id={client_id}", flush=True)
         logger.info("Starting AWS Batch execution mode")
-        logger.error("DIAGNOSTIC: If you see this, optinist logging works!")
+        logger.debug("DIAGNOSTIC: If you see this, optinist logging works!")
         future_result = _snakemake_execute_batch(
             workspace_id, unique_id, params, client_id=client_id
         )
@@ -287,7 +287,7 @@ def _snakemake_execute_batch(
             flush=True,
         )
         logger.info("Load BatchExecutor")
-        logger.error("DIAGNOSTIC: Entered _snakemake_execute_batch successfully")
+        logger.debug("DIAGNOSTIC: Entered _snakemake_execute_batch successfully")
         print(
             f"DIAGNOSTIC: About to create BatchUtils({workspace_id}, {unique_id})...",
             flush=True,

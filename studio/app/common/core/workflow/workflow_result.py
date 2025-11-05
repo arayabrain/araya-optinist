@@ -12,6 +12,7 @@ from typing import Dict, List
 from fastapi import HTTPException, status
 from psutil import AccessDenied, NoSuchProcess, Process, ZombieProcess, process_iter
 
+from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptFunction
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_writer import ExptConfigWriter
@@ -84,21 +85,34 @@ class WorkflowResult:
         )
 
         # If the workflow status observation is ongoing (maybe workflow is incomplete),
-        # check whether the actual process exists.
+        # check whether the actual process exists (local) or batch jobs (remote).
         if is_workflow_observation_ongoing:
-            # check workflow process exists
-            current_process = self.monitor.search_process()
+            if not BATCH_CONFIG.USE_AWS_BATCH:
+                # Local execution: check workflow process exists
+                current_process = self.monitor.search_process()
 
-            # error handling for process not found
-            if current_process is None:
-                workflow_error = WorkflowErrorInfo(
-                    has_error=True, error_log="No Snakemake process found."
+                # error handling for process not found
+                if current_process is None:
+                    workflow_error = WorkflowErrorInfo(
+                        has_error=True, error_log="No Snakemake process found."
+                    )
+
+                # re-run observe node list (reflects workflow error)
+                node_results = await self.__observe_nodes(
+                    observe_node_ids, expt_config, workflow_error
                 )
+            else:
+                # Batch execution: check if any batch jobs have failed
+                batch_error = await self.__check_batch_job_failures(observe_node_ids)
 
-            # re-run observe node list (reflects workflow error)
-            node_results = await self.__observe_nodes(
-                observe_node_ids, expt_config, workflow_error
-            )
+                # If batch jobs failed, update workflow_error and re-observe
+                if batch_error and batch_error.has_error:
+                    workflow_error = batch_error
+
+                    # re-run observe node list (reflects workflow error)
+                    node_results = await self.__observe_nodes(
+                        observe_node_ids, expt_config, workflow_error
+                    )
 
         return node_results
 
@@ -208,6 +222,64 @@ class WorkflowResult:
         # )
 
         return is_ongoing
+
+    async def __check_batch_job_failures(
+        self, observe_node_ids: List[str]
+    ) -> WorkflowErrorInfo:
+        """
+        Check if any AWS Batch jobs for observed nodes have failed.
+
+        For batch execution, the Snakemake process runs in remote containers,
+        so we can't check for a local process. Instead, we query AWS Batch
+        to see if any jobs have failed.
+
+        Returns:
+            WorkflowErrorInfo if any batch jobs failed, None otherwise
+        """
+        from studio.app.common.core.cloud_batch.batch_utils import BatchUtils
+
+        try:
+            batch_utils = BatchUtils(self.workspace_id, self.unique_id)
+
+            # Get recent failed jobs from AWS Batch
+            # Limit to 20 to avoid excessive API calls
+            failed_jobs = batch_utils.get_recent_failed_jobs(
+                limit=20, include_context=False
+            )
+
+            # Map failed job names to node IDs
+            # Job naming convention: "optinist-{node_id}-{jobid}"
+            failed_nodes = set()
+            for job in failed_jobs:
+                job_name = job.get("job_name", "")
+                if job_name.startswith("optinist-"):
+                    # Split on first 2 hyphens only to handle node IDs with hyphens
+                    parts = job_name.split("-", 2)
+                    if len(parts) >= 2:
+                        node_id = parts[1]
+                        if node_id in observe_node_ids:
+                            failed_nodes.add(node_id)
+                            logger.debug(
+                                f"Found failed batch job for node {node_id}: "
+                                f"{job_name}"
+                            )
+
+            # Return error info if any observed nodes have failed jobs
+            if failed_nodes:
+                error_msg = (
+                    f"AWS Batch execution failed for nodes: "
+                    f"{', '.join(sorted(failed_nodes))}"
+                )
+                logger.warning(error_msg)
+                return WorkflowErrorInfo(has_error=True, error_log=error_msg)
+
+            return None
+
+        except Exception as e:
+            # Don't fail observation if batch check fails
+            # Log error and continue with normal observation
+            logger.error(f"Failed to check batch job status: {e}", exc_info=True)
+            return None
 
     def __check_has_whole_nwb(self, node_id=None) -> None:
         nwb_filepath_list = glob(join_filepath([self.workflow_dirpath, "*.nwb"]))
