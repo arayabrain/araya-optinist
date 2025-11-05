@@ -4,10 +4,8 @@ import os
 # Set environment variables before other imports
 os.environ["STRIPE_SECRET_KEY"] = "sk_test_fake_key_for_testing"
 
-from unittest.mock import Mock, patch
-
 import pytest
-
+from unittest.mock import Mock, patch
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 
 
