@@ -4,8 +4,10 @@ import os
 # Set environment variables before other imports
 os.environ["STRIPE_SECRET_KEY"] = "sk_test_fake_key_for_testing"
 
-import pytest
 from unittest.mock import Mock, patch
+
+import pytest
+
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 
 
@@ -44,10 +46,10 @@ class TestWebhookData:
     def test_invoice_data_structure(self):
         """Test that invoice data has correct structure for subscription_id"""
         # The correct Stripe invoice structure for subscription_id
-        invoice_data = {
+        return {
             "id": "in_test123",
             "customer": "cus_test123",
-            "subscription": "sub_test123",  # This is the correct location
+            "parent": {"subscription_details": {"subscription": "sub_test123"}},
             "status": "paid",
             "amount_paid": 2999,
             "billing_reason": "subscription_cycle",
