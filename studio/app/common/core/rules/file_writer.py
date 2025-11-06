@@ -5,6 +5,7 @@ from typing import List, Union
 import h5py
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.mode import MODE
 from studio.app.common.core.snakemake.smk import Rule
 from studio.app.common.dataclass import CsvData, ImageData, TimeSeriesData
 from studio.app.const import FILETYPE
@@ -41,7 +42,7 @@ class FileWriter:
         """
         # Early exit if not running in batch mode
         # No need to copy files from Snakemake storage in non-batch contexts
-        if os.environ.get("IN_SNAKEMAKE_BATCH") != "true":
+        if not MODE.IN_SNAKEMAKE_BATCH:
             return input_path
 
         # Handle list/tuple by recursing on each element

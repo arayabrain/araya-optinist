@@ -1,6 +1,7 @@
 import os
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
+from studio.app.common.core.mode import MODE
 from studio.app.common.core.snakemake.smk import Rule, SmkParam
 from studio.app.common.core.utils.config_handler import ConfigReader
 from studio.app.common.core.utils.filepath_creater import join_filepath
@@ -56,7 +57,7 @@ class SmkConfigReader:
     @classmethod
     def get_config_yaml_path(cls, workspace_id: str, unique_id: str) -> str:
         # Check if running in batch mode
-        if os.environ.get("IN_SNAKEMAKE_BATCH") == "true":
+        if MODE.IN_SNAKEMAKE_BATCH:
             return cls.get_batch_config_path()
         else:
             # Local mode: use workspace-specific path
@@ -93,7 +94,7 @@ class SmkConfigReader:
     @classmethod
     def read_from_path(cls, filepath: str) -> dict:
         # In batch mode, ignore the filepath and use batch config location
-        if os.environ.get("IN_SNAKEMAKE_BATCH") == "true":
+        if MODE.IN_SNAKEMAKE_BATCH:
             # Extract IDs for logging but use batch config path
             ids = ExptOutputPathIds(os.path.dirname(filepath))
             return cls.read(ids.workspace_id, ids.unique_id)

@@ -5,22 +5,22 @@ from studio.app.common.core.workflow.workflow import ProcessType
 from studio.app.dir_path import DIRPATH
 
 from studio.app.common.core.workflow.workflow import NodeType, NodeTypeUtil
+from studio.app.common.core.mode import MODE
 
-import os
-
-if os.environ.get("IN_SNAKEMAKE_BATCH") == "true":
+if MODE.IN_SNAKEMAKE_BATCH:
     _config_path = SmkConfigReader.get_batch_config_path()
 else:
     _config_path = "snakemake.yaml"
 
 configfile: _config_path
 
-rule all:
-    # Compute paths outside rule definition to avoid Snakemake parsing issues
-    all_outputs = [
-        SmkUtils._make_relative_path(join_filepath([DIRPATH.OUTPUT_DIR, x]))
-        for x in config["last_output"]
+# Compute paths outside rule definition to avoid Snakemake parsing issues
+all_outputs = [
+    SmkUtils._make_relative_path(join_filepath([DIRPATH.OUTPUT_DIR, x]))
+    for x in config["last_output"]
 ]
+
+rule all:
     input: all_outputs
 
 for rule_name, details in config["rules"].items():

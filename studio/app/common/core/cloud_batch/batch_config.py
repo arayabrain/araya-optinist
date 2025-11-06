@@ -1,6 +1,7 @@
 from pydantic import BaseSettings, Field, root_validator
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.mode import MODE
 from studio.app.dir_path import DIRPATH
 
 
@@ -33,11 +34,9 @@ class BatchConfig(BaseSettings):
 
     @root_validator
     def validate_aws_config(cls, values):
-        import os
-
         # Skip validation if running inside a snakemake batch job
         # These jobs don't need orchestration-level AWS Batch configuration
-        if os.environ.get("IN_SNAKEMAKE_BATCH") == "true":
+        if MODE.IN_SNAKEMAKE_BATCH:
             logger = AppLogger.get_logger()
             logger.debug(
                 "Running inside snakemake batch job, skipping AWS Batch "
@@ -48,7 +47,7 @@ class BatchConfig(BaseSettings):
             logger = AppLogger.get_logger()
             logger.debug(
                 f"IN_SNAKEMAKE_BATCH not set or not 'true': "
-                f"{os.environ.get('IN_SNAKEMAKE_BATCH', 'NOT_SET')}"
+                f"{MODE.IN_SNAKEMAKE_BATCH}"
             )
 
         if values.get("USE_AWS_BATCH"):

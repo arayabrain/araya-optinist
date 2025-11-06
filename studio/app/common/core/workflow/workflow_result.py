@@ -104,7 +104,9 @@ class WorkflowResult:
                 )
             else:
                 # Batch execution: check if any batch jobs have failed
-                batch_error = await check_batch_job_failures(observe_node_ids)
+                batch_error = await check_batch_job_failures(
+                    self.workspace_id, self.unique_id, observe_node_ids
+                )
 
                 # If batch jobs failed, update workflow_error and re-observe
                 if batch_error and batch_error.has_error:

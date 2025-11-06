@@ -1,3 +1,5 @@
+import os
+
 from pydantic import BaseSettings, Field
 
 from studio.app.dir_path import DIRPATH
@@ -10,6 +12,11 @@ class Mode(BaseSettings):
     @property
     def IS_MULTIUSER(self):
         return not self.IS_STANDALONE
+
+    @property
+    def IN_SNAKEMAKE_BATCH(self):
+        """Check if running in Snakemake batch mode."""
+        return os.environ.get("IN_SNAKEMAKE_BATCH") == "true"
 
     def reset_mode(self, is_standalone: bool):
         # Check function availability

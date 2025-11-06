@@ -2884,7 +2884,7 @@ async def upload_snakemake_config_to_s3(workspace_id: str, unique_id: str) -> bo
 
 
 async def check_batch_job_failures(
-    self, observe_node_ids: List[str]
+    workspace_id: str, unique_id: str, observe_node_ids: List[str]
 ) -> WorkflowErrorInfo:
     """
     Check if any AWS Batch jobs for observed nodes have failed.
@@ -2893,13 +2893,17 @@ async def check_batch_job_failures(
     so we can't check for a local process. Instead, we query AWS Batch
     to see if any jobs have failed.
 
-    Returns:
-        WorkflowErrorInfo if any batch jobs failed, None otherwise
-    """
-    from studio.app.common.core.cloud_batch.batch_utils import BatchUtils
+    Args:
+        workspace_id: The workspace ID
+        unique_id: The unique workflow ID
+        observe_node_ids: List of node IDs to observe
 
+    Returns:
+        WorkflowErrorInfo with has_error=True if any batch jobs failed,
+        or has_error=False otherwise
+    """
     try:
-        batch_utils = BatchUtils(self.workspace_id, self.unique_id)
+        batch_utils = BatchUtils(workspace_id, unique_id)
 
         # Get recent failed jobs from AWS Batch
         # Limit to 20 to avoid excessive API calls
@@ -2920,7 +2924,7 @@ async def check_batch_job_failures(
                     if node_id in observe_node_ids:
                         failed_nodes.add(node_id)
                         logger.debug(
-                            f"Found failed batch job for node {node_id}: " f"{job_name}"
+                            f"Found failed batch job for node {node_id}: {job_name}"
                         )
 
         # Return error info if any observed nodes have failed jobs
@@ -2932,13 +2936,13 @@ async def check_batch_job_failures(
             logger.warning(error_msg)
             return WorkflowErrorInfo(has_error=True, error_log=error_msg)
 
-        return None
+        return WorkflowErrorInfo(has_error=False, error_log=None)
 
     except Exception as e:
         # Don't fail observation if batch check fails
         # Log error and continue with normal observation
         logger.error(f"Failed to check batch job status: {e}", exc_info=True)
-        return None
+        return WorkflowErrorInfo(has_error=False, error_log=None)
 
 
 async def upload_snakefile_to_s3(workspace_id: str, unique_id: str) -> bool:

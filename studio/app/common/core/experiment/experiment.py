@@ -2,6 +2,7 @@ import os
 from dataclasses import dataclass
 from typing import Dict, Optional
 
+from studio.app.common.core.mode import MODE
 from studio.app.common.core.snakemake.smk import SmkParam
 from studio.app.common.core.workflow.workflow import OutputPath
 from studio.app.dir_path import DIRPATH
@@ -80,7 +81,7 @@ class ExptOutputPathIds:
         # Path format: .snakemake/storage/s3/{bucket}/...
         # app/studio_data/output/{workspace_id}/{unique_id}/{function_id}
         is_batch_s3 = (
-            os.environ.get("IN_SNAKEMAKE_BATCH") == "true"
+            MODE.IN_SNAKEMAKE_BATCH
             and ".snakemake/storage/s3/" in output_dir_normalized
         )
 
