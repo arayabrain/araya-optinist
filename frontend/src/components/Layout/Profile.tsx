@@ -63,7 +63,7 @@ const Profile: FC = () => {
         </MenuItem>
         <MenuItem onClick={onClickLogout}>
           <Logout />
-          SIGN OUT
+          Sign Out
         </MenuItem>
       </Menu>
     </>

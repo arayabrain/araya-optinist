@@ -25,7 +25,9 @@ import {
   workspaceReducer,
   userReducer,
   modeStandalone,
+  subscriptionReducer,
   dataviewReducer,
+  paymentMethodReducer,
 } from "store/slice"
 import { DATAVIEW_SLICE_NAME } from "store/slice/Dataview/DataviewType"
 
@@ -50,6 +52,8 @@ export const rootReducer = combineReducers({
   user: userReducer,
   mode: modeStandalone,
   [DATAVIEW_SLICE_NAME]: dataviewReducer,
+  subscription: subscriptionReducer,
+  paymentMethod: paymentMethodReducer,
 })
 
 export const store = configureStore({

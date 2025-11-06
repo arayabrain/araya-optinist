@@ -12,6 +12,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageSimpleWriter,
 )
+from studio.app.common.core.subscription.stripe_service import StripeService
 from studio.app.common.core.workspace.workspace_services import WorkspaceService
 from studio.app.common.models import Role as RoleModel
 from studio.app.common.models import User as UserModel
@@ -287,6 +288,12 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
                 user_db.remote_bucket_name
             ) as remote_storage_controller:
                 await remote_storage_controller.delete_bucket(force_delete=True)
+
+        # ----------------------------------------
+        # Cancel a User subscription
+        # ----------------------------------------
+
+        await StripeService.handle_cancel_user_subscription(db, user_db)
 
         # ----------------------------------------
         # Delete a User database record
