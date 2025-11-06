@@ -405,12 +405,12 @@ async def _calculate_local_user_storage(user_id: int) -> int:
 
     try:
         # Get all workspaces the user has access to using shared utility
-        from studio.app.common.core.workspace.workspace_utils import (
-            get_user_accessible_workspace_ids,
-        )
+        from studio.app.common.core.workspace.workspace_services import WorkspaceService
 
         with session_scope() as db:
-            workspace_ids = get_user_accessible_workspace_ids(db, user_id)
+            workspace_ids = WorkspaceService.get_user_accessible_workspace_ids(
+                db, user_id
+            )
 
         # Calculate total storage from input and output folders
         total_usage = 0
