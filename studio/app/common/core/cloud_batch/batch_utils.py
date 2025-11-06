@@ -24,6 +24,7 @@ from studio.app.common.models.subscription import (
     SubscriptionType,
 )
 from studio.app.common.models.user import User
+from studio.app.common.schemas.workflow import WorkflowErrorInfo
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -2656,6 +2657,174 @@ async def upload_workflow_results_to_s3(workspace_id: str, unique_id: str) -> bo
         return False
 
 
+async def observe_and_update_node_status_from_s3(
+    workspace_id: str, unique_id: str
+) -> bool:
+    """
+    Observe node status by checking S3 files directly and update experiment.yaml.
+
+    After batch execution, the output files exist in S3. This function checks
+    S3 directly to determine which nodes succeeded/failed, then updates the
+    local experiment.yaml with the correct status.
+
+    This avoids issues where local observation after download might incorrectly
+    mark nodes as failed due to Snakemake storage path handling differences
+    between batch and main instances.
+
+    Args:
+        workspace_id: Workspace ID
+        unique_id: Unique experiment ID
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        import pickle
+        from datetime import datetime
+
+        from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
+        from studio.app.common.core.experiment.experiment_writer import ExptConfigWriter
+        from studio.app.common.core.utils.pickle_handler import PickleReader
+        from studio.app.common.core.workflow.workflow import NodeRunStatus
+        from studio.app.const import DATE_FORMAT
+
+        if not RemoteStorageController.is_available():
+            logger.debug(
+                "RemoteStorageController not available, "
+                "skipping S3 status observation"
+            )
+            return True
+
+        logger.info(f"Observing node status from S3 for {workspace_id}/{unique_id}")
+
+        # Get S3 client
+        s3_controller = S3StorageController(BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME)
+
+        # Read current experiment config
+        expt_config = ExptConfigReader.read(workspace_id, unique_id)
+
+        # Track updates to make
+        updates = {}
+        all_nodes_finished = True
+        any_node_failed = False
+        now = datetime.now().strftime(DATE_FORMAT)
+
+        # Check each function node
+        for node_id, node_config in expt_config.function.items():
+            # Skip if already marked as finished
+            if node_config.success != NodeRunStatus.RUNNING.value:
+                logger.debug(
+                    f"Node {node_id} already finished with status: "
+                    f"{node_config.success}, skipping"
+                )
+                continue
+
+            # Construct S3 path to the node's pickle file
+            # Format: app/studio_data/output/{workspace_id}/{unique_id}/{node_id}/*.pkl
+            s3_prefix = f"app/studio_data/output/{workspace_id}/{unique_id}/{node_id}/"
+
+            try:
+                # List objects in S3 to find the pickle file
+                async with (
+                    s3_controller._S3StorageController__get_s3_client()
+                ) as s3_client:
+                    response = await s3_client.list_objects_v2(
+                        Bucket=BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME, Prefix=s3_prefix
+                    )
+
+                    if "Contents" not in response:
+                        logger.warning(
+                            f"No output files found in S3 for node "
+                            f"{node_id} at {s3_prefix}"
+                        )
+                        all_nodes_finished = False
+                        continue
+
+                    # Find the pickle file (exclude tmp_*.pkl files)
+                    pickle_file_key = None
+                    for obj in response["Contents"]:
+                        key = obj["Key"]
+                        if key.endswith(".pkl") and "tmp_" not in key:
+                            pickle_file_key = key
+                            break
+
+                    if not pickle_file_key:
+                        logger.warning(f"No pickle file found in S3 for node {node_id}")
+                        all_nodes_finished = False
+                        continue
+
+                    # Download and read the pickle file from S3
+                    logger.debug(f"Checking pickle file in S3: {pickle_file_key}")
+                    response = await s3_client.get_object(
+                        Bucket=BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME,
+                        Key=pickle_file_key,
+                    )
+
+                    # Read pickle data
+                    pickle_data = await response["Body"].read()
+                    pickle_obj = pickle.loads(pickle_data)
+
+                    # Check if pickle is valid (dict = success, list/str = error)
+                    is_valid = PickleReader.check_is_valid_node_pickle(pickle_obj)
+
+                    if is_valid:
+                        # Node succeeded
+                        logger.info(f"Node {node_id} succeeded (verified from S3)")
+                        node_status = NodeRunStatus.SUCCESS.value
+                        # We can't easily reconstruct outputPaths from S3 without
+                        # downloading and processing, so we'll let the normal
+                        # observe handle that
+                    else:
+                        # Node failed
+                        logger.warning(f"Node {node_id} failed (verified from S3)")
+                        node_status = NodeRunStatus.ERROR.value
+                        any_node_failed = True
+
+                    # Prepare update for this node
+                    if "function" not in updates:
+                        updates["function"] = {}
+
+                    updates["function"][node_id] = {
+                        "success": node_status,
+                        "finished_at": now,
+                    }
+
+            except Exception as e:
+                logger.error(
+                    f"Error checking S3 status for node {node_id}: {e}", exc_info=True
+                )
+                all_nodes_finished = False
+                continue
+
+        # Update overall workflow status if all nodes finished
+        if all_nodes_finished:
+            if any_node_failed:
+                updates["success"] = NodeRunStatus.ERROR.value
+            else:
+                updates["success"] = NodeRunStatus.SUCCESS.value
+            updates["finished_at"] = now
+            logger.info(f"All nodes finished. Overall status: {updates['success']}")
+
+        # Write updates to experiment.yaml
+        if updates:
+            writer = ExptConfigWriter(workspace_id, unique_id)
+            writer.overwrite(updates)
+            logger.info(
+                f"Updated node status in experiment.yaml for "
+                f"{len(updates.get('function', {}))} nodes"
+            )
+        else:
+            logger.info("No status updates needed")
+
+        return True
+
+    except Exception as e:
+        logger.error(
+            f"Failed to observe and update node status from S3: {e}", exc_info=True
+        )
+        return False
+
+
 async def upload_snakemake_config_to_s3(workspace_id: str, unique_id: str) -> bool:
     """
     Upload snakemake config to S3 for batch execution.
@@ -2712,6 +2881,64 @@ async def upload_snakemake_config_to_s3(workspace_id: str, unique_id: str) -> bo
     except Exception as e:
         logger.error(f"Failed to upload config to S3: {e}")
         return False
+
+
+async def check_batch_job_failures(
+    self, observe_node_ids: List[str]
+) -> WorkflowErrorInfo:
+    """
+    Check if any AWS Batch jobs for observed nodes have failed.
+
+    For batch execution, the Snakemake process runs in remote containers,
+    so we can't check for a local process. Instead, we query AWS Batch
+    to see if any jobs have failed.
+
+    Returns:
+        WorkflowErrorInfo if any batch jobs failed, None otherwise
+    """
+    from studio.app.common.core.cloud_batch.batch_utils import BatchUtils
+
+    try:
+        batch_utils = BatchUtils(self.workspace_id, self.unique_id)
+
+        # Get recent failed jobs from AWS Batch
+        # Limit to 20 to avoid excessive API calls
+        failed_jobs = batch_utils.get_recent_failed_jobs(
+            limit=20, include_context=False
+        )
+
+        # Map failed job names to node IDs
+        # Job naming convention: "optinist-{node_id}-{jobid}"
+        failed_nodes = set()
+        for job in failed_jobs:
+            job_name = job.get("job_name", "")
+            if job_name.startswith("optinist-"):
+                # Split on first 2 hyphens only to handle node IDs with hyphens
+                parts = job_name.split("-", 2)
+                if len(parts) >= 2:
+                    node_id = parts[1]
+                    if node_id in observe_node_ids:
+                        failed_nodes.add(node_id)
+                        logger.debug(
+                            f"Found failed batch job for node {node_id}: " f"{job_name}"
+                        )
+
+        # Return error info if any observed nodes have failed jobs
+        if failed_nodes:
+            error_msg = (
+                f"AWS Batch execution failed for nodes: "
+                f"{', '.join(sorted(failed_nodes))}"
+            )
+            logger.warning(error_msg)
+            return WorkflowErrorInfo(has_error=True, error_log=error_msg)
+
+        return None
+
+    except Exception as e:
+        # Don't fail observation if batch check fails
+        # Log error and continue with normal observation
+        logger.error(f"Failed to check batch job status: {e}", exc_info=True)
+        return None
 
 
 async def upload_snakefile_to_s3(workspace_id: str, unique_id: str) -> bool:

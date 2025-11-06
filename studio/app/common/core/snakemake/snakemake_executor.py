@@ -26,6 +26,7 @@ from studio.app.common.core.cloud_batch.batch_utils import (
     BatchDebug,
     BatchUtils,
     download_workflow_results_from_s3,
+    observe_and_update_node_status_from_s3,
     upload_snakefile_to_s3,
     upload_snakemake_config_to_s3,
     upload_workflow_results_to_s3,
@@ -79,6 +80,21 @@ def snakemake_execute(workspace_id: str, unique_id: str, params: SmkParam):
             asyncio.run(upload_workflow_results_to_s3(workspace_id, unique_id))
             # Download results from S3 to local storage for post-processing
             asyncio.run(download_workflow_results_from_s3(workspace_id, unique_id))
+
+            # Observe node status by checking S3 files directly and update status
+            # This must happen BEFORE local observe to ensure correct status
+            try:
+                asyncio.run(
+                    observe_and_update_node_status_from_s3(workspace_id, unique_id)
+                )
+                logger.info(
+                    "Node status updated from S3 observation for batch execution"
+                )
+            except Exception as e:
+                logger.error(
+                    f"S3 status observation failed after batch execution: {e}",
+                    exc_info=True,
+                )
 
             # Now that files are downloaded locally, observe workflow results
             # This must happen AFTER S3 download to ensure pickle files exist
