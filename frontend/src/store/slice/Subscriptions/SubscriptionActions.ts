@@ -77,6 +77,7 @@ export const getUTCServerTime = createAsyncThunk(
       const response = await getUTCServerTimeApi()
       return response
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error("Error fetching server time:", error)
       // Extract clean error message instead of passing entire error object
       const errorMessage = extractErrorMessage(error)

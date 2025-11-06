@@ -36,6 +36,10 @@ from studio.app.common.schemas.subscriptions import (
 )
 from studio.app.common.schemas.users import User
 
+# Module-level flag for lazy Stripe initialization
+_stripe_initialized = False
+
+
 def _ensure_stripe_initialized():
     """Lazy initialization of Stripe API key"""
     global _stripe_initialized

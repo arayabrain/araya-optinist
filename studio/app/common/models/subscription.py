@@ -27,25 +27,25 @@ class SyncStatus(StrEnum):
     FAILED = "failed"
 
 
-class SubscriptionType(str, Enum):
+class SubscriptionType(StrEnum):
     PREMIUM = "premium"
     FREE = "free"
 
 
-class PlanName(str, Enum):
+class PlanName(StrEnum):
     PREMIUM = "Premium"
     FREE = "Free"
     UNKNOWN = "Unknown"  # Fallback for when plan cannot be determined
 
 
-class SubscriptionStatus(str, Enum):
+class SubscriptionStatus(StrEnum):
     FREE = "Free"  # User on free plan
     PREMIUM = "Premium"  # Active premium subscription
     LIMIT_GRACE = "Limit Grace"  # Premium expired, in grace period
     EXPIRED = "Expired"  # Grace period ended
 
 
-class SubscriptionLifecycleStatus(str, Enum):
+class SubscriptionLifecycleStatus(StrEnum):
     """Lifecycle status for subscription expiration checking in limit warnings"""
 
     ACTIVE = "active"  # Subscription has not expired yet
