@@ -10,6 +10,11 @@ export const getSubscriptionPlansApi = async (): Promise<
   return response.data
 }
 
+export const getServerTimeApi = async (): Promise<string> => {
+  const response = await axios.get("/api/subsc/mgmts/server-time")
+  return response.data
+}
+
 export const getUserSubscriptionApi = async () => {
   const response = await axios.get("/api/subsc/mgmts")
   return response.data
@@ -45,15 +50,18 @@ export const validateCheckoutSessionApi = createAsyncThunk(
   },
 )
 
-export const validateFailedCheckoutSessionApi = async (sessionId: string) => {
-  const response = await axios.post(
-    "/api/subsc/checkout/validate-failed-checkout-session",
-    {
-      session_id: sessionId,
-    },
-  )
-  return response.data
-}
+export const validateFailedCheckoutSessionApi = createAsyncThunk(
+  "subscription/validateFailedCheckoutSession",
+  async (sessionId: string) => {
+    const response = await axios.post(
+      "/api/subsc/checkout/validate-failed-checkout-session",
+      {
+        session_id: sessionId,
+      },
+    )
+    return response.data
+  },
+)
 
 export const cancelSubscriptionApi = async () => {
   const response = await axios.delete("/api/subsc/mgmts/cancel")

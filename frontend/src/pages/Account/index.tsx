@@ -26,12 +26,13 @@ import { ROLE } from "@types"
 import ChangePasswordModal from "components/Account/ChangePasswordModal"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
-import { getUserSubscription } from "store/slice/Subscriptions/SubscriptionActions"
+import {
+  getUTCServerTime,
+  getUserSubscription,
+} from "store/slice/Subscriptions/SubscriptionActions"
 import {
   selectUserSubscription,
   selectUserSubscriptionLoading,
-  selectSubscriptionError,
-  selectIsSubscriptionExpired,
 } from "store/slice/Subscriptions/SubscriptionSelector"
 import {
   deleteMe,
@@ -43,13 +44,23 @@ import { selectCurrentUser, selectLoading } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
 
+export enum SUBSCRIPTION_USER_STATUS {
+  FREE = 1,
+  SUBSCRIBED = 2,
+  EXPIRED = 3,
+  CANCELED = 4,
+}
+
+enum SUBSCRIPTION_PLAN {
+  FREE = "Free",
+  PREMIUM = "Premium",
+}
+
 const Account = () => {
   const user = useSelector(selectCurrentUser)
   const loading = useSelector(selectLoading)
   const userSubscription = useSelector(selectUserSubscription)
   const subscriptionLoading = useSelector(selectUserSubscriptionLoading)
-  const subscriptionError = useSelector(selectSubscriptionError)
-  const isSubscriptionExpired = useSelector(selectIsSubscriptionExpired)
 
   const dispatch = useDispatch<AppDispatch>()
   const navigate = useNavigate()
@@ -66,19 +77,6 @@ const Account = () => {
 
   const handleClickVariant = (variant: VariantType, mess: string) => {
     enqueueSnackbar(mess, { variant })
-  }
-
-  enum SUBSCRIPTION_STATUS {
-    LOADING = "LOADING",
-    ERROR = "ERROR",
-    FREE = "FREE",
-    EXPIRED = "EXPIRED",
-    ACTIVE = "ACTIVE",
-  }
-
-  enum SUBSCRIPTION_PLAN {
-    FREE = "Free",
-    PREMIUM = "Premium",
   }
 
   useEffect(() => {
@@ -201,26 +199,22 @@ const Account = () => {
     }
   }
 
-  const getSubscriptionStatus = () => {
-    if (subscriptionLoading) {
-      return SUBSCRIPTION_STATUS.LOADING
-    } else if (subscriptionError) {
-      return SUBSCRIPTION_STATUS.ERROR
-    } else if (!userSubscription) {
-      return SUBSCRIPTION_STATUS.FREE
-    } else if (isSubscriptionExpired) {
-      return SUBSCRIPTION_STATUS.EXPIRED
+  const determineSubscriptionButtonStatus = () => {
+    if (!userSubscription) {
+      return SUBSCRIPTION_USER_STATUS.FREE
+    } else if (userSubscription.is_expired) {
+      return SUBSCRIPTION_USER_STATUS.EXPIRED
     } else {
-      return SUBSCRIPTION_STATUS.ACTIVE
+      return SUBSCRIPTION_USER_STATUS.SUBSCRIBED
     }
   }
 
   // Updated function to handle showing both buttons for users with subscription records
   const renderSubscriptionButtons = () => {
-    const status = getSubscriptionStatus()
+    const status = determineSubscriptionButtonStatus()
 
     // For users who never had a subscription (completely free users)
-    if (status === SUBSCRIPTION_STATUS.FREE) {
+    if (status === SUBSCRIPTION_USER_STATUS.FREE) {
       return (
         <Button
           variant="contained"
@@ -236,12 +230,12 @@ const Account = () => {
 
     // For users with subscription records (active or expired)
     if (
-      status === SUBSCRIPTION_STATUS.ACTIVE ||
-      status === SUBSCRIPTION_STATUS.EXPIRED
+      status === SUBSCRIPTION_USER_STATUS.SUBSCRIBED ||
+      status === SUBSCRIPTION_USER_STATUS.EXPIRED
     ) {
       return (
         <Box sx={{ ml: 2, display: "flex", gap: 1 }}>
-          {status === SUBSCRIPTION_STATUS.EXPIRED && (
+          {status === SUBSCRIPTION_USER_STATUS.EXPIRED && (
             <Button
               variant="contained"
               color="primary"
@@ -272,7 +266,7 @@ const Account = () => {
     if (!userSubscription) return null
     const expirationDate = new Date(userSubscription.expiration)
 
-    if (isSubscriptionExpired) {
+    if (userSubscription.is_expired) {
       return (
         <Typography variant="caption" color="error" sx={{ ml: 1 }}>
           (Expired on {expirationDate.toLocaleDateString()})
@@ -280,11 +274,18 @@ const Account = () => {
       )
     }
 
-    return (
-      <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-        (Expires on {expirationDate.toLocaleDateString()})
-      </Typography>
-    )
+    if (
+      userSubscription.status === SUBSCRIPTION_USER_STATUS.CANCELED &&
+      userSubscription.scheduled_downgrade
+    ) {
+      return (
+        <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+          (Expires on {expirationDate.toLocaleDateString()})
+        </Typography>
+      )
+    }
+
+    return null
   }
 
   return (
@@ -355,7 +356,7 @@ const Account = () => {
           }}
         >
           <BoxData>
-            {userSubscription?.plan_name && !isSubscriptionExpired
+            {userSubscription?.plan_name && !userSubscription.is_expired
               ? userSubscription.plan_name
               : SUBSCRIPTION_PLAN.FREE}
           </BoxData>

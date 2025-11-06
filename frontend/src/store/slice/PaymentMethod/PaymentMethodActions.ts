@@ -48,9 +48,9 @@ export const getDefaultPaymentMethod = createAsyncThunk<
   { rejectValue: string }
 >(
   `${PAYMENT_METHODS_SLICE_NAME}/getDefaultPaymentMethod`,
-  async (userId: number | undefined, thunkAPI) => {
+  async (_, thunkAPI) => {
     try {
-      const response = await getDefaultPaymentMethodApi(userId)
+      const response = await getDefaultPaymentMethodApi()
       return response
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -77,28 +77,23 @@ export const getAllPaymentMethods = createAsyncThunk<
   PaymentMethodDTO[],
   number,
   { rejectValue: string }
->(
-  `${PAYMENT_METHODS_SLICE_NAME}/getAllPaymentMethods`,
-  async (userId: number, thunkAPI) => {
-    try {
-      const response = await getAllPaymentMethodsApi(userId)
+>(`${PAYMENT_METHODS_SLICE_NAME}/getAllPaymentMethods`, async (_, thunkAPI) => {
+  try {
+    const response = await getAllPaymentMethodsApi()
 
-      // Validate response structure
-      if (!Array.isArray(response)) {
-        // eslint-disable-next-line no-console
-        console.warn("Invalid payment methods response:", response)
-        return []
-      }
-
-      return response
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error("Error fetching payment methods:", error)
-      const errorMessage = extractErrorMessage(error)
-      return thunkAPI.rejectWithValue(errorMessage)
+    // Validate response structure
+    if (!Array.isArray(response)) {
+      console.warn("Invalid payment methods response:", response)
+      return []
     }
-  },
-)
+
+    return response
+  } catch (error) {
+    console.error("Error fetching payment methods:", error)
+    const errorMessage = extractErrorMessage(error)
+    return thunkAPI.rejectWithValue(errorMessage)
+  }
+})
 
 export const getUserInvoices = createAsyncThunk<
   InvoiceDTO[],

@@ -1,15 +1,18 @@
 import os
 from datetime import datetime, timezone
-from enum import Enum
+from enum import IntEnum
 from typing import List, Optional, Tuple
 
+from fastapi import HTTPException
 from sqlalchemy import and_
 from sqlmodel import Session
 
 from studio.app.common import models as common_model
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.models.subscription import (
+    SubscriptionCancellation,
     SubscriptionPlans,
+    SubscriptionUserPurchase,
     SyncStatus,
     UserSubscription,
 )
@@ -18,34 +21,166 @@ from studio.app.common.models.user import User
 logger = AppLogger.get_logger()
 
 
-class SubscriptionStatusType(Enum):
-    ACTIVE = "1"
-    INACTIVE = "0"
+class SubscriptionUserStatus(IntEnum):
+    FREE = 1
+    SUBSCRIBED = 2
+    EXPIRED = 3
+    CANCELED = 4
 
 
-class SubscriptionCurrencyType(Enum):
+class SubscriptionPlanType(IntEnum):
+    MONTHLY = 1
+    YEARLY = 2
+
+
+class SubscriptionStatusType(IntEnum):
+    ACTIVE = 1
+    INACTIVE = 0
+
+
+class SubscriptionCurrencyType(IntEnum):
     USD = 1
     JPY = 2
 
+    def get_currency_string(self):
+        """Get the string representation of the currency"""
+        if self == self.__class__.USD:
+            return "usd"
+        elif self == self.__class__.JPY:
+            return "jpy"
+        return None
 
-class SubscriptionCurrency(Enum):
-    USD = "usd"
-    JPY = "jpy"
+    @staticmethod
+    def get_currency_enum(value: str):
+        """Get the enum representation of the currency"""
+        value = value.lower()
+        if value == "usd":
+            return SubscriptionCurrencyType.USD
+        elif value == "jpy":
+            return SubscriptionCurrencyType.JPY
+        return None
 
 
 class SubscriptionService:
+    """Service class for managing internal subscription logic and database operations.
+
+    This service acts as the primary business logic layer for subscription management,
+    handling all subscription-related data in the application's database and
+    orchestrating subscription workflows. It serves as the single source of truth
+    for subscription state within the application.
+
+    Primary Responsibilities:
+    - Manage subscription data persistence in the application database
+    - Implement business rules and validation for subscription operations
+    - Track subscription lifecycle states (active, expired, cancelled)
+    - Handle subscription plan retrieval and user subscription status
+    - Coordinate with StripeService for payment provider operations
+    - Process subscription updates, downgrades, and cancellation tracking
+    - Maintain user subscription metadata and expiration dates
+
+    Key Features:
+    - Retrieve active subscription plans from database
+    - Check subscription cancellation status and history
+    - Determine subscription status based on plan type and cancellation state
+    - Update subscription plans and manage scheduled downgrades
+    - Track subscription purchases and cancellation events
+
+    Integration Points:
+    - Database session management for subscription data persistence
+    - User authentication and authorization
+    - Subscription plan types (monthly, yearly)
+    - StripeService for payment processing and Stripe API interactions
+
+    Note: This service focuses on internal business logic. For Stripe-specific
+    operations (payment methods, Stripe customer management, Stripe API calls),
+    use StripeService."""
+
     @staticmethod
     def get_active_plans(db: Session) -> List[SubscriptionPlans]:
         return (
             db.query(SubscriptionPlans)
-            .filter(SubscriptionPlans.status == SubscriptionStatusType.ACTIVE.value)
+            .filter(SubscriptionPlans.status == SubscriptionStatusType.ACTIVE)
             .all()
         )
 
     @staticmethod
+    def is_subscription_cancelled(db: Session, user_id: int) -> bool:
+        """
+        Check if a user's current active subscription is cancelled.
+
+        Args:
+            db: Database session
+            user_id: The user's ID
+
+        Returns:
+            bool: True if the user has an active cancelled subscription, False otherwise
+        """
+        from datetime import datetime
+
+        # Get the user's current active subscription (not expired)
+        active_subscription = (
+            db.query(UserSubscription)
+            .filter(
+                UserSubscription.user_id == user_id,
+                UserSubscription.expiration > datetime.utcnow(),
+            )
+            .order_by(UserSubscription.expiration.desc())
+            .first()
+        )
+
+        logger.info(f"Active subscription for user {user_id}: {active_subscription}")
+
+        # If no active subscription, it's not cancelled (it's expired or doesn't exist)
+        if not active_subscription:
+            return False
+
+        # Find the most recent purchase that matches or came before this subscription
+        latest_purchase = (
+            db.query(SubscriptionUserPurchase)
+            .filter(
+                SubscriptionUserPurchase.user_id == user_id,
+                SubscriptionUserPurchase.plan_id == active_subscription.plan_id,
+                SubscriptionUserPurchase.created_at <= active_subscription.created_at,
+            )
+            .order_by(SubscriptionUserPurchase.created_at.desc())
+            .first()
+        )
+
+        logger.info(f"Latest purchase for user {user_id}: {latest_purchase}")
+
+        if not latest_purchase:
+            return False
+
+        # Check if this purchase has a cancellation record
+        cancellation = (
+            db.query(SubscriptionCancellation)
+            .filter(SubscriptionCancellation.purchases_id == latest_purchase.id)
+            .first()
+        )
+
+        logger.info(f"Cancellation record for user {user_id}: {cancellation}")
+
+        return cancellation is not None
+
+    @staticmethod
+    def get_subscription_status(plan_data_id: int, is_cancelled: bool) -> int:
+        # Determine status based on plan ID and cancellation state
+        if is_cancelled:
+            subscription_status = SubscriptionUserStatus.CANCELED
+        elif plan_data_id == SubscriptionPlanType.MONTHLY:
+            subscription_status = SubscriptionUserStatus.FREE
+        elif plan_data_id == SubscriptionPlanType.YEARLY:
+            subscription_status = SubscriptionUserStatus.SUBSCRIBED
+        else:
+            subscription_status = SubscriptionUserStatus.FREE
+        return subscription_status
+
+    @staticmethod
     def get_plan_by_id(db: Session, plan_id: int) -> SubscriptionPlans:
         return (
-            db.query(SubscriptionPlans).filter(SubscriptionPlans.id == plan_id).first()
+            db.query(SubscriptionPlans)
+            .filter(SubscriptionPlans.id == plan_id, SubscriptionPlans.status.is_(True))
+            .first()
         )
 
     @staticmethod
@@ -66,7 +201,8 @@ class SubscriptionService:
             .filter(
                 and_(
                     common_model.UserSubscription.user_id == user_id,
-                    common_model.UserSubscription.expiration > datetime.now(),
+                    common_model.UserSubscription.expiration
+                    > __class__.get_current_datetime(),
                     common_model.User.active.is_(True),
                 )
             )
@@ -95,7 +231,8 @@ class SubscriptionService:
             )
             .filter(
                 common_model.UserSubscription.user_id == user_id,
-                common_model.UserSubscription.expiration <= datetime.now(),
+                common_model.UserSubscription.expiration
+                <= __class__.get_current_datetime(),
                 common_model.User.active.is_(True),
             )
             .order_by(common_model.UserSubscription.expiration.desc())
@@ -142,7 +279,9 @@ class SubscriptionService:
             logger.error(
                 f"Error updating scheduled downgrade for user {user_id}: {str(e)}"
             )
-            raise
+            raise HTTPException(
+                status_code=500, detail="Failed to update scheduled downgrade"
+            )
 
     @staticmethod
     def update_user_subscription(
@@ -157,7 +296,7 @@ class SubscriptionService:
                 db.query(UserSubscription)
                 .filter(
                     UserSubscription.user_id == user_id,
-                    UserSubscription.expiration > datetime.now(timezone.utc),
+                    UserSubscription.expiration > __class__.get_current_datetime(),
                 )
                 .first()
             )
@@ -177,7 +316,20 @@ class SubscriptionService:
         except Exception as e:
             db.rollback()
             logger.error(f"Error updating subscription for user {user_id}: {str(e)}")
-            raise
+            raise HTTPException(
+                status_code=500, detail="Failed to update user subscription"
+            )
+
+    @staticmethod
+    def get_current_datetime() -> datetime:
+        """
+        Get the current UTC date and time
+        """
+        try:
+            return datetime.now(timezone.utc)
+        except Exception as e:
+            logger.error(f"Error getting current datetime: {str(e)}")
+            return None
 
     @staticmethod
     def get_user_subscription_by_user_id(
@@ -225,8 +377,8 @@ class SyncService:
 
             # Mark as synced
             subscription.sync_status = SyncStatus.SYNCED
-            subscription.last_synced = datetime.now(timezone.utc)
-            subscription.updated_at = datetime.now(timezone.utc)
+            subscription.last_synced = SubscriptionService.get_current_datetime()
+            subscription.updated_at = SubscriptionService.get_current_datetime()
             db.commit()
 
             logger.info(f"Successfully synced subscription {subscription_user_id}")
@@ -238,7 +390,7 @@ class SyncService:
             # Mark as failed
             if subscription:
                 subscription.sync_status = SyncStatus.FAILED
-                subscription.updated_at = datetime.now(timezone.utc)
+                subscription.updated_at = SubscriptionService.get_current_datetime()
                 db.commit()
 
             return False

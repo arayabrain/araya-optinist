@@ -1,5 +1,5 @@
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Dict, Optional
 
 from sqlalchemy import BIGINT, JSON, TIMESTAMP, Boolean, DateTime
@@ -21,7 +21,7 @@ class StorageSize:
 
 
 # Enums for subscription management
-class SyncStatus(str, Enum):
+class SyncStatus(StrEnum):
     PENDING = "pending"
     SYNCED = "synced"
     FAILED = "failed"
@@ -55,7 +55,7 @@ class SubscriptionLifecycleStatus(str, Enum):
     FREE = "free"  # Never had premium subscription
 
 
-class CancellationReason(str, Enum):
+class CancellationReason(StrEnum):
     USER_REQUEST = "user_request"
     PAYMENT_FAILED = "payment_failed"
     ADMIN_ACTION = "admin_action"
@@ -232,7 +232,15 @@ class SubscriptionCancellation(SQLModel, table=True):
         sa_column=Column(TIMESTAMP, server_default=func.current_timestamp()),
     )
     reason: Optional[CancellationReason] = Field(
-        sa_column=Column(SQLEnum(CancellationReason), nullable=True),
+        sa_column=Column(
+            SQLEnum(
+                CancellationReason,
+                name="cancellation_reason_enum",
+                create_type=False,
+                values_callable=lambda x: [e.value for e in x],
+            ),
+            nullable=True,
+        ),
         default=None,
         description="Reason for cancellation",
     )
