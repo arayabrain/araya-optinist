@@ -19,6 +19,8 @@ export interface PremiumAssignmentResult {
   assigned: boolean
   retry_after?: number
   scaling_in_progress?: boolean
+  is_shared?: boolean
+  assignment_source?: string
 }
 
 export interface PremiumReleaseResult {

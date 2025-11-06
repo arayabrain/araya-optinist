@@ -303,13 +303,13 @@ export const PremiumAssignmentProvider: React.FC<{
       const twoHoursMs = 2 * 60 * 60 * 1000 // 2 hours
 
       console.log(
-        `⏰ Inactivity check: ${Math.round(timeSinceLastActivity / 1000 / 60)}min since last activity`,
+        `Inactivity check: ${Math.round(timeSinceLastActivity / 1000 / 60)}min since last activity`,
       )
 
       if (timeSinceLastActivity >= twoHoursMs) {
         // 2 hours of inactivity - auto-release
         console.log(
-          "🔴 2 hours of inactivity detected - auto-releasing premium instance",
+          "2 hours of inactivity detected - auto-releasing premium instance",
         )
         setState((prev) => ({ ...prev, showInactivityWarning: false }))
         autoReleaseOnLogout().catch((error) => {
@@ -320,7 +320,7 @@ export const PremiumAssignmentProvider: React.FC<{
         !state.showInactivityWarning
       ) {
         // 1 hour of inactivity - show warning
-        console.log("🟡 1 hour of inactivity detected - showing warning")
+        console.log("1 hour of inactivity detected - showing warning")
         setState((prev) => ({ ...prev, showInactivityWarning: true }))
       }
     }

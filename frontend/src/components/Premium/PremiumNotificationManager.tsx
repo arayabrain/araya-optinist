@@ -4,21 +4,27 @@
  * Handles user notifications for premium assignment status and fallback scenarios.
  */
 
-import { FC, useEffect, useState } from "react"
+import { FC, useEffect, useRef, useState } from "react"
 
 import { useSnackbar } from "notistack"
 
 import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 
 const PremiumNotificationManager: FC = () => {
-  const { enqueueSnackbar } = useSnackbar()
+  const { enqueueSnackbar, closeSnackbar } = useSnackbar()
   const { isPremiumUser, assignmentResult, error, isAssigning } =
     usePremiumAssignment()
 
   const [hasShownAssignmentSuccess, setHasShownAssignmentSuccess] =
     useState(false)
   const [hasShownError, setHasShownError] = useState(false)
+  const [hasShownTempAssignmentWarning, setHasShownTempAssignmentWarning] =
+    useState(false)
   const [lastAssignmentId, setLastAssignmentId] = useState<string | null>(null)
+
+  // Store keys for dismissible notifications
+  const tempAssignmentKeyRef = useRef<string | number | null>(null)
+  const scalingKeyRef = useRef<string | number | null>(null)
 
   // Show success notification when premium instance is assigned
   useEffect(() => {
@@ -29,6 +35,16 @@ const PremiumNotificationManager: FC = () => {
       assignmentResult.instance_id !== lastAssignmentId &&
       !hasShownAssignmentSuccess
     ) {
+      // Dismiss any pending temporary assignment or scaling notifications
+      if (tempAssignmentKeyRef.current) {
+        closeSnackbar(tempAssignmentKeyRef.current)
+        tempAssignmentKeyRef.current = null
+      }
+      if (scalingKeyRef.current) {
+        closeSnackbar(scalingKeyRef.current)
+        scalingKeyRef.current = null
+      }
+
       enqueueSnackbar(
         "Premium instance assigned successfully! You now have dedicated compute resources.",
         {
@@ -46,6 +62,39 @@ const PremiumNotificationManager: FC = () => {
     hasShownAssignmentSuccess,
     lastAssignmentId,
     enqueueSnackbar,
+    closeSnackbar,
+  ])
+
+  // Show temporary assignment warning when user is assigned to main instance
+  useEffect(() => {
+    if (
+      isPremiumUser &&
+      assignmentResult?.assigned &&
+      assignmentResult.is_shared === true &&
+      assignmentResult.assignment_source === "autoscaling_temp" &&
+      !hasShownTempAssignmentWarning
+    ) {
+      const key = enqueueSnackbar(
+        "You've been temporarily assigned to the main shared instance. \n" +
+          "Please refrain from running workflows until transferred to your " +
+          "premium instance to avoid losing progress. \n" +
+          "This may take a few minutes.",
+        {
+          variant: "info",
+          autoHideDuration: 10000,
+        },
+      )
+
+      // Store the key so we can dismiss this notification later if needed
+      tempAssignmentKeyRef.current = key
+
+      setHasShownTempAssignmentWarning(true)
+    }
+  }, [
+    isPremiumUser,
+    assignmentResult,
+    hasShownTempAssignmentWarning,
+    enqueueSnackbar,
   ])
 
   // Show scaling notification when capacity is being scaled up
@@ -56,13 +105,16 @@ const PremiumNotificationManager: FC = () => {
       !assignmentResult.assigned &&
       isAssigning
     ) {
-      enqueueSnackbar(
+      const key = enqueueSnackbar(
         "Premium capacity is scaling up. Your dedicated instance will be ready shortly.",
         {
           variant: "info",
           autoHideDuration: 8000,
         },
       )
+
+      // Store the key so we can dismiss this notification later if needed
+      scalingKeyRef.current = key
     }
   }, [isPremiumUser, assignmentResult, isAssigning, enqueueSnackbar])
 
@@ -94,6 +146,20 @@ const PremiumNotificationManager: FC = () => {
   useEffect(() => {
     if (!assignmentResult?.assigned) {
       setHasShownAssignmentSuccess(false)
+    }
+  }, [assignmentResult])
+
+  // Reset temp assignment warning when user is no longer on temporary instance
+  useEffect(() => {
+    if (
+      !assignmentResult?.assigned ||
+      assignmentResult.assignment_source !== "autoscaling_temp"
+    ) {
+      setHasShownTempAssignmentWarning(false)
+      // Clear the notification key reference
+      if (tempAssignmentKeyRef.current) {
+        tempAssignmentKeyRef.current = null
+      }
     }
   }, [assignmentResult])
 
