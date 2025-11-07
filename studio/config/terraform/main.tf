@@ -2101,6 +2101,8 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
           "s3:PutObject",
           "s3:DeleteObject",
           "s3:ListBucket",
+          "s3:CreateBucket",
+          "s3:DeleteBucket",
           "ec2:DescribeInstances",
           "ecs:DescribeTasks",
           "ecs:DescribeContainerInstances",
@@ -4423,7 +4425,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
         },
         {
           name  = "STRIPE_CALLBACK_URL"
-          value = "http://${aws_lb.autoscaling.dns_name}"
+          value = "${var.frontend_protocol}://${var.frontend_domain}"
         },
         {
           name  = "STRIPE_WEBHOOK_SECRET"
@@ -4912,7 +4914,7 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "STRIPE_CALLBACK_URL"
-          value = "http://${aws_lb.autoscaling.dns_name}"
+          value = "${var.frontend_protocol}://${var.frontend_domain}"
         },
         {
           name  = "STRIPE_WEBHOOK_SECRET"

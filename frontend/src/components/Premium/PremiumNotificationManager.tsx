@@ -75,9 +75,9 @@ const PremiumNotificationManager: FC = () => {
       !hasShownTempAssignmentWarning
     ) {
       const key = enqueueSnackbar(
-        "You've been temporarily assigned to the main shared instance. \n" +
+        "You've been temporarily assigned to the main shared instance. " +
           "Please refrain from running workflows until transferred to your " +
-          "premium instance to avoid losing progress. \n" +
+          "premium instance to avoid losing progress. " +
           "This may take a few minutes.",
         {
           variant: "info",

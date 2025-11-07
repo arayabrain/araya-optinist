@@ -263,8 +263,14 @@ const Account = () => {
 
   // Helper function to format expiration date with server-validated expiration status
   const getExpirationInfo = () => {
-    if (!userSubscription) return null
+    if (!userSubscription || !userSubscription.expiration) return null
+
     const expirationDate = new Date(userSubscription.expiration)
+
+    // Check if date is valid
+    if (isNaN(expirationDate.getTime())) {
+      return null
+    }
 
     if (userSubscription.is_expired) {
       return (

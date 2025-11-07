@@ -58,6 +58,7 @@ const App: FC = () => {
       action={(snackbarKey) => (
         <SnackbarCloseButton snackbarKey={snackbarKey} />
       )}
+      style={{ maxWidth: "600px" }}
     >
       <BrowserRouter>
         <Layout>

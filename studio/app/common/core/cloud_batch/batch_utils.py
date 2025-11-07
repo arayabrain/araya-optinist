@@ -2945,6 +2945,52 @@ async def check_batch_job_failures(
         return WorkflowErrorInfo(has_error=False, error_log=None)
 
 
+# Cache for throttled batch failure checks: {(workspace_id, unique_id): (timestamp, result)}
+_batch_check_cache: Dict[tuple, tuple] = {}
+
+
+async def check_batch_job_failures_throttled(
+    workspace_id: str,
+    unique_id: str,
+    observe_node_ids: List[str],
+    throttle_seconds: int = 60,
+) -> WorkflowErrorInfo:
+    """
+    Check if any AWS Batch jobs for observed nodes have failed, with throttling.
+
+    This is a throttled wrapper around check_batch_job_failures() that caches
+    results to avoid excessive AWS API calls. Results are cached per workspace/unique_id
+    and refreshed only after throttle_seconds have elapsed.
+
+    Args:
+        workspace_id: The workspace ID
+        unique_id: The unique workflow ID
+        observe_node_ids: List of node IDs to observe
+        throttle_seconds: Minimum seconds between actual checks (default: 60)
+
+    Returns:
+        WorkflowErrorInfo with has_error=True if any batch jobs failed,
+        or has_error=False otherwise
+    """
+    cache_key = (workspace_id, unique_id)
+    current_time = time.time()
+
+    # Check if we have a cached result that's still valid
+    if cache_key in _batch_check_cache:
+        cached_time, cached_result = _batch_check_cache[cache_key]
+        if (current_time - cached_time) < throttle_seconds:
+            # Use cached result
+            return cached_result
+
+    # Cache miss or expired - make actual check
+    result = await check_batch_job_failures(workspace_id, unique_id, observe_node_ids)
+
+    # Update cache
+    _batch_check_cache[cache_key] = (current_time, result)
+
+    return result
+
+
 async def upload_snakefile_to_s3(workspace_id: str, unique_id: str) -> bool:
     """
     Upload Snakefile to S3 for batch execution.
