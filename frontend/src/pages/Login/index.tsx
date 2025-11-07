@@ -201,6 +201,9 @@ const Login = () => {
             alignItems="center"
             justifyContent="flex-end"
           >
+            <LinkWrappper to="/register">
+              Don&apos;t have an account? Sign up
+            </LinkWrappper>
             <ButtonLogin data-testid="button-submit" type="submit">
               SIGN IN
             </ButtonLogin>
