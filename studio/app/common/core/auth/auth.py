@@ -41,31 +41,13 @@ async def authenticate_user(db: Session, data: UserAuth) -> Tuple[Token, UserMod
                     detail="User not found",
                 )
 
-            # If registration_source is not "firebase_email_verification",
-            # it's an old user, so automatically mark email as verified
-            if user_db.registration_source != "firebase_client_sdk":
-                # Mark email as verified in Firebase
-                if not firebase_user.email_verified:
-                    try:
-                        auth.update_user(user["localId"], email_verified=True)
-                    except Exception as e:
-                        logging.getLogger().error(
-                            f"Failed to update email verification: {e}"
-                        )
-
-                # Update registration_source to skip this check next time
-                user_db.registration_source = "firebase_legacy_migrated"
-                db.commit()
-
-            # Allow login
-            else:
-                # New user: Email verification required
-                if not firebase_user.email_verified:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Email address is not verified. Please click the "
-                        "verification link sent to your email.",
-                    )
+            # Email verification required
+            if not firebase_user.email_verified:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Email address is not verified. Please click the "
+                    "verification link sent to your email.",
+                )
 
         except auth.UserNotFoundError:
             raise HTTPException(

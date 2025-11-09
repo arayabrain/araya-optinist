@@ -26,6 +26,7 @@ from studio.app.common.models.subscription import UserSubscription
 from studio.app.common.models.workspace import Workspace
 from studio.app.common.schemas.auth import UserAuth
 from studio.app.common.schemas.base import SortOptions
+from enum import IntEnum
 from studio.app.common.schemas.users import (
     User,
     UserCreate,
@@ -35,6 +36,11 @@ from studio.app.common.schemas.users import (
 )
 
 logger = AppLogger.get_logger()
+
+
+class UserRoles(IntEnum):
+    ADMIN = 1
+    OPERATOR = 20
 
 
 async def set_role(db: Session, user_id: int, role_id: int, auto_commit=True):
@@ -150,13 +156,20 @@ async def list_user(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-async def create_user(db: Session, data: UserCreate, organization_id: int):
+async def create_user(
+    db: Session, data: UserCreate, organization_id: int, verified=False
+):
     firebase_user = None
 
     try:
-        # Create Firebase user
+        if not verified:
+            data.role_id = UserRoles.OPERATOR
+
+        # Create Firebase user with email NOT verified
         firebase_user: UserRecord = firebase_auth.create_user(
-            email=data.email, password=data.password
+            email=data.email,
+            password=data.password,
+            email_verified=verified,  # Ensure email is not verified yet
         )
 
         # Create application DB user
@@ -196,10 +209,20 @@ async def create_user(db: Session, data: UserCreate, organization_id: int):
         # Commit all changes
         db.commit()
 
+        # Refresh user_db to load relationships (especially organization)
+        db.refresh(user_db)
+
         # Add role_id for response (if needed)
         user_db.__dict__["role_id"] = data.role_id
 
-        return User.from_orm(user_db)
+        # Generate custom token for client-side Firebase authentication
+        custom_token = firebase_auth.create_custom_token(firebase_user.uid)
+
+        # Return user data along with custom token
+        return {
+            "user": User.from_orm(user_db),
+            "custom_token": custom_token.decode("utf-8"),
+        }
 
     except Exception as e:
         logger.error(f"Failed to create user: {e}", exc_info=True)
@@ -248,6 +271,9 @@ async def update_user(
         firebase_auth.update_user(user_db.uid, email=data.email)
 
         db.commit()
+
+        # Refresh user_db to ensure relationships are loaded
+        db.refresh(user_db)
 
         return User.from_orm(user_db)
     except AssertionError as e:
