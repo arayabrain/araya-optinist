@@ -7,17 +7,20 @@ export interface UserRegistrationRequestDTO {
 }
 
 export interface UserRegistrationResponseDTO {
-  success: boolean
-  message: string
   user: {
     id: number
     email: string
     name: string
     uid: string
-    firebase_uid: string
-    master_key: string
-    email_verified: boolean
+    organization: {
+      id: number
+      name: string
+    }
+    role_id?: number
+    data_usage?: number
+    attributes?: Record<string, unknown>
   }
+  custom_token: string
 }
 
 export interface VerificationStatusDTO {

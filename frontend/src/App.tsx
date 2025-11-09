@@ -18,7 +18,7 @@ import Dataview from "pages/Dataview"
 import InvoicesPage from "pages/Invoice"
 import Login from "pages/Login"
 import PublicDataview from "pages/PublicDataview"
-import MainRegistrationForm from "pages/Register/MainRegistration"
+import RegistrationForm from "pages/Register/MainRegistration"
 import ResetPassword from "pages/ResetPassword"
 import SubscriptionPage from "pages/Subscription"
 import Failed from "pages/Subscription/failed"
@@ -73,7 +73,7 @@ const App: FC = () => {
               <Route path="/dataview" element={<PublicDataview />} />
               <Route path="/account-deleted" element={<AccountDelete />} />
               <Route path="/login" element={<Login />} />
-              <Route path="/register" element={<MainRegistrationForm />} />
+              <Route path="/register" element={<RegistrationForm />} />
               <Route path="/reset-password" element={<ResetPassword />} />
               <Route path="/console" element={<Dashboard />} />
               <Route path="/console/account" element={<Account />} />

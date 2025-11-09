@@ -144,10 +144,7 @@ export const resendVerificationEmail = createAsyncThunk<
       const response = await resendVerificationEmailApi(email)
       return response
     } catch (error: unknown) {
-      const errorMessage = extractErrorMessage(
-        error,
-        "メール送信に失敗しました",
-      )
+      const errorMessage = extractErrorMessage(error, "Failed to send email")
       return rejectWithValue(errorMessage)
     }
   },

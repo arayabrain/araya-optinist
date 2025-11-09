@@ -162,7 +162,7 @@ const RegistrationForm = () => {
     )
 
     if (registerUser.fulfilled.match(resultAction)) {
-      console.log("Registration successful:", resultAction.payload)
+      console.log("Registration successful!")
     } else {
       console.error("Registration failed:", resultAction.payload)
     }

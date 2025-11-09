@@ -12,7 +12,8 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageSimpleWriter,
 )
-from studio.app.common.core.subscription.checkout_service import CheckoutService
+
+from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.stripe_service import StripeService
 from studio.app.common.core.subscription.subscription_service import (
     SubscriptionUserStatus,
@@ -169,7 +170,7 @@ async def create_user(
         firebase_user: UserRecord = firebase_auth.create_user(
             email=data.email,
             password=data.password,
-            email_verified=verified,  # Ensure email is not verified yet
+            email_verified=verified,
         )
 
         # Create application DB user
@@ -202,7 +203,7 @@ async def create_user(
         subscription = UserSubscription(
             plan_id=SubscriptionUserStatus.FREE,
             user_id=user_db.id,
-            expiration=CheckoutService.calculate_expiration_date(),
+            expiration=SubscriptionService.get_current_datetime(),
         )
         db.add(subscription)
 
