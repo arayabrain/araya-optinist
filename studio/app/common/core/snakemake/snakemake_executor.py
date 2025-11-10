@@ -394,7 +394,7 @@ def _snakemake_execute_batch(
                 remote_job_local_storage_prefix=Path(
                     ".snakemake/storage"
                 ),  # Use Snakemake default
-                shared_fs_usage=frozenset(["s3"]),
+                shared_fs_usage=frozenset([]),
                 retrieve_storage=True,
                 keep_storage_local=False,
             )
