@@ -1,23 +1,15 @@
 import axios from "axios"
-import {
-  signInWithCustomToken,
-  sendEmailVerification,
-  signOut,
-} from "firebase/auth"
 
 import type {
   UserRegistrationRequestDTO,
   UserRegistrationResponseDTO,
   VerificationStatusDTO,
 } from "api/registration/RegistrationApiDTO"
-import { auth } from "config/firebase"
 
 // Constants
 const API_BASE_URL = process.env.REACT_APP_SERVER_PROTO
   ? `${process.env.REACT_APP_SERVER_PROTO}://${process.env.REACT_APP_SERVER_HOST || "localhost"}:${process.env.REACT_APP_SERVER_PORT || 8000}`
   : "http://localhost:8000"
-
-const SIGN_OUT_DELAY_MS = 500
 
 // User roles enum (matches backend UserRole)
 export enum UserRole {
@@ -46,20 +38,12 @@ export const registerUserApi = async (
 ): Promise<UserRegistrationResponseDTO> => {
   try {
     // ===================================
-    // 0. Clear existing session
+    // Call backend to create user and send verification email
     // ===================================
-
-    if (auth.currentUser) {
-      await signOut(auth)
-      // Wait a moment after sign out
-      await new Promise((resolve) => setTimeout(resolve, SIGN_OUT_DELAY_MS))
-    }
-
-    // ===================================
-    // 1. Call backend to create user in database
-    // ===================================
-    // Backend will create both Firebase user and database user
-    // and return a custom token for authentication
+    // Backend will:
+    // 1. Create Firebase user with email_verified=false
+    // 2. Create database user record
+    // 3. Send verification email automatically
     const unauthAxios = createUnauthenticatedAxios()
 
     const response = await unauthAxios.post<UserRegistrationResponseDTO>(
@@ -71,26 +55,6 @@ export const registerUserApi = async (
         role_id: data.role_id || UserRole.OPERATOR, // Default to OPERATOR role
       },
     )
-
-    const { custom_token } = response.data
-
-    // ===================================
-    // 2. Sign in with custom token from backend
-    // ===================================
-    const userCredential = await signInWithCustomToken(auth, custom_token)
-
-    // ===================================
-    // 3. Send verification email using Firebase
-    // ===================================
-    await sendEmailVerification(userCredential.user, {
-      url: `${window.location.origin}/login`,
-      handleCodeInApp: false,
-    })
-
-    // ===================================
-    // 4. Sign out user (until they verify email)
-    // ===================================
-    await signOut(auth)
 
     return response.data
   } catch (error: unknown) {
@@ -107,24 +71,6 @@ export const registerUserApi = async (
       response: err.response?.data,
       status: err.response?.status,
     })
-
-    // Handle Firebase errors
-    if (err.code) {
-      switch (err.code) {
-        case "auth/email-already-in-use":
-          throw new Error("This email address is already registered")
-        case "auth/invalid-email":
-          throw new Error("Invalid email address")
-        case "auth/operation-not-allowed":
-          throw new Error("Email/password authentication is not enabled")
-        case "auth/weak-password":
-          throw new Error("Password is too weak (requires 6+ characters)")
-        case "auth/invalid-custom-token":
-          throw new Error("Invalid authentication token from server")
-        default:
-          throw new Error(`Firebase error: ${err.message}`)
-      }
-    }
 
     // Handle backend errors
     if (err.response?.data?.detail) {
@@ -158,13 +104,13 @@ export const resendVerificationEmailApi = async (
     console.log("Resending verification email...")
 
     // ===================================
-    // 1. Request custom token from backend
+    // Call backend to resend verification email
     // ===================================
+    // Backend will send the verification email directly
     const unauthAxios = createUnauthenticatedAxios()
     const response = await unauthAxios.post<{
       success: boolean
       message: string
-      custom_token: string
       already_verified: boolean
     }>("/api/register/resend-verification", { email })
 
@@ -176,32 +122,11 @@ export const resendVerificationEmailApi = async (
       }
     }
 
-    // ===================================
-    // 2. Temporarily sign in with custom token
-    // ===================================
-    const userCredential = await signInWithCustomToken(
-      auth,
-      response.data.custom_token,
-    )
-
-    // ===================================
-    // 3. Send verification email
-    // ===================================
-    await sendEmailVerification(userCredential.user, {
-      url: `${window.location.origin}/login`,
-      handleCodeInApp: false,
-    })
-
-    // ===================================
-    // 4. Sign out immediately
-    // ===================================
-    await signOut(auth)
-
     console.log("Verification email resent!")
 
     return {
       success: true,
-      message: "Verification email has been resent",
+      message: response.data.message || "Verification email has been resent",
     }
   } catch (error: unknown) {
     console.error("Failed to resend verification email:", error)
@@ -215,16 +140,6 @@ export const resendVerificationEmailApi = async (
     // Handle backend errors
     if (err.response?.data?.detail) {
       throw new Error(err.response.data.detail)
-    }
-
-    // Handle Firebase errors
-    if (err.code) {
-      switch (err.code) {
-        case "auth/invalid-custom-token":
-          throw new Error("Invalid authentication token from server")
-        default:
-          throw new Error(`Firebase error: ${err.message}`)
-      }
     }
 
     throw error

@@ -20,7 +20,6 @@ export interface UserRegistrationResponseDTO {
     data_usage?: number
     attributes?: Record<string, unknown>
   }
-  custom_token: string
 }
 
 export interface VerificationStatusDTO {

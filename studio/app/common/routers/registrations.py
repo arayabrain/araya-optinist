@@ -5,6 +5,7 @@ from firebase_admin import auth as firebase_auth
 from pydantic import BaseModel, EmailStr, validator
 from sqlmodel import Session
 
+from studio.app.common.core.auth.email_service import EmailService
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.users import crud_users
 from studio.app.common.db.database import get_db
@@ -68,7 +69,7 @@ class ResendVerificationRequest(BaseModel):
 
 @router.post("/resend-verification")
 async def resend_verification_email(request: ResendVerificationRequest):
-    """確認メール再送信エンドポイント"""
+    """Resend verification email endpoint"""
     try:
         # Get Firebase user by email
         firebase_user = firebase_auth.get_user_by_email(request.email)
@@ -81,13 +82,12 @@ async def resend_verification_email(request: ResendVerificationRequest):
                 "already_verified": True,
             }
 
-        # Generate custom token for temporary authentication
-        custom_token = firebase_auth.create_custom_token(firebase_user.uid)
+        # Send verification email directly from backend
+        EmailService.send_verification_email(request.email)
 
         return {
             "success": True,
-            "message": "Verification email will be sent by client",
-            "custom_token": custom_token.decode("utf-8"),
+            "message": "Verification email has been sent",
             "already_verified": False,
         }
 

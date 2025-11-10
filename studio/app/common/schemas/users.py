@@ -90,4 +90,3 @@ class UserInfo(BaseModel):
 
 class UserCreateResponse(BaseModel):
     user: User
-    custom_token: str

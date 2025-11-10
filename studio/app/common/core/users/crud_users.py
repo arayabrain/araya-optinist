@@ -9,6 +9,7 @@ from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth import authenticate_user
+from studio.app.common.core.auth.email_service import EmailService
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
@@ -216,13 +217,20 @@ async def create_user(
         # Add role_id for response (if needed)
         user_db.__dict__["role_id"] = data.role_id
 
-        # Generate custom token for client-side Firebase authentication
-        custom_token = firebase_auth.create_custom_token(firebase_user.uid)
+        # Send verification email if user is not verified
+        if not verified:
+            try:
+                EmailService.send_verification_email(data.email)
+                logger.info(f"Verification email sent to {data.email}")
+            except Exception as email_error:
+                logger.error(
+                    f"Failed to send verification email: {email_error}", exc_info=True
+                )
+                # Don't fail user creation if email fails
+                # The user can request a resend later
 
-        # Return user data along with custom token
         return {
             "user": User.from_orm(user_db),
-            "custom_token": custom_token.decode("utf-8"),
         }
 
     except Exception as e:
