@@ -6,7 +6,6 @@ from pydantic import BaseModel, EmailStr, validator
 from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
-
 from studio.app.common.core.users import crud_users
 from studio.app.common.db.database import get_db
 from studio.app.common.schemas.users import UserCreate, UserCreateResponse
@@ -81,14 +80,6 @@ async def resend_verification_email(request: ResendVerificationRequest):
                 "message": "Email is already verified",
                 "already_verified": True,
             }
-
-        # Generate email verification link using Firebase Admin SDK
-        # This works without requiring the user to be authenticated
-        action_code_settings = firebase_auth.ActionCodeSettings(
-            # URL to redirect to after verification
-            # Frontend should handle this redirect appropriately
-            url=f"{request.email}",  # This will be replaced by the frontend URL
-        )
 
         # Generate custom token for temporary authentication
         custom_token = firebase_auth.create_custom_token(firebase_user.uid)
