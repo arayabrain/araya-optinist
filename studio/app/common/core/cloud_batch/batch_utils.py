@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional
 
 import boto3
 from botocore.exceptions import ClientError
-from snakemake.api import SharedFSUsage, StorageSettings
 
 from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
 from studio.app.common.core.logger import AppLogger
@@ -696,7 +695,7 @@ class BatchUtils:
     @staticmethod
     def get_efs_optimized_storage_settings(
         workspace_id: str, unique_id: str  # noqa: ARG004
-    ) -> StorageSettings:
+    ):
         """
         Configure optimized storage settings for EFS shared filesystem.
 
@@ -707,6 +706,8 @@ class BatchUtils:
 
         Instead, all input/output files are accessed directly from the EFS mount.
         """
+        # Import here to avoid loading snakemake in Python 3.9 conda environments
+        from snakemake.api import SharedFSUsage, StorageSettings
 
         # EFS mount path - should be persistent across batch jobs
         # Use the base EFS mount point since SmkUtils generates full paths
