@@ -2945,7 +2945,8 @@ async def check_batch_job_failures(
         return WorkflowErrorInfo(has_error=False, error_log=None)
 
 
-# Cache for throttled batch failure checks: {(workspace_id, unique_id): (timestamp, result)}
+# Cache for throttled batch failure checks:
+# {(workspace_id, unique_id): (timestamp, result)}
 _batch_check_cache: Dict[tuple, tuple] = {}
 
 
@@ -3248,4 +3249,86 @@ async def download_snakefile_from_s3(workspace_id: str, unique_id: str) -> bool:
 
     except Exception as e:
         logger.error(f"Failed to download Snakefile from S3: {e}")
+        return False
+
+
+def setup_batch_storage_symlink():
+    """
+    Create symlink so batch jobs can access files through expected paths.
+
+    In batch mode, Snakemake's storage layer downloads files to:
+      .snakemake/storage/s3/<bucket>/app/studio_data/...
+
+    But wrappers expect to find files at:
+      /app/studio_data/...
+
+    This function creates a symlink to bridge the gap, allowing existing
+    wrapper code to work without modification.
+    """
+    # Only run in batch mode
+    if not os.environ.get("AWS_BATCH_JOB_ID"):
+        logger.debug("Not in batch mode, skipping storage symlink setup")
+        return False
+
+    # Determine bucket name
+    bucket_name = (
+        os.environ.get("AWS_BATCH_S3_BUCKET_NAME")
+        or os.environ.get("S3_DEFAULT_BUCKET_NAME")
+        or BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME
+    )
+
+    if not bucket_name:
+        logger.warning(
+            "Cannot setup storage symlink: No S3 bucket name found. "
+            "Storage paths may not resolve correctly."
+        )
+        return False
+
+    # Construct paths
+    storage_base = f".snakemake/storage/s3/{bucket_name}"
+    source_path = os.path.join(storage_base, "app/studio_data")
+    target_path = "/app/studio_data"
+
+    try:
+        # Check if target already exists and is a symlink
+        if os.path.islink(target_path):
+            existing_target = os.readlink(target_path)
+            if existing_target == source_path:
+                logger.debug(
+                    f"Batch storage symlink already exists: "
+                    f"{target_path} -> {source_path}"
+                )
+                return True
+            else:
+                logger.warning(
+                    f"Symlink exists but points to wrong location: "
+                    f"{target_path} -> {existing_target} (expected: {source_path})"
+                )
+                return False
+
+        # Check if target exists as a regular directory
+        if os.path.exists(target_path):
+            logger.warning(
+                f"Cannot create symlink: {target_path} already exists as a directory. "
+                "This may cause file access issues in batch mode."
+            )
+            return False
+
+        # Check if source path will exist (storage dir should be created by Snakemake)
+        # We don't check os.path.exists because Snakemake creates it lazily
+        storage_dir = os.path.dirname(source_path)
+        if not os.path.exists(storage_dir):
+            os.makedirs(storage_dir, exist_ok=True)
+            logger.debug(f"Created storage directory: {storage_dir}")
+
+        # Create the symlink
+        os.symlink(source_path, target_path)
+        logger.info(f"Created batch storage symlink: {target_path} -> {source_path}")
+        return True
+
+    except OSError as e:
+        logger.error(f"Failed to create batch storage symlink: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error setting up batch storage symlink: {e}")
         return False
