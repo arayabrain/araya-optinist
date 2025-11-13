@@ -8,7 +8,6 @@ from sqlmodel import Enum, Session
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.subscription_service import (
-    SubscriptionCurrencyType,
     SubscriptionService,
 )
 from studio.app.common.models.subscription import (
