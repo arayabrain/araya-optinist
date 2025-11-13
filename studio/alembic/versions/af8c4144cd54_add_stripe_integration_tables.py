@@ -34,6 +34,8 @@ def upgrade() -> None:
         sa.Column("features", sa.JSON(), nullable=False),
         sa.Column("currency", mysql.TINYINT(unsigned=True), nullable=False),
         sa.Column("status", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("stripe_product_id", sa.String(length=255), nullable=True),
+        sa.Column("stripe_price_id", sa.String(length=255), nullable=True),
         sa.Column(
             "created_at",
             sa.TIMESTAMP(),
@@ -109,7 +111,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column(
-            "name", sa.String(length=50), nullable=False
+            "name", sa.String(length=100), nullable=False
         ),  # e.g "stripe", "paypal"
         sa.Column(
             "created_at",
@@ -265,7 +267,8 @@ def upgrade() -> None:
     op.execute(
         """
 INSERT INTO subscription_plans
-(id, name, price, billing_cycle, features, currency, status, created_at)
+(id, name, price, billing_cycle, features, currency, status, stripe_product_id,
+ stripe_price_id, created_at)
 VALUES
 (1, 'Free', 0, 1, JSON_OBJECT(
     'Free', JSON_ARRAY(
@@ -276,7 +279,7 @@ VALUES
         JSON_OBJECT('text', 'Basic data storage of 5GB', 'isPremium', false),
         JSON_OBJECT('text', 'Standard processing speed', 'isPremium', false)
     )
-), 1, 1, NOW()),
+), 1, 1, 'prod_TPVTq7ZyjIAyn6', 'price_1SSgSLF4TJpWTMN0uqc6IPZr', NOW()),
 (2, 'Premium', 2000, 1, JSON_OBJECT(
     'Premium', JSON_ARRAY(
         JSON_OBJECT('text', 'Basic compute access with fair-use limitations',
@@ -291,7 +294,7 @@ VALUES
         JSON_OBJECT('text', 'Advanced features like extended job history',
                    'isPremium', true)
     )
-), 1, 1, NOW())
+), 1, 1, 'prod_TPXFOLnvKR5kRr', 'price_1SSiBSF4TJpWTMN0ivAKTfbq', NOW())
 """
     )
 
