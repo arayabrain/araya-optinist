@@ -17,11 +17,6 @@ from studio.app.common.core.storage.remote_storage_controller import (
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.db.database import session_scope
-from studio.app.common.models.subscription import (
-    PlanName,
-    StorageSize,
-    SubscriptionType,
-)
 from studio.app.common.models.user import User
 from studio.app.common.schemas.workflow import WorkflowErrorInfo
 from studio.app.dir_path import DIRPATH
@@ -483,6 +478,9 @@ class BatchUtils:
             user_id: Optional user ID.
             If not provided, will try to get from request context.
         """
+        # Import here to avoid Python 3.11+ dependency (StrEnum) in conda environments
+        from studio.app.common.models.subscription import PlanName
+
         try:
             target_user_id = None
             user_obj = None
@@ -1060,6 +1058,9 @@ class BatchUtils:
         """
         Get resource limits based on subscription plan.
         """
+        # Import here to avoid Python 3.11+ dependency (StrEnum) in conda environments
+        from studio.app.common.models.subscription import SubscriptionType
+
         limits = {
             SubscriptionType.FREE.value: {
                 "max_vcpus": 2,
@@ -1948,6 +1949,9 @@ class BatchDebug:
         Debug AWS Batch environment status and recent job failures.
         Provides immediate visibility into batch environment health.
         """
+        # Import here to avoid Python 3.11+ dependency (StrEnum) in conda environments
+        from studio.app.common.models.subscription import StorageSize
+
         try:
             logger.info("=== AWS BATCH ENVIRONMENT DEBUG ===")
 
@@ -3307,11 +3311,12 @@ def setup_batch_storage_symlink():
                 )
                 return False
 
-        # Check if target exists as a regular directory
+        # Check if target already exists
         if os.path.exists(target_path):
             logger.warning(
-                f"Cannot create symlink: {target_path} already exists as a directory. "
-                "This may cause file access issues in batch mode."
+                f"Cannot create symlink: {target_path} already exists. "
+                f"Expected this to not exist in batch containers. "
+                f"Symlink will not be created."
             )
             return False
 

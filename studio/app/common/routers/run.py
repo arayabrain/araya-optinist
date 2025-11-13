@@ -54,8 +54,9 @@ async def run(
 ):
     try:
         # Check storage before running job - works for both S3 and local storage
+        # Use cached data to avoid ALB timeout on large S3 buckets
         current_usage = await get_current_user_storage_usage(
-            current_user.id, force_live=True
+            current_user.id, force_live=False
         )
         storage_info = get_user_storage_usage(current_user.id)
 
@@ -76,6 +77,11 @@ async def run(
         WorkflowRunner(
             remote_bucket_name, workspace_id, unique_id, runItem, current_user.id
         ).run_workflow(background_tasks)
+
+        # Refresh storage cache in background to keep it up-to-date
+        background_tasks.add_task(
+            get_current_user_storage_usage, current_user.id, force_live=True
+        )
 
         logger.info("run snakemake")
 

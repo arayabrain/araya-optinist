@@ -49,16 +49,6 @@ class Runner:
                 logger.info(f"Batch Job ID: {os.environ.get('AWS_BATCH_JOB_ID')}")
                 logger.info(f"Batch Queue: {os.environ.get('AWS_BATCH_JOB_QUEUE')}")
 
-                # Setup storage symlink for batch mode
-                # This allows wrappers to access files at /app/studio_data/...
-                # when Snakemake stores them
-                # at .snakemake/storage/s3/.../app/studio_data/...
-                # Import here to avoid loading Python 3.11+ dependencies in conda env
-                from studio.app.common.core.cloud_batch.batch_utils import (
-                    setup_batch_storage_symlink,
-                )
-
-                setup_batch_storage_symlink()
             else:
                 logger.info("Running in local/ECS context")
 

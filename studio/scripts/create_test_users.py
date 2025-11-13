@@ -75,6 +75,10 @@ def get_database_url():
 
 async def create_test_user_in_db(db, user_data, organization_id):
     """Create a test user directly in the database (bypassing Firebase creation)."""
+    from studio.app.common.core.storage.remote_storage_controller import (
+        RemoteStorageController,
+        RemoteStorageSimpleWriter,
+    )
     from studio.app.common.models.user import User as UserModel
 
     # Create user record directly (since Firebase user already exists)
@@ -125,12 +129,40 @@ async def create_test_user_in_db(db, user_data, organization_id):
     )
     db.add(storage_usage)
 
+    # Commit initial user data before creating remote storage
     db.commit()
 
-    print(f"Created user: {user_data['name']} ({user_data['email']})")
-    print(f" - User ID: {user_db.id}")
-    print(f" - Plan: {'Premium' if user_data['subscription_plan_id'] == 2 else 'Free'}")
-    print(f" - Storage: {user_data['storage_quota_gb']}GB")
+    # Create remote storage bucket (S3 folder) - same as in create_user
+    if RemoteStorageController.is_available():
+        new_bucket_name = RemoteStorageController.create_user_bucket_name(id=user_db.id)
+
+        async with RemoteStorageSimpleWriter(
+            new_bucket_name
+        ) as remote_storage_controller:
+            await remote_storage_controller.create_bucket()
+
+        # Store bucket info in user record
+        user_db.attributes = {"remote_bucket_name": new_bucket_name}
+        db.flush()
+        db.commit()
+
+        print(f"Created user: {user_data['name']} ({user_data['email']})")
+        print(f" - User ID: {user_db.id}")
+        print(
+            f" - Plan: "
+            f"{'Premium' if user_data['subscription_plan_id'] == 2 else 'Free'}"
+        )
+        print(f" - Storage: {user_data['storage_quota_gb']}GB")
+        print(f" - S3 Bucket: {new_bucket_name}")
+    else:
+        print(f"Created user: {user_data['name']} ({user_data['email']})")
+        print(f" - User ID: {user_db.id}")
+        print(
+            f" - Plan: "
+            f"{'Premium' if user_data['subscription_plan_id'] == 2 else 'Free'}"
+        )
+        print(f" - Storage: {user_data['storage_quota_gb']}GB")
+        print(" - S3 Bucket: Not available (RemoteStorage not configured)")
 
     return user_db
 

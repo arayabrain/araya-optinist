@@ -53,9 +53,7 @@ COPY sample_data /app/sample_data
 COPY main.py alembic.ini ./
 
 # Create necessary directories for batch execution
-RUN mkdir -p /app/studio_data/input && \
-    mkdir -p /app/studio_data/output && \
-    mkdir -p /app/.snakemake && \
+RUN mkdir -p /app/.snakemake && \
     mkdir -p /app/.snakemake/pip-deployments && \
     mkdir -p /tmp/snakemake_scratch && \
     chmod 755 /tmp/snakemake_scratch
@@ -86,6 +84,11 @@ ENV USE_AWS_BATCH=false
 ENV REMOTE_STORAGE_TYPE=0
 ENV TZ=Asia/Tokyo
 
-# No ENTRYPOINT - allow AWS Batch/Snakemake to fully control command execution
+# Copy and configure entrypoint script for symlink creation
+COPY studio/config/docker/batch-entrypoint.sh /usr/local/bin/batch-entrypoint.sh
+RUN chmod +x /usr/local/bin/batch-entrypoint.sh
+
+# Use entrypoint to setup symlink before executing Snakemake commands
 # Snakemake's AWS Batch executor plugin will provide ["/bin/bash", "-c", "command"]
+ENTRYPOINT ["/usr/local/bin/batch-entrypoint.sh"]
 CMD ["/bin/bash"]

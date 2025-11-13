@@ -60,26 +60,26 @@ def get_database_url():
 
 
 def get_test_users():
-    """Get test user data from environment variable (set by Terraform)."""
-    import json
+    """Get test user data from unified configuration loader."""
+    from test_user_config import load_test_users_for_db, print_configuration_help
 
-    # Get test users from environment variable (set by Terraform)
-    test_users_json = os.getenv("TEST_USERS_CONFIG")
+    test_users = load_test_users_for_db()
 
-    if not test_users_json:
-        print("Error: TEST_USERS_CONFIG environment variable not set.")
-        print("This script requires test user configuration from Terraform.")
+    if not test_users:
+        print_configuration_help()
+        print("This script requires test user configuration.")
         return []
 
-    try:
-        return json.loads(test_users_json)
-    except json.JSONDecodeError as e:
-        print(f"Error: Could not parse TEST_USERS_CONFIG: {e}")
-        return []
+    return test_users
 
 
 async def delete_test_user_from_db(db, user_email):
     """Delete a test user and all related data from the database."""
+    from studio.app.common.core.storage.remote_storage_controller import (
+        RemoteStorageController,
+        RemoteStorageSimpleWriter,
+    )
+    from studio.app.common.core.workspace.workspace_services import WorkspaceService
 
     user_db = db.query(UserModel).filter_by(email=user_email).first()
     if not user_db:
@@ -88,23 +88,55 @@ async def delete_test_user_from_db(db, user_email):
 
     user_id = user_db.id
     user_name = user_db.name
+    remote_bucket_name = user_db.remote_bucket_name
 
     print(f"Deleting user: {user_name} ({user_email})")
-    print(f" - User ID: {user_id}")
+    print(f"User ID: {user_id}")
+    if remote_bucket_name:
+        print(f"S3 Bucket: {remote_bucket_name}")
 
     try:
-        # Get workspaces for this user
-        workspaces = db.query(Workspace).filter_by(user_id=user_id).all()
+        # ----------------------------------------
+        # Delete a User workspace contents (with S3 cleanup)
+        # ----------------------------------------
+
+        # Get workspaces for this user (non-deleted ones for proper cleanup)
+        workspaces = (
+            db.query(Workspace)
+            .filter(Workspace.user_id == user_id, Workspace.deleted.is_(False))
+            .all()
+        )
         workspace_ids = [ws.id for ws in workspaces]
 
-        # Delete in correct order to respect foreign key constraints
-
-        # 1. Delete experiment records (references workspaces)
-        experiment_count = 0
+        # Delete owned workspaces using WorkspaceService (handles S3 cleanup)
+        workspace_count = 0
         if workspace_ids:
+            for workspace_id in workspace_ids:
+                try:
+                    await WorkspaceService.process_workspace_deletion(
+                        db, remote_bucket_name, workspace_id, user_id
+                    )
+                    workspace_count += 1
+                except Exception as ws_error:
+                    print(
+                        f"Warning: Error deleting workspace {workspace_id}: {ws_error}"
+                    )
+
+        # ----------------------------------------
+        # Delete remaining database records
+        # ----------------------------------------
+        # Note: WorkspaceService.process_workspace_deletion above should have handled
+        # most workspace-related cleanup, but we clean up any remaining records here
+
+        # 1. Delete any remaining experiment records (references workspaces)
+        all_workspaces = db.query(Workspace).filter_by(user_id=user_id).all()
+        all_workspace_ids = [ws.id for ws in all_workspaces]
+
+        experiment_count = 0
+        if all_workspace_ids:
             experiments = (
                 db.query(ExperimentRecord)
-                .filter(ExperimentRecord.workspace_id.in_(workspace_ids))
+                .filter(ExperimentRecord.workspace_id.in_(all_workspace_ids))
                 .all()
             )
             experiment_count = len(experiments)
@@ -113,19 +145,18 @@ async def delete_test_user_from_db(db, user_email):
 
         # 2. Delete workspace share records (references workspaces and users)
         workspace_share_count = 0
-        if workspace_ids:
+        if all_workspace_ids:
             workspace_shares = (
                 db.query(WorkspacesShareUser)
-                .filter(WorkspacesShareUser.workspace_id.in_(workspace_ids))
+                .filter(WorkspacesShareUser.workspace_id.in_(all_workspace_ids))
                 .all()
             )
             workspace_share_count = len(workspace_shares)
             for share in workspace_shares:
                 db.delete(share)
 
-        # 3. Delete workspaces (references users)
-        workspace_count = len(workspaces)
-        for workspace in workspaces:
+        # 3. Delete all workspaces (both deleted and non-deleted)
+        for workspace in all_workspaces:
             db.delete(workspace)
 
         # 4. Delete storage usage (references users)
@@ -187,16 +218,37 @@ async def delete_test_user_from_db(db, user_email):
 
         db.commit()
 
-        print(f" - Deleted {experiment_count} experiments")
-        print(f" - Deleted {workspace_share_count} workspace shares")
-        print(f" - Deleted {workspace_count} workspaces")
-        print(f" - Deleted {storage_count} storage records")
-        print(f" - Deleted {user_account_count} subscription user accounts")
-        print(f" - Deleted {cancellation_count} subscription cancellations")
-        print(f" - Deleted {purchase_count} subscription purchases")
-        print(f" - Deleted {subscription_count} subscriptions")
-        print(f" - Deleted {user_role_count} user roles")
-        print(f" - Deleted {assignment_count} premium assignments")
+        # ----------------------------------------
+        # Delete a User remote storage bucket (S3)
+        # ----------------------------------------
+        # Do this after database commit so bucket deletion
+        # failure doesn't rollback DB changes
+
+        if remote_bucket_name and RemoteStorageController.is_available():
+            try:
+                print(f"Deleting S3 bucket: {remote_bucket_name}")
+                async with RemoteStorageSimpleWriter(
+                    remote_bucket_name
+                ) as remote_storage_controller:
+                    await remote_storage_controller.delete_bucket(force_delete=True)
+                print("S3 bucket deleted successfully")
+            except Exception as s3_error:
+                print(
+                    f"Warning: Error deleting S3 bucket "
+                    f"{remote_bucket_name}: {s3_error}"
+                )
+                print("(Continuing with user deletion)")
+
+        print(f"Deleted {experiment_count} experiments")
+        print(f"Deleted {workspace_share_count} workspace shares")
+        print(f"Deleted {workspace_count} workspaces")
+        print(f"Deleted {storage_count} storage records")
+        print(f"Deleted {user_account_count} subscription user accounts")
+        print(f"Deleted {cancellation_count} subscription cancellations")
+        print(f"Deleted {purchase_count} subscription purchases")
+        print(f"Deleted {subscription_count} subscriptions")
+        print(f"Deleted {user_role_count} user roles")
+        print(f"Deleted {assignment_count} premium assignments")
         print(f"Successfully deleted user: {user_name}")
 
         return True

@@ -2955,15 +2955,6 @@ resource "aws_cloudwatch_log_group" "ecs" {
   }
 }
 
-resource "aws_cloudwatch_log_group" "autoscaling" {
-  name              = "/aws/autoscaling/subscr-optinist"
-  retention_in_days = 14
-
-  tags = {
-    Name = "subscr-optinist-autoscaling-logs"
-  }
-}
-
 resource "aws_cloudwatch_metric_alarm" "cpu_high" {
   alarm_name          = "subscr-optinist-cpu-high"
   comparison_operator = "GreaterThanThreshold"
@@ -3031,14 +3022,6 @@ resource "aws_cloudwatch_metric_alarm" "memory_low" {
   }
 }
 
-resource "aws_cloudwatch_log_group" "application" {
-  name              = "/aws/application/subscr-optinist"
-  retention_in_days = 14
-
-  tags = {
-    Name = "subscr-optinist-application-logs"
-  }
-}
 
 resource "aws_cloudwatch_log_group" "batch" {
   name              = "/aws/batch/job"
@@ -3070,15 +3053,6 @@ resource "aws_cloudwatch_log_group" "ecs_batch" {
   }
 }
 
-resource "aws_cloudwatch_log_group" "batch_application" {
-  name              = "/aws/application/subscr-optinist-batch"
-  retention_in_days = 14
-
-  tags = {
-    Name = "subscr-optinist-batch-application-logs"
-    Service = "batch"
-  }
-}
 
 resource "aws_cloudwatch_log_metric_filter" "user_cpu_usage" {
   name           = "user-cpu-usage"

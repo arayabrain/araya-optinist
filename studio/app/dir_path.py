@@ -20,11 +20,23 @@ class DIRPATH:
     INPUT_DIR = f"{DATA_DIR}/input"
     OUTPUT_DIR = f"{DATA_DIR}/output"
 
+    # Create directories if they don't exist
+    # In batch mode, DATA_DIR will be a symlink
+    # to .snakemake/storage/s3/.../app/studio_data
+    # The symlink and its target are created by batch-entrypoint.sh before Python starts
+    # os.makedirs follows symlinks, so subdirectories are created at the target location
     os.makedirs(INPUT_DIR, exist_ok=True)
-    assert os.path.exists(INPUT_DIR)
+
+    # Assert directories exist - handle both regular directories and symlinks
+    # If DATA_DIR is a symlink, check that the symlink target resolves correctly
+    assert os.path.exists(INPUT_DIR) or (
+        os.path.islink(DATA_DIR) and os.path.exists(os.path.realpath(INPUT_DIR))
+    ), f"INPUT_DIR does not exist or is a broken symlink: {INPUT_DIR}"
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    assert os.path.exists(OUTPUT_DIR)
+    assert os.path.exists(OUTPUT_DIR) or (
+        os.path.islink(DATA_DIR) and os.path.exists(os.path.realpath(OUTPUT_DIR))
+    ), f"OUTPUT_DIR does not exist or is a broken symlink: {OUTPUT_DIR}"
 
     ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     STUDIO_DIR = os.path.dirname(os.path.dirname(__file__))
