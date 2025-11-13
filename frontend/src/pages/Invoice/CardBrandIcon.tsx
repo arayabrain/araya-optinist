@@ -87,8 +87,24 @@ const CardBrandIcon: React.FC<CardBrandIconProps> = ({ brand, size = 32 }) => {
         onError={(e) => {
           // Fallback to default image if specific brand image fails to load
           const target = e.target as HTMLImageElement
-          if (target.src !== "/images/card-brands/default.png") {
+
+          // Check if we've already handled the error to prevent infinite loops
+          if (target.dataset.errorHandled) {
+            return
+          }
+
+          // First attempt: try default image
+          if (!target.dataset.fallbackAttempted) {
+            target.dataset.fallbackAttempted = "true"
             target.src = "/images/card-brands/default.png"
+          } else {
+            // Second attempt failed, show placeholder and mark as handled
+            target.dataset.errorHandled = "true"
+            target.style.display = "none"
+            const parent = target.parentElement
+            if (parent) {
+              parent.innerHTML = `<div style="width: ${size}px; height: ${size * 0.65}px; background-color: #6b7280; border-radius: 4px; display: flex; align-items: center; justify-content: center;"><span style="color: white; font-size: 12px; font-weight: bold;">?</span></div>`
+            }
           }
         }}
       />
