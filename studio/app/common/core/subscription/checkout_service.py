@@ -423,7 +423,7 @@ class CheckoutService:
                 )
 
                 checkout_session = stripe.checkout.Session.create(
-                    payment_method_types=["card"],
+                    payment_method_types=["card", "link"],
                     line_items=[
                         {
                             "price": plan.stripe_price_id,
@@ -442,15 +442,6 @@ class CheckoutService:
                         "user_id": str(user.id),
                         "plan_id": request.plan_id,
                         "plan_name": plan.name,
-                    },
-                    # Enable automatic tax calculation
-                    automatic_tax={"enabled": True},
-                    # Collect customer's billing address for tax calculation
-                    billing_address_collection="required",
-                    # Save the address to the customer for future use
-                    customer_update={
-                        "address": "auto",
-                        "shipping": "auto",
                     },
                 )
 
