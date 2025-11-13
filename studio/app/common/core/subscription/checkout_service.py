@@ -7,9 +7,7 @@ from fastapi import HTTPException
 from sqlmodel import Enum, Session
 
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.subscription.subscription_service import (
-    SubscriptionService,
-)
+from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.models.subscription import (
     SubscriptionPlans,
     SubscriptionProvider,
