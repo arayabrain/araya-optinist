@@ -2,27 +2,14 @@
 """
 Lambda Integration Tests
 
-KNOWN ISSUE: Currently failing in ECS with ModuleNotFoundError: No module named 'config'
-
 WHERE TO RUN:
-- Cloud ECS container - FAILS (import path issues)
-- Local development machine - Best option (with proper setup)
-- Requires special Lambda package structure
+- Cloud ECS container - Works (with proper path setup)
+- Local development machine - Works (with proper setup)
 
 REQUIREMENTS:
 - Lambda function code must be in config/terraform/premium_manager_package/
-- PYTHONPATH must include Lambda package directories
 - Mocked AWS services (boto3, pymysql)
 - Python 3.7+
-
-CURRENT FAILURE REASON:
-The test attempts to directly import Lambda handler code:
-  `from config.terraform.premium_manager_package.premium_manager import handler`
-
-This fails in ECS because:
-1. Lambda packages have different PYTHONPATH than ECS container
-2. The 'config' module is not in the container's Python path
-3. Lambda code is packaged separately for deployment
 
 WHAT IT TESTS:
 End-to-end Lambda function behavior with realistic API Gateway events:
@@ -33,16 +20,19 @@ End-to-end Lambda function behavior with realistic API Gateway events:
 5. Lambda error handling for malformed requests
 6. Premium cleanup scheduled event handling
 
-HOW TO FIX:
-Option 1: Restructure tests to use subprocess to invoke Lambda locally
-Option 2: Add proper PYTHONPATH configuration for Lambda packages
-Option 3: Mock the Lambda functions entirely instead of importing actual code
+These tests verify that:
+- Lambda handlers properly process API Gateway events
+- Database operations work with enum values
+(launching, running, stopping, stopped, terminating)
+- Error handling is graceful and returns proper HTTP status codes
+- Scheduled cleanup events process correctly
+- All critical Lambda functions integrate properly with AWS services
 
-HOW TO RUN (when fixed):
+HOW TO RUN:
   python test_lambda_integration.py
 
-EXPECTED RESULT (when fixed):
-  6 tests should pass (currently 5 fail, 1 passes)
+EXPECTED RESULT:
+  All 6 tests should pass
 """
 
 import json
@@ -50,8 +40,24 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
-# Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add project root and Lambda package directories to path
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
+sys.path.insert(0, script_dir)
+sys.path.insert(0, project_root)
+
+# Add Lambda package directories to path
+lambda_package_dir = os.path.join(
+    project_root, "config", "terraform", "premium_manager_package"
+)
+if os.path.exists(lambda_package_dir):
+    sys.path.insert(0, lambda_package_dir)
+
+cleanup_package_dir = os.path.join(
+    project_root, "config", "terraform", "premium_cleanup_package"
+)
+if os.path.exists(cleanup_package_dir):
+    sys.path.insert(0, cleanup_package_dir)
 
 
 class TestLambdaIntegration:
@@ -72,7 +78,11 @@ class TestLambdaIntegration:
             "ALB_LISTENER_ARN": (
                 "arn:aws:elasticloadbalancing:region:account:listener/test"
             ),
+            "AUTOSCALING_TARGET_GROUP_ARN": (
+                "arn:aws:elasticloadbalancing:region:account:" "targetgroup/asg"
+            ),
             "CLUSTER_NAME": "test-cluster",
+            "PREMIUM_SERVICE_NAME": "subscr-optinist-premium-service",
             "PREMIUM_INSTANCE_IDS": "i-test1,i-test2,i-test3",
             "PREMIUM_STANDBY_POOL_SIZE": "2",
             "PREMIUM_IDLE_TIMEOUT_HOURS": "3",
@@ -221,9 +231,7 @@ class TestLambdaIntegration:
 
             try:
                 # Import and call the Lambda handler
-                from config.terraform.premium_manager_package.premium_manager import (
-                    handler,
-                )
+                from premium_manager import handler
 
                 # Execute the Lambda function
                 result = handler(api_gateway_event, mock_context)
@@ -305,9 +313,7 @@ class TestLambdaIntegration:
             mock_cursor.rowcount = 1  # Indicates successful update
 
             try:
-                from config.terraform.premium_manager_package.premium_manager import (
-                    handler,
-                )
+                from premium_manager import handler
 
                 result = handler(heartbeat_event, mock_context)
 
@@ -360,10 +366,10 @@ class TestLambdaIntegration:
                 "user_id": self.test_user_id,
                 "instance_id": self.test_instance_id,
                 "target_group_arn": (
-                    "arn:aws:elasticloadbalancing:region:account:targetgroup/test"
+                    "arn:aws:elasticloadbalancing:region:account:" "targetgroup/test"
                 ),
                 "alb_rule_arn": (
-                    "arn:aws:elasticloadbalancing:region:account:listener-rule/test"
+                    "arn:aws:elasticloadbalancing:region:account:" "listener-rule/test"
                 ),
             }
             mock_cursor.rowcount = 1
@@ -373,9 +379,7 @@ class TestLambdaIntegration:
             mock_boto3.return_value = mock_elbv2
 
             try:
-                from config.terraform.premium_manager_package.premium_manager import (
-                    handler,
-                )
+                from premium_manager import handler
 
                 result = handler(release_event, mock_context)
 
@@ -422,12 +426,11 @@ class TestLambdaIntegration:
             mock_pymysql.return_value.__enter__.return_value = mock_connection
             mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
             mock_cursor.rowcount = 1
+            # Mock no existing assignment for store_user_assignment
+            mock_cursor.fetchone.return_value = None
 
             try:
-                from config.terraform.premium_manager_package.premium_manager import (
-                    store_user_assignment,
-                    update_instance_state,
-                )
+                from premium_manager import store_user_assignment, update_instance_state
 
                 for enum_state, description in enum_states_to_test:
                     print(f"Testing enum state: '{enum_state}' ({description})")
@@ -438,7 +441,7 @@ class TestLambdaIntegration:
                             user_id=self.test_user_id,
                             instance_id=self.test_instance_id,
                             target_group_arn="arn:test",
-                            alb_rule_arn="arn:test2",
+                            rule_arn="arn:test2",
                             instance_state=enum_state,
                             is_shared=False,
                         )
@@ -482,9 +485,7 @@ class TestLambdaIntegration:
 
         with patch.dict("os.environ", self.mock_env_vars):
             try:
-                from config.terraform.premium_manager_package.premium_manager import (
-                    handler,
-                )
+                from premium_manager import handler
 
                 result = handler(malformed_event, mock_context)
 
@@ -537,7 +538,15 @@ class TestLambdaIntegration:
             # Mock cleanup operations
             mock_cursor.fetchall.side_effect = [
                 [
-                    {"user_id": "old_user", "instance_id": "i-old123"}
+                    {
+                        "user_id": "old_user",
+                        "instance_id": "i-old123",
+                        "target_group_arn": "arn:aws:elasticloadbalancing:"
+                        "region:account:targetgroup/old",
+                        "alb_rule_arn": "arn:aws:elasticloadbalancing:"
+                        "region:account:listener-rule/old",
+                        "last_activity": "2025-09-17T06:00:00Z",
+                    }
                 ],  # Stale assignments
                 [],  # No failed standby instances
                 [
@@ -564,7 +573,7 @@ class TestLambdaIntegration:
             }
 
             try:
-                from config.terraform.premium_cleanup import handler
+                from premium_cleanup import handler
 
                 result = handler(scheduled_event, mock_context)
 
@@ -591,8 +600,16 @@ def run_lambda_integration_tests():
 
     print("Starting Lambda Integration Tests")
     print("=" * 50)
-    print("These tests verify Lambda functions work with our fixes")
-    print("=" * 50)
+
+    # Get Lambda package paths for error messages
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    lambda_pkg_dir = os.path.join(
+        project_root, "config", "terraform", "premium_manager_package"
+    )
+    cleanup_pkg_dir = os.path.join(
+        project_root, "config", "terraform", "premium_cleanup_package"
+    )
 
     test_suite = TestLambdaIntegration()
     test_suite.setup_method()
@@ -645,13 +662,17 @@ def run_lambda_integration_tests():
 
     if failed == 0:
         print("\n All Lambda integration tests passed!")
-        print("Lambda functions handle our fixes correctly")
+        print("Lambda functions handle events correctly")
         print("Enum values work properly in all operations")
         print("End-to-end workflows function as expected")
+        print("Error handling is graceful with proper status codes")
         return True
     else:
         print("\n Some Lambda integration tests failed!")
         print("Check the errors above for integration issues")
+        print("Ensure Lambda package directories exist:")
+        print(f"  - {lambda_pkg_dir}")
+        print(f"  - {cleanup_pkg_dir}")
         return False
 
 

@@ -4,7 +4,7 @@ Safe Environment Variable Tests
 
 WHERE TO RUN:
 - Local development machine - Recommended
-- Cloud ECS container - Works perfectly
+- Cloud ECS container - Should work
 - CI/CD pipeline - Excellent for regression testing
 
 It is recommended to test on the cloud instance.
