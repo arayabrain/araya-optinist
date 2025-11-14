@@ -20,6 +20,13 @@ class CsvData(BaseData):
         self.meta = meta
 
         if isinstance(data, str):
+            from studio.app.common.core.cloud_batch.storage_utils import (
+                ensure_file_available,
+            )
+
+            # Ensure file is downloaded from S3 if running in batch mode
+            data = ensure_file_available(data)
+
             header = params.get("setHeader", None)
             self.data = pd.read_csv(data, header=header).values
 

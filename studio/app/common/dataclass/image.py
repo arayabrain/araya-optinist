@@ -33,21 +33,36 @@ class ImageData(BaseData):
         self.meta = meta
 
         if data is None:
-            self.path = None
+            self._path = None
         elif isinstance(data, str):
-            self.path = data
+            self._path = data
         elif isinstance(data, list) and isinstance(data[0], str):
-            self.path = data
+            self._path = data
         else:
             _dir = join_filepath([output_dir, "tiff", file_name])
             create_directory(_dir)
 
             _path = join_filepath([_dir, f"{file_name}.tif"])
             tifffile.imwrite(_path, data)
-            self.path = [_path]
+            self._path = [_path]
 
             del data
             gc.collect()
+
+    @property
+    def path(self):
+        """
+        Get file path(s), ensuring they are available locally in batch mode.
+
+        When running in AWS Batch, files referenced in ImageData may not be
+        downloaded by Snakemake's storage plugin. This property ensures they
+        are retrieved from S3 before being accessed by wrappers.
+        """
+        from studio.app.common.core.cloud_batch.storage_utils import (
+            ensure_file_available,
+        )
+
+        return ensure_file_available(self._path)
 
     def split_image(self, output_dir: str, n_files: int = 2):
         assert n_files > 1, "n_files should be greater than 1"
@@ -76,10 +91,13 @@ class ImageData(BaseData):
 
     @property
     def data(self):
-        if isinstance(self.path, list):
-            return np.concatenate([imageio.volread(p) for p in self.path])
+        # self.path property already ensures files are available
+        path = self.path
+
+        if isinstance(path, list):
+            return np.concatenate([imageio.volread(p) for p in path])
         else:
-            return np.array(imageio.volread(self.path))
+            return np.array(imageio.volread(path))
 
     def save_json(self, json_dir):
         if self.data.ndim < 3:
