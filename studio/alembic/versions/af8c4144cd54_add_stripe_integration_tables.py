@@ -262,41 +262,7 @@ def upgrade() -> None:
         sa.Index("idx_subscription_cancellations_cancelled_at", "cancelled_at"),
     )
 
-    # Insert initial data
-    # Insert subscription plans
-    op.execute(
-        """
-INSERT INTO subscription_plans
-(id, name, price, billing_cycle, features, currency, status, stripe_product_id,
- stripe_price_id, created_at)
-VALUES
-(1, 'Free', 0, 1, JSON_OBJECT(
-    'Free', JSON_ARRAY(
-        JSON_OBJECT('text', 'Basic compute access with fair-use limitations',
-                   'isPremium', false),
-        JSON_OBJECT('text', 'Standard support through documentation and community',
-                   'isPremium', false),
-        JSON_OBJECT('text', 'Basic data storage of 5GB', 'isPremium', false),
-        JSON_OBJECT('text', 'Standard processing speed', 'isPremium', false)
-    )
-), 1, 1, 'prod_TPVTq7ZyjIAyn6', 'price_1SSgSLF4TJpWTMN0uqc6IPZr', NOW()),
-(2, 'Premium', 2000, 1, JSON_OBJECT(
-    'Premium', JSON_ARRAY(
-        JSON_OBJECT('text', 'Basic compute access with fair-use limitations',
-                   'isPremium', false),
-        JSON_OBJECT('text', 'Standard support through documentation and community',
-                   'isPremium', false),
-        JSON_OBJECT('text', 'Priority compute access with guaranteed allocation',
-                   'isPremium', true),
-        JSON_OBJECT('text', 'Upgraded data storage of 200GB', 'isPremium', true),
-        JSON_OBJECT('text', 'Enhanced support including direct assistance',
-                   'isPremium', true),
-        JSON_OBJECT('text', 'Advanced features like extended job history',
-                   'isPremium', true)
-    )
-), 1, 1, 'prod_TPXFOLnvKR5kRr', 'price_1SSiBSF4TJpWTMN0ivAKTfbq', NOW())
-"""
-    )
+    # Initial data should be inserted manually following SUBSCRIPTION_PLANS_SETUP.md
 
 
 def downgrade() -> None:
