@@ -5,11 +5,7 @@ import type {
   UserRegistrationResponseDTO,
   VerificationStatusDTO,
 } from "api/registration/RegistrationApiDTO"
-
-// Constants
-const API_BASE_URL = process.env.REACT_APP_SERVER_PROTO
-  ? `${process.env.REACT_APP_SERVER_PROTO}://${process.env.REACT_APP_SERVER_HOST || "localhost"}:${process.env.REACT_APP_SERVER_PORT || 8000}`
-  : "http://localhost:8000"
+import { BASE_URL } from "const/API"
 
 // User roles enum (matches backend UserRole)
 export enum UserRole {
@@ -23,7 +19,7 @@ export enum UserRole {
  */
 const createUnauthenticatedAxios = () => {
   return axios.create({
-    baseURL: API_BASE_URL,
+    baseURL: BASE_URL,
     headers: {
       "Content-Type": "application/json",
     },

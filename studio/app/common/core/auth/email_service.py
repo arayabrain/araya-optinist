@@ -4,14 +4,15 @@ Email service for sending verification and authentication emails.
 
 import logging
 import os
+
 from firebase_admin import auth as firebase_auth
 
 from studio.app.common.core.auth import pyrebase_app
 
 try:
     from studio.app.common.core.auth.firebase_email_sender import (
-        send_verification_email_via_firebase,
         send_password_reset_email_via_firebase,
+        send_verification_email_via_firebase,
     )
 
     FIREBASE_EMAIL_AVAILABLE = True
