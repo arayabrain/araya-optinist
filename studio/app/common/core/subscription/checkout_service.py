@@ -91,7 +91,9 @@ class CheckoutService:
             if hasattr(session, "total_details") and session.total_details:
                 tax_amount = getattr(session.total_details, "amount_tax", 0)
                 if hasattr(session.total_details, "breakdown"):
-                    tax_details = getattr(session.total_details.breakdown, "taxes", None)
+                    tax_details = getattr(
+                        session.total_details.breakdown, "taxes", None
+                    )
 
             return {
                 "customer_id": session.customer,
