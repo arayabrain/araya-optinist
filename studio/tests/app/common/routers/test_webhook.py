@@ -8,15 +8,6 @@ from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.webhook_service import WebhookService
 
-# Import your models and services
-# from your_app.models import (
-#     SubscriptionUserAccount,
-#     UserSubscription,
-#     SubscriptionUserPurchase
-# )
-# from your_app.services import WebhookService, CheckoutService, SubscriptionService
-# from your_app.enums import BILLING_CYCLE, PaymentStatus
-
 
 class TestInvoicePaymentSucceeded:
     """Test suite for invoice.payment_succeeded webhook handler"""
@@ -25,7 +16,8 @@ class TestInvoicePaymentSucceeded:
     def mock_db(self):
         """Create a mock database session"""
         db = Mock(spec=Session)
-        db.exec = Mock()
+        # Setup query chain to return mocked objects properly
+        db.query = Mock()
         db.add = Mock()
         db.flush = Mock()
         db.commit = Mock()
@@ -47,6 +39,7 @@ class TestInvoicePaymentSucceeded:
         subscription.id = "sub_123"
         subscription.user_id = "user_123"
         subscription.plan_id = "plan_123"
+        # IMPORTANT: Set to real datetime, not Mock
         subscription.expiration = datetime.now() + timedelta(days=5)
         subscription.updated_at = None
         return subscription
@@ -57,7 +50,9 @@ class TestInvoicePaymentSucceeded:
         plan = Mock()
         plan.id = "plan_123"
         plan.name = "Premium Plan"
-        plan.billing_cycle = "monthly"
+        plan.billing_cycle = (
+            "monthly"  # This should match BILLING_CYCLE.MONTHLY from your code
+        )
         return plan
 
     @pytest.fixture
@@ -66,7 +61,7 @@ class TestInvoicePaymentSucceeded:
         return {
             "id": "in_test123",
             "customer": "cus_test123",
-            "subscription": "sub_stripe123",
+            "parent": {"subscription_details": {"subscription": "sub_stripe123"}},
             "status": "paid",
             "amount_paid": 2999,  # $29.99 in cents
             "billing_reason": "subscription_cycle",
@@ -80,7 +75,7 @@ class TestInvoicePaymentSucceeded:
         return {
             "id": "in_test456",
             "customer": "cus_test123",
-            "subscription": "sub_stripe123",
+            "parent": {"subscription_details": {"subscription": "sub_stripe123"}},
             "status": "paid",
             "amount_paid": 2999,
             "billing_reason": "subscription_create",  # This should be skipped
@@ -95,10 +90,38 @@ class TestInvoicePaymentSucceeded:
         invoice_data_subscription_cycle,
     ):
         """Test successful monthly subscription renewal"""
-        # Setup mocks
-        mock_db.exec.return_value.first.side_effect = [
-            mock_user_account,
-            mock_subscription,
+        # Setup query chain for db.query()
+        mock_query = Mock()
+        mock_filter = Mock()
+        mock_order = Mock()
+
+        # First query returns user_account
+        mock_filter.first.return_value = mock_user_account
+        mock_query.filter.return_value = mock_filter
+
+        # Second query returns subscription
+        mock_filter2 = Mock()
+        mock_order.first.return_value = mock_subscription
+        mock_filter2.order_by.return_value = mock_order
+
+        # Setup the query chain to return different results
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(
+                        order_by=Mock(
+                            return_value=Mock(
+                                first=Mock(return_value=mock_subscription)
+                            )
+                        )
+                    )
+                )
+            ),
         ]
 
         with patch.object(
@@ -148,7 +171,7 @@ class TestInvoicePaymentSucceeded:
         """Test error handling for missing customer_id"""
         invoice_data = {
             "id": "in_test789",
-            "subscription": "sub_stripe123",
+            "parent": {"subscription_details": {"subscription": "sub_stripe123"}},
             "status": "paid",
             "amount_paid": 2999,
             "billing_reason": "subscription_cycle",
@@ -166,13 +189,15 @@ class TestInvoicePaymentSucceeded:
         invoice_data = {
             "id": "in_test789",
             "customer": "cus_test123",
-            "subscription": "sub_stripe123",
+            "parent": {"subscription_details": {"subscription": "sub_stripe123"}},
             "status": "open",  # Not paid
             "amount_paid": 2999,
             "billing_reason": "subscription_cycle",
         }
 
-        mock_db.exec.return_value.first.return_value = mock_user_account
+        mock_db.query.return_value.filter.return_value.first.return_value = (
+            mock_user_account
+        )
 
         with pytest.raises(Exception):  # Should raise HTTPException
             WebhookService.handle_subscription_payment_succeeded(mock_db, invoice_data)
@@ -182,7 +207,7 @@ class TestInvoicePaymentSucceeded:
     def test_user_not_found(self, mock_db, invoice_data_subscription_cycle):
         """Test error handling when user is not found"""
         # Mock user not found
-        mock_db.exec.return_value.first.return_value = None
+        mock_db.query.return_value.filter.return_value.first.return_value = None
 
         with pytest.raises(Exception):  # Should raise HTTPException
             WebhookService.handle_subscription_payment_succeeded(
@@ -196,9 +221,19 @@ class TestInvoicePaymentSucceeded:
     ):
         """Test error handling when active subscription is not found"""
         # Mock user found but no active subscription
-        mock_db.exec.return_value.first.side_effect = [
-            mock_user_account,
-            None,  # No subscription found
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(
+                        order_by=Mock(return_value=Mock(first=Mock(return_value=None)))
+                    )
+                )
+            ),
         ]
 
         with pytest.raises(Exception):  # Should raise HTTPException
@@ -216,9 +251,23 @@ class TestInvoicePaymentSucceeded:
         invoice_data_subscription_cycle,
     ):
         """Test error handling when subscription plan is not found"""
-        mock_db.exec.return_value.first.side_effect = [
-            mock_user_account,
-            mock_subscription,
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(
+                        order_by=Mock(
+                            return_value=Mock(
+                                first=Mock(return_value=mock_subscription)
+                            )
+                        )
+                    )
+                )
+            ),
         ]
 
         with patch.object(CheckoutService, "get_subscription_plan", return_value=None):
@@ -238,9 +287,23 @@ class TestInvoicePaymentSucceeded:
         invoice_data_subscription_cycle,
     ):
         """Test error handling when database commit fails"""
-        mock_db.exec.return_value.first.side_effect = [
-            mock_user_account,
-            mock_subscription,
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(
+                        order_by=Mock(
+                            return_value=Mock(
+                                first=Mock(return_value=mock_subscription)
+                            )
+                        )
+                    )
+                )
+            ),
         ]
         mock_db.commit.side_effect = Exception("Database error")
 
@@ -309,15 +372,25 @@ def test_full_webhook_payload():
         "period_end": 1702678399,
         "period_start": 1699999999,
         "status": "paid",
-        "subscription": "sub_1QLzTh2eZvKYlo2C2222",
+        "parent": {
+            "subscription_details": {"subscription": "sub_1QLzTh2eZvKYlo2C2222"}
+        },
         "subtotal": 2999,
         "total": 2999,
     }
 
-    # This payload structure matches what Stripe actually sends
+    # This payload structure matches what your webhook service expects
     assert full_invoice_payload["billing_reason"] == "subscription_cycle"
     assert full_invoice_payload["status"] == "paid"
     assert full_invoice_payload["amount_paid"] == 2999
+
+    # Test extraction using the same logic as webhook_service.py
+    subscription_id = (
+        full_invoice_payload.get("parent", {})
+        .get("subscription_details", {})
+        .get("subscription")
+    )
+    assert subscription_id == "sub_1QLzTh2eZvKYlo2C2222"
 
 
 if __name__ == "__main__":
