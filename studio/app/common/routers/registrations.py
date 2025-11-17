@@ -2,7 +2,6 @@
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from firebase_admin import auth as firebase_auth
-from pydantic import BaseModel, EmailStr, validator
 from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
@@ -17,31 +16,16 @@ from studio.app.common.core.subscription.subscription_service import (
 from studio.app.common.db.database import get_db
 from studio.app.common.models import User as UserModel
 from studio.app.common.models.subscription import UserSubscription
+from studio.app.common.schemas.registrations import CompleteRegistrationRequest
 
 router = APIRouter(prefix="/api/register", tags=["registration"])
 logger = AppLogger.get_logger()
 
 
-class CompleteRegistrationRequest(BaseModel):
-    """フロントエンドからの登録完了リクエスト"""
-
-    firebase_uid: str
-    email: EmailStr
-    name: str
-    organization_id: int = 1
-    role_id: int = None
-
-    @validator("name")
-    def validate_name(cls, v):
-        if len(v.strip()) < 2:
-            raise ValueError("名前は2文字以上で入力してください")
-        return v.strip()
-
-
 def verify_firebase_token(authorization: str = Header(None)) -> dict:
-    """Firebase IDトークンを検証"""
+    """Verify Firebase ID token"""
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="認証トークンが必要です")
+        raise HTTPException(status_code=401, detail="Authentication token is required")
 
     token = authorization.split("Bearer ")[1]
 
@@ -50,8 +34,8 @@ def verify_firebase_token(authorization: str = Header(None)) -> dict:
         logger.info(f"✓ Token verified for UID: {decoded_token.get('uid')}")
         return decoded_token
     except Exception as e:
-        logger.error(f"トークン検証エラー: {e}")
-        raise HTTPException(status_code=401, detail="無効なトークンです")
+        logger.error(f"Token verification error: {e}")
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 
 @router.post("/complete")
@@ -62,19 +46,19 @@ async def complete_registration(
 ):
     logger.info(f"Registration request received for: {request.email}")
 
-    # トークン検証
+    # Verify token
     decoded_token = verify_firebase_token(authorization)
 
-    # UIDが一致するか確認
+    # Verify UID matches
     if decoded_token.get("uid") != request.firebase_uid:
         logger.info("UID mismatch in registration request")
         logger.info(
             f"Token UID: {decoded_token.get('uid')},Request UID: {request.firebase_uid}"
         )
-        raise HTTPException(status_code=403, detail="UIDが一致しません")
+        raise HTTPException(status_code=403, detail="UID does not match")
 
     try:
-        # メールアドレスの重複チェック
+        # Check for duplicate email address
         existing_user = (
             db.query(UserModel)
             .filter(UserModel.email == request.email.lower(), UserModel.active)
@@ -85,7 +69,7 @@ async def complete_registration(
             logger.info(f"User already exists in DB: {request.email}")
             return {
                 "success": True,
-                "message": "ユーザーは既に登録されています",
+                "message": "User is already registered",
                 "user": {
                     "id": existing_user.id,
                     "email": existing_user.email,
@@ -96,7 +80,7 @@ async def complete_registration(
                 },
             }
 
-        # DBにユーザーを作成
+        # Create user in DB
         logger.info(f"Creating user in DB: {request.email}")
         user_db = UserModel(
             uid=request.firebase_uid,
@@ -110,11 +94,11 @@ async def complete_registration(
         db.add(user_db)
         db.flush()
 
-        # master_keyを生成
+        # Generate master_key
         master_key = f"{user_db.id:010d}"
         user_db.master_key = master_key
 
-        # ロール設定
+        # Set role
         if request.role_id:
             from studio.app.common.core.users.crud_users import set_role
 
@@ -122,7 +106,7 @@ async def complete_registration(
                 db, user_id=user_db.id, role_id=request.role_id, auto_commit=False
             )
 
-        # リモートストレージバケット作成
+        # Create remote storage bucket
         if RemoteStorageController.is_available():
             new_bucket_name = RemoteStorageController.create_user_bucket_name(
                 id=user_db.id
@@ -133,7 +117,7 @@ async def complete_registration(
                 await remote_storage_controller.create_bucket()
             user_db.attributes = {"remote_bucket_name": new_bucket_name}
 
-        # サブスクリプション作成
+        # Create subscription
         subscription = UserSubscription(
             plan_id=SubscriptionUserStatus.FREE,
             user_id=user_db.id,
@@ -148,7 +132,7 @@ async def complete_registration(
 
         return {
             "success": True,
-            "message": "ユーザーを作成しました",
+            "message": "User created successfully",
             "user": {
                 "id": user_db.id,
                 "email": user_db.email,
@@ -164,12 +148,12 @@ async def complete_registration(
     except Exception as e:
         logger.error(f"Registration error: {e}", exc_info=True)
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"登録に失敗しました: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
 
 
 @router.get("/verify-status/{email}")
 async def check_verification_status(email: str):
-    """メール確認状態をチェック"""
+    """Check email verification status"""
     try:
         firebase_user = firebase_auth.get_user_by_email(email)
         return {
@@ -177,7 +161,9 @@ async def check_verification_status(email: str):
             "uid": firebase_user.uid,
         }
     except firebase_auth.UserNotFoundError:
-        raise HTTPException(status_code=404, detail="ユーザーが見つかりません")
+        raise HTTPException(status_code=404, detail="User not found")
     except Exception as e:
-        logger.error(f"確認状態チェックエラー: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="確認状態のチェックに失敗しました")
+        logger.error(f"Verification status check error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail="Failed to check verification status"
+        )

@@ -12,7 +12,7 @@ import type {
 } from "api/registration/RegistrationApiDTO"
 
 /**
- * 型ガード: Axiosエラーかどうかをチェック
+ * Type guard: Check if error is an Axios error
  */
 interface AxiosError {
   response?: {
@@ -33,62 +33,62 @@ const isAxiosError = (error: unknown): error is AxiosError => {
 }
 
 /**
- * エラーメッセージを抽出するヘルパー関数
+ * Helper function to extract error messages
  */
 const extractErrorMessage = (
   error: unknown,
   defaultMessage: string,
 ): string => {
-  // Axiosエラーの場合
+  // For Axios errors
   if (isAxiosError(error)) {
-    // サーバーからのエラーレスポンス
+    // Error response from server
     if (error.response?.data?.detail) {
       const detail = error.response.data.detail
 
-      // Pydanticのバリデーションエラーの場合（配列）
+      // For Pydantic validation errors (array)
       if (Array.isArray(detail)) {
         return detail.map((err) => err.msg).join(", ")
       }
 
-      // 文字列エラーの場合
+      // For string errors
       if (typeof detail === "string") {
         return detail
       }
     }
 
-    // ネットワークエラーの場合
+    // For network errors
     if (error.message === "Network Error") {
-      return "ネットワークエラーが発生しました。インターネット接続を確認してください。"
+      return "A network error occurred. Please check your internet connection."
     }
 
-    // タイムアウトエラーの場合
+    // For timeout errors
     if (error.code === "ECONNABORTED") {
-      return "リクエストがタイムアウトしました。もう一度お試しください。"
+      return "The request timed out. Please try again."
     }
 
-    // その他のエラーメッセージがある場合
+    // For other error messages
     if (error.message) {
       return error.message
     }
   }
 
-  // Error オブジェクトの場合
+  // For Error objects
   if (error instanceof Error) {
     return error.message
   }
 
-  // 文字列の場合
+  // For strings
   if (typeof error === "string") {
     return error
   }
 
-  // その他の場合はデフォルトメッセージ
+  // For other cases, use default message
   return defaultMessage
 }
 
 /**
- * ユーザー登録アクション
- * Firebaseでユーザーを作成し、確認メールを送信
+ * User registration action
+ * Creates a user in Firebase and sends a verification email
  */
 export const registerUser = createAsyncThunk<
   UserRegistrationResponseDTO,
@@ -101,14 +101,14 @@ export const registerUser = createAsyncThunk<
   } catch (error: unknown) {
     const errorMessage = extractErrorMessage(
       error,
-      "登録に失敗しました。もう一度お試しください。",
+      "Registration failed. Please try again.",
     )
     return rejectWithValue(errorMessage)
   }
 })
 
 /**
- * メール確認状態チェックアクション
+ * Email verification status check action
  */
 export const checkVerificationStatus = createAsyncThunk<
   VerificationStatusDTO,
@@ -123,7 +123,7 @@ export const checkVerificationStatus = createAsyncThunk<
     } catch (error: unknown) {
       const errorMessage = extractErrorMessage(
         error,
-        "確認状態のチェックに失敗しました",
+        "Failed to check verification status",
       )
       return rejectWithValue(errorMessage)
     }
@@ -131,7 +131,7 @@ export const checkVerificationStatus = createAsyncThunk<
 )
 
 /**
- * 確認メール再送信アクション
+ * Resend verification email action
  */
 export const resendVerificationEmail = createAsyncThunk<
   { success: boolean; message: string },
@@ -144,10 +144,7 @@ export const resendVerificationEmail = createAsyncThunk<
       const response = await resendVerificationEmailApi(email)
       return response
     } catch (error: unknown) {
-      const errorMessage = extractErrorMessage(
-        error,
-        "メール送信に失敗しました",
-      )
+      const errorMessage = extractErrorMessage(error, "Failed to send email")
       return rejectWithValue(errorMessage)
     }
   },
