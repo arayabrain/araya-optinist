@@ -42,7 +42,9 @@ async def check_verification_status(email: str):
         raise HTTPException(status_code=404, detail="User not found")
     except Exception as e:
         logger.error(f"Verification status check error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to check verification status")
+        raise HTTPException(
+            status_code=500, detail="Failed to check verification status"
+        )
 
 
 @router.post("/resend-verification")
