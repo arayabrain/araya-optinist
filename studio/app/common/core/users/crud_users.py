@@ -1,5 +1,3 @@
-from enum import IntEnum
-
 from fastapi import HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
 from firebase_admin import auth as firebase_auth
@@ -33,16 +31,12 @@ from studio.app.common.schemas.users import (
     User,
     UserCreate,
     UserPasswordUpdate,
+    UserRole,
     UserSearchOptions,
     UserUpdate,
 )
 
 logger = AppLogger.get_logger()
-
-
-class UserRoles(IntEnum):
-    ADMIN = 1
-    OPERATOR = 20
 
 
 async def set_role(db: Session, user_id: int, role_id: int, auto_commit=True):
@@ -165,7 +159,7 @@ async def create_user(
 
     try:
         if not verified:
-            data.role_id = UserRoles.OPERATOR
+            data.role_id = UserRole.operator
 
         # Create Firebase user with email NOT verified
         firebase_user: UserRecord = firebase_auth.create_user(

@@ -1,17 +1,12 @@
 import axios from "axios"
 
+import { ROLE } from "@types"
 import type {
   UserRegistrationRequestDTO,
   UserRegistrationResponseDTO,
   VerificationStatusDTO,
 } from "api/registration/RegistrationApiDTO"
 import { BASE_URL } from "const/API"
-
-// User roles enum (matches backend UserRole)
-export enum UserRole {
-  ADMIN = 1,
-  OPERATOR = 20,
-}
 
 /**
  * Create an unauthenticated axios instance
@@ -48,7 +43,7 @@ export const registerUserApi = async (
         email: data.email,
         password: data.password,
         name: data.name,
-        role_id: data.role_id || UserRole.OPERATOR, // Default to OPERATOR role
+        role_id: data.role_id || ROLE.OPERATOR, // Default to OPERATOR role
       },
     )
 
