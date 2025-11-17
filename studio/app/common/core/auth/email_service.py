@@ -3,11 +3,11 @@ Email service for sending verification and authentication emails.
 """
 
 import logging
-import os
 
 from firebase_admin import auth as firebase_auth
 
 from studio.app.common.core.auth import pyrebase_app
+from studio.app.common.core.utils.config_handler import get_env_bool, get_env_var
 
 try:
     from studio.app.common.core.auth.firebase_email_sender import (
@@ -22,14 +22,19 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # Get frontend URL from environment variable
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+FRONTEND_URL = get_env_var("FRONTEND_URL", default="http://localhost:3000")
 
 # Determine which email sending method to use
-USE_FIREBASE_EMAIL = os.getenv("USE_FIREBASE_EMAIL", "True").lower() == "true"
+USE_FIREBASE_EMAIL = get_env_bool("USE_FIREBASE_EMAIL", default=True)
 
 
-class EmailService:
-    """Service for sending authentication-related emails."""
+class AuthEmailService:
+    """
+    Service for sending authentication-related emails via Firebase.
+
+    Handles email verification and password reset emails for user authentication.
+    Supports Firebase built-in email service, Pyrebase fallback, and development mode.
+    """
 
     @staticmethod
     def send_verification_email(email: str) -> bool:

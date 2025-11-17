@@ -1,4 +1,3 @@
-import os
 from datetime import datetime, timezone
 from enum import IntEnum
 from typing import List, Optional, Tuple
@@ -9,6 +8,7 @@ from sqlmodel import Session
 
 from studio.app.common import models as common_model
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.utils.config_handler import get_env_var
 from studio.app.common.models.subscription import (
     SubscriptionCancellation,
     SubscriptionPlans,
@@ -252,17 +252,11 @@ class SubscriptionService:
 
     @staticmethod
     def get_stripe_key() -> str:
-        stripe_key = os.getenv("STRIPE_SECRET_KEY")
-        if not stripe_key:
-            raise ValueError("STRIPE_SECRET_KEY environment variable is not set")
-        return stripe_key
+        return get_env_var("STRIPE_SECRET_KEY", required=True)
 
     @staticmethod
     def get_base_url() -> str:
-        base_url = os.getenv("STRIPE_CALLBACK_URL")
-        if not base_url:
-            raise ValueError("STRIPE_CALLBACK_URL environment variable is not set")
-        return base_url
+        return get_env_var("STRIPE_CALLBACK_URL", required=True)
 
     @staticmethod
     def update_scheduled_downgrade(db: Session, user_id: int, scheduled: bool) -> None:

@@ -7,7 +7,7 @@ from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth import authenticate_user
-from studio.app.common.core.auth.email_service import EmailService
+from studio.app.common.core.auth.email_service import AuthEmailService
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
@@ -214,7 +214,7 @@ async def create_user(
         # Send verification email if user is not verified
         if not verified:
             try:
-                EmailService.send_verification_email(data.email)
+                AuthEmailService.send_verification_email(data.email)
                 logger.info(f"Verification email sent to {data.email}")
             except Exception as email_error:
                 logger.error(

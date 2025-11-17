@@ -162,9 +162,9 @@ const RegistrationForm = () => {
     )
 
     if (registerUser.fulfilled.match(resultAction)) {
-      console.log("Registration successful!")
+      console.log("Pre-registration successful! Please verify your email.")
     } else {
-      console.error("Registration failed:", resultAction.payload)
+      console.error("Pre-registration failed:", resultAction.payload)
     }
   }
 
