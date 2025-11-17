@@ -10,13 +10,10 @@ from studio.app.common.core.users import crud_users
 from studio.app.common.db.database import get_db
 from studio.app.common.schemas.registrations import ResendVerificationRequest
 from studio.app.common.schemas.users import UserCreate, UserCreateResponse
+from studio.app.const import DEFAULT_ORGANIZATION_ID
 
 router = APIRouter(prefix="/api/register", tags=["registration"])
 logger = AppLogger.get_logger()
-
-# Constants
-DEFAULT_ORGANIZATION_ID = 1
-MIN_NAME_LENGTH = 2
 
 
 @router.post("", response_model=UserCreateResponse)

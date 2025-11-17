@@ -27,3 +27,5 @@ ORIGINAL_DATA_EXT = ".orig"
 NOT_DISPLAY_ARGS_LIST = ["params", "output_dir", "nwbfile", "kwargs"]
 
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+DEFAULT_ORGANIZATION_ID = 1
