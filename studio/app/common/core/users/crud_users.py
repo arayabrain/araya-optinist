@@ -159,7 +159,7 @@ async def create_user(
 
     try:
         if not verified:
-            data.role_id = UserRole.operator
+            data.role_id = UserRole.operator.value
 
         # Create Firebase user with email NOT verified
         firebase_user: UserRecord = firebase_auth.create_user(
