@@ -116,3 +116,7 @@ class UserInfo(BaseModel):
 
     class Config:
         orm_mode = True
+
+
+class UserCreateResponse(BaseModel):
+    user: User

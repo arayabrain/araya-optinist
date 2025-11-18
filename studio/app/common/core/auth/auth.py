@@ -15,7 +15,6 @@ from studio.app.common.core.auth.security import (
     create_refresh_token,
     validate_refresh_token,
 )
-from studio.app.common.core.logger import AppLogger
 from studio.app.common.models.user import User as UserModel
 from studio.app.common.schemas.auth import AccessToken, Token, UserAuth
 from studio.app.common.schemas.users import User
@@ -26,17 +25,32 @@ async def authenticate_user(db: Session, data: UserAuth) -> Tuple[Token, UserMod
         user = pyrebase_app.auth().sign_in_with_email_and_password(
             data.email, data.password
         )
-        logger = AppLogger.get_logger()
         user_db: UserModel = (
             db.query(UserModel)
             .filter(UserModel.uid == user["localId"], UserModel.active.is_(True))
             .first()
         )
-        if user_db is None:
-            logger.error(f"No database user found with uid: {user['localId']}")
-        else:
-            logger.debug(
-                f"Found database user: {user_db.email} with uid: {user_db.uid}"
+
+        try:
+            firebase_user = auth.get_user(user["localId"])
+
+            if user_db is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User not found",
+                )
+
+            # Email verification required
+            if not firebase_user.email_verified:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Email address is not verified. Please click the "
+                    "verification link sent to your email.",
+                )
+
+        except auth.UserNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
             )
 
         assert user_db is not None, "Invalid user uid"
@@ -49,6 +63,9 @@ async def authenticate_user(db: Session, data: UserAuth) -> Tuple[Token, UserMod
             ex_token=ex_token,
         )
         return token, user_db
+
+    except HTTPException:
+        raise
 
     except (HTTPError, AssertionError) as e:
         logging.getLogger().error(e)

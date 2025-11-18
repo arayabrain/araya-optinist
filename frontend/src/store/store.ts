@@ -29,6 +29,7 @@ import {
   dataviewReducer,
   paymentMethodReducer,
   logsModalReducer,
+  RegistrationReducer,
 } from "store/slice"
 import { DATAVIEW_SLICE_NAME } from "store/slice/Dataview/DataviewType"
 
@@ -56,6 +57,7 @@ export const rootReducer = combineReducers({
   subscription: subscriptionReducer,
   paymentMethod: paymentMethodReducer,
   logsModal: logsModalReducer,
+  registration: RegistrationReducer,
 })
 
 export const store = configureStore({

@@ -159,12 +159,12 @@ class CheckoutService:
         )
 
     @staticmethod
-    def calculate_expiration_date(billing_cycle: int) -> datetime:
+    def calculate_expiration_date(billing_cycle: int = 1) -> datetime:
         """
         Calculate subscription expiration date based on billing cycle
 
         Args:
-            billing_cycle: Billing cycle in months
+            billing_cycle: Billing cycle in months (default: 1)
 
         Returns:
             Expiration datetime
