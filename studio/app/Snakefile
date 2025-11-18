@@ -23,6 +23,7 @@ all_outputs = [
 rule all:
     input: all_outputs
 
+
 for rule_name, details in config["rules"].items():
     # make rules of input node
     if NodeTypeUtil.check_nodetype_from_filetype(details["type"]) == NodeType.DATA:
