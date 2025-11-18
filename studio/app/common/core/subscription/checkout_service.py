@@ -1,16 +1,13 @@
 from datetime import datetime
-from http.client import HTTPException
 from typing import Any, Dict, Optional
 
 import stripe
 from dateutil.relativedelta import relativedelta
+from fastapi import HTTPException
 from sqlmodel import Enum, Session
 
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.subscription.subscription_service import (
-    SubscriptionCurrencyType,
-    SubscriptionService,
-)
+from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.models.subscription import (
     SubscriptionPlans,
     SubscriptionProvider,
@@ -75,19 +72,35 @@ class CheckoutService:
             session_id: Stripe checkout session ID
 
         Returns:
-            Dict containing session data
+            Dict containing session data including tax information
 
         Raises:
             stripe.error.StripeError: If session is invalid or API error occurs
         """
         try:
-            session = stripe.checkout.Session.retrieve(session_id)
+            session = stripe.checkout.Session.retrieve(
+                session_id, expand=["total_details"]
+            )
+
+            # Extract tax information if available
+            tax_amount = 0
+            tax_details = None
+            if hasattr(session, "total_details") and session.total_details:
+                tax_amount = getattr(session.total_details, "amount_tax", 0)
+                if hasattr(session.total_details, "breakdown"):
+                    tax_details = getattr(
+                        session.total_details.breakdown, "taxes", None
+                    )
+
             return {
                 "customer_id": session.customer,
                 "payment_status": session.payment_status,
                 "amount_total": session.amount_total,
+                "amount_subtotal": getattr(session, "amount_subtotal", None),
+                "amount_tax": tax_amount,
                 "currency": session.currency,
                 "metadata": session.metadata or {},
+                "tax_details": tax_details,
             }
         except stripe.error.StripeError as e:
             logger.error(f"Stripe API error: {str(e)}")
@@ -393,16 +406,23 @@ class CheckoutService:
                     status_code=404, detail="Subscription plan not found"
                 )
 
-            # Use the price and currency from the request
-            price = plan.price
-            currency = SubscriptionCurrencyType(plan.currency).get_currency_string()
+            # Validate that the plan has Stripe product and price IDs
+            if not plan.stripe_price_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Subscription plan '{plan.name}' is not configured "
+                        f"with a Stripe price ID"
+                    ),
+                )
 
-            logger.info(f"Request details - price: {price}, currency: {currency}")
+            logger.info(
+                f"Request details - plan: {plan.name}, "
+                f"stripe_product_id: {plan.stripe_product_id}, "
+                f"stripe_price_id: {plan.stripe_price_id}"
+            )
 
-            # Determine billing cycle for Stripe (default to monthly if not specified)
-            price_interval = "month"  # You can modify this based on your needs
-
-            # Create Stripe checkout session directly with price_data
+            # Create Stripe checkout session using the price ID from the database
             try:
                 logger.info("Initializing Stripe")
                 subscription_account = CheckoutService.get_subscription_account(
@@ -419,18 +439,10 @@ class CheckoutService:
                 )
 
                 checkout_session = stripe.checkout.Session.create(
-                    payment_method_types=["card"],
+                    payment_method_types=["card", "link"],
                     line_items=[
                         {
-                            "price_data": {
-                                "currency": currency,
-                                "product_data": {
-                                    "name": plan.name,
-                                    "description": "Subscription Plan Purchase",
-                                },
-                                "unit_amount": price,
-                                "recurring": {"interval": price_interval},
-                            },
+                            "price": plan.stripe_price_id,
                             "quantity": 1,
                         }
                     ],
@@ -447,6 +459,11 @@ class CheckoutService:
                         "plan_id": request.plan_id,
                         "plan_name": plan.name,
                     },
+                    # Enable automatic tax calculation
+                    automatic_tax={"enabled": True},
+                    # Collect customer address for tax calculation and save it
+                    billing_address_collection="required",
+                    customer_update={"address": "auto"},
                 )
 
                 return CreateCheckoutSessionResponse(

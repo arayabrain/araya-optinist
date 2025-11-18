@@ -23,7 +23,7 @@ const CardBrandIcon: React.FC<CardBrandIconProps> = ({ brand, size = 32 }) => {
       case "diners club":
         return "/images/card-brands/diners.png"
       case "unionpay":
-        return "/images/card-brands/unionpay.png"
+        return "/images/card-brands/union.png"
       default:
         return "/images/card-brands/default.png"
     }

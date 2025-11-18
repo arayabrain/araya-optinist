@@ -91,6 +91,16 @@ class SubscriptionPlans(SQLModel, table=True):
         sa_column=Column(BIGINT, nullable=False, default=1),  # Fixed: Use BIGINT
         description="Currency code in enum format (e.g., 1 for USD, 2 for JPY)",
     )
+    stripe_product_id: Optional[str] = Field(
+        sa_column=Column(String(255), nullable=True),
+        default=None,
+        description="Stripe product ID for this subscription plan",
+    )
+    stripe_price_id: Optional[str] = Field(
+        sa_column=Column(String(255), nullable=True),
+        default=None,
+        description="Stripe price ID for this subscription plan",
+    )
     created_at: Optional[datetime] = Field(
         sa_column_kwargs={"server_default": current_timestamp()},
     )
