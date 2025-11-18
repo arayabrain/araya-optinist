@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from firebase_admin import auth as firebase_auth
 from sqlmodel import Session
 
-from studio.app.common.core.auth.email_service import AuthEmailService
+from studio.app.common.core.auth.auth_email_service import AuthEmailService
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.users import crud_users
 from studio.app.common.db.database import get_db
