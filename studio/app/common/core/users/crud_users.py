@@ -7,14 +7,15 @@ from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth import authenticate_user
+from studio.app.common.core.auth.auth_email_service import AuthEmailService
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageSimpleWriter,
 )
-from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.stripe_service import StripeService
 from studio.app.common.core.subscription.subscription_service import (
+    SubscriptionService,
     SubscriptionUserStatus,
 )
 from studio.app.common.core.workspace.workspace_services import WorkspaceService
@@ -30,6 +31,7 @@ from studio.app.common.schemas.users import (
     User,
     UserCreate,
     UserPasswordUpdate,
+    UserRole,
     UserSearchOptions,
     UserUpdate,
 )
@@ -150,13 +152,20 @@ async def list_user(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-async def create_user(db: Session, data: UserCreate, organization_id: int):
+async def create_user(
+    db: Session, data: UserCreate, organization_id: int, verified=False
+):
     firebase_user = None
 
     try:
-        # Create Firebase user
+        if not verified:
+            data.role_id = UserRole.operator.value
+
+        # Create Firebase user with email NOT verified
         firebase_user: UserRecord = firebase_auth.create_user(
-            email=data.email, password=data.password
+            email=data.email,
+            password=data.password,
+            email_verified=verified,
         )
 
         # Create application DB user
@@ -186,20 +195,39 @@ async def create_user(db: Session, data: UserCreate, organization_id: int):
             user_db.attributes = {"remote_bucket_name": new_bucket_name}
 
         # Create subscription user record
+        # expiration is set to current time for free plan.
+        # Since its non nullable and must have a value
         subscription = UserSubscription(
             plan_id=SubscriptionUserStatus.FREE,
             user_id=user_db.id,
-            expiration=CheckoutService.calculate_expiration_date(),
+            expiration=SubscriptionService.get_current_datetime(),
         )
         db.add(subscription)
 
         # Commit all changes
         db.commit()
 
+        # Refresh user_db to load relationships (especially organization)
+        db.refresh(user_db)
+
         # Add role_id for response (if needed)
         user_db.__dict__["role_id"] = data.role_id
 
-        return User.from_orm(user_db)
+        # Send verification email if user is not verified
+        if not verified:
+            try:
+                AuthEmailService.send_verification_email(data.email)
+                logger.info(f"Verification email sent to {data.email}")
+            except Exception as email_error:
+                logger.error(
+                    f"Failed to send verification email: {email_error}", exc_info=True
+                )
+                # Don't fail user creation if email fails
+                # The user can request a resend later
+
+        return {
+            "user": User.from_orm(user_db),
+        }
 
     except Exception as e:
         logger.error(f"Failed to create user: {e}", exc_info=True)
@@ -248,6 +276,9 @@ async def update_user(
         firebase_auth.update_user(user_db.uid, email=data.email)
 
         db.commit()
+
+        # Refresh user_db to ensure relationships are loaded
+        db.refresh(user_db)
 
         return User.from_orm(user_db)
     except AssertionError as e:

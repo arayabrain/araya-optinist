@@ -46,21 +46,6 @@ class User(Base, TimestampMixin, table=True):
     email: str = Field(sa_column=Column(String(255), nullable=False))
     attributes: Optional[Dict] = Field(default={}, sa_column=Column(JSON))
     active: bool = Field(nullable=False)
-    master_key: Optional[str] = Field(
-        default=None,
-        sa_column=Column(
-            String(32), nullable=True, comment="Main registration ID (auto-generated)"
-        ),
-    )
-    registration_source: Optional[str] = Field(
-        default=None,
-        sa_column=Column(
-            String(50),
-            nullable=True,
-            comment="Registration source (two_step_registration, etc.)",
-        ),
-    )
-
     workspace: List["Workspace"] = Relationship(  # noqa: F821
         back_populates="user", sa_relationship_kwargs={"uselist": True}
     )

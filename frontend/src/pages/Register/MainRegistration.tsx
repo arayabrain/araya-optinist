@@ -162,9 +162,9 @@ const RegistrationForm = () => {
     )
 
     if (registerUser.fulfilled.match(resultAction)) {
-      console.log("Registration successful:", resultAction.payload)
+      console.log("Pre-registration successful! Please verify your email.")
     } else {
-      console.error("Registration failed:", resultAction.payload)
+      console.error("Pre-registration failed:", resultAction.payload)
     }
   }
 
@@ -188,18 +188,19 @@ const RegistrationForm = () => {
             <CheckCircleIcon sx={{ fontSize: 80, color: "#10b981", mb: 2 }} />
 
             <Typography variant="h4" fontWeight="bold" gutterBottom>
-              Registration Complete!
+              Registration Almost Complete!
             </Typography>
 
             <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-              A confirmation email has been sent to{" "}
+              A verification email has been sent to{" "}
               <strong>{user?.email || formData.email}</strong>
             </Typography>
 
             <Alert severity="info" icon={<InfoOutlinedIcon />} sx={{ mb: 3 }}>
               <Typography variant="body2">
-                Please click the link in the email to verify your account. You
-                will be able to log in after verification.
+                To complete your registration, please check your email and click
+                the verification link. You&apos;ll be able to log in once your
+                email is verified.
               </Typography>
             </Alert>
 

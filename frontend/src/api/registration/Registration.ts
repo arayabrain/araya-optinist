@@ -1,22 +1,12 @@
 import axios from "axios"
-import {
-  createUserWithEmailAndPassword,
-  sendEmailVerification,
-  updateProfile,
-  signOut,
-} from "firebase/auth"
 
+import { ROLE } from "@types"
 import type {
   UserRegistrationRequestDTO,
   UserRegistrationResponseDTO,
   VerificationStatusDTO,
 } from "api/registration/RegistrationApiDTO"
-import { auth } from "config/firebase"
-
-// Backend base URL
-const API_BASE_URL = process.env.REACT_APP_SERVER_PROTO
-  ? `${process.env.REACT_APP_SERVER_PROTO}://${process.env.REACT_APP_SERVER_HOST || "localhost"}:${process.env.REACT_APP_SERVER_PORT || 8000}`
-  : "http://localhost:8000"
+import { BASE_URL } from "const/API"
 
 /**
  * Create an unauthenticated axios instance
@@ -24,7 +14,7 @@ const API_BASE_URL = process.env.REACT_APP_SERVER_PROTO
  */
 const createUnauthenticatedAxios = () => {
   return axios.create({
-    baseURL: API_BASE_URL,
+    baseURL: BASE_URL,
     headers: {
       "Content-Type": "application/json",
     },
@@ -39,66 +29,21 @@ export const registerUserApi = async (
 ): Promise<UserRegistrationResponseDTO> => {
   try {
     // ===================================
-    // 0. Clear existing session
+    // Call backend to create user and send verification email
     // ===================================
-
-    if (auth.currentUser) {
-      await signOut(auth)
-      // Wait a moment after sign out
-      await new Promise((resolve) => setTimeout(resolve, 500))
-    }
-
-    // ===================================
-    // 1. Create Firebase user
-    // ===================================
-
-    const userCredential = await createUserWithEmailAndPassword(
-      auth,
-      data.email,
-      data.password,
-    )
-
-    const firebaseUser = userCredential.user
-    // ===================================
-    // 2. Set display name
-    // ===================================
-
-    await updateProfile(firebaseUser, {
-      displayName: data.name,
-    })
-    // ===================================
-    // 3. Send verification email
-    // ===================================
-    await sendEmailVerification(firebaseUser, {
-      url: `${window.location.origin}/login`,
-      handleCodeInApp: false,
-    })
-
-    // ===================================
-    // 4. Get ID token from new user
-    // ===================================
-    // Ensure we get the token from the new user
-    const idToken = await firebaseUser.getIdToken(true)
-
-    // ===================================
-    // 5. Save to backend database
-    // ===================================
-    // Use unauthenticated axios instance
+    // Backend will:
+    // 1. Create Firebase user with email_verified=false
+    // 2. Create database user record
+    // 3. Send verification email automatically
     const unauthAxios = createUnauthenticatedAxios()
 
     const response = await unauthAxios.post<UserRegistrationResponseDTO>(
-      "/api/register/complete",
+      "/api/register",
       {
-        firebase_uid: firebaseUser.uid,
-        email: firebaseUser.email,
+        email: data.email,
+        password: data.password,
         name: data.name,
-        organization_id: data.organization_id || 1,
-        role_id: data.role_id,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${idToken}`, // Explicitly set new token
-        },
+        role_id: data.role_id || ROLE.OPERATOR, // Default to OPERATOR role
       },
     )
 
@@ -117,22 +62,6 @@ export const registerUserApi = async (
       response: err.response?.data,
       status: err.response?.status,
     })
-
-    // Handle Firebase errors
-    if (err.code) {
-      switch (err.code) {
-        case "auth/email-already-in-use":
-          throw new Error("This email address is already registered")
-        case "auth/invalid-email":
-          throw new Error("Invalid email address")
-        case "auth/operation-not-allowed":
-          throw new Error("Email/password authentication is not enabled")
-        case "auth/weak-password":
-          throw new Error("Password is too weak (requires 6+ characters)")
-        default:
-          throw new Error(`Firebase error: ${err.message}`)
-      }
-    }
 
     // Handle backend errors
     if (err.response?.data?.detail) {
@@ -162,28 +91,48 @@ export const checkVerificationStatusApi = async (
 export const resendVerificationEmailApi = async (
   email: string,
 ): Promise<{ success: boolean; message: string }> => {
-  const currentUser = auth.currentUser
+  try {
+    console.log("Resending verification email...")
 
-  console.log("Resending verification email...")
+    // ===================================
+    // Call backend to resend verification email
+    // ===================================
+    // Backend will send the verification email directly
+    const unauthAxios = createUnauthenticatedAxios()
+    const response = await unauthAxios.post<{
+      success: boolean
+      message: string
+      already_verified: boolean
+    }>("/api/register/resend-verification", { email })
 
-  if (!currentUser) {
-    throw new Error("User not found. Please log in again.")
-  }
+    // If email is already verified, return success
+    if (response.data.already_verified) {
+      return {
+        success: true,
+        message: "Email is already verified",
+      }
+    }
 
-  if (currentUser.email !== email) {
-    throw new Error("Email addresses do not match")
-  }
+    console.log("Verification email resent!")
 
-  // Resend verification email from Firebase
-  await sendEmailVerification(currentUser, {
-    url: `${window.location.origin}/login`,
-    handleCodeInApp: false,
-  })
+    return {
+      success: true,
+      message: response.data.message || "Verification email has been resent",
+    }
+  } catch (error: unknown) {
+    console.error("Failed to resend verification email:", error)
 
-  console.log("Verification email resent!")
+    const err = error as {
+      code?: string
+      message?: string
+      response?: { data?: { detail?: string }; status?: number }
+    }
 
-  return {
-    success: true,
-    message: "Verification email has been resent",
+    // Handle backend errors
+    if (err.response?.data?.detail) {
+      throw new Error(err.response.data.detail)
+    }
+
+    throw error
   }
 }

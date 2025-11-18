@@ -10,6 +10,56 @@ from studio.app.common.core.utils.filepath_creater import (
 )
 
 
+def get_env_var(key: str, default: str = None, required: bool = False) -> str:
+    """
+    Get environment variable with optional validation.
+
+    Args:
+        key: Environment variable name
+        default: Default value if not set (optional)
+        required: If True, raises ValueError when variable is not set
+                  and no default provided
+
+    Returns:
+        str: Environment variable value or default
+
+    Raises:
+        ValueError: If required=True and variable is not set with no default
+
+    Examples:
+        >>> get_env_var("BASE_URL", required=True)
+        >>> get_env_var("FRONTEND_URL", default="http://localhost:3000")
+    """
+    value = os.getenv(key, default)
+    if required and not value:
+        raise ValueError(f"{key} environment variable is not set")
+    return value
+
+
+def get_env_bool(key: str, default: bool = False) -> bool:
+    """
+    Get boolean environment variable.
+
+    Converts string values to boolean. Accepts: "true", "1", "yes", "on"
+    (case-insensitive) as True. All other values are treated as False.
+
+    Args:
+        key: Environment variable name
+        default: Default boolean value if not set
+
+    Returns:
+        bool: Environment variable value as boolean or default
+
+    Examples:
+        >>> get_env_bool("USE_FIREBASE_EMAIL", default=True)
+        >>> get_env_bool("DEBUG_MODE")
+    """
+    value = os.getenv(key)
+    if value is None:
+        return default
+    return value.lower() in ("true", "1", "yes", "on")
+
+
 def differential_deep_merge(d1: dict, d2: dict) -> dict:
     """
     Deep merge only the differences to avoid destroying existing elements

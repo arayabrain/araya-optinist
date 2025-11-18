@@ -1,23 +1,7 @@
-from pydantic import BaseModel, EmailStr, validator
+from pydantic import BaseModel, EmailStr
 
 
-class CompleteRegistrationRequest(BaseModel):
-    """Registration completion request from frontend"""
+class ResendVerificationRequest(BaseModel):
+    """メール確認再送信リクエスト"""
 
-    firebase_uid: str
     email: EmailStr
-    name: str
-    organization_id: int = 1
-    role_id: int = None
-
-    @validator("name")
-    def validate_name(cls, v):
-        if len(v.strip()) < 2:
-            raise ValueError("Name must be at least 2 characters")
-        return v.strip()
-
-
-class VerifyTokenRequest(BaseModel):
-    """Token verification request"""
-
-    token: str
