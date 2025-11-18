@@ -36,3 +36,12 @@ app_setup.sh
 *.py.zip
 **/*_package/pymysql/
 **/*_package/pymysql-1.1.2.dist-info/
+**/*_package/boto3*
+**/*_package/botocore*
+**/*_package/urllib3*
+**/*_package/s3transfer*
+**/*_package/dateutil*
+**/*_package/python_dateutil*
+**/*_package/jmespath*
+**/*_package/six*
+**/*_package/bin

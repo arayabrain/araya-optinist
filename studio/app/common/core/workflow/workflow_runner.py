@@ -71,6 +71,13 @@ class WorkflowRunner:
             f"at {time.strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
+        # Track workflow start for free tier users (for load balancing)
+        from studio.app.common.core.workflow.workflow_tracking import (
+            increment_workflow_count,
+        )
+
+        increment_workflow_count(self.user_id)
+
         WorkflowConfigWriter(
             self.workspace_id,
             self.unique_id,
@@ -166,7 +173,11 @@ class WorkflowRunner:
             )
 
         background_tasks.add_task(
-            snakemake_execute, self.workspace_id, self.unique_id, snakemake_params
+            snakemake_execute,
+            self.workspace_id,
+            self.unique_id,
+            snakemake_params,
+            self.user_id,
         )
 
     def finish_workflow_without_run(

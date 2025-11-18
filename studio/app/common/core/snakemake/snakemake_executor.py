@@ -58,10 +58,18 @@ from studio.app.dir_path import DIRPATH
 logger = AppLogger.get_logger()
 
 
-def snakemake_execute(workspace_id: str, unique_id: str, params: SmkParam):
+def snakemake_execute(
+    workspace_id: str, unique_id: str, params: SmkParam, user_id: int = None
+):
     """
     Main entry point for Snakemake execution.
     Determines whether to use local or AWS Batch execution based on configuration.
+
+    Args:
+        workspace_id: Workspace ID
+        unique_id: Unique ID for the workflow
+        params: Snakemake parameters
+        user_id: User ID (for tracking free tier workflow counts)
     """
     client_id = get_client_id_for_subprocess()
 
@@ -125,6 +133,17 @@ def snakemake_execute(workspace_id: str, unique_id: str, params: SmkParam):
 
     # Update user storage after workflow completion
     asyncio.run(update_user_storage_after_workflow(workspace_id))
+
+    # Decrement workflow count for free tier users (for load balancing)
+    if user_id is not None:
+        try:
+            from studio.app.common.core.workflow.workflow_tracking import (
+                decrement_workflow_count,
+            )
+
+            decrement_workflow_count(user_id)
+        except Exception as e:
+            logger.error(f"Failed to decrement workflow count: {e}")
 
     return future_result
 

@@ -136,9 +136,7 @@ def update_premium_service_desired_count():
         )
 
         if not service_response.get("services"):
-            print(
-                f"⚠ Premium service {service_name} not found in cluster {cluster_name}"
-            )
+            print(f"Premium service {service_name} not found in cluster {cluster_name}")
             return
 
         current_desired_count = service_response["services"][0]["desiredCount"]
@@ -184,7 +182,7 @@ def update_premium_service_desired_count():
             )
 
     except Exception as e:
-        print(f"⚠ Error updating premium service desired count: {str(e)}")
+        print(f"Error updating premium service desired count: {str(e)}")
         import traceback
 
         traceback.print_exc()
