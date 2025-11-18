@@ -71,6 +71,14 @@ def send_verification_email_via_firebase(email: str) -> bool:
         # Get the user's ID token first (required for sending verification email)
         # We'll use Firebase Admin SDK to create a custom token, then exchange it
         firebase_user = firebase_auth.get_user_by_email(email)
+
+        # Check if email is already verified
+        if firebase_user.email_verified:
+            logger.info(
+                f"Email {email} is already verified, skipping verification email"
+            )
+            return True
+
         custom_token = firebase_auth.create_custom_token(firebase_user.uid)
 
         # Exchange custom token for ID token via Firebase REST API
@@ -97,9 +105,55 @@ def send_verification_email_via_firebase(email: str) -> bool:
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Firebase REST API error: {e}", exc_info=True)
-        if hasattr(e, "response") and e.response:
-            logger.error(f"Response: {e.response.text}")
-        raise Exception(f"Failed to send verification email via Firebase: {e}")
+        error_message = str(e)
+
+        if hasattr(e, "response") and e.response is not None:
+            logger.error(f"Response status: {e.response.status_code}")
+            logger.error(f"Response body: {e.response.text}")
+
+            try:
+                error_data = e.response.json()
+                logger.error(f"Response JSON: {error_data}")
+
+                if "error" in error_data:
+                    error_details = error_data["error"]
+                    error_message = error_details.get("message", str(e))
+                    logger.error(f"Firebase error message: {error_message}")
+
+                    # Check for specific error codes
+                    if (
+                        "TOO_MANY_ATTEMPTS_TRY_LATER" in error_message
+                        or "quota" in error_message.lower()
+                        or "rate" in error_message.lower()
+                    ):
+                        raise ValueError(
+                            "Too many verification emails sent. Please wait a few "
+                            "minutes before trying again."
+                        )
+                    elif "EMAIL_NOT_FOUND" in error_message:
+                        raise ValueError(
+                            f"User with email {email} not found in Firebase"
+                        )
+                    elif "INVALID_ID_TOKEN" in error_message:
+                        raise ValueError(f"Invalid or expired ID token for {email}")
+
+            except ValueError:
+                # Re-raise ValueError with user-friendly messages
+                raise
+            except Exception as json_err:
+                logger.error(f"Could not parse error response as JSON: {json_err}")
+
+            # If it's a 400 error and we couldn't determine the specific cause,
+            # it's likely rate limiting
+            if e.response.status_code == 400:
+                raise ValueError(
+                    "Unable to send verification email. This may be due to rate "
+                    "limiting. Please wait a few minutes before trying again."
+                )
+
+        raise Exception(
+            f"Failed to send verification email via Firebase: {error_message}"
+        )
     except Exception as e:
         logger.error(f"Failed to send verification email: {e}", exc_info=True)
         raise

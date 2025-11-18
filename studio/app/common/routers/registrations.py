@@ -70,6 +70,10 @@ async def resend_verification_email(request: ResendVerificationRequest):
 
     except firebase_auth.UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
+    except ValueError as e:
+        # User-friendly errors (rate limiting, etc.)
+        logger.warning(f"Verification email validation error: {e}")
+        raise HTTPException(status_code=429, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to resend verification email: {e}", exc_info=True)
         raise HTTPException(
