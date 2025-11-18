@@ -21,6 +21,7 @@ import {
   Snackbar,
 } from "@mui/material"
 
+import { regexPassword, regexIgnoreS } from "const/Auth"
 import {
   registerUser,
   resendVerificationEmail,
@@ -116,28 +117,25 @@ const RegistrationForm = () => {
       return false
     }
 
-    if (formData.password.length < 8) {
-      setValidationError("Password must be at least 8 characters")
+    if (formData.password.length > 255) {
+      setValidationError("The text may not be longer than 255 characters")
       return false
     }
 
-    if (!/(?=.*[a-z])/.test(formData.password)) {
-      setValidationError("Password must contain lowercase letters")
+    if (!regexPassword.test(formData.password)) {
+      setValidationError(
+        "Your password must be at least 6 characters long and must contain at least one letter, number, and special character",
+      )
       return false
     }
 
-    if (!/(?=.*[A-Z])/.test(formData.password)) {
-      setValidationError("Password must contain uppercase letters")
-      return false
-    }
-
-    if (!/(?=.*\d)/.test(formData.password)) {
-      setValidationError("Password must contain numbers")
+    if (regexIgnoreS.test(formData.password)) {
+      setValidationError("Allowed special characters (!#$%&()*+,-./@_|)")
       return false
     }
 
     if (formData.password !== formData.confirmPassword) {
-      setValidationError("Passwords do not match")
+      setValidationError("password is not match")
       return false
     }
 
@@ -330,7 +328,7 @@ const RegistrationForm = () => {
             value={formData.password}
             onChange={handleChange}
             disabled={loading}
-            helperText="At least 8 characters including uppercase, lowercase, and numbers"
+            helperText="At least 6 characters including letters, numbers, and special characters (!#$%&()*+,-./@_|)"
             sx={{ mb: 2 }}
             InputProps={{
               startAdornment: (
