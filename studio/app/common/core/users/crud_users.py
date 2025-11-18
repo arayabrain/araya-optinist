@@ -7,7 +7,7 @@ from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth import authenticate_user
-from studio.app.common.core.auth.email_service import AuthEmailService
+from studio.app.common.core.auth.auth_email_service import AuthEmailService
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
