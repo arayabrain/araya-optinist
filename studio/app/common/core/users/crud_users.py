@@ -195,6 +195,8 @@ async def create_user(
             user_db.attributes = {"remote_bucket_name": new_bucket_name}
 
         # Create subscription user record
+        # expiration is set to current time for free plan.
+        # Since its non nullable and must have a value
         subscription = UserSubscription(
             plan_id=SubscriptionUserStatus.FREE,
             user_id=user_db.id,
