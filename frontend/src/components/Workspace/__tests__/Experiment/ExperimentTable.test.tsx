@@ -222,6 +222,9 @@ describe("ExperimentTable", () => {
       user: {
         loading: false,
       },
+      logsModal: {
+        open: false,
+      },
     })
     ;(selectExperimentList as jest.Mock).mockReturnValue({
       1: {
