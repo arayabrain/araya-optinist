@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from enum import Enum
 
+from studio.app.common.core.utils.config_handler import get_env_var
+
 
 @dataclass
 class FILETYPE:
@@ -27,3 +29,9 @@ ORIGINAL_DATA_EXT = ".orig"
 NOT_DISPLAY_ARGS_LIST = ["params", "output_dir", "nwbfile", "kwargs"]
 
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+# Default organization ID for multi-user cloud deployment
+DEFAULT_ORGANIZATION_ID = 1
+
+# Default is set for local development, override with FRONTEND_URL environment variable
+FRONTEND_URL = get_env_var("FRONTEND_URL", default="http://localhost:3000")

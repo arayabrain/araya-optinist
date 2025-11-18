@@ -25,11 +25,34 @@ async def authenticate_user(db: Session, data: UserAuth) -> Tuple[Token, UserMod
         user = pyrebase_app.auth().sign_in_with_email_and_password(
             data.email, data.password
         )
+
         user_db: UserModel = (
             db.query(UserModel)
             .filter(UserModel.uid == user["localId"], UserModel.active.is_(True))
             .first()
         )
+
+        try:
+            firebase_user = auth.get_user(user["localId"])
+
+            if user_db is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User not found",
+                )
+
+            # Email verification required
+            if not firebase_user.email_verified:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Email address is not verified. Please click the "
+                    "verification link sent to your email.",
+                )
+
+        except auth.UserNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+            )
 
         assert user_db is not None, "Invalid user uid"
         ex_token = create_access_token(subject=user_db.uid)
@@ -40,6 +63,9 @@ async def authenticate_user(db: Session, data: UserAuth) -> Tuple[Token, UserMod
             ex_token=ex_token,
         )
         return token, user_db
+
+    except HTTPException:
+        raise
 
     except (HTTPError, AssertionError) as e:
         logging.getLogger().error(e)

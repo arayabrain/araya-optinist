@@ -96,6 +96,9 @@ async def get_user_subscription(
     try:
         # Get the most recent active subscription
         subscription = SubscriptionService.get_user_subscription(db, current_user.id)
+        user_purchase = SubscriptionService.get_user_subscription_purchase(
+            db, current_user.id
+        )
         logger.info(f"Fetched subscription for user {current_user.id}: {subscription}")
 
         if subscription is None:
@@ -104,7 +107,7 @@ async def get_user_subscription(
                 db, current_user.id
             )
 
-            if expired_subscription:
+            if expired_subscription and user_purchase:
                 try:
                     sub_data, plan_data, _ = expired_subscription
                     subscription_dict = {

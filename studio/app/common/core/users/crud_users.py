@@ -2,22 +2,29 @@ from fastapi import HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
 from firebase_admin import auth as firebase_auth
 from firebase_admin.auth import UserRecord
+from firebase_admin.exceptions import FirebaseError
 from sqlalchemy import func
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth import authenticate_user
+from studio.app.common.core.auth.auth_email_service import AuthEmailService
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageSimpleWriter,
 )
 from studio.app.common.core.subscription.stripe_service import StripeService
+from studio.app.common.core.subscription.subscription_service import (
+    SubscriptionService,
+    SubscriptionUserStatus,
+)
 from studio.app.common.core.workspace.workspace_services import WorkspaceService
 from studio.app.common.models import Role as RoleModel
 from studio.app.common.models import User as UserModel
 from studio.app.common.models import UserRole as UserRoleModel
 from studio.app.common.models.experiment import ExperimentRecord
+from studio.app.common.models.subscription import UserSubscription
 from studio.app.common.models.workspace import Workspace
 from studio.app.common.schemas.auth import UserAuth
 from studio.app.common.schemas.base import SortOptions
@@ -25,6 +32,7 @@ from studio.app.common.schemas.users import (
     User,
     UserCreate,
     UserPasswordUpdate,
+    UserRole,
     UserSearchOptions,
     UserUpdate,
 )
@@ -117,10 +125,10 @@ async def list_user(
             query=select(
                 UserModel,
                 func.min(UserRoleModel.role_id),
-                func.coalesce(WorkspaceCapacity.c.input_workspace_capacity, 0)
-                + func.coalesce(ExperimentCapacity.c.experiment_capacity, 0).label(
-                    "data_usage"
-                ),
+                (
+                    func.coalesce(WorkspaceCapacity.c.input_workspace_capacity, 0)
+                    + func.coalesce(ExperimentCapacity.c.experiment_capacity, 0)
+                ).label("data_usage"),
             )
             .outerjoin(WorkspaceCapacity, WorkspaceCapacity.c.user_id == UserModel.id)
             .outerjoin(ExperimentCapacity, ExperimentCapacity.c.user_id == UserModel.id)
@@ -145,29 +153,91 @@ async def list_user(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-async def create_user(db: Session, data: UserCreate, organization_id: int):
-    try:
-        # create firebase user
-        user: UserRecord = firebase_auth.create_user(
-            email=data.email, password=data.password
-        )
+async def create_user(
+    db: Session, data: UserCreate, organization_id: int, verified=False
+):
+    firebase_user = None
 
-        # create application db user
+    try:
+        if not verified:
+            data.role_id = UserRole.operator.value
+
+        # Create Firebase user with email NOT verified
+        try:
+            firebase_user: UserRecord = firebase_auth.create_user(
+                email=data.email,
+                password=data.password,
+                email_verified=verified,
+            )
+        except FirebaseError as firebase_error:
+            # Handle specific Firebase authentication errors
+            error_code = (
+                firebase_error.code if hasattr(firebase_error, "code") else None
+            )
+            error_message = str(firebase_error)
+
+            logger.error(
+                f"Firebase error during user creation: {error_code} - {error_message}"
+            )
+
+            # Map Firebase error codes to user-friendly messages
+            if (
+                error_code == "EMAIL_ALREADY_EXISTS"
+                or "email-already-exists" in error_message.lower()
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="This email address is already registered. "
+                    "Please use a different email or try logging in.",
+                )
+            elif (
+                error_code == "INVALID_EMAIL"
+                or "invalid-email" in error_message.lower()
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid email address format. "
+                    "Please provide a valid email.",
+                )
+            elif (
+                error_code == "WEAK_PASSWORD"
+                or "weak-password" in error_message.lower()
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Password is too weak. "
+                    "It must be at least 6 characters long.",
+                )
+            elif (
+                error_code == "OPERATION_NOT_ALLOWED"
+                or "operation-not-allowed" in error_message.lower()
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="User registration is currently disabled. "
+                    "Please contact support.",
+                )
+            else:
+                # Generic Firebase error
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to create user account: {error_message}",
+                )
+
+        # Create application DB user
         user_db = UserModel(
-            uid=user.uid,
-            email=user.email,
+            uid=firebase_user.uid,
+            email=firebase_user.email,
             name=data.name,
             organization_id=organization_id,
             active=True,
         )
-        # it may be possible to specify the organization_id externally in the future
         db.add(user_db)
-        db.flush()
-        await set_role(db, user_id=user_db.id, role_id=data.role_id, auto_commit=False)
-        db.commit()
-        user_db.__dict__["role_id"] = data.role_id
+        db.flush()  # Get user_db.id
 
-        # create remote_storage bucket
+        await set_role(db, user_id=user_db.id, role_id=data.role_id, auto_commit=False)
+
+        # Create remote storage bucket
         if RemoteStorageController.is_available():
             new_bucket_name = RemoteStorageController.create_user_bucket_name(
                 id=user_db.id
@@ -178,15 +248,71 @@ async def create_user(db: Session, data: UserCreate, organization_id: int):
             ) as remote_storage_controller:
                 await remote_storage_controller.create_bucket()
 
-            # store bucket info in user record
             user_db.attributes = {"remote_bucket_name": new_bucket_name}
-            db.flush()
-            db.commit()
 
-        return User.from_orm(user_db)
+        # Create subscription user record
+        # expiration is set to current time for free plan.
+        # Since its non nullable and must have a value
+        subscription = UserSubscription(
+            plan_id=SubscriptionUserStatus.FREE,
+            user_id=user_db.id,
+            expiration=SubscriptionService.get_current_datetime(),
+        )
+        db.add(subscription)
+
+        # Commit all changes
+        db.commit()
+
+        # Refresh user_db to load relationships (especially organization)
+        db.refresh(user_db)
+
+        # Add role_id for response (if needed)
+        user_db.__dict__["role_id"] = data.role_id
+
+        # Send verification email if user is not verified
+        if not verified:
+            try:
+                AuthEmailService.send_verification_email(data.email)
+                logger.info(f"Verification email sent to {data.email}")
+            except Exception as email_error:
+                logger.error(
+                    f"Failed to send verification email: {email_error}", exc_info=True
+                )
+                # Don't fail user creation if email fails
+                # The user can request a resend later
+
+        return {
+            "user": User.from_orm(user_db),
+        }
+
+    except HTTPException:
+        # Re-raise HTTPException as-is (from Firebase error handling)
+        db.rollback()
+        if firebase_user:
+            try:
+                firebase_auth.delete_user(firebase_user.uid)
+                logger.info(f"Cleaned up Firebase user: {firebase_user.uid}")
+            except Exception as cleanup_error:
+                logger.error(f"Failed to cleanup Firebase user: {cleanup_error}")
+        raise
     except Exception as e:
-        logger.error(e, exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Failed to create user: {e}", exc_info=True)
+
+        # Rollback database
+        db.rollback()
+
+        # Cleanup Firebase user if created
+        if firebase_user:
+            try:
+                firebase_auth.delete_user(firebase_user.uid)
+                logger.info(f"Cleaned up Firebase user: {firebase_user.uid}")
+            except Exception as cleanup_error:
+                logger.error(f"Failed to cleanup Firebase user: {cleanup_error}")
+
+        # Return appropriate error
+        if isinstance(e, ValueError):
+            raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to create user")
 
 
 async def update_user(
@@ -210,12 +336,15 @@ async def update_user(
             setattr(user_db, key, value)
         if role_id is not None:
             await set_role(db, user_id=user_db.id, role_id=role_id, auto_commit=False)
-        user_db.__dict__["role_id"] = role_id
+            user_db.__dict__["role_id"] = role_id
 
         # create firebase user
         firebase_auth.update_user(user_db.uid, email=data.email)
 
         db.commit()
+
+        # Refresh user_db to ensure relationships are loaded
+        db.refresh(user_db)
 
         return User.from_orm(user_db)
     except AssertionError as e:
