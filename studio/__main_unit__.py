@@ -158,6 +158,14 @@ app.mount(
     name="static",
 )
 
+# Mount images directory for card brand icons and other images
+os.makedirs(f"{DIRPATH.FRONTEND_DIRS.BUILD}/images", exist_ok=True)
+app.mount(
+    "/images",
+    StaticFiles(directory=f"{DIRPATH.FRONTEND_DIRS.BUILD}/images"),
+    name="images",
+)
+
 public_templates = Jinja2Templates(directory=DIRPATH.FRONTEND_DIRS.PUBLIC)
 build_templates = Jinja2Templates(directory=DIRPATH.FRONTEND_DIRS.BUILD)
 
