@@ -132,6 +132,14 @@ INSERT IGNORE INTO user_roles (user_id, role_id) VALUES (1, 1);
 
 UPDATE users SET attributes = JSON_MERGE_PATCH(IFNULL(attributes,'{}'), '{"remote_bucket_name": "${aws_s3_bucket.app_storage.id}"}') WHERE id = 1;
 
+-- Subscription plans initialization
+%{for plan in var.subscription_plans~}
+INSERT IGNORE INTO subscription_plans
+  (id, name, price, billing_cycle, features, currency, status, stripe_product_id, stripe_price_id, created_at)
+VALUES
+  (${plan.id}, '${replace(plan.name, "'", "\\'")}', ${plan.price}, ${plan.billing_cycle}, '${replace(jsonencode(plan.features), "'", "\\'")}', ${plan.currency}, ${plan.status}, '${replace(plan.stripe_product_id, "'", "\\'")}', '${replace(plan.stripe_price_id, "'", "\\'")}', NOW());
+%{endfor~}
+
 INIT_SQL
 
 chmod 644 /tmp/init_optinist_db.sql

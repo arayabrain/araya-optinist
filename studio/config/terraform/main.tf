@@ -107,6 +107,27 @@ variable "test_users" {
   sensitive = true
 }
 
+variable "subscription_plans" {
+  description = "Subscription plan configurations with Stripe integration details"
+  type = list(object({
+    id                = number
+    name              = string
+    price             = number
+    billing_cycle     = number
+    currency          = number
+    status            = number
+    stripe_product_id = string
+    stripe_price_id   = string
+    storage_quota_gb  = number
+    features          = map(list(object({
+      text      = string
+      isPremium = bool
+    })))
+  }))
+  default   = []
+  sensitive = true
+}
+
 variable "git_repo" {
   description = "Git repository"
   type        = string

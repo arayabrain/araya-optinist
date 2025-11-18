@@ -46,7 +46,7 @@ def upgrade() -> None:
     )
 
     # Insert initial storage usage records for existing users
-    # Set default quota based on subscription: Free = 5GB, Premium = 100GB
+    # Set default quota based on subscription: Free = 5GB, Premium = 200GB
     op.execute(
         """
 INSERT INTO
@@ -57,7 +57,7 @@ SELECT
     0 as storage_usage_bytes,
     CASE
         WHEN COALESCE(su.plan_id, 1) = 1 THEN 5368709120    -- 5GB for Free plan
-        WHEN COALESCE(su.plan_id, 1) = 2 THEN 107374182400  -- 100GB for Premium plan
+        WHEN COALESCE(su.plan_id, 1) = 2 THEN 214748364800  -- 200GB for Premium plan
         ELSE 5368709120                                      -- Default to 5GB
     END as storage_quota_bytes,
     NOW() as last_updated,

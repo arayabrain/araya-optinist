@@ -262,7 +262,9 @@ def upgrade() -> None:
         sa.Index("idx_subscription_cancellations_cancelled_at", "cancelled_at"),
     )
 
-    # Initial data should be inserted manually following SUBSCRIPTION_PLANS_SETUP.md
+    # NOTE: Subscription plans are automatically seeded during Terraform deployment
+    # See: studio/config/terraform/terraform.tfvars (subscription_plans variable)
+    # and studio/config/terraform/deployment.tf (database initialization section)
 
     # Create taxes table
     op.create_table(
