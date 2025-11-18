@@ -1,31 +1,46 @@
 #!/usr/bin/env python3
 """
-Test script for Free Manager Lambda functionality.
+Free Manager Lambda Tests
 
-This script tests the Free Manager system that handles:
+WHERE TO RUN:
+- Local development machine with AWS credentials - Recommended
+- Cloud ECS container - Should work
+
+REQUIREMENTS:
+- AWS credentials configured (boto3 access)
+- Terraform outputs available in ../config/terraform
+- Python 3.8+ with boto3
+- Access to ECS cluster and Lambda functions
+
+WHAT IT TESTS:
+Critical free tier user management and auto-scaling functionality:
 1. Activity tracking for free tier users
-2. Proactive scaling based on active user count
+2. Proactive scaling based on active user count (threshold: 5 users)
 3. User rebalancing to newly launched instances (multi-instance algorithm)
 4. Workflow protection during migration (atomic SQL protection)
+5. CloudWatch metrics publishing
+6. JSON serialization of Decimal types from database queries
 
-UPDATED 2025-11-18:
-- Lambda now waits up to 10 minutes internally for new instances to launch
-- Lambda performs multi-instance rebalancing (distributes across ALL instances)
-- Lambda verifies distribution is balanced after rebalancing
-- Test adapted to handle longer Lambda execution time (~8-10 min during scale-up)
+These tests verify that:
+- Free Manager Lambda correctly counts active users
+- ECS service scales up when user count exceeds threshold
+- Lambda waits internally for new instances (up to 10 minutes)
+- Users are distributed evenly across multiple instances
+- Users with active workflows are NOT migrated
+- CloudWatch metrics are published correctly
+- Database queries with Decimal types serialize properly to JSON
 
-Similar to test_premium_instance_provisioning.py pattern.
+HOW TO RUN:
+  python test_free_manager.py [--terraform-dir PATH] [--region REGION]
 
-Usage:
-    python test_free_manager.py [--terraform-dir PATH] [--region REGION]
+EXPECTED RESULT:
+  All 8 tests should pass (cleanup, user_setup, json_serialization,
+  lambda_invocation, ecs_scaling, user_distribution, workflow_protection,
+  cloudwatch_metrics)
 
-Environment Variables:
-    AWS_REGION: AWS region (default: us-east-1)
-    TERRAFORM_DIR: Path to terraform directory (default: ../config/terraform)
-
-Expected Runtime:
-    - Normal run (no scaling): ~2-3 minutes
-    - Scale-up scenario: ~10-12 minutes (Lambda waits for instances internally)
+EXPECTED RUNTIME:
+  - Normal run (no scaling): ~2-3 minutes
+  - Scale-up scenario: ~10-12 minutes (Lambda waits for instances internally)
 """
 
 import argparse
@@ -156,12 +171,12 @@ class FreeManagerTester:
         print("\nResetting ECS service to desired count = 1...")
 
         try:
-            response = self.ecs_client.update_service(
+            _ = self.ecs_client.update_service(
                 cluster=self.cluster_name,
                 service=self.free_service_name,
                 desiredCount=1,
             )
-            print(f"DEBUG: ECS update_service response: {response}")
+            # print(f"DEBUG: ECS update_service response: {response}")
             print("Updated service desired count to 1")
 
             # Wait for service to stabilize
@@ -337,6 +352,9 @@ class FreeManagerTester:
         user_ids = [f"test_user_{i}" for i in range(1, num_users + 1)]
 
         print(f"\nCreating {num_users} test users on instance {instance_id}...")
+
+        # Create all users as active (logged in)
+        # All users will be counted toward the active user count for scaling
         for user_id in user_ids:
             success = self.simulate_user_activity(user_id, instance_id, minutes_ago=0)
             if not success:
@@ -686,7 +704,10 @@ class FreeManagerTester:
 
         try:
             # Query for active user count metric
-            end_time = datetime.now()
+            # Must use UTC timezone for CloudWatch queries
+            from datetime import timezone
+
+            end_time = datetime.now(timezone.utc)
             start_time = end_time - timedelta(minutes=10)
 
             response = self.cloudwatch_client.get_metric_statistics(

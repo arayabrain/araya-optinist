@@ -99,14 +99,14 @@ def handler(event, context):
     try:
         # Get configuration
         user_threshold = int(get_required_env_var("FREE_USER_THRESHOLD", "5"))
-        idle_threshold_minutes = int(
+        activity_threshold_minutes = int(
             get_required_env_var("FREE_IDLE_THRESHOLD_MINUTES", "10")
         )
         max_instances = int(get_required_env_var("MAX_FREE_INSTANCES", "10"))
 
         # Count active free tier users
         active_user_count = count_active_free_users(
-            activity_threshold_minutes=idle_threshold_minutes
+            activity_threshold_minutes=activity_threshold_minutes
         )
         print(f"Active free tier users: {active_user_count}")
 
@@ -114,6 +114,7 @@ def handler(event, context):
         publish_active_user_metric(active_user_count)
 
         # Determine if scaling needed
+        scaling_action_taken = False
         if active_user_count >= user_threshold:
             print(
                 f"User threshold reached ({active_user_count} >= {user_threshold}), "
@@ -121,9 +122,13 @@ def handler(event, context):
             )
             result = scale_and_rebalance(
                 active_user_count=active_user_count,
-                idle_threshold_minutes=idle_threshold_minutes,
                 max_instances=max_instances,
             )
+            # Track if we performed a scaling action
+            scaling_action_taken = result.get("scaling_action") in [
+                "scale_up",
+                "scale_down",
+            ]
         else:
             print(
                 f"User threshold not reached ({active_user_count} < {user_threshold}), "
@@ -135,12 +140,20 @@ def handler(event, context):
                 "threshold": user_threshold,
             }
 
-        # Always sync ECS service desired count to match running instances
-        # This ensures 1 task per instance (critical for free tier architecture)
-        print("\n" + "=" * 70)
-        print("SYNCING ECS SERVICE TO RUNNING INSTANCES")
-        print("=" * 70)
-        sync_ecs_service_to_running_instances()
+        # Only sync ECS service to running instances if we didn't just scale
+        # If we just scaled up/down, the ASG and ECS are already set to the correct
+        # desired counts, and syncing would undo the scaling (since new instances
+        # take 7+ minutes to become InService)
+        if not scaling_action_taken:
+            print("\n" + "=" * 70)
+            print("SYNCING ECS SERVICE TO RUNNING INSTANCES")
+            print("=" * 70)
+            sync_ecs_service_to_running_instances()
+        else:
+            print("\n" + "=" * 70)
+            print("SKIPPING ECS SYNC - Scaling action was just performed")
+            print("Will sync on next Lambda run after instances stabilize")
+            print("=" * 70)
 
         return {"statusCode": 200, "body": json.dumps(result)}
 
@@ -154,7 +167,6 @@ def handler(event, context):
 
 def scale_and_rebalance(
     active_user_count: int,
-    idle_threshold_minutes: int,
     max_instances: int,
 ) -> Dict[str, Any]:
     """
@@ -162,7 +174,6 @@ def scale_and_rebalance(
 
     Args:
         active_user_count: Current number of active free tier users
-        idle_threshold_minutes: Minutes of inactivity to consider user idle
         max_instances: Maximum number of instances allowed
 
     Returns:
@@ -172,7 +183,6 @@ def scale_and_rebalance(
     print("SCALE AND REBALANCE")
     print("=" * 70)
     print(f"Active users: {active_user_count}")
-    print(f"Idle threshold: {idle_threshold_minutes} minutes")
     print(f"Max instances: {max_instances}")
 
     cluster_name = get_required_env_var("CLUSTER_NAME")
@@ -246,12 +256,10 @@ def scale_and_rebalance(
                 print("All instances ready! Attempting rebalancing...")
 
                 # Try multi-instance rebalancing
-                rebalanced = rebalance_idle_users_multi(
-                    idle_threshold_minutes, available_instances
-                )
+                rebalanced = rebalance_idle_users_multi(available_instances)
 
                 # Check if rebalancing was effective
-                distribution = get_users_per_instance(idle_threshold_minutes)
+                distribution = get_users_per_instance()
                 if is_distribution_balanced(distribution, tolerance=1):
                     print("Rebalancing successful - distribution is balanced!")
                     rebalancing_successful = True
@@ -295,13 +303,18 @@ def scale_and_rebalance(
         print("No scaling needed, checking if rebalancing is beneficial...")
 
         available_instances = get_available_instance_ids(cluster_name, service_name)
-        distribution = get_users_per_instance(idle_threshold_minutes)
+        distribution = get_users_per_instance()
 
-        if not is_distribution_balanced(distribution, tolerance=1):
+        # Build complete distribution including instances with 0 users
+        # (get_users_per_instance only returns instances that have users)
+        complete_distribution = {inst_id: 0 for inst_id in available_instances}
+        complete_distribution.update(distribution)
+
+        print(f"Complete distribution across all instances: {complete_distribution}")
+
+        if not is_distribution_balanced(complete_distribution, tolerance=1):
             print("Distribution is imbalanced, attempting rebalancing...")
-            rebalanced = rebalance_idle_users_multi(
-                idle_threshold_minutes, available_instances
-            )
+            rebalanced = rebalance_idle_users_multi(available_instances)
             result["rebalanced_users"] = rebalanced
             result["rebalancing_reason"] = "imbalance_without_scaling"
         else:
@@ -472,6 +485,10 @@ def sync_ecs_service_to_running_instances() -> None:
 
         asg = asg_response["AutoScalingGroups"][0]
 
+        # Use ASG DesiredCapacity as the target, not InService count
+        # This prevents undoing scale-up actions when instances are still launching
+        asg_desired_capacity = asg["DesiredCapacity"]
+
         # Count instances that are InService (running and healthy)
         running_instance_count = sum(
             1 for inst in asg["Instances"] if inst["LifecycleState"] == "InService"
@@ -489,31 +506,34 @@ def sync_ecs_service_to_running_instances() -> None:
         current_desired_count = service_response["services"][0]["desiredCount"]
         current_running_count = service_response["services"][0]["runningCount"]
 
+        print(f"ASG DesiredCapacity: {asg_desired_capacity}")
         print(f"ASG Instances InService: {running_instance_count}")
         print(
             f"ECS Service Status: desired={current_desired_count}, "
             f"running={current_running_count}"
         )
 
-        # Update service desired count if different from running instance count
-        if running_instance_count != current_desired_count:
+        # Sync ECS to ASG DesiredCapacity (not InService count)
+        # This ensures ECS matches the scaling target,
+        # even if instances are still launching
+        if asg_desired_capacity != current_desired_count:
             print(
                 f"Syncing ECS service desired count: {current_desired_count} "
-                f"→ {running_instance_count}"
+                f"→ {asg_desired_capacity}"
             )
             ecs_client.update_service(
                 cluster=cluster_name,
                 service=service_name,
-                desiredCount=running_instance_count,
+                desiredCount=asg_desired_capacity,
             )
             print(
                 f"ECS service {service_name} updated to desired count "
-                f"{running_instance_count}"
+                f"{asg_desired_capacity}"
             )
         else:
             print(
-                f"ECS service desired count already matches instance count "
-                f"({running_instance_count})"
+                f"ECS service desired count already matches ASG desired capacity "
+                f"({asg_desired_capacity})"
             )
 
     except Exception as e:
@@ -523,9 +543,7 @@ def sync_ecs_service_to_running_instances() -> None:
         traceback.print_exc()
 
 
-def rebalance_idle_users_multi(
-    idle_threshold_minutes: int, available_instances: List[str]
-) -> List[str]:
+def rebalance_idle_users_multi(available_instances: List[str]) -> List[str]:
     """
     Rebalance idle users across ALL available instances (multi-instance algorithm).
 
@@ -536,8 +554,10 @@ def rebalance_idle_users_multi(
     4. Ensures balanced distribution across all instances,
         not just most/least loaded pair
 
+    Idle users are defined as currently having no active workflows
+    (active_workflow_count = 0).
+
     Args:
-        idle_threshold_minutes: Minutes of inactivity to consider user idle
         available_instances: List of available instance IDs to distribute users across
 
     Returns:
@@ -546,7 +566,6 @@ def rebalance_idle_users_multi(
     print("\n" + "=" * 70)
     print("MULTI-INSTANCE REBALANCING")
     print("=" * 70)
-    print(f"Idle threshold: {idle_threshold_minutes} minutes")
     print(f"Available instances: {available_instances}")
 
     if len(available_instances) < 2:
@@ -557,7 +576,7 @@ def rebalance_idle_users_multi(
 
     # Get current user distribution
     print("\nGetting current user distribution...")
-    users_per_instance = get_users_per_instance(idle_threshold_minutes)
+    users_per_instance = get_users_per_instance()
 
     # Build complete instance map (includes instances with 0 users)
     instance_user_counts = {inst_id: 0 for inst_id in available_instances}
@@ -615,7 +634,7 @@ def rebalance_idle_users_multi(
         )
 
         # Get idle users from this instance
-        idle_users = get_idle_users_for_instance(source_inst, idle_threshold_minutes)
+        idle_users = get_idle_users_for_instance(source_inst)
 
         if not idle_users:
             print(f"No idle users on instance {source_inst}, skipping")
@@ -634,7 +653,7 @@ def rebalance_idle_users_multi(
                 print("All underloaded instances have reached target, stopping")
                 break
 
-            dest_inst, dest_count = underloaded[underloaded_idx]
+            dest_inst, _ = underloaded[underloaded_idx]
 
             # Attempt migration
             if migrate_user_to_instance(user_id, dest_inst):
@@ -654,7 +673,7 @@ def rebalance_idle_users_multi(
     return migrated
 
 
-def rebalance_idle_users(idle_threshold_minutes: int) -> List[str]:
+def rebalance_idle_users() -> List[str]:
     """
     Rebalance idle users to underutilized instances.
 
@@ -664,8 +683,8 @@ def rebalance_idle_users(idle_threshold_minutes: int) -> List[str]:
     3. Identifies idle users on overloaded instances
     4. Migrates idle users to underutilized instances
 
-    Args:
-        idle_threshold_minutes: Minutes of inactivity to consider user idle
+    Idle users are defined as currently having no active workflows
+    (active_workflow_count = 0).
 
     Returns:
         List of user IDs that were migrated
@@ -673,7 +692,6 @@ def rebalance_idle_users(idle_threshold_minutes: int) -> List[str]:
     print("\n" + "=" * 70)
     print("REBALANCING IDLE USERS")
     print("=" * 70)
-    print(f"Idle threshold: {idle_threshold_minutes} minutes")
 
     # Get all available ECS instances
     cluster_name = get_required_env_var("CLUSTER_NAME")
@@ -733,9 +751,7 @@ def rebalance_idle_users(idle_threshold_minutes: int) -> List[str]:
         return []
 
     # Get idle users from most loaded instance
-    idle_users = get_idle_users_for_instance(
-        most_loaded_instance, idle_threshold_minutes
-    )
+    idle_users = get_idle_users_for_instance(most_loaded_instance)
 
     if not idle_users:
         print(f"No idle users on instance {most_loaded_instance}")

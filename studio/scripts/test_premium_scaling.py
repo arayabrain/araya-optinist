@@ -1,29 +1,112 @@
 #!/usr/bin/env python3
 """
-Test script for premium user dynamic scaling
+Premium User Dynamic Scaling Tests
 
-This script simulates multiple premium users logging in to test:
-1. Initial assignment to shared instances
-2. Automatic spot fleet scaling
-3. User migration to dedicated instances
-4. Scale down when users logout
+WHERE TO RUN:
+- Local development machine - Recommended
+- Cloud ECS container - Should work
+- Any environment with network access to API Gateway
 
-Usage:
-    python test_premium_scaling.py --api-url <API_GATEWAY_URL>
+REQUIREMENTS:
+- API Gateway URL for premium management endpoints
+- Python 3.8+ with requests library
+- Network access to AWS API Gateway
+
+WHAT IT TESTS:
+Critical premium user dynamic scaling and instance management:
+1. Single user assignment to premium instances
+2. Concurrent user assignments to trigger scaling
+3. Automatic spot fleet scaling when capacity is exceeded
+4. User migration from shared to dedicated instances
+5. Scale down when users logout
+6. Migration queue processing and timing
+
+These tests verify that:
+- Premium users can be assigned to instances successfully
+- Multiple concurrent assignments trigger spot fleet scaling
+- Users initially assigned to shared instances migrate to dedicated instances
+- Migration queue processes assignments correctly
+- User release and cleanup work properly
+- API endpoints handle concurrent requests correctly
+
+HOW TO RUN:
+  # Automatic (reads API URL from Terraform outputs):
+  python test_premium_scaling.py
+
+  # Or specify API URL manually:
+  python test_premium_scaling.py --api-url <API_GATEWAY_URL>
+
+  Optional arguments:
+    --terraform-dir PATH: Path to Terraform directory (default: ../config/terraform)
+    --test {single,concurrent,migration,full}  Type of test to run (default: full)
+    --users NUM: Number of users for concurrent test (default: 3)
+
+EXPECTED RESULT:
+  All tests should pass with successful user assignments and migrations
 """
 
 import argparse
+import json
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict
 
 import requests
 
 
 class PremiumScalingTester:
-    def __init__(self, api_url):
-        self.api_url = api_url.rstrip("/")
+    def __init__(self, api_url: str = None, terraform_dir: str = None):
+        """
+        Initialize Premium Scaling Tester.
+
+        Args:
+            api_url: API Gateway URL (if None, will load from Terraform outputs)
+            terraform_dir: Path to Terraform directory (default: ../config/terraform)
+        """
+        if api_url:
+            self.api_url = api_url.rstrip("/")
+        else:
+            # Load from Terraform outputs
+            if terraform_dir is None:
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                terraform_dir = os.path.abspath(
+                    os.path.join(script_dir, "../config/terraform")
+                )
+
+            terraform_outputs = self._load_terraform_outputs(terraform_dir)
+            self.api_url = terraform_outputs.get("premium_api_gateway_url", "")
+            if not self.api_url:
+                raise ValueError(
+                    "premium_api_gateway_url not found in Terraform outputs"
+                )
+            self.api_url = self.api_url.rstrip("/")
+            print(f"Loaded API Gateway URL from Terraform: {self.api_url}")
+
         self.assigned_users = {}
+
+    def _load_terraform_outputs(self, terraform_dir: str) -> Dict:
+        """Load Terraform outputs using terraform output command."""
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["terraform", "output", "-json"],
+                cwd=terraform_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            outputs = json.loads(result.stdout)
+            return {k: v["value"] for k, v in outputs.items()}
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to load Terraform outputs: {e}")
+            print(f"stderr: {e.stderr}")
+            sys.exit(1)
+        except FileNotFoundError:
+            print("Terraform not found. Please install Terraform or provide --api-url")
+            sys.exit(1)
 
     def assign_premium_user(self, user_id):
         """Assign a premium user"""
@@ -249,7 +332,14 @@ class PremiumScalingTester:
 def main():
     parser = argparse.ArgumentParser(description="Test premium user dynamic scaling")
     parser.add_argument(
-        "--api-url", required=True, help="API Gateway URL for premium management"
+        "--api-url",
+        help="API Gateway URL for premium management "
+        "(default: load from Terraform outputs)",
+    )
+    parser.add_argument(
+        "--terraform-dir",
+        default="../config/terraform",
+        help="Path to Terraform directory (default: ../config/terraform)",
     )
     parser.add_argument(
         "--test",
@@ -263,7 +353,18 @@ def main():
 
     args = parser.parse_args()
 
-    tester = PremiumScalingTester(args.api_url)
+    # Resolve terraform directory path if api_url not provided
+    terraform_dir = None
+    if not args.api_url:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        terraform_dir = os.path.abspath(os.path.join(script_dir, args.terraform_dir))
+
+        if not os.path.exists(terraform_dir):
+            print(f"Terraform directory not found: {terraform_dir}")
+            print("Please provide --api-url or ensure Terraform directory exists")
+            sys.exit(1)
+
+    tester = PremiumScalingTester(api_url=args.api_url, terraform_dir=terraform_dir)
 
     try:
         if args.test == "single":

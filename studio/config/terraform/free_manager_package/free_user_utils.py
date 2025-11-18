@@ -38,20 +38,18 @@ def get_db_connection(auto_commit=False):
         raise
 
 
-def is_user_idle(
-    user_id: str,
-    idle_threshold_minutes: int = 10,
-) -> bool:
+def is_user_idle(user_id: str) -> bool:
     """
     Check if a user is idle and safe to migrate.
 
     A user is considered idle if:
-    1. active_workflow_count = 0 (no workflows running)
-    2. last_activity is older than idle_threshold_minutes
+    - active_workflow_count = 0 (no workflows running)
+
+    Note: We no longer check last_activity time. Users without active workflows
+    can be migrated regardless of when they were last active.
 
     Args:
         user_id: User ID to check
-        idle_threshold_minutes: Minutes of inactivity required (default: 10)
 
     Returns:
         True if user is idle and safe to migrate, False otherwise
@@ -60,7 +58,7 @@ def is_user_idle(
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 query = """
-                    SELECT active_workflow_count, last_activity
+                    SELECT active_workflow_count
                     FROM free_user_assignments
                     WHERE user_id = %s
                 """
@@ -72,39 +70,24 @@ def is_user_idle(
                     return False
 
                 active_workflows = result["active_workflow_count"] or 0
-                last_activity = result["last_activity"]
 
-                # Must have no active workflows
-                if active_workflows > 0:
-                    return False
-
-                # Check last activity time
-                if last_activity:
-                    idle_cutoff = datetime.now() - timedelta(
-                        minutes=idle_threshold_minutes
-                    )
-                    if last_activity > idle_cutoff:
-                        # User was active recently
-                        return False
-
-                # User is idle
-                return True
+                # User is idle if no active workflows
+                return active_workflows == 0
 
     except Exception as e:
         print(f"Error checking if user {user_id} is idle: {e}")
         return False  # Conservative: don't migrate if uncertain
 
 
-def get_idle_users_for_instance(
-    instance_id: str,
-    idle_threshold_minutes: int = 10,
-) -> List[str]:
+def get_idle_users_for_instance(instance_id: str) -> List[str]:
     """
     Get list of idle users on a specific instance.
 
+    Idle users are those who are logged in but NOT running any workflows.
+    They are safe to migrate to another instance without disrupting work.
+
     Args:
         instance_id: Instance ID to check
-        idle_threshold_minutes: Minutes of inactivity required (default: 10)
 
     Returns:
         List of user IDs that are idle on this instance
@@ -112,16 +95,16 @@ def get_idle_users_for_instance(
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                idle_cutoff = datetime.now() - timedelta(minutes=idle_threshold_minutes)
-
+                # Idle = logged in (has a session) but no active workflows
+                # No time-based restriction - users without workflows can be migrated
+                # regardless of their last activity time
                 query = """
                     SELECT user_id
                     FROM free_user_assignments
                     WHERE instance_id = %s
                       AND active_workflow_count = 0
-                      AND last_activity < %s
                 """
-                cursor.execute(query, (instance_id, idle_cutoff))
+                cursor.execute(query, (instance_id,))
                 results = cursor.fetchall()
 
                 return [row["user_id"] for row in results]
