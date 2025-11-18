@@ -2,11 +2,10 @@
 Email service for sending verification and authentication emails.
 """
 
-import logging
-
 from firebase_admin import auth as firebase_auth
 
 from studio.app.common.core.auth import pyrebase_app
+from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.utils.config_handler import get_env_bool
 from studio.app.const import FRONTEND_URL
 
@@ -20,7 +19,7 @@ try:
 except ImportError:
     FIREBASE_EMAIL_AVAILABLE = False
 
-logger = logging.getLogger(__name__)
+logger = AppLogger.get_logger()
 
 # Determine which email sending method to use
 USE_FIREBASE_EMAIL = get_env_bool("USE_FIREBASE_EMAIL", default=True)

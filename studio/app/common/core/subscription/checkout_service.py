@@ -435,6 +435,9 @@ class CheckoutService:
                         }
                     ],
                     mode="subscription",
+                    subscription_data={
+                        "trial_period_days": 30,  # 1 month trial for premium
+                    },
                     success_url=(
                         f"{STRIPE_CALLBACK_URL}/console/subscription/thanks"
                         "?session_id={CHECKOUT_SESSION_ID}"

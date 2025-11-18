@@ -5,37 +5,44 @@ This module sends verification emails using Firebase's built-in email service
 without requiring SMTP configuration.
 """
 
-import json
-import logging
 import os
 
 import requests
 from firebase_admin import auth as firebase_auth
 
+from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.utils.file_reader import JsonReader
 from studio.app.dir_path import DIRPATH
 
-logger = logging.getLogger(__name__)
+logger = AppLogger.get_logger()
+
 
 # Load Firebase API key from existing firebase_config.json
-FIREBASE_API_KEY = None
-try:
-    with open(DIRPATH.FIREBASE_CONFIG_PATH) as f:
-        firebase_config = json.load(f)
-        FIREBASE_API_KEY = firebase_config.get("apiKey")
-        if FIREBASE_API_KEY:
-            logger.info("Firebase API key loaded from firebase_config.json")
-except FileNotFoundError:
-    logger.warning("firebase_config.json not found. Email sending will be disabled.")
-except Exception as e:
-    logger.error(f"Error loading firebase_config.json: {e}")
+def _load_firebase_api_key() -> str | None:
+    """Load Firebase API key from firebase_config.json."""
+    if not os.path.exists(DIRPATH.FIREBASE_CONFIG_PATH):
+        logger.warning(
+            "firebase_config.json not found. Email sending will be disabled."
+        )
+        return None
 
-# Allow override from environment variable (optional)
-if os.getenv("FIREBASE_API_KEY"):
-    FIREBASE_API_KEY = os.getenv("FIREBASE_API_KEY")
-    logger.info("Firebase API key overridden from environment variable")
+    try:
+        firebase_config = JsonReader.read(DIRPATH.FIREBASE_CONFIG_PATH)
+        api_key = firebase_config.get("apiKey")
+        if api_key:
+            logger.info("Firebase API key loaded from firebase_config.json")
+        return api_key
+    except Exception as e:
+        logger.error(f"Error loading firebase_config.json: {e}")
+        return None
+
+
+FIREBASE_API_KEY = _load_firebase_api_key()
 
 # Firebase REST API endpoint for sending OOB codes
 FIREBASE_SEND_OOB_URL = "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode"
+
+FIREBASE_REST_API_BASE_URL = "https://identitytoolkit.googleapis.com/v1/accounts"
 
 
 def send_verification_email_via_firebase(email: str) -> bool:
@@ -67,8 +74,9 @@ def send_verification_email_via_firebase(email: str) -> bool:
         custom_token = firebase_auth.create_custom_token(firebase_user.uid)
 
         # Exchange custom token for ID token via Firebase REST API
-        base_url = "https://identitytoolkit.googleapis.com/v1/accounts"
-        exchange_url = f"{base_url}:signInWithCustomToken?key={FIREBASE_API_KEY}"
+        exchange_url = (
+            f"{FIREBASE_REST_API_BASE_URL}:signInWithCustomToken?key={FIREBASE_API_KEY}"
+        )
         exchange_response = requests.post(
             exchange_url,
             json={"token": custom_token.decode("utf-8"), "returnSecureToken": True},
