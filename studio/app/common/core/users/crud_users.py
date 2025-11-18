@@ -2,6 +2,7 @@ from fastapi import HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
 from firebase_admin import auth as firebase_auth
 from firebase_admin.auth import UserRecord
+from firebase_admin.exceptions import FirebaseError
 from sqlalchemy import func
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
@@ -124,10 +125,10 @@ async def list_user(
             query=select(
                 UserModel,
                 func.min(UserRoleModel.role_id),
-                func.coalesce(WorkspaceCapacity.c.input_workspace_capacity, 0)
-                + func.coalesce(ExperimentCapacity.c.experiment_capacity, 0).label(
-                    "data_usage"
-                ),
+                (
+                    func.coalesce(WorkspaceCapacity.c.input_workspace_capacity, 0)
+                    + func.coalesce(ExperimentCapacity.c.experiment_capacity, 0)
+                ).label("data_usage"),
             )
             .outerjoin(WorkspaceCapacity, WorkspaceCapacity.c.user_id == UserModel.id)
             .outerjoin(ExperimentCapacity, ExperimentCapacity.c.user_id == UserModel.id)
@@ -162,11 +163,66 @@ async def create_user(
             data.role_id = UserRole.operator.value
 
         # Create Firebase user with email NOT verified
-        firebase_user: UserRecord = firebase_auth.create_user(
-            email=data.email,
-            password=data.password,
-            email_verified=verified,
-        )
+        try:
+            firebase_user: UserRecord = firebase_auth.create_user(
+                email=data.email,
+                password=data.password,
+                email_verified=verified,
+            )
+        except FirebaseError as firebase_error:
+            # Handle specific Firebase authentication errors
+            error_code = (
+                firebase_error.code if hasattr(firebase_error, "code") else None
+            )
+            error_message = str(firebase_error)
+
+            logger.error(
+                f"Firebase error during user creation: {error_code} - {error_message}"
+            )
+
+            # Map Firebase error codes to user-friendly messages
+            if (
+                error_code == "EMAIL_ALREADY_EXISTS"
+                or "email-already-exists" in error_message.lower()
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="This email address is already registered. "
+                    "Please use a different email or try logging in.",
+                )
+            elif (
+                error_code == "INVALID_EMAIL"
+                or "invalid-email" in error_message.lower()
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid email address format. "
+                    "Please provide a valid email.",
+                )
+            elif (
+                error_code == "WEAK_PASSWORD"
+                or "weak-password" in error_message.lower()
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Password is too weak. "
+                    "It must be at least 6 characters long.",
+                )
+            elif (
+                error_code == "OPERATION_NOT_ALLOWED"
+                or "operation-not-allowed" in error_message.lower()
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="User registration is currently disabled. "
+                    "Please contact support.",
+                )
+            else:
+                # Generic Firebase error
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to create user account: {error_message}",
+                )
 
         # Create application DB user
         user_db = UserModel(
@@ -229,6 +285,16 @@ async def create_user(
             "user": User.from_orm(user_db),
         }
 
+    except HTTPException:
+        # Re-raise HTTPException as-is (from Firebase error handling)
+        db.rollback()
+        if firebase_user:
+            try:
+                firebase_auth.delete_user(firebase_user.uid)
+                logger.info(f"Cleaned up Firebase user: {firebase_user.uid}")
+            except Exception as cleanup_error:
+                logger.error(f"Failed to cleanup Firebase user: {cleanup_error}")
+        raise
     except Exception as e:
         logger.error(f"Failed to create user: {e}", exc_info=True)
 
@@ -270,7 +336,7 @@ async def update_user(
             setattr(user_db, key, value)
         if role_id is not None:
             await set_role(db, user_id=user_db.id, role_id=role_id, auto_commit=False)
-        user_db.__dict__["role_id"] = role_id
+            user_db.__dict__["role_id"] = role_id
 
         # create firebase user
         firebase_auth.update_user(user_db.uid, email=data.email)
