@@ -55,6 +55,7 @@ export const rootReducer = combineReducers({
   [DATAVIEW_SLICE_NAME]: dataviewReducer,
   subscription: subscriptionReducer,
   paymentMethod: paymentMethodReducer,
+  logsModal: logsModalReducer,
 })
 
 export const store = configureStore({
