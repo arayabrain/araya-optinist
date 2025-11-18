@@ -34,6 +34,8 @@ def upgrade() -> None:
         sa.Column("features", sa.JSON(), nullable=False),
         sa.Column("currency", mysql.TINYINT(unsigned=True), nullable=False),
         sa.Column("status", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("stripe_product_id", sa.String(length=255), nullable=True),
+        sa.Column("stripe_price_id", sa.String(length=255), nullable=True),
         sa.Column(
             "created_at",
             sa.TIMESTAMP(),
@@ -109,7 +111,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column(
-            "name", sa.String(length=50), nullable=False
+            "name", sa.String(length=100), nullable=False
         ),  # e.g "stripe", "paypal"
         sa.Column(
             "created_at",
@@ -260,40 +262,7 @@ def upgrade() -> None:
         sa.Index("idx_subscription_cancellations_cancelled_at", "cancelled_at"),
     )
 
-    # Insert initial data
-    # Insert subscription plans
-    op.execute(
-        """
-INSERT INTO subscription_plans
-(id, name, price, billing_cycle, features, currency, status, created_at)
-VALUES
-(1, 'Free', 0, 1, JSON_OBJECT(
-    'Free', JSON_ARRAY(
-        JSON_OBJECT('text', 'Basic compute access with fair-use limitations',
-                   'isPremium', false),
-        JSON_OBJECT('text', 'Standard support through documentation and community',
-                   'isPremium', false),
-        JSON_OBJECT('text', 'Basic data storage of 5GB', 'isPremium', false),
-        JSON_OBJECT('text', 'Standard processing speed', 'isPremium', false)
-    )
-), 1, 1, NOW()),
-(2, 'Premium', 2000, 1, JSON_OBJECT(
-    'Premium', JSON_ARRAY(
-        JSON_OBJECT('text', 'Basic compute access with fair-use limitations',
-                   'isPremium', false),
-        JSON_OBJECT('text', 'Standard support through documentation and community',
-                   'isPremium', false),
-        JSON_OBJECT('text', 'Priority compute access with guaranteed allocation',
-                   'isPremium', true),
-        JSON_OBJECT('text', 'Upgraded data storage of 200GB', 'isPremium', true),
-        JSON_OBJECT('text', 'Enhanced support including direct assistance',
-                   'isPremium', true),
-        JSON_OBJECT('text', 'Advanced features like extended job history',
-                   'isPremium', true)
-    )
-), 1, 1, NOW())
-"""
-    )
+    # Initial data should be inserted manually following SUBSCRIPTION_PLANS_SETUP.md
 
 
 def downgrade() -> None:
