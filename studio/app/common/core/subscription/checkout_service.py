@@ -72,19 +72,35 @@ class CheckoutService:
             session_id: Stripe checkout session ID
 
         Returns:
-            Dict containing session data
+            Dict containing session data including tax information
 
         Raises:
             stripe.error.StripeError: If session is invalid or API error occurs
         """
         try:
-            session = stripe.checkout.Session.retrieve(session_id)
+            session = stripe.checkout.Session.retrieve(
+                session_id, expand=["total_details"]
+            )
+
+            # Extract tax information if available
+            tax_amount = 0
+            tax_details = None
+            if hasattr(session, "total_details") and session.total_details:
+                tax_amount = getattr(session.total_details, "amount_tax", 0)
+                if hasattr(session.total_details, "breakdown"):
+                    tax_details = getattr(
+                        session.total_details.breakdown, "taxes", None
+                    )
+
             return {
                 "customer_id": session.customer,
                 "payment_status": session.payment_status,
                 "amount_total": session.amount_total,
+                "amount_subtotal": getattr(session, "amount_subtotal", None),
+                "amount_tax": tax_amount,
                 "currency": session.currency,
                 "metadata": session.metadata or {},
+                "tax_details": tax_details,
             }
         except stripe.error.StripeError as e:
             logger.error(f"Stripe API error: {str(e)}")
@@ -443,6 +459,11 @@ class CheckoutService:
                         "plan_id": request.plan_id,
                         "plan_name": plan.name,
                     },
+                    # Enable automatic tax calculation
+                    automatic_tax={"enabled": True},
+                    # Collect customer address for tax calculation and save it
+                    billing_address_collection="required",
+                    customer_update={"address": "auto"},
                 )
 
                 return CreateCheckoutSessionResponse(
