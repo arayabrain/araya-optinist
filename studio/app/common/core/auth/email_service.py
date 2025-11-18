@@ -7,7 +7,8 @@ import logging
 from firebase_admin import auth as firebase_auth
 
 from studio.app.common.core.auth import pyrebase_app
-from studio.app.common.core.utils.config_handler import get_env_bool, get_env_var
+from studio.app.common.core.utils.config_handler import get_env_bool
+from studio.app.const import FRONTEND_URL
 
 try:
     from studio.app.common.core.auth.firebase_email_sender import (
@@ -20,9 +21,6 @@ except ImportError:
     FIREBASE_EMAIL_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
-
-# Get frontend URL from environment variable
-FRONTEND_URL = get_env_var("FRONTEND_URL", default="http://localhost:3000")
 
 # Determine which email sending method to use
 USE_FIREBASE_EMAIL = get_env_bool("USE_FIREBASE_EMAIL", default=True)
