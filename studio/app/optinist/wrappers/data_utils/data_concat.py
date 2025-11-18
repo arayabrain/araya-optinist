@@ -51,7 +51,8 @@ def data_concat(
     default_params = determine_default_params(data1)
 
     axis = params.get("axis", None) if params else None
-    axis = int(axis) if axis is not None and str(axis).strip() else None
+    axis_str = str(axis).strip().lower() if axis is not None else ""
+    axis = int(axis) if axis_str and axis_str != "none" else None
     if axis is None:
         axis = default_params["axis"]
         logger.info(
@@ -61,9 +62,8 @@ def data_concat(
         logger.info(f"Concatenation axis specified: {axis}")
 
     time_axis = params.get("time_axis", None) if params else None
-    time_axis = (
-        int(time_axis) if time_axis is not None and str(time_axis).strip() else None
-    )
+    time_axis_str = str(time_axis).strip().lower() if time_axis is not None else ""
+    time_axis = int(time_axis) if time_axis_str and time_axis_str != "none" else None
     if time_axis is None:
         time_axis = default_params["time_axis"]
         logger.info(f"Using default time_axis {time_axis} for {type(data1).__name__}")
@@ -86,7 +86,8 @@ def data_concat(
             logger.info(f"Std method specified: {std_method}")
 
     std_axis = params.get("std_axis", None) if params else None
-    std_axis = int(std_axis) if std_axis is not None and str(std_axis).strip() else None
+    std_axis_str = str(std_axis).strip().lower() if std_axis is not None else ""
+    std_axis = int(std_axis) if std_axis_str and std_axis_str != "none" else None
     if std_axis is None:
         std_axis = default_params["std_axis"]
     else:
@@ -142,9 +143,22 @@ def data_concat(
             and data2.index is not None
         ):
             if time_axis is not None and axis == time_axis:
-                # Concatenating along time dimension - concatenate indices
-                concatenated_index = np.concatenate([data1.index, data2.index])
-                logger.info("Concatenated time indices")
+                # Concatenating along time dimension - create continuous index
+                data1_index = np.asarray(data1.index)
+                data2_index = np.asarray(data2.index)
+
+                # Check if simple concatenation would create duplicates
+                combined = np.concatenate([data1_index, data2_index])
+                if len(combined) != len(np.unique(combined)):
+                    # Has duplicates - create new continuous index
+                    concatenated_index = np.arange(len(combined))
+                    logger.info(
+                        f"Created new continuous index "
+                        f"(0 to {len(combined)-1}) to avoid duplicates"
+                    )
+                else:
+                    concatenated_index = combined
+                    logger.info("Concatenated time indices")
             else:
                 # Use data1's index (should be same for non-time concatenation)
                 concatenated_index = data1.index

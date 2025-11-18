@@ -25,6 +25,7 @@ import {
   workspaceReducer,
   userReducer,
   modeStandalone,
+  logsModalReducer,
   dataviewReducer,
 } from "store/slice"
 import { DATAVIEW_SLICE_NAME } from "store/slice/Dataview/DataviewType"
@@ -49,6 +50,7 @@ export const rootReducer = combineReducers({
   workspace: workspaceReducer,
   user: userReducer,
   mode: modeStandalone,
+  logsModal: logsModalReducer,
   [DATAVIEW_SLICE_NAME]: dataviewReducer,
 })
 
