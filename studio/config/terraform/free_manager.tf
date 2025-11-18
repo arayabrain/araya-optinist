@@ -68,8 +68,8 @@ resource "aws_lambda_function" "free_manager" {
       ASG_NAME = aws_autoscaling_group.main.name
 
       # Free tier configuration
-      FREE_USER_THRESHOLD         = "5" # Trigger scaling at 5 active users
-      FREE_IDLE_THRESHOLD_MINUTES = "5" # Consider user idle after 5 minutes (reduced from 10)
+      FREE_USER_THRESHOLD         = "5"  # Trigger scaling at 5 active users
+      FREE_IDLE_THRESHOLD_MINUTES = "5"  # Consider user idle after 5 minutes (reduced from 10)
       MAX_FREE_INSTANCES          = "10" # Maximum number of free tier instances
     }
   }
