@@ -93,6 +93,7 @@ yapf = "*"
 setuptools = "<70"
 aioboto3 = "^15.0.0"
 async-timeout = "^5.0.1"
+pulp = {extras = ["cbc"], version = "*"}
 stripe = "^12.5.0"
 
 [tool.poetry.group.dev]
