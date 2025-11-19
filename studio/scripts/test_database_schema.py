@@ -35,7 +35,7 @@ Migration e701e7250019 (premium_user_assignments):
 
 Migration 61f6f5b6d03f (user_storage_usage):
 6. Table creation with correct columns and constraints
-7. Quota allocation logic (5GB Free, 100GB Premium)
+7. Quota allocation logic (5GB Free, 200GB Premium)
 8. Unique constraint on user_id and proper indexing
 
 Migration 4df5949c42ef (experiment_records columns):
@@ -43,11 +43,20 @@ Migration 4df5949c42ef (experiment_records columns):
 10. JSON column operations for thumbnails
 11. Publish status values (0=private, 1=public)
 
+Migration af8c4144cd54 (stripe_integration):
+12. Stripe integration tables and columns
+
+Migration d438483eb821 (user_registration):
+13. User registration columns (master_key, registration_source, firebase_uid)
+
+All Migrations Integrity Check:
+14. Comprehensive verification of all critical schema elements across all migrations
+
 HOW TO RUN:
   python test_database_schema.py
 
 EXPECTED RESULT:
-  All 8 tests should pass
+  All 9 tests should pass
 """
 
 import os
@@ -414,10 +423,10 @@ class TestDatabaseSchema:
                     "storage_quota_bytes": 5368709120,  # 5GB
                 },
                 {
-                    "name": "Premium plan user (100GB quota)",
+                    "name": "Premium plan user (200GB quota)",
                     "user_id": 2,
                     "storage_usage_bytes": 50000000000,  # 50GB used
-                    "storage_quota_bytes": 107374182400,  # 100GB
+                    "storage_quota_bytes": 214748364800,  # 200GB
                 },
                 {
                     "name": "User approaching quota",
@@ -686,7 +695,7 @@ class TestDatabaseSchema:
 
             required_elements = [
                 ("5368709120", "5GB for Free plan"),
-                ("107374182400", "100GB for Premium plan"),
+                ("214748364800", "200GB for Premium plan"),
                 ("plan_id", "Plan ID reference"),
                 ("subscription_users", "Subscription table join"),
             ]
@@ -719,6 +728,109 @@ class TestDatabaseSchema:
         except Exception as e:
             print(f"Migration logic check failed: {e}")
             raise
+
+    def test_all_migration_files_integrity(self):
+        """Test all migration files for critical schema elements"""
+
+        print("\nTesting All Migration Files Integrity")
+        print("=" * 50)
+
+        alembic_versions_dir = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "alembic",
+            "versions",
+        )
+
+        # Define what to check in each migration file
+        migration_checks = {
+            "e701e7250019_create_premium_management_system.py": {
+                "description": "Premium Management System",
+                "checks": [
+                    ("premium_user_assignments", "Premium assignments table"),
+                    ("instance_state", "Instance state enum"),
+                    ("launching", "Launching state"),
+                    ("running", "Running state"),
+                    ("stopping", "Stopping state"),
+                    ("stopped", "Stopped state"),
+                    ("terminating", "Terminating state"),
+                    ("is_standby", "Standby flag column"),
+                ],
+            },
+            "61f6f5b6d03f_add_user_storage_usage_table.py": {
+                "description": "User Storage Usage",
+                "checks": [
+                    ("user_storage_usage", "Storage usage table"),
+                    ("storage_usage_bytes", "Storage usage column"),
+                    ("storage_quota_bytes", "Storage quota column"),
+                    ("5368709120", "5GB quota"),
+                    ("214748364800", "200GB quota"),
+                ],
+            },
+            "4df5949c42ef_add_dataview_feature.py": {
+                "description": "Experiment Records DataView",
+                "checks": [
+                    ("experiment_records", "Experiment records table"),
+                    ("thumbnails", "Thumbnails column"),
+                    ("success", "Success column"),
+                    ("analyzed_at", "Analyzed at column"),
+                    ("publish_status", "Publish status column"),
+                ],
+            },
+            "af8c4144cd54_add_stripe_integration_tables.py": {
+                "description": "Stripe Integration",
+                "checks": [
+                    ("subscription_plans", "Subscription plans table"),
+                    ("subscription_users", "Subscription users table"),
+                    ("subscription_providers", "Subscription providers table"),
+                    ("stripe_product_id", "Stripe product ID column"),
+                    ("stripe_price_id", "Stripe price ID column"),
+                ],
+            },
+            "d438483eb821_add_registration_columns_to_users_table.py": {
+                "description": "User Registration",
+                "checks": [
+                    ("master_key", "Master key column"),
+                    ("registration_source", "Registration source column"),
+                    ("firebase_uid", "Firebase UID column"),
+                ],
+            },
+        }
+
+        all_passed = True
+        for migration_file, config in migration_checks.items():
+            migration_path = os.path.join(alembic_versions_dir, migration_file)
+
+            print(f"\nChecking {config['description']} ({migration_file}):")
+
+            try:
+                with open(migration_path, "r") as f:
+                    content = f.read()
+
+                file_passed = True
+                for check_string, description in config["checks"]:
+                    if check_string in content:
+                        print(f" {description}")
+                    else:
+                        print(f" {description} - MISSING")
+                        file_passed = False
+                        all_passed = False
+
+                if file_passed:
+                    print(f"  → {config['description']}: PASSED")
+                else:
+                    print(f"  → {config['description']}: FAILED")
+
+            except FileNotFoundError:
+                print(f"Migration file not found: {migration_file}")
+                all_passed = False
+            except Exception as e:
+                print(f"Error reading migration: {e}")
+                all_passed = False
+
+        if not all_passed:
+            raise AssertionError("Some migration files have integrity issues")
+
+        print("\n All migration files integrity verified")
 
 
 def run_database_schema_tests():
@@ -758,6 +870,10 @@ def run_database_schema_tests():
         (
             "Storage Usage Migration Logic",
             test_suite.test_storage_usage_migration_logic,
+        ),
+        (
+            "All Migration Files Integrity",
+            test_suite.test_all_migration_files_integrity,
         ),
     ]
 

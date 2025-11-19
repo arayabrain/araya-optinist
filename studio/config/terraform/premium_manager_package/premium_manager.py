@@ -1324,8 +1324,22 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     f"{migrations_performed} migrations"
                 )
 
+                # Check if there are still users on autoscaling pool needing migration
+                autoscaling_users = get_assigned_users_for_instance("autoscaling-pool")
+                remaining_users = len(autoscaling_users)
+
                 if migrations_performed > 0:
-                    print(f"Migration successful after {elapsed}s")
+                    print(
+                        f"Migrated {migrations_performed} users, "
+                        f"{remaining_users} still on autoscaling pool"
+                    )
+
+                # Only exit if all autoscaling pool users have been migrated
+                if remaining_users == 0:
+                    print(
+                        f"Migration completed after {elapsed}s "
+                        f"- all users migrated from autoscaling pool"
+                    )
                     return {
                         "statusCode": 200,
                         "body": json.dumps(

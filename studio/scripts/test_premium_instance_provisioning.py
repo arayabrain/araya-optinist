@@ -247,7 +247,8 @@ class PremiumInstanceTester:
         alb_dns = terraform_outputs.get("alb_dns_name", {}).get("value")
         if not alb_dns:
             raise ValueError("No alb_dns_name found in Terraform outputs")
-        self.api_url = f"http://{alb_dns}"
+        # Use the domain name instead of ELB DNS to match SSL certificate
+        self.api_url = "https://araya-optinist.com"
 
         # Get ECS cluster name
         self.cluster_name = terraform_outputs.get("ecs_cluster_name", {}).get("value")

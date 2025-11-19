@@ -134,8 +134,11 @@ class LoadTestConfig:
                     "Could not find alb_dns_name in Terraform outputs. "
                     "Please ensure your infrastructure is deployed."
                 )
-            self.api_url = f"http://{lb_dns}"
-            logging.info(f"Detected API URL from Terraform: {self.api_url}")
+            # Use the proper domain name instead of load balancer DNS
+            self.api_url = "https://araya-optinist.com"
+            logging.info(
+                f"Using domain name for API URL: {self.api_url} (LB DNS: {lb_dns})"
+            )
 
         # Get ASG name from Terraform
         self.asg_name = args.asg_name or terraform_outputs.get("asg_name", {}).get(
@@ -437,7 +440,9 @@ class WorkflowLoadGenerator:
         self.submitted_workflows = []
         self.completed_workflows = []
         self.continuous_submission = False
-        self.submission_interval = 30  # Submit new workflows every 30 seconds
+        self.submission_interval = (
+            300  # Submit new workflows every 5 minutes (300 seconds)
+        )
         self.shared_workspace_id = None  # Reuse same workspace for all workflows
 
     def setup_authentication(self, multi_user=False):
@@ -1648,14 +1653,66 @@ def main():
         if not load_success:
             logging.error("Failed to generate load - test incomplete")
 
-        # Continue monitoring for the specified duration
+        # Monitor until autoscaling is triggered or timeout
         logging.info(
-            f"Monitoring autoscaling behavior for {config.duration} seconds..."
+            "Monitoring autoscaling behavior (will stop when scaling is detected)..."
         )
         logging.info(
             "Workflows are running... Watch for CPU/Memory to trigger autoscaling"
         )
-        time.sleep(config.duration)
+
+        # Wait for autoscaling to trigger (check every 30 seconds)
+        start_time = time.time()
+        max_wait_time = config.duration
+        autoscaling_detected = False
+        previous_capacity = None
+
+        while (time.time() - start_time) < max_wait_time and not autoscaling_detected:
+            time.sleep(30)  # Check every 30 seconds
+
+            # Check if scaling has occurred
+            if monitor.metrics_data and len(monitor.metrics_data) > 1:
+                latest_metrics = monitor.metrics_data[-1]
+                current_capacity = latest_metrics.get("asg", {}).get(
+                    "desired_capacity", 0
+                )
+
+                if previous_capacity is None:
+                    previous_capacity = current_capacity
+                elif current_capacity != previous_capacity:
+                    logging.info(
+                        f"🎉 Autoscaling detected! Capacity changed from "
+                        f"{previous_capacity} to {current_capacity}"
+                    )
+                    autoscaling_detected = True
+                    # Give it a bit more time to stabilize
+                    logging.info("Waiting 2 minutes for scaling to stabilize...")
+                    time.sleep(120)
+                    break
+
+                # Also check if we've breached thresholds for a while
+                cpu_util = latest_metrics.get("ecs", {}).get("cpu_utilization", 0)
+                memory_util = latest_metrics.get("ecs", {}).get("memory_utilization", 0)
+
+                if (
+                    cpu_util > config.target_cpu_threshold
+                    or memory_util > config.target_memory_threshold
+                ):
+                    logging.info(
+                        f"Thresholds exceeded - CPU: {cpu_util}%, "
+                        f"Memory: {memory_util}% "
+                        f"- waiting for autoscaling response..."
+                    )
+
+        if not autoscaling_detected:
+            elapsed = int(time.time() - start_time)
+            logging.warning(
+                f"Autoscaling not detected after {elapsed} seconds - "
+                f"test may need longer duration or more load"
+            )
+        else:
+            elapsed = int(time.time() - start_time)
+            logging.info(f"Test completed successfully in {elapsed} seconds!")
 
         # Stop monitoring
         monitor.stop_monitoring()
