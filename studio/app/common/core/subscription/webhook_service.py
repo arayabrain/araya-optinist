@@ -309,17 +309,40 @@ class WebhookService:
                 # Remove any scheduled downgrade
                 subscription.scheduled_downgrade = False
 
-                # Record cancellation
-                cancellation = SubscriptionCancellation(
-                    cancelled_by_user_id=user_account.user_id,
-                    purchases_id=subscription.id,
-                    reason=CancellationReason.USER_REQUEST,
-                    notes=(
-                        f"Cancelled via Stripe webhook for subscription "
-                        f"{stripe_subscription_id}"
-                    ),
+                # Find the most recent purchase for this user and plan
+                purchase = (
+                    db.query(SubscriptionUserPurchase)
+                    .filter(
+                        SubscriptionUserPurchase.user_id == user_account.user_id,
+                        SubscriptionUserPurchase.plan_id == subscription.plan_id,
+                    )
+                    .order_by(SubscriptionUserPurchase.created_at.desc())
+                    .first()
                 )
-                db.add(cancellation)
+
+                # Only record cancellation if we have a purchase record
+                if purchase:
+                    # Record cancellation
+                    cancellation = SubscriptionCancellation(
+                        cancelled_by_user_id=user_account.user_id,
+                        purchases_id=purchase.id,
+                        reason=CancellationReason.USER_REQUEST,
+                        notes=(
+                            f"Cancelled via Stripe webhook for subscription "
+                            f"{stripe_subscription_id}"
+                        ),
+                    )
+                    db.add(cancellation)
+                    logger.info(
+                        f"Recorded cancellation for user {user_account.user_id}, "
+                        f"purchase {purchase.id}"
+                    )
+                else:
+                    logger.warning(
+                        f"No purchase record found for user {user_account.user_id}, "
+                        f"plan {subscription.plan_id}. Skipping cancellation record."
+                    )
+
                 db.commit()
 
                 logger.info(f"Cancelled subscription for user {user_account.user_id}")
