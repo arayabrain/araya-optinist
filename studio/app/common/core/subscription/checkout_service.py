@@ -24,6 +24,9 @@ from studio.app.common.schemas.subscriptions import (
 logger = AppLogger.get_logger()
 STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
 
+# Trial subscription configuration
+TRIAL_PERIOD_DAYS = 30  # Number of days for trial subscription period
+
 
 class SUBSCRIPTION_ACTIVE_STATUS(Enum):
     ACTIVE = "1"
@@ -438,33 +441,56 @@ class CheckoutService:
                     ).id
                 )
 
-                checkout_session = stripe.checkout.Session.create(
-                    payment_method_types=["card", "link"],
-                    line_items=[
+                # Check if user has any previous purchase history
+                previous_purchase = SubscriptionService.get_user_subscription_purchase(
+                    db, user.id
+                )
+                is_first_time_user = previous_purchase is None
+
+                # Prepare subscription parameters
+                subscription_params = {
+                    "payment_method_types": ["card", "link"],
+                    "line_items": [
                         {
                             "price": plan.stripe_price_id,
                             "quantity": 1,
                         }
                     ],
-                    mode="subscription",
-                    success_url=(
+                    "mode": "subscription",
+                    "success_url": (
                         f"{STRIPE_CALLBACK_URL}/console/subscription/thanks"
                         "?session_id={CHECKOUT_SESSION_ID}"
                     ),
-                    cancel_url=(f"{STRIPE_CALLBACK_URL}/console/subscription"),
-                    customer=customer_id,
-                    client_reference_id=str(user.id),
-                    metadata={
+                    "cancel_url": f"{STRIPE_CALLBACK_URL}/console/subscription",
+                    "customer": customer_id,
+                    "client_reference_id": str(user.id),
+                    "metadata": {
                         "user_id": str(user.id),
                         "plan_id": request.plan_id,
                         "plan_name": plan.name,
                     },
                     # Enable automatic tax calculation
-                    automatic_tax={"enabled": True},
+                    "automatic_tax": {"enabled": True},
                     # Collect customer address for tax calculation and save it
-                    billing_address_collection="required",
-                    customer_update={"address": "auto"},
-                )
+                    "billing_address_collection": "required",
+                    "customer_update": {"address": "auto"},
+                }
+
+                # Add trial period for first-time users
+                if is_first_time_user:
+                    subscription_params["subscription_data"] = {
+                        "trial_period_days": TRIAL_PERIOD_DAYS,
+                        "metadata": {
+                            "is_trial": "true",
+                            "trial_days": str(TRIAL_PERIOD_DAYS),
+                        },
+                    }
+                    logger.info(
+                        f"Adding {TRIAL_PERIOD_DAYS}-day trial for first-time user "
+                        f"{user.id}"
+                    )
+
+                checkout_session = stripe.checkout.Session.create(**subscription_params)
 
                 return CreateCheckoutSessionResponse(
                     checkout_url=checkout_session.url, session_id=checkout_session.id

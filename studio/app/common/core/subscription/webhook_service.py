@@ -133,24 +133,26 @@ class WebhookService:
                     .first()
                 )
 
-                logger.info(
-                    f"Webhook: Duplicate processing detected for user {user_id}, "
-                    f"session {session_id}"
-                )
-                return {
-                    "success": True,
-                    "subscription_user_id": (
-                        existing_subscription.id if existing_subscription else None
-                    ),
-                    "purchase_id": existing_purchase.id,
-                    "expiration_date": (
-                        existing_subscription.expiration
-                        if existing_subscription
-                        else None
-                    ),
-                    "message": "Subscription already processed successfully",
-                    "webhook_processed": True,
-                }
+                # Only treat as duplicate if there's an ACTIVE subscription
+                # If subscription is expired/cancelled, allow new purchase to proceed
+                if existing_subscription:
+                    logger.info(
+                        f"Webhook: Duplicate processing detected for user {user_id}, "
+                        f"session {session_id}"
+                    )
+                    return {
+                        "success": True,
+                        "subscription_user_id": existing_subscription.id,
+                        "purchase_id": existing_purchase.id,
+                        "expiration_date": existing_subscription.expiration,
+                        "message": "Subscription already processed successfully",
+                        "webhook_processed": True,
+                    }
+                else:
+                    logger.info(
+                        f"Webhook: Found recent purchase but no active subscription "
+                        f"for user {user_id}. Proceeding with new subscription."
+                    )
 
             # 2. Verify payment status from webhook data
             if payment_status != PaymentStatus.PAID:
@@ -177,10 +179,159 @@ class WebhookService:
             # 6. SET DEFAULT PAYMENT METHOD
             CheckoutService.set_default_payment_method(session_id, customer_id)
 
-            # 7. Calculate expiration date
-            expiration_date = CheckoutService.calculate_expiration_date(
-                plan.billing_cycle
-            )
+            # 7. Get expiration date from Stripe subscription
+            stripe_subscription_id = session_data.get("subscription")
+            if not stripe_subscription_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No subscription ID found in session: {session_id}",
+                )
+
+            # Retrieve subscription from Stripe to get the current_period_end
+            try:
+                stripe_subscription = stripe.Subscription.retrieve(
+                    stripe_subscription_id
+                )
+
+                # Log the full subscription object for debugging
+                logger.info(
+                    f"Webhook: Retrieved subscription {stripe_subscription_id}, "
+                    f"status: {getattr(stripe_subscription, 'status', 'unknown')}"
+                )
+
+                # Access current_period_end - use getattr to handle both objects
+                # and dicts
+                current_period_end = getattr(
+                    stripe_subscription, "current_period_end", None
+                )
+                if current_period_end is None and isinstance(stripe_subscription, dict):
+                    current_period_end = stripe_subscription.get("current_period_end")
+
+                # Check for trial end as well (in case of trial subscriptions)
+                trial_end = getattr(stripe_subscription, "trial_end", None)
+                if trial_end is None and isinstance(stripe_subscription, dict):
+                    trial_end = stripe_subscription.get("trial_end")
+
+                # Also check current_period_start for fallback calculation
+                current_period_start = getattr(
+                    stripe_subscription, "current_period_start", None
+                )
+                if current_period_start is None and isinstance(
+                    stripe_subscription, dict
+                ):
+                    current_period_start = stripe_subscription.get(
+                        "current_period_start"
+                    )
+
+                # Debug logging to see raw values
+                logger.info(
+                    f"Webhook: Raw subscription data - "
+                    f"current_period_end: {current_period_end}, "
+                    f"trial_end: {trial_end}, "
+                    f"current_period_start: {current_period_start}, "
+                    f"created: {getattr(stripe_subscription, 'created', None)}"
+                )
+
+                logger.info(
+                    f"Webhook: Stripe subscription type: {type(stripe_subscription)}, "
+                    f"current_period_end: {current_period_end}, trial_end: {trial_end}, "
+                    f"current_period_start: {current_period_start}"
+                )
+
+                # For trial subscriptions, use trial_end.
+                # Otherwise use current_period_end
+                expiration_timestamp = None
+                if trial_end:
+                    # Subscription is in trial period
+                    expiration_timestamp = trial_end
+                    logger.info(
+                        f"Webhook: Subscription is in trial period, "
+                        f"using trial_end: {trial_end}"
+                    )
+                elif current_period_end:
+                    # Regular subscription
+                    expiration_timestamp = current_period_end
+                    logger.info(
+                        f"Webhook: Regular subscription, "
+                        f"using current_period_end: {current_period_end}"
+                    )
+                elif current_period_start:
+                    # Fallback: calculate expiration as 1 month from start
+                    # This handles edge case where subscription is just created
+                    start_date = datetime.fromtimestamp(current_period_start)
+                    expiration_date = start_date + relativedelta(months=1)
+                    expiration_timestamp = int(expiration_date.timestamp())
+                    logger.warning(
+                        f"Webhook: current_period_end not available, "
+                        f"calculated from current_period_start: {expiration_date}"
+                    )
+                else:
+                    # Final fallback: Try to get expiration from the latest invoice
+                    logger.warning(
+                        "Webhook: No period data found in subscription, "
+                        "trying to get from latest invoice"
+                    )
+                    try:
+                        latest_invoice_id = getattr(
+                            stripe_subscription, "latest_invoice", None
+                        )
+                        if latest_invoice_id:
+                            invoice = stripe.Invoice.retrieve(latest_invoice_id)
+                            lines = invoice.get("lines", {}).get("data", [])
+                            if lines:
+                                period_end = lines[0].get("period", {}).get("end")
+                                if period_end:
+                                    expiration_timestamp = period_end
+                                    logger.info(
+                                        f"Webhook: Got expiration from invoice: "
+                                        f"{datetime.fromtimestamp(period_end)}"
+                                    )
+                                else:
+                                    raise HTTPException(
+                                        status_code=400,
+                                        detail=(
+                                            f"No period end found in invoice lines for "
+                                            f"subscription: {stripe_subscription_id}"
+                                        ),
+                                    )
+                            else:
+                                raise HTTPException(
+                                    status_code=400,
+                                    detail=(
+                                        f"No invoice lines found for subscription: "
+                                        f"{stripe_subscription_id}"
+                                    ),
+                                )
+                        else:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=(
+                                    f"No expiration date found in subscription: "
+                                    f"{stripe_subscription_id}"
+                                ),
+                            )
+                    except stripe.error.StripeError as e:
+                        logger.error(f"Webhook: Error retrieving invoice: {str(e)}")
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Error retrieving invoice: {str(e)}",
+                        )
+
+                # Convert Unix timestamp to datetime
+                expiration_date = datetime.fromtimestamp(expiration_timestamp)
+                logger.info(
+                    f"Webhook: Using expiration date from Stripe: {expiration_date} "
+                    f"(Unix timestamp: {expiration_timestamp})"
+                )
+
+            except stripe.error.StripeError as e:
+                logger.error(
+                    f"Webhook: Stripe API error retrieving subscription: {str(e)}"
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Error retrieving subscription from Stripe: {str(e)}",
+                )
 
             # 8. Create or update subscription
             subscription_user_id = CheckoutService.create_or_update_subscription(
@@ -208,9 +359,13 @@ class WebhookService:
                 "session_id": session_id,
             }
 
-        except HTTPException:
+        except HTTPException as e:
+            logger.error(
+                f"Webhook: HTTPException processing checkout for session "
+                f"{session_id}: {e.detail}"
+            )
             db.rollback()
-            raise HTTPException(status_code=400, detail="Invalid webhook data")
+            raise  # Re-raise the original HTTPException with its details
         except Exception as e:
             logger.error(
                 f"Webhook: Error processing checkout success for session "
@@ -309,17 +464,40 @@ class WebhookService:
                 # Remove any scheduled downgrade
                 subscription.scheduled_downgrade = False
 
-                # Record cancellation
-                cancellation = SubscriptionCancellation(
-                    cancelled_by_user_id=user_account.user_id,
-                    purchases_id=subscription.id,
-                    reason=CancellationReason.USER_REQUEST,
-                    notes=(
-                        f"Cancelled via Stripe webhook for subscription "
-                        f"{stripe_subscription_id}"
-                    ),
+                # Find the most recent purchase for this user and plan
+                purchase = (
+                    db.query(SubscriptionUserPurchase)
+                    .filter(
+                        SubscriptionUserPurchase.user_id == user_account.user_id,
+                        SubscriptionUserPurchase.plan_id == subscription.plan_id,
+                    )
+                    .order_by(SubscriptionUserPurchase.created_at.desc())
+                    .first()
                 )
-                db.add(cancellation)
+
+                # Only record cancellation if we have a purchase record
+                if purchase:
+                    # Record cancellation
+                    cancellation = SubscriptionCancellation(
+                        cancelled_by_user_id=user_account.user_id,
+                        purchases_id=purchase.id,
+                        reason=CancellationReason.USER_REQUEST,
+                        notes=(
+                            f"Cancelled via Stripe webhook for subscription "
+                            f"{stripe_subscription_id}"
+                        ),
+                    )
+                    db.add(cancellation)
+                    logger.info(
+                        f"Recorded cancellation for user {user_account.user_id}, "
+                        f"purchase {purchase.id}"
+                    )
+                else:
+                    logger.warning(
+                        f"No purchase record found for user {user_account.user_id}, "
+                        f"plan {subscription.plan_id}. Skipping cancellation record."
+                    )
+
                 db.commit()
 
                 logger.info(f"Cancelled subscription for user {user_account.user_id}")
@@ -471,11 +649,7 @@ class WebhookService:
 
             # Extract data from webhook payload
             customer_id = invoice_data.get("customer")
-            subscription_id = (
-                invoice_data.get("parent", {})
-                .get("subscription_details", {})
-                .get("subscription")
-            )
+            subscription_id = invoice_data.get("subscription")
             payment_status = invoice_data.get("status")
             amount_paid = invoice_data.get("amount_paid", 0)
             billing_reason = invoice_data.get("billing_reason")
@@ -598,34 +772,52 @@ class WebhookService:
                     status_code=500, detail=f"Error getting subscription plan: {str(e)}"
                 )
 
-            # 4. Calculate new expiration date (extend from current expiration)
+            # 4. Get expiration date from invoice line items
             try:
-                logger.info("Webhook: Calculating new expiration date...")
+                logger.info("Webhook: Getting expiration date from invoice...")
 
                 current_expiration = user_subscription.expiration
-                billing_cycle = plan.billing_cycle
 
-                # Calculate extension period
-                if billing_cycle == BILLING_CYCLE.MONTHLY:
-                    new_expiration = current_expiration + relativedelta(months=1)
-                elif billing_cycle == BILLING_CYCLE.YEARLY:
-                    new_expiration = current_expiration + relativedelta(years=1)
-                else:
-                    # Default to monthly if unknown
-                    new_expiration = current_expiration + relativedelta(months=1)
-                    logger.warning(
-                        f"Unknown billing cycle: {billing_cycle}, defaulting to monthly"
+                # Get the period end from invoice line items
+                lines = invoice_data.get("lines", {}).get("data", [])
+                if not lines:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"No line items found in invoice: {invoice_id}",
                     )
 
+                # Get the period end from the first line item
+                period_end_timestamp = lines[0].get("period", {}).get("end")
+                if not period_end_timestamp:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"No period end found in invoice line items: "
+                            f"{invoice_id}"
+                        ),
+                    )
+
+                # Convert Unix timestamp to datetime
+                new_expiration = datetime.fromtimestamp(period_end_timestamp)
+
+                logger.info(
+                    f"Webhook: Using expiration date from invoice: {new_expiration} "
+                    f"(Unix timestamp: {period_end_timestamp})"
+                )
                 logger.info(
                     f"Webhook: Extending expiration from {current_expiration} "
                     f"to {new_expiration}"
                 )
 
+            except HTTPException:
+                raise
             except Exception as e:
-                logger.error(f"Webhook: Error calculating expiration: {str(e)}")
+                logger.error(
+                    f"Webhook: Error getting expiration from invoice: {str(e)}"
+                )
                 raise HTTPException(
-                    status_code=500, detail=f"Error calculating expiration: {str(e)}"
+                    status_code=500,
+                    detail=f"Error getting expiration from invoice: {str(e)}",
                 )
 
             # 5. Update subscription expiration
