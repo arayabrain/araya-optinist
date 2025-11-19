@@ -234,7 +234,7 @@ class WebhookService:
 
                 logger.info(
                     f"Webhook: Stripe subscription type: {type(stripe_subscription)}, "
-                    f"current_period_end: {current_period_end}, trial_end: {trial_end}, "
+                    f"current_period_end: {current_period_end}, trial_end: {trial_end},"
                     f"current_period_start: {current_period_start}"
                 )
 
