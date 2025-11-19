@@ -25,6 +25,7 @@ sys.path.insert(0, str(project_root))
 
 # Import after path modification to avoid E402 linting errors
 try:
+    from firebase_admin import auth
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
@@ -163,6 +164,13 @@ async def create_test_user_in_db(db, user_data, organization_id):
         )
         print(f" - Storage: {user_data['storage_quota_gb']}GB")
         print(" - S3 Bucket: Not available (RemoteStorage not configured)")
+
+    # Verify user's email in Firebase
+    try:
+        auth.update_user(user_data["firebase_uid"], email_verified=True)
+        print(" - Email verified in Firebase")
+    except Exception as e:
+        print(f" - Warning: Could not verify email in Firebase: {e}")
 
     return user_db
 

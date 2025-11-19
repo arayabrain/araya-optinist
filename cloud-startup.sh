@@ -117,6 +117,18 @@ EOSQL
 EOSQL
         echo "Initial admin user created successfully"
 
+        # Verify admin email in Firebase
+        echo "Verifying admin email in Firebase..."
+        python3 -c "
+from firebase_admin import auth, credentials, initialize_app
+try:
+    initialize_app(credentials.Certificate('/app/studio/config/auth/firebase_private.json'))
+except ValueError:
+    pass  # Already initialized
+auth.update_user('$INITIAL_FIREBASE_UID', email_verified=True)
+print('Admin email verified successfully')
+" || echo "Warning: Could not verify admin email in Firebase"
+
         # Assign admin role to the initial user
         echo "Assigning admin role to initial user..."
         mysql --skip-ssl -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" ${MYSQL_DATABASE} <<-EOSQL

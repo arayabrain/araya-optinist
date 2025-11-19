@@ -1,7 +1,7 @@
 """Add registration columns to users table
 
 Revision ID: d438483eb821
-Revises: af8c4144cd54
+Revises: f801f8250020
 Create Date: 2025-10-31 03:31:20.832700
 
 """
@@ -11,7 +11,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "d438483eb821"
-down_revision = "af8c4144cd54"
+down_revision = "f801f8250020"
 branch_labels = None
 depends_on = None
 
