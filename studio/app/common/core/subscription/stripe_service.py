@@ -465,7 +465,7 @@ class StripeService:
             if not stripe_subscriptions.data:
                 raise HTTPException(
                     status_code=404,
-                    detail="No active or trialing Stripe subscription found",
+                    detail="No active or Trial Stripe subscription found",
                 )
 
             stripe_subscription = stripe_subscriptions.data[0]
