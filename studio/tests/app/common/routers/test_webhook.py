@@ -61,12 +61,22 @@ class TestInvoicePaymentSucceeded:
         return {
             "id": "in_test123",
             "customer": "cus_test123",
+            "subscription": "sub_stripe123",  # Added subscription at top level
             "parent": {"subscription_details": {"subscription": "sub_stripe123"}},
             "status": "paid",
             "amount_paid": 2999,  # $29.99 in cents
             "billing_reason": "subscription_cycle",
             "period_start": 1699999999,
             "period_end": 1702678399,
+            "lines": {
+                "object": "list",
+                "data": [
+                    {
+                        "id": "il_test123",
+                        "period": {"end": 1702678399, "start": 1699999999},
+                    }
+                ],
+            },
         }
 
     @pytest.fixture
@@ -75,6 +85,7 @@ class TestInvoicePaymentSucceeded:
         return {
             "id": "in_test456",
             "customer": "cus_test123",
+            "subscription": "sub_stripe123",  # Added subscription at top level
             "parent": {"subscription_details": {"subscription": "sub_stripe123"}},
             "status": "paid",
             "amount_paid": 2999,
@@ -171,6 +182,7 @@ class TestInvoicePaymentSucceeded:
         """Test error handling for missing customer_id"""
         invoice_data = {
             "id": "in_test789",
+            "subscription": "sub_stripe123",  # Added subscription at top level
             "parent": {"subscription_details": {"subscription": "sub_stripe123"}},
             "status": "paid",
             "amount_paid": 2999,
@@ -189,6 +201,7 @@ class TestInvoicePaymentSucceeded:
         invoice_data = {
             "id": "in_test789",
             "customer": "cus_test123",
+            "subscription": "sub_stripe123",  # Added subscription at top level
             "parent": {"subscription_details": {"subscription": "sub_stripe123"}},
             "status": "open",  # Not paid
             "amount_paid": 2999,

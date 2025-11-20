@@ -29,6 +29,7 @@ class StripeSubscriptionStatus(StrEnum):
 
     INCOMPLETE = "incomplete"
     INCOMPLETE_EXPIRED = "incomplete_expired"
+    TRIAL = "trialing"
     ACTIVE = "active"
     PAST_DUE = "past_due"
     CANCELED = "canceled"
@@ -412,9 +413,7 @@ class StripeService:
         """
         try:
             # Get the new plan details
-            new_plan = stripe.SubscriptionService.get_plan_by_id(
-                db, request.new_plan_id
-            )
+            new_plan = SubscriptionService.get_plan_by_id(db, request.new_plan_id)
             if not new_plan:
                 raise HTTPException(
                     status_code=404, detail="New subscription plan not found"
@@ -447,16 +446,26 @@ class StripeService:
                     status_code=404, detail="No Stripe customer found for user"
                 )
 
-            # Get active Stripe subscription
+            # Get active or trial Stripe subscription
+            # First try to find active subscription
             stripe_subscriptions = stripe.Subscription.list(
                 customer=customer.id,
                 status=StripeSubscriptionStatus.ACTIVE,
                 limit=1,
             )
 
+            # If no active subscription found, check for trial subscription
+            if not stripe_subscriptions.data:
+                stripe_subscriptions = stripe.Subscription.list(
+                    customer=customer.id,
+                    status=StripeSubscriptionStatus.TRIAL,
+                    limit=1,
+                )
+
             if not stripe_subscriptions.data:
                 raise HTTPException(
-                    status_code=404, detail="No active Stripe subscription found"
+                    status_code=404,
+                    detail="No active or Trial Stripe subscription found",
                 )
 
             stripe_subscription = stripe_subscriptions.data[0]
@@ -586,14 +595,22 @@ class StripeService:
                 status_code=404, detail="No Stripe customer found for user"
             )
 
-        # Get active Stripe subscription
+        # Get active or trial Stripe subscription
+        # First try to find active subscription
         stripe_subscriptions = stripe.Subscription.list(
             customer=customer.id, status=StripeSubscriptionStatus.ACTIVE, limit=1
         )
 
+        # If no active subscription found, check for trial subscription
+        if not stripe_subscriptions.data:
+            stripe_subscriptions = stripe.Subscription.list(
+                customer=customer.id, status=StripeSubscriptionStatus.TRIAL, limit=1
+            )
+
         if not stripe_subscriptions.data:
             raise HTTPException(
-                status_code=404, detail="No active Stripe subscription found"
+                status_code=404,
+                detail="No active or trial Stripe subscription found",
             )
 
         stripe_subscription = stripe_subscriptions.data[0]
