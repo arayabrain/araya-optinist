@@ -274,13 +274,22 @@ const Account = () => {
       )
     }
 
-    if (
-      userSubscription.status === SUBSCRIPTION_USER_STATUS.CANCELED &&
-      userSubscription.scheduled_downgrade
-    ) {
+    if (userSubscription.scheduled_downgrade) {
       return (
         <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
           (Expires on {expirationDate.toLocaleDateString()})
+        </Typography>
+      )
+    }
+
+    // Show expiration date for all active paid subscriptions (not FREE tier)
+    if (
+      userSubscription.status === SUBSCRIPTION_USER_STATUS.SUBSCRIBED ||
+      userSubscription.status === SUBSCRIPTION_USER_STATUS.CANCELED
+    ) {
+      return (
+        <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+          (Renew on {expirationDate.toLocaleDateString()})
         </Typography>
       )
     }
