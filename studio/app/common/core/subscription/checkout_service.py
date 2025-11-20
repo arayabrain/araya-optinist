@@ -431,15 +431,28 @@ class CheckoutService:
                 subscription_account = CheckoutService.get_subscription_account(
                     db, user.id
                 )
-                customer_id = (
-                    subscription_account.provider_customer_id
-                    if subscription_account
-                    else stripe.Customer.create(
+
+                if subscription_account:
+                    customer_id = subscription_account.provider_customer_id
+                else:
+                    # Create new Stripe customer
+                    stripe_customer = stripe.Customer.create(
                         email=user.email,
                         name=getattr(user, "name", ""),
                         metadata={"user_id": str(user.id)},
-                    ).id
-                )
+                    )
+                    customer_id = stripe_customer.id
+
+                    # Save the customer to database to prevent duplicates
+                    provider_id = CheckoutService.get_or_create_stripe_provider(db)
+                    CheckoutService.create_or_update_user_account(
+                        db, user.id, provider_id, customer_id
+                    )
+                    db.commit()
+                    logger.info(
+                        f"Created and saved new Stripe customer {customer_id} "
+                        f"for user {user.id}"
+                    )
 
                 # Check if user has any previous purchase history
                 previous_purchase = SubscriptionService.get_user_subscription_purchase(
