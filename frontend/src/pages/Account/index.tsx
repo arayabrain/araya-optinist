@@ -267,12 +267,10 @@ const Account = () => {
 
     const expirationDate = new Date(userSubscription.expiration)
 
-    // Check if date is valid
-    if (isNaN(expirationDate.getTime())) {
-      return null
-    }
-
-    if (userSubscription.is_expired) {
+    if (
+      userSubscription.is_expired ||
+      userSubscription.status === SUBSCRIPTION_USER_STATUS.CANCELED
+    ) {
       return (
         <Typography variant="caption" color="error" sx={{ ml: 1 }}>
           (Expired on {expirationDate.toLocaleDateString()})
@@ -280,13 +278,19 @@ const Account = () => {
       )
     }
 
-    if (
-      userSubscription.status === SUBSCRIPTION_USER_STATUS.CANCELED &&
-      userSubscription.scheduled_downgrade
-    ) {
+    if (userSubscription.scheduled_downgrade) {
       return (
         <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
           (Expires on {expirationDate.toLocaleDateString()})
+        </Typography>
+      )
+    }
+
+    // Show expiration date for all active paid subscriptions (not FREE tier)
+    if (userSubscription.status === SUBSCRIPTION_USER_STATUS.SUBSCRIBED) {
+      return (
+        <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+          (Renew on {expirationDate.toLocaleDateString()})
         </Typography>
       )
     }

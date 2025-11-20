@@ -601,7 +601,7 @@ const SubscriptionPlans = () => {
           {/* Data Storage Warning in Dialog */}
           <Alert severity="warning" sx={{ mb: 2 }}>
             <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
-              ⚠️ Data Storage Notice:
+              Data Storage Notice:
             </Typography>
             <Typography variant="body2">
               Your premium data will be stored for <strong>30 days</strong>{" "}

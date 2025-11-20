@@ -302,14 +302,22 @@ async def reactivate_user_subscription(
                 status_code=404, detail="No Stripe customer found for user"
             )
 
-        # Get active Stripe subscription
+        # Get active or trialing Stripe subscription
+        # First try to find active subscription
         stripe_subscriptions = stripe.Subscription.list(
             customer=customer.id, status="active", limit=1
         )
 
+        # If no active subscription found, check for trialing subscription
+        if not stripe_subscriptions.data:
+            stripe_subscriptions = stripe.Subscription.list(
+                customer=customer.id, status="trialing", limit=1
+            )
+
         if not stripe_subscriptions.data:
             raise HTTPException(
-                status_code=404, detail="No active Stripe subscription found"
+                status_code=404,
+                detail="No active or trialing Stripe subscription found",
             )
 
         stripe_subscription = stripe_subscriptions.data[0]
