@@ -4,12 +4,21 @@ import { Provider } from "react-redux"
 import { SnackbarProvider } from "notistack"
 import configureStore from "redux-mock-store"
 
-import { describe, it, beforeEach } from "@jest/globals"
-import { render, screen } from "@testing-library/react"
+import { describe, it, beforeEach, jest } from "@jest/globals"
+import { render, screen, waitFor } from "@testing-library/react"
 import { userEvent } from "@testing-library/user-event"
 
 import { RunButtons } from "components/Workspace/FlowChart/Buttons/RunButtons"
 import { RUN_BTN_OPTIONS } from "store/slice/Pipeline/PipelineType"
+
+// Mock the storage alert API
+jest.mock("api/storage/StorageAlerts", () => ({
+  getMyStorageAlertApi: () =>
+    Promise.resolve({
+      has_alert: false,
+      alert: null,
+    }),
+}))
 
 const mockStore = configureStore([])
 
@@ -36,7 +45,7 @@ describe("RunButtons component", () => {
       currentPipeline: {
         uid: "test-uid",
       },
-      runBtn: RUN_BTN_OPTIONS.RUN_NEW,
+      runBtn: RUN_BTN_OPTIONS.RUN_ALREADY,
     })
   })
 
@@ -57,8 +66,10 @@ describe("RunButtons component", () => {
     if (runButton) {
       await userEvent.click(runButton)
 
-      // Check if handleRunPipelineByUid was called
-      expect(mockProps.handleRunPipelineByUid).toHaveBeenCalledTimes(1)
+      // Wait for async storage check to complete and handler to be called
+      await waitFor(() => {
+        expect(mockProps.handleRunPipelineByUid).toHaveBeenCalledTimes(1)
+      })
     } else {
       throw new Error("Run button not found")
     }

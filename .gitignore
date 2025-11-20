@@ -33,7 +33,7 @@ terraform.*
 app_setup.sh
 
 # Lambda deployment packages
-*.zip
+**/*.py.zip
 **/*_package/pymysql/
 **/*_package/pymysql-1.1.2.dist-info/
 **/*_package/boto3*

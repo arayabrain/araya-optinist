@@ -665,6 +665,14 @@ resource "aws_security_group" "rds" {
     security_groups = [aws_security_group.ecs.id]
   }
 
+  # Allow RDS Proxy (which uses this same security group) to connect to RDS
+  ingress {
+    from_port = 3306
+    to_port   = 3306
+    protocol  = "tcp"
+    self      = true
+  }
+
   egress {
     from_port   = 0
     to_port     = 0

@@ -6,7 +6,7 @@
 data "archive_file" "ecs_asg_sync" {
   type        = "zip"
   source_dir  = "${path.module}/lambda_ecs_asg_sync"
-  output_path = "${path.module}/lambda_ecs_asg_sync.zip"
+  output_path = "${path.module}/lambda_ecs_asg_sync.py.zip"
 }
 
 # IAM role for Lambda

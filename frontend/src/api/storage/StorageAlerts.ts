@@ -41,23 +41,23 @@ export interface RefreshStorageResponse {
 }
 
 export const getMyStorageAlertApi = async (): Promise<StorageAlertResponse> => {
-  const response = await axios.get("/storage-alerts/me")
+  const response = await axios.get("/storage-limit-alerts/me")
   return response.data
 }
 
 export const getMyStorageUsageApi = async (): Promise<StorageUsage> => {
-  const response = await axios.get("/storage-alerts/usage")
+  const response = await axios.get("/storage-limit-alerts/usage")
   return response.data
 }
 
 export const getAllStorageAlertsApi = async (): Promise<StorageAlert[]> => {
-  const response = await axios.get("/storage-alerts/all")
+  const response = await axios.get("/storage-limit-alerts/all")
   return response.data
 }
 
 export const refreshStorageUsageApi =
   async (): Promise<RefreshStorageResponse> => {
-    const response = await axios.post("/storage-alerts/refresh")
+    const response = await axios.post("/storage-limit-alerts/refresh")
     return response.data
   }
 
@@ -87,12 +87,14 @@ export interface LimitWarningStatus {
 
 // Limit Warning API Functions
 export const getMyLimitWarningApi = async (): Promise<LimitWarning | null> => {
-  const response = await axios.get("/storage-alerts/limit-warning")
+  const response = await axios.get("/storage-limit-alerts/limit-warning")
   return response.data
 }
 
 export const checkLimitWarningStatusApi =
   async (): Promise<LimitWarningStatus> => {
-    const response = await axios.get("/storage-alerts/limit-warning/check")
+    const response = await axios.get(
+      "/storage-limit-alerts/limit-warning/check",
+    )
     return response.data
   }
