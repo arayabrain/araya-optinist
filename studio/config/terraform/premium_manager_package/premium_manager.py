@@ -60,29 +60,56 @@ def get_required_env_var(var_name: str, default_value: str = None) -> str:
 
 
 def get_db_connection(auto_commit=False):
-    """Create database connection with proper transaction management"""
-    try:
-        rds_host = get_required_env_var("RDS_HOST")
-        host = rds_host.split(":")[0] if ":" in rds_host else rds_host
+    """
+    Create database connection with proper transaction management and auto-close.
 
-        return pymysql.connect(
-            host=host,
-            port=3306,
-            user=get_required_env_var("RDS_USER"),
-            password=get_required_env_var("RDS_PASSWORD"),
-            database=get_required_env_var("RDS_DATABASE"),
-            charset="utf8mb4",
-            cursorclass=pymysql.cursors.DictCursor,
-            autocommit=auto_commit,  # Default False for transactions
-        )
-    except ValueError as e:
-        print(
-            f" Database connection failed - environment configuration error: {str(e)}"
-        )
-        raise
-    except Exception as e:
-        print(f" Database connection failed - connection error: {str(e)}")
-        raise
+    This function returns a context manager that ensures connections are properly
+    closed when exiting the context, preventing connection leaks.
+
+    Usage:
+        with get_db_connection() as conn:
+            # Use connection
+            # Connection will be automatically closed on exit
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def connection_context():
+        conn = None
+        try:
+            rds_host = get_required_env_var("RDS_HOST")
+            host = rds_host.split(":")[0] if ":" in rds_host else rds_host
+
+            conn = pymysql.connect(
+                host=host,
+                port=3306,
+                user=get_required_env_var("RDS_USER"),
+                password=get_required_env_var("RDS_PASSWORD"),
+                database=get_required_env_var("RDS_DATABASE"),
+                charset="utf8mb4",
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=auto_commit,  # Default False for transactions
+            )
+            yield conn
+        except ValueError as e:
+            print(
+                f" Database connection failed "
+                f"- environment configuration error: {str(e)}"
+            )
+            raise
+        except Exception as e:
+            print(f" Database connection failed - connection error: {str(e)}")
+            raise
+        finally:
+            # CRITICAL: Always close the connection to prevent leaks
+            if conn is not None:
+                try:
+                    conn.close()
+                    print(" Database connection closed")
+                except Exception as e:
+                    print(f" Warning: Error closing database connection: {str(e)}")
+
+    return connection_context()
 
 
 def with_transaction(func):

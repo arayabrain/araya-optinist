@@ -26,22 +26,47 @@ logger = AppLogger.get_logger()
 
 
 def get_db_connection():
-    """Create database connection using environment variables"""
-    try:
-        connection = pymysql.connect(
-            host=os.environ.get("RDS_HOST", "localhost").split(":")[0],
-            port=3306,
-            user=os.environ.get("RDS_USER", "root"),
-            password=os.environ.get("RDS_PASSWORD", ""),
-            database=os.environ.get("RDS_DATABASE", "optinist"),
-            charset="utf8mb4",
-            cursorclass=pymysql.cursors.DictCursor,
-            autocommit=True,
-        )
-        return connection
-    except Exception as e:
-        logger.error(f"Failed to connect to database: {e}")
-        return None
+    """
+    Create database connection with proper transaction management and auto-close.
+
+    This function returns a context manager that ensures connections are properly
+    closed when exiting the context, preventing connection leaks.
+
+    Usage:
+        with get_db_connection() as conn:
+            # Use connection
+            # Connection will be automatically closed on exit
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def connection_context():
+        conn = None
+        try:
+            conn = pymysql.connect(
+                host=os.environ.get("RDS_HOST", "localhost").split(":")[0],
+                port=3306,
+                user=os.environ.get("RDS_USER", "root"),
+                password=os.environ.get("RDS_PASSWORD", ""),
+                database=os.environ.get("RDS_DATABASE", "optinist"),
+                charset="utf8mb4",
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=True,
+            )
+            yield conn
+        except Exception as e:
+            logger.error(f"Failed to connect to database: {e}")
+            raise
+        finally:
+            # CRITICAL: Always close the connection to prevent leaks
+            if conn is not None:
+                try:
+                    conn.close()
+                    logger.info("Database connection closed")
+                except Exception as e:
+                    logger.warning(f"Error closing database connection: {str(e)}")
+
+    return connection_context()
 
 
 def get_active_premium_instances() -> List[str]:
@@ -211,8 +236,7 @@ def cleanup_orphaned_instances(dry_run: bool = True) -> Dict:
 
     # Clean up database entries for terminated instances
     try:
-        connection = get_db_connection()
-        if connection:
+        with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 # Get all assignments
                 cursor.execute(
@@ -244,8 +268,7 @@ def cleanup_orphaned_instances(dry_run: bool = True) -> Dict:
                                 (user_id,),
                             )
                             cleanup_results["cleaned_db_entries"] += 1
-
-            connection.close()
+            # Connection automatically closed when exiting 'with' block
 
     except Exception as e:
         logger.error(f"Failed to clean up database entries: {e}")

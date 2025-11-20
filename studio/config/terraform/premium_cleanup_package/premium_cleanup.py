@@ -32,18 +32,48 @@ def get_required_env_var(var_name: str, default_value: str = None) -> str:
 
 
 def get_db_connection(auto_commit=False):
-    """Create database connection with proper transaction management"""
-    rds_host = get_required_env_var("RDS_HOST")
-    return pymysql.connect(
-        host=rds_host.split(":")[0],
-        port=int(rds_host.split(":")[1]) if ":" in rds_host else 3306,
-        user=get_required_env_var("RDS_USER"),
-        password=get_required_env_var("RDS_PASSWORD"),
-        database=get_required_env_var("RDS_DATABASE"),
-        charset="utf8mb4",
-        cursorclass=pymysql.cursors.DictCursor,
-        autocommit=auto_commit,  # Default False for transactions
-    )
+    """
+    Create database connection with proper transaction management and auto-close.
+
+    This function returns a context manager that ensures connections are properly
+    closed when exiting the context, preventing connection leaks.
+
+    Usage:
+        with get_db_connection() as conn:
+            # Use connection
+            # Connection will be automatically closed on exit
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def connection_context():
+        conn = None
+        try:
+            rds_host = get_required_env_var("RDS_HOST")
+            conn = pymysql.connect(
+                host=rds_host.split(":")[0],
+                port=int(rds_host.split(":")[1]) if ":" in rds_host else 3306,
+                user=get_required_env_var("RDS_USER"),
+                password=get_required_env_var("RDS_PASSWORD"),
+                database=get_required_env_var("RDS_DATABASE"),
+                charset="utf8mb4",
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=auto_commit,  # Default False for transactions
+            )
+            yield conn
+        except Exception as e:
+            print(f" Database connection failed: {str(e)}")
+            raise
+        finally:
+            # CRITICAL: Always close the connection to prevent leaks
+            if conn is not None:
+                try:
+                    conn.close()
+                    print(" Database connection closed")
+                except Exception as e:
+                    print(f" Warning: Error closing database connection: {str(e)}")
+
+    return connection_context()
 
 
 def with_transaction(func):

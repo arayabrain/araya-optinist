@@ -134,10 +134,19 @@ UPDATE users SET attributes = JSON_MERGE_PATCH(IFNULL(attributes,'{}'), '{"remot
 
 -- Subscription plans initialization
 %{for plan in var.subscription_plans~}
-INSERT IGNORE INTO subscription_plans
+INSERT INTO subscription_plans
   (id, name, price, billing_cycle, features, currency, status, stripe_product_id, stripe_price_id, created_at)
 VALUES
-  (${plan.id}, '${replace(plan.name, "'", "\\'")}', ${plan.price}, ${plan.billing_cycle}, '${replace(jsonencode(plan.features), "'", "\\'")}', ${plan.currency}, ${plan.status}, '${replace(plan.stripe_product_id, "'", "\\'")}', '${replace(plan.stripe_price_id, "'", "\\'")}', NOW());
+  (${plan.id}, '${replace(plan.name, "'", "\\'")}', ${plan.price}, ${plan.billing_cycle}, '${replace(jsonencode(plan.features), "'", "\\'")}', ${plan.currency}, ${plan.status}, '${replace(plan.stripe_product_id, "'", "\\'")}', '${replace(plan.stripe_price_id, "'", "\\'")}', NOW())
+ON DUPLICATE KEY UPDATE
+  name = VALUES(name),
+  price = VALUES(price),
+  billing_cycle = VALUES(billing_cycle),
+  features = VALUES(features),
+  currency = VALUES(currency),
+  status = VALUES(status),
+  stripe_product_id = VALUES(stripe_product_id),
+  stripe_price_id = VALUES(stripe_price_id);
 %{endfor~}
 
 INIT_SQL

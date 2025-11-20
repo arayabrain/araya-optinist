@@ -15,27 +15,53 @@ import pymysql
 
 
 def get_db_connection(auto_commit=False):
-    """Create database connection with proper transaction management"""
-    try:
-        rds_host = os.environ.get("RDS_HOST")
-        if not rds_host:
-            raise ValueError("RDS_HOST environment variable not set")
+    """
+    Create database connection with proper transaction management and auto-close.
 
-        host = rds_host.split(":")[0] if ":" in rds_host else rds_host
+    This function returns a context manager that ensures connections are properly
+    closed when exiting the context, preventing connection leaks.
 
-        return pymysql.connect(
-            host=host,
-            port=3306,
-            user=os.environ.get("RDS_USER"),
-            password=os.environ.get("RDS_PASSWORD"),
-            database=os.environ.get("RDS_DATABASE"),
-            charset="utf8mb4",
-            cursorclass=pymysql.cursors.DictCursor,
-            autocommit=auto_commit,
-        )
-    except Exception as e:
-        print(f" Database connection failed: {str(e)}")
-        raise
+    Usage:
+        with get_db_connection() as conn:
+            # Use connection
+            # Connection will be automatically closed on exit
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def connection_context():
+        conn = None
+        try:
+            rds_host = os.environ.get("RDS_HOST")
+            if not rds_host:
+                raise ValueError("RDS_HOST environment variable not set")
+
+            host = rds_host.split(":")[0] if ":" in rds_host else rds_host
+
+            conn = pymysql.connect(
+                host=host,
+                port=3306,
+                user=os.environ.get("RDS_USER"),
+                password=os.environ.get("RDS_PASSWORD"),
+                database=os.environ.get("RDS_DATABASE"),
+                charset="utf8mb4",
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=auto_commit,
+            )
+            yield conn
+        except Exception as e:
+            print(f" Database connection failed: {str(e)}")
+            raise
+        finally:
+            # CRITICAL: Always close the connection to prevent leaks
+            if conn is not None:
+                try:
+                    conn.close()
+                    print(" Database connection closed")
+                except Exception as e:
+                    print(f" Warning: Error closing database connection: {str(e)}")
+
+    return connection_context()
 
 
 def is_user_idle(user_id: str) -> bool:

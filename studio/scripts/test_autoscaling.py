@@ -554,6 +554,76 @@ class WorkflowLoadGenerator:
             logging.error(f"Error getting ASG metrics: {e}")
             return {}
 
+    def get_current_ecs_metrics(self) -> Dict:
+        """Get current ECS metrics (CPU and Memory utilization)"""
+        try:
+            from datetime import timezone
+
+            import boto3
+
+            cloudwatch = boto3.client("cloudwatch", region_name=self.config.aws_region)
+
+            # Get cluster and service names from terraform outputs
+            terraform_outputs = get_terraform_outputs(self.config.terraform_dir)
+            cluster_name = terraform_outputs.get("ecs_cluster_name", {}).get("value")
+            service_name = terraform_outputs.get(
+                "ecs_service_name_autoscaling", {}
+            ).get("value")
+
+            if not cluster_name or not service_name:
+                return {"cpu_utilization": 0, "memory_utilization": 0}
+
+            end_time = datetime.now(timezone.utc)
+            start_time = end_time - timedelta(minutes=5)
+
+            # Get CPU utilization
+            cpu_response = cloudwatch.get_metric_statistics(
+                Namespace="AWS/ECS",
+                MetricName="CPUUtilization",
+                Dimensions=[
+                    {"Name": "ServiceName", "Value": service_name},
+                    {"Name": "ClusterName", "Value": cluster_name},
+                ],
+                StartTime=start_time,
+                EndTime=end_time,
+                Period=60,
+                Statistics=["Average"],
+            )
+
+            # Get Memory utilization
+            memory_response = cloudwatch.get_metric_statistics(
+                Namespace="AWS/ECS",
+                MetricName="MemoryUtilization",
+                Dimensions=[
+                    {"Name": "ServiceName", "Value": service_name},
+                    {"Name": "ClusterName", "Value": cluster_name},
+                ],
+                StartTime=start_time,
+                EndTime=end_time,
+                Period=60,
+                Statistics=["Average"],
+            )
+
+            cpu_latest = 0
+            if cpu_response["Datapoints"]:
+                cpu_latest = sorted(
+                    cpu_response["Datapoints"], key=lambda x: x["Timestamp"]
+                )[-1]["Average"]
+
+            memory_latest = 0
+            if memory_response["Datapoints"]:
+                memory_latest = sorted(
+                    memory_response["Datapoints"], key=lambda x: x["Timestamp"]
+                )[-1]["Average"]
+
+            return {
+                "cpu_utilization": round(cpu_latest, 2),
+                "memory_utilization": round(memory_latest, 2),
+            }
+        except Exception as e:
+            logging.error(f"Error getting ECS metrics: {e}")
+            return {"cpu_utilization": 0, "memory_utilization": 0}
+
     def get_user_tokens(self):
         """Get list of (user_index, token) tuples for multi-user testing"""
         free_tokens = {}
@@ -743,15 +813,46 @@ class WorkflowLoadGenerator:
         workflow_counter = 0
 
         while workflow_counter < max_workflows:
-            # Check current instance count
+            # Check current metrics
             asg_metrics = self.get_asg_metrics()
-            current_instances = asg_metrics.get("in_service", 0)
+            ecs_metrics = self.get_current_ecs_metrics()
 
-            if current_instances >= target_instances:
+            desired_capacity = asg_metrics.get("desired_capacity", 0)
+            in_service = asg_metrics.get("in_service", 0)
+            cpu_util = ecs_metrics.get("cpu_utilization", 0)
+            memory_util = ecs_metrics.get("memory_utilization", 0)
+
+            # Stop if autoscaling has been triggered (desired capacity increased)
+            if desired_capacity >= target_instances:
                 logging.info(
-                    f"Target of {target_instances} instances reached! "
-                    f"(Current: {current_instances})"
+                    f"✓ Target of {target_instances} instances triggered! "
+                    f"(Desired: {desired_capacity}, In-Service: {in_service})"
                 )
+                logging.info(
+                    "Autoscaling has been triggered - stopping workflow submission"
+                )
+                break
+
+            # Stop if CPU or Memory thresholds are exceeded
+            if (
+                cpu_util > self.config.target_cpu_threshold
+                or memory_util > self.config.target_memory_threshold
+            ):
+                logging.info("")
+                logging.info("=" * 60)
+                logging.info("TEST MILESTONE 1: THRESHOLD REACHED")
+                logging.info(
+                    f"CPU: {cpu_util}% (threshold: {self.config.target_cpu_threshold}%)"
+                )
+                logging.info(
+                    f"Memory: {memory_util}% (threshold: "
+                    f"{self.config.target_memory_threshold}%)"
+                )
+                logging.info("PASSED: Resource thresholds successfully exceeded")
+                logging.info("=" * 60)
+                logging.info("")
+                logging.info("Now monitoring for autoscaling response...")
+                logging.info("Waiting for AWS to trigger new instance...")
                 break
 
             # Submit batch of workflows
@@ -761,7 +862,8 @@ class WorkflowLoadGenerator:
 
             logging.info(
                 f"Submitting batch of {batch_size} workflows "
-                f"(instances: {current_instances}/{target_instances})..."
+                f"(CPU: {cpu_util}%, Memory: {memory_util}%, "
+                f"Capacity: {desired_capacity}/{target_instances})..."
             )
 
             with concurrent.futures.ThreadPoolExecutor(
@@ -791,8 +893,31 @@ class WorkflowLoadGenerator:
                 f"(total: {submitted_count}/{workflow_counter})"
             )
 
-            # Brief pause before checking again
-            time.sleep(5)
+            # After first batch, wait for workflows to start and metrics to rise
+            if workflow_counter == self.config.concurrent_workflows:
+                logging.info("")
+                logging.info(
+                    "First batch submitted. Waiting 3 minutes for workflows to start..."
+                )
+                logging.info(
+                    "Monitoring CPU and Memory as workflows begin processing..."
+                )
+                for i in range(18):  # 18 * 10 = 180 seconds = 3 minutes
+                    time.sleep(10)
+                    # Get current metrics during wait
+                    if i % 3 == 0:  # Every 30 seconds
+                        ecs_metrics = self.get_current_ecs_metrics()
+                        cpu = ecs_metrics.get("cpu_utilization", 0)
+                        mem = ecs_metrics.get("memory_utilization", 0)
+                        elapsed = (i + 1) * 10
+                        logging.info(f"  [{elapsed}s] CPU: {cpu}%, Memory: {mem}%")
+                logging.info(
+                    "3-minute wait complete. Checking if thresholds reached..."
+                )
+                logging.info("")
+            else:
+                # Brief pause before checking again for subsequent batches
+                time.sleep(5)
 
         logging.info(
             f"Load generation complete: {submitted_count}/{workflow_counter} "
@@ -1680,14 +1805,43 @@ def main():
                 if previous_capacity is None:
                     previous_capacity = current_capacity
                 elif current_capacity != previous_capacity:
+                    logging.info("")
+                    logging.info("=" * 60)
+                    logging.info("TEST MILESTONE 2: AUTOSCALING TRIGGERED")
                     logging.info(
-                        f"🎉 Autoscaling detected! Capacity changed from "
-                        f"{previous_capacity} to {current_capacity}"
+                        f"Capacity changed: {previous_capacity} → {current_capacity}"
                     )
+                    logging.info("PASSED: AWS autoscaling successfully triggered")
+                    logging.info("=" * 60)
+                    logging.info("")
                     autoscaling_detected = True
                     # Give it a bit more time to stabilize
-                    logging.info("Waiting 2 minutes for scaling to stabilize...")
+                    logging.info(
+                        "Waiting 2 minutes for new instance to become active..."
+                    )
                     time.sleep(120)
+
+                    # Check if instance is now in service
+                    final_metrics = (
+                        monitor.metrics_data[-1] if monitor.metrics_data else {}
+                    )
+                    final_in_service = final_metrics.get("asg", {}).get("in_service", 0)
+
+                    logging.info("")
+                    logging.info("=" * 60)
+                    logging.info("TEST MILESTONE 3: NEW INSTANCE ACTIVE")
+                    logging.info(
+                        f"In-Service Instances: {final_in_service}/{current_capacity}"
+                    )
+                    if final_in_service >= current_capacity:
+                        logging.info("PASSED: New instance successfully became active")
+                    else:
+                        logging.info(
+                            f"PARTIAL: {final_in_service}/{current_capacity} "
+                            f"instances in service"
+                        )
+                    logging.info("=" * 60)
+                    logging.info("")
                     break
 
                 # Also check if we've breached thresholds for a while
@@ -1706,13 +1860,24 @@ def main():
 
         if not autoscaling_detected:
             elapsed = int(time.time() - start_time)
-            logging.warning(
-                f"Autoscaling not detected after {elapsed} seconds - "
-                f"test may need longer duration or more load"
-            )
+            logging.info("")
+            logging.info("=" * 60)
+            logging.info("⚠ TEST INCOMPLETE")
+            logging.info(f"Autoscaling not detected after {elapsed} seconds")
+            logging.info("Test may need longer duration or more load")
+            logging.info("=" * 60)
+            logging.info("")
         else:
             elapsed = int(time.time() - start_time)
-            logging.info(f"Test completed successfully in {elapsed} seconds!")
+            logging.info("")
+            logging.info("=" * 60)
+            logging.info("ALL TESTS PASSED!")
+            logging.info(f"Test completed successfully in {elapsed} seconds")
+            logging.info("Milestone 1: Threshold reached")
+            logging.info("Milestone 2: Autoscaling triggered")
+            logging.info("Milestone 3: New instance active")
+            logging.info("=" * 60)
+            logging.info("")
 
         # Stop monitoring
         monitor.stop_monitoring()

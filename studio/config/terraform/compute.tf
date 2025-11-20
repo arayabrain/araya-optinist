@@ -1255,3 +1255,52 @@ resource "aws_ecs_service" "autoscaling" {
     Name = "subscr-optinist-cloud-service"
   }
 }
+
+# ===========================
+# ECS Service Auto Scaling
+# ===========================
+resource "aws_appautoscaling_target" "autoscaling_ecs" {
+  max_capacity       = 3
+  min_capacity       = 1
+  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.autoscaling.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  service_namespace  = "ecs"
+
+  depends_on = [aws_ecs_service.autoscaling]
+}
+
+# CPU-based scaling policy
+resource "aws_appautoscaling_policy" "autoscaling_ecs_cpu" {
+  name               = "subscr-optinist-ecs-cpu-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.autoscaling_ecs.resource_id
+  scalable_dimension = aws_appautoscaling_target.autoscaling_ecs.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.autoscaling_ecs.service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+    target_value       = 60.0
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+  }
+}
+
+# Memory-based scaling policy
+resource "aws_appautoscaling_policy" "autoscaling_ecs_memory" {
+  name               = "subscr-optinist-ecs-memory-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.autoscaling_ecs.resource_id
+  scalable_dimension = aws_appautoscaling_target.autoscaling_ecs.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.autoscaling_ecs.service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageMemoryUtilization"
+    }
+    target_value       = 80.0
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+  }
+}
