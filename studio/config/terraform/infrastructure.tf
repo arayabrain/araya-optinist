@@ -275,6 +275,19 @@ resource "aws_vpc_endpoint" "logs" {
   }
 }
 
+# Secrets Manager VPC Endpoint (required for RDS Proxy)
+resource "aws_vpc_endpoint" "secretsmanager" {
+  vpc_id             = aws_vpc.main.id
+  service_name       = "com.amazonaws.ap-northeast-1.secretsmanager"
+  vpc_endpoint_type  = "Interface"
+  subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id]
+  security_group_ids = [aws_security_group.vpc_endpoints.id]
+
+  tags = {
+    Name = "subscr-optinist-secretsmanager-endpoint"
+  }
+}
+
 
 # =================================
 # S3 bucket for application storage
@@ -352,6 +365,55 @@ resource "aws_efs_access_point" "snmk" {
 
   tags = {
     Name = "subscr-optinist-cloud-efs-ap"
+  }
+}
+
+# ===============================
+# EFS File System for studio_data
+# ===============================
+resource "aws_efs_file_system" "studio_data" {
+  creation_token = "subscr-optinist-cloud-studio-data-volume"
+
+  performance_mode = "generalPurpose"
+  throughput_mode  = "bursting"
+
+  lifecycle_policy {
+    transition_to_ia = "AFTER_30_DAYS"
+  }
+
+  tags = {
+    Name = "subscr-optinist-cloud-studio-data-volume"
+  }
+}
+
+# EFS Mount Targets for studio_data
+resource "aws_efs_mount_target" "studio_data_private1" {
+  file_system_id  = aws_efs_file_system.studio_data.id
+  subnet_id       = aws_subnet.private1.id
+  security_groups = [aws_security_group.efs.id]
+}
+
+resource "aws_efs_mount_target" "studio_data_private2" {
+  file_system_id  = aws_efs_file_system.studio_data.id
+  subnet_id       = aws_subnet.private2.id
+  security_groups = [aws_security_group.efs.id]
+}
+
+# EFS Access Point for studio_data
+resource "aws_efs_access_point" "studio_data" {
+  file_system_id = aws_efs_file_system.studio_data.id
+
+  root_directory {
+    path = "/"
+    creation_info {
+      owner_gid   = 1000
+      owner_uid   = 1000
+      permissions = "755"
+    }
+  }
+
+  tags = {
+    Name = "subscr-optinist-cloud-studio-data-ap"
   }
 }
 

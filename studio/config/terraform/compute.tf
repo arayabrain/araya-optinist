@@ -132,7 +132,7 @@ resource "aws_launch_template" "ecs" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = 30
+      volume_size = 80
       volume_type = "gp3"
       encrypted   = true
     }
@@ -421,7 +421,7 @@ resource "aws_ecs_service" "premium" {
 resource "aws_launch_template" "premium" {
   name_prefix   = "subscr-optinist-premium-"
   image_id      = data.aws_ami.ecs_optimized.id
-  instance_type = "t3.large" # Will be overridden by spot fleet instance types
+  instance_type = "t3.large"
   key_name      = aws_key_pair.subscr_optinist_cloud_key_pair.key_name
 
   vpc_security_group_ids = [aws_security_group.ecs.id]
@@ -433,7 +433,7 @@ resource "aws_launch_template" "premium" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = 30
+      volume_size = 80
       volume_type = "gp3"
       encrypted   = true
     }
@@ -983,6 +983,15 @@ resource "aws_ecs_task_definition" "autoscaling" {
 
   volume {
     name = "subscr-optinist-cloud-studio-data-volume"
+    efs_volume_configuration {
+      file_system_id     = aws_efs_file_system.studio_data.id
+      root_directory     = "/"
+      transit_encryption = "ENABLED"
+      authorization_config {
+        access_point_id = aws_efs_access_point.studio_data.id
+        iam             = "DISABLED"
+      }
+    }
   }
 
   volume {
@@ -1192,6 +1201,15 @@ resource "aws_ecs_task_definition" "premium" {
 
   volume {
     name = "subscr-premium-optinist-cloud-studio-data-volume"
+    efs_volume_configuration {
+      file_system_id     = aws_efs_file_system.studio_data.id
+      root_directory     = "/"
+      transit_encryption = "ENABLED"
+      authorization_config {
+        access_point_id = aws_efs_access_point.studio_data.id
+        iam             = "DISABLED"
+      }
+    }
   }
 
   volume {
