@@ -650,6 +650,14 @@ class WebhookService:
             # Extract data from webhook payload
             customer_id = invoice_data.get("customer")
             subscription_id = invoice_data.get("subscription")
+
+            # If subscription_id is None, check in parent.subscription_details
+            if not subscription_id:
+                parent = invoice_data.get("parent", {})
+                if parent.get("type") == "subscription_details":
+                    subscription_details = parent.get("subscription_details", {})
+                    subscription_id = subscription_details.get("subscription")
+
             payment_status = invoice_data.get("status")
             amount_paid = invoice_data.get("amount_paid", 0)
             billing_reason = invoice_data.get("billing_reason")
@@ -694,6 +702,7 @@ class WebhookService:
             # 1. Find user by Stripe customer ID
             try:
                 logger.info(f"Webhook: Finding user by customer_id: {customer_id}")
+                logger.info(f"Webhook: Invoice ID: {invoice_id}")
 
                 user_account = (
                     db.query(SubscriptionUserAccount)
@@ -701,9 +710,16 @@ class WebhookService:
                     .first()
                 )
 
-                logger.info(f"Webhook: Query result: {user_account}")
+                logger.info(f"Webhook: User account query result: {user_account}")
 
                 if not user_account:
+                    logger.error(
+                        f"Webhook: No user account found for customer_id: {customer_id}"
+                    )
+                    logger.error(
+                        "Webhook: This likely means the user hasn't completed initial "
+                        "checkout or the customer_id wasn't stored correctly"
+                    )
                     raise HTTPException(
                         status_code=404,
                         detail=f"User not found for customer_id: {customer_id}",
@@ -721,30 +737,60 @@ class WebhookService:
                     status_code=500, detail=f"Error finding user: {str(e)}"
                 )
 
-            # 2. Find active subscription by Stripe subscription ID
+            # 2. Find active or recently expired subscription
+            # (for trial to paid conversion, the trial might have just expired)
             try:
-                logger.info(
-                    f"Webhook: Finding active subscription for user_id: {user_id}"
-                )
+                logger.info(f"Webhook: Finding subscription for user_id: {user_id}")
+                current_time = SubscriptionService.get_current_datetime()
+                logger.info(f"Webhook: Current datetime: {current_time}")
+
+                # First try to find active subscription
                 user_subscription = (
                     db.query(UserSubscription)
                     .filter(
                         UserSubscription.user_id == user_id,
-                        UserSubscription.expiration
-                        > SubscriptionService.get_current_datetime(),
+                        UserSubscription.expiration > current_time,
                     )
                     .order_by(UserSubscription.expiration.desc())
                     .first()
                 )
 
+                # If no active subscription, check for recently expired ones
+                # (within last 7 days) - this handles trial-to-paid conversion
                 if not user_subscription:
+                    logger.info(
+                        "Webhook: No active subscription found, "
+                        "checking for recently expired subscription"
+                    )
+                    user_subscription = (
+                        db.query(UserSubscription)
+                        .filter(
+                            UserSubscription.user_id == user_id,
+                            UserSubscription.expiration
+                            > current_time - timedelta(days=7),
+                        )
+                        .order_by(UserSubscription.expiration.desc())
+                        .first()
+                    )
+
+                logger.info(f"Webhook: Subscription query result: {user_subscription}")
+
+                if not user_subscription:
+                    logger.error(f"Webhook: No subscription found for user: {user_id}")
+                    logger.error(
+                        "Webhook: No active or recently expired subscription found. "
+                        "This means the subscription wasn't created during checkout."
+                    )
                     raise HTTPException(
                         status_code=404,
-                        detail=f"Active subscription not found for user: {user_id}",
+                        detail=f"Subscription not found for user: {user_id}",
                     )
 
                 plan_id = user_subscription.plan_id
                 logger.info(f"Webhook: Found subscription plan_id: {plan_id}")
+                logger.info(
+                    f"Webhook: Current expiration: {user_subscription.expiration}"
+                )
 
             except HTTPException:
                 raise HTTPException(status_code=400, detail="Invalid webhook data")
