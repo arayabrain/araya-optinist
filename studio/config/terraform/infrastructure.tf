@@ -504,8 +504,9 @@ resource "aws_db_proxy" "main" {
   name                   = "subscr-optinist-rds-proxy"
   engine_family          = "MYSQL"
   auth {
-    auth_scheme = "SECRETS"
-    secret_arn  = aws_secretsmanager_secret.rds_credentials.arn
+    auth_scheme               = "SECRETS"
+    secret_arn                = aws_secretsmanager_secret.rds_credentials.arn
+    client_password_auth_type = "MYSQL_NATIVE_PASSWORD"
   }
   role_arn               = aws_iam_role.rds_proxy.arn
   vpc_subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id]

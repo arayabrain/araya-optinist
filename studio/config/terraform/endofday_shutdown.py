@@ -1011,7 +1011,7 @@ def plan1_shutdown() -> bool:
             f"\n{Colors.YELLOW}Step 7: Waiting for ASG instances to terminate"
             f"{Colors.NC}"
         )
-        if not wait_for_asg_to_terminate(timeout=100):
+        if not wait_for_asg_to_terminate(timeout=30):
             print(
                 f"{Colors.YELLOW}ASG instances didn't terminate gracefully, "
                 f"forcing termination...{Colors.NC}"

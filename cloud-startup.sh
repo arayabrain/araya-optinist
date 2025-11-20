@@ -31,6 +31,15 @@ done
 
 echo 'Database connection successful'
 
+# Ensure user has mysql_native_password authentication for RDS Proxy compatibility
+# This is needed because RDS Proxy with MySQL 8.0 requires mysql_native_password
+# when using MYSQL_NATIVE_PASSWORD client authentication type
+echo 'Ensuring user authentication plugin is mysql_native_password...'
+mysql --skip-ssl -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" <<-EOSQL
+    ALTER USER '${MYSQL_USER}'@'%' IDENTIFIED WITH mysql_native_password BY '${MYSQL_PASSWORD}';
+    FLUSH PRIVILEGES;
+EOSQL
+
 # Create database if it doesn't exist
 # This ensures the application's database exists before proceeding
 mysql --skip-ssl -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" <<-EOSQL
