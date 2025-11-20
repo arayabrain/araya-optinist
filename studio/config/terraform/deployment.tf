@@ -89,7 +89,7 @@ mkdir -p /opt/optinist/optinist-for-cloud/studio/config/auth
 cat > /opt/optinist/optinist-for-cloud/studio/config/.env << 'CONFIG_ENV'
 SECRET_KEY='${var.optinist_secret_key}'
 USE_FIREBASE_TOKEN=True
-MYSQL_SERVER=${aws_db_instance.main.endpoint}
+MYSQL_SERVER=${aws_db_proxy.main.endpoint}
 MYSQL_DATABASE=${var.mysql_database}
 MYSQL_USER=${var.mysql_user}
 MYSQL_PASSWORD=${var.mysql_password}

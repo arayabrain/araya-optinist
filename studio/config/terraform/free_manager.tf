@@ -55,7 +55,7 @@ resource "aws_lambda_function" "free_manager" {
   environment {
     variables = {
       # Database configuration
-      RDS_HOST     = aws_db_instance.main.endpoint
+      RDS_HOST     = aws_db_proxy.main.endpoint
       RDS_USER     = var.mysql_user
       RDS_PASSWORD = var.mysql_password
       RDS_DATABASE = var.mysql_database
@@ -279,7 +279,7 @@ resource "aws_lambda_function" "free_cleanup" {
   environment {
     variables = {
       # Database configuration
-      RDS_HOST     = aws_db_instance.main.endpoint
+      RDS_HOST     = aws_db_proxy.main.endpoint
       RDS_USER     = var.mysql_user
       RDS_PASSWORD = var.mysql_password
       RDS_DATABASE = var.mysql_database

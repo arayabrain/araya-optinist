@@ -414,7 +414,7 @@ resource "aws_db_instance" "main" {
   storage_type                    = "gp3"
   engine                          = "mysql"
   engine_version                  = "8.0"
-  instance_class                  = "db.t4g.micro"
+  instance_class                  = "db.t4g.small"
   parameter_group_name            = "default.mysql8.0"
   db_name                         = var.mysql_database
   username                        = var.mysql_user
@@ -436,4 +436,68 @@ resource "aws_db_instance" "main" {
   tags = {
     Name = "subscr-optinist-cloud-rds"
   }
+}
+
+resource "aws_db_proxy" "main" {
+  name                   = "subscr-optinist-rds-proxy"
+  engine_family          = "MYSQL"
+  auth {
+    auth_scheme = "SECRETS"
+    secret_arn  = aws_secretsmanager_secret.rds_credentials.arn
+  }
+  role_arn               = aws_iam_role.rds_proxy.arn
+  vpc_subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id]
+  vpc_security_group_ids = [aws_security_group.rds.id]
+  require_tls            = false
+
+  tags = {
+    Name = "subscr-optinist-rds-proxy"
+  }
+}
+
+resource "aws_db_proxy_default_target_group" "main" {
+  db_proxy_name = aws_db_proxy.main.name
+
+  connection_pool_config {
+    max_connections_percent      = 100
+    max_idle_connections_percent = 50
+    connection_borrow_timeout    = 120
+  }
+}
+
+resource "aws_db_proxy_target" "main" {
+  db_proxy_name          = aws_db_proxy.main.name
+  target_group_name      = aws_db_proxy_default_target_group.main.name
+  db_instance_identifier = aws_db_instance.main.identifier
+}
+
+# IAM role for RDS Proxy
+resource "aws_iam_role" "rds_proxy" {
+  name = "subscr-rds-proxy-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "rds.amazonaws.com"
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "rds_proxy_secrets" {
+  role = aws_iam_role.rds_proxy.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "secretsmanager:GetSecretValue"
+      ]
+      Resource = aws_secretsmanager_secret.rds_credentials.arn
+    }]
+  })
 }

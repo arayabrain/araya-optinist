@@ -25,7 +25,7 @@ resource "aws_lambda_function" "premium_manager" {
       PREMIUM_LAUNCH_TEMPLATE_ID   = aws_launch_template.premium.id
       CLUSTER_NAME                 = aws_ecs_cluster.main.name
       PREMIUM_SERVICE_NAME         = aws_ecs_service.premium.name
-      RDS_HOST                     = aws_db_instance.main.endpoint
+      RDS_HOST                     = aws_db_proxy.main.endpoint
       RDS_USER                     = var.mysql_user
       RDS_PASSWORD                 = var.mysql_password
       RDS_DATABASE                 = var.mysql_database
@@ -162,7 +162,7 @@ resource "aws_lambda_function" "premium_cleanup" {
       PREMIUM_LAUNCH_TEMPLATE_ID = aws_launch_template.premium.id
       CLUSTER_NAME               = aws_ecs_cluster.main.name
       PREMIUM_SERVICE_NAME       = aws_ecs_service.premium.name
-      RDS_HOST                   = aws_db_instance.main.endpoint
+      RDS_HOST                   = aws_db_proxy.main.endpoint
       RDS_USER                   = var.mysql_user
       RDS_PASSWORD               = var.mysql_password
       RDS_DATABASE               = var.mysql_database

@@ -1293,11 +1293,11 @@ resource "aws_batch_job_definition" "optinist" {
     environment = [
       {
         name  = "DB_HOST"
-        value = split(":", aws_db_instance.main.endpoint)[0]
+        value = split(":", aws_db_instance.batch.endpoint)[0]
       },
       {
         name  = "DB_PORT"
-        value = split(":", aws_db_instance.main.endpoint)[1]
+        value = split(":", aws_db_instance.batch.endpoint)[1]
       },
       {
         name  = "DB_USER"

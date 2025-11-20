@@ -826,11 +826,11 @@ resource "aws_ecs_task_definition" "autoscaling" {
         },
         {
           name  = "DB_HOST"
-          value = split(":", aws_db_instance.main.endpoint)[0]
+          value = aws_db_proxy.main.endpoint
         },
         {
           name  = "DB_PORT"
-          value = split(":", aws_db_instance.main.endpoint)[1]
+          value = "3306"
         },
         {
           name  = "DB_USER"
@@ -1054,11 +1054,11 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "DB_HOST"
-          value = split(":", aws_db_instance.main.endpoint)[0]
+          value = aws_db_proxy.main.endpoint
         },
         {
           name  = "DB_PORT"
-          value = split(":", aws_db_instance.main.endpoint)[1]
+          value = "3306"
         },
         {
           name  = "DB_USER"

@@ -386,3 +386,7 @@ output "alb_listener_https_arn" {
   description = "ARN of the HTTPS ALB listener"
   value       = aws_lb_listener.autoscaling_https.arn
 }
+
+output "rds_proxy_endpoint" {
+  value = aws_db_proxy.main.endpoint
+}

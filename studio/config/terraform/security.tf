@@ -758,6 +758,19 @@ resource "aws_secretsmanager_secret_version" "aws_credentials" {
   })
 }
 
+# Store RDS credentials in Secrets Manager
+resource "aws_secretsmanager_secret" "rds_credentials" {
+  name = "subscr-rds-credentials"
+}
+
+resource "aws_secretsmanager_secret_version" "rds_credentials" {
+  secret_id = aws_secretsmanager_secret.rds_credentials.id
+  secret_string = jsonencode({
+    username = var.mysql_user
+    password = var.mysql_password
+  })
+}
+
 # ==============
 # Key generation
 # ==============
