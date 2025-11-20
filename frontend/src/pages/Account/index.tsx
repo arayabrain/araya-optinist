@@ -266,7 +266,10 @@ const Account = () => {
     if (!userSubscription) return null
     const expirationDate = new Date(userSubscription.expiration)
 
-    if (userSubscription.is_expired) {
+    if (
+      userSubscription.is_expired ||
+      userSubscription.status === SUBSCRIPTION_USER_STATUS.CANCELED
+    ) {
       return (
         <Typography variant="caption" color="error" sx={{ ml: 1 }}>
           (Expired on {expirationDate.toLocaleDateString()})
@@ -283,10 +286,7 @@ const Account = () => {
     }
 
     // Show expiration date for all active paid subscriptions (not FREE tier)
-    if (
-      userSubscription.status === SUBSCRIPTION_USER_STATUS.SUBSCRIBED ||
-      userSubscription.status === SUBSCRIPTION_USER_STATUS.CANCELED
-    ) {
+    if (userSubscription.status === SUBSCRIPTION_USER_STATUS.SUBSCRIBED) {
       return (
         <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
           (Renew on {expirationDate.toLocaleDateString()})
