@@ -122,7 +122,13 @@ const LimitWarning: React.FC<LimitWarningProps> = ({
   const hasStorageIssue = warning.excess_data_gb > 0
   const hasSubscriptionIssue =
     warning.warning_type === "grace" || warning.warning_type === "overdue"
-  const showUpgradeButton = hasStorageIssue || hasSubscriptionIssue
+
+  // Only show upgrade button if:
+  // 1. User has subscription expiration issues (was premium, now expired), OR
+  // 2. User is a free user with storage issues (has deletion_date, meaning they're on free plan)
+  // Note: Active premium users with storage issues don't have deletion_date and shouldn't see upgrade button
+  const isFreeUserWithStorageIssue = hasStorageIssue && !!warning.deletion_date
+  const showUpgradeButton = hasSubscriptionIssue || isFreeUserWithStorageIssue
   const showManageFilesButton = hasStorageIssue
 
   const getSeverity = (warningType: string) => {

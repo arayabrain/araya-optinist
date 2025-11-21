@@ -74,7 +74,7 @@ export interface LimitWarning {
   storage_quota_gb: number
   subscription_end_date?: string
   grace_end_date?: string
-  deletion_date: string
+  deletion_date?: string // Optional: only present for free users and expired subscriptions
   message: string
 }
 
