@@ -314,10 +314,6 @@ const Account = () => {
       />
       <Title>Account Profile</Title>
       <BoxFlex>
-        <TitleData>Organization</TitleData>
-        <BoxData>{user?.organization?.name}</BoxData>
-      </BoxFlex>
-      <BoxFlex>
         <TitleData>Name</TitleData>
         {isEditName ? (
           <Input
@@ -342,10 +338,6 @@ const Account = () => {
       <BoxFlex>
         <TitleData>Email</TitleData>
         <BoxData>{user?.email}</BoxData>
-      </BoxFlex>
-      <BoxFlex>
-        <TitleData>Role</TitleData>
-        <BoxData>{getRole(user?.role_id)}</BoxData>
       </BoxFlex>
       <BoxFlex>
         <TitleData>Data size</TitleData>
