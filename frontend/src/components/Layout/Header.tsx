@@ -45,7 +45,7 @@ const StandaloneHeader: FC = () => {
 const MultiUserHeader: FC<{ handleDrawerOpen: () => void }> = ({
   handleDrawerOpen,
 }) => {
-  const showTabsRegex = /^\/console\/workspaces\/.+$/
+  const showTabsRegex = /^\/dashboard\/workspaces\/.+$/
   const location = useLocation()
 
   return (
@@ -60,7 +60,7 @@ const MultiUserHeader: FC<{ handleDrawerOpen: () => void }> = ({
           <MenuIcon />
         </IconButton>
         <Box display="flex" flexGrow={1}>
-          <TitleLogo>STUDIO</TitleLogo>
+          <TitleLogo>OptiNiSt</TitleLogo>
         </Box>
         {showTabsRegex.test(location.pathname) && <WorkspaceTabs />}
         <Profile />

@@ -390,13 +390,13 @@ const InvoicesPage: React.FC = () => {
 
   const handleGoBack = (): void => {
     if (!shouldShowLoader) {
-      navigate("/console/account")
+      navigate("/dashboard/account")
     }
   }
 
   const handleAdjustPlan = (): void => {
     if (!shouldShowLoader) {
-      navigate("/console/subscription")
+      navigate("/dashboard/subscription")
     }
   }
 

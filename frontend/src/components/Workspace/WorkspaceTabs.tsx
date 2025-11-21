@@ -70,7 +70,7 @@ const WorkspaceTabs: FC = () => {
                 </span>
               </span>
             }
-            onClick={() => navigate("/console/workspaces")}
+            onClick={() => navigate("/dashboard/workspaces")}
           />
         )}
       </Tabs>

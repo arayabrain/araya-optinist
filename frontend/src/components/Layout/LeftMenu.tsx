@@ -28,17 +28,17 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
 
   const onClickDashboard = () => {
     handleDrawerClose()
-    navigate("/console")
+    navigate("/dashboard")
   }
 
   const onClickDataview = () => {
     handleDrawerClose()
-    navigate("/console/dataview")
+    navigate("/dashboard/dataview")
   }
 
   const onClickWorkspaces = () => {
     handleDrawerClose()
-    navigate("/console/workspaces")
+    navigate("/dashboard/workspaces")
   }
 
   const onClickOpenSite = () => {
@@ -48,12 +48,12 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
 
   const onClickAccountManager = () => {
     handleDrawerClose()
-    navigate("/console/account-manager")
+    navigate("/dashboard/account-manager")
   }
 
   const onClickUpgrade = () => {
     handleDrawerClose()
-    navigate("/console/subscription")
+    navigate("/dashboard/subscription")
   }
 
   return (
@@ -107,7 +107,7 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
                 <ListItemIcon>
                   <WebIcon />
                 </ListItemIcon>
-                <ListItemText primary="Open Site" />
+                <ListItemText primary="Public Repository" />
               </ListItemButton>
             </ListItem>
           </List>

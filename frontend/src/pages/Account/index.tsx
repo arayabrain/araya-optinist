@@ -166,11 +166,11 @@ const Account = () => {
   }
 
   const onClickUpgrade = () => {
-    navigate("/console/subscription")
+    navigate("/dashboard/subscription")
   }
 
   const onClickManage = () => {
-    navigate("/console/subscription/manage")
+    navigate("/dashboard/subscription/manage")
   }
 
   const getRole = (role?: number) => {

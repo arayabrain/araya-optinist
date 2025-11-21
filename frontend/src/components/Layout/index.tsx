@@ -19,7 +19,7 @@ import { selectCurrentUser } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 import { getToken } from "utils/auth/AuthUtils"
 
-const authRequiredPathRegex = /^\/console\/?.*/
+const authRequiredPathRegex = /^\/dashboard\/?.*/
 
 const Layout = ({ children }: { children?: ReactNode }) => {
   const user = useSelector(selectCurrentUser)
@@ -50,7 +50,7 @@ const Layout = ({ children }: { children?: ReactNode }) => {
     try {
       if (token) {
         await dispatch(getMe())
-        if (isLogin) navigate("/console")
+        if (isLogin) navigate("/dashboard")
         return
       } else if (!isLogin) throw new Error("fail auth")
     } catch {

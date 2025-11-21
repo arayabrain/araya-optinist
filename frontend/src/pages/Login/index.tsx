@@ -73,7 +73,7 @@ const Login = () => {
       .unwrap()
       .then(async (_) => {
         await dispatch(getMe())
-        navigate("/console")
+        navigate("/dashboard")
       })
       .catch((e: AxiosError) => {
         const status = e.response?.status

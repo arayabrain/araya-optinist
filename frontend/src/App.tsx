@@ -75,34 +75,40 @@ const App: FC = () => {
               <Route path="/login" element={<Login />} />
               <Route path="/register" element={<RegistrationForm />} />
               <Route path="/reset-password" element={<ResetPassword />} />
-              <Route path="/console" element={<Dashboard />} />
-              <Route path="/console/account" element={<Account />} />
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/dashboard/account" element={<Account />} />
               <Route
-                path="/console/account-manager"
+                path="/dashboard/account-manager"
                 element={<AccountManager />}
               />
-              <Route path="/console/dataview">
+              <Route path="/dashboard/dataview">
                 <Route path="" element={<Dataview />} />
                 <Route path=":workspaceId" element={<Dataview />} />
               </Route>
 
-              <Route path="/console/workspaces">
+              <Route path="/dashboard/workspaces">
                 <Route path="" element={<Workspaces />} />
                 <Route path=":workspaceId" element={<Workspace />} />
               </Route>
-              <Route path="/console/subscription/thanks" element={<Thanks />} />
-              <Route path="/console/subscription/failed" element={<Failed />} />
               <Route
-                path="/console/subscription"
+                path="/dashboard/subscription/thanks"
+                element={<Thanks />}
+              />
+              <Route
+                path="/dashboard/subscription/failed"
+                element={<Failed />}
+              />
+              <Route
+                path="/dashboard/subscription"
                 element={<SubscriptionPage />}
               />
               <Route
-                path="/console/subscription/manage"
+                path="/dashboard/subscription/manage"
                 element={<InvoicesPage />}
               />
               <Route
-                path="/console/*"
-                element={<Navigate replace to="/console" />}
+                path="/dashboard/*"
+                element={<Navigate replace to="/dashboard" />}
               />
               <Route path="*" element={<Navigate replace to="/" />} />
             </Routes>

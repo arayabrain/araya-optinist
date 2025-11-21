@@ -1,4 +1,5 @@
 import { FC } from "react"
+import { useSelector } from "react-redux"
 import { useNavigate } from "react-router-dom"
 
 import {
@@ -11,17 +12,25 @@ import {
 } from "@mui/material"
 import { SxProps, Theme } from "@mui/material/styles"
 
+import { selectCurrentUser } from "store/slice/User/UserSelector"
+
 const PublicHeader: FC = () => {
+  const currentUser = useSelector(selectCurrentUser)
+  const isLoggedIn = !!currentUser
+
   return (
     <PublicAppBar>
       <Container maxWidth={false}>
         <Toolbar>
           <PublicNavMenu
-            displayName="Studio Dataview"
+            displayName="OptiNiSt Public Repository"
             navLink="/"
             sx={{ fontWeight: 600, fontSize: 22, mr: 2 }}
           />
-          <PublicNavMenu displayName="Console" navLink="/console" />
+          <PublicNavMenu
+            displayName={isLoggedIn ? "DASHBOARD" : "LOGIN"}
+            navLink={isLoggedIn ? "/dashboard" : "/login"}
+          />
         </Toolbar>
       </Container>
     </PublicAppBar>
@@ -43,7 +52,11 @@ const PublicNavMenu: FC<{
   }
 
   return (
-    <Button key={displayName} onClick={handleMenuClick}>
+    <Button
+      key={displayName}
+      onClick={handleMenuClick}
+      sx={{ textTransform: "none" }}
+    >
       <Typography color="white" sx={sx}>
         {displayName}
       </Typography>

@@ -26,7 +26,7 @@ const Dashboard = () => {
       <h1 style={{ paddingLeft: 16 }}>Dashboard</h1>
       <DashboardWrapper>
         <DashboardContent>
-          <LinkWrapper to="/console/dataview">
+          <LinkWrapper to="/dashboard/dataview">
             <BoxMenu>
               <Box>
                 <ViewListIcon fontSize="large" />
@@ -34,7 +34,7 @@ const Dashboard = () => {
               </Box>
             </BoxMenu>
           </LinkWrapper>
-          <LinkWrapper to="/console/workspaces">
+          <LinkWrapper to="/dashboard/workspaces">
             <BoxMenu>
               <Box>
                 <AnalyticsIcon fontSize="large" />
@@ -43,7 +43,7 @@ const Dashboard = () => {
             </BoxMenu>
           </LinkWrapper>
           {admin ? (
-            <LinkWrapper to="/console/account-manager">
+            <LinkWrapper to="/dashboard/account-manager">
               <BoxMenu>
                 <Box>
                   <ManageAccountsIcon fontSize="large" />
