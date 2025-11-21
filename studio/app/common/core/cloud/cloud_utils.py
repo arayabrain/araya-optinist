@@ -137,17 +137,16 @@ def get_user_storage_usage(user_id: int) -> Optional[Dict[str, Any]]:
     """
     import os
 
-    # Skip storage check during testing - return safe default
+    # Skip storage check during testing
+    # - return safe default with subscription-aware quota
     skip_checks_value = os.environ.get("SKIP_STORAGE_CHECKS", "")
     if skip_checks_value.lower() == "true":
         logger.debug(f"Skipping storage usage lookup for user {user_id} (test mode)")
-        return {
-            "user_id": user_id,
-            "storage_usage_bytes": 0,
-            "storage_quota_bytes": 100 * StorageSize.GB,  # 100GB default quota
-            "storage_usage_percent": 0.0,
-            "last_updated": None,
-        }
+        # Get subscription-aware quota instead of hardcoded value
+        fallback = _get_fallback_storage_quota(user_id)
+        # Set last_updated to enable caching (avoid repeated recalculations)
+        fallback["last_updated"] = datetime.now()
+        return fallback
 
     try:
         with session_scope() as db:
@@ -355,26 +354,38 @@ async def _calculate_live_storage_usage(user_id: int) -> int:
     """
     try:
         # Determine if we should use S3 or local storage based on environment
-        # (Same logic as workspace refresh endpoint)
         import os
 
         from studio.app.common.core.storage.remote_storage_controller import (
             RemoteStorageType,
         )
 
-        shared_bucket_name = None
         remote_storage_type = RemoteStorageType.get_activated_type()
 
         if remote_storage_type == RemoteStorageType.S3:
-            shared_bucket_name = os.environ.get("S3_DEFAULT_BUCKET_NAME")
+            # Get user-specific bucket name from user attributes
+            from studio.app.common.core.users.crud_users import get_user_with_context
 
-        use_s3 = bool(shared_bucket_name)
+            with session_scope() as db:
+                user = await get_user_with_context(db, user_id)
+                if (
+                    user
+                    and user.attributes
+                    and user.attributes.get("remote_bucket_name")
+                ):
+                    user_bucket_name = user.attributes.get("remote_bucket_name")
+                else:
+                    # Fallback to shared for admin or users without personal bucket
+                    user_bucket_name = os.environ.get("S3_DEFAULT_BUCKET_NAME")
+                    logger.debug(
+                        f"User {user_id} has no personal bucket, using shared bucket: "
+                        f"{user_bucket_name}"
+                    )
 
-        if use_s3:
-            # Use S3 storage calculation with shared bucket
+            # Use S3 storage calculation with user's bucket
             from studio.app.common.core.cloud.s3_storage_monitor import S3StorageMonitor
 
-            monitor = S3StorageMonitor(shared_bucket_name)
+            monitor = S3StorageMonitor(user_bucket_name)
             return await monitor.get_user_s3_storage_size(user_id)
         else:
             # Use local storage calculation

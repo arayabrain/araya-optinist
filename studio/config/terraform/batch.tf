@@ -957,6 +957,10 @@ resource "aws_ecs_task_definition" "batch" {
           value = "http://${aws_lb.batch.dns_name}"
         },
         {
+          name  = "STRIPE_SECRET_KEY"
+          value = var.stripe_secret_key
+        },
+        {
           name  = "STRIPE_WEBHOOK_SECRET"
           value = var.stripe_webhook_secret
         },
@@ -1370,6 +1374,10 @@ resource "aws_batch_job_definition" "optinist" {
       {
         name  = "AWS_BATCH_S3_BUCKET_NAME"
         value = aws_s3_bucket.app_storage.id
+      },
+      {
+        name  = "SKIP_STORAGE_CHECKS"
+        value = "false"
       },
     ]
 

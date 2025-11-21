@@ -370,6 +370,66 @@ export const PremiumAssignmentProvider: React.FC<{
     autoAssignOnLogin,
   ])
 
+  // Poll for premium instance when user is on temporary shared instance
+  useEffect(() => {
+    if (
+      !isPremiumUser ||
+      !state.assignmentResult?.assigned ||
+      !state.assignmentResult?.is_shared ||
+      state.assignmentResult?.assignment_source !== "autoscaling_temp"
+    ) {
+      return
+    }
+
+    console.log(
+      "User is on temporary shared instance, polling for premium instance...",
+    )
+
+    let pollInterval: NodeJS.Timeout | null = null
+
+    const pollForPremiumInstance = async () => {
+      try {
+        // Check if premium instance is now available
+        const result = await assignPremiumInstance()
+
+        if (result.assigned && !result.is_shared) {
+          // Premium instance is now available!
+          console.log("Premium instance now available:", result.instance_id)
+          setState((prev) => ({
+            ...prev,
+            assignmentResult: result,
+            error: null,
+          }))
+
+          // Stop polling
+          if (pollInterval) {
+            clearInterval(pollInterval)
+            pollInterval = null
+          }
+        } else {
+          console.log("Still on temporary instance, will retry...")
+        }
+      } catch (error) {
+        console.warn("Error polling for premium instance:", error)
+      }
+    }
+
+    // Poll every 5 seconds
+    pollInterval = setInterval(pollForPremiumInstance, 5000)
+
+    // Cleanup on unmount or when conditions change
+    return () => {
+      if (pollInterval) {
+        clearInterval(pollInterval)
+      }
+    }
+  }, [
+    isPremiumUser,
+    state.assignmentResult?.assigned,
+    state.assignmentResult?.is_shared,
+    state.assignmentResult?.assignment_source,
+  ])
+
   // Handle browser close/refresh for premium users
   useEffect(() => {
     if (!isPremiumUser) return

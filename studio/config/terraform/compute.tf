@@ -925,8 +925,16 @@ resource "aws_ecs_task_definition" "autoscaling" {
           value = "${var.frontend_protocol}://${var.frontend_domain}"
         },
         {
+          name  = "STRIPE_SECRET_KEY"
+          value = var.stripe_secret_key
+        },
+        {
           name  = "STRIPE_WEBHOOK_SECRET"
           value = var.stripe_webhook_secret
+        },
+        {
+          name  = "SKIP_STORAGE_CHECKS"
+          value = "false"
         },
       ]
       secrets = [
@@ -1158,8 +1166,16 @@ resource "aws_ecs_task_definition" "premium" {
           value = "${var.frontend_protocol}://${var.frontend_domain}"
         },
         {
+          name  = "STRIPE_SECRET_KEY"
+          value = var.stripe_secret_key
+        },
+        {
           name  = "STRIPE_WEBHOOK_SECRET"
           value = var.stripe_webhook_secret
+        },
+        {
+          name  = "SKIP_STORAGE_CHECKS"
+          value = "false"
         }
       ]
 

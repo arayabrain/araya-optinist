@@ -28,12 +28,22 @@ const PremiumNotificationManager: FC = () => {
 
   // Show success notification when premium instance is assigned
   useEffect(() => {
+    // Show success when:
+    // 1. User has a premium assignment (assigned=true, is_shared=false)
+    // 2. Has an instance_id
+    // 3. Either: never shown before OR different instance than last time
+    // OR transitioning from temp
+    const isPremiumInstance =
+      assignmentResult?.assigned && !assignmentResult?.is_shared
+    const hasNewInstance = assignmentResult?.instance_id !== lastAssignmentId
+    const isTransitioningFromTemp =
+      hasShownTempAssignmentWarning && !hasShownAssignmentSuccess
+
     if (
       isPremiumUser &&
-      assignmentResult?.assigned &&
+      isPremiumInstance &&
       assignmentResult.instance_id &&
-      assignmentResult.instance_id !== lastAssignmentId &&
-      !hasShownAssignmentSuccess
+      (hasNewInstance || isTransitioningFromTemp)
     ) {
       // Dismiss any pending temporary assignment or scaling notifications
       if (tempAssignmentKeyRef.current) {
@@ -60,6 +70,7 @@ const PremiumNotificationManager: FC = () => {
     isPremiumUser,
     assignmentResult,
     hasShownAssignmentSuccess,
+    hasShownTempAssignmentWarning,
     lastAssignmentId,
     enqueueSnackbar,
     closeSnackbar,
@@ -81,7 +92,7 @@ const PremiumNotificationManager: FC = () => {
           "This may take a few minutes.",
         {
           variant: "info",
-          autoHideDuration: 10000,
+          persist: true, // Keep notification until explicitly dismissed
         },
       )
 
