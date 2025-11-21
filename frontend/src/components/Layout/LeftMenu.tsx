@@ -33,7 +33,7 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
 
   const onClickDataview = () => {
     handleDrawerClose()
-    navigate("/dashboard/dataview")
+    navigate("/dashboard/public")
   }
 
   const onClickWorkspaces = () => {

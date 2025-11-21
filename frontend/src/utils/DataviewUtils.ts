@@ -5,7 +5,7 @@ export const isDataviewPublicOutputsRequest = (url: string): boolean => {
   // Check if we're on the public dataview screen from path
   const path = window.location.pathname
   const isPublicDataviewPage =
-    path === "/" || (path === "/dataview" && !path.includes("/dashboard"))
+    path === "/" || (path === "/public" && !path.includes("/dashboard"))
 
   // Checks whether the request is to the outputs API
   const isOutputsApi = !!url && url.includes("/outputs/")

@@ -432,7 +432,7 @@ const Workspaces = () => {
 
   const handleNavDataview = (id: number) => {
     dispatch(resetVisualizeLayout())
-    navigate(`/dashboard/dataview/${id}`)
+    navigate(`/dashboard/public/${id}`)
   }
 
   const onEditName = (id: number) => {

@@ -26,7 +26,7 @@ const Dashboard = () => {
       <h1 style={{ paddingLeft: 16 }}>Dashboard</h1>
       <DashboardWrapper>
         <DashboardContent>
-          <LinkWrapper to="/dashboard/dataview">
+          <LinkWrapper to="/dashboard/public">
             <BoxMenu>
               <Box>
                 <ViewListIcon fontSize="large" />
