@@ -65,7 +65,6 @@ export const usePremiumAssignment = () => {
 export const PremiumAssignmentProvider: React.FC<{
   children: React.ReactNode
 }> = ({ children }) => {
-  console.log("PremiumAssignmentProvider mounted!")
   const currentUser = useSelector((state: RootState) => state.user.currentUser)
 
   const [state, setState] = useState<PremiumAssignmentState>({
@@ -121,6 +120,7 @@ export const PremiumAssignmentProvider: React.FC<{
         showInactivityWarning: false,
       }))
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.warn("Failed to record premium user activity:", error)
     }
   }, [isPremiumUser])
@@ -190,7 +190,7 @@ export const PremiumAssignmentProvider: React.FC<{
       }))
       return result
     } catch (error: unknown) {
-      // Don't treat release errors as critical
+      // eslint-disable-next-line no-console
       console.warn("Premium instance release warning:", error)
       setState((prev) => ({ ...prev, isReleasing: false }))
       return { released: true, message: "Release completed with warnings" }
@@ -206,6 +206,7 @@ export const PremiumAssignmentProvider: React.FC<{
       setState((prev) => ({ ...prev, statusResult: status }))
       return status
     } catch (error: unknown) {
+      // eslint-disable-next-line no-console
       console.warn("Failed to get premium status:", error)
       return null
     }
@@ -226,6 +227,7 @@ export const PremiumAssignmentProvider: React.FC<{
 
       return routing
     } catch (error: unknown) {
+      // eslint-disable-next-line no-console
       console.warn("Failed to get routing info:", error)
       return null
     }
@@ -237,8 +239,6 @@ export const PremiumAssignmentProvider: React.FC<{
   const autoAssignOnLogin = useCallback(async () => {
     if (!isPremiumUser || hasAttemptedAutoAssignment) return
 
-    console.log("Premium user detected, attempting auto-assignment...")
-
     // Set flag immediately to prevent duplicate calls
     setHasAttemptedAutoAssignment(true)
 
@@ -246,17 +246,12 @@ export const PremiumAssignmentProvider: React.FC<{
       // Check current status first (inline to avoid dependency issues)
       const statusResponse = await getPremiumStatus()
       if (statusResponse?.assignment) {
-        console.log("Premium user already assigned to instance")
         return
       }
 
       // Attempt assignment directly (inline to avoid dependency issues)
       const assignmentResponse = await assignPremiumInstance()
       if (assignmentResponse?.assigned) {
-        console.log(
-          "Premium user successfully assigned to instance:",
-          assignmentResponse.instance_id,
-        )
         // Update state to reflect the assignment
         setState((prev) => ({
           ...prev,
@@ -265,6 +260,7 @@ export const PremiumAssignmentProvider: React.FC<{
         }))
       }
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.warn("Auto-assignment failed:", error)
     }
   }, [isPremiumUser, hasAttemptedAutoAssignment])
@@ -277,11 +273,11 @@ export const PremiumAssignmentProvider: React.FC<{
     try {
       const currentStatus = await getPremiumStatus()
       if (currentStatus?.assignment) {
-        console.log("Releasing premium instance on logout...")
         return await release()
       }
       return null
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.warn("Failed to check status before logout release:", error)
       return null
     }
@@ -301,25 +297,26 @@ export const PremiumAssignmentProvider: React.FC<{
 
       const oneHourMs = 60 * 60 * 1000 // 1 hour
       const twoHoursMs = 2 * 60 * 60 * 1000 // 2 hours
-
+      // eslint-disable-next-line no-console
       console.log(
         `Inactivity check: ${Math.round(timeSinceLastActivity / 1000 / 60)}min since last activity`,
       )
 
       if (timeSinceLastActivity >= twoHoursMs) {
-        // 2 hours of inactivity - auto-release
+        // eslint-disable-next-line no-console
         console.log(
           "2 hours of inactivity detected - auto-releasing premium instance",
         )
         setState((prev) => ({ ...prev, showInactivityWarning: false }))
         autoReleaseOnLogout().catch((error) => {
+          // eslint-disable-next-line no-console
           console.error("Failed to auto-release after inactivity:", error)
         })
       } else if (
         timeSinceLastActivity >= oneHourMs &&
         !state.showInactivityWarning
       ) {
-        // 1 hour of inactivity - show warning
+        // eslint-disable-next-line no-console
         console.log("1 hour of inactivity detected - showing warning")
         setState((prev) => ({ ...prev, showInactivityWarning: true }))
       }
@@ -344,19 +341,10 @@ export const PremiumAssignmentProvider: React.FC<{
 
   // Auto-assign when premium user is detected
   useEffect(() => {
-    console.log("PremiumAssignmentContext useEffect triggered:", {
-      isPremiumUser,
-      currentUserId: currentUser?.id,
-      currentUserEmail: currentUser?.email,
-      subscriptionPlan: currentUser?.subscription_plan_name,
-      subscriptionStatus: currentUser?.subscription_status,
-      hasAttemptedAutoAssignment,
-    })
-
     if (isPremiumUser && currentUser) {
-      console.log("Conditions met, calling autoAssignOnLogin...")
       autoAssignOnLogin()
     } else {
+      // eslint-disable-next-line no-console
       console.log("Conditions not met for auto-assignment:", {
         isPremiumUser,
         hasCurrentUser: !!currentUser,
@@ -381,6 +369,7 @@ export const PremiumAssignmentProvider: React.FC<{
       return
     }
 
+    // eslint-disable-next-line no-console
     console.log(
       "User is on temporary shared instance, polling for premium instance...",
     )
@@ -393,7 +382,7 @@ export const PremiumAssignmentProvider: React.FC<{
         const result = await assignPremiumInstance()
 
         if (result.assigned && !result.is_shared) {
-          // Premium instance is now available!
+          // eslint-disable-next-line no-console
           console.log("Premium instance now available:", result.instance_id)
           setState((prev) => ({
             ...prev,
@@ -407,9 +396,11 @@ export const PremiumAssignmentProvider: React.FC<{
             pollInterval = null
           }
         } else {
+          // eslint-disable-next-line no-console
           console.log("Still on temporary instance, will retry...")
         }
       } catch (error) {
+        // eslint-disable-next-line no-console
         console.warn("Error polling for premium instance:", error)
       }
     }
@@ -438,6 +429,7 @@ export const PremiumAssignmentProvider: React.FC<{
       // Try to release premium assignment on browser close/refresh
       // Note: This is best-effort and may not always complete due to browser limitations
       autoReleaseOnLogout().catch((error) => {
+        // eslint-disable-next-line no-console
         console.warn("Failed to release on beforeunload:", error)
       })
     }

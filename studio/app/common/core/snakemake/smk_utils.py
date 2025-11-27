@@ -31,7 +31,7 @@ class SmkUtils:
 
         is_s3_mode = use_aws_batch.lower() == "true" and s3_bucket is not None
 
-        logger.debug(
+        logger.info(
             f"S3 storage mode check: USE_AWS_BATCH='{use_aws_batch}', "
             f"S3_DEFAULT_BUCKET_NAME='{s3_bucket}', is_s3_mode={is_s3_mode}"
         )

@@ -49,7 +49,7 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
                     f"{limit_warning['excess_data_gb']} GB over limit"
                 )
             else:
-                logger.debug(f"No limit warning for user {user.id}")
+                logger.warning(f"No limit warning for user {user.id}")
         except Exception as warning_error:
             # Don't fail login due to warning check failure
             logger.warning(

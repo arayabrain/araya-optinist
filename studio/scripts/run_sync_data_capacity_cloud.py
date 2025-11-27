@@ -63,11 +63,11 @@ class CloudWorkspaceDataCapacityService:
                 f"app/studio_data/output/{workspace_id}/",
             ]
 
-            logger.debug(f"Calculating S3 usage for workspace {workspace_id}")
+            logger.info(f"Calculating S3 usage for workspace {workspace_id}")
 
             for prefix in prefixes:
                 try:
-                    logger.debug(f"Scanning S3 prefix: {prefix}")
+                    # logger.debug(f"Scanning S3 prefix: {prefix}")
                     paginator = s3_client.get_paginator("list_objects_v2")
                     page_iterator = paginator.paginate(
                         Bucket=bucket_name, Prefix=prefix
@@ -83,10 +83,10 @@ class CloudWorkspaceDataCapacityService:
                                 prefix_size += object_size
                                 object_count += 1
 
-                    logger.debug(
-                        f"Prefix {prefix}: {object_count} objects, "
-                        f"{prefix_size:,} bytes"
-                    )
+                    # logger.debug(
+                    #     f"Prefix {prefix}: {object_count} objects, "
+                    #     f"{prefix_size:,} bytes"
+                    # )
 
                 except Exception as e:
                     logger.warning(f"Failed to get size for prefix {prefix}: {e}")
@@ -125,9 +125,9 @@ class CloudWorkspaceDataCapacityService:
             s3_client = boto3.client("s3")
             prefix = f"app/studio_data/output/{workspace_id}/{unique_id}/"
 
-            logger.debug(
-                f"Calculating S3 usage for experiment {workspace_id}/{unique_id}"
-            )
+            # logger.debug(
+            #     f"Calculating S3 usage for experiment {workspace_id}/{unique_id}"
+            # )
 
             paginator = s3_client.get_paginator("list_objects_v2")
             page_iterator = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
@@ -139,10 +139,10 @@ class CloudWorkspaceDataCapacityService:
                         total_size += obj["Size"]
                         object_count += 1
 
-            logger.debug(
-                f"S3 experiment {workspace_id}/{unique_id}: {object_count} objects, "
-                f"{total_size:,} bytes"
-            )
+            # logger.debug(
+            #     f"S3 experiment {workspace_id}/{unique_id}: {object_count} objects, "
+            #     f"{total_size:,} bytes"
+            # )
 
         except Exception as e:
             logger.error(
@@ -286,7 +286,7 @@ class CloudWorkspaceDataCapacityService:
         logger.info(
             f"Found {len(all_experiments)} experiments for workspace {workspace_id}"
         )
-        logger.debug(f"Local: {local_experiments}, S3: {s3_experiments}")
+        # logger.debug(f"Local: {local_experiments}, S3: {s3_experiments}")
 
         for unique_id in all_experiments:
             try:
@@ -306,10 +306,11 @@ class CloudWorkspaceDataCapacityService:
                 # Total data usage
                 total_data_usage = local_size + s3_size
 
-                logger.debug(
-                    f"Experiment {workspace_id}/{unique_id}: "
-                    f"local={local_size:,}, S3={s3_size:,}, total={total_data_usage:,}"
-                )
+                # logger.debug(
+                #     f"Experiment {workspace_id}/{unique_id}: "
+                #     f"local={local_size:,}, S3={s3_size:,}, "
+                #     f"total={total_data_usage:,}"
+                # )
 
                 # Update yaml file
                 WorkspaceDataCapacityService._update_exp_data_usage_yaml(

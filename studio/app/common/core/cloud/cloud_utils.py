@@ -156,15 +156,7 @@ def get_user_storage_usage(user_id: int) -> Optional[Dict[str, Any]]:
                     select(UserStorageUsage).where(UserStorageUsage.user_id == user_id)
                 )
                 result_row = query_result.first()
-                logger.debug(
-                    f"get_user_storage_usage: "
-                    f"result_row type={type(result_row)}, value={result_row}"
-                )
                 storage_usage = result_row[0] if result_row else None
-                logger.debug(
-                    f"get_user_storage_usage: "
-                    f"storage_usage type={type(storage_usage)}, value={storage_usage}"
-                )
 
                 if storage_usage:
                     result_dict = {
@@ -290,10 +282,10 @@ async def get_current_user_storage_usage(user_id: int, force_live: bool = False)
             if storage_info and _is_storage_data_fresh(
                 storage_info, max_age_minutes=20
             ):
-                logger.debug(f"Using cached storage data for user {user_id}")
+                logger.info(f"Using cached storage data for user {user_id}")
                 return storage_info["storage_usage_bytes"]
             else:
-                logger.debug(
+                logger.info(
                     f"Storage data for user {user_id} is stale or missing, "
                     f"calculating live"
                 )
@@ -377,7 +369,7 @@ async def _calculate_live_storage_usage(user_id: int) -> int:
                 else:
                     # Fallback to shared for admin or users without personal bucket
                     user_bucket_name = os.environ.get("S3_DEFAULT_BUCKET_NAME")
-                    logger.debug(
+                    logger.warning(
                         f"User {user_id} has no personal bucket, using shared bucket: "
                         f"{user_bucket_name}"
                     )
@@ -436,7 +428,7 @@ async def _calculate_local_user_storage(user_id: int) -> int:
             if os.path.exists(input_path):
                 input_size = get_folder_size(input_path)
                 total_usage += input_size
-                logger.debug(
+                logger.info(
                     f"User {user_id} workspace {workspace_id} input: {input_size} bytes"
                 )
 
@@ -445,10 +437,6 @@ async def _calculate_local_user_storage(user_id: int) -> int:
             if os.path.exists(output_path):
                 output_size = get_folder_size(output_path)
                 total_usage += output_size
-                logger.debug(
-                    f"User {user_id} workspace {workspace_id} output: "
-                    f"{output_size} bytes"
-                )
 
         logger.info(
             f"Calculated local storage size for user {user_id}: {total_usage:,} bytes"
@@ -489,7 +477,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                 storage_info, max_age_minutes=20
             ):
                 current_usage_bytes = storage_info.get("storage_usage_bytes", 0)
-                logger.debug(
+                logger.info(
                     f"LimitWarning: Using fresh cached storage data "
                     f"for user {user_id}: {current_usage_bytes}"
                 )
@@ -498,7 +486,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                 current_usage_bytes = await get_current_user_storage_usage(
                     user_id, force_live=True
                 )
-                logger.debug(
+                logger.info(
                     f"LimitWarning: Calculated fresh storage data "
                     f"for user {user_id}: {current_usage_bytes}"
                 )

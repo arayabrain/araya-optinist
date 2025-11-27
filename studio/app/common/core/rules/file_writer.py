@@ -75,13 +75,13 @@ class FileWriter:
 
         # Copy file if it doesn't already exist at permanent location
         if not os.path.exists(permanent_path):
-            logger.debug(
+            logger.info(
                 "Copying file from Snakemake storage to permanent location: "
                 f"{input_path} -> {permanent_path}"
             )
             shutil.copy2(input_path, permanent_path)
         else:
-            logger.debug(
+            logger.info(
                 "File already exists at permanent location, skipping copy: "
                 f"{permanent_path}"
             )

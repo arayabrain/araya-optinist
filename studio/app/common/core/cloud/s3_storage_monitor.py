@@ -86,10 +86,7 @@ class S3StorageMonitor:
                 )
                 workspace_ids = db.execute(workspaces_query).scalars().all()
 
-            logger.debug(
-                f"Checking S3 storage for user {user_id} across "
-                f"{len(workspace_ids)} workspaces"
-            )
+            logger.info(f"Checking S3 storage for user {user_id} across all workspaces")
 
             # Create sync S3 client for boto3 operations
             s3_client = boto3.client("s3")
@@ -105,7 +102,6 @@ class S3StorageMonitor:
 
                 for prefix in prefixes:
                     try:
-                        logger.debug(f"Scanning prefix: {prefix}")
                         # Use paginator to handle large number of objects
                         paginator = s3_client.get_paginator("list_objects_v2")
                         page_iterator = paginator.paginate(
@@ -121,11 +117,6 @@ class S3StorageMonitor:
                                     total_size += object_size
                                     prefix_size += object_size
                                     object_count += 1
-
-                        logger.debug(
-                            f"Workspace {workspace_id} - Prefix {prefix}: "
-                            f"{object_count} objects, {prefix_size:,} bytes"
-                        )
 
                     except Exception as e:
                         logger.warning(f"Failed to get size for prefix {prefix}: {e}")
@@ -182,7 +173,7 @@ class S3StorageMonitor:
 
             # If no storage info exists, try to determine quota from user's subscription
             if not storage_info:
-                logger.debug(
+                logger.info(
                     f"No storage usage record found for user {user_id}, "
                     "checking subscription"
                 )

@@ -29,27 +29,6 @@ def main():
         # Initialize client_id from snakemake config
         init_client_id_from_snakemake_config(snakemake.config)
 
-        # INVESTIGATION: Debug logging AFTER init_client_id_from_snakemake_config
-        logger.debug("INVESTIGATION: In batch container func.py main()")
-        logger.debug(
-            f"INVESTIGATION: After init, AppLogger.get_client_id(): "
-            f"{AppLogger.get_client_id()}"
-        )
-        logger.debug(
-            f"INVESTIGATION: snakemake.config keys: {list(snakemake.config.keys())}"
-        )
-        logger.debug(
-            f"INVESTIGATION: client_id in snakemake.config: "
-            f"{snakemake.config.get('client_id', 'NOT FOUND')}"
-        )
-        try:
-            logger.debug(
-                f"INVESTIGATION: Full snakemake.config dump: "
-                f"{json.dumps(dict(snakemake.config), indent=2, default=str)}"
-            )
-        except Exception as e:
-            logger.debug(f"INVESTIGATION: Could not dump snakemake.config: {e}")
-
         last_output = [
             join_filepath([DIRPATH.OUTPUT_DIR, x])
             for x in snakemake.config["last_output"]

@@ -1242,23 +1242,23 @@ def start_standby_instance(instance_id: str):
 
 def get_premium_user_status(user_id: str) -> Dict[str, Any]:
     """Get premium user assignment status"""
-    print(f"DIAGNOSTIC: get_premium_user_status called for user_id={user_id}")
+    print(f"get_premium_user_status called for user_id={user_id}")
     try:
-        print("DIAGNOSTIC: Opening database connection...")
+        print(" Opening database connection...")
         with get_db_connection() as connection:
-            print("DIAGNOSTIC: Database connection established")
+            print("Database connection established")
             with connection.cursor() as cursor:
-                print(f"DIAGNOSTIC: Executing query for user_id={user_id}")
+                print(f"Executing query for user_id={user_id}")
                 cursor.execute(
                     """SELECT instance_id, target_group_arn, alb_rule_arn, status,
                     assigned_at FROM premium_user_assignments WHERE user_id = %s""",
                     (user_id,),
                 )
                 assignment = cursor.fetchone()
-                print(f"DIAGNOSTIC: Query result: {assignment}")
+                print(f"Query result: {assignment}")
 
                 if not assignment:
-                    print(f"DIAGNOSTIC: No assignment found for user {user_id}")
+                    print(f" No assignment found for user {user_id}")
                     return {
                         "statusCode": 404,
                         "body": json.dumps(
@@ -1267,7 +1267,7 @@ def get_premium_user_status(user_id: str) -> Dict[str, Any]:
                     }
 
                 print(
-                    f"DIAGNOSTIC: Found assignment - "
+                    f"Found assignment - "
                     f"instance_id={assignment['instance_id']}, "
                     f"status={assignment['status']}"
                 )
@@ -1289,10 +1289,10 @@ def get_premium_user_status(user_id: str) -> Dict[str, Any]:
 
     except Exception as e:
         print(f"Error getting premium user status: {str(e)}")
-        print(f"DIAGNOSTIC: Full exception details: {type(e).__name__}: {e}")
+        print(f"Full exception details: {type(e).__name__}: {e}")
         import traceback
 
-        print(f"DIAGNOSTIC: Traceback: {traceback.format_exc()}")
+        print(f"Traceback: {traceback.format_exc()}")
         return {
             "statusCode": 500,
             "body": json.dumps({"error": str(e)}),

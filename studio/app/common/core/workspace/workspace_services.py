@@ -179,9 +179,6 @@ class WorkspaceService:
             )
             workspace_ids = db.execute(workspaces_query).scalars().all()
 
-            logger.debug(
-                f"User {user_id} has access to {len(workspace_ids)} workspaces"
-            )
             return list(workspace_ids)
 
         except Exception as e:

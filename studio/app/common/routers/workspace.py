@@ -457,15 +457,8 @@ async def refresh_all_workspaces_storage(
                         {"ws_id": workspace_id},
                     )
 
-                    logger.debug(
-                        f"Workspace {workspace_id}: input={input_size}, "
-                        f"output={output_size}, total={total_workspace_size} bytes"
-                    )
-
                 refreshed_count += 1
-                logger.debug(
-                    f"Refreshed storage for workspace {workspace_id} (use_s3={use_s3})"
-                )
+
             except Exception as e:
                 logger.error(
                     f"Failed to refresh storage for workspace {workspace_id}: {e}"

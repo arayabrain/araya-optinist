@@ -50,7 +50,7 @@ def increment_workflow_count(user_id: Optional[int]) -> None:
                     f"(free tier workflow started)"
                 )
             else:
-                logger.debug(
+                logger.info(
                     f"User {user_id} not in free_user_assignments table "
                     f"(likely premium user or not tracked yet)"
                 )
@@ -95,7 +95,7 @@ def decrement_workflow_count(user_id: Optional[int]) -> None:
                     f"(free tier workflow completed)"
                 )
             else:
-                logger.debug(
+                logger.info(
                     f"User {user_id} not in free_user_assignments table "
                     f"(likely premium user or not tracked yet)"
                 )

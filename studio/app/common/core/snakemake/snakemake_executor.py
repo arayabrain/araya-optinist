@@ -74,10 +74,10 @@ def snakemake_execute(
     client_id = get_client_id_for_subprocess()
 
     if BATCH_CONFIG.USE_AWS_BATCH:
-        # DIAGNOSTIC: This should ALWAYS appear if batch mode is enabled
-        print(f"DIAGNOSTIC: USE_AWS_BATCH=True, client_id={client_id}", flush=True)
+        # BATCH: This should ALWAYS appear if batch mode is enabled
+        print(f"BATCH: USE_AWS_BATCH=True, client_id={client_id}", flush=True)
         logger.info("Starting AWS Batch execution mode")
-        logger.debug("DIAGNOSTIC: If you see this, optinist logging works!")
+        logger.debug("BATCH: If you see this, optinist logging works!")
         future_result = _snakemake_execute_batch(
             workspace_id, unique_id, params, client_id=client_id
         )
@@ -317,19 +317,19 @@ def _snakemake_execute_batch(
     try:
         # Initialize BatchExecutor for AWS Batch specific operations
         print(
-            f"DIAGNOSTIC: Inside _snakemake_execute_batch "
+            f"BATCH: Inside _snakemake_execute_batch "
             f"for {workspace_id}/{unique_id}",
             flush=True,
         )
         logger.info("Load BatchExecutor")
-        logger.debug("DIAGNOSTIC: Entered _snakemake_execute_batch successfully")
+        logger.debug("BATCH: Entered _snakemake_execute_batch successfully")
         print(
-            f"DIAGNOSTIC: About to create BatchUtils({workspace_id}, {unique_id})...",
+            f"BATCH: About to create BatchUtils({workspace_id}, {unique_id})...",
             flush=True,
         )
         batch_executor = BatchUtils(workspace_id, unique_id)
-        print("DIAGNOSTIC: BatchUtils created successfully", flush=True)
-        logger.info("DIAGNOSTIC: BatchUtils object created successfully")
+        print("BATCH: BatchUtils created successfully", flush=True)
+        logger.info("BATCH: BatchUtils object created successfully")
 
         # Configure S3 bucket name EARLY for batch execution
         # This must happen before any Snakemake APIs capture environment state
@@ -417,14 +417,9 @@ def _snakemake_execute_batch(
                 retrieve_storage=True,
                 keep_storage_local=False,
             )
-            # logger.debug(
-            #     f"S3 storage breakdown: provider='{s3_prefix}', "
-            #     f"bucket='{s3_bucket_name}', full_prefix='{s3_storage}'"
-            # )
-            # logger.debug(f"DIRPATH.DATA_DIR: {DIRPATH.DATA_DIR}")
         else:
             # Use optimized EFS configuration when S3 is not available
-            logger.debug("S3 not available, configuring optimized EFS storage")
+            logger.warning("S3 not available, configuring optimized EFS storage")
             BatchUtils.prepare_efs_environment(workspace_id)
             storage_settings = BatchUtils.get_efs_optimized_storage_settings(
                 workspace_id, unique_id
@@ -792,22 +787,22 @@ def _snakemake_execute_batch(
 
     except Exception as e:
         print(
-            f"DIAGNOSTIC: Exception caught in _snakemake_execute_batch: "
+            f"BATCH: Exception caught in _snakemake_execute_batch: "
             f"{type(e).__name__}: {e}",
             flush=True,
         )
         logger.error(f"Failed to setup AWS Batch execution: {e}")
-        logger.error(f"DIAGNOSTIC: Exception type: {type(e).__name__}")
+        logger.error(f"BATCH: Exception type: {type(e).__name__}")
         import traceback
 
-        print(f"DIAGNOSTIC: Full traceback:\n{traceback.format_exc()}", flush=True)
+        print(f"BATCH: Full traceback:\n{traceback.format_exc()}", flush=True)
         snakemake_result = False
     finally:
         # Clean up config symlink if it exists
         config_symlink = "/app/snakemake.yaml"
         if os.path.islink(config_symlink):
             os.unlink(config_symlink)
-            logger.debug(f"Cleaned up config symlink: {config_symlink}")
+            logger.info(f"Cleaned up config symlink: {config_symlink}")
 
         smk_logger.clean_up()
 

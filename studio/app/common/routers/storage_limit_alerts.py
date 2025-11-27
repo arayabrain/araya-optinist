@@ -291,7 +291,7 @@ async def get_my_limit_warning(
                 f"{warning['warning_type']}-{warning['days_remaining']} days remaining"
             )
         else:
-            logger.debug(f"No limit warning for user {current_user.id}")
+            logger.warning(f"No limit warning for user {current_user.id}")
 
         return warning
 
