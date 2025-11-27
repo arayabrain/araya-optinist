@@ -96,6 +96,7 @@ const FlowChart = memo(function FlowChart(props: UseRunPipelineReturnType) {
   const [errorUrl, setErrorUrl] = useState("")
   const [dialogFilterNodeId, setFilterDialogNodeId] = useState("")
   const [nodeRefresh, setNodeRefresh] = useState(false)
+  const [leftSidebarOpen, setLeftSidebarOpen] = useState(true)
 
   const handleRefreshAlgoList = async () => {
     setNodeRefresh(true)
@@ -196,7 +197,10 @@ const FlowChart = memo(function FlowChart(props: UseRunPipelineReturnType) {
         }}
       >
         <DndProvider backend={HTML5Backend}>
-          <LeftSidebarContainer>
+          <LeftSidebarContainer
+            isOpen={leftSidebarOpen}
+            onToggle={() => setLeftSidebarOpen(!leftSidebarOpen)}
+          >
             <Box overflow="auto" marginRight={2}>
               <CurrentPipelineInfo />
             </Box>
