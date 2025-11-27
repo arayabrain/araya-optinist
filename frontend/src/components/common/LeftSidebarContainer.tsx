@@ -18,14 +18,36 @@ export const LeftSidebarContainer: FC<LeftSidebarContainerProps> = ({
   isOpen,
   onToggle,
 }) => {
-  if (!isOpen) {
-    return (
+  return (
+    <Box
+      sx={{
+        width: isOpen ? DRAWER_WIDTH : 56,
+        height: CONTENT_HEIGHT,
+        display: "flex",
+        flexDirection: "column",
+        marginRight: isOpen ? 3 : 0,
+        borderRight: isOpen ? 1 : 0,
+        borderColor: grey[300],
+        overflow: "hidden",
+        paddingTop: 0,
+        paddingLeft: 1,
+        transition:
+          "width 0.3s cubic-bezier(0.4, 0, 0.2, 1), margin-right 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+        position: "relative",
+      }}
+    >
+      {/* Collapsed state: Menu icon */}
       <Box
         sx={{
-          display: "flex",
-          flexDirection: "column",
-          paddingTop: 1,
-          paddingLeft: 1,
+          position: "absolute",
+          top: 8,
+          left: 8,
+          opacity: isOpen ? 0 : 1,
+          visibility: isOpen ? "hidden" : "visible",
+          transition:
+            "opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), visibility 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+          transitionDelay: isOpen ? "0s" : "0.1s",
+          pointerEvents: isOpen ? "none" : "auto",
         }}
       >
         <Tooltip title="Open sidebar" placement="right">
@@ -47,52 +69,61 @@ export const LeftSidebarContainer: FC<LeftSidebarContainerProps> = ({
           </IconButton>
         </Tooltip>
       </Box>
-    )
-  }
 
-  return (
-    <Box
-      width={DRAWER_WIDTH}
-      overflow="auto"
-      marginRight={3}
-      borderRight={1}
-      borderColor={grey[300]}
-      sx={{
-        height: CONTENT_HEIGHT,
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
+      {/* Expanded state: Sidebar content */}
       <Box
         sx={{
           display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          paddingY: 1,
-          borderBottom: `1px solid ${grey[200]}`,
-          minHeight: 26,
+          flexDirection: "column",
+          height: "100%",
+          width: DRAWER_WIDTH,
+          transform: isOpen
+            ? "translateX(0)"
+            : `translateX(-${DRAWER_WIDTH}px)`,
+          opacity: isOpen ? 1 : 0,
+          transition:
+            "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+          pointerEvents: isOpen ? "auto" : "none",
         }}
       >
-        <Box sx={{ fontWeight: 500, color: grey[700], fontSize: "24px" }}>
-          Sidebar
+        <Box
+          sx={{
+            display: "flex",
+            justifyContent: "flex-start",
+            alignItems: "center",
+            paddingY: 0,
+            borderBottom: `1px solid ${grey[200]}`,
+            minHeight: 26,
+          }}
+        >
+          <Tooltip title="Close sidebar">
+            <IconButton
+              onClick={onToggle}
+              sx={{
+                backgroundColor: "transparent",
+                borderRadius: "6px",
+                width: 36,
+                height: 36,
+                color: grey[700],
+                "&:hover": {
+                  backgroundColor: grey[100],
+                  color: grey[900],
+                },
+              }}
+            >
+              <MenuOpenIcon />
+            </IconButton>
+          </Tooltip>
         </Box>
-        <Tooltip title="Close sidebar">
-          <IconButton
-            onClick={onToggle}
-            size="small"
-            sx={{
-              color: grey[600],
-              "&:hover": {
-                backgroundColor: grey[100],
-                color: grey[900],
-              },
-            }}
-          >
-            <MenuOpenIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
+        <Box
+          sx={{
+            flex: 1,
+            overflow: "auto",
+          }}
+        >
+          {children}
+        </Box>
       </Box>
-      <Box sx={{ flex: 1, overflow: "auto" }}>{children}</Box>
     </Box>
   )
 }
