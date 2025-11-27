@@ -23,10 +23,10 @@ class MicroscopeData(BaseData):
         retrieved from S3 before being accessed.
         """
         from studio.app.common.core.cloud_batch.storage_utils import (
-            ensure_file_available,
+            ensure_file_available_to_batch,
         )
 
-        return ensure_file_available(self._path)
+        return ensure_file_available_to_batch(self._path)
 
     def save_json(self, json_dir):
         pass

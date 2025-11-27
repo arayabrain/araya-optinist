@@ -59,10 +59,10 @@ class ImageData(BaseData):
         are retrieved from S3 before being accessed by wrappers.
         """
         from studio.app.common.core.cloud_batch.storage_utils import (
-            ensure_file_available,
+            ensure_file_available_to_batch,
         )
 
-        return ensure_file_available(self._path)
+        return ensure_file_available_to_batch(self._path)
 
     def split_image(self, output_dir: str, n_files: int = 2):
         assert n_files > 1, "n_files should be greater than 1"

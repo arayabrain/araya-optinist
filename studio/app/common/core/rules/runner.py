@@ -10,6 +10,8 @@ from pathlib import Path
 from filelock import FileLock
 
 from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
+from studio.app.common.core.cloud_batch.batch_context import is_running_in_batch
+from studio.app.common.core.cloud_batch.batch_logging import log_batch_config
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk import Rule
@@ -42,7 +44,7 @@ class Runner:
             logger.info("start rule runner")
 
             # Detect execution context
-            is_batch = cls.is_running_in_batch()
+            is_batch = is_running_in_batch()
             if is_batch:
                 logger.info("Running in AWS Batch context")
                 # Log batch job information
@@ -55,23 +57,7 @@ class Runner:
             # Determine if this should run on AWS Batch
             if BATCH_CONFIG.USE_AWS_BATCH and not is_batch:
                 # We're in the main process, not in batch yet
-                logger.debug("=================== AWS BATCH CONFIG ===================")
-                logger.debug(
-                    f"aws_batch_free_queue = {BATCH_CONFIG.AWS_BATCH_FREE_QUEUE}"
-                )
-                logger.debug(
-                    f"aws_batch_paid_queue = {BATCH_CONFIG.AWS_BATCH_PAID_QUEUE}"
-                )
-                logger.debug(
-                    f"aws_batch_job_definition={BATCH_CONFIG.AWS_BATCH_JOB_DEFINITION}"
-                )
-                logger.debug(
-                    f"aws_batch_s3_bucket_name={BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME}"
-                )
-                logger.debug(
-                    f"aws_default_provider = {BATCH_CONFIG.AWS_DEFAULT_PROVIDER}"
-                )
-                logger.debug("====================================================")
+                log_batch_config()
             else:
                 logger.debug(
                     "AWS Batch disabled or already in batch - using local execution"
@@ -377,15 +363,3 @@ class Runner:
             return cls.__dict2leaf(root_dict[path], path_list)
         else:
             return root_dict[path]
-
-    @classmethod
-    def is_running_in_batch(cls) -> bool:
-        """
-        Detect if the current execution is happening in AWS Batch container.
-        """
-        # Check for AWS Batch specific environment variables
-        batch_job_id = os.environ.get("AWS_BATCH_JOB_ID")
-        if batch_job_id:
-            logger.info(f"Detected AWS Batch execution: Job ID {batch_job_id}")
-            return True
-        return False

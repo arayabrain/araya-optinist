@@ -10,7 +10,9 @@ from studio.app.common.core.mode import MODE
 logger = AppLogger.get_logger()
 
 
-def ensure_file_available(file_path: Union[str, List[str]]) -> Union[str, List[str]]:
+def ensure_file_available_to_batch(
+    file_path: Union[str, List[str]]
+) -> Union[str, List[str]]:
     """
     Ensure that file(s) are available locally in AWS Batch execution.
 
@@ -39,7 +41,7 @@ def ensure_file_available(file_path: Union[str, List[str]]) -> Union[str, List[s
 
     # Handle list by recursing on each element
     if isinstance(file_path, list):
-        return [ensure_file_available(p) for p in file_path]
+        return [ensure_file_available_to_batch(p) for p in file_path]
 
     # Only process string paths
     if not isinstance(file_path, str):
