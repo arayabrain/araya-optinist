@@ -69,6 +69,7 @@ nbstripout = "*"
 snakemake = { version = ">=9, <10" }
 jinja2 = "3.1.*"
 httpx = "0.21.0"
+requests = "*"
 starlette = "0.27.0"
 firebase_admin = "*"
 pyrebase4 = "4.7.1"
@@ -93,6 +94,7 @@ setuptools = "<70"
 aioboto3 = "^15.0.0"
 async-timeout = "^5.0.1"
 pulp = {extras = ["cbc"], version = "*"}
+stripe = "^12.5.0"
 
 [tool.poetry.group.dev]
 optional = true

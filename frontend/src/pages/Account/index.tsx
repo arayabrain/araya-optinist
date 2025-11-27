@@ -11,7 +11,7 @@ import { useNavigate } from "react-router-dom"
 
 import { useSnackbar, VariantType } from "notistack"
 
-import Edit from "@mui/icons-material/Edit"
+import { Edit } from "@mui/icons-material"
 import {
   Box,
   Button,
@@ -27,6 +27,14 @@ import ChangePasswordModal from "components/Account/ChangePasswordModal"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
 import {
+  getUTCServerTime,
+  getUserSubscription,
+} from "store/slice/Subscriptions/SubscriptionActions"
+import {
+  selectUserSubscription,
+  selectUserSubscriptionLoading,
+} from "store/slice/Subscriptions/SubscriptionSelector"
+import {
   deleteMe,
   getMe,
   updateMe,
@@ -36,11 +44,27 @@ import { selectCurrentUser, selectLoading } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
 
+export enum SUBSCRIPTION_USER_STATUS {
+  FREE = 1,
+  SUBSCRIBED = 2,
+  EXPIRED = 3,
+  CANCELED = 4,
+}
+
+enum SUBSCRIPTION_PLAN {
+  FREE = "Free",
+  PREMIUM = "Premium",
+}
+
 const Account = () => {
   const user = useSelector(selectCurrentUser)
   const loading = useSelector(selectLoading)
+  const userSubscription = useSelector(selectUserSubscription)
+  const subscriptionLoading = useSelector(selectUserSubscriptionLoading)
+
   const dispatch = useDispatch<AppDispatch>()
   const navigate = useNavigate()
+
   const [isDeleteConfirmModalOpen, setIsDeleteConfirmModalOpen] =
     useState(false)
   const [isChangePwModalOpen, setIsChangePwModalOpen] = useState(false)
@@ -62,8 +86,12 @@ const Account = () => {
   useEffect(() => {
     if (!user) return
     setIsName(user.name)
-    //eslint-disable-next-line
-  }, [])
+
+    // Fetch user subscription when user is loaded
+    if (user.id) {
+      dispatch(getUserSubscription())
+    }
+  }, [user, dispatch])
 
   const handleCloseDeleteComfirmModal = () => {
     setIsDeleteConfirmModalOpen(false)
@@ -137,6 +165,14 @@ const Account = () => {
     setIsEditName(false)
   }
 
+  const onClickUpgrade = () => {
+    navigate("/console/subscription")
+  }
+
+  const onClickManage = () => {
+    navigate("/console/subscription/manage")
+  }
+
   const getRole = (role?: number) => {
     if (!role) return
     let newRole = ""
@@ -161,6 +197,104 @@ const Account = () => {
       if (ref.current) ref.current?.querySelector("input")?.blur?.()
       return
     }
+  }
+
+  const determineSubscriptionButtonStatus = () => {
+    if (!userSubscription) {
+      return SUBSCRIPTION_USER_STATUS.FREE
+    } else if (userSubscription.is_expired) {
+      return SUBSCRIPTION_USER_STATUS.EXPIRED
+    } else {
+      return SUBSCRIPTION_USER_STATUS.SUBSCRIBED
+    }
+  }
+
+  // Updated function to handle showing both buttons for users with subscription records
+  const renderSubscriptionButtons = () => {
+    const status = determineSubscriptionButtonStatus()
+
+    // For users who never had a subscription (completely free users)
+    if (status === SUBSCRIPTION_USER_STATUS.FREE) {
+      return (
+        <Button
+          variant="contained"
+          color="primary"
+          sx={{ ml: 2 }}
+          onClick={onClickUpgrade}
+          disabled={subscriptionLoading}
+        >
+          Upgrade
+        </Button>
+      )
+    }
+
+    // For users with subscription records (active or expired)
+    if (
+      status === SUBSCRIPTION_USER_STATUS.SUBSCRIBED ||
+      status === SUBSCRIPTION_USER_STATUS.EXPIRED
+    ) {
+      return (
+        <Box sx={{ ml: 2, display: "flex", gap: 1 }}>
+          {status === SUBSCRIPTION_USER_STATUS.EXPIRED && (
+            <Button
+              variant="contained"
+              color="primary"
+              onClick={onClickUpgrade}
+              disabled={subscriptionLoading}
+            >
+              Upgrade
+            </Button>
+          )}
+          <Button
+            variant="contained"
+            color="secondary"
+            onClick={onClickManage}
+            disabled={subscriptionLoading}
+          >
+            Manage
+          </Button>
+        </Box>
+      )
+    }
+
+    // Fallback for loading/error states
+    return null
+  }
+
+  // Helper function to format expiration date with server-validated expiration status
+  const getExpirationInfo = () => {
+    if (!userSubscription) return null
+    const expirationDate = new Date(userSubscription.expiration)
+
+    if (
+      userSubscription.is_expired ||
+      userSubscription.status === SUBSCRIPTION_USER_STATUS.CANCELED
+    ) {
+      return (
+        <Typography variant="caption" color="error" sx={{ ml: 1 }}>
+          (Expired on {expirationDate.toLocaleDateString()})
+        </Typography>
+      )
+    }
+
+    if (userSubscription.scheduled_downgrade) {
+      return (
+        <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+          (Expires on {expirationDate.toLocaleDateString()})
+        </Typography>
+      )
+    }
+
+    // Show expiration date for all active paid subscriptions (not FREE tier)
+    if (userSubscription.status === SUBSCRIPTION_USER_STATUS.SUBSCRIBED) {
+      return (
+        <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+          (Renew on {expirationDate.toLocaleDateString()})
+        </Typography>
+      )
+    }
+
+    return null
   }
 
   return (
@@ -220,6 +354,24 @@ const Account = () => {
       <BoxFlex>
         <TitleData>Bucket name</TitleData>
         <BoxData>{user?.attributes?.remote_bucket_name || "-"}</BoxData>
+      </BoxFlex>
+      <BoxFlex>
+        <TitleData>Subscription</TitleData>
+        <Box
+          sx={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-start",
+          }}
+        >
+          <BoxData>
+            {userSubscription?.plan_name && !userSubscription.is_expired
+              ? userSubscription.plan_name
+              : SUBSCRIPTION_PLAN.FREE}
+          </BoxData>
+          {getExpirationInfo()}
+        </Box>
+        {renderSubscriptionButtons()}
       </BoxFlex>
       <BoxFlex sx={{ justifyContent: "space-between", mt: 10, maxWidth: 600 }}>
         <Button variant="contained" color="primary" onClick={onChangePwClick}>

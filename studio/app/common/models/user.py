@@ -46,7 +46,6 @@ class User(Base, TimestampMixin, table=True):
     email: str = Field(sa_column=Column(String(255), nullable=False))
     attributes: Optional[Dict] = Field(default={}, sa_column=Column(JSON))
     active: bool = Field(nullable=False)
-
     workspace: List["Workspace"] = Relationship(  # noqa: F821
         back_populates="user", sa_relationship_kwargs={"uselist": True}
     )

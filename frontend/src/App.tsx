@@ -15,9 +15,14 @@ import AccountDelete from "pages/AccountDelete"
 import AccountManager from "pages/AccountManager"
 import Dashboard from "pages/Dashboard"
 import Dataview from "pages/Dataview"
+import InvoicesPage from "pages/Invoice"
 import Login from "pages/Login"
 import PublicDataview from "pages/PublicDataview"
+import RegistrationForm from "pages/Register/MainRegistration"
 import ResetPassword from "pages/ResetPassword"
+import SubscriptionPage from "pages/Subscription"
+import Failed from "pages/Subscription/failed"
+import Thanks from "pages/Subscription/thanks"
 import Workspaces from "pages/Workspace"
 import Workspace from "pages/Workspace/Workspace"
 import { getModeStandalone } from "store/slice/Standalone/StandaloneActions"
@@ -68,6 +73,7 @@ const App: FC = () => {
               <Route path="/dataview" element={<PublicDataview />} />
               <Route path="/account-deleted" element={<AccountDelete />} />
               <Route path="/login" element={<Login />} />
+              <Route path="/register" element={<RegistrationForm />} />
               <Route path="/reset-password" element={<ResetPassword />} />
               <Route path="/console" element={<Dashboard />} />
               <Route path="/console/account" element={<Account />} />
@@ -84,6 +90,16 @@ const App: FC = () => {
                 <Route path="" element={<Workspaces />} />
                 <Route path=":workspaceId" element={<Workspace />} />
               </Route>
+              <Route path="/console/subscription/thanks" element={<Thanks />} />
+              <Route path="/console/subscription/failed" element={<Failed />} />
+              <Route
+                path="/console/subscription"
+                element={<SubscriptionPage />}
+              />
+              <Route
+                path="/console/subscription/manage"
+                element={<InvoicesPage />}
+              />
               <Route
                 path="/console/*"
                 element={<Navigate replace to="/console" />}
