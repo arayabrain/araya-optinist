@@ -69,7 +69,11 @@ type PopupType = {
 
 const columns = (
   handleOpenPopupShare: (id: number) => void,
-  handleOpenPopupDel: (id: number, nameWorkspace: string) => void,
+  handleOpenPopupDel: (
+    id: number,
+    nameWorkspace: string,
+    displayNumber?: number,
+  ) => void,
   handleNavWorkflow: (id: number) => void,
   handleNavRecords: (id: number) => void,
   handleNavDataview: (id: number) => void,
@@ -77,14 +81,14 @@ const columns = (
   onEdit?: (id: number) => void,
 ) => [
   {
-    field: "id",
+    field: "display_number",
     headerName: "ID",
     filterable: false, // todo enable when api complete
     sortable: false, // todo enable when api complete
     flex: 1,
     minWidth: 70,
     renderCell: (params: GridRenderCellParams<GridValidRowModel>) => (
-      <span>{params.value}</span>
+      <span>{params.value ?? params.row.id}</span>
     ),
   },
   {
@@ -273,7 +277,12 @@ const columns = (
           <span>
             <IconButton
               onClick={() =>
-                canDelete && handleOpenPopupDel(params.row.id, params.row.name)
+                canDelete &&
+                handleOpenPopupDel(
+                  params.row.id,
+                  params.row.name,
+                  params.row.display_number,
+                )
               }
               color="error"
               disabled={!canDelete}
@@ -343,6 +352,7 @@ const Workspaces = () => {
   const [workspaceDel, setWorkspaceDel] = useState<{
     id: number
     name: string
+    display_number?: number
   }>()
   const [newWorkspace, setNewWorkSpace] = useState<string>()
   const [error, setError] = useState("")
@@ -386,8 +396,12 @@ const Workspaces = () => {
     setOpen({ ...open, share: false })
   }
 
-  const handleOpenPopupDel = (id: number, name: string) => {
-    setWorkspaceDel({ id, name })
+  const handleOpenPopupDel = (
+    id: number,
+    name: string,
+    display_number?: number,
+  ) => {
+    setWorkspaceDel({ id, name, display_number })
     setOpen({ ...open, del: true })
   }
 
@@ -606,7 +620,7 @@ const Workspaces = () => {
         titleSubmit={"Delete Workspace"}
         description={
           "Delete ID: " +
-          workspaceDel?.id +
+          (workspaceDel?.display_number ?? workspaceDel?.id) +
           " Name: " +
           workspaceDel?.name +
           " ? \n"
