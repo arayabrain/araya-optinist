@@ -27,7 +27,7 @@ def return_as_data_type(data, processed_data, output_dir, file_name, **kwargs):
     if output_type in ["behaviors_data", "BehaviorData", "CsvData"] or (
         output_type is None and isinstance(data, (BehaviorData, CsvData))
     ):
-        logger.debug("Processing as BehaviorData or CsvData")
+        logger.info("Processing as BehaviorData or CsvData")
         result = BehaviorData(
             data=processed_data,
             std=std,
@@ -40,7 +40,7 @@ def return_as_data_type(data, processed_data, output_dir, file_name, **kwargs):
     elif output_type in ["neural_data", "FluoData"] or (
         output_type is None and isinstance(data, FluoData)
     ):
-        logger.debug("Processing as FluoData")
+        logger.info("Processing as FluoData")
         result = FluoData(
             data=processed_data,
             std=std,
@@ -54,7 +54,7 @@ def return_as_data_type(data, processed_data, output_dir, file_name, **kwargs):
     elif output_type in ["image_data", "ImageData", "image"] or (
         output_type is None and isinstance(data, ImageData)
     ):
-        logger.debug("Processing as ImageData")
+        logger.info("Processing as ImageData")
         result = ImageData(
             data=processed_data,
             output_dir=output_dir,
