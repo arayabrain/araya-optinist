@@ -2,7 +2,14 @@ from typing import Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
-from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
+from studio.app.common.core.auth.auth_dependencies import (
+    get_current_user,
+    get_user_remote_bucket_name,
+)
+from studio.app.common.core.cloud.cloud_utils import (
+    get_current_user_storage_usage,
+    get_user_storage_usage,
+)
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageLockError,
@@ -26,6 +33,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
     is_workspace_owner,
 )
+from studio.app.common.schemas.users import User
 
 router = APIRouter(prefix="/run", tags=["run"])
 
@@ -41,13 +49,39 @@ async def run(
     workspace_id: str,
     runItem: RunItem,
     background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     try:
+        # Check storage before running job - works for both S3 and local storage
+        # Use cached data to avoid ALB timeout on large S3 buckets
+        current_usage = await get_current_user_storage_usage(
+            current_user.id, force_live=False
+        )
+        storage_info = get_user_storage_usage(current_user.id)
+
+        if storage_info and storage_info["storage_quota_bytes"] > 0:
+            quota_limit = storage_info["storage_quota_bytes"]
+            storage_usage_percent = (current_usage / quota_limit) * 100
+
+            # Block workflow execution if over quota (100%)
+            if storage_usage_percent >= 100:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Cannot run job: Storage quota exceeded "
+                    f"({storage_usage_percent:.1f}% used). "
+                    f"Please free up space before running jobs.",
+                )
+
         unique_id = WorkflowRunner.create_workflow_unique_id()
         WorkflowRunner(
-            remote_bucket_name, workspace_id, unique_id, runItem
+            remote_bucket_name, workspace_id, unique_id, runItem, current_user.id
         ).run_workflow(background_tasks)
+
+        # Refresh storage cache in background to keep it up-to-date
+        background_tasks.add_task(
+            get_current_user_storage_usage, current_user.id, force_live=True
+        )
 
         logger.info("run snakemake")
 
@@ -85,11 +119,12 @@ async def run_id(
     runItem: RunItem,
     background_tasks: BackgroundTasks,
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    current_user: User = Depends(get_current_user),
 ):
     try:
-        WorkflowRunner(remote_bucket_name, workspace_id, uid, runItem).run_workflow(
-            background_tasks
-        )
+        WorkflowRunner(
+            remote_bucket_name, workspace_id, uid, runItem, current_user.id
+        ).run_workflow(background_tasks)
 
         logger.info("run snakemake")
         logger.info("forcerun list: %s", runItem.forceRunList)
