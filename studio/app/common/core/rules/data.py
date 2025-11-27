@@ -31,7 +31,6 @@ def main():
 
         last_output = snakemake.config["last_output"]
 
-        logger.info(f"Reading rule config for: {snakemake.params.name}")
         rule_config = RuleConfigReader.read(snakemake.params.name)
 
         rule_config = SmkUtils.resolve_nwbfile_reference(rule_config)

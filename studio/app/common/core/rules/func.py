@@ -19,8 +19,6 @@ logger = AppLogger.get_logger()
 
 def main():
     try:
-        import json
-
         from studio.app.common.core.rules.runner import Runner
         from studio.app.common.core.snakemake.snakemake_reader import RuleConfigReader
         from studio.app.common.core.utils.filepath_creater import join_filepath
