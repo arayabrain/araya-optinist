@@ -18,8 +18,8 @@ export const getAllPaymentMethodsApi = async (): Promise<
 }
 
 export const getInvoicesApi = async (
-  _userId: number | undefined,
+  userId: number | undefined,
 ): Promise<InvoiceDTO[]> => {
-  const response = await axios.get(`/api/subsc/invoices/${_userId}`)
+  const response = await axios.get(`/api/subsc/invoices/${userId}`)
   return response.data
 }

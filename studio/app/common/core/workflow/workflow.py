@@ -123,7 +123,7 @@ class OutputType:
 
 
 class ProcessType:
-    POST_PROCESS = NormalRun(
+    POST_PROCESS: NormalRun = NormalRun(
         id="post_process_0", type="post_process", label="post_process"
     )
 
