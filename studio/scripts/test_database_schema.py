@@ -46,9 +46,6 @@ Migration 4df5949c42ef (experiment_records columns):
 Migration af8c4144cd54 (stripe_integration):
 12. Stripe integration tables and columns
 
-Migration d438483eb821 (user_registration):
-13. User registration columns (master_key, registration_source, firebase_uid)
-
 All Migrations Integrity Check:
 14. Comprehensive verification of all critical schema elements across all migrations
 
@@ -784,14 +781,6 @@ class TestDatabaseSchema:
                     ("subscription_providers", "Subscription providers table"),
                     ("stripe_product_id", "Stripe product ID column"),
                     ("stripe_price_id", "Stripe price ID column"),
-                ],
-            },
-            "d438483eb821_add_registration_columns_to_users_table.py": {
-                "description": "User Registration",
-                "checks": [
-                    ("master_key", "Master key column"),
-                    ("registration_source", "Registration source column"),
-                    ("firebase_uid", "Firebase UID column"),
                 ],
             },
         }
