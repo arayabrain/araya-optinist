@@ -10,11 +10,49 @@ from sqlalchemy.sql.functions import current_timestamp
 from sqlmodel import Column, Field, SQLModel
 
 
+# Storage size constants (in bytes)
+class StorageSize:
+    """Constants for storage size calculations"""
+
+    KB = 1024  # 1 Kilobyte
+    MB = 1024 * 1024  # 1 Megabyte
+    GB = 1024 * 1024 * 1024  # 1 Gigabyte
+    TB = 1024 * 1024 * 1024 * 1024  # 1 Terabyte
+
+
 # Enums for subscription management
 class SyncStatus(StrEnum):
     PENDING = "pending"
     SYNCED = "synced"
     FAILED = "failed"
+
+
+class SubscriptionType(StrEnum):
+    PREMIUM = "premium"
+    FREE = "free"
+
+
+class PlanName(StrEnum):
+    PREMIUM = "Premium"
+    FREE = "Free"
+    UNKNOWN = "Unknown"  # Fallback for when plan cannot be determined
+
+
+class SubscriptionStatus(StrEnum):
+    FREE = "Free"  # User on free plan
+    PREMIUM = "Premium"  # Active premium subscription
+    LIMIT_GRACE = "Limit Grace"  # Premium expired, in grace period
+    EXPIRED = "Expired"  # Grace period ended
+
+
+class SubscriptionLifecycleStatus(StrEnum):
+    """Lifecycle status for subscription expiration checking in limit warnings"""
+
+    ACTIVE = "active"  # Subscription has not expired yet
+    GRACE = "grace"  # In grace period after expiration
+    WARNING = "warning"  # In warning period (after grace, before deletion)
+    OVERDUE = "overdue"  # Past warning period
+    FREE = "free"  # Never had premium subscription
 
 
 class CancellationReason(StrEnum):
@@ -221,3 +259,37 @@ class SubscriptionCancellation(SQLModel, table=True):
         default=None,
         description="Additional notes or comments",
     )
+
+
+class UserStorageUsage(SQLModel, table=True):
+    __tablename__ = "user_storage_usage"
+    __table_args__ = (UniqueConstraint("id", name="idx_id"),)
+
+    id: Optional[int] = Field(
+        sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
+        default=None,
+    )
+    user_id: int = Field(sa_column=Column(BIGINT, nullable=False, unique=True))
+    storage_usage_bytes: int = Field(
+        sa_column=Column(BIGINT, nullable=False, default=0)
+    )
+    storage_quota_bytes: int = Field(sa_column=Column(BIGINT, nullable=False))
+    last_updated: Optional[datetime] = Field(
+        default_factory=datetime.utcnow,
+        sa_column=Column(
+            DateTime, nullable=False, server_default=func.current_timestamp()
+        ),
+    )
+    created_at: Optional[datetime] = Field(
+        default_factory=datetime.utcnow,
+        sa_column=Column(
+            DateTime, nullable=False, server_default=func.current_timestamp()
+        ),
+    )
+
+    @property
+    def storage_usage_percent(self) -> float:
+        """Calculate usage percentage."""
+        if self.storage_quota_bytes == 0:
+            return 0.0
+        return round((self.storage_usage_bytes / self.storage_quota_bytes) * 100, 2)

@@ -57,6 +57,10 @@ export async function uploadFileApi(
   const upload_config = {
     onUploadProgress: config.onUploadProgress,
     timeout: 1800000, // Set a long timeout for upload api (30min)
+    headers: {
+      // Let axios auto-detect Content-Type for multipart/form-data with boundary
+      "Content-Type": undefined,
+    },
   }
   const response = await axios.post(
     `${BASE_URL}/files/${workspaceId}/upload/${fileName}`,
