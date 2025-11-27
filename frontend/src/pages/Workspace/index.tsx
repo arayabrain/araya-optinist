@@ -422,17 +422,17 @@ const Workspaces = () => {
 
   const handleNavWorkflow = (id: number) => {
     dispatch(resetVisualizeLayout())
-    navigate(`/dashboard/workspaces/${id}`)
+    navigate(`/workspaces/${id}`)
   }
 
   const handleNavRecords = (id: number) => {
     dispatch(resetVisualizeLayout())
-    navigate(`/dashboard/workspaces/${id}`, { state: { tab: 2 } })
+    navigate(`/workspaces/${id}`, { state: { tab: 2 } })
   }
 
   const handleNavDataview = (id: number) => {
     dispatch(resetVisualizeLayout())
-    navigate(`/dashboard/public/${id}`)
+    navigate(`/dataview/${id}`)
   }
 
   const onEditName = (id: number) => {

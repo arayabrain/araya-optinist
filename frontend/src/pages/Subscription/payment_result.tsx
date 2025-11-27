@@ -48,7 +48,7 @@ const PaymentResult: React.FC<PaymentResultProps> = ({ type = "success" }) => {
       buttonText: "Try Again",
       buttonColor: "#ef4444",
       buttonHoverColor: "#dc2626",
-      buttonAction: () => navigate("/dashboard/subscription"),
+      buttonAction: () => navigate("/subscription"),
     },
   }
 

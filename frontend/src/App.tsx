@@ -69,47 +69,35 @@ const App: FC = () => {
             </Routes>
           ) : (
             <Routes>
+              {/* Public routes */}
               <Route path="/" element={<Navigate replace to="/public" />} />
               <Route path="/public" element={<PublicDataview />} />
               <Route path="/account-deleted" element={<AccountDelete />} />
               <Route path="/login" element={<Login />} />
               <Route path="/register" element={<RegistrationForm />} />
               <Route path="/reset-password" element={<ResetPassword />} />
+
+              {/* Authenticated routes */}
               <Route path="/dashboard" element={<Dashboard />} />
-              <Route path="/dashboard/account" element={<Account />} />
-              <Route
-                path="/dashboard/account-manager"
-                element={<AccountManager />}
-              />
-              <Route path="/dashboard/public">
+              <Route path="/account" element={<Account />} />
+              <Route path="/account-manager" element={<AccountManager />} />
+
+              <Route path="/dataview">
                 <Route path="" element={<Dataview />} />
                 <Route path=":workspaceId" element={<Dataview />} />
               </Route>
 
-              <Route path="/dashboard/workspaces">
+              <Route path="/workspaces">
                 <Route path="" element={<Workspaces />} />
                 <Route path=":workspaceId" element={<Workspace />} />
               </Route>
-              <Route
-                path="/dashboard/subscription/thanks"
-                element={<Thanks />}
-              />
-              <Route
-                path="/dashboard/subscription/failed"
-                element={<Failed />}
-              />
-              <Route
-                path="/dashboard/subscription"
-                element={<SubscriptionPage />}
-              />
-              <Route
-                path="/dashboard/subscription/manage"
-                element={<InvoicesPage />}
-              />
-              <Route
-                path="/dashboard/*"
-                element={<Navigate replace to="/dashboard" />}
-              />
+
+              <Route path="/subscription/thanks" element={<Thanks />} />
+              <Route path="/subscription/failed" element={<Failed />} />
+              <Route path="/subscription" element={<SubscriptionPage />} />
+              <Route path="/subscription/manage" element={<InvoicesPage />} />
+
+              {/* Catch-all */}
               <Route path="*" element={<Navigate replace to="/" />} />
             </Routes>
           )}

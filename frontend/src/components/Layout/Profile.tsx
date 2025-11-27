@@ -30,7 +30,7 @@ const Profile: FC = () => {
 
   const onClickAccount = () => {
     setAnchorEl(null)
-    navigate("/dashboard/account")
+    navigate("/account")
   }
 
   return (

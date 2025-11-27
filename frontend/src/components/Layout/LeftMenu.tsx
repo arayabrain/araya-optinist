@@ -33,27 +33,27 @@ const LeftMenu: FC<{ open: boolean; handleDrawerClose: () => void }> = ({
 
   const onClickDataview = () => {
     handleDrawerClose()
-    navigate("/dashboard/public")
+    navigate("/dataview")
   }
 
   const onClickWorkspaces = () => {
     handleDrawerClose()
-    navigate("/dashboard/workspaces")
+    navigate("/workspaces")
   }
 
   const onClickOpenSite = () => {
     handleDrawerClose()
-    navigate("/")
+    navigate("/public")
   }
 
   const onClickAccountManager = () => {
     handleDrawerClose()
-    navigate("/dashboard/account-manager")
+    navigate("/account-manager")
   }
 
   const onClickUpgrade = () => {
     handleDrawerClose()
-    navigate("/dashboard/subscription")
+    navigate("/subscription")
   }
 
   return (

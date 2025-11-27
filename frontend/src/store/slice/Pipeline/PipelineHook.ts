@@ -65,7 +65,7 @@ export function useRunPipeline() {
           selectedTab && dispatch(setActiveTab(selectedTab))
         })
         .catch((_) => {
-          navigate("/dashboard/workspaces")
+          navigate("/workspaces")
         })
     }
     return () => {
