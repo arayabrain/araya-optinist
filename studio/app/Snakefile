@@ -1,3 +1,4 @@
+from studio.app.common.core.cloud_batch.batch_path_handler import BatchPathHandler
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
 from studio.app.common.core.snakemake.snakemake_reader import SmkConfigReader
 from studio.app.common.core.utils.filepath_creater import join_filepath
@@ -16,7 +17,7 @@ configfile: _config_path
 
 # Compute paths outside rule definition to avoid Snakemake parsing issues
 all_outputs = [
-    SmkUtils._make_relative_path(join_filepath([DIRPATH.OUTPUT_DIR, x]))
+    BatchPathHandler.make_relative_path(join_filepath([DIRPATH.OUTPUT_DIR, x]))
     for x in config["last_output"]
 ]
 
