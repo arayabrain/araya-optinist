@@ -497,13 +497,14 @@ async def get_user_invoices(
         )
 
     try:
-        # Get user email to find Stripe customer
-        subscription_user, user = SubscriptionService.get_user_subscription_by_user_id(
-            db, user_id
-        )
-        logger.info(f"Fetched user subscription record: {subscription_user}")
-        if not user:
+        # Get user and subscription (if exists) for invoice lookup
+        result = SubscriptionService.get_user_for_invoice_lookup(db, user_id)
+
+        if not result:
             raise HTTPException(status_code=404, detail="User not found")
+
+        subscription_user, user = result
+        logger.info(f"Fetched user subscription record: {subscription_user}")
 
         logger.info(f"Fetching invoices for user {user_id} with email {user.email}")
 
