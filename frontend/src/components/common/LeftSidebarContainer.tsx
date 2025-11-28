@@ -89,7 +89,7 @@ export const LeftSidebarContainer: FC<LeftSidebarContainerProps> = ({
         <Box
           sx={{
             display: "flex",
-            justifyContent: "flex-start",
+            justifyContent: "flex-end",
             alignItems: "center",
             paddingY: 0,
             borderBottom: `1px solid ${grey[200]}`,
