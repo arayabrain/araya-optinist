@@ -31,9 +31,39 @@ const Layout = ({ children }: { children?: ReactNode }) => {
   )
 
   useEffect(() => {
-    !isStandalone && requiresAuth(location.pathname) && checkAuth()
+    if (!isStandalone) {
+      if (requiresAuth(location.pathname)) {
+        checkAuth()
+      } else {
+        // For public routes, check if logged-in user should be redirected
+        checkPublicRouteAccess()
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname, user])
+
+  const checkPublicRouteAccess = async () => {
+    const isAuthPage = ["/login", "/register"].includes(location.pathname)
+
+    // For all public routes, if there's a token, fetch user data to show correct header
+    if (!user) {
+      const token = getToken()
+      if (token) {
+        try {
+          await dispatch(getMe())
+          // If on login/register page and successfully authenticated, redirect to dashboard
+          if (isAuthPage) {
+            navigate("/dashboard", { replace: true })
+          }
+        } catch {
+          // Invalid token, stay on current page
+        }
+      }
+    } else if (isAuthPage) {
+      // If user is already logged in and trying to access login/register, redirect to dashboard
+      navigate("/dashboard", { replace: true })
+    }
+  }
 
   const checkAuth = async () => {
     if (user) {
@@ -56,14 +86,20 @@ const Layout = ({ children }: { children?: ReactNode }) => {
     }
   }
 
-  return isStandalone || requiresAuth(location.pathname) ? (
-    <AuthedLayout>{children}</AuthedLayout>
-  ) : (
-    <>
-      <Loading loading={loading} />
-      <UnauthedLayout>{children}</UnauthedLayout>
-    </>
-  )
+  if (isStandalone) {
+    return <AuthedLayout>{children}</AuthedLayout>
+  }
+
+  if (requiresAuth(location.pathname)) {
+    return (
+      <>
+        <Loading loading={loading} />
+        {!loading && <AuthedLayout>{children}</AuthedLayout>}
+      </>
+    )
+  }
+
+  return <UnauthedLayout>{children}</UnauthedLayout>
 }
 
 const AuthedLayout: FC<{ children: ReactNode }> = ({ children }) => {
