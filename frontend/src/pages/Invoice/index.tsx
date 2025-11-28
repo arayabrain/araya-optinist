@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, FC } from "react"
 import { useDispatch, useSelector } from "react-redux"
 import { useNavigate } from "react-router-dom"
 
@@ -136,18 +136,12 @@ interface CardIconProps {
 
 const CardIcon = styled(Box, {
   shouldForwardProp: (prop) => prop !== "brand",
-})<CardIconProps>(({ brand }) => ({
+})<CardIconProps>(() => ({
   width: "32px",
   borderRadius: "4px",
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-}))
-
-const CardText = styled(Typography)(() => ({
-  color: "white",
-  fontSize: "12px",
-  fontWeight: "bold",
 }))
 
 const CardNumber = styled(Typography)(() => ({
@@ -242,40 +236,6 @@ const ViewButton = styled(Button)(() => ({
 }))
 
 // Helper functions
-function getCardBrandColor(brand?: string): string {
-  const colors: Record<CardBrand, string> = {
-    visa: "#1e40af",
-    mastercard: "#eb1c26",
-    amex: "#006fcf",
-    discover: "#ff6000",
-    jcb: "#0e4c96",
-    diners: "#0079be",
-    unionpay: "#e21836",
-  }
-
-  if (!brand) return "#6b7280"
-
-  const normalizedBrand = brand.toLowerCase() as CardBrand
-  return colors[normalizedBrand] || "#6b7280"
-}
-
-function getCardBrandText(brand?: string): string {
-  const brandMap: Record<CardBrand, string> = {
-    visa: "V",
-    mastercard: "MC",
-    amex: "AX",
-    discover: "D",
-    jcb: "JCB",
-    diners: "DC",
-    unionpay: "UP",
-  }
-
-  if (!brand) return "?"
-
-  const normalizedBrand = brand.toLowerCase() as CardBrand
-  return brandMap[normalizedBrand] || brand.charAt(0).toUpperCase() || "?"
-}
-
 function formatCardBrand(brand?: string): string {
   const brandNames: Record<CardBrand, string> = {
     visa: "Visa",
@@ -293,7 +253,7 @@ function formatCardBrand(brand?: string): string {
   return brandNames[normalizedBrand] || brand
 }
 
-const InvoicesPage: React.FC = () => {
+const InvoicesPage: FC = () => {
   const navigate = useNavigate()
 
   const dispatch = useDispatch<AppDispatch>()
@@ -319,8 +279,6 @@ const InvoicesPage: React.FC = () => {
   const userId = useSelector(selectCurrentUserId)
 
   // Combined loading states
-  const isAnyLoading =
-    subscriptionLoading || paymentMethodLoading || invoicesLoading
   const shouldShowLoader = isInitialLoading || isRefreshing
   const error = subscriptionError || paymentMethodsError
 
@@ -337,6 +295,7 @@ const InvoicesPage: React.FC = () => {
           dispatch(getUserInvoices(userId)),
         ])
       } catch (err) {
+        // eslint-disable-next-line no-console
         console.error("Error loading data:", err)
       } finally {
         setIsInitialLoading(false)
@@ -364,6 +323,7 @@ const InvoicesPage: React.FC = () => {
         )
         setServerTimeDate(fetchedServerTime)
       } catch (err) {
+        // eslint-disable-next-line no-console
         console.error("Error fetching server time:", err)
       }
     }
@@ -382,6 +342,7 @@ const InvoicesPage: React.FC = () => {
         dispatch(getUserInvoices(userId)),
       ])
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.error("Error refreshing data:", err)
     } finally {
       setIsRefreshing(false)

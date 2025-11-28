@@ -36,10 +36,28 @@ from studio.app.common.schemas.subscriptions import (
 )
 from studio.app.common.schemas.users import User
 
-stripe.api_key = SubscriptionService.get_stripe_key()
+# Load callback URL at module level (doesn't require secrets for module import)
+try:
+    STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
+except ValueError:
+    STRIPE_CALLBACK_URL = None  # Will be set when needed
 
-router = APIRouter(prefix="/api/subsc", tags=["Subscriptions"])
-webhook_router = APIRouter(prefix="/api/subsc/webhooks", tags=["Subscription Webhooks"])
+
+def stripe_dependency():
+    """Dependency to ensure Stripe is initialized before handling requests"""
+    SubscriptionService._ensure_stripe_initialized()
+
+
+router = APIRouter(
+    prefix="/api/subsc",
+    tags=["Subscriptions"],
+    dependencies=[Depends(stripe_dependency)],
+)
+webhook_router = APIRouter(
+    prefix="/api/subsc/webhooks",
+    tags=["Subscription Webhooks"],
+    dependencies=[Depends(stripe_dependency)],
+)
 logger = AppLogger.get_logger()
 
 
