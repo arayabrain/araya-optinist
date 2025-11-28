@@ -17,7 +17,7 @@ export const validateSession = async (
 ) => {
   // If no session ID, redirect to checkout
   if (!sessionId) {
-    navigate("/console/subscription", { replace: true })
+    navigate("/subscription", { replace: true })
     return
   }
 
@@ -34,10 +34,10 @@ export const validateSession = async (
     if (result.payload === true || result.meta?.requestStatus === "fulfilled") {
       setIsValidSession(true)
     } else {
-      navigate("/console/subscription", { replace: true })
+      navigate("/subscription", { replace: true })
     }
   } catch (error) {
-    navigate("/console/subscription", { replace: true })
+    navigate("/subscription", { replace: true })
   } finally {
     setIsLoading(false)
   }

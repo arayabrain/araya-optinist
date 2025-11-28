@@ -351,13 +351,13 @@ const InvoicesPage: FC = () => {
 
   const handleGoBack = (): void => {
     if (!shouldShowLoader) {
-      navigate("/console/account")
+      navigate("/account")
     }
   }
 
   const handleAdjustPlan = (): void => {
     if (!shouldShowLoader) {
-      navigate("/console/subscription")
+      navigate("/subscription")
     }
   }
 

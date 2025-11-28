@@ -48,7 +48,7 @@ const Login = () => {
   useEffect(() => {
     if (loginSuccess) {
       const timer = setTimeout(() => {
-        navigate("/console")
+        navigate("/dashboard")
       }, 100) // Small delay to ensure login completion
 
       return () => clearTimeout(timer)

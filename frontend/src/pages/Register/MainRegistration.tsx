@@ -156,8 +156,10 @@ const RegistrationForm = () => {
     )
 
     if (registerUser.fulfilled.match(resultAction)) {
+      // eslint-disable-next-line no-console
       console.log("Pre-registration successful! Please verify your email.")
     } else {
+      // eslint-disable-next-line no-console
       console.error("Pre-registration failed:", resultAction.payload)
     }
   }
@@ -167,8 +169,10 @@ const RegistrationForm = () => {
     const resultAction = await dispatch(resendVerificationEmail(formData.email))
 
     if (resendVerificationEmail.fulfilled.match(resultAction)) {
+      // eslint-disable-next-line no-console
       console.log("Email resent successfully")
     } else {
+      // eslint-disable-next-line no-console
       console.error("Email resend failed:", resultAction.payload)
     }
   }

@@ -1,6 +1,6 @@
 import { FC } from "react"
 import { useSelector } from "react-redux"
-import { Link } from "react-router-dom"
+import { Link, useLocation } from "react-router-dom"
 
 import { Box, styled, Typography } from "@mui/material"
 
@@ -8,20 +8,32 @@ import { selectCurrentUser } from "store/slice/User/UserSelector"
 
 const PublicHeader: FC = () => {
   const user = useSelector(selectCurrentUser)
+  const location = useLocation()
+  const isLoginPage = location.pathname === "/login"
+  const isRegisterPage = location.pathname === "/register"
+  const isPublicPage = location.pathname === "/public"
 
   return (
     <HeaderContainer>
-      <HeaderLogoLink to="/dataview">
+      {isPublicPage ? (
         <HeaderContent>
           <HeaderLogo src="/static/optinist_logo.png" alt="OptiNiSt" />
           <HeaderTitle>OptiNiSt</HeaderTitle>
         </HeaderContent>
-      </HeaderLogoLink>
+      ) : (
+        <HeaderLogoLink to="/public">
+          <HeaderContent>
+            <HeaderLogo src="/static/optinist_logo.png" alt="OptiNiSt" />
+            <HeaderTitle>OptiNiSt</HeaderTitle>
+          </HeaderContent>
+        </HeaderLogoLink>
+      )}
       <NavSection>
         {user ? (
-          <NavLink to="/console">Console</NavLink>
+          <DashboardButton to="/dashboard">Dashboard</DashboardButton>
         ) : (
-          <LoginButton to="/login">Login</LoginButton>
+          !isLoginPage &&
+          !isRegisterPage && <LoginButton to="/login">Login</LoginButton>
         )}
       </NavSection>
     </HeaderContainer>
@@ -31,7 +43,7 @@ const PublicHeader: FC = () => {
 const HeaderContainer = styled(Box)({
   width: "98%",
   height: 64,
-  backgroundColor: "#ffffff",
+  backgroundColor: "#E1DEDB",
   borderBottom: "1px solid #e5e7eb",
   display: "flex",
   alignItems: "center",
@@ -76,14 +88,18 @@ const NavSection = styled(Box)({
   gap: 16,
 })
 
-const NavLink = styled(Link)({
+const DashboardButton = styled(Link)({
+  display: "inline-block",
+  padding: "8px 16px",
   fontSize: 14,
   fontWeight: 500,
-  color: "#374151",
+  color: "#ffffff",
+  backgroundColor: "#000000c4",
+  borderRadius: 6,
   textDecoration: "none",
-  transition: "color 0.2s",
+  transition: "background-color 0.2s",
   ":hover": {
-    color: "#000000",
+    backgroundColor: "#00000090",
   },
 })
 
@@ -93,12 +109,12 @@ const LoginButton = styled(Link)({
   fontSize: 14,
   fontWeight: 500,
   color: "#ffffff",
-  backgroundColor: "#000000",
+  backgroundColor: "#000000c4",
   borderRadius: 6,
   textDecoration: "none",
   transition: "background-color 0.2s",
   ":hover": {
-    backgroundColor: "#1f2937",
+    backgroundColor: "#00000090",
   },
 })
 
