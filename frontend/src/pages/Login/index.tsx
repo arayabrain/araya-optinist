@@ -11,6 +11,7 @@ import {
   Box,
   CircularProgress,
   Snackbar,
+  Stack,
   styled,
   Typography,
 } from "@mui/material"
@@ -211,6 +212,16 @@ const Login = () => {
                 Please verify your email address to continue.
               </Alert>
             )}
+            <LinkWrappper to="/reset-password">
+              Forgot your password?
+            </LinkWrappper>
+            <Stack
+              flexDirection="row"
+              gap={2}
+              mt={3}
+              alignItems="center"
+              justifyContent="flex-end"
+            ></Stack>
 
             <ButtonLogin data-testid="button-submit" type="submit">
               Sign In
@@ -261,6 +272,12 @@ const LoginContent = styled(Box)({
   borderRadius: 8,
   boxShadow:
     "0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)",
+})
+
+const LinkWrappper = styled(Link)({
+  fontSize: 14,
+  marginLeft: 6,
+  color: "#1892d1",
 })
 
 const CardHeader = styled(Box)({
