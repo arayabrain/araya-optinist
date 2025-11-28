@@ -4,21 +4,24 @@ import { Link, useNavigate } from "react-router-dom"
 
 import { AxiosError } from "axios"
 
+import LockOutlinedIcon from "@mui/icons-material/LockOutlined"
+import MailOutlineIcon from "@mui/icons-material/MailOutline"
+import {
+  Alert,
+  Box,
+  CircularProgress,
+  Snackbar,
+  Stack,
+  styled,
+  Typography,
+} from "@mui/material"
+
 interface ErrorResponse {
   detail?: string
 }
 
-import {
-  Box,
-  Stack,
-  styled,
-  Typography,
-  CircularProgress,
-  Alert,
-  Snackbar,
-} from "@mui/material"
-
 import Loading from "components/common/Loading"
+import PublicHeader from "components/PublicLayout/PublicHeader"
 import { resendVerificationEmail } from "store/slice/Registration/RegistrationActions"
 import { getMe, login } from "store/slice/User/UserActions"
 import { AppDispatch } from "store/store"
@@ -128,141 +131,206 @@ const Login = () => {
   }
 
   return (
-    <LoginWrapper>
-      <LoginContent>
-        <Title data-testid="title">Sign in to your account</Title>
-        <FormSignUp autoComplete="off" onSubmit={onSubmit}>
-          <Box sx={{ position: "relative", mb: 2 }}>
-            <LabelField>
-              Email<LableRequired>*</LableRequired>
-            </LabelField>
-            <Input
-              data-testid="email"
-              autoComplete="off"
-              error={!!errors.email}
-              name="email"
-              onChange={onChangeValue}
-              value={values.email}
-              placeholder="Enter your email"
-            />
-            <TextError data-testid="error-email">{errors.email}</TextError>
-          </Box>
-          <Box sx={{ position: "relative", mb: 2 }}>
-            <LabelField>
-              Password<LableRequired>*</LableRequired>
-            </LabelField>
-            <Input
-              data-testid="password"
-              autoComplete="off"
-              error={!!errors.password}
-              onChange={onChangeValue}
-              name="password"
-              type="password"
-              value={values.password}
-              placeholder="Enter your password"
-            />
-            <TextError data-testid="error-password">
-              {errors.password}
-            </TextError>
-          </Box>
+    <>
+      <PublicHeader />
+      <LoginWrapper>
+        <LoginContent>
+          <CardHeader>
+            <LogoWrapper>
+              <Logo src="/static/optinist_logo.png" alt="OptiNiSt Logo" />
+            </LogoWrapper>
+            <Title data-testid="title">Login to OptiNiSt</Title>
+            <Subtitle>Enter your credentials to access your account</Subtitle>
+          </CardHeader>
 
-          {/* Verification Alert */}
-          {needsVerification && (
-            <Alert
-              severity="warning"
-              sx={{ mb: 2, fontSize: 12 }}
-              action={
-                <ResendButton
-                  onClick={handleResendEmail}
-                  disabled={resendingEmail}
-                >
-                  {resendingEmail ? (
-                    <>
-                      <CircularProgress size={12} sx={{ mr: 0.5 }} />
-                      Sending...
-                    </>
-                  ) : (
-                    "Resend Email"
-                  )}
-                </ResendButton>
-              }
-            >
-              Please verify your email address to continue.
-            </Alert>
-          )}
+          <FormSignUp autoComplete="off" onSubmit={onSubmit}>
+            <Box sx={{ mb: 3 }}>
+              <LabelField>Email</LabelField>
+              <InputWrapper>
+                <IconWrapper>
+                  <MailOutlineIcon sx={{ fontSize: 18, color: "#9ca3af" }} />
+                </IconWrapper>
+                <Input
+                  data-testid="email"
+                  autoComplete="off"
+                  error={!!errors.email}
+                  name="email"
+                  onChange={onChangeValue}
+                  value={values.email}
+                  placeholder="name@example.com"
+                />
+              </InputWrapper>
+              {errors.email && (
+                <TextError data-testid="error-email">{errors.email}</TextError>
+              )}
+            </Box>
 
-          <Description>
-            Forgot your password?
-            <LinkWrappper to="/reset-password">Reset password</LinkWrappper>
-          </Description>
-          <Stack
-            flexDirection="row"
-            gap={2}
-            mt={3}
-            alignItems="center"
-            justifyContent="flex-end"
-          >
-            <LinkWrappper to="/register">
-              Don&apos;t have an account? Sign up
+            <Box sx={{ mb: 3 }}>
+              <LabelField>Password</LabelField>
+              <InputWrapper>
+                <IconWrapper>
+                  <LockOutlinedIcon sx={{ fontSize: 18, color: "#9ca3af" }} />
+                </IconWrapper>
+                <Input
+                  data-testid="password"
+                  autoComplete="off"
+                  error={!!errors.password}
+                  onChange={onChangeValue}
+                  name="password"
+                  type="password"
+                  value={values.password}
+                  placeholder="••••••••"
+                />
+              </InputWrapper>
+              {errors.password && (
+                <TextError data-testid="error-password">
+                  {errors.password}
+                </TextError>
+              )}
+            </Box>
+
+            {/* Verification Alert */}
+            {needsVerification && (
+              <Alert
+                severity="warning"
+                sx={{ mb: 2, fontSize: 12 }}
+                action={
+                  <ResendButton
+                    onClick={handleResendEmail}
+                    disabled={resendingEmail}
+                  >
+                    {resendingEmail ? (
+                      <>
+                        <CircularProgress size={12} sx={{ mr: 0.5 }} />
+                        Sending...
+                      </>
+                    ) : (
+                      "Resend Email"
+                    )}
+                  </ResendButton>
+                }
+              >
+                Please verify your email address to continue.
+              </Alert>
+            )}
+            <LinkWrappper to="/reset-password">
+              Forgot your password?
             </LinkWrappper>
-            <ButtonLogin data-testid="button-submit" type="submit">
-              SIGN IN
-            </ButtonLogin>
-          </Stack>
-        </FormSignUp>
-      </LoginContent>
-      <Loading loading={loading} />
+            <Stack
+              flexDirection="row"
+              gap={2}
+              mt={3}
+              alignItems="center"
+              justifyContent="flex-end"
+            ></Stack>
 
-      {/* Resend success snackbar */}
-      <Snackbar
-        open={showResendSnackbar}
-        autoHideDuration={6000}
-        onClose={() => setShowResendSnackbar(false)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-      >
-        <Alert
+            <ButtonLogin data-testid="button-submit" type="submit">
+              Sign In
+            </ButtonLogin>
+
+            <SignUpWrapper>
+              Don&apos;t have an account?{" "}
+              <SignUpLink to="/register">Sign up</SignUpLink>
+            </SignUpWrapper>
+          </FormSignUp>
+        </LoginContent>
+        <Loading loading={loading} />
+
+        {/* Resend success snackbar */}
+        <Snackbar
+          open={showResendSnackbar}
+          autoHideDuration={6000}
           onClose={() => setShowResendSnackbar(false)}
-          severity="success"
-          sx={{ width: "100%" }}
+          anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
         >
-          Verification email resent successfully
-        </Alert>
-      </Snackbar>
-    </LoginWrapper>
+          <Alert
+            onClose={() => setShowResendSnackbar(false)}
+            severity="success"
+            sx={{ width: "100%" }}
+          >
+            Verification email resent successfully
+          </Alert>
+        </Snackbar>
+      </LoginWrapper>
+    </>
   )
 }
 
 const LoginWrapper = styled(Box)({
   width: "100%",
-  height: "100%",
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
+  paddingTop: 64,
 })
 
 const LoginContent = styled(Box)({
-  width: 400,
-  padding: 30,
-  boxShadow: "2px 1px 3px 1px rgba(0,0,0,0.1)",
-  borderRadius: 4,
+  width: "100%",
+  maxWidth: 448,
+  padding: "32px",
+  backgroundColor: "#ffffff",
+  border: "1px solid #e5e7eb",
+  borderRadius: 8,
+  boxShadow:
+    "0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)",
+})
+
+const LinkWrappper = styled(Link)({
+  fontSize: 14,
+  marginLeft: 6,
+  color: "#000000",
+})
+
+const CardHeader = styled(Box)({
+  marginBottom: 32,
+  textAlign: "center",
+})
+
+const LogoWrapper = styled(Box)({
+  display: "flex",
+  justifyContent: "center",
+  marginBottom: 24,
+})
+
+const Logo = styled("img")({
+  height: 60,
+  width: "auto",
 })
 
 const Title = styled(Typography)({
-  fontSize: 15,
+  fontSize: 24,
   fontWeight: 600,
-  marginBottom: 24,
+  color: "#000000",
+  marginBottom: 8,
+})
+
+const Subtitle = styled(Typography)({
+  fontSize: 14,
+  color: "#6b7280",
 })
 
 const FormSignUp = styled("form")({})
 
-const LabelField = styled(Typography)({
+const LabelField = styled("label")({
+  display: "block",
   fontSize: 14,
+  fontWeight: 500,
+  color: "#374151",
+  marginBottom: 8,
 })
 
-const LableRequired = styled("span")({
-  color: "red",
-  fontSize: 14,
-  marginLeft: 2,
+const InputWrapper = styled(Box)({
+  position: "relative",
+  display: "flex",
+  alignItems: "center",
+})
+
+const IconWrapper = styled(Box)({
+  position: "absolute",
+  left: 12,
+  display: "flex",
+  alignItems: "center",
+  pointerEvents: "none",
 })
 
 const Input = styled("input", {
@@ -270,39 +338,61 @@ const Input = styled("input", {
 })<{ error: boolean }>(({ error }) => {
   return {
     width: "100%",
-    height: 35,
-    borderRadius: 4,
+    height: 40,
+    borderRadius: 6,
     border: "1px solid",
-    borderColor: error ? "red" : "#d9d9d9",
-    padding: "5px 12px",
-    transition: "all 0.3s",
+    borderColor: error ? "#ef4444" : "#d1d5db",
+    paddingLeft: 40,
+    paddingRight: 12,
+    backgroundColor: "#ffffff",
+    color: "#000000",
+    fontSize: 14,
+    transition: "all 0.2s",
     outline: "none",
     boxSizing: "border-box",
-    ":focus, :hover": {
-      borderColor: "#1677ff",
+    "::placeholder": {
+      color: "#9ca3af",
+    },
+    ":focus": {
+      borderColor: error ? "#ef4444" : "#000000",
+      boxShadow: error
+        ? "0 0 0 3px rgba(239, 68, 68, 0.1)"
+        : "0 0 0 3px rgba(0, 0, 0, 0.1)",
     },
   }
 })
 
-const Description = styled(Typography)(({ theme }) => ({
-  fontSize: 12,
-  color: "rgba(0, 0, 0, 0.65)",
-  marginTop: theme.spacing(1),
-}))
-
-const LinkWrappper = styled(Link)({
-  marginLeft: 6,
-  color: "#1892d1",
-})
-
 const ButtonLogin = styled("button")({
-  backgroundColor: "#283237",
+  width: "100%",
+  height: 40,
+  backgroundColor: "#000000",
   color: "#ffffff",
-  borderRadius: 4,
+  borderRadius: 6,
   border: "none",
   outline: "none",
-  padding: "10px 20px",
+  fontSize: 14,
+  fontWeight: 500,
   cursor: "pointer",
+  transition: "background-color 0.2s",
+  ":hover": {
+    backgroundColor: "#1f2937",
+  },
+  marginBottom: 16,
+})
+
+const SignUpWrapper = styled(Typography)({
+  textAlign: "center",
+  fontSize: 14,
+  color: "#6b7280",
+})
+
+const SignUpLink = styled(Link)({
+  color: "#000000",
+  textDecoration: "none",
+  fontWeight: 500,
+  ":hover": {
+    textDecoration: "underline",
+  },
 })
 
 const ResendButton = styled("button")({
@@ -328,8 +418,8 @@ const ResendButton = styled("button")({
 
 const TextError = styled(Typography)({
   fontSize: 12,
-  color: "red",
-  bottom: 4,
+  color: "#ef4444",
+  marginTop: 4,
   wordWrap: "break-word",
   wordBreak: "break-word",
   whiteSpace: "normal",

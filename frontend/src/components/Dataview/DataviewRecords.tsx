@@ -1196,7 +1196,7 @@ const DataviewRecords = ({
 
 const DataviewRecordsWrapper = styled(Box)(() => ({
   width: "100%",
-  height: "calc(100vh - 220px)",
+  height: "calc(100vh - 280px)",
   display: "flex",
   flexDirection: "column",
 }))
