@@ -17,25 +17,7 @@ import { selectModeStandalone } from "store/slice/Standalone/StandaloneSeclector
 import { getMe } from "store/slice/User/UserActions"
 import { selectCurrentUser } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
-import { getToken } from "utils/auth/AuthUtils"
-
-// Public routes that don't require authentication
-const PUBLIC_ROUTES = [
-  /^\/$/,
-  /^\/public(\/.*)?$/,
-  /^\/login$/,
-  /^\/register$/,
-  /^\/reset-password$/,
-  /^\/account-deleted$/,
-]
-
-const isPublicRoute = (pathname: string): boolean => {
-  return PUBLIC_ROUTES.some((pattern) => pattern.test(pathname))
-}
-
-const requiresAuth = (pathname: string): boolean => {
-  return !isPublicRoute(pathname)
-}
+import { getToken, requiresAuth } from "utils/auth/AuthUtils"
 
 const Layout = ({ children }: { children?: ReactNode }) => {
   const user = useSelector(selectCurrentUser)
