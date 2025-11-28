@@ -26,10 +26,7 @@ import { ROLE } from "@types"
 import ChangePasswordModal from "components/Account/ChangePasswordModal"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
-import {
-  getUTCServerTime,
-  getUserSubscription,
-} from "store/slice/Subscriptions/SubscriptionActions"
+import { getUserSubscription } from "store/slice/Subscriptions/SubscriptionActions"
 import {
   selectUserSubscription,
   selectUserSubscriptionLoading,

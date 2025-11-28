@@ -55,6 +55,7 @@ const Login = () => {
         setShowResendSnackbar(true)
       }
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error("Failed to resend verification email:", error)
     } finally {
       setResendingEmail(false)
