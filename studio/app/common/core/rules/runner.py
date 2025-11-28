@@ -9,9 +9,9 @@ from pathlib import Path
 
 from filelock import FileLock
 
-from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
-from studio.app.common.core.cloud_batch.batch_context import is_running_in_batch
-from studio.app.common.core.cloud_batch.batch_logging import log_batch_config
+from studio.app.common.core.cloud_batch.batch_execution_handler import (
+    BatchExecutionHandler,
+)
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk import Rule
@@ -43,25 +43,8 @@ class Runner:
         try:
             logger.info("start rule runner")
 
-            # Detect execution context
-            is_batch = is_running_in_batch()
-            if is_batch:
-                logger.info("Running in AWS Batch context")
-                # Log batch job information
-                logger.info(f"Batch Job ID: {os.environ.get('AWS_BATCH_JOB_ID')}")
-                logger.info(f"Batch Queue: {os.environ.get('AWS_BATCH_JOB_QUEUE')}")
-
-            else:
-                logger.info("Running in local/ECS context")
-
-            # Determine if this should run on AWS Batch
-            if BATCH_CONFIG.USE_AWS_BATCH and not is_batch:
-                # We're in the main process, not in batch yet
-                log_batch_config()
-            else:
-                logger.debug(
-                    "AWS Batch disabled or already in batch - using local execution"
-                )
+            # Detect execution context and log batch information
+            is_batch = BatchExecutionHandler.detect_and_log_execution_context()
 
             # write pid file
             workflow_dirpath = str(Path(__rule.output).parent.parent)
@@ -98,17 +81,9 @@ class Runner:
             )
 
             # Handle output based on execution context
-            if is_batch and BATCH_CONFIG.AWS_BATCH_S3_BUCKET_NAME:
-                # In batch context - prepare for S3 upload (future implementation)
-                logger.info(
-                    "Batch execution detected "
-                    "if needed S3 upload will be implemented later"
-                )
-                # For now, just save locally as before
-                PickleWriter.write(__rule.output, output_info)
-            else:
-                # Local/ECS execution - save to EFS as before
-                PickleWriter.write(__rule.output, output_info)
+            BatchExecutionHandler.log_output_handling(is_batch)
+            # Save output (locally or to EFS/S3 as configured)
+            PickleWriter.write(__rule.output, output_info)
 
             # Save NWB data through Workflow
             if __rule.output in last_output:

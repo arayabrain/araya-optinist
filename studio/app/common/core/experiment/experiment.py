@@ -2,7 +2,7 @@ import os
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-from studio.app.common.core.mode import MODE
+from studio.app.common.core.cloud_batch.batch_path_handler import BatchPathHandler
 from studio.app.common.core.snakemake.smk import SmkParam
 from studio.app.common.core.workflow.workflow import OutputPath
 from studio.app.dir_path import DIRPATH
@@ -68,33 +68,20 @@ class ExptOutputPathIds:
         - output_dir format
           - {DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}/{function_id}
 
-        In AWS Batch with S3 storage, paths look like:
-          - .snakemake/storage/s3/{bucket}/app/studio_data/...
-          - output/{workspace_id}/{unique_id}/{function_id}
         """
         if not self.output_dir:
             return
 
         output_dir_normalized = self.output_dir.replace("\\", "/")
 
-        # In AWS Batch with S3 storage, extract IDs from the S3 path structure
-        # Path format: .snakemake/storage/s3/{bucket}/...
-        # app/studio_data/output/{workspace_id}/{unique_id}/{function_id}
-        is_batch_s3 = (
-            MODE.IN_SNAKEMAKE_BATCH
-            and ".snakemake/storage/s3/" in output_dir_normalized
-        )
+        # Check if this is a Batch S3 path and extract IDs accordingly
+        is_batch_s3 = BatchPathHandler.is_batch_s3_path(output_dir_normalized)
 
         if is_batch_s3:
-            # Find the "output/" segment and extract everything after it
-            output_marker = "/output/"
-            if output_marker in output_dir_normalized:
-                # "/output/" is: {workspace_id}/{unique_id}/{function_id}
-                ids_part = output_dir_normalized.split(output_marker, 1)[1]
-                splitted_ids = ids_part.rstrip("/").split("/")
-            else:
-                # Fallback: couldn't find expected structure
-                splitted_ids = []
+            # Extract IDs from S3 storage path
+            splitted_ids = BatchPathHandler.extract_ids_from_s3_path(
+                output_dir_normalized
+            )
         else:
             # Local/EFS mode: compute relative path from DIRPATH.OUTPUT_DIR
             output_relative_dir = os.path.relpath(

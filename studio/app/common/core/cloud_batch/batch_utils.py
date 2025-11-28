@@ -1767,8 +1767,8 @@ class BatchDebug:
                     expires_at = auth_data.get("expiresAt")
 
                     logger.debug("ECR Authentication: SUCCESS")
-                    logger.debug(f"  Proxy Endpoint: {proxy_endpoint}")
-                    logger.debug(f"  Token expires: {expires_at}")
+                    logger.debug(f"Proxy Endpoint: {proxy_endpoint}")
+                    logger.debug(f"Token expires: {expires_at}")
 
                     # Test repository access
                     try:
@@ -1887,12 +1887,11 @@ class BatchDebug:
 
                             except Exception as metrics_error:
                                 logger.debug(
-                                    "    Could not get memory metrics: "
-                                    f"{metrics_error}"
+                                    "Could not get memory metrics: " f"{metrics_error}"
                                 )
 
                         except Exception as cw_error:
-                            logger.debug(f"    CloudWatch check failed: {cw_error}")
+                            logger.debug(f"CloudWatch check failed: {cw_error}")
 
                         # Check for OOM killer in logs if available
                         log_stream = container.get("logStreamName")
@@ -1924,19 +1923,19 @@ class BatchDebug:
                                         ]
                                     ):
                                         logger.warning(
-                                            "    Memory issue detected: "
+                                            "Memory issue detected: "
                                             f"{event['message'][:100]}..."
                                         )
 
                             except Exception as log_error:
                                 logger.debug(
-                                    "    Could not check logs for memory issues: "
+                                    "Could not check logs for memory issues: "
                                     f"{log_error}"
                                 )
 
                 except Exception as job_error:
                     logger.warning(
-                        f"  Could not check memory for job {job_name}: {job_error}"
+                        f"Could not check memory for job {job_name}: {job_error}"
                     )
 
         except Exception as e:
@@ -1990,7 +1989,7 @@ class BatchDebug:
                             ce_state = ce_info.get("state", "UNKNOWN")
                             ce_status = ce_info.get("status", "UNKNOWN")
                             logger.info(
-                                f"  CE {ce_name}: state={ce_state}, status={ce_status}"
+                                f"CE {ce_name}: state={ce_state}, status={ce_status}"
                             )
 
                             # Check resource limits
@@ -1999,7 +1998,7 @@ class BatchDebug:
                                 max_vcpus = resources.get("maxvCpus", "N/A")
                                 desired_vcpus = resources.get("desiredvCpus", "N/A")
                                 logger.info(
-                                    f"  Resources: max_vCPUs={max_vcpus}, "
+                                    f"Resources: max_vCPUs={max_vcpus}, "
                                     f"desired_vCPUs={desired_vcpus}"
                                 )
 
@@ -2008,12 +2007,12 @@ class BatchDebug:
                                 "UPDATING",
                             ]:
                                 logger.warning(
-                                    "  CE {ce_name} may have issues: "
+                                    "CE {ce_name} may have issues: "
                                     f"{ce_state}/{ce_status}"
                                 )
                     except Exception as ce_error:
                         logger.warning(
-                            "  Could not get details for CE " f"{ce_name}: {ce_error}"
+                            "Could not get details for CE " f"{ce_name}: {ce_error}"
                         )
             else:
                 logger.error(f"Job queue '{job_queue}' not found!")
@@ -2040,7 +2039,7 @@ class BatchDebug:
                             if created_at:
                                 created_time = datetime.fromtimestamp(created_at / 1000)
                                 duration = datetime.now() - created_time
-                                logger.warning(f"  {job_name}: stuck for {duration}")
+                                logger.warning(f"{job_name}: stuck for {duration}")
                 except Exception as status_error:
                     logger.warning(f"Could not check {status} jobs: {status_error}")
 
@@ -2073,13 +2072,13 @@ class BatchDebug:
                                 exit_reason = container.get("reason", "Unknown")
 
                                 logger.warning(
-                                    f"  {job_name}: exit_code={exit_code}, "
+                                    f"{job_name}: exit_code={exit_code}, "
                                     f"reason='{exit_reason}'"
                                 )
-                                logger.warning(f"    Status: {status_reason}")
+                                logger.warning(f"Status: {status_reason}")
                         except Exception as detail_error:
                             logger.warning(
-                                f"  {job_name}: Could not get details - "
+                                f"{job_name}: Could not get details - "
                                 f"{detail_error}"
                             )
             except Exception as failed_error:
@@ -2196,7 +2195,7 @@ class BatchDebug:
                                     for metric in metrics["Metrics"][:3]:
                                         metric_name = metric["MetricName"]
                                         logger.debug(
-                                            "  Available metric: " f"{metric_name}"
+                                            "Available metric: " f"{metric_name}"
                                         )
 
                             except Exception as metric_error:
@@ -2276,10 +2275,10 @@ class BatchDebug:
                                             ]
                                         ):
                                             logger.warning(
-                                                "  Issue found: " f"{message[:100]}..."
+                                                "Issue found: " f"{message[:100]}..."
                                             )
                                         else:
-                                            logger.debug(f"  {message[:80]}...")
+                                            logger.debug(f"{message[:80]}...")
                             except Exception as events_error:
                                 logger.debug(
                                     "Could not get log events: " f"{events_error}"
@@ -2453,7 +2452,7 @@ class BatchDebug:
             logger.error("=" * 60)
 
             # Decision point: fail fast or continue with warning
-            logger.error("  Dryrun validation failed - batch execution may also fail")
+            logger.error("Dryrun validation failed - batch execution may also fail")
             logger.error(
                 "This indicates workflow configuration issues (likely S3 path mapping)"
             )
@@ -2508,11 +2507,11 @@ class BatchDebug:
                     if failure_analysis:
                         logger.error("Likely Causes:")
                         for cause in failure_analysis.get("likely_causes", []):
-                            logger.error(f"  - {cause}")
+                            logger.error(f"- {cause}")
 
                         logger.error("Recommendations:")
                         for rec in failure_analysis.get("recommendations", []):
-                            logger.error(f"  - {rec}")
+                            logger.error(f"- {rec}")
 
                     # Show monitoring context if available
                     mon_cntx = job_context.get("monitoring_context", {})
@@ -2529,7 +2528,7 @@ class BatchDebug:
                         logger.error("Error Patterns Found:")
                         for pattern in logs["error_patterns"][:3]:  # First 3 patterns
                             logger.error(
-                                f"  - {pattern['pattern']}: "
+                                f"- {pattern['pattern']}: "
                                 f"{pattern['message'][:100]}..."
                             )
 

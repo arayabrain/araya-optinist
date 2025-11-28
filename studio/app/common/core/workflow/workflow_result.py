@@ -12,11 +12,7 @@ from typing import Dict, List
 from fastapi import HTTPException, status
 from psutil import AccessDenied, NoSuchProcess, Process, ZombieProcess, process_iter
 
-from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
-from studio.app.common.core.cloud_batch.batch_utils import (
-    check_batch_job_failures_throttled,
-    observe_and_update_node_status_from_s3,
-)
+from studio.app.common.core.cloud_batch.batch_observation import BatchObservationHandler
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptFunction
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_writer import ExptConfigWriter
@@ -69,32 +65,11 @@ class WorkflowResult:
         """
         # For batch mode, update node status from S3 and return results from config
         # This reads pickle files directly from S3 and updates experiment.yaml
-        if BATCH_CONFIG.USE_AWS_BATCH and RemoteStorageController.is_available():
-            await observe_and_update_node_status_from_s3(
-                self.workspace_id, self.unique_id
-            )
-
-            # Read updated config
+        if BatchObservationHandler.should_use_batch_observation():
             expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
-
-            # In batch mode, construct results directly from config
-            # Local files may not be downloaded yet, so skip local observation
-            node_results: Dict[str, Message] = {}
-            for node_id in observe_node_ids:
-                expt_function = (
-                    expt_config.procs.get(node_id)
-                    if NodeResult.is_procs_node(node_id=node_id)
-                    else expt_config.function.get(node_id)
-                )
-                if expt_function:
-                    # Construct Message from config data
-                    node_results[node_id] = Message(
-                        status=expt_function.success,
-                        message=expt_function.message
-                        or f"{node_id} {expt_function.success}",
-                        outputPaths=expt_function.outputPaths,
-                    )
-            return node_results
+            return await BatchObservationHandler.observe_batch_nodes_from_s3(
+                self.workspace_id, self.unique_id, observe_node_ids, expt_config
+            )
 
         expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
 
@@ -120,7 +95,7 @@ class WorkflowResult:
         # If the workflow status observation is ongoing (maybe workflow is incomplete),
         # check whether the actual process exists (local) or batch jobs (remote).
         if is_workflow_observation_ongoing:
-            if not BATCH_CONFIG.USE_AWS_BATCH:
+            if not BatchObservationHandler.should_use_batch_observation():
                 # Local execution: check workflow process exists
                 current_process = self.monitor.search_process()
 
@@ -137,7 +112,7 @@ class WorkflowResult:
             else:
                 # Batch execution: check if any batch jobs have failed
                 # Throttled to every 60 seconds to avoid excessive AWS API calls
-                batch_error = await check_batch_job_failures_throttled(
+                batch_error = await BatchObservationHandler.check_batch_job_failures(
                     self.workspace_id, self.unique_id, observe_node_ids
                 )
 

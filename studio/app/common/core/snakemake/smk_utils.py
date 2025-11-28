@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict
 
+from studio.app.common.core.cloud_batch.batch_path_handler import BatchPathHandler
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk import Rule
 from studio.app.common.core.snakemake.snakemake_reader import SmkConfigReader
@@ -22,111 +23,6 @@ logger = AppLogger.get_logger()
 
 class SmkUtils:
     @classmethod
-    def _is_s3_storage_mode(cls):
-        """Check if we're in S3 storage mode by checking environment variables"""
-        import os
-
-        use_aws_batch = os.environ.get("USE_AWS_BATCH", "")
-        s3_bucket = os.environ.get("S3_DEFAULT_BUCKET_NAME")
-
-        is_s3_mode = use_aws_batch.lower() == "true" and s3_bucket is not None
-
-        logger.info(
-            f"S3 storage mode check: USE_AWS_BATCH='{use_aws_batch}', "
-            f"S3_DEFAULT_BUCKET_NAME='{s3_bucket}', is_s3_mode={is_s3_mode}"
-        )
-
-        # If not in S3 mode, log all relevant environment variables for debugging
-        if not is_s3_mode:
-            logger.debug("Not in S3 mode. Current environment:")
-            for key in [
-                "USE_AWS_BATCH",
-                "S3_DEFAULT_BUCKET_NAME",
-                "OPTINIST_DIR",
-                "AWS_DEFAULT_REGION",
-                "EFS_MOUNT_TARGET",
-            ]:
-                value = os.environ.get(key, "NOT_SET")
-                logger.debug(f"  {key}={value}")
-
-        return is_s3_mode
-
-    @classmethod
-    def _is_remote_storage_mode(cls):
-        """Check if we're in remote storage mode (S3 or EFS with AWS Batch)
-
-        Both S3 and EFS storage modes in AWS Batch require relative paths
-        to work properly with Snakemake's storage settings.
-        """
-        import os
-
-        use_aws_batch = os.environ.get("USE_AWS_BATCH", "")
-        s3_bucket = os.environ.get("S3_DEFAULT_BUCKET_NAME")
-        efs_mount = os.environ.get("EFS_MOUNT_TARGET")
-
-        # S3 storage mode: AWS Batch + S3 bucket configured
-        is_s3_mode = use_aws_batch.lower() == "true" and s3_bucket is not None
-
-        # EFS storage mode: AWS Batch + EFS mount configured (but no S3)
-        is_efs_mode = (
-            use_aws_batch.lower() == "true"
-            and efs_mount is not None
-            and s3_bucket is None
-        )
-
-        is_remote_mode = is_s3_mode or is_efs_mode
-
-        logger.debug(
-            f"Remote storage mode check: USE_AWS_BATCH='{use_aws_batch}', "
-            f"S3_DEFAULT_BUCKET_NAME='{s3_bucket}', EFS_MOUNT_TARGET='{efs_mount}', "
-            f"is_s3_mode={is_s3_mode}, is_efs_mode={is_efs_mode}, "
-            f"is_remote_mode={is_remote_mode}"
-        )
-
-        return is_remote_mode
-
-    @classmethod
-    def _make_relative_path(cls, absolute_path):
-        """Convert absolute path to relative path for remote storage compatibility
-
-        For S3 and EFS storage in AWS Batch, Snakemake expects relative paths that
-        will be prefixed with the storage prefix.
-        Absolute paths cause double slash issues.
-        """
-        logger.debug(f"_make_relative_path called with: {absolute_path}")
-
-        if not cls._is_remote_storage_mode():
-            logger.debug(
-                f"Not in remote storage mode, returning absolute path: {absolute_path}"
-            )
-            return absolute_path
-
-        # Strip the DATA_DIR prefix to make paths relative
-        # DIRPATH.DATA_DIR = "/app/studio_data" in container
-        data_dir = DIRPATH.DATA_DIR
-        logger.debug(f"DATA_DIR: {data_dir}")
-
-        if absolute_path.startswith(data_dir + "/"):
-            # Remove "/app/studio_data/" prefix, leaving "output/1/abc123/file.pkl"
-            relative_path = absolute_path[len(data_dir) + 1 :]
-            logger.debug(f"Converted path (case 1): {absolute_path} -> {relative_path}")
-            return relative_path
-        elif absolute_path.startswith(data_dir):
-            # Remove "/app/studio_data" prefix, handle case without trailing slash
-            remaining = absolute_path[len(data_dir) :]
-            # If remaining starts with "/", remove it to avoid empty path
-            relative_path = remaining.lstrip("/")
-            logger.debug(f"Converted path (case 2): {absolute_path} -> {relative_path}")
-            return relative_path
-
-        # If path doesn't start with DATA_DIR, might be
-        # already relative or different structure
-        # Remove leading slash if present to ensure relative path
-        relative_path = absolute_path.lstrip("/")
-        logger.debug(f"Converted path (case 3): {absolute_path} -> {relative_path}")
-        return relative_path
-
-    @classmethod
     def input(cls, details):
         logger.debug(
             f"SmkUtils.input() called with type: {details.get('type')}, "
@@ -136,20 +32,24 @@ class SmkUtils:
         if NodeTypeUtil.check_nodetype_from_filetype(details["type"]) == NodeType.DATA:
             if details["type"] in [FILETYPE.IMAGE]:
                 paths = [
-                    cls._make_relative_path(join_filepath([DIRPATH.INPUT_DIR, x]))
+                    BatchPathHandler.make_relative_path(
+                        join_filepath([DIRPATH.INPUT_DIR, x])
+                    )
                     for x in details["input"]
                 ]
                 logger.debug(f"Generated IMAGE input paths: {paths}")
                 return paths
             else:
-                path = cls._make_relative_path(
+                path = BatchPathHandler.make_relative_path(
                     join_filepath([DIRPATH.INPUT_DIR, details["input"]])
                 )
                 logger.debug(f"Generated DATA input path: {path}")
                 return path
         else:
             paths = [
-                cls._make_relative_path(join_filepath([DIRPATH.OUTPUT_DIR, x]))
+                BatchPathHandler.make_relative_path(
+                    join_filepath([DIRPATH.OUTPUT_DIR, x])
+                )
                 for x in details["input"]
             ]
             logger.debug(f"Generated OUTPUT input paths: {paths}")
@@ -158,7 +58,7 @@ class SmkUtils:
     @classmethod
     def output(cls, details):
         logger.debug(f"SmkUtils.output() called with output: {details.get('output')}")
-        path = cls._make_relative_path(
+        path = BatchPathHandler.make_relative_path(
             join_filepath([DIRPATH.OUTPUT_DIR, details["output"]])
         )
         logger.debug(f"Generated output path: {path}")

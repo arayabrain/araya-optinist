@@ -338,7 +338,7 @@ class S3StorageMonitor:
         percentage = alert["storage_usage_percent"]
 
         level_messages = {
-            "critical": f"  Storage usage is at {percentage}% "
+            "critical": f"Storage usage is at {percentage}% "
             f"({usage_formatted} of {quota_formatted}) - approaching limit",
             "danger": f" Storage quota exceeded at {percentage}% "
             f"({usage_formatted} of {quota_formatted}) - immediate action required",
