@@ -14,4 +14,5 @@ wrapper_dict.update(**lccd_wrapper_dict)
 wrapper_dict.update(**optinist_wrapper_dict)
 wrapper_dict.update(**utils_wrapper_dict)
 wrapper_dict.update(**maintenance_wrapper_dict)
+# Commented out as custom wrappers are not currently possible in cloud deployments
 # wrapper_dict.update(**custom_wrapper_dict)
