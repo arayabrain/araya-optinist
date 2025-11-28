@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useState } from "react"
+import { ChangeEvent, FormEvent, useState, useEffect } from "react"
 import { useDispatch } from "react-redux"
 import { Link, useNavigate } from "react-router-dom"
 
@@ -34,6 +34,7 @@ const Login = () => {
   const [showResendSnackbar, setShowResendSnackbar] = useState(false)
 
   const [loading, setLoading] = useState(false)
+  const [loginSuccess, setLoginSuccess] = useState(false)
   const [errors, setErrors] = useState<{ [key: string]: string }>({
     email: "",
     password: "",
@@ -43,6 +44,17 @@ const Login = () => {
     password: "",
   })
 
+  // Handle navigation after successful login
+  useEffect(() => {
+    if (loginSuccess) {
+      const timer = setTimeout(() => {
+        navigate("/console")
+      }, 100) // Small delay to ensure login completion
+
+      return () => clearTimeout(timer)
+    }
+    return undefined
+  }, [loginSuccess, navigate])
   // Handle resend verification email
   const handleResendEmail = async () => {
     if (!values.email) {
@@ -77,7 +89,7 @@ const Login = () => {
       .unwrap()
       .then(async (_) => {
         await dispatch(getMe())
-        navigate("/console")
+        setLoginSuccess(true)
       })
       .catch((e: AxiosError) => {
         const status = e.response?.status

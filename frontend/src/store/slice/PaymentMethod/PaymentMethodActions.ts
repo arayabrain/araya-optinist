@@ -53,6 +53,7 @@ export const getDefaultPaymentMethod = createAsyncThunk<
       const response = await getDefaultPaymentMethodApi()
       return response
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error("Error fetching default payment method:", error)
 
       // Handle 404 specifically (no payment method found)
@@ -106,12 +107,14 @@ export const getUserInvoices = createAsyncThunk<
 
       // Validate response structure
       if (!Array.isArray(response)) {
+        // eslint-disable-next-line no-console
         console.warn("Invalid invoices response:", response)
         return []
       }
 
       return response
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error("Error fetching invoices:", error)
       const errorMessage = extractErrorMessage(error)
       return thunkAPI.rejectWithValue(errorMessage)
