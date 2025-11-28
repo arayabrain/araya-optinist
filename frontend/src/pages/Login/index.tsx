@@ -277,7 +277,7 @@ const LoginContent = styled(Box)({
 const LinkWrappper = styled(Link)({
   fontSize: 14,
   marginLeft: 6,
-  color: "#1892d1",
+  color: "#000000",
 })
 
 const CardHeader = styled(Box)({
