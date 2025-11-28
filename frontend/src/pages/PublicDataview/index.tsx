@@ -9,7 +9,7 @@ const PublicDataview = () => {
     <>
       <PublicHeader />
       <PageWrapper>
-        <Title>Public Dataview</Title>
+        <Title>OptiNiSt Public Repository</Title>
         <PublicDataviewWrapper>
           <DataviewRecords />
         </PublicDataviewWrapper>
