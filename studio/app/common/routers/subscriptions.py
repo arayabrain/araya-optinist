@@ -36,22 +36,6 @@ from studio.app.common.schemas.subscriptions import (
 )
 from studio.app.common.schemas.users import User
 
-# Module-level flag for lazy Stripe initialization
-_stripe_initialized = False
-
-
-def _ensure_stripe_initialized():
-    """Lazy initialization of Stripe API key"""
-    global _stripe_initialized
-    if not _stripe_initialized:
-        try:
-            stripe.api_key = SubscriptionService.get_stripe_key()
-            _stripe_initialized = True
-        except ValueError as e:
-            logger.warning(f"Stripe not initialized: {e}")
-            # Don't raise here - allow module to load for tests
-
-
 # Load callback URL at module level (doesn't require secrets for module import)
 try:
     STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
@@ -61,7 +45,7 @@ except ValueError:
 
 def stripe_dependency():
     """Dependency to ensure Stripe is initialized before handling requests"""
-    _ensure_stripe_initialized()
+    SubscriptionService._ensure_stripe_initialized()
 
 
 router = APIRouter(
@@ -531,13 +515,14 @@ async def get_user_invoices(
         )
 
     try:
-        # Get user email to find Stripe customer
-        subscription_user, user = SubscriptionService.get_user_subscription_by_user_id(
-            db, user_id
-        )
-        logger.info(f"Fetched user subscription record: {subscription_user}")
-        if not user:
+        # Get user and subscription (if exists) for invoice lookup
+        result = SubscriptionService.get_user_for_invoice_lookup(db, user_id)
+
+        if not result:
             raise HTTPException(status_code=404, detail="User not found")
+
+        subscription_user, user = result
+        logger.info(f"Fetched user subscription record: {subscription_user}")
 
         logger.info(f"Fetching invoices for user {user_id} with email {user.email}")
 

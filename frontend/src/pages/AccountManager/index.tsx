@@ -365,7 +365,7 @@ const AccountManager = () => {
   )
 
   useEffect(() => {
-    if (!admin) navigate("/console")
+    if (!admin) navigate("/dashboard")
     //eslint-disable-next-line
   }, [JSON.stringify(admin)])
 
@@ -608,7 +608,7 @@ const AccountManager = () => {
     if (!userWaitingProxy?.uid) return
     setLoadingProxyLogin(true)
     await dispatch(proxyLogin(userWaitingProxy.uid))
-    navigate("/console")
+    navigate("/dashboard")
     setLoadingProxyLogin(false)
   }, [dispatch, navigate, userWaitingProxy?.uid])
 

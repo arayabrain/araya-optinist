@@ -52,3 +52,21 @@ export const getExToken = () => {
 export const removeExToken = () => {
   return localStorage.removeItem("ExToken")
 }
+
+// Public routes that don't require authentication
+const PUBLIC_ROUTES = [
+  /^\/$/,
+  /^\/public(\/.*)?$/,
+  /^\/login$/,
+  /^\/register$/,
+  /^\/reset-password$/,
+  /^\/account-deleted$/,
+]
+
+export const isPublicRoute = (pathname: string): boolean => {
+  return PUBLIC_ROUTES.some((pattern) => pattern.test(pathname))
+}
+
+export const requiresAuth = (pathname: string): boolean => {
+  return !isPublicRoute(pathname)
+}

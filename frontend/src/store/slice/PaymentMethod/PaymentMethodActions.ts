@@ -83,12 +83,14 @@ export const getAllPaymentMethods = createAsyncThunk<
 
     // Validate response structure
     if (!Array.isArray(response)) {
+      // eslint-disable-next-line no-console
       console.warn("Invalid payment methods response:", response)
       return []
     }
 
     return response
   } catch (error) {
+    // eslint-disable-next-line no-console
     console.error("Error fetching payment methods:", error)
     const errorMessage = extractErrorMessage(error)
     return thunkAPI.rejectWithValue(errorMessage)

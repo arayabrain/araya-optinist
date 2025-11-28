@@ -1,54 +1,121 @@
 import { FC } from "react"
-import { useNavigate } from "react-router-dom"
+import { useSelector } from "react-redux"
+import { Link, useLocation } from "react-router-dom"
 
-import {
-  AppBar,
-  Button,
-  Container,
-  styled,
-  Toolbar,
-  Typography,
-} from "@mui/material"
-import { SxProps, Theme } from "@mui/material/styles"
+import { Box, styled, Typography } from "@mui/material"
+
+import { selectCurrentUser } from "store/slice/User/UserSelector"
 
 const PublicHeader: FC = () => {
+  const user = useSelector(selectCurrentUser)
+  const location = useLocation()
+  const isLoginPage = location.pathname === "/login"
+  const isRegisterPage = location.pathname === "/register"
+  const isPublicPage = location.pathname === "/public"
+
   return (
-    <PublicAppBar>
-      <Container maxWidth={false}>
-        <Toolbar>
-          <PublicNavMenu
-            displayName="Studio Dataview"
-            navLink="/"
-            sx={{ fontWeight: 600, fontSize: 22, mr: 2 }}
-          />
-          <PublicNavMenu displayName="Console" navLink="/console" />
-        </Toolbar>
-      </Container>
-    </PublicAppBar>
+    <HeaderContainer>
+      {isPublicPage ? (
+        <HeaderContent>
+          <HeaderLogo src="/static/optinist_logo.png" alt="OptiNiSt" />
+          <HeaderTitle>OptiNiSt</HeaderTitle>
+        </HeaderContent>
+      ) : (
+        <HeaderLogoLink to="/public">
+          <HeaderContent>
+            <HeaderLogo src="/static/optinist_logo.png" alt="OptiNiSt" />
+            <HeaderTitle>OptiNiSt</HeaderTitle>
+          </HeaderContent>
+        </HeaderLogoLink>
+      )}
+      <NavSection>
+        {user ? (
+          <DashboardButton to="/dashboard">Dashboard</DashboardButton>
+        ) : (
+          !isLoginPage &&
+          !isRegisterPage && <LoginButton to="/login">Login</LoginButton>
+        )}
+      </NavSection>
+    </HeaderContainer>
   )
 }
 
-const PublicAppBar = styled(AppBar)({
+const HeaderContainer = styled(Box)({
+  width: "98%",
+  height: 64,
+  backgroundColor: "#E1DEDB",
+  borderBottom: "1px solid #e5e7eb",
+  display: "flex",
+  alignItems: "center",
+  padding: "0 24px",
   position: "fixed",
+  top: 0,
+  left: 0,
+  zIndex: 1000,
 })
 
-const PublicNavMenu: FC<{
-  displayName: string
-  navLink: string
-  sx?: SxProps<Theme>
-}> = ({ displayName, navLink, sx }) => {
-  const navigate = useNavigate()
-  const handleMenuClick = () => {
-    navigate(navLink)
-  }
+const HeaderLogoLink = styled(Link)({
+  textDecoration: "none",
+  display: "flex",
+  alignItems: "center",
+  transition: "opacity 0.2s",
+  ":hover": {
+    opacity: 0.8,
+  },
+})
 
-  return (
-    <Button key={displayName} onClick={handleMenuClick}>
-      <Typography color="white" sx={sx}>
-        {displayName}
-      </Typography>
-    </Button>
-  )
-}
+const HeaderContent = styled(Box)({
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+})
+
+const HeaderLogo = styled("img")({
+  height: 40,
+  width: "auto",
+})
+
+const HeaderTitle = styled(Typography)({
+  fontSize: 20,
+  fontWeight: 600,
+  color: "#000000",
+})
+
+const NavSection = styled(Box)({
+  marginLeft: "auto",
+  display: "flex",
+  alignItems: "center",
+  gap: 16,
+})
+
+const DashboardButton = styled(Link)({
+  display: "inline-block",
+  padding: "8px 16px",
+  fontSize: 14,
+  fontWeight: 500,
+  color: "#ffffff",
+  backgroundColor: "#000000c4",
+  borderRadius: 6,
+  textDecoration: "none",
+  transition: "background-color 0.2s",
+  ":hover": {
+    backgroundColor: "#00000090",
+  },
+})
+
+const LoginButton = styled(Link)({
+  display: "inline-block",
+  padding: "8px 16px",
+  fontSize: 14,
+  fontWeight: 500,
+  color: "#ffffff",
+  backgroundColor: "#000000c4",
+  borderRadius: 6,
+  textDecoration: "none",
+  transition: "background-color 0.2s",
+  ":hover": {
+    backgroundColor: "#00000090",
+  },
+})
 
 export default PublicHeader

@@ -1,6 +1,6 @@
 import { FC } from "react"
 import { useSelector } from "react-redux"
-import { useLocation } from "react-router-dom"
+import { Link, useLocation } from "react-router-dom"
 
 import MenuIcon from "@mui/icons-material/Menu"
 import MuiAppBar from "@mui/material/AppBar"
@@ -45,7 +45,7 @@ const StandaloneHeader: FC = () => {
 const MultiUserHeader: FC<{ handleDrawerOpen: () => void }> = ({
   handleDrawerOpen,
 }) => {
-  const showTabsRegex = /^\/console\/workspaces\/.+$/
+  const showTabsRegex = /^\/workspaces\/.+$/
   const location = useLocation()
 
   return (
@@ -59,8 +59,11 @@ const MultiUserHeader: FC<{ handleDrawerOpen: () => void }> = ({
         >
           <MenuIcon />
         </IconButton>
-        <Box display="flex" flexGrow={1}>
-          <TitleLogo>STUDIO</TitleLogo>
+        <Box display="flex" flexGrow={1} alignItems="center" gap={1.5}>
+          <HeaderLogoLink to="/public">
+            <HeaderLogo src="/static/optinist_logo.png" alt="OptiNiSt" />
+            <TitleLogo>OptiNiSt</TitleLogo>
+          </HeaderLogoLink>
         </Box>
         {showTabsRegex.test(location.pathname) && <WorkspaceTabs />}
         <Profile />
@@ -77,9 +80,26 @@ const StyledAppBar = styled(MuiAppBar)({
   height: APP_BAR_HEIGHT,
 })
 
+const HeaderLogoLink = styled(Link)({
+  textDecoration: "none",
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  transition: "opacity 0.2s",
+  ":hover": {
+    opacity: 0.8,
+  },
+})
+
+const HeaderLogo = styled("img")({
+  height: 40,
+  width: "auto",
+})
+
 const TitleLogo = styled(Typography)({
   fontWeight: 600,
-  fontSize: 22,
+  fontSize: 20,
+  color: "#000000",
 })
 
 export default Header

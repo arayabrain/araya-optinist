@@ -523,7 +523,7 @@ class WebhookService:
             logger.info("Processing subscription_schedule.released webhook")
 
             # Ensure Stripe is initialized
-            cls._ensure_stripe_initialized()
+            SubscriptionService._ensure_stripe_initialized()
 
             # Get the subscription schedule data
             subscription_id = data.get("subscription")

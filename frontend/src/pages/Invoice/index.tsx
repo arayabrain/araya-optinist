@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from "react"
+import { useState, useEffect, FC } from "react"
 import { useDispatch, useSelector } from "react-redux"
 import { useNavigate } from "react-router-dom"
 
 import ArrowBackIcon from "@mui/icons-material/ArrowBack"
+import ReceiptLongOutlinedIcon from "@mui/icons-material/ReceiptLongOutlined"
 import {
   Box,
   Typography,
@@ -236,6 +237,47 @@ const ViewButton = styled(Button)(() => ({
   },
 }))
 
+const EmptyStateContainer = styled(Box)(() => ({
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: "64px 32px",
+  textAlign: "center",
+  backgroundColor: "#f9fafb",
+  borderRadius: "12px",
+  border: "2px dashed #e5e7eb",
+}))
+
+const EmptyStateIcon = styled(Box)(() => ({
+  width: "80px",
+  height: "80px",
+  borderRadius: "50%",
+  backgroundColor: "#eff6ff",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  marginBottom: "24px",
+  "& svg": {
+    fontSize: "48px",
+    color: "#3b82f6",
+  },
+}))
+
+const EmptyStateTitle = styled(Typography)(() => ({
+  fontSize: "20px",
+  fontWeight: "600",
+  color: "#111827",
+  marginBottom: "8px",
+}))
+
+const EmptyStateDescription = styled(Typography)(() => ({
+  fontSize: "14px",
+  color: "#6b7280",
+  maxWidth: "400px",
+  lineHeight: "1.6",
+}))
+
 // Helper functions
 function formatCardBrand(brand?: string): string {
   const brandNames: Record<CardBrand, string> = {
@@ -254,7 +296,7 @@ function formatCardBrand(brand?: string): string {
   return brandNames[normalizedBrand] || brand
 }
 
-const InvoicesPage: React.FC = () => {
+const InvoicesPage: FC = () => {
   const navigate = useNavigate()
 
   const dispatch = useDispatch<AppDispatch>()
@@ -324,6 +366,7 @@ const InvoicesPage: React.FC = () => {
         )
         setServerTimeDate(fetchedServerTime)
       } catch (err) {
+        // eslint-disable-next-line no-console
         console.error("Error fetching server time:", err)
       }
     }
@@ -351,13 +394,13 @@ const InvoicesPage: React.FC = () => {
 
   const handleGoBack = (): void => {
     if (!shouldShowLoader) {
-      navigate("/console/account")
+      navigate("/account")
     }
   }
 
   const handleAdjustPlan = (): void => {
     if (!shouldShowLoader) {
-      navigate("/console/subscription")
+      navigate("/subscription")
     }
   }
 
@@ -469,10 +512,10 @@ const InvoicesPage: React.FC = () => {
                     </>
                   ) : (
                     <>
-                      <PlanTitle>No Active Subscription</PlanTitle>
-                      <PlanType>-</PlanType>
+                      <PlanTitle>Free Plan</PlanTitle>
+                      <PlanType>Free</PlanType>
                       <ExpirationText>
-                        No active subscription found
+                        Upgrade to access premium features
                       </ExpirationText>
                     </>
                   )}
@@ -535,19 +578,19 @@ const InvoicesPage: React.FC = () => {
           <Box>
             <InvoicesTitle>Invoices</InvoicesTitle>
 
-            <TableContainer>
-              <Table>
-                <TableHeader>
-                  <tr>
-                    <TableHeaderCell>Date</TableHeaderCell>
-                    <TableHeaderCell>Total</TableHeaderCell>
-                    <TableHeaderCell>Status</TableHeaderCell>
-                    <TableHeaderCell>Actions</TableHeaderCell>
-                  </tr>
-                </TableHeader>
-                <tbody>
-                  {invoicesLoading && !shouldShowLoader ? (
-                    Array.from({ length: 3 }, (_, index) => (
+            {invoicesLoading && !shouldShowLoader ? (
+              <TableContainer>
+                <Table>
+                  <TableHeader>
+                    <tr>
+                      <TableHeaderCell>Date</TableHeaderCell>
+                      <TableHeaderCell>Total</TableHeaderCell>
+                      <TableHeaderCell>Status</TableHeaderCell>
+                      <TableHeaderCell>Actions</TableHeaderCell>
+                    </tr>
+                  </TableHeader>
+                  <tbody>
+                    {Array.from({ length: 3 }, (_, index) => (
                       <TableRow key={`loading-${index}`}>
                         <TableCell>
                           <Skeleton variant="text" />
@@ -566,9 +609,23 @@ const InvoicesPage: React.FC = () => {
                           />
                         </TableCell>
                       </TableRow>
-                    ))
-                  ) : invoices.length > 0 ? (
-                    invoices.map((invoice: InvoiceDTO) => (
+                    ))}
+                  </tbody>
+                </Table>
+              </TableContainer>
+            ) : invoices.length > 0 ? (
+              <TableContainer>
+                <Table>
+                  <TableHeader>
+                    <tr>
+                      <TableHeaderCell>Date</TableHeaderCell>
+                      <TableHeaderCell>Total</TableHeaderCell>
+                      <TableHeaderCell>Status</TableHeaderCell>
+                      <TableHeaderCell>Actions</TableHeaderCell>
+                    </tr>
+                  </TableHeader>
+                  <tbody>
+                    {invoices.map((invoice: InvoiceDTO) => (
                       <TableRow key={invoice.id}>
                         <TableCell>{formatDate(invoice.date)}</TableCell>
                         <TableCell>{invoice.total}</TableCell>
@@ -582,19 +639,23 @@ const InvoicesPage: React.FC = () => {
                           </ViewButton>
                         </TableCell>
                       </TableRow>
-                    ))
-                  ) : (
-                    <TableRow>
-                      <TableCell colSpan={4}>
-                        <Typography color="text.secondary">
-                          No invoices found
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </tbody>
-              </Table>
-            </TableContainer>
+                    ))}
+                  </tbody>
+                </Table>
+              </TableContainer>
+            ) : (
+              <EmptyStateContainer>
+                <EmptyStateIcon>
+                  <ReceiptLongOutlinedIcon />
+                </EmptyStateIcon>
+                <EmptyStateTitle>No Invoices Found</EmptyStateTitle>
+                <EmptyStateDescription>
+                  You don&apos;t have any invoice records at the moment.
+                  Invoices will appear here once you subscribe to a plan and
+                  your first billing cycle completes.
+                </EmptyStateDescription>
+              </EmptyStateContainer>
+            )}
           </Box>
         </MainContainer>
       </MainWrapper>
