@@ -61,20 +61,24 @@ def _get_fallback_storage_quota(user_id: int) -> Dict[str, Any]:
 
         # Set quotas based on Subscription Type
         if subscription_type == SubscriptionType.PREMIUM.value:
-            default_quota_bytes = 100 * StorageSize.GB  # 100GB for paid plan
+            default_quota_bytes = StorageQuota.PREMIUM * StorageSize.GB  # 100GB
             logger.info(
-                f"Using paid plan quota for user {user_id} ({plan_name}): 100GB"
+                f"Using paid plan quota for user {user_id} ({plan_name}): "
+                f"{StorageQuota.PREMIUM}GB"
             )
         else:
-            default_quota_bytes = 5 * StorageSize.GB  # 5GB for free plan
-            logger.info(f"Using free plan quota for user {user_id} ({plan_name}): 5GB")
+            default_quota_bytes = StorageQuota.FREE * StorageSize.GB  # 5GB
+            logger.info(
+                f"Using free plan quota for user {user_id} ({plan_name}): "
+                f"{StorageQuota.FREE}GB"
+            )
 
     except Exception as e:
         logger.warning(
             f"Error determining subscription quota for user {user_id}: {e}, "
             "using free plan"
         )
-        default_quota_bytes = 5 * StorageSize.GB  # 5GB fallback
+        default_quota_bytes = StorageQuota.FREE * StorageSize.GB  # 5GB fallback
 
     return {
         "user_id": user_id,

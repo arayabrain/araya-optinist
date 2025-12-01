@@ -45,8 +45,8 @@ class S3StorageMonitor:
         # Storage quotas by plan (in bytes)
         # These should match the values in your subscription plan features
         self.PLAN_QUOTAS = {
-            SubscriptionType.FREE.value: 5 * StorageSize.GB,  # 5GB
-            SubscriptionType.PREMIUM.value: 100 * StorageSize.GB,  # 100GB
+            SubscriptionType.FREE.value: StorageQuota.FREE * StorageSize.GB,  # 5GB
+            SubscriptionType.PREMIUM.value: StorageQuota.PREMIUM * StorageSize.GB,
         }
 
     async def get_user_s3_storage_size(self, user_id: int) -> int:
