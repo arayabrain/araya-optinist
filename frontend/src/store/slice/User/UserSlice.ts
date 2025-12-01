@@ -39,6 +39,8 @@ export const userSlice = createSlice({
       removeExToken()
       // Clear dismissed warnings so they can appear again for the next user
       localStorage.removeItem("dismissedWarnings")
+      // Clear session storage to prevent stale state on browser back
+      sessionStorage.removeItem("storage-refreshed-on-login")
       // Clear premium routing information
       routingService.clearRoutingInfo()
       return initialState
