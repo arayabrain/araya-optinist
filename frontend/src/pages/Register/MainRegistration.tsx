@@ -1,43 +1,39 @@
-import { useState, FormEvent, ChangeEvent, useEffect } from "react"
+import { ChangeEvent, FormEvent, useEffect, useState } from "react"
 import { useDispatch, useSelector } from "react-redux"
-import { useNavigate } from "react-router-dom"
+import { Link, useNavigate } from "react-router-dom"
 
 import CheckCircleIcon from "@mui/icons-material/CheckCircle"
-import EmailIcon from "@mui/icons-material/Email"
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined"
-import LockIcon from "@mui/icons-material/Lock"
-import PersonIcon from "@mui/icons-material/Person"
+import LockOutlinedIcon from "@mui/icons-material/LockOutlined"
+import MailOutlineIcon from "@mui/icons-material/MailOutline"
+import PersonOutlineIcon from "@mui/icons-material/PersonOutline"
 import {
-  Box,
-  Button,
-  TextField,
-  Typography,
   Alert,
-  styled,
+  Box,
   CircularProgress,
-  Paper,
-  Checkbox,
-  FormControlLabel,
   Snackbar,
+  styled,
+  Typography,
 } from "@mui/material"
 
-import { regexPassword, regexIgnoreS } from "const/Auth"
+import PublicHeader from "components/PublicLayout/PublicHeader"
+import { regexIgnoreS, regexPassword } from "const/Auth"
 import {
   registerUser,
   resendVerificationEmail,
 } from "store/slice/Registration/RegistrationActions"
 import {
+  selectRegistrationError,
   selectRegistrationLoading,
   selectRegistrationSuccess,
-  selectRegistrationError,
   selectRegistrationUser,
   selectResendEmailLoading,
   selectResendEmailSuccess,
 } from "store/slice/Registration/RegistrationSelector"
 import {
+  clearAllRegistrationState,
   clearRegistrationErrors,
   clearResendSuccess,
-  clearAllRegistrationState,
 } from "store/slice/Registration/RegistrationSlice"
 import { AppDispatch } from "store/store"
 
@@ -160,8 +156,10 @@ const RegistrationForm = () => {
     )
 
     if (registerUser.fulfilled.match(resultAction)) {
+      // eslint-disable-next-line no-console
       console.log("Pre-registration successful! Please verify your email.")
     } else {
+      // eslint-disable-next-line no-console
       console.error("Pre-registration failed:", resultAction.payload)
     }
   }
@@ -171,8 +169,10 @@ const RegistrationForm = () => {
     const resultAction = await dispatch(resendVerificationEmail(formData.email))
 
     if (resendVerificationEmail.fulfilled.match(resultAction)) {
+      // eslint-disable-next-line no-console
       console.log("Email resent successfully")
     } else {
+      // eslint-disable-next-line no-console
       console.error("Email resend failed:", resultAction.payload)
     }
   }
@@ -180,240 +180,193 @@ const RegistrationForm = () => {
   // Success view
   if (success) {
     return (
-      <PageWrapper>
-        <FormCard elevation={3}>
-          <SuccessContent>
-            <CheckCircleIcon sx={{ fontSize: 80, color: "#10b981", mb: 2 }} />
+      <>
+        <PublicHeader />
+        <PageWrapper>
+          <FormCard>
+            <SuccessContent>
+              <CheckCircleIcon sx={{ fontSize: 80, color: "#10b981", mb: 2 }} />
 
-            <Typography variant="h4" fontWeight="bold" gutterBottom>
-              Registration Almost Complete!
-            </Typography>
+              <Title>Registration Almost Complete!</Title>
 
-            <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-              A verification email has been sent to{" "}
-              <strong>{user?.email || formData.email}</strong>
-            </Typography>
+              <Subtitle>
+                A verification email has been sent to{" "}
+                <strong>{user?.email || formData.email}</strong>
+              </Subtitle>
 
-            <Alert severity="info" icon={<InfoOutlinedIcon />} sx={{ mb: 3 }}>
-              <Typography variant="body2">
-                To complete your registration, please check your email and click
-                the verification link. You&apos;ll be able to log in once your
-                email is verified.
-              </Typography>
-            </Alert>
+              <Alert severity="info" icon={<InfoOutlinedIcon />} sx={{ mb: 3 }}>
+                <Typography variant="body2">
+                  To complete your registration, please check your email and
+                  click the verification link. You&apos;ll be able to log in
+                  once your email is verified.
+                </Typography>
+              </Alert>
 
-            <Button
-              variant="outlined"
-              onClick={handleResendEmail}
-              disabled={resendingEmail}
-              sx={{
-                mb: 2,
-                borderColor: "#667eea",
-                color: "#667eea",
-                "&:hover": {
-                  borderColor: "#5568d3",
-                  backgroundColor: "rgba(102, 126, 234, 0.04)",
-                },
-              }}
-            >
-              {resendingEmail ? (
-                <>
-                  <CircularProgress size={16} sx={{ mr: 1 }} />
-                  Sending...
-                </>
-              ) : (
-                "Resend Verification Email"
-              )}
-            </Button>
+              <ResendButton
+                onClick={handleResendEmail}
+                disabled={resendingEmail}
+              >
+                {resendingEmail ? (
+                  <>
+                    <CircularProgress size={16} sx={{ mr: 1 }} />
+                    Sending...
+                  </>
+                ) : (
+                  "Resend Verification Email"
+                )}
+              </ResendButton>
 
-            <Button
-              variant="contained"
-              onClick={() => navigate("/login")}
-              fullWidth
-              sx={{
-                backgroundColor: "#667eea",
-                "&:hover": {
-                  backgroundColor: "#5568d3",
-                },
-              }}
-            >
-              Go to Login Page
-            </Button>
-          </SuccessContent>
-        </FormCard>
+              <SubmitButton onClick={() => navigate("/login")}>
+                Go to Login Page
+              </SubmitButton>
+            </SuccessContent>
+          </FormCard>
 
-        {/* Resend success snackbar */}
-        <Snackbar
-          open={showResendSnackbar}
-          autoHideDuration={6000}
-          onClose={() => setShowResendSnackbar(false)}
-          anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-        >
-          <Alert
+          {/* Resend success snackbar */}
+          <Snackbar
+            open={showResendSnackbar}
+            autoHideDuration={6000}
             onClose={() => setShowResendSnackbar(false)}
-            severity="success"
-            sx={{ width: "100%" }}
+            anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
           >
-            Verification email resent successfully
-          </Alert>
-        </Snackbar>
-      </PageWrapper>
+            <Alert
+              onClose={() => setShowResendSnackbar(false)}
+              severity="success"
+              sx={{ width: "100%" }}
+            >
+              Verification email resent successfully
+            </Alert>
+          </Snackbar>
+        </PageWrapper>
+      </>
     )
   }
 
   // Registration form
   return (
-    <PageWrapper>
-      <FormCard elevation={3}>
-        <Typography variant="h4" fontWeight="bold" textAlign="center" mb={1}>
-          Sign Up
-        </Typography>
-        <Typography
-          variant="body2"
-          color="text.secondary"
-          textAlign="center"
-          mb={3}
-        >
-          Please fill in all information
-        </Typography>
+    <>
+      <PublicHeader />
+      <PageWrapper>
+        <FormCard>
+          <CardHeader>
+            <LogoWrapper>
+              <Logo src="/static/optinist_logo.png" alt="OptiNiSt Logo" />
+            </LogoWrapper>
+            <Title>Create your account</Title>
+            <Subtitle>Sign up to get started with OptiNiSt</Subtitle>
+          </CardHeader>
 
-        <form onSubmit={handleSubmit}>
-          {/* Validation or server error */}
-          {(validationError || error) && (
-            <Alert severity="error" sx={{ mb: 3 }}>
-              {validationError || error}
-            </Alert>
-          )}
+          <form onSubmit={handleSubmit}>
+            {/* Validation or server error */}
+            {(validationError || error) && (
+              <Alert severity="error" sx={{ mb: 3, fontSize: 12 }}>
+                {validationError || error}
+              </Alert>
+            )}
 
-          {/* Name input */}
-          <TextField
-            fullWidth
-            label="Name"
-            name="name"
-            value={formData.name}
-            onChange={handleChange}
-            disabled={loading}
-            autoFocus
-            sx={{ mb: 2 }}
-            InputProps={{
-              startAdornment: (
-                <PersonIcon sx={{ mr: 1, color: "action.disabled" }} />
-              ),
-            }}
-          />
+            {/* Name input */}
+            <Box sx={{ mb: 3 }}>
+              <LabelField>Name</LabelField>
+              <InputWrapper>
+                <IconWrapper>
+                  <PersonOutlineIcon sx={{ fontSize: 18, color: "#9ca3af" }} />
+                </IconWrapper>
+                <Input
+                  autoComplete="off"
+                  name="name"
+                  value={formData.name}
+                  onChange={handleChange}
+                  placeholder="John Doe"
+                  disabled={loading}
+                  autoFocus
+                />
+              </InputWrapper>
+            </Box>
 
-          {/* Email input */}
-          <TextField
-            fullWidth
-            type="email"
-            label="Email Address"
-            name="email"
-            value={formData.email}
-            onChange={handleChange}
-            disabled={loading}
-            sx={{ mb: 2 }}
-            InputProps={{
-              startAdornment: (
-                <EmailIcon sx={{ mr: 1, color: "action.disabled" }} />
-              ),
-            }}
-          />
+            {/* Email input */}
+            <Box sx={{ mb: 3 }}>
+              <LabelField>Email</LabelField>
+              <InputWrapper>
+                <IconWrapper>
+                  <MailOutlineIcon sx={{ fontSize: 18, color: "#9ca3af" }} />
+                </IconWrapper>
+                <Input
+                  autoComplete="off"
+                  type="email"
+                  name="email"
+                  value={formData.email}
+                  onChange={handleChange}
+                  placeholder="name@example.com"
+                  disabled={loading}
+                />
+              </InputWrapper>
+            </Box>
 
-          {/* Password input */}
-          <TextField
-            fullWidth
-            type={showPassword ? "text" : "password"}
-            label="Password"
-            name="password"
-            value={formData.password}
-            onChange={handleChange}
-            disabled={loading}
-            helperText="At least 6 characters including letters, numbers, and special characters (!#$%&()*+,-./@_|)"
-            sx={{ mb: 2 }}
-            InputProps={{
-              startAdornment: (
-                <LockIcon sx={{ mr: 1, color: "action.disabled" }} />
-              ),
-            }}
-          />
+            {/* Password input */}
+            <Box sx={{ mb: 3 }}>
+              <LabelField>Password</LabelField>
+              <InputWrapper>
+                <IconWrapper>
+                  <LockOutlinedIcon sx={{ fontSize: 18, color: "#9ca3af" }} />
+                </IconWrapper>
+                <Input
+                  autoComplete="off"
+                  type={showPassword ? "text" : "password"}
+                  name="password"
+                  value={formData.password}
+                  onChange={handleChange}
+                  placeholder="••••••••"
+                  disabled={loading}
+                />
+              </InputWrapper>
+              <HelperText>
+                At least 6 characters including letters, numbers, and special
+                characters
+              </HelperText>
+            </Box>
 
-          {/* Confirm password input */}
-          <TextField
-            fullWidth
-            type={showPassword ? "text" : "password"}
-            label="Confirm Password"
-            name="confirmPassword"
-            value={formData.confirmPassword}
-            onChange={handleChange}
-            disabled={loading}
-            sx={{ mb: 2 }}
-            InputProps={{
-              startAdornment: (
-                <LockIcon sx={{ mr: 1, color: "action.disabled" }} />
-              ),
-            }}
-          />
+            {/* Confirm password input */}
+            <Box sx={{ mb: 3 }}>
+              <LabelField>Confirm Password</LabelField>
+              <InputWrapper>
+                <IconWrapper>
+                  <LockOutlinedIcon sx={{ fontSize: 18, color: "#9ca3af" }} />
+                </IconWrapper>
+                <Input
+                  autoComplete="off"
+                  type={showPassword ? "text" : "password"}
+                  name="confirmPassword"
+                  value={formData.confirmPassword}
+                  onChange={handleChange}
+                  placeholder="••••••••"
+                  disabled={loading}
+                />
+              </InputWrapper>
+            </Box>
 
-          {/* Show password checkbox */}
-          <FormControlLabel
-            control={
+            {/* Show password checkbox */}
+            <CheckboxWrapper>
               <Checkbox
+                type="checkbox"
                 checked={showPassword}
                 onChange={(e) => setShowPassword(e.target.checked)}
-                sx={{
-                  color: "#667eea",
-                  "&.Mui-checked": {
-                    color: "#667eea",
-                  },
-                }}
               />
-            }
-            label="Show Password"
-            sx={{ mb: 2 }}
-          />
+              <CheckboxLabel>Show Password</CheckboxLabel>
+            </CheckboxWrapper>
 
-          {/* Submit button */}
-          <Button
-            type="submit"
-            variant="contained"
-            fullWidth
-            disabled={loading}
-            startIcon={
-              loading ? <CircularProgress size={20} color="inherit" /> : null
-            }
-            sx={{
-              py: 1.5,
-              fontSize: "1rem",
-              fontWeight: 600,
-              textTransform: "none",
-              backgroundColor: "#667eea",
-              "&:hover": {
-                backgroundColor: "#5568d3",
-                transform: "translateY(-2px)",
-                boxShadow: "0 6px 20px rgba(102, 126, 234, 0.4)",
-              },
-              "&:disabled": {
-                backgroundColor: "#9ca3af",
-              },
-              transition: "all 0.2s ease-in-out",
-            }}
-          >
-            {loading ? "Registering..." : "Register"}
-          </Button>
-        </form>
+            {/* Submit button */}
+            <SubmitButton type="submit" disabled={loading}>
+              {loading ? "Registering..." : "Sign Up"}
+            </SubmitButton>
 
-        {/* Login link */}
-        <Typography variant="body2" textAlign="center" mt={2}>
-          Already have an account?{" "}
-          <span
-            onClick={() => navigate("/login")}
-            style={{ color: "#667eea", cursor: "pointer", fontWeight: 600 }}
-          >
-            Login
-          </span>
-        </Typography>
-      </FormCard>
-    </PageWrapper>
+            {/* Login link */}
+            <LoginWrapper>
+              Already have an account? <LoginLink to="/login">Login</LoginLink>
+            </LoginWrapper>
+          </form>
+        </FormCard>
+      </PageWrapper>
+    </>
   )
 }
 
@@ -422,18 +375,183 @@ const RegistrationForm = () => {
 // ========================================
 
 const PageWrapper = styled(Box)({
-  minHeight: "70vh",
+  width: "100%",
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  padding: "2rem",
+  paddingTop: 64,
 })
 
-const FormCard = styled(Paper)({
-  padding: "3rem",
-  maxWidth: "500px",
+const FormCard = styled(Box)({
   width: "100%",
-  borderRadius: "1rem",
+  maxWidth: 448,
+  padding: "32px",
+  backgroundColor: "#ffffff",
+  border: "1px solid #e5e7eb",
+  borderRadius: 8,
+  boxShadow:
+    "0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)",
+})
+
+const CardHeader = styled(Box)({
+  marginBottom: 32,
+  textAlign: "center",
+})
+
+const LogoWrapper = styled(Box)({
+  display: "flex",
+  justifyContent: "center",
+  marginBottom: 24,
+})
+
+const Logo = styled("img")({
+  height: 60,
+  width: "auto",
+})
+
+const Title = styled(Typography)({
+  fontSize: 24,
+  fontWeight: 600,
+  color: "#000000",
+  marginBottom: 8,
+})
+
+const Subtitle = styled(Typography)({
+  fontSize: 14,
+  color: "#6b7280",
+  marginBottom: 16,
+})
+
+const LabelField = styled("label")({
+  display: "block",
+  fontSize: 14,
+  fontWeight: 500,
+  color: "#374151",
+  marginBottom: 8,
+})
+
+const InputWrapper = styled(Box)({
+  position: "relative",
+  display: "flex",
+  alignItems: "center",
+})
+
+const IconWrapper = styled(Box)({
+  position: "absolute",
+  left: 12,
+  display: "flex",
+  alignItems: "center",
+  pointerEvents: "none",
+})
+
+const Input = styled("input")({
+  width: "100%",
+  height: 40,
+  borderRadius: 6,
+  border: "1px solid #d1d5db",
+  paddingLeft: 40,
+  paddingRight: 12,
+  backgroundColor: "#ffffff",
+  color: "#000000",
+  fontSize: 14,
+  transition: "all 0.2s",
+  outline: "none",
+  boxSizing: "border-box",
+  "::placeholder": {
+    color: "#9ca3af",
+  },
+  ":focus": {
+    borderColor: "#000000",
+    boxShadow: "0 0 0 3px rgba(0, 0, 0, 0.1)",
+  },
+  ":disabled": {
+    backgroundColor: "#f3f4f6",
+    cursor: "not-allowed",
+  },
+})
+
+const HelperText = styled(Typography)({
+  fontSize: 12,
+  color: "#6b7280",
+  marginTop: 4,
+})
+
+const CheckboxWrapper = styled(Box)({
+  display: "flex",
+  alignItems: "center",
+  marginBottom: 16,
+})
+
+const Checkbox = styled("input")({
+  width: 16,
+  height: 16,
+  marginRight: 8,
+  cursor: "pointer",
+})
+
+const CheckboxLabel = styled("label")({
+  fontSize: 14,
+  color: "#374151",
+  cursor: "pointer",
+})
+
+const SubmitButton = styled("button")({
+  width: "100%",
+  height: 40,
+  backgroundColor: "#000000",
+  color: "#ffffff",
+  borderRadius: 6,
+  border: "none",
+  outline: "none",
+  fontSize: 14,
+  fontWeight: 500,
+  cursor: "pointer",
+  transition: "background-color 0.2s",
+  ":hover": {
+    backgroundColor: "#1f2937",
+  },
+  ":disabled": {
+    backgroundColor: "#9ca3af",
+    cursor: "not-allowed",
+  },
+  marginBottom: 16,
+})
+
+const ResendButton = styled("button")({
+  width: "100%",
+  height: 40,
+  backgroundColor: "#ffffff",
+  color: "#000000",
+  borderRadius: 6,
+  border: "1px solid #d1d5db",
+  outline: "none",
+  fontSize: 14,
+  fontWeight: 500,
+  cursor: "pointer",
+  transition: "all 0.2s",
+  marginBottom: 16,
+  ":hover": {
+    backgroundColor: "#f9fafb",
+  },
+  ":disabled": {
+    opacity: 0.6,
+    cursor: "not-allowed",
+  },
+})
+
+const LoginWrapper = styled(Typography)({
+  textAlign: "center",
+  fontSize: 14,
+  color: "#6b7280",
+})
+
+const LoginLink = styled(Link)({
+  color: "#000000",
+  textDecoration: "none",
+  fontWeight: 500,
+  ":hover": {
+    textDecoration: "underline",
+  },
 })
 
 const SuccessContent = styled(Box)({

@@ -37,6 +37,10 @@ logger = AppLogger.get_logger()
 class PostProcessRunner:
     @classmethod
     async def run(cls, __rule: Rule):
+        # Initialize variables before try block to avoid UnboundLocalError in exception handler
+        workspace_id = None
+        unique_id = None
+
         try:
             logger.info("start post_process runner")
 
@@ -91,7 +95,7 @@ class PostProcessRunner:
 
         finally:
             # Operate remote storage.
-            if RemoteStorageController.is_available():
+            if RemoteStorageController.is_available() and workspace_id and unique_id:
                 # Just to be safe, make sure to delete the sync_lock_file.
                 RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
 
