@@ -19,6 +19,7 @@ from studio.app.common.core.users import crud_users
 from studio.app.common.db.database import session_scope
 from studio.app.common.models.subscription import (
     PlanName,
+    StorageQuota,
     StorageSize,
     SubscriptionStatus,
     SubscriptionType,
@@ -38,8 +39,8 @@ class S3StorageMonitor:
         self.s3_controller = S3StorageController(bucket_name)
 
         # Alert thresholds (percentage of quota)
-        self.CRITICAL_THRESHOLD = 90  # 90%
-        self.DANGER_THRESHOLD = 100  # 100%
+        self.CRITICAL_THRESHOLD = StorageQuota.CRITICAL_THRESHOLD_PERCENT  # 90%
+        self.DANGER_THRESHOLD = StorageQuota.DANGER_THRESHOLD_PERCENT  # 100%
 
         # Storage quotas by plan (in bytes)
         # These should match the values in your subscription plan features

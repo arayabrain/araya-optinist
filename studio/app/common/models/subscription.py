@@ -25,6 +25,8 @@ class StorageQuota:
 
     FREE = StorageSize.GB * 5  # 5 GB for free plan
     PREMIUM = StorageSize.GB * 100  # 100 GB for premium plan
+    CRITICAL_THRESHOLD_PERCENT = 90  # 90% usage threshold for critical warning
+    DANGER_THRESHOLD_PERCENT = 100  # 100% usage threshold for danger warning
 
 
 class SubscriptionPeriods:

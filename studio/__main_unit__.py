@@ -15,7 +15,10 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_current_user_with_dataview_outputs_check,
 )
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.middleware import ClientIdLoggingMiddleware
+from studio.app.common.core.middleware import (
+    ClientIdLoggingMiddleware,
+    FreeUserActivityMiddleware,
+)
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
 from studio.app.common.core.workspace.workspace_dependencies import (
@@ -33,6 +36,7 @@ from studio.app.common.routers import (
     params,
     registrations,
     run,
+    storage_limit_alerts,
     subscriptions,
     users_admin,
     users_me,
@@ -104,6 +108,9 @@ app.include_router(
 )  # NOTE: The outputs router uses the unique get_current_user.
 app.include_router(params.router, dependencies=[Depends(get_current_user)])
 app.include_router(run.router, dependencies=[Depends(get_current_user)])
+app.include_router(
+    storage_limit_alerts.router, dependencies=[Depends(get_current_user)]
+)
 app.include_router(users_admin.router, dependencies=[Depends(get_admin_user)])
 app.include_router(users_me.router, dependencies=[Depends(get_current_user)])
 app.include_router(users_search.router, dependencies=[Depends(get_current_user)])
