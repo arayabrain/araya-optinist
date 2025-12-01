@@ -144,6 +144,7 @@ def search_workspaces(
 
     # Create CTE with ROW_NUMBER for display numbering
     # Calculate row numbers on ALL workspaces (including deleted) to preserve gaps
+    # Order by ownership first (owned workspaces before shared), then by sort options
     all_workspaces_cte = (
         select(
             common_model.Workspace,
@@ -151,9 +152,16 @@ def search_workspaces(
             (data_capacity_subq.c.data_usage).label("data_usage"),
             func.row_number()
             .over(
-                order_by=sa_sort_list
-                if sa_sort_list
-                else [common_model.Workspace.created_at]
+                order_by=[
+                    # First, order by ownership: owned (False) before shared (True)
+                    (common_model.Workspace.user_id != current_user.id),
+                    # Then apply the requested sort order
+                    *(
+                        sa_sort_list
+                        if sa_sort_list
+                        else [common_model.Workspace.created_at]
+                    ),
+                ]
             )
             .label("display_number"),
         )
