@@ -103,9 +103,14 @@ async def create_test_user_in_db(db, user_data, organization_id):
     # Free users should not have entries in the subscription_users table
     if user_data["subscription_plan_id"] != 1:  # Not free plan
         if user_data["subscription_plan_id"] == 2:  # Premium plan
-            if "expire" in user_data["email"]:
-                # Only the "expire" user gets expired subscription
-                # Expired 50 days ago (past grace period) to trigger warnings
+            if (
+                "grace_under" in user_data["email"]
+                or "grace_over" in user_data["email"]
+            ):
+                # Grace period users: expired 15 days ago (within 30-day grace period)
+                expiration_date = datetime.now(timezone.utc) - timedelta(days=15)
+            elif "expire" in user_data["email"]:
+                # Overdue user: expired 50 days ago (past grace, in warning period)
                 expiration_date = datetime.now(timezone.utc) - timedelta(days=50)
             else:
                 # Other premium users get active subscriptions for priority testing
