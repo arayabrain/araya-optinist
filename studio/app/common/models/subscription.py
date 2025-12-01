@@ -20,6 +20,51 @@ class StorageSize:
     TB = 1024 * 1024 * 1024 * 1024  # 1 Terabyte
 
 
+class StorageQuota:
+    """Constants for storage quota limits"""
+
+    FREE = StorageSize.GB * 5  # 5 GB for free plan
+    PREMIUM = StorageSize.GB * 100  # 100 GB for premium plan
+
+
+class SubscriptionPeriods:
+    """
+    Constants for subscription period calculations
+    Note: any updates should also be reflected in
+    frontend/src/const/Subscription.ts SubscriptionPeriods
+    """
+
+    TRIAL_PERIOD_DAYS = 30
+    GRACE_PERIOD_DAYS = 30
+    WARNING_PERIOD_DAYS = 30
+    STORAGE_WARNING_DAYS = 30  # Days to remove excess storage for free users
+
+    # Progress calculation constants
+    MAX_PROGRESS_PERCENT = 100
+    MIN_PROGRESS_PERCENT = 0
+    PROGRESS_REFERENCE_DAYS = 30  # Reference period for progress bar (30 days)
+
+    # Warning color thresholds (days remaining)
+    CRITICAL_THRESHOLD_DAYS = 0  # Red/error
+    URGENT_THRESHOLD_DAYS = 7  # Red/error
+    WARNING_THRESHOLD_DAYS = 14  # Yellow/warning
+
+
+class SubscriptionPlanIds:
+    """
+    Constants for subscription plan database IDs.
+
+    Usage: Database queries comparing plan_id field
+    Example: if subscription_plan_id == SubscriptionPlanIds.FREE
+
+    Note: Different from SubscriptionType (string identifiers) and
+    PlanName (display names)
+    """
+
+    FREE = 1
+    PREMIUM = 2
+
+
 # Enums for subscription management
 class SyncStatus(StrEnum):
     PENDING = "pending"
@@ -28,17 +73,44 @@ class SyncStatus(StrEnum):
 
 
 class SubscriptionType(StrEnum):
+    """
+    String identifiers for subscription types.
+
+    Usage: Type discriminator in API responses and business logic
+    Example: if subscription_type == SubscriptionType.FREE.value
+
+    Note: Different from SubscriptionPlanIds (database IDs) and
+    PlanName (display strings)
+    """
+
     PREMIUM = "premium"
     FREE = "free"
 
 
 class PlanName(StrEnum):
+    """
+    Display names for subscription plans.
+
+    Usage: UI labels and user-facing text
+    Example: user.__dict__["subscription_plan_name"] = PlanName.FREE.value
+
+    Note: Different from SubscriptionPlanIds (database IDs) and
+    SubscriptionType (type identifiers)
+    """
+
     PREMIUM = "Premium"
     FREE = "Free"
     UNKNOWN = "Unknown"  # Fallback for when plan cannot be determined
 
 
 class SubscriptionStatus(StrEnum):
+    """
+    User subscription status labels.
+
+    Usage: Represents current state of user's subscription for display
+    Example: user.__dict__["subscription_status"] = SubscriptionStatus.FREE.value
+    """
+
     FREE = "Free"  # User on free plan
     PREMIUM = "Premium"  # Active premium subscription
     LIMIT_GRACE = "Limit Grace"  # Premium expired, in grace period
@@ -46,7 +118,12 @@ class SubscriptionStatus(StrEnum):
 
 
 class SubscriptionLifecycleStatus(StrEnum):
-    """Lifecycle status for subscription expiration checking in limit warnings"""
+    """
+    Lifecycle status for subscription expiration checking in limit warnings.
+
+    Usage: Determines warning state based on subscription expiration timeline
+    Example: Used in calculate_limit_warning() to decide warning type
+    """
 
     ACTIVE = "active"  # Subscription has not expired yet
     GRACE = "grace"  # In grace period after expiration

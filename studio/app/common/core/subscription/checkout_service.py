@@ -9,6 +9,7 @@ from sqlmodel import Enum, Session
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.models.subscription import (
+    SubscriptionPeriods,
     SubscriptionPlans,
     SubscriptionProvider,
     SubscriptionUserAccount,
@@ -23,9 +24,6 @@ from studio.app.common.schemas.subscriptions import (
 
 logger = AppLogger.get_logger()
 STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
-
-# Trial subscription configuration
-TRIAL_PERIOD_DAYS = 30  # Number of days for trial subscription period
 
 
 class SUBSCRIPTION_ACTIVE_STATUS(Enum):
@@ -492,15 +490,15 @@ class CheckoutService:
                 # Add trial period for first-time users
                 if is_first_time_user:
                     subscription_params["subscription_data"] = {
-                        "trial_period_days": TRIAL_PERIOD_DAYS,
+                        "trial_period_days": SubscriptionPeriods.TRIAL_PERIOD_DAYS,
                         "metadata": {
                             "is_trial": "true",
-                            "trial_days": str(TRIAL_PERIOD_DAYS),
+                            "trial_days": str(SubscriptionPeriods.TRIAL_PERIOD_DAYS),
                         },
                     }
                     logger.info(
-                        f"Adding {TRIAL_PERIOD_DAYS}-day trial for first-time user "
-                        f"{user.id}"
+                        f"Adding {SubscriptionPeriods.TRIAL_PERIOD_DAYS}-day trial "
+                        f"for first-time user {user.id}"
                     )
 
                 checkout_session = stripe.checkout.Session.create(**subscription_params)

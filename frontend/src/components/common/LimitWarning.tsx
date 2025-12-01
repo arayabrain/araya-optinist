@@ -22,6 +22,7 @@ import {
   getMyLimitWarningApi,
   LimitWarning as LimitWarningType,
 } from "api/storage/StorageAlerts"
+import { SubscriptionPeriods } from "const/Subscription"
 import { getToken } from "utils/auth/AuthUtils"
 
 interface LimitWarningProps {
@@ -158,15 +159,26 @@ const LimitWarning: React.FC<LimitWarningProps> = ({
   }
 
   const getProgressColor = (daysRemaining: number) => {
-    if (daysRemaining <= 0) return "error"
-    if (daysRemaining <= 7) return "error"
-    if (daysRemaining <= 14) return "warning"
+    if (daysRemaining <= SubscriptionPeriods.CRITICAL_THRESHOLD_DAYS)
+      return "error"
+    if (daysRemaining <= SubscriptionPeriods.URGENT_THRESHOLD_DAYS)
+      return "error"
+    if (daysRemaining <= SubscriptionPeriods.WARNING_THRESHOLD_DAYS)
+      return "warning"
     return "primary"
   }
 
   const progressValue =
     warning.days_remaining > 0
-      ? Math.max(0, Math.min(100, (warning.days_remaining / 30) * 100))
+      ? Math.max(
+          SubscriptionPeriods.MIN_PROGRESS_PERCENT,
+          Math.min(
+            SubscriptionPeriods.MAX_PROGRESS_PERCENT,
+            (warning.days_remaining /
+              SubscriptionPeriods.PROGRESS_REFERENCE_DAYS) *
+              SubscriptionPeriods.MAX_PROGRESS_PERCENT,
+          ),
+        )
       : 0
 
   const warningContent = (

@@ -13,8 +13,10 @@ from studio.app.common.models import User as UserModel
 from studio.app.common.models import UserStorageUsage, UserSubscription
 from studio.app.common.models.subscription import (
     PlanName,
+    StorageQuota,
     StorageSize,
     SubscriptionLifecycleStatus,
+    SubscriptionPeriods,
     SubscriptionStatus,
     SubscriptionType,
 )
@@ -235,9 +237,9 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
                     result = db.execute(statement).first()
 
                     if result and result.plan_name == PlanName.PREMIUM.value:
-                        default_quota = 100 * StorageSize.GB  # 100GB for paid
+                        default_quota = StorageQuota.PREMIUM * StorageSize.GB  # 100GB
                     else:
-                        default_quota = 5 * StorageSize.GB  # 5GB for free
+                        default_quota = StorageQuota.FREE * StorageSize.GB  # 5GB
 
                     # Create new record
                     new_storage_usage = UserStorageUsage(
@@ -460,11 +462,9 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
     5. Premium user, storage exceeded + subscription expiring → Combined warning
     """
     try:
-        # Default values as fallbacks
-        DEFAULT_FREE_PLAN_LIMIT_GB = 5
-        DEFAULT_FREE_PLAN_LIMIT_BYTES = DEFAULT_FREE_PLAN_LIMIT_GB * StorageSize.GB
-        GRACE_PERIOD_DAYS = 30
-        WARNING_PERIOD_DAYS = 30
+        FREE_PLAN_LIMIT_BYTES = StorageQuota.FREE * StorageSize.GB
+        GRACE_PERIOD_DAYS = SubscriptionPeriods.GRACE_PERIOD_DAYS
+        WARNING_PERIOD_DAYS = SubscriptionPeriods.WARNING_PERIOD_DAYS
 
         logger.info(f"Calculating limit warning for user {user_id}")
 
@@ -493,9 +493,9 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
 
             # Use quota from already retrieved storage_info to avoid redundant DB call
             storage_quota_bytes = (
-                storage_info.get("storage_quota_bytes", DEFAULT_FREE_PLAN_LIMIT_BYTES)
+                storage_info.get("storage_quota_bytes", FREE_PLAN_LIMIT_BYTES)
                 if storage_info
-                else DEFAULT_FREE_PLAN_LIMIT_BYTES
+                else FREE_PLAN_LIMIT_BYTES
             )
             storage_quota_gb = storage_quota_bytes / StorageSize.GB
 
@@ -603,19 +603,22 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                 return {
                     "has_warning": True,
                     "warning_type": "storage",
-                    "days_remaining": 30,
+                    "days_remaining": SubscriptionPeriods.STORAGE_WARNING_DAYS,
                     "excess_data_bytes": excess_bytes,
                     "excess_data_gb": round(excess_gb, 2),
                     "storage_usage_bytes": current_usage_bytes,
                     "storage_usage_gb": round(current_usage_gb, 2),
                     "storage_quota_bytes": storage_quota_bytes,
                     "storage_quota_gb": storage_quota_gb,
-                    "deletion_date": (datetime.now() + timedelta(days=30)).isoformat(),
+                    "deletion_date": (
+                        datetime.now()
+                        + timedelta(days=SubscriptionPeriods.STORAGE_WARNING_DAYS)
+                    ).isoformat(),
                     "message": (
                         f"Your data usage ({round(current_usage_gb, 1)} GB) "
                         f"exceeds the free plan limit ({storage_quota_gb:.1f} GB). "
                         f"Please upgrade or remove {round(excess_gb, 1)} GB of data "
-                        f"within 30 days."
+                        f"within {SubscriptionPeriods.STORAGE_WARNING_DAYS} days."
                     ),
                 }
 
@@ -627,7 +630,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                 return {
                     "has_warning": True,
                     "warning_type": "storage",
-                    "days_remaining": 30,
+                    "days_remaining": SubscriptionPeriods.STORAGE_WARNING_DAYS,
                     "excess_data_bytes": excess_bytes,
                     "excess_data_gb": round(excess_gb, 2),
                     "storage_usage_bytes": current_usage_bytes,
