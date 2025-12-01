@@ -378,13 +378,26 @@ async def refresh_all_workspaces_storage(
             CloudWorkspaceDataCapacityService,
         )
 
-        shared_bucket_name = None
+        bucket_name = None
         remote_storage_type = RemoteStorageType.get_activated_type()
 
         if remote_storage_type == RemoteStorageType.S3:
-            shared_bucket_name = os.environ.get("S3_DEFAULT_BUCKET_NAME")
+            # Use per-user bucket if available, otherwise fall back to shared bucket
+            from studio.app.common.core.users import crud_users
 
-        use_s3 = bool(shared_bucket_name)
+            user_info = await crud_users.get_user_with_context(db, current_user.id)
+
+            if user_info and user_info.remote_bucket_name:
+                bucket_name = user_info.remote_bucket_name
+            else:
+                # Fallback to shared bucket
+                bucket_name = os.environ.get("S3_DEFAULT_BUCKET_NAME")
+                logger.warning(
+                    f"User {current_user.id} has no personal bucket, "
+                    f"using shared bucket: {bucket_name}"
+                )
+
+        use_s3 = bool(bucket_name)
 
         # Get all non-deleted workspaces that the user has access to
         from studio.app.common.core.workspace.workspace_services import WorkspaceService
@@ -403,11 +416,11 @@ async def refresh_all_workspaces_storage(
         for workspace_id in workspace_ids:
             try:
                 if use_s3:
-                    # Use S3 storage service with shared bucket
+                    # Use S3 storage service with user's bucket (per-user or shared)
                     service = CloudWorkspaceDataCapacityService
                     await service.sync_workspace_data_capacity_with_s3(
                         db,
-                        shared_bucket_name,
+                        bucket_name,
                         str(workspace_id),
                         delete_existing=False,
                     )

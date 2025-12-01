@@ -169,13 +169,14 @@ class CloudWorkspaceDataCapacityService:
         # Get S3 storage size
         s3_size = await cls.get_s3_experiment_size(bucket_name, workspace_id, unique_id)
 
-        # Total data usage is local + S3
-        total_data_usage = local_size + s3_size
+        # Total data usage is the max of local and S3 (they are mirrored)
+        # Using max instead of sum to avoid double-counting synced files
+        total_data_usage = max(local_size, s3_size)
 
         logger.info(
             f"Experiment {workspace_id}/{unique_id} usage: "
             f"local={local_size:,} bytes, S3={s3_size:,} bytes, "
-            f"total={total_data_usage:,} bytes"
+            f"total={total_data_usage:,} bytes (using max to avoid double-counting)"
         )
 
         # Update the yaml file and database
@@ -221,13 +222,14 @@ class CloudWorkspaceDataCapacityService:
             )
             s3_input_size = 0
 
-        # Total input data usage is local + S3
-        total_input_usage = local_input_size + s3_input_size
+        # Total input data usage is the max of local and S3 (they are mirrored)
+        # Using max instead of sum to avoid double-counting synced files
+        total_input_usage = max(local_input_size, s3_input_size)
 
         logger.info(
             f"Workspace {workspace_id} input usage: "
             f"local={local_input_size:,} bytes, S3={s3_input_size:,} bytes, "
-            f"total={total_input_usage:,} bytes"
+            f"total={total_input_usage:,} bytes (using max to avoid double-counting)"
         )
 
         # Update database
@@ -303,8 +305,9 @@ class CloudWorkspaceDataCapacityService:
                     bucket_name, workspace_id, unique_id
                 )
 
-                # Total data usage
-                total_data_usage = local_size + s3_size
+                # Total data usage is the max of local and S3 (they are mirrored)
+                # Using max instead of sum to avoid double-counting synced files
+                total_data_usage = max(local_size, s3_size)
 
                 # logger.debug(
                 #     f"Experiment {workspace_id}/{unique_id}: "
