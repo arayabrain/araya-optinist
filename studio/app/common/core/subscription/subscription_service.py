@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from enum import IntEnum
 from typing import List, Optional, Tuple
 
+import stripe
 from fastapi import HTTPException
 from sqlalchemy import and_
 from sqlmodel import Session
@@ -94,6 +95,19 @@ class SubscriptionService:
     Note: This service focuses on internal business logic. For Stripe-specific
     operations (payment methods, Stripe customer management, Stripe API calls),
     use StripeService."""
+
+    _stripe_initialized = False
+
+    @classmethod
+    def _ensure_stripe_initialized(cls):
+        """Lazy initialization of Stripe API key"""
+        if not cls._stripe_initialized:
+            try:
+                stripe.api_key = cls.get_stripe_key()
+                cls._stripe_initialized = True
+            except ValueError as e:
+                logger.warning(f"Stripe not initialized: {e}")
+                # Don't raise here - allow module to load for tests
 
     @staticmethod
     def get_active_plans(db: Session) -> List[SubscriptionPlans]:
@@ -346,6 +360,44 @@ class SubscriptionService:
             .filter(UserSubscription.user_id == user_id)
             .first()
         )
+
+    @staticmethod
+    def get_user_for_invoice_lookup(
+        db: Session, user_id: int
+    ) -> Optional[Tuple[Optional[UserSubscription], User]]:
+        """
+        Get user and their subscription (if exists) for invoice lookup purposes.
+
+        This method handles cases where a user may not have a subscription record
+        but still needs to be looked up for invoice retrieval.
+
+        Args:
+            db: Database session
+            user_id: The user's ID
+
+        Returns:
+            Tuple of (UserSubscription or None, User) if user exists
+            None if user not found
+        """
+        # Try to get user with subscription first
+        result = __class__.get_user_subscription_by_user_id(db, user_id)
+
+        if result:
+            # User has a subscription record
+            subscription_user, user = result
+            return (subscription_user, user)
+
+        # User has no subscription record, get user directly
+        user = db.query(User).filter(User.id == user_id).first()
+
+        if not user:
+            return None
+
+        logger.info(
+            f"No subscription record for user {user_id}, "
+            f"returning user without subscription"
+        )
+        return (None, user)
 
 
 class SyncService:

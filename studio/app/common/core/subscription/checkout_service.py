@@ -471,10 +471,10 @@ class CheckoutService:
                     ],
                     "mode": "subscription",
                     "success_url": (
-                        f"{STRIPE_CALLBACK_URL}/console/subscription/thanks"
+                        f"{STRIPE_CALLBACK_URL}/subscription/thanks"
                         "?session_id={CHECKOUT_SESSION_ID}"
                     ),
-                    "cancel_url": f"{STRIPE_CALLBACK_URL}/console/subscription",
+                    "cancel_url": f"{STRIPE_CALLBACK_URL}/subscription",
                     "customer": customer_id,
                     "client_reference_id": str(user.id),
                     "metadata": {

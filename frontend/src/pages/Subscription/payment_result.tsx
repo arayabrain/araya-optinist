@@ -37,7 +37,7 @@ const PaymentResult: React.FC<PaymentResultProps> = ({ type = "success" }) => {
       buttonText: "Dashboard",
       buttonColor: "#3b82f6",
       buttonHoverColor: "#2563eb",
-      buttonAction: () => navigate("/console/dashboard"),
+      buttonAction: () => navigate("/dashboard"),
     },
     failed: {
       icon: <CloseIcon sx={{ fontSize: "3rem", color: "white" }} />,
@@ -48,7 +48,7 @@ const PaymentResult: React.FC<PaymentResultProps> = ({ type = "success" }) => {
       buttonText: "Try Again",
       buttonColor: "#ef4444",
       buttonHoverColor: "#dc2626",
-      buttonAction: () => navigate("/console/subscription"),
+      buttonAction: () => navigate("/subscription"),
     },
   }
 

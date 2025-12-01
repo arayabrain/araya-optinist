@@ -22,7 +22,7 @@ import {
 } from "@mui/material"
 import { isRejectedWithValue } from "@reduxjs/toolkit"
 
-import { ROLE } from "@types"
+// import { ROLE } from "@types"
 import ChangePasswordModal from "components/Account/ChangePasswordModal"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
@@ -163,26 +163,26 @@ const Account = () => {
   }
 
   const onClickUpgrade = () => {
-    navigate("/console/subscription")
+    navigate("/subscription")
   }
 
   const onClickManage = () => {
-    navigate("/console/subscription/manage")
+    navigate("/subscription/manage")
   }
-
-  const getRole = (role?: number) => {
-    if (!role) return
-    let newRole = ""
-    switch (role) {
-      case ROLE.ADMIN:
-        newRole = "Admin"
-        break
-      case ROLE.OPERATOR:
-        newRole = "Operator"
-        break
-    }
-    return newRole
-  }
+  // Not used in cloud implementation. Comment to remove ESLint warning.
+  // const getRole = (role?: number) => {
+  //   if (!role) return
+  //   let newRole = ""
+  //   switch (role) {
+  //     case ROLE.ADMIN:
+  //       newRole = "Admin"
+  //       break
+  //     case ROLE.OPERATOR:
+  //       newRole = "Operator"
+  //       break
+  //   }
+  //   return newRole
+  // }
 
   const handleName = (event: KeyboardEvent) => {
     if (event.key === "Escape") {
@@ -260,7 +260,8 @@ const Account = () => {
 
   // Helper function to format expiration date with server-validated expiration status
   const getExpirationInfo = () => {
-    if (!userSubscription) return null
+    if (!userSubscription || !userSubscription.expiration) return null
+
     const expirationDate = new Date(userSubscription.expiration)
 
     if (
@@ -311,10 +312,6 @@ const Account = () => {
       />
       <Title>Account Profile</Title>
       <BoxFlex>
-        <TitleData>Organization</TitleData>
-        <BoxData>{user?.organization?.name}</BoxData>
-      </BoxFlex>
-      <BoxFlex>
         <TitleData>Name</TitleData>
         {isEditName ? (
           <Input
@@ -339,10 +336,6 @@ const Account = () => {
       <BoxFlex>
         <TitleData>Email</TitleData>
         <BoxData>{user?.email}</BoxData>
-      </BoxFlex>
-      <BoxFlex>
-        <TitleData>Role</TitleData>
-        <BoxData>{getRole(user?.role_id)}</BoxData>
       </BoxFlex>
       <BoxFlex>
         <TitleData>Data size</TitleData>
