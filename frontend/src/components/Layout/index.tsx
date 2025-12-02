@@ -5,7 +5,7 @@ import { useLocation, useNavigate } from "react-router-dom"
 import { Box } from "@mui/material"
 import { styled } from "@mui/material/styles"
 
-import LimitWarning from "components/common/LimitWarning"
+import LimitAlert from "components/common/LimitAlert"
 import Loading from "components/common/Loading"
 import { LogsFloatingButton } from "components/common/LogsFloatingButton"
 import Header from "components/Layout/Header"
@@ -158,8 +158,8 @@ const AuthedLayout: FC<{ children: ReactNode }> = ({ children }) => {
         <LeftMenu open={open} handleDrawerClose={handleDrawerClose} />
         <ChildrenWrapper>{children}</ChildrenWrapper>
       </ContentBodyWrapper>
-      {/* Global limit warning modal for authenticated users */}
-      <LimitWarning showAsModal={true} autoCheck={true} />
+      {/* Global limit alert modal for authenticated users */}
+      <LimitAlert showAsModal={true} autoCheck={true} />
       {!isStandalone && <LogsFloatingButton />}
       {logsModalOpen && <ModalLogs isOpen onClose={handleLogsModalClose} />}
     </LayoutWrapper>

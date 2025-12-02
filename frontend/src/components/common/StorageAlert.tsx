@@ -27,6 +27,7 @@ import {
   StorageAlert as StorageAlertType,
   StorageUsage,
 } from "api/storage/StorageAlerts"
+import { SubscriptionAlertThresholds } from "const/Subscription"
 
 interface StorageAlertProps {
   showUsageDetails?: boolean
@@ -122,8 +123,8 @@ const StorageAlert: React.FC<StorageAlertProps> = ({
   }
 
   const getProgressColor = (percentage: number) => {
-    if (percentage >= 100) return "error"
-    if (percentage >= 90) return "warning"
+    if (percentage >= SubscriptionAlertThresholds.CRITICAL) return "error"
+    if (percentage >= SubscriptionAlertThresholds.WARNING) return "warning"
     return "primary"
   }
 

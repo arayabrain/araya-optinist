@@ -34,6 +34,7 @@ import {
 import { isRejectedWithValue } from "@reduxjs/toolkit"
 
 import { UserDTO } from "api/users/UsersApiDTO"
+import { refreshAllWorkspacesStorageApi } from "api/workspace"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
 import PaginationCustom from "components/common/PaginationCustom"
@@ -56,7 +57,6 @@ import { ItemsWorkspace } from "store/slice/Workspace/WorkspaceType"
 import { isMine } from "store/slice/Workspace/WorkspaceUtils"
 import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
-import axios from "utils/axios"
 
 type PopupType = {
   open: boolean
@@ -533,13 +533,13 @@ const Workspaces = () => {
     try {
       setRefreshing(true)
       // Call API to refresh all workspace storage usage
-      const response = await axios.post("/workspaces/refresh-storage")
+      const response = await refreshAllWorkspacesStorageApi()
 
       // Refresh the workspace list after storage sync
       await dispatch(getWorkspaceList(dataParams))
       handleClickVariant(
         "success",
-        `Storage refreshed for ${response.data.refreshed_workspaces} workspaces!`,
+        `Storage refreshed for ${response.refreshed_workspaces} workspaces!`,
       )
     } catch (error) {
       // eslint-disable-next-line no-console

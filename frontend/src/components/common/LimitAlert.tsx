@@ -19,34 +19,34 @@ import {
 } from "@mui/material"
 
 import {
-  getMyLimitWarningApi,
-  LimitWarning as LimitWarningType,
+  getMyLimitAlertApi,
+  LimitAlert as LimitAlertType,
 } from "api/storage/StorageAlerts"
 import { SubscriptionPeriods } from "const/Subscription"
 import { getToken } from "utils/auth/AuthUtils"
 
-interface LimitWarningProps {
+interface LimitAlertProps {
   showAsModal?: boolean
   onClose?: () => void
   autoCheck?: boolean
 }
 
-const LimitWarning: React.FC<LimitWarningProps> = ({
+const LimitAlert: React.FC<LimitAlertProps> = ({
   showAsModal = false,
   onClose,
   autoCheck = true,
 }) => {
   const { enqueueSnackbar: _enqueueSnackbar } = useSnackbar()
   const navigate = useNavigate()
-  const [warning, setWarning] = useState<LimitWarningType | null>(null)
+  const [alert, setAlert] = useState<LimitAlertType | null>(null)
   const [loading, setLoading] = useState(true)
   const [dismissed, setDismissed] = useState(() => {
-    // Check if this warning was already dismissed in localStorage
-    const dismissedWarnings = localStorage.getItem("dismissedWarnings")
-    if (dismissedWarnings) {
+    // Check if this alert was already dismissed in localStorage
+    const dismissedAlerts = localStorage.getItem("dismissedAlerts")
+    if (dismissedAlerts) {
       try {
-        const parsed = JSON.parse(dismissedWarnings)
-        return parsed.limitWarning === true
+        const parsed = JSON.parse(dismissedAlerts)
+        return parsed.limitAlert === true
       } catch {
         return false
       }
@@ -54,11 +54,11 @@ const LimitWarning: React.FC<LimitWarningProps> = ({
     return false
   })
 
-  const fetchLimitWarning = async () => {
+  const fetchLimitAlert = async () => {
     try {
       setLoading(true)
-      const warningResponse = await getMyLimitWarningApi()
-      setWarning(warningResponse)
+      const alertResponse = await getMyLimitAlertApi()
+      setAlert(alertResponse)
     } catch (error) {
       // Silently fail to not disrupt the main UI
     } finally {
@@ -68,19 +68,19 @@ const LimitWarning: React.FC<LimitWarningProps> = ({
 
   const handleDismiss = () => {
     // Persist dismissal in localStorage
-    const dismissedWarnings = localStorage.getItem("dismissedWarnings")
+    const dismissedAlerts = localStorage.getItem("dismissedAlerts")
     let parsed = {}
     try {
-      parsed = dismissedWarnings ? JSON.parse(dismissedWarnings) : {}
+      parsed = dismissedAlerts ? JSON.parse(dismissedAlerts) : {}
     } catch {
       // Handle JSON parse errors
     }
 
     localStorage.setItem(
-      "dismissedWarnings",
+      "dismissedAlerts",
       JSON.stringify({
         ...parsed,
-        limitWarning: true,
+        limitAlert: true,
       }),
     )
 
@@ -89,7 +89,7 @@ const LimitWarning: React.FC<LimitWarningProps> = ({
   }
 
   const handleUpgrade = () => {
-    // Dismiss the warning when user clicks upgrade
+    // Dismiss the alert when user clicks upgrade
     handleDismiss()
     // Navigate to payment page
     navigate("/payment")
@@ -98,7 +98,7 @@ const LimitWarning: React.FC<LimitWarningProps> = ({
   useEffect(() => {
     if (autoCheck) {
       if (getToken()) {
-        fetchLimitWarning()
+        fetchLimitAlert()
       } else {
         // No token, stop loading immediately
         setLoading(false)
@@ -115,25 +115,25 @@ const LimitWarning: React.FC<LimitWarningProps> = ({
     )
   }
 
-  if (dismissed || !warning?.has_warning) {
+  if (dismissed || !alert?.has_alert) {
     return null
   }
 
-  // Determine what actions to show based on warning type and conditions
-  const hasStorageIssue = warning.excess_data_gb > 0
+  // Determine what actions to show based on alert type and conditions
+  const hasStorageIssue = alert.excess_data_gb > 0
   const hasSubscriptionIssue =
-    warning.warning_type === "grace" || warning.warning_type === "overdue"
+    alert.alert_type === "grace" || alert.alert_type === "overdue"
 
   // Only show upgrade button if:
   // 1. User has subscription expiration issues (was premium, now expired), OR
   // 2. User is a free user with storage issues (has deletion_date, meaning they're on free plan)
   // Note: Active premium users with storage issues don't have deletion_date and shouldn't see upgrade button
-  const isFreeUserWithStorageIssue = hasStorageIssue && !!warning.deletion_date
+  const isFreeUserWithStorageIssue = hasStorageIssue && !!alert.deletion_date
   const showUpgradeButton = hasSubscriptionIssue || isFreeUserWithStorageIssue
   const showManageFilesButton = hasStorageIssue
 
-  const getSeverity = (warningType: string) => {
-    switch (warningType) {
+  const getSeverity = (alertType: string) => {
+    switch (alertType) {
       case "overdue":
         return "error"
       case "storage":
@@ -145,8 +145,8 @@ const LimitWarning: React.FC<LimitWarningProps> = ({
     }
   }
 
-  const getTitle = (warningType: string) => {
-    switch (warningType) {
+  const getTitle = (alertType: string) => {
+    switch (alertType) {
       case "overdue":
         return "Data Cleanup Overdue"
       case "storage":
@@ -154,7 +154,7 @@ const LimitWarning: React.FC<LimitWarningProps> = ({
       case "grace":
         return "Premium Subscription Expired"
       default:
-        return "Storage Warning"
+        return "Storage Alert"
     }
   }
 
@@ -169,22 +169,22 @@ const LimitWarning: React.FC<LimitWarningProps> = ({
   }
 
   const progressValue =
-    warning.days_remaining > 0
+    alert.days_remaining > 0
       ? Math.max(
           SubscriptionPeriods.MIN_PROGRESS_PERCENT,
           Math.min(
             SubscriptionPeriods.MAX_PROGRESS_PERCENT,
-            (warning.days_remaining /
+            (alert.days_remaining /
               SubscriptionPeriods.PROGRESS_REFERENCE_DAYS) *
               SubscriptionPeriods.MAX_PROGRESS_PERCENT,
           ),
         )
       : 0
 
-  const warningContent = (
+  const alertContent = (
     <Box>
       <Alert
-        severity={getSeverity(warning.warning_type)}
+        severity={getSeverity(alert.alert_type)}
         action={
           !showAsModal && (
             <IconButton size="small" onClick={handleDismiss}>
@@ -194,27 +194,27 @@ const LimitWarning: React.FC<LimitWarningProps> = ({
         }
         sx={{ mb: showAsModal ? 0 : 2 }}
       >
-        <AlertTitle>{getTitle(warning.warning_type)}</AlertTitle>
+        <AlertTitle>{getTitle(alert.alert_type)}</AlertTitle>
 
         <Typography variant="body2" sx={{ mb: 2 }}>
-          {warning.message}
+          {alert.message}
         </Typography>
 
         {/* Days remaining progress bar */}
-        {warning.days_remaining > 0 && (
+        {alert.days_remaining > 0 && (
           <Box sx={{ mb: 2 }}>
             <Box display="flex" justifyContent="space-between" mb={1}>
               <Typography variant="caption" fontWeight="bold">
                 Days Remaining
               </Typography>
               <Typography variant="caption" fontWeight="bold">
-                {warning.days_remaining} days
+                {alert.days_remaining} days
               </Typography>
             </Box>
             <LinearProgress
               variant="determinate"
               value={progressValue}
-              color={getProgressColor(warning.days_remaining)}
+              color={getProgressColor(alert.days_remaining)}
               sx={{ height: 8, borderRadius: 4 }}
             />
           </Box>
@@ -240,7 +240,7 @@ const LimitWarning: React.FC<LimitWarningProps> = ({
               Current Usage:
             </Typography>
             <Typography variant="body2" fontWeight="bold">
-              {warning.storage_usage_gb} GB
+              {alert.storage_usage_gb} GB
             </Typography>
           </Box>
 
@@ -248,9 +248,7 @@ const LimitWarning: React.FC<LimitWarningProps> = ({
             <Typography variant="body2" color="text.secondary">
               Free Plan Limit:
             </Typography>
-            <Typography variant="body2">
-              {warning.storage_quota_gb} GB
-            </Typography>
+            <Typography variant="body2">{alert.storage_quota_gb} GB</Typography>
           </Box>
 
           <Box display="flex" justifyContent="space-between">
@@ -266,7 +264,7 @@ const LimitWarning: React.FC<LimitWarningProps> = ({
               color={hasStorageIssue ? "error.main" : "text.primary"}
               fontWeight={hasStorageIssue ? "bold" : "normal"}
             >
-              {warning.excess_data_gb} GB
+              {alert.excess_data_gb} GB
             </Typography>
           </Box>
         </Box>
@@ -303,12 +301,12 @@ const LimitWarning: React.FC<LimitWarningProps> = ({
   if (showAsModal) {
     return (
       <Dialog
-        open={Boolean(warning?.has_warning && !dismissed)}
+        open={Boolean(alert?.has_alert && !dismissed)}
         onClose={handleDismiss}
         maxWidth="md"
         fullWidth
       >
-        <DialogContent>{warningContent}</DialogContent>
+        <DialogContent>{alertContent}</DialogContent>
         <DialogActions>
           <Button onClick={handleDismiss} color="inherit">
             Handle later
@@ -342,7 +340,7 @@ const LimitWarning: React.FC<LimitWarningProps> = ({
     )
   }
 
-  return warningContent
+  return alertContent
 }
 
-export default LimitWarning
+export default LimitAlert

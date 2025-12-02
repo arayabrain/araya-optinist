@@ -25,3 +25,8 @@ export const SubscriptionPlanIds = {
   FREE: 1,
   PREMIUM: 2,
 } as const
+
+export const SubscriptionAlertThresholds = {
+  WARNING: 90,
+  CRITICAL: 100,
+} as const

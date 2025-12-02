@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.db.database import session_scope
 from studio.app.common.models import SubscriptionPlans
 from studio.app.common.models import User as UserModel
@@ -39,7 +40,10 @@ def _get_fallback_storage_quota(user_id: int) -> Dict[str, Any]:
                 .outerjoin(
                     UserSubscription,
                     (UserModel.id == UserSubscription.user_id)
-                    & (UserSubscription.expiration > datetime.now()),
+                    & (
+                        UserSubscription.expiration
+                        > SubscriptionService.get_current_datetime()
+                    ),
                 )
                 .outerjoin(
                     SubscriptionPlans, UserSubscription.plan_id == SubscriptionPlans.id
@@ -51,16 +55,16 @@ def _get_fallback_storage_quota(user_id: int) -> Dict[str, Any]:
         if result and result.plan_name:
             plan_name = result.plan_name
             subscription_type = (
-                SubscriptionType.PREMIUM.value
-                if plan_name == PlanName.PREMIUM.value
-                else SubscriptionType.FREE.value
+                SubscriptionType.PREMIUM
+                if plan_name == PlanName.PREMIUM
+                else SubscriptionType.FREE
             )
         else:
-            plan_name = PlanName.FREE.value
-            subscription_type = SubscriptionType.FREE.value
+            plan_name = PlanName.FREE
+            subscription_type = SubscriptionType.FREE
 
         # Set quotas based on Subscription Type
-        if subscription_type == SubscriptionType.PREMIUM.value:
+        if subscription_type == SubscriptionType.PREMIUM:
             default_quota_bytes = StorageQuota.PREMIUM * StorageSize.GB  # 100GB
             logger.info(
                 f"Using paid plan quota for user {user_id} ({plan_name}): "
@@ -151,7 +155,7 @@ def get_user_storage_usage(user_id: int) -> Optional[Dict[str, Any]]:
         # Get subscription-aware quota instead of hardcoded value
         fallback = _get_fallback_storage_quota(user_id)
         # Set last_updated to enable caching (avoid repeated recalculations)
-        fallback["last_updated"] = datetime.now()
+        fallback["last_updated"] = SubscriptionService.get_current_datetime()
         return fallback
 
     try:
@@ -220,7 +224,9 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
                 if existing_usage:
                     # Update existing record
                     existing_usage.storage_usage_bytes = new_usage_bytes
-                    existing_usage.last_updated = datetime.now()
+                    existing_usage.last_updated = (
+                        SubscriptionService.get_current_datetime()
+                    )
                     db.add(existing_usage)
                 else:
                     # Need to determine quota - try to get from user's subscription
@@ -230,7 +236,10 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
                         .outerjoin(
                             UserSubscription,
                             (UserModel.id == UserSubscription.user_id)
-                            & (UserSubscription.expiration > datetime.now()),
+                            & (
+                                UserSubscription.expiration
+                                > SubscriptionService.get_current_datetime()
+                            ),
                         )
                         .outerjoin(
                             SubscriptionPlans,
@@ -240,7 +249,7 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
                     )
                     result = db.execute(statement).first()
 
-                    if result and result.plan_name == PlanName.PREMIUM.value:
+                    if result and result.plan_name == PlanName.PREMIUM:
                         default_quota = StorageQuota.PREMIUM * StorageSize.GB  # 100GB
                     else:
                         default_quota = StorageQuota.FREE * StorageSize.GB  # 5GB
@@ -286,7 +295,7 @@ async def get_current_user_storage_usage(user_id: int, force_live: bool = False)
             # Try database first (fast)
             storage_info = get_user_storage_usage(user_id)
             if storage_info and _is_storage_data_fresh(
-                storage_info, max_age_minutes=20
+                storage_info, SubscriptionPeriods.MAX_CACHE_AGE_MINUTES
             ):
                 logger.info(f"Using cached storage data for user {user_id}")
                 return storage_info["storage_usage_bytes"]
@@ -311,13 +320,13 @@ async def get_current_user_storage_usage(user_id: int, force_live: bool = False)
         return storage_info.get("storage_usage_bytes", 0) if storage_info else 0
 
 
-def _is_storage_data_fresh(storage_info: Dict, max_age_minutes: int = 60) -> bool:
+def _is_storage_data_fresh(storage_info: Dict, max_cache_age_minutes: int) -> bool:
     """
     Check if storage data is fresh enough to use.
 
     Args:
         storage_info: Storage info from database
-        max_age_minutes: Maximum age in minutes to consider fresh
+        max_cache_age_minutes: Maximum age of cache in minutes
 
     Returns:
         True if data is fresh enough
@@ -331,8 +340,10 @@ def _is_storage_data_fresh(storage_info: Dict, max_age_minutes: int = 60) -> boo
         if isinstance(last_updated, str):
             last_updated = datetime.fromisoformat(last_updated.replace("Z", "+00:00"))
 
-        age_minutes = (datetime.now() - last_updated).total_seconds() / 60
-        return age_minutes <= max_age_minutes
+        age_minutes = (
+            SubscriptionService.get_current_datetime() - last_updated
+        ).total_seconds() / 60
+        return age_minutes <= max_cache_age_minutes
 
     except Exception as e:
         logger.warning(f"Failed to check storage data freshness: {e}")
@@ -478,7 +489,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
             # First check if we have cached data (within 20 minutes)
             storage_info = get_user_storage_usage(user_id)
             if storage_info and _is_storage_data_fresh(
-                storage_info, max_age_minutes=20
+                storage_info, SubscriptionPeriods.MAX_CACHE_AGE_MINUTES
             ):
                 current_usage_bytes = storage_info.get("storage_usage_bytes", 0)
                 logger.info(
@@ -543,11 +554,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                     return None
                 grace_end = subscription_end + timedelta(days=GRACE_PERIOD_DAYS)
                 deletion_date = grace_end + timedelta(days=WARNING_PERIOD_DAYS)
-                now = (
-                    datetime.now(subscription_end.tzinfo)
-                    if subscription_end.tzinfo
-                    else datetime.now()
-                )
+                now = SubscriptionService.get_current_datetime()
 
                 logger.info(f"User {user_id} subscription details:")
                 logger.info(f"Subscription end: {subscription_end}")
@@ -556,14 +563,14 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                 logger.info(f"Current time: {now}")
 
                 if subscription_end > now:
-                    subscription_status = SubscriptionLifecycleStatus.ACTIVE.value
+                    subscription_status = SubscriptionLifecycleStatus.ACTIVE
                 elif now <= grace_end:
-                    subscription_status = SubscriptionLifecycleStatus.GRACE.value
+                    subscription_status = SubscriptionLifecycleStatus.GRACE
                 elif now <= deletion_date:
-                    subscription_status = SubscriptionLifecycleStatus.WARNING.value
+                    subscription_status = SubscriptionLifecycleStatus.WARNING
                     days_remaining = (deletion_date - now).days
                 else:
-                    subscription_status = SubscriptionLifecycleStatus.OVERDUE.value
+                    subscription_status = SubscriptionLifecycleStatus.OVERDUE
                     days_remaining = 0
 
                 logger.info(
@@ -572,7 +579,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                 )
             else:
                 subscription_status = (
-                    SubscriptionLifecycleStatus.FREE.value
+                    SubscriptionLifecycleStatus.FREE
                 )  # Never had premium
 
             # Step 2: Determine storage status
@@ -591,7 +598,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
 
             # Case 1: Free user, no storage limit exceeded → No warning
             if (
-                subscription_status == SubscriptionLifecycleStatus.FREE.value
+                subscription_status == SubscriptionLifecycleStatus.FREE
                 and not storage_exceeded
             ):
                 logger.info(
@@ -601,7 +608,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
 
             # Case 2: Free user, storage limit exceeded → Storage warning
             if (
-                subscription_status == SubscriptionLifecycleStatus.FREE.value
+                subscription_status == SubscriptionLifecycleStatus.FREE
                 and storage_exceeded
             ):
                 return {
@@ -615,7 +622,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                     "storage_quota_bytes": storage_quota_bytes,
                     "storage_quota_gb": storage_quota_gb,
                     "deletion_date": (
-                        datetime.now()
+                        SubscriptionService.get_current_datetime()
                         + timedelta(days=SubscriptionPeriods.STORAGE_WARNING_DAYS)
                     ).isoformat(),
                     "message": (
@@ -628,7 +635,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
 
             # Case 3: Premium user active, storage limit exceeded → Storage warning only
             if (
-                subscription_status == SubscriptionLifecycleStatus.ACTIVE.value
+                subscription_status == SubscriptionLifecycleStatus.ACTIVE
                 and storage_exceeded
             ):
                 return {
@@ -650,8 +657,8 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
 
             # Cases 4 & 5: Premium user with subscription issues (warning/overdue)
             if subscription_status in [
-                SubscriptionLifecycleStatus.WARNING.value,
-                SubscriptionLifecycleStatus.OVERDUE.value,
+                SubscriptionLifecycleStatus.WARNING,
+                SubscriptionLifecycleStatus.OVERDUE,
             ]:
                 logger.info(
                     f"User {user_id}: Creating limit warning "
@@ -659,7 +666,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                 )
                 warning_type = (
                     "grace"
-                    if subscription_status == SubscriptionLifecycleStatus.WARNING.value
+                    if subscription_status == SubscriptionLifecycleStatus.WARNING
                     else "overdue"
                 )
 
@@ -746,7 +753,8 @@ class CloudDebug:
                 try:
                     query_result = db.execute(
                         select(UserSubscription).where(
-                            UserSubscription.expiration > datetime.now()
+                            UserSubscription.expiration
+                            > SubscriptionService.get_current_datetime()
                         )
                     )
                     active_subscriptions = len(query_result.all())
@@ -814,8 +822,7 @@ class CloudDebug:
                         f"{user_with_details.has_active_subscription}"
                     )
                     subscription_status = (
-                        user_with_details.subscription_status
-                        or SubscriptionStatus.FREE.value
+                        user_with_details.subscription_status or SubscriptionStatus.FREE
                     )
                     logger.info(f"Subscription Status: {subscription_status}")
                     logger.info(
@@ -846,7 +853,7 @@ class CloudDebug:
                         1
                         for user in active_subscriptions
                         if user.subscription_status
-                        and user.subscription_status != SubscriptionStatus.FREE.value
+                        and user.subscription_status != SubscriptionStatus.FREE
                     )
                     logger.info(f"Total active subscriptions: {active_count}")
                 except Exception as e:
@@ -912,31 +919,25 @@ async def get_user_subscription_plan(user_id: int) -> Dict[str, Any]:
             if not user:
                 logger.warning(f"User {user_id} not found")
                 return {
-                    "tier": SubscriptionType.FREE.value,
-                    "plan_name": PlanName.FREE.value,
+                    "tier": SubscriptionType.FREE,
+                    "plan_name": PlanName.FREE,
                     "is_premium": False,
                     "has_active_subscription": False,
                 }
 
             # Extract subscription information from user context
-            plan_name = getattr(user, "subscription_plan_name", PlanName.FREE.value)
+            plan_name = getattr(user, "subscription_plan_name", PlanName.FREE)
             has_active = getattr(user, "has_active_subscription", False)
 
             # Determine tier - Premium users should get priority even in grace period
-            is_premium = (
-                plan_name and plan_name.lower() == SubscriptionType.PREMIUM.value
-            )
-            tier = (
-                SubscriptionType.PREMIUM.value
-                if is_premium
-                else SubscriptionType.FREE.value
-            )
+            is_premium = plan_name and plan_name.lower() == SubscriptionType.PREMIUM
+            tier = SubscriptionType.PREMIUM if is_premium else SubscriptionType.FREE
 
             logger.info(f"User {user_id} subscription tier: {tier} (plan: {plan_name})")
 
             return {
                 "tier": tier,
-                "plan_name": plan_name or PlanName.FREE.value,
+                "plan_name": plan_name or PlanName.FREE,
                 "is_premium": is_premium,
                 "has_active_subscription": has_active,
             }
@@ -945,8 +946,8 @@ async def get_user_subscription_plan(user_id: int) -> Dict[str, Any]:
         logger.warning(f"Failed to get subscription tier for user {user_id}: {e}")
         # Return free tier as fallback
         return {
-            "tier": SubscriptionType.FREE.value,
-            "plan_name": PlanName.FREE.value,
+            "tier": SubscriptionType.FREE,
+            "plan_name": PlanName.FREE,
             "is_premium": False,
             "has_active_subscription": False,
         }
