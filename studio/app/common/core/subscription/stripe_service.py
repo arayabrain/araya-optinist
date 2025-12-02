@@ -1,5 +1,4 @@
 from datetime import datetime
-from enum import StrEnum
 from typing import Optional
 
 import stripe
@@ -7,8 +6,13 @@ from fastapi import HTTPException, status
 from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.subscription.subscription_service import (
+from studio.app.common.core.subscription.constants import (
+    PAYMENT_METHOD_TYPE_CARD,
+    SETUP_INTENT_USAGE_OFF_SESSION,
     SubscriptionCurrencyType,
+    StripeSubscriptionStatus,
+)
+from studio.app.common.core.subscription.subscription_service import (
     SubscriptionService,
 )
 from studio.app.common.schemas.subscriptions import (
@@ -22,19 +26,6 @@ from studio.app.common.schemas.subscriptions import (
 from studio.app.common.schemas.users import User
 
 logger = AppLogger.get_logger()
-
-
-class StripeSubscriptionStatus(StrEnum):
-    """Stripe subscription status values"""
-
-    INCOMPLETE = "incomplete"
-    INCOMPLETE_EXPIRED = "incomplete_expired"
-    TRIAL = "trialing"
-    ACTIVE = "active"
-    PAST_DUE = "past_due"
-    CANCELED = "canceled"
-    UNPAID = "unpaid"
-    PAUSED = "paused"
 
 
 async def get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
@@ -131,7 +122,7 @@ class StripeService:
             # Retrieve the payment method details
             payment_method = stripe.PaymentMethod.retrieve(default_pm_id)
 
-            if payment_method.type != "card":
+            if payment_method.type != PAYMENT_METHOD_TYPE_CARD:
                 logger.info(f"Default payment method is not a card for user {user.id}")
                 return None
 
@@ -181,8 +172,8 @@ class StripeService:
             # Create SetupIntent
             setup_intent = stripe.SetupIntent.create(
                 customer=customer.id,
-                payment_method_types=["card"],
-                usage="off_session",  # For future payments
+                payment_method_types=[PAYMENT_METHOD_TYPE_CARD],
+                usage=SETUP_INTENT_USAGE_OFF_SESSION,  # For future payments
             )
 
             return CreateSetupIntentResponse(
@@ -370,7 +361,7 @@ class StripeService:
 
             # Get all payment methods for this customer
             payment_methods = stripe.PaymentMethod.list(
-                customer=customer.id, type="card"
+                customer=customer.id, type=PAYMENT_METHOD_TYPE_CARD
             )
 
             result = []

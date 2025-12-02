@@ -1,5 +1,4 @@
 from datetime import datetime, timezone
-from enum import IntEnum
 from typing import List, Optional, Tuple
 
 import stripe
@@ -9,57 +8,22 @@ from sqlmodel import Session
 
 from studio.app.common import models as common_model
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.subscription.constants import (
+    SubscriptionPlanType,
+    SubscriptionStatusType,
+    SubscriptionUserStatus,
+    SyncStatus,
+)
 from studio.app.common.core.utils.config_handler import get_env_var
 from studio.app.common.models.subscription import (
     SubscriptionCancellation,
     SubscriptionPlans,
     SubscriptionUserPurchase,
-    SyncStatus,
     UserSubscription,
 )
 from studio.app.common.models.user import User
 
 logger = AppLogger.get_logger()
-
-
-class SubscriptionUserStatus(IntEnum):
-    FREE = 1
-    SUBSCRIBED = 2
-    EXPIRED = 3
-    CANCELED = 4
-
-
-class SubscriptionPlanType(IntEnum):
-    MONTHLY = 1
-    YEARLY = 2
-
-
-class SubscriptionStatusType(IntEnum):
-    ACTIVE = 1
-    INACTIVE = 0
-
-
-class SubscriptionCurrencyType(IntEnum):
-    USD = 1
-    JPY = 2
-
-    def get_currency_string(self):
-        """Get the string representation of the currency"""
-        if self == self.__class__.USD:
-            return "usd"
-        elif self == self.__class__.JPY:
-            return "jpy"
-        return None
-
-    @staticmethod
-    def get_currency_enum(value: str):
-        """Get the enum representation of the currency"""
-        value = value.lower()
-        if value == "usd":
-            return SubscriptionCurrencyType.USD
-        elif value == "jpy":
-            return SubscriptionCurrencyType.JPY
-        return None
 
 
 class SubscriptionService:

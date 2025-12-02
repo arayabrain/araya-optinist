@@ -1,6 +1,5 @@
 import os
 from datetime import datetime, timedelta
-from enum import StrEnum
 from typing import Any, Dict
 
 import stripe
@@ -10,38 +9,27 @@ from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.checkout_service import CheckoutService
-from studio.app.common.core.subscription.subscription_service import (
+from studio.app.common.core.subscription.constants import (
+    DUPLICATE_PURCHASE_WINDOW_MINUTES,
+    RECENT_SUBSCRIPTION_WINDOW_DAYS,
+    CancellationReason,
+    PaymentStatus,
+    StripeWebhookEvent,
     SubscriptionCurrencyType,
+    SyncStatus,
+)
+from studio.app.common.core.subscription.subscription_service import (
     SubscriptionService,
 )
 from studio.app.common.models.subscription import (
-    CancellationReason,
     SubscriptionCancellation,
     SubscriptionPlans,
     SubscriptionUserAccount,
     SubscriptionUserPurchase,
-    SyncStatus,
     UserSubscription,
 )
 
 logger = AppLogger.get_logger()
-
-
-class StripeWebhookEvent(StrEnum):
-    CHECKOUT_SESSION_COMPLETED = "checkout.session.completed"
-    INVOICE_PAYMENT_FAILED = "invoice.payment_failed"
-    CUSTOMER_SUBSCRIPTION_DELETED = "customer.subscription.deleted"
-    SUBSCRIPTION_SCHEDULE_RELEASED = "subscription_schedule.released"
-    INVOICE_PAYMENT_SUCCEEDED = "invoice.payment_succeeded"
-
-
-class BILLING_CYCLE(StrEnum):
-    MONTHLY = "1"
-    YEARLY = "2"
-
-
-class PaymentStatus(StrEnum):
-    PAID = "paid"
 
 
 class WebhookService:
@@ -113,7 +101,7 @@ class WebhookService:
                     SubscriptionUserPurchase.plan_id == plan_id,
                     SubscriptionUserPurchase.created_at
                     > SubscriptionService.get_current_datetime()
-                    - timedelta(minutes=30),  # Within last 30 minutes
+                    - timedelta(minutes=DUPLICATE_PURCHASE_WINDOW_MINUTES),
                 )
                 .first()
             )
@@ -768,7 +756,8 @@ class WebhookService:
                         .filter(
                             UserSubscription.user_id == user_id,
                             UserSubscription.expiration
-                            > current_time - timedelta(days=7),
+                            > current_time
+                            - timedelta(days=RECENT_SUBSCRIPTION_WINDOW_DAYS),
                         )
                         .order_by(UserSubscription.expiration.desc())
                         .first()

@@ -1,5 +1,4 @@
 from datetime import datetime
-from enum import StrEnum
 from typing import Any, Dict, Optional
 
 from sqlalchemy import BIGINT, JSON, TIMESTAMP, Boolean, DateTime
@@ -9,19 +8,10 @@ from sqlalchemy.sql import func
 from sqlalchemy.sql.functions import current_timestamp
 from sqlmodel import Column, Field, SQLModel
 
-
-# Enums for subscription management
-class SyncStatus(StrEnum):
-    PENDING = "pending"
-    SYNCED = "synced"
-    FAILED = "failed"
-
-
-class CancellationReason(StrEnum):
-    USER_REQUEST = "user_request"
-    PAYMENT_FAILED = "payment_failed"
-    ADMIN_ACTION = "admin_action"
-    REFUND = "refund"
+from studio.app.common.core.subscription.constants import (
+    CancellationReason,
+    SyncStatus,
+)
 
 
 class SubscriptionPlans(SQLModel, table=True):
