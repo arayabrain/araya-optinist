@@ -208,7 +208,9 @@ async def create_file(
     with open(filepath, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    update_image_shape(workspace_id, filename)
+    # Only update image shape for TIFF files
+    if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
+        update_image_shape(workspace_id, filename)
 
     if WorkspaceDataCapacityService.is_available():
         background_tasks.add_task(
@@ -305,7 +307,9 @@ async def download_file(
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
     background_tasks.add_task(download, db, res, path.name, workspace_id)
-    background_tasks.add_task(update_image_shape, workspace_id, path.name)
+    # Only update image shape for TIFF files
+    if path.name.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
+        background_tasks.add_task(update_image_shape, workspace_id, path.name)
     return {"file_name": path.name}
 
 
