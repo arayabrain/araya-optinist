@@ -9,12 +9,10 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.constants import (
     PAYMENT_METHOD_TYPE_CARD,
     SETUP_INTENT_USAGE_OFF_SESSION,
-    SubscriptionCurrencyType,
     StripeSubscriptionStatus,
+    SubscriptionCurrencyType,
 )
-from studio.app.common.core.subscription.subscription_service import (
-    SubscriptionService,
-)
+from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.schemas.subscriptions import (
     CancelSubscriptionResponse,
     CreateSetupIntentResponse,

@@ -18,9 +18,7 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionCurrencyType,
     SyncStatus,
 )
-from studio.app.common.core.subscription.subscription_service import (
-    SubscriptionService,
-)
+from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.models.subscription import (
     SubscriptionCancellation,
     SubscriptionPlans,

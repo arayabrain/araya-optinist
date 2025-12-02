@@ -18,9 +18,7 @@ from studio.app.common.core.subscription.stripe_service import (
     StripeService,
     get_stripe_customer_by_email,
 )
-from studio.app.common.core.subscription.subscription_service import (
-    SubscriptionService,
-)
+from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.db.database import get_db
 from studio.app.common.models.subscription import SubscriptionPlans

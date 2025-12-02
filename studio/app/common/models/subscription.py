@@ -8,10 +8,7 @@ from sqlalchemy.sql import func
 from sqlalchemy.sql.functions import current_timestamp
 from sqlmodel import Column, Field, SQLModel
 
-from studio.app.common.core.subscription.constants import (
-    CancellationReason,
-    SyncStatus,
-)
+from studio.app.common.core.subscription.constants import CancellationReason, SyncStatus
 
 
 class SubscriptionPlans(SQLModel, table=True):
