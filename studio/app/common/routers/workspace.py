@@ -69,11 +69,37 @@ def search_workspaces(
     def workspace_transformer(items):
         list_ws = []
 
+        # Fetch all users for these workspaces in one query for efficiency
+        workspace_ids = [item.id for item in items]
+        user_map = {}
+        if workspace_ids:
+            users_query = (
+                db.query(common_model.User)
+                .filter(common_model.User.id.in_([item.user_id for item in items]))
+                .all()
+            )
+            user_map = {user.id: user for user in users_query}
+
         for item in items:
-            ws = item[0]
+            # Create a Workspace object from the row data
+            ws = common_model.Workspace(
+                id=item.id,
+                name=item.name,
+                user_id=item.user_id,
+                deleted=item.deleted,
+                input_data_usage=item.input_data_usage,
+                created_at=item.created_at,
+                updated_at=item.updated_at,
+            )
+
+            # Add the computed fields
             ws_dict = ws.__dict__
             ws_dict["shared_count"] = item.shared_count
             ws_dict["data_usage"] = item.data_usage
+            ws_dict["display_number"] = item.display_number
+
+            # Attach the user object
+            ws_dict["user"] = user_map.get(item.user_id)
 
             workspace_dir = join_filepath([DIRPATH.OUTPUT_DIR, str(ws.id)])
             can_delete = True
@@ -116,11 +142,28 @@ def search_workspaces(
         .subquery()
     )
 
-    query = (
+    # Create CTE with ROW_NUMBER for display numbering
+    # Calculate row numbers on ALL workspaces (including deleted) to preserve gaps
+    # Order by ownership first (owned workspaces before shared), then by sort options
+    all_workspaces_cte = (
         select(
             common_model.Workspace,
             shared_count_subquery.label("shared_count"),
             (data_capacity_subq.c.data_usage).label("data_usage"),
+            func.row_number()
+            .over(
+                order_by=[
+                    # First, order by ownership: owned (False) before shared (True)
+                    (common_model.Workspace.user_id != current_user.id),
+                    # Then apply the requested sort order
+                    *(
+                        sa_sort_list
+                        if sa_sort_list
+                        else [common_model.Workspace.created_at]
+                    ),
+                ]
+            )
+            .label("display_number"),
         )
         .outerjoin(
             data_capacity_subq, data_capacity_subq.c.id == common_model.Workspace.id
@@ -131,15 +174,17 @@ def search_workspaces(
             isouter=True,
         )
         .filter(
-            common_model.Workspace.deleted.is_(False),
             or_(
                 common_model.WorkspacesShareUser.user_id == current_user.id,
                 common_model.Workspace.user_id == current_user.id,
             ),
         )
         .group_by(common_model.Workspace.id)
-        .order_by(*sa_sort_list)
+        .cte("all_workspaces")
     )
+
+    # Now filter out deleted workspaces from the numbered results
+    query = select(all_workspaces_cte).where(all_workspaces_cte.c.deleted.is_(False))
 
     data = paginate(
         db,

@@ -8,6 +8,7 @@ from studio.app.common.schemas.users import UserInfo
 
 class Workspace(BaseModel):
     id: Optional[int]
+    display_number: Optional[int]
     name: str
     user: Optional[UserInfo]
     shared_count: int
