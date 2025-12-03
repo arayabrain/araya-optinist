@@ -154,9 +154,7 @@ async def test_get_user_s3_storage_size_single_workspace():
     workspace_id = 100
 
     with patch("boto3.client") as mock_boto_client:
-        with patch(
-            "studio.app.common.core.cloud.s3_storage_monitor.session_scope"
-        ) as mock_scope:
+        with patch("studio.app.common.db.database.session_scope") as mock_scope:
             # Mock database to return single workspace
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
@@ -190,9 +188,7 @@ async def test_get_user_s3_storage_size_single_workspace():
             # Total: (1MB + 2MB + 0.5MB) per call
             # The implementation calls paginate for each prefix (input/output)
             # Since mock returns same page each time: 3.5MB * 2 prefixes = 7MB
-            # But actual result is 14MB because paginator is called multiple times
-            # This is a mock artifact - accept the actual behavior
-            assert result == 14_000_000  # 7MB * 2 (mock returns data twice)
+            assert result == 7_000_000
 
 
 @pytest.mark.asyncio
@@ -202,9 +198,7 @@ async def test_get_user_s3_storage_size_multiple_workspaces():
     workspace_ids = [100, 101, 102]
 
     with patch("boto3.client") as mock_boto_client:
-        with patch(
-            "studio.app.common.core.cloud.s3_storage_monitor.session_scope"
-        ) as mock_scope:
+        with patch("studio.app.common.db.database.session_scope") as mock_scope:
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
 
@@ -230,10 +224,8 @@ async def test_get_user_s3_storage_size_multiple_workspaces():
             monitor = S3StorageMonitor("test-bucket")
             result = await monitor.get_user_s3_storage_size(user_id)
 
-            # 3 workspaces * 2 prefixes (input/output) * 1MB
-            # But mock behavior may vary - accept actual result
-            # Actual result is 4MB based on how the mock paginator is called
-            assert result == 4_000_000  # Actual result from mock
+            # 3 workspaces * 2 prefixes (input/output) * 1MB = 6MB
+            assert result == 6_000_000
 
 
 @pytest.mark.asyncio
@@ -243,9 +235,7 @@ async def test_get_user_s3_storage_size_empty_bucket():
     workspace_id = 100
 
     with patch("boto3.client") as mock_boto_client:
-        with patch(
-            "studio.app.common.core.cloud.s3_storage_monitor.session_scope"
-        ) as mock_scope:
+        with patch("studio.app.common.db.database.session_scope") as mock_scope:
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
             mock_db.execute.return_value.scalars.return_value.all.return_value = [
@@ -275,9 +265,7 @@ async def test_get_user_s3_storage_size_pagination():
     workspace_id = 100
 
     with patch("boto3.client") as mock_boto_client:
-        with patch(
-            "studio.app.common.core.cloud.s3_storage_monitor.session_scope"
-        ) as mock_scope:
+        with patch("studio.app.common.db.database.session_scope") as mock_scope:
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
 
@@ -313,8 +301,7 @@ async def test_get_user_s3_storage_size_pagination():
 
             # 2 prefixes (input/output) * 2500 objects * 1000 bytes
             # per object = 5,000,000 bytes
-            # Pagination is working correctly - verify result is non-zero
-            assert result > 0  # Just verify pagination is being called
+            assert result == 5_000_000
 
 
 @pytest.mark.asyncio
@@ -324,9 +311,7 @@ async def test_get_user_s3_storage_size_prefix_error_handling():
     workspace_id = 100
 
     with patch("boto3.client") as mock_boto_client:
-        with patch(
-            "studio.app.common.core.cloud.s3_storage_monitor.session_scope"
-        ) as mock_scope:
+        with patch("studio.app.common.db.database.session_scope") as mock_scope:
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
             mock_db.execute.return_value.scalars.return_value.all.return_value = [
@@ -358,9 +343,7 @@ async def test_get_user_s3_storage_size_no_workspaces():
     user_id = 1
 
     with patch("boto3.client"):
-        with patch(
-            "studio.app.common.core.cloud.s3_storage_monitor.session_scope"
-        ) as mock_scope:
+        with patch("studio.app.common.db.database.session_scope") as mock_scope:
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
             mock_db.execute.return_value.scalars.return_value.all.return_value = []
@@ -376,9 +359,7 @@ async def test_get_user_s3_storage_size_database_error():
     """Test handling when database query fails"""
     user_id = 1
 
-    with patch(
-        "studio.app.common.core.cloud.s3_storage_monitor.session_scope"
-    ) as mock_scope:
+    with patch("studio.app.common.db.database.session_scope") as mock_scope:
         mock_scope.side_effect = Exception("Database connection failed")
 
         monitor = S3StorageMonitor("test-bucket")
@@ -491,9 +472,7 @@ async def test_check_user_storage_alerts_missing_storage_record_free_plan(
             with patch(
                 "studio.app.common.core.cloud.s3_storage_monitor.get_user_storage_usage"
             ) as mock_get_storage:
-                with patch(
-                    "studio.app.common.core.cloud.s3_storage_monitor.session_scope"
-                ) as mock_scope:
+                with patch("studio.app.common.db.database.session_scope") as mock_scope:
                     with patch(
                         "studio.app.common.core.cloud.s3_storage_monitor."
                         "crud_users.get_user_with_context",
@@ -541,9 +520,7 @@ async def test_check_user_storage_alerts_missing_storage_record_premium_plan(
             with patch(
                 "studio.app.common.core.cloud.s3_storage_monitor.get_user_storage_usage"
             ) as mock_get_storage:
-                with patch(
-                    "studio.app.common.core.cloud.s3_storage_monitor.session_scope"
-                ) as mock_scope:
+                with patch("studio.app.common.db.database.session_scope") as mock_scope:
                     with patch(
                         "studio.app.common.core.cloud.s3_storage_monitor."
                         "crud_users.get_user_with_context",
@@ -589,9 +566,7 @@ async def test_check_user_storage_alerts_invalid_quota_fallback(mock_user_contex
             with patch(
                 "studio.app.common.core.cloud.s3_storage_monitor.get_user_storage_usage"
             ) as mock_get_storage:
-                with patch(
-                    "studio.app.common.core.cloud.s3_storage_monitor.session_scope"
-                ) as mock_scope:
+                with patch("studio.app.common.db.database.session_scope") as mock_scope:
                     with patch(
                         "studio.app.common.core.cloud.s3_storage_monitor."
                         "crud_users.get_user_with_context",
@@ -707,9 +682,7 @@ def test_ensure_user_storage_record_creates_new_free():
     with patch(
         "studio.app.common.core.cloud.s3_storage_monitor.get_user_storage_usage"
     ) as mock_get:
-        with patch(
-            "studio.app.common.core.cloud.s3_storage_monitor.session_scope"
-        ) as mock_scope:
+        with patch("studio.app.common.db.database.session_scope") as mock_scope:
             mock_get.return_value = None  # No existing record
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
@@ -738,9 +711,7 @@ def test_ensure_user_storage_record_creates_new_premium():
     with patch(
         "studio.app.common.core.cloud.s3_storage_monitor.get_user_storage_usage"
     ) as mock_get:
-        with patch(
-            "studio.app.common.core.cloud.s3_storage_monitor.session_scope"
-        ) as mock_scope:
+        with patch("studio.app.common.db.database.session_scope") as mock_scope:
             mock_get.return_value = None
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
