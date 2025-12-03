@@ -126,12 +126,10 @@ const Layout = ({ children }: { children?: ReactNode }) => {
   }
 
   if (requiresAuth(location.pathname)) {
-    return (
-      <>
-        <Loading loading={loading} />
-        {!loading && <AuthedLayout>{children}</AuthedLayout>}
-      </>
-    )
+    if (loading) {
+      return <Loading loading={true} />
+    }
+    return <AuthedLayout>{children}</AuthedLayout>
   }
 
   return <UnauthedLayout>{children}</UnauthedLayout>

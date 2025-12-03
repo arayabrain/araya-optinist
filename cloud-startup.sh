@@ -70,17 +70,16 @@ cat /app/frontend/.env.production
 # This ensures all database tables and schemas are up to date
 cd /app
 
-# Try Alembic upgrade and handle migration errors
+# Run Alembic upgrade - if migrations fail, the container will exit
+# This causes ECS to mark the deployment as failed and revert to the previous version
 echo "Running Alembic upgrade..."
 if ! alembic upgrade head 2>&1; then
-    echo "Migration error detected, dropping and recreating database schema..."
-    mysql --skip-ssl -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "
-        DROP DATABASE IF EXISTS ${MYSQL_DATABASE};
-        CREATE DATABASE ${MYSQL_DATABASE} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-    "
-    echo "Database schema recreated, running migrations from scratch..."
-    alembic upgrade head
+    echo "ERROR: Database migration failed!"
+    echo "Container will exit to prevent data loss and trigger deployment rollback."
+    echo "Please investigate the migration error before redeploying."
+    exit 1
 fi
+echo "Database migrations completed successfully"
 
 # Initialize subscription plans
 echo "Initializing subscription plans..."
