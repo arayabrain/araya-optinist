@@ -235,7 +235,9 @@ async def create_file(
                     f"Please free up space before uploading files.",
                 )
 
-        create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
+    # Only update image shape for TIFF files
+    if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
+        update_image_shape(workspace_id, filename)
 
         filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
 
@@ -361,7 +363,9 @@ async def download_file(
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
     background_tasks.add_task(download, db, res, path.name, workspace_id)
-    background_tasks.add_task(update_image_shape, workspace_id, path.name)
+    # Only update image shape for TIFF files
+    if path.name.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
+        background_tasks.add_task(update_image_shape, workspace_id, path.name)
     return {"file_name": path.name}
 
 
