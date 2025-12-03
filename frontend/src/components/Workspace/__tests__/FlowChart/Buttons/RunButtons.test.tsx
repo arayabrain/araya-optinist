@@ -4,7 +4,7 @@ import { Provider } from "react-redux"
 import { SnackbarProvider } from "notistack"
 import configureStore from "redux-mock-store"
 
-import { describe, it, beforeEach, jest } from "@jest/globals"
+import { describe, it, beforeEach, jest, expect } from "@jest/globals"
 import { render, screen, waitFor } from "@testing-library/react"
 import { userEvent } from "@testing-library/user-event"
 

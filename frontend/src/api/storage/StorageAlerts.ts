@@ -61,10 +61,10 @@ export const refreshStorageUsageApi =
     return response.data
   }
 
-// Limit Warning Types
-export interface LimitWarning {
-  has_warning: boolean
-  warning_type: "storage" | "grace" | "overdue"
+// Limit Alert Types
+export interface LimitAlert {
+  has_alert: boolean
+  alert_type: "storage" | "grace" | "overdue"
   days_remaining: number
   excess_data_bytes: number
   excess_data_gb: number
@@ -78,23 +78,20 @@ export interface LimitWarning {
   message: string
 }
 
-export interface LimitWarningStatus {
-  has_warning: boolean
-  warning_type: string | null
+export interface LimitAlertStatus {
+  has_alert: boolean
+  alert_type: string | null
   days_remaining: number | null
   user_id: number
 }
 
-// Limit Warning API Functions
-export const getMyLimitWarningApi = async (): Promise<LimitWarning | null> => {
+// Limit Alert API Functions
+export const getMyLimitAlertApi = async (): Promise<LimitAlert | null> => {
   const response = await axios.get("/storage-limit-alerts/limit-warning")
   return response.data
 }
 
-export const checkLimitWarningStatusApi =
-  async (): Promise<LimitWarningStatus> => {
-    const response = await axios.get(
-      "/storage-limit-alerts/limit-warning/check",
-    )
-    return response.data
-  }
+export const checkLimitAlertStatusApi = async (): Promise<LimitAlertStatus> => {
+  const response = await axios.get("/storage-limit-alerts/limit-warning/check")
+  return response.data
+}

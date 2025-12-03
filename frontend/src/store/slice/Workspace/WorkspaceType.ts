@@ -5,6 +5,7 @@ export const WORKSPACE_SLICE_NAME = "workspace"
 
 export type ItemsWorkspace = {
   id: number
+  display_number?: number
   name: string
   user: {
     id: number

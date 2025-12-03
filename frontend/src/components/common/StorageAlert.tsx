@@ -27,6 +27,7 @@ import {
   StorageAlert as StorageAlertType,
   StorageUsage,
 } from "api/storage/StorageAlerts"
+import { SubscriptionAlertThresholds } from "const/Subscription"
 
 interface StorageAlertProps {
   showUsageDetails?: boolean
@@ -62,6 +63,7 @@ const StorageAlert: React.FC<StorageAlertProps> = ({
         setUsage(usageResponse)
       }
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error("Failed to fetch storage alert:", error)
       // Silently fail for storage alerts to not disrupt the main UI
     } finally {
@@ -76,6 +78,7 @@ const StorageAlert: React.FC<StorageAlertProps> = ({
       await fetchStorageAlert()
       enqueueSnackbar("Storage usage refreshed", { variant: "success" })
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error("Failed to refresh storage:", error)
       enqueueSnackbar("Failed to refresh storage usage", { variant: "error" })
     } finally {
@@ -90,6 +93,7 @@ const StorageAlert: React.FC<StorageAlertProps> = ({
 
   useEffect(() => {
     fetchStorageAlert()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showUsageDetails])
 
   if (loading) {
@@ -119,8 +123,8 @@ const StorageAlert: React.FC<StorageAlertProps> = ({
   }
 
   const getProgressColor = (percentage: number) => {
-    if (percentage >= 100) return "error"
-    if (percentage >= 90) return "warning"
+    if (percentage >= SubscriptionAlertThresholds.CRITICAL) return "error"
+    if (percentage >= SubscriptionAlertThresholds.WARNING) return "warning"
     return "primary"
   }
 

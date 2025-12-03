@@ -5,17 +5,12 @@ import { useLocation, useNavigate } from "react-router-dom"
 import { Box } from "@mui/material"
 import { styled } from "@mui/material/styles"
 
-import LimitWarning from "components/common/LimitWarning"
 import Loading from "components/common/Loading"
 import { LogsFloatingButton } from "components/common/LogsFloatingButton"
 import Header from "components/Layout/Header"
 import LeftMenu from "components/Layout/LeftMenu"
-import InactivityWarning from "components/Premium/InactivityWarning"
-import PremiumAssignmentManager from "components/Premium/PremiumAssignmentManager"
-import PremiumNotificationManager from "components/Premium/PremiumNotificationManager"
 import ModalLogs from "components/Workspace/FlowChart/ModalLogs"
 import { APP_BAR_HEIGHT } from "const/Layout"
-import { PremiumAssignmentProvider } from "contexts/PremiumAssignmentContext"
 import { selectLogsModalIsOpen } from "store/slice/LogsModal/LogsModalSelectors"
 import { closeLogsModal } from "store/slice/LogsModal/LogsModalSlice"
 import { selectModeStandalone } from "store/slice/Standalone/StandaloneSeclector"
@@ -154,25 +149,15 @@ const AuthedLayout: FC<{ children: ReactNode }> = ({ children }) => {
   }
 
   return (
-    <PremiumAssignmentProvider>
-      <LayoutWrapper>
-        <Header handleDrawerOpen={handleDrawerOpen} />
-        <ContentBodyWrapper>
-          <LeftMenu open={open} handleDrawerClose={handleDrawerClose} />
-          <ChildrenWrapper>{children}</ChildrenWrapper>
-        </ContentBodyWrapper>
-        {/* Global limit warning modal for authenticated users */}
-        <LimitWarning showAsModal={true} autoCheck={true} />
-        {/* Premium assignment manager for automatic instance assignment */}
-        <PremiumAssignmentManager />
-        {/* Premium notification manager for user feedback */}
-        <PremiumNotificationManager />
-        {/* Inactivity warning for premium users */}
-        <InactivityWarning />
-        {!isStandalone && <LogsFloatingButton />}
-        {logsModalOpen && <ModalLogs isOpen onClose={handleLogsModalClose} />}
-      </LayoutWrapper>
-    </PremiumAssignmentProvider>
+    <LayoutWrapper>
+      <Header handleDrawerOpen={handleDrawerOpen} />
+      <ContentBodyWrapper>
+        <LeftMenu open={open} handleDrawerClose={handleDrawerClose} />
+        <ChildrenWrapper>{children}</ChildrenWrapper>
+      </ContentBodyWrapper>
+      {!isStandalone && <LogsFloatingButton />}
+      {logsModalOpen && <ModalLogs isOpen onClose={handleLogsModalClose} />}
+    </LayoutWrapper>
   )
 }
 

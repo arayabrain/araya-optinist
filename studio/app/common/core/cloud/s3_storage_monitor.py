@@ -19,6 +19,7 @@ from studio.app.common.core.users import crud_users
 from studio.app.common.db.database import session_scope
 from studio.app.common.models.subscription import (
     PlanName,
+    StorageQuota,
     StorageSize,
     SubscriptionStatus,
     SubscriptionType,
@@ -38,14 +39,14 @@ class S3StorageMonitor:
         self.s3_controller = S3StorageController(bucket_name)
 
         # Alert thresholds (percentage of quota)
-        self.CRITICAL_THRESHOLD = 90  # 90%
-        self.DANGER_THRESHOLD = 100  # 100%
+        self.CRITICAL_THRESHOLD = StorageQuota.CRITICAL_THRESHOLD_PERCENT  # 90%
+        self.DANGER_THRESHOLD = StorageQuota.DANGER_THRESHOLD_PERCENT  # 100%
 
         # Storage quotas by plan (in bytes)
         # These should match the values in your subscription plan features
         self.PLAN_QUOTAS = {
-            SubscriptionType.FREE.value: 5 * StorageSize.GB,  # 5GB
-            SubscriptionType.PREMIUM.value: 100 * StorageSize.GB,  # 100GB
+            SubscriptionType.FREE.value: StorageQuota.FREE * StorageSize.GB,  # 5GB
+            SubscriptionType.PREMIUM.value: StorageQuota.PREMIUM * StorageSize.GB,
         }
 
     async def get_user_s3_storage_size(self, user_id: int) -> int:
@@ -338,7 +339,7 @@ class S3StorageMonitor:
         percentage = alert["storage_usage_percent"]
 
         level_messages = {
-            "critical": f"Storage usage is at {percentage}% "
+            "critical": f"  Storage usage is at {percentage}% "
             f"({usage_formatted} of {quota_formatted}) - approaching limit",
             "danger": f" Storage quota exceeded at {percentage}% "
             f"({usage_formatted} of {quota_formatted}) - immediate action required",

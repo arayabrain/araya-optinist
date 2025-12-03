@@ -28,6 +28,8 @@ from studio.app.common.models import UserRole as UserRoleModel
 from studio.app.common.models.experiment import ExperimentRecord
 from studio.app.common.models.subscription import (
     PlanName,
+    SubscriptionPeriods,
+    SubscriptionPlanIds,
     SubscriptionPlans,
     SubscriptionStatus,
     UserStorageUsage,
@@ -123,12 +125,12 @@ async def get_user_with_context(db: Session, user_id: int) -> User:
 
                     days_remaining = (subscription_expiration - now).days
 
-                    if subscription_plan_id == 1:  # Free plan
+                    if subscription_plan_id == SubscriptionPlanIds.FREE:
                         user.__dict__[
                             "subscription_status"
                         ] = SubscriptionStatus.FREE.value
                         user.__dict__["subscription_days_remaining"] = None
-                    elif subscription_plan_id == 2:  # Premium plan
+                    elif subscription_plan_id == SubscriptionPlanIds.PREMIUM:
                         if days_remaining > 0:
                             user.__dict__[
                                 "subscription_status"
@@ -136,14 +138,12 @@ async def get_user_with_context(db: Session, user_id: int) -> User:
                             user.__dict__[
                                 "subscription_days_remaining"
                             ] = days_remaining
-                        elif (
-                            days_remaining >= -30
-                        ):  # Grace period (30 days after expiration)
+                        elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
                             user.__dict__[
                                 "subscription_status"
                             ] = SubscriptionStatus.LIMIT_GRACE.value
                             user.__dict__["subscription_days_remaining"] = (
-                                30 + days_remaining
+                                SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
                             )  # Days left in grace period
                         else:
                             user.__dict__[
@@ -278,23 +278,21 @@ async def list_user(
 
                 days_remaining = (subscription_expiration - now).days
 
-                if subscription_plan_id == 1:  # Free plan
+                if subscription_plan_id == SubscriptionPlanIds.FREE:
                     user.__dict__["subscription_status"] = SubscriptionStatus.FREE.value
                     user.__dict__["subscription_days_remaining"] = None
-                elif subscription_plan_id == 2:  # Premium plan
+                elif subscription_plan_id == SubscriptionPlanIds.PREMIUM:
                     if days_remaining > 0:
                         user.__dict__[
                             "subscription_status"
                         ] = SubscriptionStatus.PREMIUM.value
                         user.__dict__["subscription_days_remaining"] = days_remaining
-                    elif (
-                        days_remaining >= -30
-                    ):  # Grace period (30 days after expiration)
+                    elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
                         user.__dict__[
                             "subscription_status"
                         ] = SubscriptionStatus.LIMIT_GRACE.value
                         user.__dict__["subscription_days_remaining"] = (
-                            30 + days_remaining
+                            SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
                         )  # Days left in grace period
                     else:
                         user.__dict__[

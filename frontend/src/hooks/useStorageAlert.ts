@@ -56,6 +56,7 @@ export const useStorageAlert = (
         setAlert(null)
       }
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error("Failed to check storage alert:", error)
       // Silently fail to not disrupt user experience
     } finally {
