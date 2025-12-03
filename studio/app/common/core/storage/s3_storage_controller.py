@@ -1,12 +1,16 @@
+import asyncio
 import os
 import re
 from subprocess import CalledProcessError
 
 import aioboto3
+import boto3
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     BaseRemoteStorageController,
+    RemoteSyncLockFileUtil,
+    RemoteSyncStatusFileUtil,
     StorageDirectoryType,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
@@ -28,7 +32,7 @@ class S3StorageController(BaseRemoteStorageController):
         assert bucket_name, "S3 bucket name is not defined."
         self.__s3_storage_bucket = bucket_name
         self.__s3_storage_url = f"s3://{bucket_name}"
-        logger.debug(f"Init S3StorageController: {bucket_name=}")
+        logger.info(f"Init S3StorageController: {bucket_name=}")
 
     def __get_s3_client(self):
         return aioboto3.Session().client("s3")
@@ -43,8 +47,11 @@ class S3StorageController(BaseRemoteStorageController):
         return input_data_local_path
 
     def _make_input_data_remote_path(self, workspace_id: str, filename: str) -> str:
+        # Include app/studio_data path to match Snakemake's expected S3 structure
+        # Snakemake expects: /app/studio_data/input/{workspace_id}/{filename}
+        # S3 mapping: s3://bucket/app/studio_data/input/{workspace_id}/{filename}
         input_data_remote_path = join_filepath(
-            [__class__.S3_INPUT_DIR, workspace_id, filename]
+            ["app", "studio_data", __class__.S3_INPUT_DIR, workspace_id, filename]
         )
         return input_data_remote_path
 
@@ -55,8 +62,15 @@ class S3StorageController(BaseRemoteStorageController):
         return experiment_local_path
 
     def _make_experiment_remote_path(self, workspace_id: str, unique_id: str) -> str:
+        # Include app/studio_data path to match Snakemake's expected S3 structure
+        # Snakemake expects: /app/studio_data/output/{workspace_id}/{unique_id}
+        # S3 mapping: s3://bucket/app/studio_data/output/{workspace_id}/{unique_id}
         experiment_remote_path = join_filepath(
-            [__class__.S3_OUTPUT_DIR, workspace_id, unique_id]
+            ["app", "studio_data", __class__.S3_OUTPUT_DIR, workspace_id, unique_id]
+        )
+        logger.info(
+            f"S3 experiment path: {experiment_remote_path} "
+            f"(workspace_id='{workspace_id}', unique_id='{unique_id}')"
         )
         return experiment_remote_path
 
@@ -110,10 +124,10 @@ class S3StorageController(BaseRemoteStorageController):
         )
 
         if os.path.isfile(input_data_local_path):
-            logger.debug(f"skip download input data: {input_data_remote_path}")
+            logger.debug(f"Skip download input data: {input_data_remote_path}")
 
-        logger.debug(
-            "download input data from remote storage (S3). [%s] [%s -> %s]",
+        logger.info(
+            "Download input data from remote storage (S3). [%s] [%s -> %s]",
             self.bucket_name,
             input_data_remote_path,
             input_data_local_path,
@@ -144,18 +158,24 @@ class S3StorageController(BaseRemoteStorageController):
                 s3_file_path = s3_object["Key"]
                 file_size = s3_object["Size"]
 
-                logger.debug(
-                    f"download data from S3 [{self.bucket_name}] "
+                logger.info(
+                    f"Download data from S3 [{self.bucket_name}] "
                     f"({index+1}/{target_files_count}) "
                     f"{s3_file_path} ({file_size:,} bytes)"
                 )
+
+                # Create local directory before downloading
+                input_data_local_dir = os.path.dirname(input_data_local_path)
+                if not os.path.exists(input_data_local_dir):
+                    os.makedirs(input_data_local_dir, exist_ok=True)
+                    logger.info(f"Created directory: {input_data_local_dir}")
 
                 await __s3_client.download_file(
                     self.bucket_name, s3_file_path, input_data_local_path
                 )
 
-                logger.debug(
-                    f"finish download data from S3 [{self.bucket_name}] "
+                logger.info(
+                    f"Finish download data from S3 [{self.bucket_name}] "
                     f"{s3_file_path}"
                 )
 
@@ -168,8 +188,8 @@ class S3StorageController(BaseRemoteStorageController):
             workspace_id, filename
         )
 
-        logger.debug(
-            "upload data to remote storage (S3). [%s] [%s -> %s]",
+        logger.info(
+            "Upload data to remote storage (S3). [%s] [%s -> %s]",
             self.bucket_name,
             input_data_local_path,
             input_data_remote_path,
@@ -181,18 +201,27 @@ class S3StorageController(BaseRemoteStorageController):
 
         file_size = os.path.getsize(input_data_local_path)
 
-        logger.debug(
-            f"upload data to S3 [{self.bucket_name}] "
+        logger.info(
+            f"Upload data to S3 [{self.bucket_name}] "
             f"{input_data_remote_path} ({file_size:,} bytes)"
         )
 
-        async with self.__get_s3_client() as __s3_client:
-            await __s3_client.upload_file(
-                input_data_local_path, self.bucket_name, input_data_remote_path
+        try:
+            # Use synchronous boto3 to avoid aioboto3 asyncio compatibility issues
+            # Run in thread pool to maintain async interface
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: boto3.client("s3").upload_file(
+                    input_data_local_path, self.bucket_name, input_data_remote_path
+                ),
             )
+        except Exception as e:
+            logger.error(f"Failed to upload input data: {e}")
+            return False
 
-        logger.debug(
-            f"finish upload data from S3 [{self.bucket_name}] "
+        logger.info(
+            f"Finish upload data from S3 [{self.bucket_name}] "
             f"{input_data_remote_path}"
         )
 
@@ -204,8 +233,8 @@ class S3StorageController(BaseRemoteStorageController):
             workspace_id, filename
         )
 
-        logger.debug(
-            "delete input data from remote storage (s3). [%s]",
+        logger.info(
+            "Delete input data from remote storage (S3). [%s]",
             input_data_remote_path,
         )
 
@@ -263,7 +292,7 @@ class S3StorageController(BaseRemoteStorageController):
         async with self.__get_s3_client() as __s3_client:
             workspaces_response = await __s3_client.list_objects_v2(
                 Bucket=self.bucket_name,
-                Prefix=f"{__class__.S3_OUTPUT_DIR}/",
+                Prefix=f"app/studio_data/{__class__.S3_OUTPUT_DIR}/",
                 Delimiter="/",
             )
 
@@ -289,8 +318,8 @@ class S3StorageController(BaseRemoteStorageController):
         else:
             workspaces_dirs = all_workspaces_dirs
 
-        logger.debug(
-            "download all medata from remote storage (s3). [%s] workspaces: %s",
+        logger.info(
+            "Download all metadata from remote storage (S3). [%s] workspaces: %s",
             self.bucket_name,
             workspaces_dirs,
         )
@@ -318,10 +347,6 @@ class S3StorageController(BaseRemoteStorageController):
                 experiments_dirs = [
                     v["Prefix"] for v in experiments_response["CommonPrefixes"]
                 ]
-                logger.debug(
-                    "Processing experiments dirs: "
-                    f"[{self.bucket_name}] {experiments_dirs}"
-                )
 
                 # Scan experiments directories
                 for experiment_dir in experiments_dirs:
@@ -332,6 +357,11 @@ class S3StorageController(BaseRemoteStorageController):
                             DIRPATH.DATA_DIR, experiment_dir, metadata_filename
                         )
 
+                        if "app/studio_data/app/studio_data/" in flie_local_path:
+                            flie_local_path = flie_local_path.replace(
+                                "/app/studio_data/app/studio_data/", "/app/studio_data/"
+                            )
+
                         if not os.path.isfile(flie_local_path):
                             try:
                                 # create local directory
@@ -340,10 +370,6 @@ class S3StorageController(BaseRemoteStorageController):
                                 )
 
                                 # download file
-                                logger.debug(
-                                    f"Downloading from S3 [{self.bucket_name}]"
-                                    f"[{file_remote_path} -> {flie_local_path}]"
-                                )
                                 await __s3_client.download_file(
                                     self.bucket_name,
                                     file_remote_path,
@@ -355,7 +381,7 @@ class S3StorageController(BaseRemoteStorageController):
                                     f"[{file_remote_path}]: {e}"
                                 )
                         else:
-                            logger.debug(f"skip download: {file_remote_path}")
+                            logger.debug(f"Skip download: {file_remote_path}")
                             continue
 
         return True
@@ -441,18 +467,6 @@ class S3StorageController(BaseRemoteStorageController):
             else:
                 target_files = []
 
-            logger.debug(
-                "aws s3 sync result: [returncode:%d][len:%d]",
-                cmd_ret.returncode,
-                len(target_files),
-            )
-
-        logger.debug(
-            "download all medata from remote storage (s3). [%s] [count: %d]",
-            self.bucket_name,
-            len(target_files),
-        )
-
         # ----------------------------------------
         # exec downloading
         # ----------------------------------------
@@ -469,11 +483,6 @@ class S3StorageController(BaseRemoteStorageController):
                 local_config_yml_dir = os.path.dirname(local_config_yml_path)
 
                 if not os.path.isfile(local_config_yml_path):
-                    logger.debug(
-                        f"copy config_yml: {relative_config_yml_path} "
-                        f"({index+1}/{target_files_count})"
-                    )
-
                     os.makedirs(local_config_yml_dir, exist_ok=True)
 
                     # do download config file
@@ -485,7 +494,7 @@ class S3StorageController(BaseRemoteStorageController):
 
                 else:
                     logger.debug(
-                        f"skip copy config_yml: {relative_config_yml_path} "
+                        f"Skip copy config_yml: {relative_config_yml_path} "
                         f"({index+1}/{target_files_count})"
                     )
                     continue
@@ -500,9 +509,8 @@ class S3StorageController(BaseRemoteStorageController):
         experiment_remote_path = self._make_experiment_remote_path(
             workspace_id, unique_id
         )
-
-        logger.debug(
-            "download data from remote storage (S3). [%s] [%s -> %s]",
+        logger.info(
+            "Download data from remote storage (S3). [%s] [%s -> %s]",
             self.bucket_name,
             experiment_local_path,
             experiment_remote_path,
@@ -533,6 +541,13 @@ class S3StorageController(BaseRemoteStorageController):
 
             # do download data from remote storage
             target_files_count = len(s3_list_objects["Contents"])
+
+            # Coordination files that should not be downloaded from S3
+            coordination_files = {
+                RemoteSyncLockFileUtil.REMOTE_SYNC_LOCK_FILE,
+                RemoteSyncStatusFileUtil.REMOTE_SYNC_STATUS_FILE,
+            }
+
             for index, s3_object in enumerate(s3_list_objects["Contents"]):
                 s3_file_path = s3_object["Key"]
                 file_size = s3_object["Size"]
@@ -541,14 +556,28 @@ class S3StorageController(BaseRemoteStorageController):
                 if s3_file_path.endswith("/"):
                     continue
 
+                # skip coordination files - they are local-only
+                filename = os.path.basename(s3_file_path)
+                if filename in coordination_files:
+                    logger.debug(
+                        f"Skipping coordination file from S3 download: {filename}"
+                    )
+                    continue
+
                 # make paths
                 local_abs_path = os.path.join(
                     os.path.dirname(DIRPATH.OUTPUT_DIR), s3_file_path
                 )
+
+                if "app/studio_data/app/studio_data/" in local_abs_path:
+                    local_abs_path = local_abs_path.replace(
+                        "/app/studio_data/app/studio_data/", "/app/studio_data/"
+                    )
+
                 local_abs_dir = os.path.dirname(local_abs_path)
 
-                logger.debug(
-                    f"download data from S3 [{self.bucket_name}] "
+                logger.info(
+                    f"Download data from S3 [{self.bucket_name}] "
                     f"({index+1}/{target_files_count}) "
                     f"{s3_file_path} ({file_size:,} bytes)"
                 )
@@ -574,9 +603,8 @@ class S3StorageController(BaseRemoteStorageController):
         experiment_remote_path = self._make_experiment_remote_path(
             workspace_id, unique_id
         )
-
-        logger.debug(
-            "upload data to remote storage (S3). [%s] [%s -> %s]",
+        logger.info(
+            "Upload data to remote storage (S3). [%s] [%s -> %s]",
             self.bucket_name,
             experiment_local_path,
             experiment_remote_path,
@@ -592,8 +620,19 @@ class S3StorageController(BaseRemoteStorageController):
         if target_files:  # Target specified files.
             target_abs_paths = [f"{experiment_local_path}/{f}" for f in target_files]
         else:  # Target all files.
-            for root, dirs, files in os.walk(experiment_local_path):
+            # Exclude coordination files - they are local-only and should not be in S3
+            coordination_files = {
+                RemoteSyncLockFileUtil.REMOTE_SYNC_LOCK_FILE,
+                RemoteSyncStatusFileUtil.REMOTE_SYNC_STATUS_FILE,
+            }
+            for root, _, files in os.walk(experiment_local_path):
                 for filename in files:
+                    # Skip coordination files
+                    if filename in coordination_files:
+                        logger.debug(
+                            f"Skipping coordination file from S3 upload: {filename}"
+                        )
+                        continue
                     local_abs_path = os.path.join(root, filename)
                     target_abs_paths.append(local_abs_path)
 
@@ -605,6 +644,8 @@ class S3StorageController(BaseRemoteStorageController):
 
             s3_file_path = join_filepath(
                 [
+                    "app",
+                    "studio_data",
                     __class__.S3_OUTPUT_DIR,
                     workspace_id,
                     unique_id,
@@ -616,21 +657,31 @@ class S3StorageController(BaseRemoteStorageController):
             adjusted_target_files.append([local_abs_path, s3_file_path, file_size])
 
         # do upload data to remote storage
-        async with self.__get_s3_client() as __s3_client:
-            target_files_count = len(adjusted_target_files)
-            for index, (local_abs_path, s3_file_path, file_size) in enumerate(
-                adjusted_target_files
-            ):
-                logger.debug(
-                    f"upload data to S3 [{self.bucket_name}] "
-                    f"({index+1}/{target_files_count}) "
-                    f"{s3_file_path} ({file_size:,} bytes)"
-                )
+        target_files_count = len(adjusted_target_files)
+        loop = asyncio.get_event_loop()
 
-                # do upload experiment files
-                await __s3_client.upload_file(
-                    local_abs_path, self.bucket_name, s3_file_path
+        for index, (local_abs_path, s3_file_path, file_size) in enumerate(
+            adjusted_target_files
+        ):
+            logger.info(
+                f"Upload data to S3 [{self.bucket_name}] "
+                f"({index+1}/{target_files_count}) "
+                f"{s3_file_path} ({file_size:,} bytes)"
+            )
+
+            try:
+                # Use synchronous boto3 to avoid aioboto3 asyncio compatibility issues
+                # Run in thread pool to maintain async interface
+                def upload_file(local_path, s3_path):
+                    s3_client = boto3.client("s3")
+                    return s3_client.upload_file(local_path, self.bucket_name, s3_path)
+
+                await loop.run_in_executor(
+                    None, upload_file, local_abs_path, s3_file_path
                 )
+            except Exception as e:
+                logger.error(f"Failed to upload experiment file {s3_file_path}: {e}")
+                return False
 
         return True
 
@@ -638,12 +689,6 @@ class S3StorageController(BaseRemoteStorageController):
         # make paths
         experiment_remote_path = self._make_experiment_remote_path(
             workspace_id, unique_id
-        )
-
-        logger.debug(
-            "delete data from remote storage (s3). [%s] [%s]",
-            self.bucket_name,
-            experiment_remote_path,
         )
 
         # ----------------------------------------

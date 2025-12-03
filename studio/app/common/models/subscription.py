@@ -10,11 +10,131 @@ from sqlalchemy.sql.functions import current_timestamp
 from sqlmodel import Column, Field, SQLModel
 
 
+# Storage size constants (in bytes)
+class StorageSize:
+    """Constants for storage size calculations"""
+
+    KB = 1024  # 1 Kilobyte
+    MB = 1024 * 1024  # 1 Megabyte
+    GB = 1024 * 1024 * 1024  # 1 Gigabyte
+    TB = 1024 * 1024 * 1024 * 1024  # 1 Terabyte
+
+
+class StorageQuota:
+    """Constants for storage quota limits"""
+
+    FREE = 5  # 5 GB for free plan
+    PREMIUM = 100  # 100 GB for premium plan
+    CRITICAL_THRESHOLD_PERCENT = 90  # 90% usage threshold for critical warning
+    DANGER_THRESHOLD_PERCENT = 100  # 100% usage threshold for danger warning
+
+
+class SubscriptionPeriods:
+    """
+    Constants for subscription period calculations
+    Note: any updates should also be reflected in
+    frontend/src/const/Subscription.ts SubscriptionPeriods
+    """
+
+    TRIAL_PERIOD_DAYS = 30
+    GRACE_PERIOD_DAYS = 30
+    WARNING_PERIOD_DAYS = 30
+    STORAGE_WARNING_DAYS = 30  # Days to remove excess storage for free users
+
+    # Cache age for storage usage (in minutes)
+    MAX_CACHE_AGE_MINUTES = 20
+
+    # Progress calculation constants
+    MAX_PROGRESS_PERCENT = 100
+    MIN_PROGRESS_PERCENT = 0
+    PROGRESS_REFERENCE_DAYS = 30  # Reference period for progress bar (30 days)
+
+    # Warning color thresholds (days remaining)
+    CRITICAL_THRESHOLD_DAYS = 0  # Red/error
+    URGENT_THRESHOLD_DAYS = 7  # Red/error
+    WARNING_THRESHOLD_DAYS = 14  # Yellow/warning
+
+
+class SubscriptionPlanIds:
+    """
+    Constants for subscription plan database IDs.
+
+    Usage: Database queries comparing plan_id field
+    Example: if subscription_plan_id == SubscriptionPlanIds.FREE
+
+    Note: Different from SubscriptionType (string identifiers) and
+    PlanName (display names)
+    """
+
+    FREE = 1
+    PREMIUM = 2
+
+
 # Enums for subscription management
 class SyncStatus(StrEnum):
     PENDING = "pending"
     SYNCED = "synced"
     FAILED = "failed"
+
+
+class SubscriptionType(StrEnum):
+    """
+    String identifiers for subscription types.
+
+    Usage: Type discriminator in API responses and business logic
+    Example: if subscription_type == SubscriptionType.FREE.value
+
+    Note: Different from SubscriptionPlanIds (database IDs) and
+    PlanName (display strings)
+    """
+
+    PREMIUM = "premium"
+    FREE = "free"
+
+
+class PlanName(StrEnum):
+    """
+    Display names for subscription plans.
+
+    Usage: UI labels and user-facing text
+    Example: user.__dict__["subscription_plan_name"] = PlanName.FREE.value
+
+    Note: Different from SubscriptionPlanIds (database IDs) and
+    SubscriptionType (type identifiers)
+    """
+
+    PREMIUM = "Premium"
+    FREE = "Free"
+    UNKNOWN = "Unknown"  # Fallback for when plan cannot be determined
+
+
+class SubscriptionStatus(StrEnum):
+    """
+    User subscription status labels.
+
+    Usage: Represents current state of user's subscription for display
+    Example: user.__dict__["subscription_status"] = SubscriptionStatus.FREE.value
+    """
+
+    FREE = "Free"  # User on free plan
+    PREMIUM = "Premium"  # Active premium subscription
+    LIMIT_GRACE = "Limit Grace"  # Premium expired, in grace period
+    EXPIRED = "Expired"  # Grace period ended
+
+
+class SubscriptionLifecycleStatus(StrEnum):
+    """
+    Lifecycle status for subscription expiration checking in limit warnings.
+
+    Usage: Determines warning state based on subscription expiration timeline
+    Example: Used in calculate_limit_warning() to decide warning type
+    """
+
+    ACTIVE = "active"  # Subscription has not expired yet
+    GRACE = "grace"  # In grace period after expiration
+    WARNING = "warning"  # In warning period (after grace, before deletion)
+    OVERDUE = "overdue"  # Past warning period
+    FREE = "free"  # Never had premium subscription
 
 
 class CancellationReason(StrEnum):
@@ -221,3 +341,37 @@ class SubscriptionCancellation(SQLModel, table=True):
         default=None,
         description="Additional notes or comments",
     )
+
+
+class UserStorageUsage(SQLModel, table=True):
+    __tablename__ = "user_storage_usage"
+    __table_args__ = (UniqueConstraint("id", name="idx_id"),)
+
+    id: Optional[int] = Field(
+        sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
+        default=None,
+    )
+    user_id: int = Field(sa_column=Column(BIGINT, nullable=False, unique=True))
+    storage_usage_bytes: int = Field(
+        sa_column=Column(BIGINT, nullable=False, default=0)
+    )
+    storage_quota_bytes: int = Field(sa_column=Column(BIGINT, nullable=False))
+    last_updated: Optional[datetime] = Field(
+        default_factory=datetime.utcnow,
+        sa_column=Column(
+            DateTime, nullable=False, server_default=func.current_timestamp()
+        ),
+    )
+    created_at: Optional[datetime] = Field(
+        default_factory=datetime.utcnow,
+        sa_column=Column(
+            DateTime, nullable=False, server_default=func.current_timestamp()
+        ),
+    )
+
+    @property
+    def storage_usage_percent(self) -> float:
+        """Calculate usage percentage."""
+        if self.storage_quota_bytes == 0:
+            return 0.0
+        return round((self.storage_usage_bytes / self.storage_quota_bytes) * 100, 2)

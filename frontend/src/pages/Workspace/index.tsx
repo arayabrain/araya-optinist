@@ -8,6 +8,7 @@ import { useSnackbar, VariantType } from "notistack"
 import DeleteIcon from "@mui/icons-material/Delete"
 import EditIcon from "@mui/icons-material/Edit"
 import GroupsIcon from "@mui/icons-material/Groups"
+import ReplayIcon from "@mui/icons-material/Replay"
 import {
   Box,
   styled,
@@ -19,6 +20,7 @@ import {
   Input,
   Tooltip,
   IconButton,
+  CircularProgress,
 } from "@mui/material"
 import {
   GridEventListener,
@@ -32,6 +34,7 @@ import {
 import { isRejectedWithValue } from "@reduxjs/toolkit"
 
 import { UserDTO } from "api/users/UsersApiDTO"
+import { refreshAllWorkspacesStorageApi } from "api/workspace"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
 import PaginationCustom from "components/common/PaginationCustom"
@@ -359,6 +362,7 @@ const Workspaces = () => {
   const [initName, setInitName] = useState("")
   const [rowModesModel, setRowModesModel] = useState<GridRowModesModel>({})
   const [searchParams, setParams] = useSearchParams()
+  const [refreshing, setRefreshing] = useState(false)
 
   const { enqueueSnackbar } = useSnackbar()
 
@@ -539,6 +543,27 @@ const Workspaces = () => {
     setParams(`limit=${Number(event.target.value)}&offset=0`)
   }
 
+  const handleRefreshStorage = async () => {
+    try {
+      setRefreshing(true)
+      // Call API to refresh all workspace storage usage
+      const response = await refreshAllWorkspacesStorageApi()
+
+      // Refresh the workspace list after storage sync
+      await dispatch(getWorkspaceList(dataParams))
+      handleClickVariant(
+        "success",
+        `Storage refreshed for ${response.refreshed_workspaces} workspaces!`,
+      )
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error("Failed to refresh storage:", error)
+      handleClickVariant("error", "Failed to refresh storage usage")
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   return (
     <WorkspacesWrapper>
       <WorkspacesTitle>Workspaces</WorkspacesTitle>
@@ -550,6 +575,14 @@ const Workspaces = () => {
           marginBottom: 2,
         }}
       >
+        <Button
+          variant="outlined"
+          onClick={handleRefreshStorage}
+          disabled={refreshing}
+          endIcon={refreshing ? <CircularProgress size={16} /> : <ReplayIcon />}
+        >
+          Reload
+        </Button>
         <Button
           sx={{
             background: "#000000c4",

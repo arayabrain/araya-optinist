@@ -13,7 +13,14 @@ from requests.models import Response
 from sqlmodel import Session
 from tqdm import tqdm
 
-from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
+from studio.app.common.core.auth.auth_dependencies import (
+    get_current_user,
+    get_user_remote_bucket_name,
+)
+from studio.app.common.core.cloud.cloud_utils import (
+    get_current_user_storage_usage,
+    get_user_storage_usage,
+)
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
@@ -38,6 +45,7 @@ from studio.app.common.schemas.files import (
     FilePath,
     TreeNode,
 )
+from studio.app.common.schemas.users import User
 from studio.app.const import ACCEPT_FILE_EXT, FILETYPE
 from studio.app.dir_path import DIRPATH
 
@@ -198,34 +206,82 @@ async def create_file(
     filename: str,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
-    create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
+    try:
+        # Check storage quota before allowing file upload
+        # (use cached data to avoid timeout)
+        current_usage = await get_current_user_storage_usage(
+            current_user.id, force_live=False
+        )
+        storage_info = get_user_storage_usage(current_user.id)
 
-    filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
+        if storage_info and storage_info["storage_quota_bytes"] > 0:
+            quota_limit = storage_info["storage_quota_bytes"]
+            storage_usage_percent = (current_usage / quota_limit) * 100
 
-    with open(filepath, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+            # Block file upload if over quota (100%)
+            if storage_usage_percent >= 100:
+                logger.warning(
+                    f"File upload blocked for user {current_user.id}: "
+                    f"storage quota exceeded ({storage_usage_percent:.1f}% used)"
+                )
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Cannot upload file: Storage quota exceeded "
+                    f"({storage_usage_percent:.1f}% used). "
+                    f"Please free up space before uploading files.",
+                )
 
-    # Only update image shape for TIFF files
-    if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-        update_image_shape(workspace_id, filename)
+        create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
 
-    if WorkspaceDataCapacityService.is_available():
+        filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
+
+        with open(filepath, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+
+        # Only update image shape for TIFF files
+        if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
+            update_image_shape(workspace_id, filename)
+
+        if WorkspaceDataCapacityService.is_available():
+            background_tasks.add_task(
+                WorkspaceDataCapacityService.update_workspace_data_usage,
+                db,
+                workspace_id,
+            )
+
+        # Operate remote storage data.
+        if RemoteStorageController.is_available():
+            # upload input data to remote storage
+            async with RemoteStorageSimpleWriter(
+                remote_bucket_name
+            ) as remote_storage_controller:
+                await remote_storage_controller.upload_input_data(
+                    workspace_id, filename
+                )
+
+        # Refresh storage cache in background to keep it up-to-date
         background_tasks.add_task(
-            WorkspaceDataCapacityService.update_workspace_data_usage, db, workspace_id
+            get_current_user_storage_usage, current_user.id, force_live=True
         )
 
-    # Operate remote storage data.
-    if RemoteStorageController.is_available():
-        # upload input data to remote storage
-        async with RemoteStorageSimpleWriter(
-            remote_bucket_name
-        ) as remote_storage_controller:
-            await remote_storage_controller.upload_input_data(workspace_id, filename)
+        return {"file_path": filename}
 
-    return {"file_path": filename}
+    except HTTPException:
+        # Re-raise HTTPExceptions (like 403 storage quota error)
+        raise
+    except Exception as e:
+        logger.error(
+            f"Error uploading file {filename} to workspace {workspace_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to upload file: {str(e)}",
+        )
 
 
 DOWNLOAD_STATUS: Dict[str, DownloadStatus] = {}
