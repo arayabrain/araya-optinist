@@ -544,6 +544,27 @@ const Workspaces = () => {
     setParams(`limit=${Number(event.target.value)}&offset=0`)
   }
 
+  const handleRefreshStorage = async () => {
+    try {
+      setRefreshing(true)
+      // Call API to refresh all workspace storage usage
+      const response = await refreshAllWorkspacesStorageApi()
+
+      // Refresh the workspace list after storage sync
+      await dispatch(getWorkspaceList(dataParams))
+      handleClickVariant(
+        "success",
+        `Storage refreshed for ${response.refreshed_workspaces} workspaces!`,
+      )
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error("Failed to refresh storage:", error)
+      handleClickVariant("error", "Failed to refresh storage usage")
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   return (
     <WorkspacesWrapper>
       <WorkspacesTitle>Workspaces</WorkspacesTitle>
