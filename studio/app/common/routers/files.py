@@ -235,16 +235,16 @@ async def create_file(
                     f"Please free up space before uploading files.",
                 )
 
-    # Only update image shape for TIFF files
-    if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-        update_image_shape(workspace_id, filename)
+        create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
 
         filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
 
         with open(filepath, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
-        update_image_shape(workspace_id, filename)
+        # Only update image shape for TIFF files
+        if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
+            update_image_shape(workspace_id, filename)
 
         if WorkspaceDataCapacityService.is_available():
             background_tasks.add_task(
