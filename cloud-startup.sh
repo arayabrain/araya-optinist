@@ -187,9 +187,16 @@ if [ -z "$BACKEND_HOST" ] || [ -z "$BACKEND_PORT" ]; then
     exit 1
 fi
 
+# Configure Uvicorn worker processes
+# Workers handle concurrent requests. Recommended formula: (2 × CPU cores) + 1
+# t3.large has 2 vCPUs, so optimal range is 2-5 workers
+# Set via environment variable UVICORN_WORKERS, defaults to 5 for production use
+UVICORN_WORKERS=${UVICORN_WORKERS:-5}
+echo "Uvicorn workers: $UVICORN_WORKERS"
+
 # Start the application in background
 echo "Starting application..."
-poetry run python main.py --host="$BACKEND_HOST" --port="$BACKEND_PORT" &
+poetry run python main.py --host="$BACKEND_HOST" --port="$BACKEND_PORT" --workers="$UVICORN_WORKERS" &
 APP_PID=$!
 
 # Allow initial startup time matching ECS health check startPeriod
