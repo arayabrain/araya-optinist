@@ -10,19 +10,19 @@ echo "Getting configuration from Terraform outputs..."
 AUTOSCALING_HOST=$(terraform output -raw domain_name)
 AUTOSCALING_PORT=$(terraform output -raw domain_port)
 AUTOSCALING_PROTO=$(terraform output -raw domain_protocol)
-BATCH_DNS=$(terraform output -raw alb_dns_name_batch)
+# BATCH_DNS=$(terraform output -raw alb_dns_name_batch)
 
 echo "Autoscaling Host: $AUTOSCALING_HOST"
 echo "Autoscaling Protocol: $AUTOSCALING_PROTO"
 echo "Autoscaling Port: $AUTOSCALING_PORT"
-echo "Batch DNS: $BATCH_DNS"
+# echo "Batch DNS: $BATCH_DNS"
 
 # Validate batch DNS (required)
-if [ -z "$BATCH_DNS" ]; then
-    echo "Error: Could not get batch ALB DNS from Terraform outputs."
-    echo "Please run 'terraform apply' first to create the infrastructure."
-    exit 1
-fi
+# if [ -z "$BATCH_DNS" ]; then
+#     echo "Error: Could not get batch ALB DNS from Terraform outputs."
+#     echo "Please run 'terraform apply' first to create the infrastructure."
+#     exit 1
+# fi
 
 # ===========================================
 # 1. Build Autoscaling Image with Frontend
@@ -68,76 +68,76 @@ docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:latest
 docker push $ECR_URI:latest
 echo "Successfully pushed autoscaling image: $ECR_URI:latest"
 
-# ===========================================
-# 2. Build Batch Image with Frontend
-# ===========================================
-REPO_NAME="optinist-for-cloud-batch"
-ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO_NAME}"
+# # ===========================================
+# # 2. Build Batch Image with Frontend
+# # ===========================================
+# REPO_NAME="optinist-for-cloud-batch"
+# ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO_NAME}"
 
-echo "Building batch image: $ECR_URI"
+# echo "Building batch image: $ECR_URI"
 
-# Authenticate Docker to ECR (ignore keychain errors on macOS)
-aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_URI 2>&1 | grep -v "error storing credentials" || true
+# # Authenticate Docker to ECR (ignore keychain errors on macOS)
+# aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_URI 2>&1 | grep -v "error storing credentials" || true
 
-# Check if ECR repository exists, create if it doesn't
-if ! aws ecr describe-repositories --repository-names $REPO_NAME --region $REGION >/dev/null 2>&1; then
-    echo "Repository $REPO_NAME does not exist. Creating..."
-    aws ecr create-repository --repository-name $REPO_NAME --region $REGION
-    echo "Repository $REPO_NAME created successfully."
-else
-    echo "Repository $REPO_NAME already exists."
-fi
+# # Check if ECR repository exists, create if it doesn't
+# if ! aws ecr describe-repositories --repository-names $REPO_NAME --region $REGION >/dev/null 2>&1; then
+#     echo "Repository $REPO_NAME does not exist. Creating..."
+#     aws ecr create-repository --repository-name $REPO_NAME --region $REGION
+#     echo "Repository $REPO_NAME created successfully."
+# else
+#     echo "Repository $REPO_NAME already exists."
+# fi
 
-# Build frontend with batch DNS
-echo "Building frontend for batch with DNS: $BATCH_DNS"
-cd frontend
-cat > .env.production << ENV_EOF
-REACT_APP_SERVER_HOST=${BATCH_DNS}
-REACT_APP_SERVER_PORT=80
-REACT_APP_SERVER_PROTO=http
-REACT_APP_EXPDB_METADATA_EDITABLE=true
-ENV_EOF
+# # Build frontend with batch DNS
+# echo "Building frontend for batch with DNS: $BATCH_DNS"
+# cd frontend
+# cat > .env.production << ENV_EOF
+# REACT_APP_SERVER_HOST=${BATCH_DNS}
+# REACT_APP_SERVER_PORT=80
+# REACT_APP_SERVER_PROTO=http
+# REACT_APP_EXPDB_METADATA_EDITABLE=true
+# ENV_EOF
 
-yarn install
-yarn build
-cd ..
+# yarn install
+# yarn build
+# cd ..
 
-# Build the Docker image
-echo "Building batch Docker image..."
-docker build -f studio/config/docker/Dockerfile -t $REPO_NAME:$IMAGE_TAG .
+# # Build the Docker image
+# echo "Building batch Docker image..."
+# docker build -f studio/config/docker/Dockerfile -t $REPO_NAME:$IMAGE_TAG .
 
-# Tag and push to ECR
-docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:latest
-docker push $ECR_URI:latest
-echo "Successfully pushed batch image: $ECR_URI:latest"
+# # Tag and push to ECR
+# docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:latest
+# docker push $ECR_URI:latest
+# echo "Successfully pushed batch image: $ECR_URI:latest"
 
-# ===========================================
-# 3. Build Snakemake Batch Image (No Frontend)
-# ===========================================
-REPO_NAME="optinist-for-cloud-snakemake-batch"
-ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO_NAME}"
+# # ===========================================
+# # 3. Build Snakemake Batch Image (No Frontend)
+# # ===========================================
+# REPO_NAME="optinist-for-cloud-snakemake-batch"
+# ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO_NAME}"
 
-echo "Building snakemake batch image: $ECR_URI"
+# echo "Building snakemake batch image: $ECR_URI"
 
-# Authenticate Docker to ECR (ignore keychain errors on macOS)
-aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_URI 2>&1 | grep -v "error storing credentials" || true
+# # Authenticate Docker to ECR (ignore keychain errors on macOS)
+# aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_URI 2>&1 | grep -v "error storing credentials" || true
 
-# Check if ECR repository exists, create if it doesn't
-if ! aws ecr describe-repositories --repository-names $REPO_NAME --region $REGION >/dev/null 2>&1; then
-    echo "Repository $REPO_NAME does not exist. Creating..."
-    aws ecr create-repository --repository-name $REPO_NAME --region $REGION
-    echo "Repository $REPO_NAME created successfully."
-else
-    echo "Repository $REPO_NAME already exists."
-fi
+# # Check if ECR repository exists, create if it doesn't
+# if ! aws ecr describe-repositories --repository-names $REPO_NAME --region $REGION >/dev/null 2>&1; then
+#     echo "Repository $REPO_NAME does not exist. Creating..."
+#     aws ecr create-repository --repository-name $REPO_NAME --region $REGION
+#     echo "Repository $REPO_NAME created successfully."
+# else
+#     echo "Repository $REPO_NAME already exists."
+# fi
 
-# Build the Docker image (no frontend build needed)
-echo "Building snakemake batch Docker image..."
-docker build -f studio/config/docker/Dockerfile.batch -t $REPO_NAME:$IMAGE_TAG .
+# # Build the Docker image (no frontend build needed)
+# echo "Building snakemake batch Docker image..."
+# docker build -f studio/config/docker/Dockerfile.batch -t $REPO_NAME:$IMAGE_TAG .
 
-# Tag and push to ECR
-docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:latest
-docker push $ECR_URI:latest
-echo "Successfully pushed snakemake batch image: $ECR_URI:latest"
+# # Tag and push to ECR
+# docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:latest
+# docker push $ECR_URI:latest
+# echo "Successfully pushed snakemake batch image: $ECR_URI:latest"
 
-echo "All images built and pushed successfully!"
+# echo "All images built and pushed successfully!"

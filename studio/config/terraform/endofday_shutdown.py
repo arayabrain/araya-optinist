@@ -951,22 +951,22 @@ def plan1_shutdown() -> bool:
         print(f"{Colors.YELLOW}Continuing with Batch shutdown...{Colors.NC}")
 
     # Step 2: Shutdown AWS Batch environments
-    try:
-        print(
-            f"\n{Colors.YELLOW}Step 2: Shutting down AWS Batch environments"
-            f"{Colors.NC}"
-        )
-        shutdown_batch_environments()
-    except Exception as e:
-        print(f"{Colors.RED}Error shutting down Batch: {e}{Colors.NC}")
-        print(f"{Colors.YELLOW}Continuing with ECS shutdown...{Colors.NC}")
+    # try:
+    #     print(
+    #         f"\n{Colors.YELLOW}Step 2: Shutting down AWS Batch environments"
+    #         f"{Colors.NC}"
+    #     )
+    #     shutdown_batch_environments()
+    # except Exception as e:
+    #     print(f"{Colors.RED}Error shutting down Batch: {e}{Colors.NC}")
+    #     print(f"{Colors.YELLOW}Continuing with ECS shutdown...{Colors.NC}")
 
     # Step 3: Scale down ECS services
     try:
         print(f"\n{Colors.YELLOW}Step 3: Scaling down ECS services{Colors.NC}")
         services = [
             "subscr-optinist-cloud-service",
-            "subscr-batch-optinist-cloud-service",
+            # "subscr-batch-optinist-cloud-service",
         ]
         if not update_services(services):
             print(f"{Colors.RED}Failed to scale down services{Colors.NC}")
@@ -1025,16 +1025,16 @@ def plan1_shutdown() -> bool:
         )
 
     # Step 8: Terminate dedicated batch instance
-    try:
-        print(
-            f"\n{Colors.YELLOW}Step 8: Terminating dedicated batch instance"
-            f"{Colors.NC}"
-        )
-        if not terminate_dedicated_batch_instance():
-            print(
-                f"{Colors.YELLOW}Failed to terminate dedicated batch instance"
-                f"{Colors.NC}"
-            )
+    # try:
+    #     print(
+    #         f"\n{Colors.YELLOW}Step 8: Terminating dedicated batch instance"
+    #         f"{Colors.NC}"
+    #     )
+    #     if not terminate_dedicated_batch_instance():
+    #         print(
+    #             f"{Colors.YELLOW}Failed to terminate dedicated batch instance"
+    #             f"{Colors.NC}"
+    #         )
     except Exception as e:
         print(
             f"{Colors.RED}Error terminating dedicated batch instance: {e}"

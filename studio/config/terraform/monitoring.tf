@@ -245,26 +245,27 @@ resource "aws_cloudwatch_dashboard" "main" {
         }
       },
       # Row 4: Batch Processing Metrics
-      {
-        type   = "metric"
-        x      = 0
-        y      = 18
-        width  = 12
-        height = 6
-        properties = {
-          metrics = [
-            ["AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.batch.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Batch CPU" }],
-            ["AWS/ECS", "MemoryUtilization", "ServiceName", aws_ecs_service.batch.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Batch Memory" }],
-            ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", aws_lb.batch.arn_suffix, { "label" : "Batch Requests" }],
-            ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", aws_lb.batch.arn_suffix, { "label" : "Batch Response Time" }]
-          ]
-          view    = "timeSeries"
-          stacked = false
-          region  = "ap-northeast-1"
-          title   = "Batch Processing Performance"
-          period  = 300
-        }
-      },
+      # COMMENTED OUT - Batch resources disabled
+      # {
+      #   type   = "metric"
+      #   x      = 0
+      #   y      = 18
+      #   width  = 12
+      #   height = 6
+      #   properties = {
+      #     metrics = [
+      #       ["AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.batch.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Batch CPU" }],
+      #       ["AWS/ECS", "MemoryUtilization", "ServiceName", aws_ecs_service.batch.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Batch Memory" }],
+      #       ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", aws_lb.batch.arn_suffix, { "label" : "Batch Requests" }],
+      #       ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", aws_lb.batch.arn_suffix, { "label" : "Batch Response Time" }]
+      #     ]
+      #     view    = "timeSeries"
+      #     stacked = false
+      #     region  = "ap-northeast-1"
+      #     title   = "Batch Processing Performance"
+      #     period  = 300
+      #   }
+      # },
       # Row 4: System Health Overview
       {
         type   = "metric"

@@ -58,18 +58,18 @@ echo "$(date): Starting application setup script"
 
 # Function for retries
 retry_command() {
-    local max_attempts=$1
-    local delay=$2
+    local max_attempts=$$1
+    local delay=$$2
     local command="$${@:3}"
 
-    for i in $$(seq 1 $max_attempts); do
+    for i in $$(seq 1 $$max_attempts); do
         echo "$$(date): Attempting: $$command (attempt $$i/$$max_attempts)"
         if eval "$$command"; then
             echo "$$(date): Success: $$command"
             return 0
         else
-            echo "$$(date): Failed attempt $$I/$$max_attempts"
-            [ $$i -lt $max_attempts ] && sleep $$delay
+            echo "$$(date): Failed attempt $$i/$$max_attempts"
+            [ $$i -lt $$max_attempts ] && sleep $$delay
         fi
     done
 
