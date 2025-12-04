@@ -55,6 +55,12 @@ axios.interceptors.request.use(
 
 // Track if we're already refreshing to prevent multiple refresh attempts
 let isRefreshing = false
+// Track if user is logging out to prevent token refresh during logout
+let isLoggingOut = false
+// Promise to track when logout completes
+let logoutCompletePromise: Promise<void> | null = null
+let resolveLogoutComplete: (() => void) | null = null
+
 let failedQueue: Array<{
   resolve: (value?: unknown) => void
   reject: (reason?: unknown) => void
@@ -71,6 +77,34 @@ const processQueue = (error: unknown, token: string | null = null) => {
   failedQueue = []
 }
 
+// Export function to set logout state - called by logout functions
+export const setLoggingOut = (value: boolean) => {
+  isLoggingOut = value
+  if (value) {
+    // Create a promise that will resolve when logout completes
+    logoutCompletePromise = new Promise<void>((resolve) => {
+      resolveLogoutComplete = resolve
+    })
+    // Clear the refresh queue when logging out
+    processQueue(new Error("User is logging out"), null)
+    isRefreshing = false
+  } else {
+    // Logout complete - resolve the promise
+    if (resolveLogoutComplete) {
+      resolveLogoutComplete()
+      resolveLogoutComplete = null
+      logoutCompletePromise = null
+    }
+  }
+}
+
+// Export function to wait for logout to complete
+export const waitForLogoutComplete = async () => {
+  if (logoutCompletePromise) {
+    await logoutCompletePromise
+  }
+}
+
 axios.interceptors.response.use(
   async (res) => res,
   async (error) => {
@@ -83,6 +117,13 @@ axios.interceptors.response.use(
         originalRequest?.url,
         error.response?.data,
       )
+
+      // Prevent token refresh during logout
+      if (isLoggingOut) {
+        // eslint-disable-next-line no-console
+        console.log("[Auth] User is logging out, skipping token refresh")
+        return Promise.reject(error)
+      }
 
       // Prevent refresh loop - don't retry refresh endpoint itself
       if (originalRequest?.url?.includes("/auth/refresh")) {

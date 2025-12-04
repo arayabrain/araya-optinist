@@ -49,6 +49,7 @@ export const registerUserApi = async (
 
     return response.data
   } catch (error: unknown) {
+    // eslint-disable-next-line no-console
     console.error("Registration error:", error)
 
     const err = error as {
@@ -56,7 +57,7 @@ export const registerUserApi = async (
       message?: string
       response?: { data?: { detail?: string }; status?: number }
     }
-
+    // eslint-disable-next-line no-console
     console.error("Error details:", {
       message: err.message,
       response: err.response?.data,
@@ -92,6 +93,7 @@ export const resendVerificationEmailApi = async (
   email: string,
 ): Promise<{ success: boolean; message: string }> => {
   try {
+    // eslint-disable-next-line no-console
     console.log("Resending verification email...")
 
     // ===================================
@@ -112,7 +114,7 @@ export const resendVerificationEmailApi = async (
         message: "Email is already verified",
       }
     }
-
+    // eslint-disable-next-line no-console
     console.log("Verification email resent!")
 
     return {
@@ -120,6 +122,7 @@ export const resendVerificationEmailApi = async (
       message: response.data.message || "Verification email has been resent",
     }
   } catch (error: unknown) {
+    // eslint-disable-next-line no-console
     console.error("Failed to resend verification email:", error)
 
     const err = error as {
