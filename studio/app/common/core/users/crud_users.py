@@ -354,6 +354,11 @@ async def list_user(
                     func.coalesce(WorkspaceCapacity.c.input_workspace_capacity, 0)
                     + func.coalesce(ExperimentCapacity.c.experiment_capacity, 0)
                 ).label("data_usage"),
+                SubscriptionPlans.name,
+                UserStorageUsage.storage_usage_bytes,
+                UserStorageUsage.storage_quota_bytes,
+                UserSubscription.expiration,
+                UserSubscription.plan_id,
             )
             .outerjoin(WorkspaceCapacity, WorkspaceCapacity.c.user_id == UserModel.id)
             .outerjoin(ExperimentCapacity, ExperimentCapacity.c.user_id == UserModel.id)
@@ -372,7 +377,14 @@ async def list_user(
                 UserModel.name.like("%{0}%".format(options.name)),
                 UserModel.email.like("%{0}%".format(options.email)),
             )
-            .group_by(UserModel.id)
+            .group_by(
+                UserModel.id,
+                SubscriptionPlans.name,
+                UserStorageUsage.storage_usage_bytes,
+                UserStorageUsage.storage_quota_bytes,
+                UserSubscription.expiration,
+                UserSubscription.plan_id,
+            )
             .order_by(*sa_sort_list),
             transformer=user_transformer,
             unique=False,
