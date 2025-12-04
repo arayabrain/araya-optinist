@@ -18,6 +18,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware import (
     ClientIdLoggingMiddleware,
     FreeUserActivityMiddleware,
+    SPARoutingMiddleware,
 )
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
@@ -150,6 +151,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add SPARoutingMiddleware to handle browser navigation to SPA routes
+# This must be added before other middleware to intercept browser requests early
+app.add_middleware(SPARoutingMiddleware)
 
 # Add LoggingMiddleware to capture client_id for logging
 app.add_middleware(ClientIdLoggingMiddleware)

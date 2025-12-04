@@ -57,7 +57,6 @@ import { ItemsWorkspace } from "store/slice/Workspace/WorkspaceType"
 import { isMine } from "store/slice/Workspace/WorkspaceUtils"
 import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
-import axios from "utils/axios"
 
 type PopupType = {
   open: boolean
@@ -383,9 +382,11 @@ const Workspaces = () => {
   }, [offset, limit])
 
   useEffect(() => {
+    // Only fetch workspaces if user is authenticated
+    if (!user) return
     dispatch(getWorkspaceList(dataParams))
     //eslint-disable-next-line
-  }, [dataParams])
+  }, [dataParams, user])
 
   const handleOpenPopupShare = (shareId: number) => {
     setOpen({ ...open, share: true, shareId })
