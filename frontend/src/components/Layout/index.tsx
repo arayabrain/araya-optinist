@@ -10,8 +10,12 @@ import Loading from "components/common/Loading"
 import { LogsFloatingButton } from "components/common/LogsFloatingButton"
 import Header from "components/Layout/Header"
 import LeftMenu from "components/Layout/LeftMenu"
+import InactivityWarning from "components/Premium/InactivityWarning"
+import PremiumAssignmentManager from "components/Premium/PremiumAssignmentManager"
+import PremiumNotificationManager from "components/Premium/PremiumNotificationManager"
 import ModalLogs from "components/Workspace/FlowChart/ModalLogs"
 import { APP_BAR_HEIGHT } from "const/Layout"
+import { PremiumAssignmentProvider } from "contexts/PremiumAssignmentContext"
 import { selectLogsModalIsOpen } from "store/slice/LogsModal/LogsModalSelectors"
 import { closeLogsModal } from "store/slice/LogsModal/LogsModalSlice"
 import { selectModeStandalone } from "store/slice/Standalone/StandaloneSeclector"
@@ -150,17 +154,25 @@ const AuthedLayout: FC<{ children: ReactNode }> = ({ children }) => {
   }
 
   return (
-    <LayoutWrapper>
-      <Header handleDrawerOpen={handleDrawerOpen} />
-      <ContentBodyWrapper>
-        <LeftMenu open={open} handleDrawerClose={handleDrawerClose} />
-        <ChildrenWrapper>{children}</ChildrenWrapper>
-      </ContentBodyWrapper>
-      {/* Global limit alert modal for authenticated users */}
-      <LimitAlert showAsModal={true} autoCheck={true} />
-      {!isStandalone && <LogsFloatingButton />}
-      {logsModalOpen && <ModalLogs isOpen onClose={handleLogsModalClose} />}
-    </LayoutWrapper>
+    <PremiumAssignmentProvider>
+      <LayoutWrapper>
+        <Header handleDrawerOpen={handleDrawerOpen} />
+        <ContentBodyWrapper>
+          <LeftMenu open={open} handleDrawerClose={handleDrawerClose} />
+          <ChildrenWrapper>{children}</ChildrenWrapper>
+        </ContentBodyWrapper>
+        {/* Premium assignment manager for automatic instance assignment */}
+        <PremiumAssignmentManager />
+        {/* Premium notification manager for user feedback */}
+        <PremiumNotificationManager />
+        {/* Inactivity warning for premium users */}
+        <InactivityWarning />
+        {/* Global limit alert modal for authenticated users */}
+        <LimitAlert showAsModal={true} autoCheck={true} />
+        {!isStandalone && <LogsFloatingButton />}
+        {logsModalOpen && <ModalLogs isOpen onClose={handleLogsModalClose} />}
+      </LayoutWrapper>
+    </PremiumAssignmentProvider>
   )
 }
 
