@@ -5,8 +5,13 @@ from studio.app.common.core.utils.filepath_finder import find_param_filepath
 logger = AppLogger.get_logger()
 
 
+def read_default_params(name: str):
+    filepath = find_param_filepath(name)
+    return ConfigReader.read(filepath)
+
+
 def get_typecheck_params(message_params, name):
-    default_params = ConfigReader.read(find_param_filepath(name))
+    default_params = read_default_params(name)
     if message_params != {} and message_params is not None:
         return check_types(nest2dict(message_params), default_params)
     return default_params

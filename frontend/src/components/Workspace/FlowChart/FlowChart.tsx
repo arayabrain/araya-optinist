@@ -102,11 +102,11 @@ const FlowChart = memo(function FlowChart(props: UseRunPipelineReturnType) {
     setNodeRefresh(true)
 
     try {
-      await dispatch(getAlgoList()) // Ensure it waits for the API call to finish
+      await dispatch(getAlgoList()).unwrap()
+      handleClickVariant("success", "Algorithm List Refreshed")
     } catch (error) {
       handleClickVariant("error", "Failed to get Algorithm List")
     } finally {
-      handleClickVariant("success", "Algorithm List Refreshed")
       setNodeRefresh(false)
     }
   }

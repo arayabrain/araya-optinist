@@ -2,6 +2,7 @@ import { createSlice, isAnyOf, PayloadAction } from "@reduxjs/toolkit"
 
 import { isInputNodePostData } from "api/run/RunUtils"
 import { INITIAL_IMAGE_ELEMENT_ID } from "const/flowchart"
+import { WORKSPACE_TYPE } from "const/Workspace"
 import { FileNodeFactory } from "factories/FileNodeFactory"
 import { uploadFile } from "store/slice/FileUploader/FileUploaderActions"
 import { addInputNode } from "store/slice/FlowElement/FlowElementActions"
@@ -20,6 +21,7 @@ import {
   InputNodeType,
   INPUT_NODE_SLICE_NAME,
   MatlabInputNode,
+  WORKSPACE_TYPE_KEY,
 } from "store/slice/InputNode/InputNodeType"
 import {
   isCsvInputNode,
@@ -31,13 +33,50 @@ import {
   importWorkflowConfig,
   fetchWorkflow,
 } from "store/slice/Workflow/WorkflowActions"
+import { getWorkspace } from "store/slice/Workspace/WorkspaceActions"
 
-const initialState: InputNode = {
-  [INITIAL_IMAGE_ELEMENT_ID]: {
-    fileType: FILE_TYPE_SET.IMAGE,
-    param: {},
-  },
-} as InputNode
+/**
+ * Get the appropriate file type for the initial node
+ */
+const getInitialNodeFileType = (_workspaceType?: number) => {
+  return FILE_TYPE_SET.IMAGE
+}
+
+/**
+ * Create initial state with workspace type
+ * @param workspaceType - Workspace type to use directly (optional)
+ * @param preserveFrom - Old state to preserve workspace type from (optional)
+ * @param includeInitialNode - Whether to include initial node (default: true)
+ */
+const createInitialState = (
+  workspaceType?: number,
+  preserveFrom?: InputNode,
+  includeInitialNode = true,
+): InputNode => {
+  const effectiveWorkspaceType =
+    workspaceType !== undefined
+      ? workspaceType
+      : preserveFrom?.[WORKSPACE_TYPE_KEY]
+
+  const newState: InputNode = {}
+
+  // Add initial node if requested
+  if (includeInitialNode) {
+    newState[INITIAL_IMAGE_ELEMENT_ID] = {
+      fileType: getInitialNodeFileType(effectiveWorkspaceType),
+      param: {},
+    } as InputNodeType
+  }
+
+  // Preserve workspace type in new state
+  if (effectiveWorkspaceType !== undefined) {
+    newState[WORKSPACE_TYPE_KEY] = effectiveWorkspaceType
+  }
+
+  return newState
+}
+
+const initialState: InputNode = createInitialState()
 
 export const inputNodeSlice = createSlice({
   name: INPUT_NODE_SLICE_NAME,
@@ -88,6 +127,18 @@ export const inputNodeSlice = createSlice({
   },
   extraReducers: (builder) =>
     builder
+      .addCase(getWorkspace.fulfilled, (state) => {
+        // Save workspace type for later use
+        const workspaceType = WORKSPACE_TYPE.DEFAULT // Currently a fixed value
+        state[WORKSPACE_TYPE_KEY] = workspaceType
+
+        // Update the initial node based on workspace type
+        const initialNode = state[INITIAL_IMAGE_ELEMENT_ID]
+        if (initialNode) {
+          const newFileType = getInitialNodeFileType(workspaceType)
+          initialNode.fileType = newFileType as typeof initialNode.fileType
+        }
+      })
       .addCase(setInputNodeFilePath, (state, action) => {
         const { nodeId, filePath } = action.payload
         const targetNode = state[nodeId]
@@ -111,7 +162,9 @@ export const inputNodeSlice = createSlice({
           }
         }
       })
-      .addCase(clearFlowElements, () => initialState)
+      .addCase(clearFlowElements, (state, action) =>
+        createInitialState(action.payload?.workspaceType, state),
+      )
       .addCase(deleteFlowNodes, (state, action) => {
         action.payload.forEach((node) => {
           if (node.data?.type === NODE_TYPE_SET.INPUT) {
@@ -141,9 +194,13 @@ export const inputNodeSlice = createSlice({
           }
         }
       })
-      .addCase(fetchWorkflow.rejected, () => initialState)
-      .addCase(importWorkflowConfig.fulfilled, (_, action) => {
-        const newState: InputNode = {}
+      .addCase(fetchWorkflow.rejected, (state) => {
+        // Clear previous workspace nodes and reset to initial state
+        return createInitialState(undefined, state)
+      })
+      .addCase(importWorkflowConfig.fulfilled, (state, action) => {
+        const newState = createInitialState(undefined, state, false)
+
         Object.values(action.payload.nodeDict)
           .filter(isInputNodePostData)
           .forEach((node) => {
@@ -174,8 +231,9 @@ export const inputNodeSlice = createSlice({
       })
       .addMatcher(
         isAnyOf(fetchWorkflow.fulfilled, reproduceWorkflow.fulfilled),
-        (_, action) => {
-          const newState: InputNode = {}
+        (state, action) => {
+          const newState = createInitialState(undefined, state, false)
+
           Object.values(action.payload.nodeDict)
             .filter(isInputNodePostData)
             .forEach((node) => {
