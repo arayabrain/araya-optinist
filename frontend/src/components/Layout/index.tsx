@@ -5,6 +5,7 @@ import { useLocation, useNavigate } from "react-router-dom"
 import { Box } from "@mui/material"
 import { styled } from "@mui/material/styles"
 
+import LimitAlert from "components/common/LimitAlert"
 import Loading from "components/common/Loading"
 import { LogsFloatingButton } from "components/common/LogsFloatingButton"
 import Header from "components/Layout/Header"
@@ -29,6 +30,10 @@ const Layout = ({ children }: { children?: ReactNode }) => {
   const [loading, setLoading] = useState(
     !isStandalone && requiresAuth(location.pathname),
   )
+  const [storageRefreshedOnLogin, setStorageRefreshedOnLogin] = useState(() => {
+    // Check if storage was already refreshed in this session
+    return sessionStorage.getItem("storage-refreshed-on-login") === "true"
+  })
 
   useEffect(() => {
     if (!isStandalone) {
@@ -76,6 +81,32 @@ const Layout = ({ children }: { children?: ReactNode }) => {
     try {
       if (token) {
         await dispatch(getMe())
+
+        // Refresh workspace storage only once per session to ensure accurate limit warnings
+        if (!storageRefreshedOnLogin) {
+          try {
+            const { refreshAllWorkspacesStorageApi } = await import(
+              "api/workspace"
+            )
+            await refreshAllWorkspacesStorageApi()
+
+            // Mark as refreshed in session storage
+            sessionStorage.setItem("storage-refreshed-on-login", "true")
+            setStorageRefreshedOnLogin(true)
+          } catch (storageError) {
+            // Don't fail login if storage refresh fails
+            // eslint-disable-next-line no-console
+            console.warn(
+              "Failed to refresh workspace storage usage on login:",
+              storageError,
+            )
+
+            // Still mark as attempted so we don't keep retrying
+            sessionStorage.setItem("storage-refreshed-on-login", "true")
+            setStorageRefreshedOnLogin(true)
+          }
+        }
+
         if (isLogin) navigate("/dashboard")
         return
       } else if (!isLogin) throw new Error("fail auth")
@@ -127,6 +158,8 @@ const AuthedLayout: FC<{ children: ReactNode }> = ({ children }) => {
         <LeftMenu open={open} handleDrawerClose={handleDrawerClose} />
         <ChildrenWrapper>{children}</ChildrenWrapper>
       </ContentBodyWrapper>
+      {/* Global limit alert modal for authenticated users */}
+      <LimitAlert showAsModal={true} autoCheck={true} />
       {!isStandalone && <LogsFloatingButton />}
       {logsModalOpen && <ModalLogs isOpen onClose={handleLogsModalClose} />}
     </LayoutWrapper>

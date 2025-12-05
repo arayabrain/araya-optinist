@@ -93,14 +93,12 @@ class SubscriptionService:
         Returns:
             bool: True if the user has an active cancelled subscription, False otherwise
         """
-        from datetime import datetime
-
         # Get the user's current active subscription (not expired)
         active_subscription = (
             db.query(UserSubscription)
             .filter(
                 UserSubscription.user_id == user_id,
-                UserSubscription.expiration > datetime.utcnow(),
+                UserSubscription.expiration > __class__.get_current_datetime(),
             )
             .order_by(UserSubscription.expiration.desc())
             .first()
@@ -283,7 +281,7 @@ class SubscriptionService:
 
             # Update the subscription
             subscription.plan_id = new_plan_id
-            subscription.updated_at = datetime.utcnow()
+            subscription.updated_at = __class__.get_current_datetime()
 
             db.commit()
             db.refresh(subscription)

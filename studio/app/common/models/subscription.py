@@ -208,3 +208,37 @@ class SubscriptionCancellation(SQLModel, table=True):
         default=None,
         description="Additional notes or comments",
     )
+
+
+class UserStorageUsage(SQLModel, table=True):
+    __tablename__ = "user_storage_usage"
+    __table_args__ = (UniqueConstraint("id", name="idx_id"),)
+
+    id: Optional[int] = Field(
+        sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
+        default=None,
+    )
+    user_id: int = Field(sa_column=Column(BIGINT, nullable=False, unique=True))
+    storage_usage_bytes: int = Field(
+        sa_column=Column(BIGINT, nullable=False, default=0)
+    )
+    storage_quota_bytes: int = Field(sa_column=Column(BIGINT, nullable=False))
+    last_updated: Optional[datetime] = Field(
+        default_factory=datetime.utcnow,
+        sa_column=Column(
+            DateTime, nullable=False, server_default=func.current_timestamp()
+        ),
+    )
+    created_at: Optional[datetime] = Field(
+        default_factory=datetime.utcnow,
+        sa_column=Column(
+            DateTime, nullable=False, server_default=func.current_timestamp()
+        ),
+    )
+
+    @property
+    def storage_usage_percent(self) -> float:
+        """Calculate usage percentage."""
+        if self.storage_quota_bytes == 0:
+            return 0.0
+        return round((self.storage_usage_bytes / self.storage_quota_bytes) * 100, 2)

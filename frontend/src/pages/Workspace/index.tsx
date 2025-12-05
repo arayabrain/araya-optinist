@@ -8,6 +8,7 @@ import { useSnackbar, VariantType } from "notistack"
 import DeleteIcon from "@mui/icons-material/Delete"
 import EditIcon from "@mui/icons-material/Edit"
 import GroupsIcon from "@mui/icons-material/Groups"
+import ReplayIcon from "@mui/icons-material/Replay"
 import {
   Box,
   styled,
@@ -19,6 +20,7 @@ import {
   Input,
   Tooltip,
   IconButton,
+  CircularProgress,
 } from "@mui/material"
 import {
   GridEventListener,
@@ -32,6 +34,7 @@ import {
 import { isRejectedWithValue } from "@reduxjs/toolkit"
 
 import { UserDTO } from "api/users/UsersApiDTO"
+import { refreshAllWorkspacesStorageApi } from "api/workspace"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
 import PaginationCustom from "components/common/PaginationCustom"
@@ -69,7 +72,11 @@ type PopupType = {
 
 const columns = (
   handleOpenPopupShare: (id: number) => void,
-  handleOpenPopupDel: (id: number, nameWorkspace: string) => void,
+  handleOpenPopupDel: (
+    id: number,
+    nameWorkspace: string,
+    displayNumber?: number,
+  ) => void,
   handleNavWorkflow: (id: number) => void,
   handleNavRecords: (id: number) => void,
   handleNavDataview: (id: number) => void,
@@ -77,14 +84,14 @@ const columns = (
   onEdit?: (id: number) => void,
 ) => [
   {
-    field: "id",
+    field: "display_number",
     headerName: "ID",
     filterable: false, // todo enable when api complete
     sortable: false, // todo enable when api complete
     flex: 1,
     minWidth: 70,
     renderCell: (params: GridRenderCellParams<GridValidRowModel>) => (
-      <span>{params.value}</span>
+      <span>{params.value ?? params.row.id}</span>
     ),
   },
   {
@@ -273,7 +280,12 @@ const columns = (
           <span>
             <IconButton
               onClick={() =>
-                canDelete && handleOpenPopupDel(params.row.id, params.row.name)
+                canDelete &&
+                handleOpenPopupDel(
+                  params.row.id,
+                  params.row.name,
+                  params.row.display_number,
+                )
               }
               color="error"
               disabled={!canDelete}
@@ -343,12 +355,14 @@ const Workspaces = () => {
   const [workspaceDel, setWorkspaceDel] = useState<{
     id: number
     name: string
+    display_number?: number
   }>()
   const [newWorkspace, setNewWorkSpace] = useState<string>()
   const [error, setError] = useState("")
   const [initName, setInitName] = useState("")
   const [rowModesModel, setRowModesModel] = useState<GridRowModesModel>({})
   const [searchParams, setParams] = useSearchParams()
+  const [refreshing, setRefreshing] = useState(false)
 
   const { enqueueSnackbar } = useSnackbar()
 
@@ -386,8 +400,12 @@ const Workspaces = () => {
     setOpen({ ...open, share: false })
   }
 
-  const handleOpenPopupDel = (id: number, name: string) => {
-    setWorkspaceDel({ id, name })
+  const handleOpenPopupDel = (
+    id: number,
+    name: string,
+    display_number?: number,
+  ) => {
+    setWorkspaceDel({ id, name, display_number })
     setOpen({ ...open, del: true })
   }
 
@@ -525,6 +543,27 @@ const Workspaces = () => {
     setParams(`limit=${Number(event.target.value)}&offset=0`)
   }
 
+  const handleRefreshStorage = async () => {
+    try {
+      setRefreshing(true)
+      // Call API to refresh all workspace storage usage
+      const response = await refreshAllWorkspacesStorageApi()
+
+      // Refresh the workspace list after storage sync
+      await dispatch(getWorkspaceList(dataParams))
+      handleClickVariant(
+        "success",
+        `Storage refreshed for ${response.refreshed_workspaces} workspaces!`,
+      )
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error("Failed to refresh storage:", error)
+      handleClickVariant("error", "Failed to refresh storage usage")
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   return (
     <WorkspacesWrapper>
       <WorkspacesTitle>Workspaces</WorkspacesTitle>
@@ -536,6 +575,14 @@ const Workspaces = () => {
           marginBottom: 2,
         }}
       >
+        <Button
+          variant="outlined"
+          onClick={handleRefreshStorage}
+          disabled={refreshing}
+          endIcon={refreshing ? <CircularProgress size={16} /> : <ReplayIcon />}
+        >
+          Reload
+        </Button>
         <Button
           sx={{
             background: "#000000c4",
@@ -606,7 +653,7 @@ const Workspaces = () => {
         titleSubmit={"Delete Workspace"}
         description={
           "Delete ID: " +
-          workspaceDel?.id +
+          (workspaceDel?.display_number ?? workspaceDel?.id) +
           " Name: " +
           workspaceDel?.name +
           " ? \n"

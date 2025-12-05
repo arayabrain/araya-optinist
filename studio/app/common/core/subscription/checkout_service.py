@@ -11,8 +11,8 @@ from studio.app.common.core.subscription.constants import (
     PAYMENT_METHOD_TYPE_CARD,
     PAYMENT_METHOD_TYPE_LINK,
     STRIPE_PROVIDER_NAME,
-    TRIAL_PERIOD_DAYS,
     SubscriptionActiveStatus,
+    SubscriptionPeriods,
     SyncStatus,
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
@@ -371,6 +371,58 @@ class CheckoutService:
         )
 
     @staticmethod
+    def has_stripe_purchase_history(customer_id: str) -> bool:
+        """
+        Check if a Stripe customer has any previous purchase history
+
+        Args:
+            customer_id: Stripe customer ID
+
+        Returns:
+            True if customer has any successful payments, False otherwise
+        """
+        try:
+            # Check for any successful charges
+            charges = stripe.Charge.list(customer=customer_id, limit=1)
+            if charges.data:
+                logger.info(
+                    f"Found {len(charges.data)} charge(s) for customer {customer_id}"
+                )
+                return True
+
+            # Check for any subscriptions (past or present)
+            subscriptions = stripe.Subscription.list(customer=customer_id, limit=1)
+            if subscriptions.data:
+                logger.info(
+                    f"Found {len(subscriptions.data)} subscription(s) "
+                    f"for customer {customer_id}"
+                )
+                return True
+
+            # Check for any invoices that were paid
+            invoices = stripe.Invoice.list(customer=customer_id, status="paid", limit=1)
+            if invoices.data:
+                logger.info(
+                    f"Found {len(invoices.data)} paid invoice(s) "
+                    f"for customer {customer_id}"
+                )
+                return True
+
+            logger.info(
+                f"No purchase history found in Stripe for customer {customer_id}"
+            )
+            return False
+
+        except stripe.error.StripeError as e:
+            logger.error(
+                f"Stripe API error while checking purchase history for "
+                f"customer {customer_id}: {str(e)}"
+            )
+            # In case of error, assume they have purchase history to be safe
+            # (we don't want to give a trial if we can't verify)
+            return True
+
+    @staticmethod
     def record_purchase(
         db: Session, plan_id: int, user_id: int
     ) -> SubscriptionUserPurchase:
@@ -449,10 +501,17 @@ class CheckoutService:
                     )
 
                 # Check if user has any previous purchase history
+                # Check both database and Stripe to ensure we don't miss any purchases
                 previous_purchase = SubscriptionService.get_user_subscription_purchase(
                     db, user.id
                 )
-                is_first_time_user = previous_purchase is None
+                has_db_purchase = previous_purchase is not None
+                has_stripe_purchase = CheckoutService.has_stripe_purchase_history(
+                    customer_id
+                )
+
+                # User is first-time only if they have no purchase in either system
+                is_first_time_user = not (has_db_purchase or has_stripe_purchase)
 
                 # Prepare subscription parameters
                 subscription_params = {
@@ -489,15 +548,15 @@ class CheckoutService:
                 # Add trial period for first-time users
                 if is_first_time_user:
                     subscription_params["subscription_data"] = {
-                        "trial_period_days": TRIAL_PERIOD_DAYS,
+                        "trial_period_days": SubscriptionPeriods.TRIAL_PERIOD_DAYS,
                         "metadata": {
                             "is_trial": "true",
-                            "trial_days": str(TRIAL_PERIOD_DAYS),
+                            "trial_days": str(SubscriptionPeriods.TRIAL_PERIOD_DAYS),
                         },
                     }
                     logger.info(
-                        f"Adding {TRIAL_PERIOD_DAYS}-day trial for first-time user "
-                        f"{user.id}"
+                        f"Adding {SubscriptionPeriods.TRIAL_PERIOD_DAYS}-day trial "
+                        f"for first-time user {user.id}"
                     )
 
                 checkout_session = stripe.checkout.Session.create(**subscription_params)

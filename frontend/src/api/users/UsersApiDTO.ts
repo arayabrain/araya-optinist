@@ -12,6 +12,9 @@ export type UserDTO = {
   attributes?: {
     remote_bucket_name?: string
   }
+  storage_usage_bytes?: number
+  storage_quota_bytes?: number
+  storage_usage_percent?: number
   created_at?: string
   updated_at?: string
 }
