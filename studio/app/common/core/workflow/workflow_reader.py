@@ -44,6 +44,15 @@ class WorkflowConfigReader:
         return cls.read(ids.workspace_id, ids.unique_id)
 
     @classmethod
+    def _read_from_any_path(cls, filepath: str) -> WorkflowConfig:
+        assert os.path.exists(filepath), f"Config yaml file not found: [{filepath}]"
+
+        config = ConfigReader.read(filepath)
+        assert config, f"Invalid config yaml file: [{filepath}] [{config}]"
+
+        return cls._create_workflow_config(config)
+
+    @classmethod
     def read_from_bytes(cls, content: bytes) -> WorkflowConfig:
         config = ConfigReader.read_from_bytes(content)
         assert config, f"Invalid config yaml: [{config}]"

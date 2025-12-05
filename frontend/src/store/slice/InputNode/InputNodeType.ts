@@ -2,12 +2,16 @@ import { FILE_TYPE_SET, FILE_TYPE } from "config/fileTypes.config"
 
 export const INPUT_NODE_SLICE_NAME = "inputNode"
 
+// Symbol key for storing workspace type without interfering with Object.entries/values
+export const WORKSPACE_TYPE_KEY = Symbol("workspaceType")
+
 // Re-export for convenience
 export type { FILE_TYPE }
 export { FILE_TYPE_SET }
 
 export type InputNode = {
   [nodeId: string]: InputNodeType
+  [WORKSPACE_TYPE_KEY]?: number
 }
 
 export type InputNodeType =

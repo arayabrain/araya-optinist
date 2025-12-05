@@ -89,9 +89,11 @@ class ExptConfigReader:
         """
         config_dict = asdict(config)
         for field in ExptConfig.required_fields():
-            assert (
-                config_dict.get(field) is not None
-            ), f"ExptConfig.{field} is required."
+            if config_dict.get(field) is None:
+                logger.warning(
+                    f"ExptConfig.{field} is missing or None in experiment config"
+                )
+                return False
 
         return True
 
