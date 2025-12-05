@@ -260,8 +260,13 @@ output "ecs_cluster_name" {
 }
 
 output "ecs_service_name_autoscaling" {
-  description = "Name of the ECS service"
+  description = "Name of the ECS service (free tier)"
   value       = aws_ecs_service.autoscaling.name
+}
+
+output "ecs_service_name_premium" {
+  description = "Name of the ECS service (premium tier)"
+  value       = aws_ecs_service.premium.name
 }
 
 output "efs_id" {

@@ -132,30 +132,50 @@ resource "aws_iam_role_policy" "free_manager_lambda_policy" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      # ECS permissions
+      # ECS Service actions (scoped to free tier service)
       {
         Effect = "Allow"
         Action = [
           "ecs:DescribeServices",
-          "ecs:UpdateService",
+          "ecs:UpdateService"
+        ]
+        Resource = aws_ecs_service.autoscaling.id
+      },
+      # ECS Cluster-level actions
+      {
+        Effect = "Allow"
+        Action = [
           "ecs:ListTasks",
+          "ecs:ListContainerInstances"
+        ]
+        Resource = "*"
+      },
+      # ECS Task/Instance describe (scoped to cluster)
+      {
+        Effect = "Allow"
+        Action = [
           "ecs:DescribeTasks",
           "ecs:ListContainerInstances",
           "ecs:DescribeContainerInstances"
         ]
         Resource = "*"
       },
-      # Autoscaling permissions (for manual ASG control)
+      # ASG Describe (read-only)
+      {
+        Effect = "Allow"
+        Action = "autoscaling:DescribeAutoScalingGroups"
+        Resource = "*"
+      },
+      # ASG Management (scoped to free tier ASG)
       {
         Effect = "Allow"
         Action = [
-          "autoscaling:DescribeAutoScalingGroups",
           "autoscaling:SetDesiredCapacity",
           "autoscaling:UpdateAutoScalingGroup"
         ]
-        Resource = "*"
+        Resource = aws_autoscaling_group.main.arn
       },
-      # CloudWatch metrics permissions
+      # CloudWatch metrics (requires wildcard)
       {
         Effect = "Allow"
         Action = [
@@ -165,7 +185,7 @@ resource "aws_iam_role_policy" "free_manager_lambda_policy" {
         ]
         Resource = "*"
       },
-      # EC2 permissions (for instance metadata)
+      # EC2 Describe (read-only, requires wildcard)
       {
         Effect = "Allow"
         Action = [

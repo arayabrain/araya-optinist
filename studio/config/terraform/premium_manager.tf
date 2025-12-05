@@ -222,153 +222,6 @@ resource "aws_cloudwatch_log_group" "premium_cleanup_logs" {
   }
 }
 
-# API Gateway for Premium Management
-resource "aws_api_gateway_rest_api" "premium_management" {
-  name        = "subscr-premium-management-api"
-  description = "API for premium user assignment and management"
-
-  tags = {
-    Name = "Premium Management API"
-    Type = "Premium-API"
-  }
-}
-
-# API Gateway Resource for Premium endpoints
-resource "aws_api_gateway_resource" "premium_resource" {
-  rest_api_id = aws_api_gateway_rest_api.premium_management.id
-  parent_id   = aws_api_gateway_rest_api.premium_management.root_resource_id
-  path_part   = "premium"
-}
-
-# API Gateway Resource for assign endpoint
-resource "aws_api_gateway_resource" "premium_assign" {
-  rest_api_id = aws_api_gateway_rest_api.premium_management.id
-  parent_id   = aws_api_gateway_resource.premium_resource.id
-  path_part   = "assign"
-}
-
-# API Gateway Resource for release endpoint
-resource "aws_api_gateway_resource" "premium_release" {
-  rest_api_id = aws_api_gateway_rest_api.premium_management.id
-  parent_id   = aws_api_gateway_resource.premium_resource.id
-  path_part   = "release"
-}
-
-# API Gateway Resource for status endpoint
-resource "aws_api_gateway_resource" "premium_status" {
-  rest_api_id = aws_api_gateway_rest_api.premium_management.id
-  parent_id   = aws_api_gateway_resource.premium_resource.id
-  path_part   = "status"
-}
-
-# API Gateway Method for assign (POST)
-resource "aws_api_gateway_method" "premium_assign_post" {
-  rest_api_id   = aws_api_gateway_rest_api.premium_management.id
-  resource_id   = aws_api_gateway_resource.premium_assign.id
-  http_method   = "POST"
-  authorization = "NONE"
-}
-
-# API Gateway Method for release (POST)
-resource "aws_api_gateway_method" "premium_release_post" {
-  rest_api_id   = aws_api_gateway_rest_api.premium_management.id
-  resource_id   = aws_api_gateway_resource.premium_release.id
-  http_method   = "POST"
-  authorization = "NONE"
-}
-
-# API Gateway Method for status (GET)
-resource "aws_api_gateway_method" "premium_status_get" {
-  rest_api_id   = aws_api_gateway_rest_api.premium_management.id
-  resource_id   = aws_api_gateway_resource.premium_status.id
-  http_method   = "GET"
-  authorization = "NONE"
-}
-
-# API Gateway Integration for assign
-resource "aws_api_gateway_integration" "premium_assign_integration" {
-  rest_api_id = aws_api_gateway_rest_api.premium_management.id
-  resource_id = aws_api_gateway_resource.premium_assign.id
-  http_method = aws_api_gateway_method.premium_assign_post.http_method
-
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = aws_lambda_function.premium_manager.invoke_arn
-}
-
-# API Gateway Integration for release
-resource "aws_api_gateway_integration" "premium_release_integration" {
-  rest_api_id = aws_api_gateway_rest_api.premium_management.id
-  resource_id = aws_api_gateway_resource.premium_release.id
-  http_method = aws_api_gateway_method.premium_release_post.http_method
-
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = aws_lambda_function.premium_manager.invoke_arn
-}
-
-# API Gateway Integration for status
-resource "aws_api_gateway_integration" "premium_status_integration" {
-  rest_api_id = aws_api_gateway_rest_api.premium_management.id
-  resource_id = aws_api_gateway_resource.premium_status.id
-  http_method = aws_api_gateway_method.premium_status_get.http_method
-
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = aws_lambda_function.premium_manager.invoke_arn
-}
-
-# Lambda permission for API Gateway to invoke premium manager
-resource "aws_lambda_permission" "premium_manager_api_gateway" {
-  statement_id  = "AllowExecutionFromAPIGateway"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.premium_manager.function_name
-  principal     = "apigateway.amazonaws.com"
-
-  source_arn = "${aws_api_gateway_rest_api.premium_management.execution_arn}/*/*"
-}
-
-# API Gateway Deployment
-resource "aws_api_gateway_deployment" "premium_management_deployment" {
-  depends_on = [
-    aws_api_gateway_integration.premium_assign_integration,
-    aws_api_gateway_integration.premium_release_integration,
-    aws_api_gateway_integration.premium_status_integration
-  ]
-
-  rest_api_id = aws_api_gateway_rest_api.premium_management.id
-
-  triggers = {
-    redeployment = sha1(jsonencode([
-      aws_api_gateway_resource.premium_assign.id,
-      aws_api_gateway_resource.premium_release.id,
-      aws_api_gateway_resource.premium_status.id,
-      aws_api_gateway_method.premium_assign_post.id,
-      aws_api_gateway_method.premium_release_post.id,
-      aws_api_gateway_method.premium_status_get.id,
-      aws_api_gateway_integration.premium_assign_integration.id,
-      aws_api_gateway_integration.premium_release_integration.id,
-      aws_api_gateway_integration.premium_status_integration.id,
-    ]))
-  }
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
-# API Gateway Stage
-resource "aws_api_gateway_stage" "premium_management_v1" {
-  deployment_id = aws_api_gateway_deployment.premium_management_deployment.id
-  rest_api_id   = aws_api_gateway_rest_api.premium_management.id
-  stage_name    = "v1"
-
-  tags = {
-    Name    = "Premium Management API v1"
-    Service = "premium-api"
-  }
-}
-
 # ======================
 # PREMIUM TIER IAM ROLES
 # ======================
@@ -410,36 +263,100 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      # EC2 Describe actions (read-only, need wildcard)
       {
         Effect = "Allow"
         Action = [
-          "ec2:DescribeSpotFleetInstances",
-          "ec2:DescribeSpotFleetRequests",
-          "ec2:ModifySpotFleetRequest",
           "ec2:DescribeInstances",
-          "ec2:DescribeInstanceHealth",
-          "ec2:StopInstances",
-          "ec2:StartInstances",
-          "ec2:TerminateInstances",
-          "ec2:RunInstances",
-          "ec2:CreateTags"
+          "ec2:DescribeInstanceStatus",
+          "ec2:DescribeSpotFleetInstances",
+          "ec2:DescribeSpotFleetRequests"
         ]
         Resource = "*"
       },
+      # EC2 Management actions (scoped to premium instances by tag)
       {
         Effect = "Allow"
         Action = [
-          "ecs:DescribeServices",
-          "ecs:UpdateService",
-          "ecs:RegisterTargets",
-          "ecs:DeregisterTargets",
+          "ec2:StopInstances",
+          "ec2:StartInstances",
+          "ec2:TerminateInstances"
+        ]
+        Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
+        Condition = {
+          StringEquals = {
+            "ec2:ResourceTag/Service" = "premium-tier"
+          }
+        }
+      },
+      # EC2 CreateTags (unrestricted to allow tagging new instances)
+      {
+        Effect = "Allow"
+        Action = "ec2:CreateTags"
+        Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
+      },
+      # EC2 RunInstances (requires multiple resource types)
+      {
+        Effect = "Allow"
+        Action = "ec2:RunInstances"
+        Resource = [
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:volume/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:network-interface/*",
+          "arn:aws:ec2:${var.aws_region}::image/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:subnet/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:security-group/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:key-pair/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:launch-template/*"
+        ]
+      },
+      # ECS Cluster-level actions
+      # Note: ListContainerInstances requires Resource="*" without conditions
+      # because the cluster context is passed as a parameter, not evaluated as a condition
+      {
+        Effect = "Allow"
+        Action = [
           "ecs:ListTasks",
-          "ecs:DescribeTasks",
-          "ecs:DescribeContainerInstances",
           "ecs:ListContainerInstances"
         ]
         Resource = "*"
       },
+      # ECS Service actions (scoped to specific services)
+      {
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeServices",
+          "ecs:UpdateService"
+        ]
+        Resource = [
+          aws_ecs_service.premium.id,
+          aws_ecs_service.autoscaling.id
+        ]
+      },
+      # ECS Task actions (scoped to cluster)
+      {
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeTasks",
+          "ecs:DescribeContainerInstances"
+        ]
+        Resource = "*"
+        Condition = {
+          ArnEquals = {
+            "ecs:cluster" = aws_ecs_cluster.main.arn
+          }
+        }
+      },
+      # ELB Describe actions (read-only)
+      {
+        Effect = "Allow"
+        Action = [
+          "elasticloadbalancing:DescribeTargetGroups",
+          "elasticloadbalancing:DescribeRules"
+        ]
+        Resource = "*"
+      },
+      # ELB Management actions (scoped to this ALB)
       {
         Effect = "Allow"
         Action = [
@@ -450,39 +367,37 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
           "elasticloadbalancing:ModifyRule",
           "elasticloadbalancing:RegisterTargets",
           "elasticloadbalancing:DeregisterTargets",
-          "elasticloadbalancing:DescribeTargetGroups",
-          "elasticloadbalancing:DescribeRules",
           "elasticloadbalancing:AddTags",
           "elasticloadbalancing:RemoveTags"
         ]
-        Resource = "*"
+        Resource = [
+          aws_lb.autoscaling.arn,
+          "${aws_lb.autoscaling.arn}/*",
+          aws_lb_listener.autoscaling_https.arn,
+          "arn:aws:elasticloadbalancing:${var.aws_region}:${data.aws_caller_identity.current.account_id}:listener-rule/*",
+          "arn:aws:elasticloadbalancing:${var.aws_region}:${data.aws_caller_identity.current.account_id}:targetgroup/subscr-*",
+          "arn:aws:elasticloadbalancing:${var.aws_region}:${data.aws_caller_identity.current.account_id}:targetgroup/premium-*"
+        ]
       },
+      # CloudWatch metrics (requires wildcard)
       {
         Effect = "Allow"
-        Action = [
-          "cloudwatch:PutMetricData"
-        ]
+        Action = "cloudwatch:PutMetricData"
         Resource = "*"
       },
+      # ASG Describe (read-only)
       {
         Effect = "Allow"
-        Action = [
-          "autoscaling:DescribeAutoScalingGroups"
-        ]
+        Action = "autoscaling:DescribeAutoScalingGroups"
         Resource = "*"
       },
+      # RDS Describe (read-only)
       {
         Effect = "Allow"
-        Action = [
-          "rds:DescribeDBInstances",
-          "rds-data:BatchExecuteStatement",
-          "rds-data:BeginTransaction",
-          "rds-data:CommitTransaction",
-          "rds-data:ExecuteStatement",
-          "rds-data:RollbackTransaction"
-        ]
+        Action = "rds:DescribeDBInstances"
         Resource = "*"
       },
+      # S3 access (already scoped)
       {
         Effect = "Allow"
         Action = [
@@ -496,11 +411,10 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
           "${aws_s3_bucket.app_storage.arn}/*"
         ]
       },
+      # IAM PassRole (already scoped)
       {
         Effect = "Allow"
-        Action = [
-          "iam:PassRole"
-        ]
+        Action = "iam:PassRole"
         Resource = aws_iam_role.ecs_instance_role.arn
         Condition = {
           StringEquals = {
@@ -508,11 +422,10 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
           }
         }
       },
+      # Lambda self-invocation (already scoped)
       {
         Effect = "Allow"
-        Action = [
-          "lambda:InvokeFunction"
-        ]
+        Action = "lambda:InvokeFunction"
         Resource = aws_lambda_function.premium_manager.arn
       }
     ]
@@ -707,12 +620,6 @@ resource "aws_cloudwatch_metric_alarm" "premium_memory_high" {
     Service = "premium-monitoring"
   }
 }
-
-output "premium_api_gateway_url" {
-  description = "URL of the premium management API Gateway"
-  value       = "https://${aws_api_gateway_rest_api.premium_management.id}.execute-api.${var.aws_region}.amazonaws.com/${aws_api_gateway_stage.premium_management_v1.stage_name}/premium"
-}
-
 
 output "premium_manager_lambda_arn" {
   description = "ARN of the premium manager Lambda function"

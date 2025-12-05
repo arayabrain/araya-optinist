@@ -7,15 +7,21 @@ Run locally (with AWS credentials and Terraform state)
 
 WHAT IT TESTS:
 1. Counts free and premium instances (running/stopped) before test
-2. Signs in as premium user via API Gateway
+2. Signs in as premium user via backend API
 3. Verifies new premium instance is created and user is redirected
 4. Counts instances after test to confirm state changes
 
 REQUIREMENTS:
 - AWS credentials configured (AWS CLI or environment variables)
-- IAM permissions: ec2:DescribeInstances, ecs:DescribeTasks, ecs:ListTasks
-- Terraform outputs with premium_instance_ids and premium_api_gateway_url
+- IAM permissions:
+  ec2:DescribeInstances, ecs:DescribeTasks, ecs:ListTasks, lambda:InvokeFunction
+- Terraform outputs with premium_instance_ids and premium_manager_lambda_arn
 - Test user configuration (premium user with Firebase UID)
+
+NOTE:
+- This script tests premium instance provisioning by calling the production backend API,
+  which in turn uses direct Lambda invocation.
+- The backend handles authentication and calls the Lambda function internally.
 
 Usage:
     python test_premium_instance_provisioning.py

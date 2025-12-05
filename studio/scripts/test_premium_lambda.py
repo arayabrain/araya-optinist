@@ -12,7 +12,7 @@ REQUIREMENTS:
 - Python 3.7+
 
 WHAT IT TESTS:
-End-to-end Lambda function behavior with realistic API Gateway events:
+End-to-end Lambda function behavior with realistic Lambda invocation events:
 1. Premium manager assignment event handling
 2. Premium manager heartbeat event handling
 3. Premium manager release event handling
@@ -21,12 +21,19 @@ End-to-end Lambda function behavior with realistic API Gateway events:
 6. Premium cleanup scheduled event handling
 
 These tests verify that:
-- Lambda handlers properly process API Gateway events
+- Lambda handlers properly process invocation events (simulating API Gateway format)
 - Database operations work with enum values
-(launching, running, stopping, stopped, terminating)
+  (launching, running, stopping, stopped, terminating)
 - Error handling is graceful and returns proper HTTP status codes
 - Scheduled cleanup events process correctly
 - All critical Lambda functions integrate properly with AWS services
+
+NOTE:
+- These tests use mocked event payloads that simulate the API Gateway event format
+- In production, the backend invokes Lambda directly with boto3,
+  passing similar event structures
+- The Lambda function is designed to handle API Gateway-formatted events
+  for compatibility
 
 HOW TO RUN:
   python test_lambda_integration.py
@@ -60,6 +67,22 @@ if os.path.exists(cleanup_package_dir):
     sys.path.insert(0, cleanup_package_dir)
 
 
+class MockRow:
+    """Mock database row that behaves like
+    a dictionary but also supports index access"""
+
+    def __init__(self, data):
+        self.data = data
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return list(self.data.values())[key]
+        return self.data.get(key)
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+
 class TestLambdaIntegration:
     """Test Lambda functions with realistic event scenarios"""
 
@@ -90,6 +113,48 @@ class TestLambdaIntegration:
             "ABSOLUTE_MAX": "10",
         }
 
+    def setup_db_mock(self, fetchone_values=None, fetchall_values=None):
+        """
+        Create a properly configured database mock that
+        returns real values instead of MagicMocks
+
+        Args:
+            fetchone_values: List of values to return from fetchone()
+            calls (can be None, dict, or MockRow)
+            fetchall_values: List of values to return from fetchall()
+            calls (list of dicts or MockRows)
+
+        Returns:
+            A mock connection object that will be reused for all
+            get_db_connection() calls
+        """
+        # Create a single mock connection and cursor that will be shared
+        # across all database operations
+        mock_cursor = MagicMock()
+        mock_cursor.rowcount = 1
+
+        # Configure fetchone - return None by default unless specified
+        # Use lambda to return None infinitely
+        if fetchone_values is not None:
+            mock_cursor.fetchone.side_effect = fetchone_values
+        else:
+            mock_cursor.fetchone.side_effect = lambda: None
+
+        # Configure fetchall - return empty list by default unless specified
+        if fetchall_values is not None:
+            mock_cursor.fetchall.side_effect = fetchall_values
+        else:
+            # Use lambda to return empty list infinitely
+            mock_cursor.fetchall.side_effect = lambda: []
+
+        # Create mock connection that returns our configured cursor
+        mock_connection = MagicMock()
+        mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_connection.__enter__.return_value = mock_connection
+        mock_connection.__exit__.return_value = None
+
+        return mock_connection
+
     def test_premium_manager_assign_event(self):
         """Test premium_manager Lambda with assignment API Gateway event"""
 
@@ -118,26 +183,40 @@ class TestLambdaIntegration:
         with patch.dict("os.environ", self.mock_env_vars), patch(
             "boto3.client"
         ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
-            # Setup database mocks
-            mock_connection = MagicMock()
-            mock_cursor = MagicMock()
-            mock_pymysql.return_value.__enter__.return_value = mock_connection
-            mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
-
-            # Mock successful assignment flow
-            mock_cursor.fetchone.side_effect = [
-                None,  # No existing assignment
-                {"count": 1},  # Active users count
-                {"count": 3},  # Total premium users
-            ]
-            mock_cursor.fetchall.side_effect = [
-                [],  # No standby instances initially
-                [
-                    {"instance_id": self.test_instance_id, "state": "running"}
-                ],  # Running instances
-                [],  # No assigned users for the instance
-            ]
-            mock_cursor.rowcount = 1
+            # Setup database mocks with sufficient values for all queries
+            # The Lambda makes many DB queries,
+            # so we need to provide enough return values
+            mock_connection = self.setup_db_mock(
+                fetchone_values=[
+                    None,  # 1. Check for existing assignment
+                    MockRow({"count": 1}),  # 2. Count active users
+                    MockRow({"count": 0}),  # 3. Count standby users
+                    MockRow({"count": 1}),  # 4. Count real users
+                    None,  # 5. Check for existing assignment again
+                    MockRow({"count": 1}),  # 6. Another user count
+                    MockRow({"count": 0}),  # 7. Another standby count
+                    MockRow({"count": 1}),  # 8. Another real user count
+                    None,  # 9. Reserve instance check
+                    None,  # 10. Additional checks
+                    MockRow(
+                        {"priority": 100}
+                    ),  # 11. ALB rule priority query (default return a high priority)
+                ],
+                fetchall_values=[
+                    [],  # 1. No standby instances initially
+                    [
+                        MockRow(
+                            {"instance_id": self.test_instance_id, "state": "running"}
+                        )
+                    ],  # 2. Running instances
+                    [],  # 3. No assigned users for the instance
+                    [],  # 4. No existing ALB rules
+                    [],  # 5. Additional queries
+                    [],  # 6. More queries
+                ],
+            )
+            # Make pymysql.connect return the same mock connection for all calls
+            mock_pymysql.return_value = mock_connection
 
             # Mock AWS services
             mock_ec2 = MagicMock()
@@ -199,7 +278,8 @@ class TestLambdaIntegration:
                 "tasks": [
                     {
                         "taskDefinitionArn": (
-                            "arn:aws:ecs:region:account:task-definition/optinist"
+                            "arn:aws:ecs:region:account:"
+                            "task-definition/optinist-premium"
                         ),
                         "lastStatus": "RUNNING",
                         "desiredStatus": "RUNNING",
@@ -303,14 +383,9 @@ class TestLambdaIntegration:
         with patch.dict("os.environ", self.mock_env_vars), patch(
             "pymysql.connect"
         ) as mock_pymysql:
-            # Setup database mocks
-            mock_connection = MagicMock()
-            mock_cursor = MagicMock()
-            mock_pymysql.return_value.__enter__.return_value = mock_connection
-            mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
-
-            # Mock successful activity update
-            mock_cursor.rowcount = 1  # Indicates successful update
+            # Setup database mocks for heartbeat
+            mock_connection = self.setup_db_mock()
+            mock_pymysql.return_value = mock_connection
 
             try:
                 from premium_manager import handler
@@ -355,28 +430,62 @@ class TestLambdaIntegration:
         with patch.dict("os.environ", self.mock_env_vars), patch(
             "boto3.client"
         ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
-            # Setup mocks
-            mock_connection = MagicMock()
-            mock_cursor = MagicMock()
-            mock_pymysql.return_value.__enter__.return_value = mock_connection
-            mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
-
-            # Mock existing assignment
-            mock_cursor.fetchone.return_value = {
-                "user_id": self.test_user_id,
-                "instance_id": self.test_instance_id,
-                "target_group_arn": (
-                    "arn:aws:elasticloadbalancing:region:account:" "targetgroup/test"
-                ),
-                "alb_rule_arn": (
-                    "arn:aws:elasticloadbalancing:region:account:" "listener-rule/test"
-                ),
-            }
-            mock_cursor.rowcount = 1
+            # Setup mocks with sufficient return values
+            # for all DB queries during release
+            mock_connection = self.setup_db_mock(
+                fetchone_values=[
+                    MockRow(
+                        {  # 1. remove_user_assignment - get assignment
+                            "user_id": self.test_user_id,
+                            "instance_id": self.test_instance_id,
+                            "target_group_arn": (
+                                "arn:aws:elasticloadbalancing:region:account:"
+                                "targetgroup/test"
+                            ),
+                            "alb_rule_arn": (
+                                "arn:aws:elasticloadbalancing:region:account1:"
+                                "listener-rule/test"
+                            ),
+                        }
+                    ),
+                    MockRow(
+                        {"count": 1}
+                    ),  # 2. count_active_premium_users - total count
+                    MockRow(
+                        {"count": 0}
+                    ),  # 3. count_active_premium_users - standby count
+                    MockRow(
+                        {"count": 1}
+                    ),  # 4. count_active_premium_users - real user count
+                    MockRow({"count": 3}),  # 5. Total premium subscribers
+                    MockRow({"count": 0}),  # 6. Current standby count
+                    MockRow({"count": 1}),  # 7. Another user count
+                    MockRow({"count": 0}),  # 8. Another standby count
+                    MockRow({"count": 1}),  # 9. Another real user count
+                ],
+                fetchall_values=[
+                    [],  # 1. No instances to process
+                    [],  # 2. Additional queries
+                    [],  # 3. More queries
+                ],
+            )
+            mock_pymysql.return_value = mock_connection
 
             # Mock AWS services
             mock_elbv2 = MagicMock()
-            mock_boto3.return_value = mock_elbv2
+            mock_ec2 = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "elbv2":
+                    return mock_elbv2
+                elif service == "ec2":
+                    return mock_ec2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            # Mock EC2 describe_instances for scale-down check
+            mock_ec2.describe_instances.return_value = {"Reservations": []}
 
             try:
                 from premium_manager import handler
@@ -418,27 +527,28 @@ class TestLambdaIntegration:
             ("terminating", "Instance being destroyed"),
         ]
 
-        with patch.dict("os.environ", self.mock_env_vars), patch(
-            "pymysql.connect"
-        ) as mock_pymysql:
-            mock_connection = MagicMock()
-            mock_cursor = MagicMock()
-            mock_pymysql.return_value.__enter__.return_value = mock_connection
-            mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
-            mock_cursor.rowcount = 1
-            # Mock no existing assignment for store_user_assignment
-            mock_cursor.fetchone.return_value = None
+        try:
+            from premium_manager import store_user_assignment, update_instance_state
 
-            try:
-                from premium_manager import store_user_assignment, update_instance_state
+            for enum_state, description in enum_states_to_test:
+                print(f"Testing enum state: '{enum_state}' ({description})")
 
-                for enum_state, description in enum_states_to_test:
-                    print(f"Testing enum state: '{enum_state}' ({description})")
+                # Create completely fresh mocks for each iteration
+                with patch.dict("os.environ", self.mock_env_vars), patch(
+                    "pymysql.connect"
+                ) as mock_pymysql:
+                    # Use a unique user_id for each enum test
+                    test_user = f"{self.test_user_id}_{enum_state}"
+
+                    # Setup database mocks for enum test
+                    # No existing assignment, so store should succeed
+                    mock_connection = self.setup_db_mock()
+                    mock_pymysql.return_value = mock_connection
 
                     # Test storing assignment with enum state
                     try:
                         store_user_assignment(
-                            user_id=self.test_user_id,
+                            user_id=test_user,
                             instance_id=self.test_instance_id,
                             target_group_arn="arn:test",
                             rule_arn="arn:test2",
@@ -457,7 +567,7 @@ class TestLambdaIntegration:
 
                     # Test updating instance state
                     try:
-                        update_instance_state(self.test_user_id, enum_state)
+                        update_instance_state(test_user, enum_state)
                         print(f"update_instance_state to '{enum_state}' - " f"SUCCESS")
                     except Exception as e:
                         print(
@@ -465,12 +575,12 @@ class TestLambdaIntegration:
                         )
                         raise
 
-                print("\n    All enum values work correctly in Lambda operations")
-                return True
+            print("\n    All enum values work correctly in Lambda operations")
+            return True
 
-            except Exception as e:
-                print(f"\n    Enum testing failed: {e}")
-                return False
+        except Exception as e:
+            print(f"\n    Enum testing failed: {e}")
+            return False
 
     def test_lambda_error_handling(self):
         """Test Lambda error handling scenarios"""
@@ -529,31 +639,30 @@ class TestLambdaIntegration:
         with patch.dict("os.environ", self.mock_env_vars), patch(
             "boto3.client"
         ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
-            # Setup database mocks
-            mock_connection = MagicMock()
-            mock_cursor = MagicMock()
-            mock_pymysql.return_value.__enter__.return_value = mock_connection
-            mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
-
-            # Mock cleanup operations
-            mock_cursor.fetchall.side_effect = [
-                [
-                    {
-                        "user_id": "old_user",
-                        "instance_id": "i-old123",
-                        "target_group_arn": "arn:aws:elasticloadbalancing:"
-                        "region:account:targetgroup/old",
-                        "alb_rule_arn": "arn:aws:elasticloadbalancing:"
-                        "region:account:listener-rule/old",
-                        "last_activity": "2025-09-17T06:00:00Z",
-                    }
-                ],  # Stale assignments
-                [],  # No failed standby instances
-                [
-                    {"instance_id": self.test_instance_id, "state": "running"}
-                ],  # Running instances
-            ]
-            mock_cursor.rowcount = 1
+            # Setup database mocks for cleanup operation
+            mock_connection = self.setup_db_mock(
+                fetchone_values=[
+                    MockRow({"count": 0}),  # 1. No stale assignments
+                    MockRow({"count": 1}),  # 2. Active assignments
+                    MockRow({"count": 0}),  # 3. Standby assignments
+                    MockRow({"count": 1}),  # 4. Real user assignments
+                    MockRow({"count": 3}),  # 5. Total premium subscribers
+                    MockRow({"count": 0}),  # 6. Current standby count
+                ],
+                fetchall_values=[
+                    [],  # 1. No stale assignments to clean
+                    [],  # 2. No ALB rules
+                    [],  # 3. No assignments
+                    [],  # 4. No failed standby instances
+                    [
+                        MockRow(
+                            {"instance_id": self.test_instance_id, "state": "running"}
+                        )
+                    ],  # 5. Running instances
+                    [],  # 6. No assigned users
+                ],
+            )
+            mock_pymysql.return_value = mock_connection
 
             # Mock AWS services
             mock_ec2 = MagicMock()

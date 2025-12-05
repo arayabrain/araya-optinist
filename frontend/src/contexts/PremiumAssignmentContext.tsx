@@ -247,9 +247,15 @@ export const PremiumAssignmentProvider: React.FC<{
       const statusResponse = await getPremiumStatus()
       if (statusResponse?.assignment) {
         // User already has an assignment - update state immediately so notifications trigger
+        // Convert PremiumAssignment to PremiumAssignmentResult format
+        const assignmentResult: PremiumAssignmentResult = {
+          message: "Premium instance already assigned",
+          instance_id: statusResponse.assignment.instance_id,
+          assigned: true,
+        }
         setState((prev) => ({
           ...prev,
-          assignmentResult: statusResponse.assignment,
+          assignmentResult,
           error: null,
         }))
         return

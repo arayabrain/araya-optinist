@@ -66,20 +66,77 @@ resource "aws_iam_role" "ecs_task" {
   })
 }
 
-# Attach standard policies to ECS Task Role
-resource "aws_iam_role_policy_attachment" "ecs_task_efs" {
-  role       = aws_iam_role.ecs_task.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonElasticFileSystemClientFullAccess"
+# Custom scoped policies for ECS Task Role
+resource "aws_iam_role_policy" "ecs_task_efs" {
+  name = "subscr-ecs-task-efs-access"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "elasticfilesystem:ClientMount",
+          "elasticfilesystem:ClientWrite",
+          "elasticfilesystem:DescribeFileSystems",
+          "elasticfilesystem:DescribeMountTargets"
+        ]
+        Resource = [
+          aws_efs_file_system.snmk.arn,
+          aws_efs_file_system.studio_data.arn
+        ]
+      }
+    ]
+  })
 }
 
-resource "aws_iam_role_policy_attachment" "ecs_task_cloudwatch" {
-  role       = aws_iam_role.ecs_task.name
-  policy_arn = "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+resource "aws_iam_role_policy" "ecs_task_cloudwatch" {
+  name = "subscr-ecs-task-cloudwatch-access"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogStreams"
+        ]
+        Resource = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/*"
+      }
+    ]
+  })
 }
 
-resource "aws_iam_role_policy_attachment" "ecs_task_ecr" {
-  role       = aws_iam_role.ecs_task.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+resource "aws_iam_role_policy" "ecs_task_ecr" {
+  name = "subscr-ecs-task-ecr-access"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:GetAuthorizationToken"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage"
+        ]
+        Resource = "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/*"
+      }
+    ]
+  })
 }
 resource "aws_iam_role_policy_attachment" "ecs_instance_ecr" {
   role       = aws_iam_role.ecs_instance_role.name
@@ -356,10 +413,6 @@ resource "aws_s3_bucket_policy" "app_storage" {
 }
 
 
-resource "aws_iam_role_policy_attachment" "ecs_task_s3" {
-  role       = aws_iam_role.ecs_task.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
-}
 
 # Cloudwatch
 # ----------
@@ -451,6 +504,10 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
           "ec2:DescribeInstances",
           "ecs:DescribeTasks",
           "ecs:DescribeContainerInstances",
+          "ecs:ListTasks",
+          "ecs:ListClusters",
+          "ecs:DescribeClusters",
+          "ecs:ListContainerInstances",
           "ecr:GetAuthorizationToken",
           "ecr:DescribeRepositories",
           "ecr:BatchCheckLayerAvailability",
@@ -460,6 +517,7 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
           "ecr:GetRepositoryPolicy",
           "cloudwatch:ListMetrics",
           "cloudwatch:GetMetricStatistics",
+          "autoscaling:DescribeAutoScalingGroups",
           "lambda:InvokeFunction"
         ]
         Resource = "*"
@@ -479,8 +537,9 @@ resource "aws_iam_access_key" "subscr_optinist_cloud_user_access_key" {
   user = aws_iam_user.subscr_optinist_cloud_user.name
 }
 
-resource "aws_iam_role_policy" "ecs_task_ecr_access" {
-  name = "subscr-ecs-task-ecr-access"
+# S3 access for ECS tasks (scoped to app storage bucket)
+resource "aws_iam_role_policy" "ecs_task_s3_access" {
+  name = "subscr-ecs-task-s3-access"
   role = aws_iam_role.ecs_task.id
 
   policy = jsonencode({
@@ -489,12 +548,41 @@ resource "aws_iam_role_policy" "ecs_task_ecr_access" {
       {
         Effect = "Allow"
         Action = [
-          "ecr:GetAuthorizationToken",
-          "ecr:BatchCheckLayerAvailability",
-          "ecr:GetDownloadUrlForLayer",
-          "ecr:BatchGetImage"
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket",
+          "s3:GetBucketLocation",
+          "s3:CreateBucket",
+          "s3:DeleteBucket"
+
         ]
-        Resource = "*"
+        Resource = [
+          aws_s3_bucket.app_storage.arn,
+          "${aws_s3_bucket.app_storage.arn}/*",
+          "arn:aws:s3:::optinist-user-*",
+          "arn:aws:s3:::optinist-user-*/*"
+        ]
+      }
+    ]
+  })
+}
+
+# Lambda invocation for premium assignment
+resource "aws_iam_role_policy" "ecs_task_lambda_invoke" {
+  name = "subscr-ecs-task-lambda-invoke"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = "lambda:InvokeFunction"
+        Resource = [
+          "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:subscr-premium-manager",
+          "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:subscr-free-manager"
+        ]
       }
     ]
   })
@@ -514,36 +602,18 @@ resource "aws_security_group" "ecs" {
   }
 }
 
-resource "aws_security_group_rule" "ecs_ingress_all" {
+# Allow internal VPC traffic (ECS-to-ECS, Lambda-to-ECS, NAT routing)
+resource "aws_security_group_rule" "ecs_ingress_vpc" {
   type              = "ingress"
   from_port         = 0
   to_port           = 0
   protocol          = "-1"
-  cidr_blocks       = ["0.0.0.0/0"]
-  ipv6_cidr_blocks  = ["::/0"]
+  cidr_blocks       = [aws_vpc.main.cidr_block]
   security_group_id = aws_security_group.ecs.id
+  description       = "Allow all traffic from within VPC"
 }
 
-resource "aws_security_group_rule" "ecs_ingress_http" {
-  type              = "ingress"
-  from_port         = 80
-  to_port           = 80
-  protocol          = "tcp"
-  cidr_blocks       = ["0.0.0.0/0"]
-  ipv6_cidr_blocks  = ["::/0"]
-  security_group_id = aws_security_group.ecs.id
-}
-
-resource "aws_security_group_rule" "ecs_ingress_app" {
-  type              = "ingress"
-  from_port         = 8000
-  to_port           = 8009
-  protocol          = "tcp"
-  cidr_blocks       = ["0.0.0.0/0"]
-  ipv6_cidr_blocks  = ["::/0"]
-  security_group_id = aws_security_group.ecs.id
-}
-
+# Allow ALB to reach ECS on dynamic ports (required for ECS dynamic port mapping)
 resource "aws_security_group_rule" "ecs_ingress_dynamic_ports" {
   type                     = "ingress"
   from_port                = 32768
@@ -551,24 +621,7 @@ resource "aws_security_group_rule" "ecs_ingress_dynamic_ports" {
   protocol                 = "tcp"
   source_security_group_id = aws_security_group.alb.id
   security_group_id        = aws_security_group.ecs.id
-}
-
-resource "aws_security_group_rule" "ecs_ingress_nfs" {
-  type              = "ingress"
-  from_port         = 2049
-  to_port           = 2049
-  protocol          = "tcp"
-  cidr_blocks       = ["0.0.0.0/0"]
-  security_group_id = aws_security_group.ecs.id
-}
-
-resource "aws_security_group_rule" "ecs_ingress_mysql" {
-  type              = "ingress"
-  from_port         = 3306
-  to_port           = 3306
-  protocol          = "tcp"
-  cidr_blocks       = ["0.0.0.0/0"]
-  security_group_id = aws_security_group.ecs.id
+  description              = "ALB to ECS dynamic port mapping"
 }
 
 resource "aws_security_group_rule" "ecs_egress_all" {

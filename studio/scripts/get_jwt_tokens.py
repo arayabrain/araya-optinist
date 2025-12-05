@@ -338,7 +338,9 @@ def generate_jwt_tokens(
 
                 id_token = create_firebase_id_token(firebase_uid, email)
                 if id_token:
+                    # Store both by index (for backward compatibility) and by email
                     tokens[f"free_{idx}"] = id_token
+                    tokens[email] = id_token
                 else:
                     print(f"Warning: Failed to generate token for {email}")
         else:
