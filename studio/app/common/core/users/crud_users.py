@@ -14,17 +14,11 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageSimpleWriter,
 )
-from studio.app.common.core.subscription.stripe_service import StripeService
-from studio.app.common.core.subscription.subscription_service import (
-    SubscriptionService,
-    SubscriptionUserStatus,
-)
 from studio.app.common.core.workspace.workspace_services import WorkspaceService
 from studio.app.common.models import Role as RoleModel
 from studio.app.common.models import User as UserModel
 from studio.app.common.models import UserRole as UserRoleModel
 from studio.app.common.models.experiment import ExperimentRecord
-from studio.app.common.models.subscription import UserSubscription
 from studio.app.common.models.workspace import Workspace
 from studio.app.common.schemas.auth import UserAuth
 from studio.app.common.schemas.base import SortOptions
@@ -250,16 +244,6 @@ async def create_user(
 
             user_db.attributes = {"remote_bucket_name": new_bucket_name}
 
-        # Create subscription user record
-        # expiration is set to current time for free plan.
-        # Since its non nullable and must have a value
-        subscription = UserSubscription(
-            plan_id=SubscriptionUserStatus.FREE,
-            user_id=user_db.id,
-            expiration=SubscriptionService.get_current_datetime(),
-        )
-        db.add(subscription)
-
         # Commit all changes
         db.commit()
 
@@ -417,12 +401,6 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
                 user_db.remote_bucket_name
             ) as remote_storage_controller:
                 await remote_storage_controller.delete_bucket(force_delete=True)
-
-        # ----------------------------------------
-        # Cancel a User subscription
-        # ----------------------------------------
-
-        await StripeService.handle_cancel_user_subscription(db, user_db)
 
         # ----------------------------------------
         # Delete a User database record

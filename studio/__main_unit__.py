@@ -33,7 +33,6 @@ from studio.app.common.routers import (
     params,
     registrations,
     run,
-    subscriptions,
     users_admin,
     users_me,
     users_search,
@@ -111,8 +110,6 @@ app.include_router(workflow.router, dependencies=[Depends(get_current_user)])
 app.include_router(workspace.router, dependencies=[Depends(get_current_user)])
 app.include_router(dataview.public_router)
 app.include_router(dataview.router, dependencies=[Depends(get_current_user)])
-app.include_router(subscriptions.router, dependencies=[Depends(get_current_user)])
-app.include_router(subscriptions.webhook_router)
 app.include_router(registrations.router)
 
 # optinist routers
@@ -160,13 +157,6 @@ app.mount(
     name="static",
 )
 
-# Mount images directory for card brand icons and other images
-os.makedirs(f"{DIRPATH.FRONTEND_DIRS.BUILD}/images", exist_ok=True)
-app.mount(
-    "/images",
-    StaticFiles(directory=f"{DIRPATH.FRONTEND_DIRS.BUILD}/images"),
-    name="images",
-)
 
 public_templates = Jinja2Templates(directory=DIRPATH.FRONTEND_DIRS.PUBLIC)
 build_templates = Jinja2Templates(directory=DIRPATH.FRONTEND_DIRS.BUILD)
