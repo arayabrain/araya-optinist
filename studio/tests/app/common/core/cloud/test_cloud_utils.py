@@ -19,7 +19,7 @@ from studio.app.common.core.cloud.cloud_utils import (
     calculate_limit_warning,
     get_current_user_storage_usage,
 )
-from studio.app.common.models.subscription import (
+from studio.app.common.core.subscription.constants import (
     PlanName,
     StorageQuota,
     StorageSize,

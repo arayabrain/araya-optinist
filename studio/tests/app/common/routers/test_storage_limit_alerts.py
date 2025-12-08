@@ -16,7 +16,7 @@ import pytest
 from fastapi import HTTPException
 
 from studio.app.common.core.cloud.s3_storage_monitor import S3StorageMonitor
-from studio.app.common.models.subscription import StorageQuota
+from studio.app.common.core.subscription.constants import StorageQuota
 
 # ============================================================================
 # Fixtures
