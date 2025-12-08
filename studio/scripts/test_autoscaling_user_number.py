@@ -1,42 +1,85 @@
 #!/usr/bin/env python3
 """
-Free Tier Autoscaling Test - User Count Based Scaling (Layer 3)
+Free Tier Autoscaling Test - User Count Based Scaling
 
-This test validates the Free Manager Lambda's user-count based autoscaling mechanism.
+WHERE TO RUN:
+** RUN FROM EC2 INSTANCE IN VPC ** (not local machine)
+- Requires direct database access to private RDS instance
+- OR run locally with SSH tunnel/VPN to RDS
+- Alternative: Refactor to use Lambda proxies (like test_free_manager.py)
 
-THEORETICALLY OPTIMAL BEHAVIOR:
-================================
-When 5+ users are active (last_activity within 5 minutes):
-1. Lambda detects active user count every 5 minutes
-2. Calculates desired instances: min(max(1, (active_users + 4) // 5), max_instances)
-   - 1-4 users → 1 instance
-   - 5-9 users → 2 instances
-   - 10-14 users → 3 instances
-3. Scales ASG to desired capacity
-4. Waits for new instances to launch (~7-10 minutes)
-5. Rebalances idle users evenly across all instances
-6. Protects users with active workflows from migration
-7. Only scales down when: (current - desired) >= 2 (conservative)
+REQUIREMENTS:
+- AWS credentials configured (boto3 access)
+- IAM permissions: ecs:*, asg:*, cloudwatch:*, lambda:*, rds:*
+- Terraform outputs available in ../config/terraform
+- Python 3.8+ with boto3, pymysql, requests
+- ** NETWORK ACCESS to private RDS database **
+- Test users: optinist_test_user_free_1 through free_6
 
-This test uses 6 free users to verify:
-- Scaling from 1 → 2 instances when 5+ users active
-- Even distribution of users across instances
-- Idle user migration (no active workflows)
-- Active user protection (with workflows running)
-- Database accuracy (free_user_assignments table)
+WHAT IT TESTS:
+==============
+Validates the Free Manager Lambda's user-count based autoscaling mechanism:
+1. User activity tracking in free_user_assignments table
+2. Lambda detects 6 active users (above threshold of 5)
+3. Lambda scales ASG from 1 to 2 instances
+4. Lambda waits for new instances to be ready
+5. Lambda rebalances users across instances
+6. Users migrate to new instances via cookie expiration
+7. Final verification of even distribution
 
-Test Users:
-- optinist_test_user_free_1 through optinist_test_user_free_6
+TEST FLOW:
+==========
+Phase 1: Setup (2 min)
+  - Clean database and scaling locks
+  - Scale down to 1 instance
 
-Configuration:
-- API URL and database credentials are automatically loaded from Terraform outputs
-- Authentication tokens are automatically generated if not present or missing
+Phase 2: Establish User Tracking (2 min)
+  - Start heartbeats to get users tracked in database
+  - Verify users appear in free_user_assignments table
 
-Usage:
-    python test_autoscaling_user_number.py
+Phase 3: Prepare for Scaling (6 min)
+  - STOP heartbeats (users become idle)
+  - Wait for ALB cookies to expire (5 min + buffer)
+  - Users now have NO cookies and are idle
 
-Author: Claude Code
-Date: 2025-12-05
+Phase 4: Trigger Lambda Scaling (14-20 min)
+  - Manually invoke Lambda (for deterministic timing)
+  - Lambda scales ASG, waits for instances, rebalances database
+  - Poll for Lambda completion via scaling lock
+
+Phase 5: Trigger User Migration (1 min)
+  - Resume heartbeats to trigger user requests
+  - Users get NEW cookies pointing to NEW instances (from database)
+  - Users migrate to their assigned instances
+
+Phase 6: Verification (1 min)
+  - Verify ASG scaled to 2 instances
+  - Verify users distributed evenly across instances
+
+Total Duration: 26-32 minutes
+
+KEY INSIGHTS:
+=============
+- ALB cookies expire after 5 min of INACTIVITY (each request resets timer)
+- Lambda updates database immediately, but users don't migrate until cookies expire
+- Heartbeats must be STOPPED before Lambda runs to allow cookies to expire
+- After Lambda completes, heartbeats must RESUME to trigger migration
+- Phase 5 only needs 1 minute (to trigger requests), not 6 minutes
+
+EXPECTED RESULT:
+================
+- ASG scales from 1 to 2 instances
+- All 6 users tracked in database
+- Users distributed evenly (3 per instance)
+- No errors in Lambda logs
+
+HOW TO RUN:
+  # From EC2 instance in VPC:
+  python test_autoscaling_user_number.py
+
+EXPECTED RUNTIME:
+  26-32 minutes (includes 6 min cookie expiration + 14-20 min Lambda execution)
+
 """
 
 import json
@@ -96,10 +139,18 @@ class TestConfig:
     test_users: List[str] = None
 
     # Test Timing
-    lambda_cycle_minutes: int = 5  # Lambda runs every 5 minutes
-    lambda_wait_buffer_minutes: int = 2  # Extra wait for safety
-    instance_launch_timeout_minutes: int = 15  # Max wait for instance launch
-    heartbeat_interval_seconds: int = 120  # Heartbeat every 2 minutes
+    lambda_timeout_minutes: int = 20  # Lambda timeout (typical: 14 min, max: 20 min)
+    heartbeat_interval_seconds: int = 240  # Heartbeat every 4 minutes
+    activity_threshold_minutes: int = (
+        5  # Must match Lambda's FREE_IDLE_THRESHOLD_MINUTES
+    )
+    cookie_expiration_wait_seconds: int = (
+        360  # Wait 6 minutes for ALB cookies to expire (5 min + buffer)
+    )
+    initial_tracking_wait_seconds: int = 120  # Wait for users to be tracked in database
+    migration_trigger_wait_seconds: int = (
+        60  # Wait for users to make requests after Lambda completes
+    )
 
     # Expected Behavior
     user_threshold: int = 5  # Lambda scales at 5+ users
@@ -134,6 +185,7 @@ class AutoscalingUserNumberTest:
         self.asg_client = boto3.client("autoscaling", region_name=config.aws_region)
         self.ec2_client = boto3.client("ec2", region_name=config.aws_region)
         self.logs_client = boto3.client("logs", region_name=config.aws_region)
+        self.lambda_client = boto3.client("lambda", region_name=config.aws_region)
 
         # HTTP session with retries
         self.session = self._create_http_session()
@@ -308,7 +360,7 @@ class AutoscalingUserNumberTest:
                     ORDER BY instance_id, user_id
                 """
                 cutoff = datetime.now() - timedelta(
-                    minutes=self.config.lambda_cycle_minutes
+                    minutes=self.config.activity_threshold_minutes
                 )
                 cursor.execute(query, (cutoff,))
                 results = cursor.fetchall()
@@ -341,11 +393,28 @@ class AutoscalingUserNumberTest:
 
         logging.info(f"[{user_email}] Starting heartbeat simulation")
 
+        # First request to ensure user is in free_user_assignments table
+        try:
+            response = self.session.get(
+                f"{self.config.api_base_url}/workspaces",
+                headers=headers,
+                timeout=10,
+            )
+            if response.status_code == 200:
+                logging.info(f"[{user_email}] Initial request successful")
+            else:
+                logging.warning(
+                    f"[{user_email}] Initial request failed: {response.status_code}"
+                )
+        except Exception as e:
+            logging.warning(f"[{user_email}] Initial request error: {e}")
+
         while not stop_event.is_set():
             try:
-                # Make a lightweight API call to update last_activity
+                # Use /workspaces endpoint which requires auth and
+                # triggers activity tracking
                 response = self.session.get(
-                    f"{self.config.api_base_url}/api/health",
+                    f"{self.config.api_base_url}/workspaces",
                     headers=headers,
                     timeout=10,
                 )
@@ -371,7 +440,7 @@ class AutoscalingUserNumberTest:
         logging.info("STARTING USER HEARTBEATS")
         logging.info("=" * 70)
 
-        for user_email in self.tokens.keys():
+        for i, user_email in enumerate(self.tokens.keys()):
             stop_event = Event()
             self.heartbeat_stop_events[user_email] = stop_event
 
@@ -382,6 +451,10 @@ class AutoscalingUserNumberTest:
             )
             thread.start()
             self.heartbeat_threads.append(thread)
+
+            # Stagger thread starts by 2 seconds to avoid overwhelming the server
+            if i < len(self.tokens) - 1:
+                time.sleep(2)
 
         logging.info(f"Started {len(self.heartbeat_threads)} heartbeat threads")
 
@@ -398,6 +471,52 @@ class AutoscalingUserNumberTest:
             thread.join(timeout=5)
 
         logging.info("All heartbeats stopped")
+
+    def wait_for_lambda_completion(self, timeout_minutes: int = 20) -> bool:
+        """Wait for Lambda to complete by polling scaling lock."""
+        import time
+
+        start_time = time.time()
+        max_wait = timeout_minutes * 60
+
+        logging.info(f"Polling for Lambda completion (max {timeout_minutes} min)")
+
+        while time.time() - start_time < max_wait:
+            try:
+                response = self.cloudwatch_client.get_metric_data(
+                    MetricDataQueries=[
+                        {
+                            "Id": "scaling_lock",
+                            "MetricStat": {
+                                "Metric": {
+                                    "Namespace": "OptiNiSt/FreeManager",
+                                    "MetricName": "ScalingInProgress",
+                                },
+                                "Period": 60,
+                                "Stat": "Maximum",
+                            },
+                            "ReturnData": True,
+                        }
+                    ],
+                    StartTime=int((datetime.now() - timedelta(minutes=2)).timestamp()),
+                    EndTime=int(datetime.now().timestamp()),
+                )
+
+                values = response["MetricDataResults"][0].get("Values", [])
+                if not values or values[0] == 0:
+                    logging.info("Lambda completed (scaling lock cleared)")
+                    return True
+
+                elapsed = int(time.time() - start_time)
+                logging.info(f"Lambda still running... ({elapsed}s / {max_wait}s)")
+                time.sleep(30)  # Check every 30 seconds
+
+            except Exception as e:
+                logging.warning(f"Error checking Lambda status: {e}")
+                time.sleep(30)
+
+        logging.error(f"Lambda did not complete within {timeout_minutes} minutes")
+        return False
 
     def get_asg_capacity(self) -> Tuple[int, int]:
         """Get ASG desired and current capacity."""
@@ -425,27 +544,58 @@ class AutoscalingUserNumberTest:
             HonorCooldown=False,
         )
 
-    def wait_for_asg_instances(self, target_count: int, timeout_minutes: int = 10):
-        """Wait for ASG to reach target instance count."""
-        logging.info(f"Waiting for ASG to reach {target_count} instance(s)...")
+    def wait_for_ecs_instances(self, target_count: int, timeout_minutes: int = 13):
+        """Wait for ECS instances to be registered and ready.
+
+        Default timeout is 13 minutes to account for:
+        - EC2 instance launch: ~5 minutes
+        - ECS task startup: ~7 minutes
+        - Buffer: ~1 minute
+        """
+        logging.info(
+            f"Waiting for {target_count} ECS-registered instance(s) "
+            f"(timeout: {timeout_minutes} min)"
+        )
         start_time = time.time()
 
         while (time.time() - start_time) < (timeout_minutes * 60):
-            _, current = self.get_asg_capacity()
+            # Check ECS container instances
+            try:
+                response = self.ecs_client.list_container_instances(
+                    cluster=self.config.cluster_name, status="ACTIVE"
+                )
+                container_arns = response.get("containerInstanceArns", [])
 
-            if current == target_count:
-                logging.info(f"ASG has reached {target_count} instance(s)")
-                return True
+                if container_arns:
+                    # Describe to check agent connectivity
+                    details = self.ecs_client.describe_container_instances(
+                        cluster=self.config.cluster_name,
+                        containerInstances=container_arns,
+                    )
+                    ready_count = sum(
+                        1
+                        for inst in details["containerInstances"]
+                        if inst["status"] == "ACTIVE" and inst["agentConnected"]
+                    )
+                else:
+                    ready_count = 0
 
-            elapsed = int((time.time() - start_time) / 60)
-            logging.info(
-                f"[{elapsed}/{timeout_minutes} min] "
-                f"Current: {current}, Target: {target_count}"
-            )
+                if ready_count >= target_count:
+                    logging.info(f"ECS has {ready_count} ready instance(s)")
+                    return True
+
+                elapsed = int((time.time() - start_time) / 60)
+                logging.info(
+                    f"[{elapsed}/{timeout_minutes} min] "
+                    f"Ready: {ready_count}, Target: {target_count}"
+                )
+            except Exception as e:
+                logging.warning(f"Error checking ECS instances: {e}")
+
             time.sleep(30)
 
         logging.warning(
-            f"ASG did not reach {target_count} instances within "
+            f"ECS did not reach {target_count} ready instances within "
             f"{timeout_minutes} minutes"
         )
         return False
@@ -467,10 +617,10 @@ class AutoscalingUserNumberTest:
         if not instance_ids:
             return
 
-        logging.info(f"Force terminating {len(instance_ids)} instance(s)...")
+        logging.info(f"Force terminating {len(instance_ids)} instance(s)")
         for instance_id in instance_ids:
             try:
-                logging.info(f"  Terminating {instance_id}...")
+                logging.info(f"  Terminating {instance_id}")
                 self.ec2_client.terminate_instances(InstanceIds=[instance_id])
             except Exception as e:
                 logging.warning(f"  Failed to terminate {instance_id}: {e}")
@@ -504,8 +654,8 @@ class AutoscalingUserNumberTest:
         # Set desired capacity to 1
         self.set_asg_capacity(1)
 
-        # Wait for scale-down to complete
-        success = self.wait_for_asg_instances(1, timeout_minutes=5)
+        # Wait for scale-down to complete in ECS
+        success = self.wait_for_ecs_instances(1, timeout_minutes=5)
 
         if success:
             logging.info("Successfully scaled down to 1 instance")
@@ -534,16 +684,39 @@ class AutoscalingUserNumberTest:
             logging.warning(f"Could not fetch Lambda logs: {e}")
             return []
 
-    def wait_for_lambda_cycle(self):
-        """Wait for at least one Lambda execution cycle."""
-        wait_minutes = (
-            self.config.lambda_cycle_minutes + self.config.lambda_wait_buffer_minutes
-        )
-        logging.info(f"\nWaiting {wait_minutes} minutes for Lambda cycle")
+    def invoke_free_manager_lambda(self) -> bool:
+        """Invoke free manager Lambda asynchronously."""
+        logging.info("\n" + "=" * 70)
+        logging.info("INVOKING FREE MANAGER LAMBDA (ASYNC)")
+        logging.info("=" * 70)
 
-        for i in range(wait_minutes):
-            logging.info(f"  {i+1}/{wait_minutes} minutes elapsed")
-            time.sleep(60)
+        try:
+            payload = {
+                "source": "aws.events",
+                "detail-type": "Scheduled Event",
+                "detail": {"action": "monitor"},
+            }
+
+            logging.info(f"Invoking Lambda: {self.config.lambda_function_name}")
+            response = self.lambda_client.invoke(
+                FunctionName=self.config.lambda_function_name,
+                InvocationType="Event",  # Async invocation
+                Payload=json.dumps(payload),
+            )
+
+            status_code = response["StatusCode"]
+            logging.info(f"Lambda invocation status: {status_code}")
+
+            if status_code == 202:  # Async invocation accepted
+                logging.info("Lambda invocation accepted (async)")
+                return True
+            else:
+                logging.error(f"Lambda invocation failed: {status_code}")
+                return False
+
+        except Exception as e:
+            logging.error(f"Error invoking Lambda: {e}")
+            return False
 
     def verify_scaling(self, expected_instances: int) -> bool:
         """Verify ASG scaled to expected capacity."""
@@ -583,11 +756,11 @@ class AutoscalingUserNumberTest:
 
         # Check if users are distributed
         if len(distribution) < expected_instances:
-            logging.warning(
-                f"Only {len(distribution)} instances have users, "
+            logging.error(
+                f"FAILED: Only {len(distribution)} instances have users, "
                 f"expected {expected_instances}"
             )
-            logging.warning("Users may not be rebalanced yet")
+            return False
 
         # Check if distribution is reasonably balanced
         user_counts = [len(users) for users in distribution.values()]
@@ -599,18 +772,73 @@ class AutoscalingUserNumberTest:
             logging.info(f"User count per instance: min={min_users}, max={max_users}")
 
             if imbalance > 2:
-                logging.warning(
-                    f"Imbalanced distribution: difference of {imbalance} users"
+                logging.error(
+                    f"FAILED: Imbalanced distribution: difference of {imbalance} users"
                 )
+                return False
             else:
                 logging.info("Distribution is balanced")
 
         return True
 
+    def cleanup_scaling_lock(self) -> bool:
+        """Clear scaling lock before test."""
+        logging.info("\n" + "=" * 70)
+        logging.info("CLEARING SCALING LOCK")
+        logging.info("=" * 70)
+
+        try:
+            self.cloudwatch_client = boto3.client(
+                "cloudwatch", region_name=self.config.aws_region
+            )
+            self.cloudwatch_client.put_metric_data(
+                Namespace="OptiNiSt/FreeManager",
+                MetricData=[
+                    {
+                        "MetricName": "ScalingInProgress",
+                        "Value": 0.0,
+                        "Unit": "None",
+                    }
+                ],
+            )
+            logging.info("Cleared scaling lock")
+            return True
+        except Exception as e:
+            logging.warning(f"Could not clear scaling lock: {e}")
+            return False
+
+    def cleanup_free_user_assignments(self) -> bool:
+        """Clean up free_user_assignments table before test."""
+        logging.info("\n" + "=" * 70)
+        logging.info("CLEANING UP FREE USER ASSIGNMENTS")
+        logging.info("=" * 70)
+
+        try:
+            conn = self.get_db_connection()
+            with conn.cursor() as cursor:
+                # Delete all test user assignments
+                email_placeholders = ", ".join(["%s"] * len(self.config.test_users))
+                query = f"""
+                    DELETE fua FROM free_user_assignments fua
+                    INNER JOIN users u ON fua.user_id = u.id
+                    WHERE u.email IN ({email_placeholders})
+                """
+                cursor.execute(query, self.config.test_users)
+                deleted_count = cursor.rowcount
+                conn.commit()
+            conn.close()
+
+            logging.info(f"Deleted {deleted_count} stale assignment(s)")
+            return True
+
+        except Exception as e:
+            logging.warning(f"Database cleanup failed (non-fatal): {e}")
+            return False
+
     def run_test(self) -> bool:
         """Run the complete user-number autoscaling test."""
         logging.info("\n" + "=" * 80)
-        logging.info("FREE TIER AUTOSCALING TEST - USER COUNT BASED (LAYER 3)")
+        logging.info("FREE TIER AUTOSCALING TEST - USER COUNT BASED SCALING")
         logging.info("=" * 80)
         logging.info(f"Test users: {len(self.config.test_users)}")
         logging.info(
@@ -620,6 +848,10 @@ class AutoscalingUserNumberTest:
         logging.info("=" * 80)
 
         try:
+            # Step 0: Clean up database and scaling lock
+            self.cleanup_scaling_lock()
+            self.cleanup_free_user_assignments()
+
             # Step 1: Load tokens
             if not self.load_tokens():
                 return False
@@ -642,7 +874,7 @@ class AutoscalingUserNumberTest:
                     logging.error("Failed to scale down to 1 instance")
                     return False
                 # Give instances time to fully terminate
-                logging.info("Waiting 60 seconds for termination to complete...")
+                logging.info("Waiting 60 seconds for termination to complete")
                 time.sleep(60)
             else:
                 logging.info("Already at 1 instance, proceeding with test")
@@ -650,41 +882,154 @@ class AutoscalingUserNumberTest:
             # Step 4: Start heartbeats for all users
             self.start_heartbeats()
 
-            # Step 5: Wait for Lambda to detect users and scale
-            self.wait_for_lambda_cycle()
+            # Step 4.5: Verify users are being tracked in database
+            logging.info("\n" + "=" * 70)
+            logging.info("VERIFYING USER TRACKING")
+            logging.info("=" * 70)
+            logging.info(
+                f"Waiting {self.config.initial_tracking_wait_seconds}s "
+                f"for users to be tracked (middleware caches for 60s)"
+            )
+            time.sleep(self.config.initial_tracking_wait_seconds)
 
-            # Step 6: Verify scaling occurred
+            tracked_users = self.query_free_user_assignments()
+            if not tracked_users:
+                logging.warning("No users found in database after initial wait")
+                logging.info("Waiting additional 60s for middleware cache to flush")
+                time.sleep(60)
+                tracked_users = self.query_free_user_assignments()
+
+                if not tracked_users:
+                    logging.error("No users found in database after heartbeats started")
+                    logging.error("Check: 1) Backend is running on EC2 (not local)")
+                    logging.error("       2) Users exist in 'users' table")
+                    logging.error("       3) Middleware is enabled")
+                    return False
+
+            logging.info(f"Found {len(tracked_users)} tracked users:")
+            for user in tracked_users:
+                logging.info(
+                    f"  {user['user_id']}: instance={user['instance_id']}, "
+                    f"workflows={user['active_workflow_count']}, "
+                    f"last_activity={user['last_activity']}"
+                )
+
+            if len(tracked_users) < len(self.config.test_users):
+                logging.warning(
+                    f"Only {len(tracked_users)}/{len(self.config.test_users)} "
+                    f"users tracked, continuing anyway"
+                )
+
+            # Step 5: Stop heartbeats and wait for cookies to expire
+            logging.info("\n" + "=" * 70)
+            logging.info("PHASE 3: PREPARING FOR SCALING")
+            logging.info("=" * 70)
+            logging.info("Stopping heartbeats so users become idle")
+            self.stop_heartbeats()
+
+            logging.info(
+                f"\nWaiting {self.config.cookie_expiration_wait_seconds}s "
+                f"for ALB cookies to expire...\n"
+                f"ALB cookies expire after 5 minutes of inactivity.\n"
+                f"Users will have NO cookies after this wait."
+            )
+            time.sleep(self.config.cookie_expiration_wait_seconds)
+            logging.info("Cookies expired. Users are idle with no active cookies.")
+
+            # Step 6: Invoke Lambda asynchronously
+            logging.info("\n" + "=" * 70)
+            logging.info("PHASE 4: TRIGGERING LAMBDA SCALING")
+            logging.info("=" * 70)
+            logging.info(
+                "Invoking Lambda manually for deterministic timing.\n"
+                "Expected duration: 14 min (typical), 20 min (max)\n"
+                "Lambda will:\n"
+                "  1. Detect 6 active users in database\n"
+                "  2. Scale ASG to 2 instances\n"
+                "  3. Wait for instances to be ready\n"
+                "  4. Update database with new user assignments\n"
+                "  5. Clear scaling lock when complete"
+            )
+
+            if not self.invoke_free_manager_lambda():
+                logging.error("Lambda invocation failed")
+                return False
+
+            # Step 7: Wait for Lambda to complete (poll for scaling lock to clear)
+            logging.info("\n" + "=" * 70)
+            logging.info("WAITING FOR LAMBDA TO COMPLETE")
+            logging.info("=" * 70)
+            if not self.wait_for_lambda_completion():
+                logging.error("Lambda did not complete in time")
+                return False
+
+            # Step 8: Verify scaling occurred
+            logging.info("\n" + "=" * 70)
+            logging.info("VERIFYING SCALING RESULT")
+            logging.info("=" * 70)
             if not self.verify_scaling(self.config.expected_instances_for_6_users):
                 logging.error("Scaling verification failed")
                 return False
 
-            # Step 7: Wait for new instances to launch
+            # Step 9: Trigger user migration
             logging.info("\n" + "=" * 70)
-            logging.info("WAITING FOR INSTANCES TO LAUNCH")
+            logging.info("PHASE 5: TRIGGERING USER MIGRATION")
             logging.info("=" * 70)
-            self.wait_for_asg_instances(
-                self.config.expected_instances_for_6_users, timeout_minutes=15
+            logging.info(
+                "Lambda updated database with new assignments.\n"
+                "Users still have NO cookies (expired in Phase 3).\n"
+                "Resuming heartbeats to trigger user requests...\n"
+                "Users will get NEW cookies pointing to NEW instances."
             )
+            self.start_heartbeats()
 
-            # Step 8: Wait for another Lambda cycle to trigger rebalancing
-            logging.info("Waiting for Lambda to rebalance users")
-            self.wait_for_lambda_cycle()
+            logging.info(
+                f"Waiting {self.config.migration_trigger_wait_seconds}s "
+                f"for users to make requests"
+            )
+            time.sleep(self.config.migration_trigger_wait_seconds)
+            logging.info("Users have made requests and received new cookies.")
 
-            # Step 9: Verify user distribution
-            self.verify_user_distribution(self.config.expected_instances_for_6_users)
-
-            # Step 10: Check Lambda logs
+            # Step 10: Verify user distribution
             logging.info("\n" + "=" * 70)
-            logging.info("LAMBDA EXECUTION LOGS (Last 10 minutes)")
+            logging.info("PHASE 6: VERIFICATION")
             logging.info("=" * 70)
-            logs = self.get_lambda_logs(minutes=10)
-            for log in logs:
-                if "Scaling" in log or "rebalanc" in log.lower():
-                    logging.info(f"  {log.strip()}")
+            if not self.verify_user_distribution(
+                self.config.expected_instances_for_6_users
+            ):
+                logging.error("User distribution verification failed")
+                return False
+
+            # Step 11: Check Lambda logs for errors
+            logging.info("\n" + "=" * 70)
+            logging.info("CHECKING LAMBDA LOGS FOR ERRORS")
+            logging.info("=" * 70)
+            logs = self.get_lambda_logs(minutes=20)
+            errors = [
+                log
+                for log in logs
+                if "ERROR" in log or "Exception" in log or "Traceback" in log
+            ]
+
+            if errors:
+                logging.warning(f"Found {len(errors)} error(s) in Lambda logs:")
+                for error in errors[:5]:  # Show first 5 errors
+                    logging.warning(f"  {error.strip()}")
+            else:
+                logging.info("No errors found in Lambda logs")
 
             logging.info("\n" + "=" * 80)
             logging.info("TEST COMPLETED SUCCESSFULLY")
             logging.info("=" * 80)
+            logging.info("Total test duration: ~26-32 minutes")
+            logging.info(
+                f"ASG scaled: 1 → "
+                f"{self.config.expected_instances_for_6_users} instances"
+            )
+            logging.info(
+                f"Users distributed: {len(self.config.test_users)} "
+                f"users across {self.config.expected_instances_for_6_users} instances"
+            )
             return True
 
         except Exception as e:
@@ -695,8 +1040,9 @@ class AutoscalingUserNumberTest:
             return False
 
         finally:
-            # Always stop heartbeats
+            # Always stop heartbeats and clear lock
             self.stop_heartbeats()
+            self.cleanup_scaling_lock()
 
 
 def main():

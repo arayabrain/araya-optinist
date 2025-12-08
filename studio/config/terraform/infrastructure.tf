@@ -70,7 +70,7 @@ resource "aws_subnet" "private2" {
 # ============
 resource "aws_instance" "nat" {
   ami                    = data.aws_ami.nat_instance.id
-  instance_type          = "t3a.nano"
+  instance_type          = "t3.nano"
   subnet_id              = aws_subnet.public1.id
   vpc_security_group_ids = [aws_security_group.nat_instance.id]
   source_dest_check      = false
@@ -107,13 +107,63 @@ resource "aws_instance" "nat" {
   }
 }
 
-# Elastic IP for NAT Instance
+# Second NAT Instance in AZ 1c
+resource "aws_instance" "nat2" {
+  ami                    = data.aws_ami.nat_instance.id
+  instance_type          = "t3.nano"
+  subnet_id              = aws_subnet.public2.id
+  vpc_security_group_ids = [aws_security_group.nat_instance.id]
+  source_dest_check      = false
+
+  iam_instance_profile = aws_iam_instance_profile.nat_instance.name
+
+  root_block_device {
+    volume_size = 8
+    volume_type = "gp3"
+  }
+
+  user_data = <<-EOF
+              #!/bin/bash
+              yum update -y
+
+              # Enable IP forwarding
+              echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.conf
+              sysctl -p
+
+              # Configure NAT with iptables
+              iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+              iptables -A FORWARD -i eth0 -o eth1 -m state --state RELATED,ESTABLISHED -j ACCEPT
+              iptables -A FORWARD -i eth1 -o eth0 -j ACCEPT
+
+              # Save iptables rules
+              service iptables save
+
+              # Ensure iptables starts on boot
+              chkconfig iptables on
+              EOF
+
+  tags = {
+    Name = "subscr-optinist-nat-instance-2"
+  }
+}
+
+# Elastic IP for NAT Instance 1
 resource "aws_eip" "nat_instance" {
   domain   = "vpc"
   instance = aws_instance.nat.id
 
   tags = {
     Name = "subscr-optinist-nat-instance-eip"
+  }
+}
+
+# Elastic IP for NAT Instance 2
+resource "aws_eip" "nat_instance2" {
+  domain   = "vpc"
+  instance = aws_instance.nat2.id
+
+  tags = {
+    Name = "subscr-optinist-nat-instance-2-eip"
   }
 }
 
@@ -144,6 +194,20 @@ data "aws_network_interface" "nat" {
   filter {
     name   = "attachment.instance-id"
     values = [aws_instance.nat.id]
+  }
+
+  filter {
+    name   = "attachment.device-index"
+    values = ["0"]
+  }
+}
+
+data "aws_network_interface" "nat2" {
+  depends_on = [aws_instance.nat2]
+
+  filter {
+    name   = "attachment.instance-id"
+    values = [aws_instance.nat2.id]
   }
 
   filter {
@@ -186,7 +250,7 @@ resource "aws_route_table" "private2" {
 
   route {
     cidr_block           = "0.0.0.0/0"
-    network_interface_id = data.aws_network_interface.nat.id
+    network_interface_id = data.aws_network_interface.nat2.id
   }
 
   tags = {

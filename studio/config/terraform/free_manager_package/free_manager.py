@@ -11,8 +11,8 @@ PRIMARY RESPONSIBILITIES:
 ARCHITECTURE NOTES:
 - This Lambda handles proactive scaling and load rebalancing for free tier users
 - Triggered by CloudWatch Events (every 5 minutes)
-- Works in conjunction with ALB sticky sessions
-    (reduced to 1 hour for better rebalancing)
+- Works in conjunction with ALB sticky sessions (5 minutes)
+- Users migrate to new instances within 5 minutes after rebalancing
 - Timeout: 15 minutes (allows for 7-min instance launch + rebalancing)
 
 IMPROVEMENTS IN THIS VERSION:
@@ -38,6 +38,7 @@ Required Environment Variables:
 
 import json
 import os
+from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 import boto3
@@ -84,11 +85,11 @@ ec2_client = boto3.client("ec2")
 
 def handler(event, context):
     """
-    Main Lambda handler for Free Manager.
+    Main Lambda handler for Free Manager - supports dual triggers.
 
     Triggered by:
-    1. CloudWatch Event (every 5 minutes) - regular monitoring
-    2. CloudWatch Alarm (when active users >= threshold) - immediate scaling
+    1. CloudWatch Event (every 5 minutes) - full monitoring and scaling
+    2. ASG lifecycle events - immediate ECS sync
 
     Returns:
         Dictionary with status and actions taken
@@ -96,6 +97,37 @@ def handler(event, context):
     print("Free Manager Lambda triggered")
     print(f"Event: {json.dumps(event)}")
 
+    try:
+        # Detect trigger type
+        event_source = event.get("source", "")
+
+        if event_source == "aws.autoscaling":
+            # ASG event - quick sync only
+            print("Triggered by ASG event - performing ECS sync")
+            return handle_asg_event(event, context)
+        else:
+            # Scheduled event - full monitoring
+            print("Triggered by schedule - performing full monitoring")
+            return handle_scheduled_monitoring(event, context)
+
+    except Exception as e:
+        print(f"Error in Free Manager Lambda: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+
+
+def handle_scheduled_monitoring(event, context):
+    """
+    Handle periodic monitoring (every 5 minutes).
+
+    Responsibilities:
+    - Count active users
+    - Scale ASG if needed
+    - Rebalance users across instances
+    - Publish metrics
+    """
     try:
         # Get configuration
         user_threshold = int(get_required_env_var("FREE_USER_THRESHOLD", "5"))
@@ -114,7 +146,6 @@ def handler(event, context):
         publish_active_user_metric(active_user_count)
 
         # Determine if scaling needed
-        scaling_action_taken = False
         if active_user_count >= user_threshold:
             print(
                 f"User threshold reached ({active_user_count} >= {user_threshold}), "
@@ -124,11 +155,6 @@ def handler(event, context):
                 active_user_count=active_user_count,
                 max_instances=max_instances,
             )
-            # Track if we performed a scaling action
-            scaling_action_taken = result.get("scaling_action") in [
-                "scale_up",
-                "scale_down",
-            ]
         else:
             print(
                 f"User threshold not reached ({active_user_count} < {user_threshold}), "
@@ -140,29 +166,168 @@ def handler(event, context):
                 "threshold": user_threshold,
             }
 
-        # Only sync ECS service to running instances if we didn't just scale
-        # If we just scaled up/down, the ASG and ECS are already set to the correct
-        # desired counts, and syncing would undo the scaling (since new instances
-        # take 7+ minutes to become InService)
-        if not scaling_action_taken:
-            print("\n" + "=" * 70)
-            print("SYNCING ECS SERVICE TO RUNNING INSTANCES")
-            print("=" * 70)
-            sync_ecs_service_to_running_instances()
-        else:
-            print("\n" + "=" * 70)
-            print("SKIPPING ECS SYNC - Scaling action was just performed")
-            print("Will sync on next Lambda run after instances stabilize")
-            print("=" * 70)
-
         return {"statusCode": 200, "body": json.dumps(result)}
 
     except Exception as e:
-        print(f"Error in Free Manager Lambda: {e}")
+        print(f"Error in scheduled monitoring: {e}")
         import traceback
 
         traceback.print_exc()
         return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+
+
+def handle_asg_event(event, context):
+    """
+    Handle ASG lifecycle events - sync ECS to ASG immediately.
+
+    This provides immediate response when ASG scales (manual or alarm-driven),
+    without waiting for the next 5-minute scheduled run.
+    """
+    print("\n" + "=" * 70)
+    print("ASG EVENT HANDLER")
+    print("=" * 70)
+
+    try:
+        # Extract event details
+        detail = event.get("detail", {})
+        asg_name = detail.get("AutoScalingGroupName", "")
+        event_type = event.get("detail-type", "")
+
+        print(f"Event Type: {event_type}")
+        print(f"ASG Name: {asg_name}")
+
+        # Verify this is our ASG
+        expected_asg = get_required_env_var("ASG_NAME")
+        if asg_name != expected_asg:
+            print(f"Event is for different ASG ({asg_name}), ignoring")
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"message": "Event ignored - different ASG"}),
+            }
+
+        # Sync ECS to ASG
+        cluster_name = get_required_env_var("CLUSTER_NAME")
+        service_name = get_required_env_var("FREE_SERVICE_NAME")
+
+        # Get ASG desired capacity
+        asg_response = autoscaling_client.describe_auto_scaling_groups(
+            AutoScalingGroupNames=[asg_name]
+        )
+
+        if not asg_response["AutoScalingGroups"]:
+            raise ValueError(f"ASG {asg_name} not found")
+
+        asg_desired = asg_response["AutoScalingGroups"][0]["DesiredCapacity"]
+        print(f"ASG desired capacity: {asg_desired}")
+
+        # Get ECS desired count
+        ecs_response = ecs_client.describe_services(
+            cluster=cluster_name, services=[service_name]
+        )
+
+        if not ecs_response["services"]:
+            raise ValueError(f"ECS service {service_name} not found")
+
+        ecs_desired = ecs_response["services"][0]["desiredCount"]
+        print(f"ECS desired count: {ecs_desired}")
+
+        # Sync if different
+        if asg_desired != ecs_desired:
+            print(f"Syncing ECS from {ecs_desired} to {asg_desired}")
+
+            ecs_client.update_service(
+                cluster=cluster_name, service=service_name, desiredCount=asg_desired
+            )
+
+            print(f"Successfully synced ECS to {asg_desired}")
+
+            return {
+                "statusCode": 200,
+                "body": json.dumps(
+                    {
+                        "message": "ECS synced to ASG",
+                        "asg_desired": asg_desired,
+                        "ecs_previous": ecs_desired,
+                        "ecs_new": asg_desired,
+                    }
+                ),
+            }
+        else:
+            print(f"Already in sync at {asg_desired}")
+
+            return {
+                "statusCode": 200,
+                "body": json.dumps(
+                    {"message": "Already in sync", "capacity": asg_desired}
+                ),
+            }
+
+    except Exception as e:
+        print(f"Error handling ASG event: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+
+
+def is_scaling_in_progress() -> bool:
+    """Check if a scaling operation is currently in progress.
+
+    Returns:
+        True if scaling is in progress, False otherwise
+    """
+    try:
+        response = cloudwatch_client.get_metric_data(
+            MetricDataQueries=[
+                {
+                    "Id": "scaling_lock",
+                    "MetricStat": {
+                        "Metric": {
+                            "Namespace": "OptiNiSt/FreeManager",
+                            "MetricName": "ScalingInProgress",
+                        },
+                        "Period": 900,  # 15 minutes
+                        "Stat": "Maximum",
+                    },
+                    "ReturnData": True,
+                }
+            ],
+            StartTime=int((datetime.now() - timedelta(minutes=15)).timestamp()),
+            EndTime=int(datetime.now().timestamp()),
+        )
+
+        values = response["MetricDataResults"][0].get("Values", [])
+        if values and values[0] > 0:
+            print("⚠️  Scaling operation already in progress, skipping")
+            return True
+        return False
+
+    except Exception as e:
+        print(f"Warning: Could not check scaling lock: {e}")
+        return False  # Fail open - allow scaling if check fails
+
+
+def set_scaling_lock(in_progress: bool) -> None:
+    """Set or clear the scaling lock.
+
+    Args:
+        in_progress: True to set lock, False to clear it
+    """
+    try:
+        cloudwatch_client.put_metric_data(
+            Namespace="OptiNiSt/FreeManager",
+            MetricData=[
+                {
+                    "MetricName": "ScalingInProgress",
+                    "Value": 1.0 if in_progress else 0.0,
+                    "Unit": "None",
+                }
+            ],
+        )
+        status = "SET" if in_progress else "CLEARED"
+        print(f"Scaling lock {status}")
+    except Exception as e:
+        print(f"Warning: Could not set scaling lock: {e}")
 
 
 def scale_and_rebalance(
@@ -184,6 +349,14 @@ def scale_and_rebalance(
     print("=" * 70)
     print(f"Active users: {active_user_count}")
     print(f"Max instances: {max_instances}")
+
+    # Check if scaling is already in progress
+    if is_scaling_in_progress():
+        return {
+            "status": "scaling_in_progress",
+            "message": "Another scaling operation is in progress, skipping",
+            "active_users": active_user_count,
+        }
 
     cluster_name = get_required_env_var("CLUSTER_NAME")
     service_name = get_required_env_var("FREE_SERVICE_NAME")
@@ -215,77 +388,92 @@ def scale_and_rebalance(
     # Scale up if needed
     if desired_instances > current_desired:
         print(f"Scaling up from {current_desired} to {desired_instances} instances")
-        scale_service(cluster_name, service_name, desired_instances)
-        result["scaling_action"] = "scale_up"
 
-        # Wait for instances to launch and rebalance with retry logic
-        # Instances take ~7 minutes to become fully operational
-        # We'll retry for up to 10 minutes
-        import time
+        # Set scaling lock before starting
+        set_scaling_lock(True)
 
-        max_wait_time = 600  # 10 minutes in seconds
-        check_interval = 60  # Check every 60 seconds
-        start_time = time.time()
-        attempt = 0
+        try:
+            scale_service(cluster_name, service_name, desired_instances)
+            result["scaling_action"] = "scale_up"
 
-        print(
-            f"\nWaiting for new instances to launch "
-            f"(up to {max_wait_time // 60} minutes)..."
-        )
+            # Wait for instances to launch and rebalance with retry logic
+            # Lifecycle hook: ~5 minutes, EC2 instances:
+            # ~5 minutes, ECS tasks: ~7 minutes
+            # Total: ~17 minutes for full operational readiness
+            # We'll retry for up to 17 minutes to allow for variability
+            import time
 
-        rebalanced = []
-        rebalancing_successful = False
-
-        while time.time() - start_time < max_wait_time:
-            attempt += 1
-            elapsed = int(time.time() - start_time)
+            max_wait_time = 1020  # 17 minutes in seconds
+            check_interval = 60  # Check every 60 seconds
+            start_time = time.time()
+            attempt = 0
 
             print(
-                f"\n[Attempt {attempt}] Checking instance readiness "
-                f"(elapsed: {elapsed}s / {max_wait_time}s)..."
+                f"\nWaiting for new instances to launch and become ECS-ready "
+                f"(up to {max_wait_time // 60} minutes, includes lifecycle hooks)"
             )
 
-            # Check if desired number of instances are ready
-            available_instances = get_available_instance_ids(cluster_name, service_name)
-            print(
-                f"Found {len(available_instances)}/{desired_instances} "
-                f"running instances: {available_instances}"
-            )
+            rebalanced = []
+            rebalancing_successful = False
 
-            if len(available_instances) >= desired_instances:
-                print("All instances ready! Attempting rebalancing...")
+            while time.time() - start_time < max_wait_time:
+                attempt += 1
+                elapsed = int(time.time() - start_time)
 
-                # Try multi-instance rebalancing
-                rebalanced = rebalance_idle_users_multi(available_instances)
+                print(
+                    f"\n[Attempt {attempt}] Checking instance readiness "
+                    f"(elapsed: {elapsed}s / {max_wait_time}s)"
+                )
 
-                # Check if rebalancing was effective
-                distribution = get_users_per_instance()
-                if is_distribution_balanced(distribution, tolerance=1):
-                    print("Rebalancing successful - distribution is balanced!")
-                    rebalancing_successful = True
-                    break
+                # Check if desired number of instances are ready
+                available_instances = get_available_instance_ids(
+                    cluster_name, service_name
+                )
+                print(
+                    f"Found {len(available_instances)}/{desired_instances} "
+                    f"running instances: {available_instances}"
+                )
+
+                if len(available_instances) >= desired_instances:
+                    print("All instances ready! Attempting rebalancing")
+
+                    # Try multi-instance rebalancing
+                    rebalanced = rebalance_idle_users_multi(available_instances)
+
+                    # Check if rebalancing was effective
+                    distribution = get_users_per_instance()
+                    if is_distribution_balanced(distribution, tolerance=1):
+                        print("Rebalancing successful - distribution is balanced!")
+                        rebalancing_successful = True
+                        break
+                    else:
+                        print("Distribution still imbalanced, will retry")
+
                 else:
-                    print("Distribution still imbalanced, will retry...")
+                    print(
+                        f"Only {len(available_instances)}/{desired_instances} "
+                        f"instances ready, waiting {check_interval}s before next check"
+                    )
 
-            else:
-                print(
-                    f"Only {len(available_instances)}/{desired_instances} instances "
-                    f"ready, waiting {check_interval}s before next check..."
-                )
+                # Wait before next check (unless this is the last iteration)
+                if time.time() - start_time + check_interval < max_wait_time:
+                    time.sleep(check_interval)
+                else:
+                    print(
+                        f"\nTimeout reached "
+                        f"({max_wait_time}s / {max_wait_time // 60} min). "
+                        f"Rebalancing will be retried on next Lambda run (every 5 min)."
+                    )
+                    break
 
-            # Wait before next check (unless this is the last iteration)
-            if time.time() - start_time + check_interval < max_wait_time:
-                time.sleep(check_interval)
-            else:
-                print(
-                    f"\nTimeout reached ({max_wait_time}s). "
-                    f"Rebalancing will be retried on next Lambda run."
-                )
-                break
+            # Update result after loop completes
+            result["rebalanced_users"] = rebalanced
+            result["rebalancing_successful"] = rebalancing_successful
+            result["rebalancing_attempts"] = attempt
 
-        result["rebalanced_users"] = rebalanced
-        result["rebalancing_successful"] = rebalancing_successful
-        result["rebalancing_attempts"] = attempt
+        finally:
+            # Always clear the lock when done
+            set_scaling_lock(False)
 
     elif desired_instances < current_desired:
         # Scale down (conservative - only if significantly overprovisioned)
@@ -300,7 +488,7 @@ def scale_and_rebalance(
             result["scaling_action"] = "none"
     else:
         # No scaling needed, but check if rebalancing needed
-        print("No scaling needed, checking if rebalancing is beneficial...")
+        print("No scaling needed, checking if rebalancing is beneficial")
 
         available_instances = get_available_instance_ids(cluster_name, service_name)
         distribution = get_users_per_instance()
@@ -313,7 +501,7 @@ def scale_and_rebalance(
         print(f"Complete distribution across all instances: {complete_distribution}")
 
         if not is_distribution_balanced(complete_distribution, tolerance=1):
-            print("Distribution is imbalanced, attempting rebalancing...")
+            print("Distribution is imbalanced, attempting rebalancing")
             rebalanced = rebalance_idle_users_multi(available_instances)
             result["rebalanced_users"] = rebalanced
             result["rebalancing_reason"] = "imbalance_without_scaling"
@@ -384,7 +572,7 @@ def get_service_info(cluster_name: str, service_name: str) -> Dict[str, int]:
     print(f"Pending Count: {service['pendingCount']}")
 
     # List tasks
-    print("\nQuerying ECS tasks...")
+    print("\nQuerying ECS tasks")
     tasks_response = ecs_client.list_tasks(
         cluster=cluster_name, serviceName=service_name, desiredStatus="RUNNING"
     )
@@ -457,92 +645,6 @@ def scale_service(cluster_name: str, service_name: str, desired_count: int) -> N
         raise
 
 
-def sync_ecs_service_to_running_instances() -> None:
-    """
-    Sync ECS service desired count to match the number of running free tier instances.
-
-    This ensures that each free tier instance has an ECS task running on it.
-    Similar to premium manager's update_premium_service_desired_count().
-
-    The function:
-    1. Counts running free tier EC2 instances (InService in ASG)
-    2. Updates the ECS service desired count to match
-    3. ECS will then place one task per instance (with distinctInstance constraint)
-    """
-    try:
-        cluster_name = get_required_env_var("CLUSTER_NAME")
-        service_name = get_required_env_var("FREE_SERVICE_NAME")
-        asg_name = get_required_env_var("ASG_NAME")
-
-        # Get ASG information to count InService instances
-        asg_response = autoscaling_client.describe_auto_scaling_groups(
-            AutoScalingGroupNames=[asg_name]
-        )
-
-        if not asg_response["AutoScalingGroups"]:
-            print(f"ASG {asg_name} not found")
-            return
-
-        asg = asg_response["AutoScalingGroups"][0]
-
-        # Use ASG DesiredCapacity as the target, not InService count
-        # This prevents undoing scale-up actions when instances are still launching
-        asg_desired_capacity = asg["DesiredCapacity"]
-
-        # Count instances that are InService (running and healthy)
-        running_instance_count = sum(
-            1 for inst in asg["Instances"] if inst["LifecycleState"] == "InService"
-        )
-
-        # Get current ECS service status
-        service_response = ecs_client.describe_services(
-            cluster=cluster_name, services=[service_name]
-        )
-
-        if not service_response.get("services"):
-            print(f"Service {service_name} not found in cluster {cluster_name}")
-            return
-
-        current_desired_count = service_response["services"][0]["desiredCount"]
-        current_running_count = service_response["services"][0]["runningCount"]
-
-        print(f"ASG DesiredCapacity: {asg_desired_capacity}")
-        print(f"ASG Instances InService: {running_instance_count}")
-        print(
-            f"ECS Service Status: desired={current_desired_count}, "
-            f"running={current_running_count}"
-        )
-
-        # Sync ECS to ASG DesiredCapacity (not InService count)
-        # This ensures ECS matches the scaling target,
-        # even if instances are still launching
-        if asg_desired_capacity != current_desired_count:
-            print(
-                f"Syncing ECS service desired count: {current_desired_count} "
-                f"→ {asg_desired_capacity}"
-            )
-            ecs_client.update_service(
-                cluster=cluster_name,
-                service=service_name,
-                desiredCount=asg_desired_capacity,
-            )
-            print(
-                f"ECS service {service_name} updated to desired count "
-                f"{asg_desired_capacity}"
-            )
-        else:
-            print(
-                f"ECS service desired count already matches ASG desired capacity "
-                f"({asg_desired_capacity})"
-            )
-
-    except Exception as e:
-        print(f"Error syncing ECS service to running instances: {str(e)}")
-        import traceback
-
-        traceback.print_exc()
-
-
 def rebalance_idle_users_multi(available_instances: List[str]) -> List[str]:
     """
     Rebalance idle users across ALL available instances (multi-instance algorithm).
@@ -575,7 +677,7 @@ def rebalance_idle_users_multi(available_instances: List[str]) -> List[str]:
         return []
 
     # Get current user distribution
-    print("\nGetting current user distribution...")
+    print("\nGetting current user distribution")
     users_per_instance = get_users_per_instance()
 
     # Build complete instance map (includes instances with 0 users)
@@ -713,7 +815,7 @@ def rebalance_idle_users() -> List[str]:
     print(f"Available instances for rebalancing: {available_instances}")
 
     # Get current user distribution
-    print("\nGetting current user distribution from database...")
+    print("\nGetting current user distribution from database")
     users_per_instance = get_users_per_instance()
 
     print(f"User distribution from DB: {users_per_instance}")
@@ -801,7 +903,7 @@ def get_available_instance_ids(cluster_name: str, service_name: str) -> List[str
     try:
         # List all container instances in the cluster
         # Check all statuses to find available instances
-        print("\nStep 1: Listing container instances in ECS cluster...")
+        print("\nStep 1: Listing container instances in ECS cluster")
 
         all_container_arns = []
         for status in ["ACTIVE", "DRAINING", "REGISTERING"]:
@@ -820,7 +922,7 @@ def get_available_instance_ids(cluster_name: str, service_name: str) -> List[str
             return []
 
         # Describe container instances to get EC2 instance IDs
-        print("\nStep 2: Describing container instances...")
+        print("\nStep 2: Describing container instances")
         instances_response = ecs_client.describe_container_instances(
             cluster=cluster_name, containerInstances=all_container_arns
         )
@@ -864,7 +966,7 @@ def get_available_instance_ids(cluster_name: str, service_name: str) -> List[str
             return []
 
         # Check EC2 state to ensure instances are actually running
-        print("\nStep 3: Checking EC2 instance states...")
+        print("\nStep 3: Checking EC2 instance states")
         ec2_response = ec2_client.describe_instances(InstanceIds=ecs_instance_ids)
 
         running_instances = []

@@ -48,7 +48,7 @@ resource "aws_lambda_function" "free_manager" {
   role          = aws_iam_role.free_manager_lambda.arn
   handler       = "free_manager.handler"
   runtime       = "python3.9"
-  timeout       = 900 # 15 minutes (increased to allow for instance launch + rebalancing)
+  timeout       = 900 # 15 minutes # Max timeout
 
   source_code_hash = data.archive_file.free_manager_zip.output_base64sha256
 
@@ -255,6 +255,52 @@ resource "aws_lambda_permission" "allow_cloudwatch_free_manager" {
 }
 
 # ===========================
+# ASG Event Triggers
+# ===========================
+
+# EventBridge rule for ASG scaling events
+resource "aws_cloudwatch_event_rule" "free_manager_asg_events" {
+  name        = "subscr-free-manager-asg-events"
+  description = "Trigger free manager on ASG lifecycle events for immediate ECS sync"
+
+  event_pattern = jsonencode({
+    source      = ["aws.autoscaling"]
+    detail-type = [
+      "EC2 Instance Launch Successful",
+      "EC2 Instance Terminate Successful",
+      "EC2 Instance Launch Unsuccessful",
+      "EC2 Instance-launch Lifecycle Action",
+      "EC2 Instance-terminate Lifecycle Action"
+    ]
+    detail = {
+      AutoScalingGroupName = [aws_autoscaling_group.main.name]
+    }
+  })
+
+  tags = {
+    Name    = "Free Manager ASG Events"
+    Type    = "Free-CloudWatch"
+    Service = "free-tier"
+  }
+}
+
+# EventBridge target to invoke free_manager on ASG events
+resource "aws_cloudwatch_event_target" "free_manager_asg_target" {
+  rule      = aws_cloudwatch_event_rule.free_manager_asg_events.name
+  target_id = "FreeManagerASGTarget"
+  arn       = aws_lambda_function.free_manager.arn
+}
+
+# Lambda Permission for ASG events
+resource "aws_lambda_permission" "allow_asg_events_free_manager" {
+  statement_id  = "AllowExecutionFromASGEvents"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.free_manager.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.free_manager_asg_events.arn
+}
+
+# ===========================
 # Free Cleanup Lambda Package
 # ===========================
 # This Lambda is used by test scripts to manage test data
@@ -396,4 +442,12 @@ output "free_manager_lambda_name" {
 output "free_cleanup_lambda_name" {
   description = "Name of the free cleanup Lambda function (for test scripts)"
   value       = aws_lambda_function.free_cleanup.function_name
+}
+
+output "free_manager_triggers" {
+  description = "Free manager Lambda trigger configuration"
+  value = {
+    scheduled_rule = aws_cloudwatch_event_rule.free_manager_schedule.name
+    asg_event_rule = aws_cloudwatch_event_rule.free_manager_asg_events.name
+  }
 }

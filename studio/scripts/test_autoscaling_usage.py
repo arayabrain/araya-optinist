@@ -1,8 +1,29 @@
 #!/usr/bin/env python3
 """
-Free Tier Autoscaling Test - CPU/Memory Based Scaling (Layer 1)
+Free Tier Autoscaling Test - CPU/Memory Based Scaling
 
-This test validates CloudWatch alarm-based autoscaling triggered by CPU/Memory usage.
+WHERE TO RUN:
+** RUN FROM EC2 INSTANCE IN VPC ** (not local machine)
+- Requires direct database access to private RDS instance
+- OR run locally with SSH tunnel/VPN to RDS
+- Alternative: Refactor to use Lambda proxies (like test_free_manager.py)
+
+REQUIREMENTS:
+- AWS credentials configured (boto3 access)
+- IAM permissions: ecs:*, asg:*, cloudwatch:*, rds:*
+- Terraform outputs available in ../config/terraform
+- Python 3.8+ with boto3, pymysql, requests
+- ** NETWORK ACCESS to private RDS database **
+- Test users: optinist_test_user_free_7, optinist_test_user_free_8
+
+WHAT IT TESTS:
+==============
+Validates CloudWatch alarm-based autoscaling triggered by CPU/Memory usage:
+1. User 7 generates CPU load by running 30 concurrent workflows
+2. CloudWatch monitors ECS service metrics and triggers alarm
+3. ASG scales up by adding a new instance
+4. User 8 logs in and should be assigned to the less-loaded new instance
+5. Lambda (running every 5 min) rebalances users if needed
 
 THEORETICALLY OPTIMAL BEHAVIOR:
 ================================
@@ -30,19 +51,21 @@ TEST WORKFLOW APPROACH (Aligned with test_premium_load.py):
 4. Submit real workflows using the /run/{workspace_id} endpoint
 5. Monitor CPU/Memory metrics and CloudWatch alarms
 
-This test uses:
-- optinist_test_user_free_7: Generates CPU load with 30 workflows
-- optinist_test_user_free_8: New user to verify instance assignment
+EXPECTED RESULT:
+================
+- CPU/Memory utilization exceeds threshold
+- CloudWatch alarm triggers (ALARM state)
+- ASG scales from 1 to 2 instances
+- User 8 is assigned to the new, less-loaded instance
+- Optimal load balancing demonstrated
 
-Configuration:
-- API URL and database credentials are automatically loaded from Terraform outputs
-- Authentication tokens are automatically generated if not present or missing
+HOW TO RUN:
+  # From EC2 instance in VPC:
+  python test_autoscaling_usage.py
 
-Usage:
-    python test_autoscaling_usage.py
+EXPECTED RUNTIME:
+  20-30 minutes (workflow submission + alarm trigger + instance launch)
 
-Author: Claude Code
-Date: 2025-12-05
 """
 
 import json
@@ -186,44 +209,64 @@ class AutoscalingUsageTest:
         tokens_file = Path(__file__).parent / "tokens.json"
         test_users = [self.config.load_generator_user, self.config.new_user]
 
-        # Auto-generate tokens if they don't exist
+        # Auto-generate tokens if they don't exist or are expired
+        needs_generation = False
+
         if not tokens_file.exists():
             logging.info("Tokens file not found, generating automatically...")
-            if not self.generate_tokens():
-                logging.error("Failed to generate tokens")
-                return False
+            needs_generation = True
+        else:
+            # Check if tokens exist and are valid
+            try:
+                with open(tokens_file) as f:
+                    all_tokens = json.load(f)
 
-        with open(tokens_file) as f:
-            all_tokens = json.load(f)
+                # Check if our test users have tokens
+                missing_users = []
+                for user_email in test_users:
+                    if user_email not in all_tokens:
+                        missing_users.append(user_email)
 
-        # Load tokens for our test users
-        missing_users = []
-        for user_email in test_users:
-            if user_email not in all_tokens:
-                missing_users.append(user_email)
-            else:
-                self.tokens[user_email] = all_tokens[user_email]
+                if missing_users:
+                    logging.info(f"Some users missing tokens: {missing_users}")
+                    needs_generation = True
+                else:
+                    # Tokens exist, load them
+                    for user_email in test_users:
+                        self.tokens[user_email] = all_tokens[user_email]
+                    logging.info(f"Loaded tokens for {len(self.tokens)} users")
+                    return True
 
-        # Auto-generate if any users are missing
-        if missing_users:
-            logging.info(f"Some users missing tokens: {missing_users}")
-            logging.info("Regenerating tokens...")
+            except Exception as e:
+                logging.warning(f"Error reading tokens file: {e}")
+                needs_generation = True
+
+        # Generate tokens if needed
+        if needs_generation:
             if not self.generate_tokens():
                 logging.error("Failed to generate tokens")
                 return False
 
             # Reload tokens
-            with open(tokens_file) as f:
-                all_tokens = json.load(f)
+            try:
+                with open(tokens_file) as f:
+                    all_tokens = json.load(f)
 
-            for user_email in test_users:
-                if user_email not in all_tokens:
-                    logging.error(f"Token still not found for user: {user_email}")
-                    return False
-                self.tokens[user_email] = all_tokens[user_email]
+                for user_email in test_users:
+                    if user_email not in all_tokens:
+                        logging.error(f"Token still not found for user: {user_email}")
+                        logging.error(f"Available tokens: {list(all_tokens.keys())}")
+                        return False
+                    self.tokens[user_email] = all_tokens[user_email]
 
-        logging.info(f"Loaded tokens for {len(self.tokens)} users")
-        return True
+                logging.info(f"Loaded tokens for {len(self.tokens)} users")
+                return True
+
+            except Exception as e:
+                logging.error(f"Error loading generated tokens: {e}")
+                return False
+
+        return False
 
     def generate_tokens(self) -> bool:
         """Generate authentication tokens for test users
@@ -405,6 +448,18 @@ class AutoscalingUsageTest:
                     f"{workspace_name} (ID: {workspace_id})"
                 )
                 return workspace_id
+            elif response.status_code == 401:
+                logging.error(
+                    f"[{user_email}] Authentication failed (401): {response.text}"
+                )
+                logging.error(
+                    "Token may be expired (Firebase tokens expire after 1 hour)"
+                )
+                logging.error(
+                    "Try regenerating tokens with: "
+                    "python get_jwt_tokens.py --multi-free"
+                )
+                return None
             else:
                 logging.error(
                     f"[{user_email}] Failed to create workspace: "
@@ -474,6 +529,18 @@ class AutoscalingUsageTest:
                     f"[{user_email}] Found {len(workspace_ids)} existing workspaces"
                 )
                 return workspace_ids
+            elif response.status_code == 401:
+                logging.error(
+                    f"[{user_email}] Authentication failed (401): {response.text}"
+                )
+                logging.error(
+                    "Token may be expired (Firebase tokens expire after 1 hour)"
+                )
+                logging.error(
+                    "Try regenerating tokens with: "
+                    "python get_jwt_tokens.py --multi-free"
+                )
+                return []
             else:
                 logging.warning(
                     f"[{user_email}] Failed to get existing workspaces: "
@@ -923,7 +990,7 @@ class AutoscalingUsageTest:
     def run_test(self) -> bool:
         """Run the complete CPU/Memory autoscaling test."""
         logging.info("\n" + "=" * 80)
-        logging.info("FREE TIER AUTOSCALING TEST - CPU/MEMORY BASED (LAYER 1)")
+        logging.info("FREE TIER AUTOSCALING TEST - CPU/MEMORY BASED USAGE")
         logging.info("=" * 80)
         logging.info(f"Load generator: {self.config.load_generator_user}")
         logging.info(f"New user: {self.config.new_user}")
