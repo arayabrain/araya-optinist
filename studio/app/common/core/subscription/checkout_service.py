@@ -4,12 +4,19 @@ from typing import Any, Dict, Optional
 import stripe
 from dateutil.relativedelta import relativedelta
 from fastapi import HTTPException
-from sqlmodel import Enum, Session
+from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.subscription.constants import (
+    PAYMENT_METHOD_TYPE_CARD,
+    PAYMENT_METHOD_TYPE_LINK,
+    STRIPE_PROVIDER_NAME,
+    SubscriptionActiveStatus,
+    SubscriptionPeriods,
+    SyncStatus,
+)
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.models.subscription import (
-    SubscriptionPeriods,
     SubscriptionPlans,
     SubscriptionProvider,
     SubscriptionUserAccount,
@@ -24,17 +31,6 @@ from studio.app.common.schemas.subscriptions import (
 
 logger = AppLogger.get_logger()
 STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
-
-
-class SUBSCRIPTION_ACTIVE_STATUS(Enum):
-    ACTIVE = "1"
-    INACTIVE = "0"
-
-
-class SUBSCRIPTION_SYNC_STATUS(Enum):
-    SYNCED = "synced"
-    PENDING = "pending"
-    FAILED = "failed"
 
 
 class CheckoutService:
@@ -126,12 +122,12 @@ class CheckoutService:
         """
         provider = (
             db.query(SubscriptionProvider)
-            .filter(SubscriptionProvider.name == "stripe")
+            .filter(SubscriptionProvider.name == STRIPE_PROVIDER_NAME)
             .first()
         )
 
         if not provider:
-            provider = SubscriptionProvider(name="stripe")
+            provider = SubscriptionProvider(name=STRIPE_PROVIDER_NAME)
             db.add(provider)
             db.commit()
             db.refresh(provider)
@@ -154,7 +150,7 @@ class CheckoutService:
             db.query(SubscriptionPlans)
             .filter(
                 SubscriptionPlans.id == plan_id,
-                SubscriptionPlans.status == SUBSCRIPTION_ACTIVE_STATUS.ACTIVE,
+                SubscriptionPlans.status == SubscriptionActiveStatus.ACTIVE,
             )
             .first()
         )
@@ -332,7 +328,7 @@ class CheckoutService:
         if existing_subscription:
             # Update existing subscription
             existing_subscription.plan_id = plan_id
-            existing_subscription.sync_status = SUBSCRIPTION_SYNC_STATUS.SYNCED
+            existing_subscription.sync_status = SyncStatus.SYNCED
             existing_subscription.expiration = expiration_date
             existing_subscription.scheduled_downgrade = False
             existing_subscription.updated_at = (
@@ -345,7 +341,7 @@ class CheckoutService:
                 plan_id=plan_id,
                 user_id=user_id,
                 expiration=expiration_date,
-                sync_status=SUBSCRIPTION_SYNC_STATUS.SYNCED,
+                sync_status=SyncStatus.SYNCED,
             )
             db.add(new_subscription)
             db.flush()  # Get ID without committing
@@ -519,7 +515,10 @@ class CheckoutService:
 
                 # Prepare subscription parameters
                 subscription_params = {
-                    "payment_method_types": ["card", "link"],
+                    "payment_method_types": [
+                        PAYMENT_METHOD_TYPE_CARD,
+                        PAYMENT_METHOD_TYPE_LINK,
+                    ],
                     "line_items": [
                         {
                             "price": plan.stripe_price_id,
