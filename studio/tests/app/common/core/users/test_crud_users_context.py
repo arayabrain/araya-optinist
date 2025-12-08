@@ -21,13 +21,13 @@ from unittest.mock import Mock
 import pytest
 from fastapi import HTTPException
 
-from studio.app.common.core.users.crud_users import get_user_with_context
 from studio.app.common.core.subscription.constants import (
     PlanName,
     SubscriptionPeriods,
     SubscriptionPlanIds,
     SubscriptionStatus,
 )
+from studio.app.common.core.users.crud_users import get_user_with_context
 
 # ============================================================================
 # Fixtures
