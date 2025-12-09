@@ -13,13 +13,13 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.premium.premium_assignment_service import (
     premium_assignment_service,
 )
-from studio.app.common.core.users import crud_users
-from studio.app.common.db.database import get_db
-from studio.app.common.models.subscription import (
+from studio.app.common.core.subscription.constants import (
     PlanName,
     SubscriptionStatus,
     SubscriptionType,
 )
+from studio.app.common.core.users import crud_users
+from studio.app.common.db.database import get_db
 from studio.app.common.schemas.users import SelfUserUpdate, User, UserPasswordUpdate
 
 router = APIRouter(prefix="/users/me", tags=["users/me"])

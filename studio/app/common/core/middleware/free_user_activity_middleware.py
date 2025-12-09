@@ -20,8 +20,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
+from studio.app.common.core.subscription.constants import SubscriptionStatus
 from studio.app.common.db.database import session_scope
-from studio.app.common.models.subscription import SubscriptionStatus
 
 # In-memory cache to reduce database load (tracks last update time per user)
 _last_activity_cache = {}

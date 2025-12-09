@@ -14,7 +14,7 @@ from typing import Dict, Optional
 import boto3
 
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.models.subscription import SubscriptionType
+from studio.app.common.core.subscription.constants import SubscriptionType
 
 logger = AppLogger.get_logger()
 

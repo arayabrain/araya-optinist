@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import Query
 from pydantic import BaseModel, EmailStr, Field
 
-from studio.app.common.models.subscription import (
+from studio.app.common.core.subscription.constants import (
     PlanName,
     SubscriptionStatus,
     SubscriptionType,

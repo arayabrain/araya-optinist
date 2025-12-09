@@ -477,7 +477,7 @@ class BatchUtils:
             If not provided, will try to get from request context.
         """
         # Import here to avoid Python 3.11+ dependency (StrEnum) in conda environments
-        from studio.app.common.models.subscription import PlanName
+        from studio.app.common.core.subscription.constants import PlanName
 
         try:
             target_user_id = None
@@ -1057,7 +1057,7 @@ class BatchUtils:
         Get resource limits based on subscription plan.
         """
         # Import here to avoid Python 3.11+ dependency (StrEnum) in conda environments
-        from studio.app.common.models.subscription import SubscriptionType
+        from studio.app.common.core.subscription.constants import SubscriptionType
 
         limits = {
             SubscriptionType.FREE.value: {
@@ -1947,7 +1947,7 @@ class BatchDebug:
         Provides immediate visibility into batch environment health.
         """
         # Import here to avoid Python 3.11+ dependency (StrEnum) in conda environments
-        from studio.app.common.models.subscription import StorageSize
+        from studio.app.common.core.subscription.constants import StorageSize
 
         try:
             logger.info("=== AWS BATCH ENVIRONMENT DEBUG ===")

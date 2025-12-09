@@ -17,7 +17,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from studio.app.common.models.subscription import StorageSize
+from studio.app.common.core.subscription.constants import StorageSize
 
 # Add the project root directory to the Python path
 project_root = Path(__file__).parent.parent.parent
