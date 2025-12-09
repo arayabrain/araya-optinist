@@ -921,6 +921,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
           value = jsonencode(var.test_users)
         },
         {
+          name  = "SUBSCRIPTION_PLANS_CONFIG"
+          value = jsonencode(var.subscription_plans)
+        },
+        {
           name  = "STRIPE_CALLBACK_URL"
           value = "${var.frontend_protocol}://${var.frontend_domain}"
         },
@@ -1160,6 +1164,10 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "OPTINIST_DIR"
           value = "/app/studio_data"
+        },
+        {
+          name  = "SUBSCRIPTION_PLANS_CONFIG"
+          value = jsonencode(var.subscription_plans)
         },
         {
           name  = "STRIPE_CALLBACK_URL"

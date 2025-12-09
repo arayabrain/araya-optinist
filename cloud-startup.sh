@@ -81,12 +81,72 @@ if ! alembic upgrade head 2>&1; then
 fi
 echo "Database migrations completed successfully"
 
-# Initialize subscription plans
-echo "Initializing subscription plans..."
-mysql --skip-ssl -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" ${MYSQL_DATABASE} <<-EOSQL
-    INSERT IGNORE INTO subscription_plans (id, name, price, billing_cycle, currency, status)
-    VALUES (1, 'Free', 0, 30, 840, 1), (2, 'Premium', 2999, 30, 840, 1);
+# Initialize subscription plans from environment variable
+echo "Initializing subscription plans from SUBSCRIPTION_PLANS_CONFIG..."
+if [ ! -z "$SUBSCRIPTION_PLANS_CONFIG" ]; then
+    # Generate SQL from JSON using Python, then execute with mysql CLI
+    SQL_STATEMENTS=$(echo "$SUBSCRIPTION_PLANS_CONFIG" | python3 -c "
+import sys
+import json
+
+try:
+    plans = json.load(sys.stdin)
+
+    # Generate SQL statements for each plan
+    for plan in plans:
+        # Escape single quotes for MySQL (matching deployment.tf pattern)
+        name = plan['name'].replace(\"'\", r\"\\'\")
+        features_json = json.dumps(plan['features']).replace(\"'\", r\"\\'\")
+        stripe_product_id = plan.get('stripe_product_id', '').replace(\"'\", r\"\\'\")
+        stripe_price_id = plan.get('stripe_price_id', '').replace(\"'\", r\"\\'\")
+
+        # Generate INSERT ... ON DUPLICATE KEY UPDATE statement
+        print(f'''
+INSERT INTO subscription_plans
+    (id, name, price, billing_cycle, features, currency, status, stripe_product_id, stripe_price_id, created_at)
+VALUES
+    ({plan['id']}, '{name}', {plan['price']}, {plan['billing_cycle']}, '{features_json}', {plan['currency']}, {plan['status']}, '{stripe_product_id}', '{stripe_price_id}', NOW())
+ON DUPLICATE KEY UPDATE
+    name = VALUES(name),
+    price = VALUES(price),
+    billing_cycle = VALUES(billing_cycle),
+    features = VALUES(features),
+    currency = VALUES(currency),
+    status = VALUES(status),
+    stripe_product_id = VALUES(stripe_product_id),
+    stripe_price_id = VALUES(stripe_price_id);
+''')
+
+except json.JSONDecodeError as e:
+    print(f'-- Error parsing JSON: {e}', file=sys.stderr)
+    sys.exit(1)
+except KeyError as e:
+    print(f'-- Missing required field in subscription plan: {e}', file=sys.stderr)
+    sys.exit(1)
+" 2>&1)
+
+    if [ $? -eq 0 ]; then
+        echo "Generated SQL for subscription plans, executing..."
+        echo "$SQL_STATEMENTS" | mysql --skip-ssl -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" ${MYSQL_DATABASE}
+
+        if [ $? -eq 0 ]; then
+            echo "Subscription plans initialized successfully from SUBSCRIPTION_PLANS_CONFIG"
+        else
+            echo "ERROR: Failed to execute subscription plan SQL"
+            exit 1
+        fi
+    else
+        echo "ERROR: Failed to generate SQL from SUBSCRIPTION_PLANS_CONFIG"
+        echo "$SQL_STATEMENTS"
+        exit 1
+    fi
+else
+    echo "SUBSCRIPTION_PLANS_CONFIG not provided, using fallback values..."
+    mysql --skip-ssl -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" ${MYSQL_DATABASE} <<-EOSQL
+        INSERT IGNORE INTO subscription_plans (id, name, price, billing_cycle, currency, status)
+        VALUES (1, 'Free', 0, 30, 840, 1), (2, 'Premium', 2999, 30, 840, 1);
 EOSQL
+fi
 
 # Initialize tax rates
 echo "Initializing tax rates..."
