@@ -440,7 +440,7 @@ async def test_calculate_limit_warning_premium_active_storage_exceeded():
 
                 # Mock storage info: 205GB used of 200GB (over premium limit)
                 mock_get_storage.return_value = {
-                    "storage_usage_bytes": 105_000_000_000,
+                    "storage_usage_bytes": 205_000_000_000,
                     "storage_quota_bytes": 200_000_000_000,
                 }
                 mock_fresh.return_value = True
@@ -676,7 +676,7 @@ async def test_calculate_limit_warning_premium_in_grace_period():
                 # Mock storage info: within limits
                 mock_get_storage.return_value = {
                     "storage_usage_bytes": 50_000_000_000,
-                    "storage_quota_bytes": 100_000_000_000,
+                    "storage_quota_bytes": 200_000_000_000,
                 }
                 mock_fresh.return_value = True
 
