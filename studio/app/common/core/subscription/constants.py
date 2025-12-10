@@ -162,11 +162,11 @@ class PaymentStatus(StrEnum):
 # ============================================================================
 # Active Status (for backward compatibility with Enum)
 # ============================================================================
-class SubscriptionActiveStatus(StrEnum):
+class SubscriptionActiveStatus(IntEnum):
     """Subscription active status (legacy enum format)"""
 
-    ACTIVE = "1"
-    INACTIVE = "0"
+    ACTIVE = 1
+    INACTIVE = 0
 
 
 # Storage size constants (in bytes)
