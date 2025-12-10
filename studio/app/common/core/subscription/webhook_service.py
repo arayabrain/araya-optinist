@@ -33,6 +33,8 @@ class StripeWebhookEvent(StrEnum):
     CUSTOMER_SUBSCRIPTION_DELETED = "customer.subscription.deleted"
     SUBSCRIPTION_SCHEDULE_RELEASED = "subscription_schedule.released"
     INVOICE_PAYMENT_SUCCEEDED = "invoice.payment_succeeded"
+    INVOICE_CREATED = "invoice.created"
+    INVOICE_FINALIZED = "invoice.finalized"
 
 
 class BILLING_CYCLE(StrEnum):
@@ -943,6 +945,307 @@ class WebhookService:
             )
 
     @staticmethod
+    def handle_invoice_created(invoice_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Handle invoice.created webhook - finalize draft invoices immediately
+
+        Args:
+            invoice_data: Webhook invoice data from Stripe
+
+        Returns:
+            Dict with processing results
+
+        Raises:
+            HTTPException: If finalization fails
+        """
+        try:
+            # Ensure Stripe is initialized
+            SubscriptionService._ensure_stripe_initialized()
+
+            invoice_id = invoice_data.get("id")
+            invoice_status = invoice_data.get("status")
+
+            logger.info(
+                f"Webhook: Processing invoice.created event for invoice {invoice_id} "
+                f"with status: {invoice_status}"
+            )
+
+            # Check if invoice is in draft status
+            if invoice_status == "draft":
+                logger.info(f"Webhook: Finalizing draft invoice {invoice_id}")
+
+                # Ensure payment method is set before finalizing
+                try:
+                    # Get the customer and check for default payment method
+                    customer_id = invoice_data.get("customer")
+                    subscription_id = invoice_data.get("subscription")
+                    default_pm = None
+
+                    if customer_id:
+                        # First, try to get payment method from the subscription
+                        if subscription_id:
+                            try:
+                                logger.info(
+                                    f"Webhook: Retrieving subscription {subscription_id} "
+                                    f"to get payment method"
+                                )
+                                subscription = stripe.Subscription.retrieve(subscription_id)
+                                default_pm = subscription.get("default_payment_method")
+                                logger.info(
+                                    f"Webhook: Subscription retrieved. "
+                                    f"default_payment_method = {default_pm}"
+                                )
+                                if default_pm:
+                                    logger.info(
+                                        f"Webhook: Found payment method {default_pm} "
+                                        f"from subscription {subscription_id}"
+                                    )
+                            except stripe.error.StripeError as sub_error:
+                                logger.warning(
+                                    f"Webhook: Could not retrieve subscription "
+                                    f"{subscription_id}: {str(sub_error)}"
+                                )
+
+                        # If not found on subscription, check customer's invoice settings
+                        if not default_pm:
+                            customer = stripe.Customer.retrieve(customer_id)
+                            default_pm = customer.get("invoice_settings", {}).get(
+                                "default_payment_method"
+                            )
+                            if default_pm:
+                                logger.info(
+                                    f"Webhook: Found payment method {default_pm} "
+                                    f"from customer invoice settings"
+                                )
+
+                        # If we found a payment method but invoice doesn't have one, set it
+                        if default_pm and not invoice_data.get("default_payment_method"):
+                            logger.info(
+                                f"Webhook: Setting default payment method {default_pm} "
+                                f"on invoice {invoice_id}"
+                            )
+                            updated_invoice = stripe.Invoice.modify(
+                                invoice_id, default_payment_method=default_pm
+                            )
+                            logger.info(
+                                f"Webhook: Payment method successfully attached to invoice. "
+                                f"Updated invoice default_payment_method: "
+                                f"{updated_invoice.get('default_payment_method')}"
+                            )
+                        elif not default_pm:
+                            logger.warning(
+                                f"Webhook: No payment method found for customer "
+                                f"{customer_id} or subscription {subscription_id}"
+                            )
+                        elif invoice_data.get("default_payment_method"):
+                            logger.info(
+                                f"Webhook: Invoice {invoice_id} already has payment "
+                                f"method {invoice_data.get('default_payment_method')}"
+                            )
+
+                except stripe.error.StripeError as e:
+                    logger.warning(
+                        f"Webhook: Could not set payment method on invoice "
+                        f"{invoice_id}: {str(e)}"
+                    )
+                    # Continue anyway - finalization might still work
+
+                # Finalize the invoice
+                try:
+                    finalized_invoice = stripe.Invoice.finalize_invoice(
+                        invoice_id,
+                        auto_advance=True  # Enable automatic payment attempts
+                    )
+                    logger.info(
+                        f"Webhook: Successfully finalized invoice {invoice_id}. "
+                        f"New status: {finalized_invoice.get('status')}, "
+                        f"auto_advance: {finalized_invoice.get('auto_advance')}"
+                    )
+
+                    # After finalizing, attempt to pay the invoice immediately
+                    # Only if it has a payment method and amount due > 0
+                    if (finalized_invoice.get('default_payment_method') and
+                        finalized_invoice.get('amount_due', 0) > 0 and
+                        finalized_invoice.get('status') == 'open'):
+                        try:
+                            logger.info(
+                                f"Webhook: Attempting immediate payment for invoice "
+                                f"{invoice_id}"
+                            )
+                            paid_invoice = stripe.Invoice.pay(invoice_id)
+                            logger.info(
+                                f"Webhook: Payment attempt completed for invoice "
+                                f"{invoice_id}. Status: {paid_invoice.get('status')}"
+                            )
+
+                            return {
+                                "success": True,
+                                "invoice_id": invoice_id,
+                                "previous_status": "draft",
+                                "new_status": paid_invoice.get("status"),
+                                "message": "Invoice finalized and payment attempted",
+                                "webhook_processed": True,
+                                "payment_attempted": True,
+                            }
+                        except stripe.error.StripeError as pay_error:
+                            logger.warning(
+                                f"Webhook: Could not immediately pay invoice {invoice_id}: "
+                                f"{str(pay_error)}. Stripe will retry automatically."
+                            )
+                            # Don't fail the webhook - finalization succeeded
+                            # Stripe will handle automatic retries
+
+                    return {
+                        "success": True,
+                        "invoice_id": invoice_id,
+                        "previous_status": "draft",
+                        "new_status": finalized_invoice.get("status"),
+                        "message": "Invoice finalized successfully",
+                        "webhook_processed": True,
+                    }
+
+                except stripe.error.StripeError as e:
+                    logger.error(
+                        f"Webhook: Stripe error finalizing invoice {invoice_id}: {str(e)}"
+                    )
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Error finalizing invoice: {str(e)}",
+                    )
+            else:
+                logger.info(
+                    f"Webhook: Invoice {invoice_id} is not in draft status "
+                    f"(status: {invoice_status}), skipping finalization"
+                )
+                return {
+                    "success": True,
+                    "invoice_id": invoice_id,
+                    "status": invoice_status,
+                    "message": "Invoice not in draft status, no action needed",
+                    "webhook_processed": True,
+                    "skipped": True,
+                }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(
+                f"Webhook: Error processing invoice.created for invoice "
+                f"{invoice_data.get('id')}: {str(e)}"
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error processing invoice.created: {str(e)}",
+            )
+
+    @staticmethod
+    def handle_invoice_finalized(invoice_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Handle invoice.finalized webhook - attempt immediate payment
+
+        Args:
+            invoice_data: Webhook invoice data from Stripe
+
+        Returns:
+            Dict with processing results
+
+        Raises:
+            HTTPException: If payment attempt fails critically
+        """
+        try:
+            # Ensure Stripe is initialized
+            SubscriptionService._ensure_stripe_initialized()
+
+            invoice_id = invoice_data.get("id")
+            invoice_status = invoice_data.get("status")
+            default_pm = invoice_data.get("default_payment_method")
+            amount_due = invoice_data.get("amount_due", 0)
+
+            logger.info(
+                f"Webhook: Processing invoice.finalized event for invoice {invoice_id} "
+                f"with status: {invoice_status}, payment_method: {default_pm}, "
+                f"amount_due: {amount_due}"
+            )
+
+            # Only attempt payment if invoice is open and has amount due
+            if invoice_status == "open" and amount_due > 0:
+                # Check if payment method exists
+                if not default_pm:
+                    logger.warning(
+                        f"Webhook: Invoice {invoice_id} has no payment method, "
+                        f"cannot attempt payment"
+                    )
+                    return {
+                        "success": True,
+                        "invoice_id": invoice_id,
+                        "status": invoice_status,
+                        "message": "No payment method available for payment",
+                        "webhook_processed": True,
+                        "skipped": True,
+                    }
+
+                # Attempt to pay the invoice
+                try:
+                    logger.info(
+                        f"Webhook: Attempting immediate payment for invoice {invoice_id}"
+                    )
+                    paid_invoice = stripe.Invoice.pay(invoice_id)
+                    logger.info(
+                        f"Webhook: Payment attempt completed for invoice {invoice_id}. "
+                        f"Status: {paid_invoice.get('status')}"
+                    )
+
+                    return {
+                        "success": True,
+                        "invoice_id": invoice_id,
+                        "previous_status": "open",
+                        "new_status": paid_invoice.get("status"),
+                        "message": "Invoice payment attempted successfully",
+                        "webhook_processed": True,
+                        "payment_attempted": True,
+                    }
+
+                except stripe.error.StripeError as pay_error:
+                    logger.error(
+                        f"Webhook: Failed to pay invoice {invoice_id}: {str(pay_error)}"
+                    )
+                    return {
+                        "success": False,
+                        "invoice_id": invoice_id,
+                        "status": invoice_status,
+                        "message": f"Payment failed: {str(pay_error)}",
+                        "webhook_processed": True,
+                        "payment_attempted": True,
+                        "payment_failed": True,
+                    }
+
+            else:
+                logger.info(
+                    f"Webhook: Invoice {invoice_id} does not require immediate payment. "
+                    f"Status: {invoice_status}, Amount due: {amount_due}"
+                )
+                return {
+                    "success": True,
+                    "invoice_id": invoice_id,
+                    "status": invoice_status,
+                    "message": "Invoice does not require immediate payment",
+                    "webhook_processed": True,
+                    "skipped": True,
+                }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(
+                f"Webhook: Error processing invoice.finalized for invoice "
+                f"{invoice_data.get('id')}: {str(e)}"
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error processing invoice.finalized: {str(e)}",
+            )
+
+    @staticmethod
     def get_webhook_secret() -> str:
         webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
         if not webhook_secret:
@@ -1002,6 +1305,14 @@ class WebhookService:
                     return WebhookService.handle_subscription_payment_succeeded(
                         db, data
                     )
+
+                case StripeWebhookEvent.INVOICE_CREATED:
+                    logger.info("Handling invoice.created")
+                    return WebhookService.handle_invoice_created(data)
+
+                case StripeWebhookEvent.INVOICE_FINALIZED:
+                    logger.info("Handling invoice.finalized")
+                    return WebhookService.handle_invoice_finalized(data)
 
                 case _:
                     logger.info(f"Unhandled webhook event type: {event_type}")

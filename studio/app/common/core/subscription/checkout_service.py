@@ -555,6 +555,12 @@ class CheckoutService:
                             "trial_days": str(SubscriptionPeriods.TRIAL_PERIOD_DAYS),
                         },
                     }
+                    # Require payment method during trial so it can be charged later
+                    subscription_params["payment_method_collection"] = "always"
+                    # Save payment method for future invoices
+                    subscription_params["payment_method_options"] = {
+                        "card": {"setup_future_usage": "off_session"}
+                    }
                     logger.info(
                         f"Adding {SubscriptionPeriods.TRIAL_PERIOD_DAYS}-day trial "
                         f"for first-time user {user.id}"
