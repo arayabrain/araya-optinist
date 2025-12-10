@@ -2,6 +2,7 @@
 S3 Storage Monitoring Utility for Cloud Alerts.
 Monitors S3 storage usage and generates alerts when thresholds are exceeded.
 """
+
 import asyncio
 import os
 from datetime import datetime, timezone
@@ -15,15 +16,15 @@ from studio.app.common.core.cloud.cloud_utils import (
 )
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
-from studio.app.common.core.users import crud_users
-from studio.app.common.db.database import session_scope
-from studio.app.common.models.subscription import (
+from studio.app.common.core.subscription.constants import (
     PlanName,
     StorageQuota,
     StorageSize,
     SubscriptionStatus,
     SubscriptionType,
 )
+from studio.app.common.core.users import crud_users
+from studio.app.common.db.database import session_scope
 
 logger = AppLogger.get_logger()
 

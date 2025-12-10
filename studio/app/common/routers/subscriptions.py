@@ -1,5 +1,4 @@
 from datetime import datetime, timezone
-from enum import StrEnum
 from typing import List, Optional
 
 import stripe
@@ -9,14 +8,17 @@ from sqlalchemy.orm import Session
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.checkout_service import CheckoutService
+from studio.app.common.core.subscription.constants import (
+    INVOICE_LIST_LIMIT,
+    StripeCheckoutPaymentStatus,
+    StripeCheckoutSessionStatus,
+    SubscriptionUserStatus,
+)
 from studio.app.common.core.subscription.stripe_service import (
     StripeService,
     get_stripe_customer_by_email,
 )
-from studio.app.common.core.subscription.subscription_service import (
-    SubscriptionService,
-    SubscriptionUserStatus,
-)
+from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.db.database import get_db
 from studio.app.common.models.subscription import SubscriptionPlans
@@ -59,18 +61,6 @@ webhook_router = APIRouter(
     dependencies=[Depends(stripe_dependency)],
 )
 logger = AppLogger.get_logger()
-
-
-class StripeCheckoutSessionStatus(StrEnum):
-    COMPLETE = "complete"
-    EXPIRED = "expired"
-    OPEN = "open"
-
-
-class StripeCheckoutPaymentStatus(StrEnum):
-    PAID = "paid"
-    UNPAID = "unpaid"
-    NO_PAYMENT_REQUIRED = "no_payment_required"
 
 
 @router.get("/mgmts/plans", response_model=List[SubscriptionPlanResponse])
@@ -538,7 +528,7 @@ async def get_user_invoices(
         # Get all invoices for this customer
         invoices = stripe.Invoice.list(
             customer=customer.id,
-            limit=100,  # Adjust limit as needed
+            limit=INVOICE_LIST_LIMIT,
             expand=["data.subscription"],  # Expand subscription data for more details
         )
 

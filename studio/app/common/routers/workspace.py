@@ -13,6 +13,7 @@ from studio.app.common.core.auth.auth_dependencies import (
 )
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.subscription.constants import StorageSize
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.workflow.workflow import WorkflowRunStatus
 from studio.app.common.core.workspace.workspace_dependencies import (
@@ -21,7 +22,6 @@ from studio.app.common.core.workspace.workspace_dependencies import (
 )
 from studio.app.common.core.workspace.workspace_services import WorkspaceService
 from studio.app.common.db.database import get_db
-from studio.app.common.models.subscription import StorageSize
 from studio.app.common.schemas.base import SortOptions
 from studio.app.common.schemas.users import User
 from studio.app.common.schemas.workspace import (

@@ -1,6 +1,5 @@
 import os
 from datetime import datetime, timedelta
-from enum import StrEnum
 from typing import Any, Dict
 
 import stripe
@@ -10,40 +9,25 @@ from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.checkout_service import CheckoutService
-from studio.app.common.core.subscription.subscription_service import (
-    SubscriptionCurrencyType,
-    SubscriptionService,
-)
-from studio.app.common.models.subscription import (
+from studio.app.common.core.subscription.constants import (
+    DUPLICATE_PURCHASE_WINDOW_MINUTES,
+    RECENT_SUBSCRIPTION_WINDOW_DAYS,
     CancellationReason,
+    PaymentStatus,
+    StripeWebhookEvent,
+    SubscriptionCurrencyType,
+    SyncStatus,
+)
+from studio.app.common.core.subscription.subscription_service import SubscriptionService
+from studio.app.common.models.subscription import (
     SubscriptionCancellation,
     SubscriptionPlans,
     SubscriptionUserAccount,
     SubscriptionUserPurchase,
-    SyncStatus,
     UserSubscription,
 )
 
 logger = AppLogger.get_logger()
-
-
-class StripeWebhookEvent(StrEnum):
-    CHECKOUT_SESSION_COMPLETED = "checkout.session.completed"
-    INVOICE_PAYMENT_FAILED = "invoice.payment_failed"
-    CUSTOMER_SUBSCRIPTION_DELETED = "customer.subscription.deleted"
-    SUBSCRIPTION_SCHEDULE_RELEASED = "subscription_schedule.released"
-    INVOICE_PAYMENT_SUCCEEDED = "invoice.payment_succeeded"
-    INVOICE_CREATED = "invoice.created"
-    INVOICE_FINALIZED = "invoice.finalized"
-
-
-class BILLING_CYCLE(StrEnum):
-    MONTHLY = "1"
-    YEARLY = "2"
-
-
-class PaymentStatus(StrEnum):
-    PAID = "paid"
 
 
 class WebhookService:
@@ -115,7 +99,7 @@ class WebhookService:
                     SubscriptionUserPurchase.plan_id == plan_id,
                     SubscriptionUserPurchase.created_at
                     > SubscriptionService.get_current_datetime()
-                    - timedelta(minutes=30),  # Within last 30 minutes
+                    - timedelta(minutes=DUPLICATE_PURCHASE_WINDOW_MINUTES),
                 )
                 .first()
             )
@@ -770,7 +754,8 @@ class WebhookService:
                         .filter(
                             UserSubscription.user_id == user_id,
                             UserSubscription.expiration
-                            > current_time - timedelta(days=7),
+                            > current_time
+                            - timedelta(days=RECENT_SUBSCRIPTION_WINDOW_DAYS),
                         )
                         .order_by(UserSubscription.expiration.desc())
                         .first()
@@ -986,10 +971,12 @@ class WebhookService:
                         if subscription_id:
                             try:
                                 logger.info(
-                                    f"Webhook: Retrieving subscription {subscription_id} "
-                                    f"to get payment method"
+                                    f"Webhook: Retrieving subscription "
+                                    f"{subscription_id} to get payment method"
                                 )
-                                subscription = stripe.Subscription.retrieve(subscription_id)
+                                subscription = stripe.Subscription.retrieve(
+                                    subscription_id
+                                )
                                 default_pm = subscription.get("default_payment_method")
                                 logger.info(
                                     f"Webhook: Subscription retrieved. "
@@ -1006,7 +993,7 @@ class WebhookService:
                                     f"{subscription_id}: {str(sub_error)}"
                                 )
 
-                        # If not found on subscription, check customer's invoice settings
+                        # If not found on subscription, check customer's invoice setting
                         if not default_pm:
                             customer = stripe.Customer.retrieve(customer_id)
                             default_pm = customer.get("invoice_settings", {}).get(
@@ -1018,8 +1005,11 @@ class WebhookService:
                                     f"from customer invoice settings"
                                 )
 
-                        # If we found a payment method but invoice doesn't have one, set it
-                        if default_pm and not invoice_data.get("default_payment_method"):
+                        # If we found a payment method but invoice doesn't have one,
+                        # set it
+                        if default_pm and not invoice_data.get(
+                            "default_payment_method"
+                        ):
                             logger.info(
                                 f"Webhook: Setting default payment method {default_pm} "
                                 f"on invoice {invoice_id}"
@@ -1028,8 +1018,8 @@ class WebhookService:
                                 invoice_id, default_payment_method=default_pm
                             )
                             logger.info(
-                                f"Webhook: Payment method successfully attached to invoice. "
-                                f"Updated invoice default_payment_method: "
+                                f"Webhook: Payment method successfully attached to "
+                                f"invoice. Updated invoice default_payment_method: "
                                 f"{updated_invoice.get('default_payment_method')}"
                             )
                         elif not default_pm:
@@ -1054,7 +1044,7 @@ class WebhookService:
                 try:
                     finalized_invoice = stripe.Invoice.finalize_invoice(
                         invoice_id,
-                        auto_advance=True  # Enable automatic payment attempts
+                        auto_advance=True,  # Enable automatic payment attempts
                     )
                     logger.info(
                         f"Webhook: Successfully finalized invoice {invoice_id}. "
@@ -1064,9 +1054,11 @@ class WebhookService:
 
                     # After finalizing, attempt to pay the invoice immediately
                     # Only if it has a payment method and amount due > 0
-                    if (finalized_invoice.get('default_payment_method') and
-                        finalized_invoice.get('amount_due', 0) > 0 and
-                        finalized_invoice.get('status') == 'open'):
+                    if (
+                        finalized_invoice.get("default_payment_method")
+                        and finalized_invoice.get("amount_due", 0) > 0
+                        and finalized_invoice.get("status") == "open"
+                    ):
                         try:
                             logger.info(
                                 f"Webhook: Attempting immediate payment for invoice "
@@ -1089,8 +1081,9 @@ class WebhookService:
                             }
                         except stripe.error.StripeError as pay_error:
                             logger.warning(
-                                f"Webhook: Could not immediately pay invoice {invoice_id}: "
-                                f"{str(pay_error)}. Stripe will retry automatically."
+                                f"Webhook: Could not immediately pay invoice "
+                                f"{invoice_id}: {str(pay_error)}. "
+                                f"Stripe will retry automatically."
                             )
                             # Don't fail the webhook - finalization succeeded
                             # Stripe will handle automatic retries
@@ -1106,7 +1099,8 @@ class WebhookService:
 
                 except stripe.error.StripeError as e:
                     logger.error(
-                        f"Webhook: Stripe error finalizing invoice {invoice_id}: {str(e)}"
+                        f"Webhook: Stripe error finalizing invoice {invoice_id}: "
+                        f"{str(e)}"
                     )
                     raise HTTPException(
                         status_code=500,
@@ -1187,7 +1181,8 @@ class WebhookService:
                 # Attempt to pay the invoice
                 try:
                     logger.info(
-                        f"Webhook: Attempting immediate payment for invoice {invoice_id}"
+                        f"Webhook: Attempting immediate payment for invoice "
+                        f"{invoice_id}"
                     )
                     paid_invoice = stripe.Invoice.pay(invoice_id)
                     logger.info(
@@ -1221,7 +1216,7 @@ class WebhookService:
 
             else:
                 logger.info(
-                    f"Webhook: Invoice {invoice_id} does not require immediate payment. "
+                    f"Webhook: Invoice {invoice_id} does not require immediate payment"
                     f"Status: {invoice_status}, Amount due: {amount_due}"
                 )
                 return {

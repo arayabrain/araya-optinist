@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from studio.app.common.core.cloud.s3_storage_monitor import S3StorageMonitor
-from studio.app.common.models.subscription import (
+from studio.app.common.core.subscription.constants import (
     PlanName,
     StorageQuota,
     SubscriptionType,
