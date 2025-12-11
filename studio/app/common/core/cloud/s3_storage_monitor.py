@@ -423,7 +423,7 @@ async def monitor_storage_and_generate_alerts(bucket_name: str) -> List[Dict]:
 if __name__ == "__main__":
 
     async def test_monitor():
-        bucket_name = os.environ.get("S3_BUCKET_NAME", "test-bucket")
+        bucket_name = os.environ.get("S3_DEFAULT_BUCKET_NAME", "test-bucket")
         alerts = await monitor_storage_and_generate_alerts(bucket_name)
 
         if alerts:
