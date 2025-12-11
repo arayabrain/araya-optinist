@@ -289,6 +289,31 @@ class SubscriptionLifecycleStatus(StrEnum):
     FREE = "free"  # Never had premium subscription
 
 
+class SyncStatusConstants:
+    """
+    Configuration constants for background sync and cleanup jobs.
+
+    Controls the behavior of:
+    - Published experiment sync job (downloads experiments from S3 to local storage)
+    - User data cleanup job (removes data for logged-out free tier users)
+    """
+
+    import os
+    import tempfile
+
+    # Sync job configuration
+    SYNC_INTERVAL_MINUTES = 5  # How often to run sync job
+    MAX_SYNC_PER_RUN = 10  # Max experiments to sync per run (avoid overload)
+    LOCK_FILE = os.path.join(
+        tempfile.gettempdir(), "optinist_sync_job.lock"
+    )  # Lock file to prevent concurrent runs (cross-platform)
+
+    # Cleanup job configuration
+    CLEANUP_INTERVAL_MINUTES = 60  # How often to run cleanup job
+    LOGOUT_GRACE_PERIOD_MINUTES = 60  # Wait time after logout before cleanup
+    MAX_USERS_PER_RUN = 50  # Max users to clean per run (avoid overload)
+
+
 # ============================================================================
 # Configuration Constants
 # ============================================================================
