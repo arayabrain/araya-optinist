@@ -1,6 +1,6 @@
-import { ChangeEvent, FormEvent, useState, useEffect } from "react"
+import { ChangeEvent, FormEvent, useState } from "react"
 import { useDispatch } from "react-redux"
-import { Link, useNavigate } from "react-router-dom"
+import { Link } from "react-router-dom"
 
 import { AxiosError } from "axios"
 
@@ -27,14 +27,12 @@ import { getMe, login } from "store/slice/User/UserActions"
 import { AppDispatch } from "store/store"
 
 const Login = () => {
-  const navigate = useNavigate()
   const dispatch: AppDispatch = useDispatch()
   const [needsVerification, setNeedsVerification] = useState(false)
   const [resendingEmail, setResendingEmail] = useState(false)
   const [showResendSnackbar, setShowResendSnackbar] = useState(false)
 
   const [loading, setLoading] = useState(false)
-  const [loginSuccess, setLoginSuccess] = useState(false)
   const [errors, setErrors] = useState<{ [key: string]: string }>({
     email: "",
     password: "",
@@ -44,17 +42,6 @@ const Login = () => {
     password: "",
   })
 
-  // Handle navigation after successful login
-  useEffect(() => {
-    if (loginSuccess) {
-      const timer = setTimeout(() => {
-        navigate("/dashboard")
-      }, 100) // Small delay to ensure login completion
-
-      return () => clearTimeout(timer)
-    }
-    return undefined
-  }, [loginSuccess, navigate])
   // Handle resend verification email
   const handleResendEmail = async () => {
     if (!values.email) {
@@ -89,7 +76,7 @@ const Login = () => {
       .unwrap()
       .then(async (_) => {
         await dispatch(getMe())
-        setLoginSuccess(true)
+        // Login successful - Layout component will handle navigation
       })
       .catch((e: AxiosError) => {
         const status = e.response?.status

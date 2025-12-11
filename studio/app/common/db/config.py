@@ -15,7 +15,7 @@ class DatabaseConfig(BaseSettings):
     MYSQL_DATABASE: str = Field(default=None, env="MYSQL_DATABASE")
     DATABASE_URL: str = Field(default=None)
 
-    POOL_SIZE: int = Field(default=100)
+    POOL_SIZE: int = Field(default=5)
 
     @validator("DATABASE_URL", pre=True)
     def assemble_db_connection(cls, v: Optional[str], values: Dict[str, Any]) -> Any:
