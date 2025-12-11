@@ -398,9 +398,9 @@ async def main(args):
     Main function to sync workspace data capacity including S3 storage.
     """
     # Get S3 bucket name from environment
-    bucket_name = os.environ.get("S3_BUCKET_NAME")
+    bucket_name = os.environ.get("S3_DEFAULT_BUCKET_NAME")
     if not bucket_name:
-        logger.error("S3_BUCKET_NAME environment variable not set")
+        logger.error("S3_DEFAULT_BUCKET_NAME environment variable not set")
         sys.exit(1)
 
     logger.info(f"Using S3 bucket: {bucket_name}")

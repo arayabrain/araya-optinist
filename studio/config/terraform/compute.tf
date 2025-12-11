@@ -132,7 +132,7 @@ resource "aws_launch_template" "ecs" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = 80
+      volume_size = 120
       volume_type = "gp3"
       encrypted   = true
     }
@@ -957,11 +957,6 @@ resource "aws_ecs_task_definition" "autoscaling" {
           sourceVolume  = "subscr-optinist-cloud-snmk-volume"
           containerPath = "/app/.snakemake"
           readOnly      = false
-        },
-        {
-          sourceVolume  = "subscr-optinist-cloud-studio-data-volume"
-          containerPath = "/app/studio_data"
-          readOnly      = false
         }
       ]
 
@@ -992,19 +987,6 @@ resource "aws_ecs_task_definition" "autoscaling" {
       }
     }
   ])
-
-  volume {
-    name = "subscr-optinist-cloud-studio-data-volume"
-    efs_volume_configuration {
-      file_system_id     = aws_efs_file_system.studio_data.id
-      root_directory     = "/"
-      transit_encryption = "ENABLED"
-      authorization_config {
-        access_point_id = aws_efs_access_point.studio_data.id
-        iam             = "DISABLED"
-      }
-    }
-  }
 
   volume {
     name = "subscr-optinist-cloud-snmk-volume"
@@ -1189,11 +1171,6 @@ resource "aws_ecs_task_definition" "premium" {
 
       mountPoints = [
         {
-          sourceVolume  = "subscr-premium-optinist-cloud-studio-data-volume"
-          containerPath = "/opt/studio/dataset"
-          readOnly      = false
-        },
-        {
           sourceVolume  = "subscr-premium-optinist-cloud-snmk-volume"
           containerPath = "/efs"
           readOnly      = false
@@ -1222,19 +1199,6 @@ resource "aws_ecs_task_definition" "premium" {
       }
     }
   ])
-
-  volume {
-    name = "subscr-premium-optinist-cloud-studio-data-volume"
-    efs_volume_configuration {
-      file_system_id     = aws_efs_file_system.studio_data.id
-      root_directory     = "/"
-      transit_encryption = "ENABLED"
-      authorization_config {
-        access_point_id = aws_efs_access_point.studio_data.id
-        iam             = "DISABLED"
-      }
-    }
-  }
 
   volume {
     name = "subscr-premium-optinist-cloud-snmk-volume"

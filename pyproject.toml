@@ -98,6 +98,7 @@ snakemake-executor-plugin-aws-batch = "^0.2.1"
 snakemake-storage-plugin-fs = "^1.1.2"
 snakemake-storage-plugin-s3 = "*"
 stripe = "^12.5.0"
+apscheduler = "3.10.4"
 
 [tool.poetry.group.dev]
 optional = true

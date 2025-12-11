@@ -1,7 +1,8 @@
+from datetime import datetime
 from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.cloud.cloud_utils import (
@@ -20,6 +21,7 @@ from studio.app.common.core.subscription.constants import (
 )
 from studio.app.common.core.users import crud_users
 from studio.app.common.db.database import get_db
+from studio.app.common.models import FreeUserAssignment
 from studio.app.common.schemas.users import SelfUserUpdate, User, UserPasswordUpdate
 
 router = APIRouter(prefix="/users/me", tags=["users/me"])
@@ -159,6 +161,63 @@ async def release_premium_instance(current_user: User = Depends(get_current_user
         )
         # Don't fail on release errors - just log them
         return {"message": "Release completed with warnings", "released": True}
+
+
+@router.post("/free/logout", response_model=Dict)
+async def logout_free_user(
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    """
+    Explicitly log out a free tier user.
+    Updates logged_out_at timestamp in free_user_assignments table.
+    Data cleanup will occur 1 hour after logout.
+    """
+    # Only for free tier users
+    if current_user.subscription_type != SubscriptionType.FREE.value:
+        return {
+            "message": "Logout tracking only applies to free tier users",
+            "user_tier": current_user.subscription_type,
+            "logged_out": False,
+        }
+
+    try:
+        # Get the free user assignment
+        statement = select(FreeUserAssignment).where(
+            FreeUserAssignment.user_id == str(current_user.id)
+        )
+        assignment = db.exec(statement).first()
+
+        if assignment:
+            # Update logged_out_at timestamp
+            assignment.logged_out_at = datetime.now()
+            db.add(assignment)
+            db.commit()
+
+            logger.info(
+                f"Free user {current_user.id} logged out, data cleanup scheduled"
+            )
+        else:
+            logger.warning(
+                f"No assignment found for free user {current_user.id}, "
+                f"may not be assigned yet"
+            )
+
+        return {
+            "message": "Logout recorded successfully",
+            "user_id": current_user.id,
+            "user_tier": SubscriptionType.FREE.value,
+            "logged_out": True,
+            "cleanup_after_minutes": 60,  # Data cleanup occurs after 1 hour
+        }
+
+    except Exception as e:
+        logger.error(f"Error logging out free user {current_user.id}: {e}")
+        return {
+            "message": f"Logout processed with warnings: {str(e)}",
+            "user_id": current_user.id,
+            "logged_out": False,
+            "error": str(e),
+        }
 
 
 @router.get("/premium/status", response_model=Dict)

@@ -36,6 +36,14 @@ export const logout = async () => {
   const setLoggingOut = await getSetLoggingOut()
   setLoggingOut(true)
 
+  // Call backend logout endpoint for free tier users (fire and forget)
+  try {
+    const { logoutFreeUserApi } = await import("api/users/UsersMe")
+    await logoutFreeUserApi()
+  } catch (e) {
+    // Ignore errors - logout should proceed even if API call fails
+  }
+
   // Remove tokens synchronously first - this is the critical step
   removeRefreshToken()
   removeToken()

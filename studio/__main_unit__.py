@@ -22,6 +22,13 @@ from studio.app.common.core.middleware import (
 )
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
+from studio.app.common.core.subscription.constants import SyncStatusConstants
+
+# Background job imports (only used in non-standalone mode)
+if not MODE.IS_STANDALONE:
+    from studio.app.common.core.background.cleanup_job import DataCleanupJob
+    from studio.app.common.core.background.scheduler import BackgroundScheduler
+    from studio.app.common.core.background.sync_job import PublishedExperimentSyncJob
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
     is_workspace_owner,
@@ -75,9 +82,36 @@ async def lifespan(app: FastAPI):
         f"    # REMOTE_STORAGE_TYPE: {remote_storage_type}\n"
     )
 
+    # Initialize background job scheduler
+    if not MODE.IS_STANDALONE:
+        logger.info("Initializing background job scheduler")
+        BackgroundScheduler.initialize()
+
+        # Add sync job (every 5 minutes)
+        BackgroundScheduler.add_job(
+            func=PublishedExperimentSyncJob.run,
+            interval_minutes=SyncStatusConstants.SYNC_INTERVAL_MINUTES,
+            job_id="published_experiment_sync",
+        )
+
+        # Add cleanup job (every 60 minutes)
+        BackgroundScheduler.add_job(
+            func=DataCleanupJob.run,
+            interval_minutes=SyncStatusConstants.CLEANUP_INTERVAL_MINUTES,
+            job_id="data_cleanup",
+        )
+
+        # Start scheduler
+        BackgroundScheduler.start()
+        logger.info("Background job scheduler started")
+
     yield
 
     # Shutdown event
+    if not MODE.IS_STANDALONE:
+        BackgroundScheduler.shutdown()
+        logger.info("Background job scheduler shut down")
+
     logger.info('"Studio" application shutdown.')
 
 

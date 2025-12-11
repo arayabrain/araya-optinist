@@ -83,8 +83,7 @@ resource "aws_iam_role_policy" "ecs_task_efs" {
           "elasticfilesystem:DescribeMountTargets"
         ]
         Resource = [
-          aws_efs_file_system.snmk.arn,
-          aws_efs_file_system.studio_data.arn
+          aws_efs_file_system.snmk.arn
         ]
       }
     ]

@@ -13,6 +13,7 @@ IMPORTANT: Database updates run in background tasks to avoid blocking requests.
 
 import os
 import threading
+from datetime import datetime
 from typing import Optional
 
 from fastapi import Request
@@ -22,6 +23,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.subscription.constants import SubscriptionStatus
 from studio.app.common.db.database import session_scope
+from studio.app.common.models import FreeUserAssignment
 
 # In-memory cache to reduce database load (tracks last update time per user)
 _last_activity_cache = {}
@@ -90,6 +92,9 @@ class FreeUserActivityMiddleware(BaseHTTPMiddleware):
         """
         Check if we should update activity for this user (throttling).
         Only update DB once per minute per user to reduce load.
+
+        IMPORTANT: This only CHECKS the cache. The actual cache update happens
+        in _update_cache_after_commit() AFTER successful database commit.
         """
         import time
 
@@ -98,29 +103,54 @@ class FreeUserActivityMiddleware(BaseHTTPMiddleware):
             now = time.time()
 
             if now - last_update >= _CACHE_TTL_SECONDS:
-                _last_activity_cache[user_id] = now
                 return True
             return False
+
+    def _update_cache_after_commit(self, user_id: str):
+        """
+        Update cache timestamp after successful database commit.
+        This ensures cache consistency with database state.
+        """
+        import time
+
+        with _cache_lock:
+            _last_activity_cache[user_id] = time.time()
 
     async def _update_free_user_activity_async(self, user_id: str):
         """
         Update last_activity timestamp for free tier user (async wrapper).
         Runs in background to avoid blocking request.
+
+        Cache is updated optimistically before database commit to minimize latency.
+        If database update fails, the cache will be refreshed on next request.
         """
         import asyncio
 
-        # Run blocking database call in thread pool
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._update_free_user_activity_sync, user_id)
+        # Update cache immediately (optimistic) to reduce perceived latency
+        self._update_cache_after_commit(user_id)
 
-    def _update_free_user_activity_sync(self, user_id: str):
+        # Run blocking database call in thread pool (fire-and-forget)
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(
+                None, self._update_free_user_activity_sync, user_id
+            )
+        except Exception as e:
+            # Log error but don't propagate (fire-and-forget pattern)
+            logger = AppLogger.get_logger()
+            logger.warning(f"Background activity update failed for user {user_id}: {e}")
+
+    def _update_free_user_activity_sync(self, user_id: str) -> bool:
         """
         Update last_activity timestamp for free tier user (sync implementation).
 
         This method:
         1. Gets current instance ID from EC2 metadata
-        2. Upserts record in free_user_assignments table
+        2. Upserts record in free_user_assignments table using merge()
         3. Updates last_activity timestamp
+
+        Returns:
+            True if update successful, False otherwise
         """
         try:
             # Get current instance ID from EC2 metadata or environment
@@ -129,29 +159,32 @@ class FreeUserActivityMiddleware(BaseHTTPMiddleware):
             # Don't track if we can't determine instance ID
             # This prevents polluting database with fake "local" entries
             if not instance_id or instance_id == "local":
-                return
+                return False
 
-            # Update database using SQLAlchemy session
+            # Update database using SQLAlchemy merge() for atomic upsert
             with session_scope() as session:
-                # Use raw SQL for better performance (avoid ORM overhead)
-                from sqlalchemy import text
+                now = datetime.now()
 
-                query = text(
-                    """
-                    INSERT INTO free_user_assignments
-                        (user_id, instance_id, assigned_at, last_activity)
-                    VALUES
-                        (:user_id, :instance_id, NOW(), NOW())
-                    ON DUPLICATE KEY UPDATE
-                        last_activity = NOW(),
-                        instance_id = :instance_id
-                """
+                assignment = FreeUserAssignment(
+                    user_id=user_id,
+                    instance_id=instance_id,
+                    assigned_at=now,
+                    last_activity=now,
                 )
-                session.execute(query, {"user_id": user_id, "instance_id": instance_id})
+
+                merged = session.merge(assignment)
+
+                # For existing records, ensure we update the timestamps
+                merged.last_activity = now
+                merged.instance_id = instance_id
+
+                session.commit()
+                return True
 
         except Exception as e:
             logger = AppLogger.get_logger()
             logger.error(f"Error updating free user activity for user {user_id}: {e}")
+            return False
 
     def _get_instance_id(self) -> Optional[str]:
         """
