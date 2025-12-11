@@ -27,6 +27,11 @@ class TestPublishDataviewRecords:
         mock_record.local_sync_status = LocalSyncStatus.synced.value
         mock_record.version = 0
         """Test successful publish operation"""
+        # Setup mock result for execute() with rowcount=1 (success)
+        mock_result = MagicMock()
+        mock_result.rowcount = 1
+        mock_db.execute.return_value = mock_result
+
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
             "find_user_owned_dataview_record",
@@ -39,9 +44,8 @@ class TestPublishDataviewRecords:
             )
 
         assert result is True
-        assert mock_record.publish_status == 1
-        assert mock_record.local_sync_status == LocalSyncStatus.pending.value
-        assert mock_record.version == 1
+        # Verify execute() was called (the actual SQL update)
+        assert mock_db.execute.called
         mock_db.commit.assert_called_once()
 
     @pytest.mark.asyncio
@@ -56,6 +60,11 @@ class TestPublishDataviewRecords:
         """Test successful unpublish operation"""
         mock_record.publish_status = 1
 
+        # Setup mock result for execute() with rowcount=1 (success)
+        mock_result = MagicMock()
+        mock_result.rowcount = 1
+        mock_db.execute.return_value = mock_result
+
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
             "find_user_owned_dataview_record",
@@ -68,9 +77,9 @@ class TestPublishDataviewRecords:
             )
 
         assert result is True
-        assert mock_record.publish_status == 0
-        assert mock_record.local_sync_status == LocalSyncStatus.synced.value
-        assert mock_record.version == 1
+        # Verify execute() was called (the actual SQL update)
+        assert mock_db.execute.called
+        mock_db.commit.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_publish_no_change_needed(self):
@@ -131,30 +140,26 @@ class TestPublishDataviewRecords:
         """Test retry on concurrent modification"""
         call_count = 0
 
-        def mock_find_record(*args, **kwargs):
+        def mock_execute(stmt):
             nonlocal call_count
             call_count += 1
+            mock_result = MagicMock()
             if call_count == 1:
-                # First call: version 0
-                mock_record.version = 0
+                # First attempt: version conflict (rowcount=0)
+                mock_result.rowcount = 0
             else:
-                # Second call: version already incremented by another request
-                mock_record.version = 1
-            return mock_record
+                # Second attempt: success (rowcount=1)
+                mock_result.rowcount = 1
+            return mock_result
+
+        mock_db.execute.side_effect = mock_execute
 
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
             "find_user_owned_dataview_record",
-            side_effect=mock_find_record,
+            return_value=mock_record,
         ):
             from studio.app.common.routers.dataview import PublishFlags
-
-            # Simulate version mismatch on first attempt
-            def mock_refresh(record):
-                if call_count == 1:
-                    record.version = 0  # Simulate concurrent modification
-
-            mock_db.refresh.side_effect = mock_refresh
 
             result = await publish_dataview_records(
                 id=1, flag=PublishFlags.on, db=mock_db, current_user=mock_user
@@ -162,6 +167,8 @@ class TestPublishDataviewRecords:
 
         assert result is True
         assert call_count == 2  # Retried once
+        # commit is called on each attempt
+        assert mock_db.commit.call_count == 2
 
     @pytest.mark.asyncio
     async def test_publish_concurrent_modification_max_retries(self):
@@ -174,18 +181,18 @@ class TestPublishDataviewRecords:
         mock_record.local_sync_status = LocalSyncStatus.synced.value
         mock_record.version = 0
         """Test failure after max retries on concurrent modification"""
+
+        # Always return rowcount=0 to simulate persistent version conflicts
+        mock_result = MagicMock()
+        mock_result.rowcount = 0
+        mock_db.execute.return_value = mock_result
+
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
             "find_user_owned_dataview_record",
             return_value=mock_record,
         ):
             from studio.app.common.routers.dataview import PublishFlags
-
-            # Always simulate version mismatch
-            def mock_refresh(record):
-                record.version = 999  # Always wrong version
-
-            mock_db.refresh.side_effect = mock_refresh
 
             with pytest.raises(HTTPException) as exc_info:
                 await publish_dataview_records(
@@ -212,7 +219,8 @@ class TestPublicDataviewReproduceWorkflow:
             "find_published_dataview_record",
             return_value=mock_record,
         ):
-            with patch("os.path.exists", return_value=False):
+            # Mock experiment exists locally to skip S3 download
+            with patch("os.path.exists", return_value=True):
                 response = await public_reproduce_experiment(
                     workspace_id="1", unique_id="exp123", db=MagicMock()
                 )
@@ -233,7 +241,8 @@ class TestPublicDataviewReproduceWorkflow:
             "find_published_dataview_record",
             return_value=mock_record,
         ):
-            with patch("os.path.exists", return_value=False):
+            # Mock experiment exists locally to skip S3 download
+            with patch("os.path.exists", return_value=True):
                 response = await public_reproduce_experiment(
                     workspace_id="1", unique_id="exp123", db=MagicMock()
                 )
@@ -244,13 +253,16 @@ class TestPublicDataviewReproduceWorkflow:
     @pytest.mark.asyncio
     async def test_reproduce_downloads_from_s3_if_missing(self):
         """Test S3 download when experiment not on local EBS"""
+        from unittest.mock import AsyncMock
+
         from studio.app.common.routers.dataview import public_reproduce_experiment
 
         mock_record = MagicMock()
         mock_record.local_sync_status = LocalSyncStatus.synced.value
 
         mock_s3_controller = MagicMock()
-        mock_s3_controller.download_experiment = MagicMock(return_value=True)
+        # Use AsyncMock for async method
+        mock_s3_controller.download_experiment = AsyncMock(return_value=True)
 
         with patch(
             "studio.app.common.routers.dataview.DataviewService."

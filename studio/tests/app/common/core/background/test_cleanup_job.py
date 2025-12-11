@@ -81,7 +81,10 @@ class TestCleanupUserData:
                             )
 
         assert result is False
-        mock_rmtree.assert_not_called()
+        # Input directory is always deleted (1 call), but experiments are kept
+        assert mock_rmtree.call_count == 1
+        # Verify it was the input directory that was deleted
+        assert "input" in str(mock_rmtree.call_args_list[0])
 
 
 class TestVerifyNoActiveWorkflows:

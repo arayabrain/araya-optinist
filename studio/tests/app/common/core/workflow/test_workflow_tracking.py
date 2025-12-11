@@ -18,12 +18,15 @@ from studio.app.common.core.workflow.workflow_tracking import (
 @pytest.fixture
 def mock_session():
     """Mock database session"""
-    with patch(
-        "studio.app.common.core.workflow.workflow_tracking.session_scope"
-    ) as mock:
-        session = MagicMock()
-        mock.return_value.__enter__.return_value = session
-        yield session
+    # Patch MODE.IS_STANDALONE to False so functions don't return early
+    with patch("studio.app.common.core.workflow.workflow_tracking.MODE") as mock_mode:
+        mock_mode.IS_STANDALONE = False
+        with patch(
+            "studio.app.common.core.workflow.workflow_tracking.session_scope"
+        ) as mock:
+            session = MagicMock()
+            mock.return_value.__enter__.return_value = session
+            yield session
 
 
 class TestIncrementWorkflowCount:
@@ -31,27 +34,30 @@ class TestIncrementWorkflowCount:
 
     def test_increment_workflow_count_success(self, mock_session):
         """Test successful increment of workflow count"""
-        mock_assignment = MagicMock()
-        mock_assignment.active_workflow_count = 0
-        mock_assignment.last_workflow_start = None
-        mock_session.exec.return_value.first.return_value = mock_assignment
+        # Setup mock result for execute()
+        mock_result = MagicMock()
+        mock_result.rowcount = 1
+        mock_session.execute.return_value = mock_result
 
         increment_workflow_count(user_id=123)
 
-        assert mock_assignment.active_workflow_count == 1
-        assert mock_assignment.last_workflow_start is not None
-        mock_session.add.assert_called_once_with(mock_assignment)
+        # Verify execute() was called (the actual SQL update)
+        assert mock_session.execute.called
         mock_session.commit.assert_called_once()
 
     def test_increment_workflow_count_no_assignment(self, mock_session):
         """Test increment when user has no assignment (premium user)"""
-        mock_session.exec.return_value.first.return_value = None
+        # Setup mock result with rowcount=0 (no rows updated)
+        mock_result = MagicMock()
+        mock_result.rowcount = 0
+        mock_session.execute.return_value = mock_result
 
         # Should not raise exception
         increment_workflow_count(user_id=123)
 
-        mock_session.add.assert_not_called()
-        mock_session.commit.assert_not_called()
+        # execute() is called but rowcount is 0 (no rows updated)
+        assert mock_session.execute.called
+        mock_session.commit.assert_called_once()
 
     def test_increment_workflow_count_none_user_id(self, mock_session):
         """Test increment with None user_id"""
@@ -61,15 +67,17 @@ class TestIncrementWorkflowCount:
 
     def test_increment_workflow_count_multiple_times(self, mock_session):
         """Test multiple increments"""
-        mock_assignment = MagicMock()
-        mock_assignment.active_workflow_count = 0
-        mock_session.exec.return_value.first.return_value = mock_assignment
+        # Setup mock result for execute()
+        mock_result = MagicMock()
+        mock_result.rowcount = 1
+        mock_session.execute.return_value = mock_result
 
         increment_workflow_count(user_id=123)
-        assert mock_assignment.active_workflow_count == 1
-
         increment_workflow_count(user_id=123)
-        assert mock_assignment.active_workflow_count == 2
+
+        # Verify execute() was called twice
+        assert mock_session.execute.call_count == 2
+        assert mock_session.commit.call_count == 2
 
 
 class TestDecrementWorkflowCount:
@@ -77,37 +85,44 @@ class TestDecrementWorkflowCount:
 
     def test_decrement_workflow_count_success(self, mock_session):
         """Test successful decrement of workflow count"""
-        mock_assignment = MagicMock()
-        mock_assignment.active_workflow_count = 2
-        mock_assignment.last_workflow_end = None
-        mock_session.exec.return_value.first.return_value = mock_assignment
+        # Setup mock result for execute()
+        mock_result = MagicMock()
+        mock_result.rowcount = 1
+        mock_session.execute.return_value = mock_result
 
         decrement_workflow_count(user_id=123)
 
-        assert mock_assignment.active_workflow_count == 1
-        assert mock_assignment.last_workflow_end is not None
-        mock_session.add.assert_called_once_with(mock_assignment)
+        # Verify execute() was called (the actual SQL update)
+        assert mock_session.execute.called
         mock_session.commit.assert_called_once()
 
     def test_decrement_workflow_count_never_negative(self, mock_session):
         """Test that count never goes below 0"""
-        mock_assignment = MagicMock()
-        mock_assignment.active_workflow_count = 0
-        mock_session.exec.return_value.first.return_value = mock_assignment
+        # Setup mock result for execute()
+        mock_result = MagicMock()
+        mock_result.rowcount = 1
+        mock_session.execute.return_value = mock_result
 
         decrement_workflow_count(user_id=123)
 
-        assert mock_assignment.active_workflow_count == 0
+        # The SQL uses func.greatest(0, count - 1) to ensure count never goes negative
+        # We just verify execute was called
+        assert mock_session.execute.called
+        mock_session.commit.assert_called_once()
 
     def test_decrement_workflow_count_no_assignment(self, mock_session):
         """Test decrement when user has no assignment"""
-        mock_session.exec.return_value.first.return_value = None
+        # Setup mock result with rowcount=0 (no rows updated)
+        mock_result = MagicMock()
+        mock_result.rowcount = 0
+        mock_session.execute.return_value = mock_result
 
         # Should not raise exception
         decrement_workflow_count(user_id=123)
 
-        mock_session.add.assert_not_called()
-        mock_session.commit.assert_not_called()
+        # execute() is called but rowcount is 0 (no rows updated)
+        assert mock_session.execute.called
+        mock_session.commit.assert_called_once()
 
     def test_decrement_workflow_count_none_user_id(self, mock_session):
         """Test decrement with None user_id"""

@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from studio.app.common.core.subscription.constants import SubscriptionType
 from studio.app.common.routers.users_me import logout_free_user
 
 
@@ -20,7 +21,7 @@ class TestLogoutFreeUser:
         mock_db = MagicMock()
         mock_free_user = MagicMock()
         mock_free_user.id = 123
-        mock_free_user.subscription_type = 0
+        mock_free_user.subscription_type = SubscriptionType.FREE.value
         mock_assignment = MagicMock()
         mock_assignment.user_id = "123"
         mock_assignment.logged_out_at = None
@@ -40,7 +41,7 @@ class TestLogoutFreeUser:
         mock_db = MagicMock()
         mock_premium_user = MagicMock()
         mock_premium_user.id = 456
-        mock_premium_user.subscription_type = 1
+        mock_premium_user.subscription_type = SubscriptionType.PREMIUM.value
         """Test logout for premium user has no effect"""
         result = await logout_free_user(current_user=mock_premium_user, db=mock_db)
 
@@ -54,7 +55,7 @@ class TestLogoutFreeUser:
         mock_db = MagicMock()
         mock_free_user = MagicMock()
         mock_free_user.id = 123
-        mock_free_user.subscription_type = 0
+        mock_free_user.subscription_type = SubscriptionType.FREE.value
         """Test logout when user has no assignment"""
         mock_db.exec.return_value.first.return_value = None
 
@@ -68,7 +69,7 @@ class TestLogoutFreeUser:
         mock_db = MagicMock()
         mock_free_user = MagicMock()
         mock_free_user.id = 123
-        mock_free_user.subscription_type = 0
+        mock_free_user.subscription_type = SubscriptionType.FREE.value
         mock_assignment = MagicMock()
         mock_assignment.user_id = "123"
         mock_assignment.logged_out_at = None
@@ -88,7 +89,7 @@ class TestLogoutFreeUser:
         mock_db = MagicMock()
         mock_free_user = MagicMock()
         mock_free_user.id = 123
-        mock_free_user.subscription_type = 0
+        mock_free_user.subscription_type = SubscriptionType.FREE.value
         mock_assignment = MagicMock()
         mock_assignment.user_id = "123"
         mock_assignment.logged_out_at = None
