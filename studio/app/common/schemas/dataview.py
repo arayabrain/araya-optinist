@@ -22,6 +22,12 @@ class PublishStatus(int, Enum):
     off = 0
 
 
+class LocalSyncStatus(str, Enum):
+    pending = "pending"  # Experiment published but not yet synced to all instances
+    synced = "synced"  # Experiment available on local storage
+    error = "error"  # Sync failed, needs retry
+
+
 class DataviewRecordHeader(BaseModel):
     workspace_id: Optional[int]
     workspace_name: Optional[str]
