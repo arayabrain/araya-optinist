@@ -139,6 +139,7 @@ const CardIcon = styled(Box, {
   shouldForwardProp: (prop) => prop !== "brand",
 })<CardIconProps>(() => ({
   width: "32px",
+  height: "32px",
   borderRadius: "4px",
   display: "flex",
   alignItems: "center",

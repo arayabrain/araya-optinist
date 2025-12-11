@@ -33,6 +33,19 @@ logger = AppLogger.get_logger()
 class WebhookService:
     """Service class for handling Stripe webhooks"""
 
+    _stripe_initialized = False
+
+    @classmethod
+    def _ensure_stripe_initialized(cls):
+        """Lazy initialization of Stripe API key"""
+        if not cls._stripe_initialized:
+            try:
+                stripe.api_key = SubscriptionService.get_stripe_key()
+                cls._stripe_initialized = True
+            except ValueError as e:
+                logger.warning(f"Stripe not initialized: {e}")
+                # Don't raise here - allow module to load for tests
+
     @staticmethod
     def handle_checkout_completed(
         db: Session, session_data: Dict[str, Any]

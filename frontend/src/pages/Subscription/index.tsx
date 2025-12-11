@@ -111,19 +111,15 @@ const SubscriptionPlans = () => {
 
       // Check if the action was fulfilled
       if (reactivateSubscription.fulfilled.match(resultAction)) {
-        // Successfully reactivated
         // eslint-disable-next-line no-console
         console.log("Subscription reactivated successfully")
       } else {
-        // Handle error case
         // eslint-disable-next-line no-console
         console.error("Failed to reactivate subscription:", resultAction.error)
-        // You might want to show an error message to the user here
       }
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error("Error reactivating subscription:", error)
-      // Handle error - maybe show a toast notification
     } finally {
       setProcessingPlanId(null)
     }

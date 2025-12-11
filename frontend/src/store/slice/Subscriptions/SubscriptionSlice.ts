@@ -186,7 +186,7 @@ const subscriptionSlice = createSlice({
         state.loading = true
         state.error = null
       })
-      .addCase(reactivateSubscription.fulfilled, (state) => {
+      .addCase(reactivateSubscription.fulfilled, (state, _action) => {
         state.loading = false
         if (state.userSubscription) {
           state.userSubscription.scheduled_downgrade = false

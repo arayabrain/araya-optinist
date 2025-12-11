@@ -32,6 +32,7 @@ export const createCheckoutSessionApi = async (planId: number) => {
 
 export const reactivateSubscriptionApi = async (user_id: number) => {
   const response = await axios.post(`/api/subsc/mgmts/reactivate/${user_id}`)
+  // eslint-disable-next-line no-console
   console.log("Reactivation response:", response.data)
   return response.data
 }

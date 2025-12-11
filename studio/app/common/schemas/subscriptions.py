@@ -89,6 +89,7 @@ class UserSubscriptionResponse(BaseModel):
 
     class Config:
         from_attributes = True
+        json_encoders = {datetime: lambda v: v.isoformat()}
 
 
 class UserSubscriptionSummary(BaseModel):
@@ -139,7 +140,7 @@ class PaymentMethodResponse(BaseModel):
             "discover": "/static/images/cards/discover.png",
             "jcb": "/static/images/cards/jcb.png",
             "diners": "/static/images/cards/diners.png",
-            "unionpay": "/static/images/cards/unionpay.png",
+            "unionpay": "/static/images/cards/union.png",
         }
         return brand_logos.get(self.brand.lower(), "/static/images/cards/default.png")
 
