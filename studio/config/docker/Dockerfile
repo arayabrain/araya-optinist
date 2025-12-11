@@ -4,11 +4,11 @@ WORKDIR /app
 
 # install default packages
 RUN apt-get --allow-releaseinfo-change update && \
-    apt-get install --no-install-recommends -y sudo procps iproute2 iputils-ping telnet wget curl unzip less vim \
+    apt-get install --no-install-recommends -y sudo procps iproute2 iputils-ping telnet wget curl unzip less vim git \
         default-mysql-client
 
-# install conda & packages
-RUN apt-get install --no-install-recommends -y gcc g++ clang libgl1 libgl1-mesa-dev libopencv-dev && \
+# install conda & packages and optimization solvers
+RUN apt-get install --no-install-recommends -y gcc g++ clang clang libgl1 libgl1-mesa-dev libopencv-dev coinor-cbc rsync && \
     apt-get autoremove -y && apt-get clean
 
 # Specify compiler (use clang)
@@ -54,6 +54,8 @@ COPY frontend/build /app/frontend/build
 COPY studio /app/studio
 COPY sample_data /app/sample_data
 COPY main.py alembic.ini ./
+
+ENV OPTINIST_DIR=/app/studio_data
 
 # Copy the cloud-startup.sh script
 COPY cloud-startup.sh ./
