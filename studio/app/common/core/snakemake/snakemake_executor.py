@@ -15,6 +15,7 @@ from snakemake.api import (
     StorageSettings,
 )
 
+from studio.app.common.core.cloud.cloud_utils import update_user_storage_after_workflow
 from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
 )
@@ -42,7 +43,18 @@ from studio.app.dir_path import DIRPATH
 logger = AppLogger.get_logger()
 
 
-def snakemake_execute(workspace_id: str, unique_id: str, params: SmkParam):
+def snakemake_execute(
+    workspace_id: str, unique_id: str, params: SmkParam, user_id: int = None
+):
+    """
+    Main entry point for Snakemake execution.
+
+    Args:
+        workspace_id: Workspace ID
+        unique_id: Unique ID for the workflow
+        params: Snakemake parameters
+        user_id: User ID (for tracking free tier workflow counts)
+    """
     client_id = get_client_id_for_subprocess()
 
     with ProcessPoolExecutor(max_workers=1) as executor:
@@ -57,7 +69,19 @@ def snakemake_execute(workspace_id: str, unique_id: str, params: SmkParam):
         )
         future_result = future.result()
 
-        logger.info("finish snakemake running process. result: %s", future_result)
+        # Update user storage after workflow completion
+        asyncio.run(update_user_storage_after_workflow(workspace_id))
+
+        # Decrement workflow count for free tier users (for load balancing)
+        if user_id is not None:
+            try:
+                from studio.app.common.core.workflow.workflow_tracking import (
+                    decrement_workflow_count,
+                )
+
+                decrement_workflow_count(user_id)
+            except Exception as e:
+                logger.error(f"Failed to decrement workflow count: {e}")
 
         return future_result
 
@@ -92,8 +116,10 @@ def _snakemake_execute_process(
     # Use context manager for proper cleanup
     with SnakemakeApi(
         OutputSettings(
-            verbose=True,
-            show_failed_logs=True,
+            verbose=True,  # Print debugging output
+            show_failed_logs=True,  # Automatically display logs of failed jobs
+            debug_dag=True,  # Print candidate and selected jobs with wildcards
+            printshellcmds=True,  # Show shell commands
         ),
     ) as snakemake_api:
         workflow_api = snakemake_api.workflow(
@@ -193,6 +219,12 @@ def _snakemake_execute_process(
     return snakemake_result
 
 
+# NOTE: The old _snakemake_execute_batch() function (~580 lines) has been completely
+# replaced by BatchSnakemakeExecutor and removed from this file.
+# See:
+# studio.app.common.core.cloud_batch.batch_snakemake_executor.BatchSnakemakeExecutor
+
+
 def delete_dependencies(
     workspace_id: str,
     unique_id: str,
@@ -225,7 +257,6 @@ def delete_dependencies(
                 ),
             ]
         )
-        # logger.debug(pickle_filepath)
 
         if os.path.exists(pickle_filepath):
             os.remove(pickle_filepath)

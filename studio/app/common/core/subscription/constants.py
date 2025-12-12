@@ -183,7 +183,7 @@ class StorageQuota:
     """Constants for storage quota limits"""
 
     FREE = 5  # 5 GB for free plan
-    PREMIUM = 100  # 100 GB for premium plan
+    PREMIUM = 200  # 200 GB for premium plan
     CRITICAL_THRESHOLD_PERCENT = 90  # 90% usage threshold for critical warning
     DANGER_THRESHOLD_PERCENT = 100  # 100% usage threshold for danger warning
 
@@ -287,6 +287,31 @@ class SubscriptionLifecycleStatus(StrEnum):
     WARNING = "warning"  # In warning period (after grace, before deletion)
     OVERDUE = "overdue"  # Past warning period
     FREE = "free"  # Never had premium subscription
+
+
+class SyncStatusConstants:
+    """
+    Configuration constants for background sync and cleanup jobs.
+
+    Controls the behavior of:
+    - Published experiment sync job (downloads experiments from S3 to local storage)
+    - User data cleanup job (removes data for logged-out free tier users)
+    """
+
+    import os
+    import tempfile
+
+    # Sync job configuration
+    SYNC_INTERVAL_MINUTES = 5  # How often to run sync job
+    MAX_SYNC_PER_RUN = 10  # Max experiments to sync per run (avoid overload)
+    LOCK_FILE = os.path.join(
+        tempfile.gettempdir(), "optinist_sync_job.lock"
+    )  # Lock file to prevent concurrent runs (cross-platform)
+
+    # Cleanup job configuration
+    CLEANUP_INTERVAL_MINUTES = 60  # How often to run cleanup job
+    LOGOUT_GRACE_PERIOD_MINUTES = 60  # Wait time after logout before cleanup
+    MAX_USERS_PER_RUN = 50  # Max users to clean per run (avoid overload)
 
 
 # ============================================================================
