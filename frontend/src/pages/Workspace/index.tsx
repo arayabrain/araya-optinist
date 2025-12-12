@@ -382,9 +382,11 @@ const Workspaces = () => {
   }, [offset, limit])
 
   useEffect(() => {
+    // Only fetch workspaces if user is authenticated
+    if (!user) return
     dispatch(getWorkspaceList(dataParams))
     //eslint-disable-next-line
-  }, [dataParams])
+  }, [dataParams, user])
 
   const handleOpenPopupShare = (shareId: number) => {
     setOpen({ ...open, share: true, shareId })
