@@ -73,6 +73,8 @@ def snakemake_execute(
         # Update user storage after workflow completion
         asyncio.run(update_user_storage_after_workflow(workspace_id))
 
+        logger.info("Finished snakemake running process. result: %s", future_result)
+
         return future_result
 
 
@@ -207,12 +209,6 @@ def _snakemake_execute_process(
             )
 
     return snakemake_result
-
-
-# NOTE: The old _snakemake_execute_batch() function (~580 lines) has been completely
-# replaced by BatchSnakemakeExecutor and removed from this file.
-# See:
-# studio.app.common.core.cloud_batch.batch_snakemake_executor.BatchSnakemakeExecutor
 
 
 def delete_dependencies(

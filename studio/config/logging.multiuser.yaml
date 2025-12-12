@@ -37,7 +37,7 @@ loggers:
   # sqlalchemy.engine:
   #   level: INFO
   snakemake:
-    level: DEBUG
+    level: INFO
     handlers: [rotating_file]
     propagate: false
 root:
