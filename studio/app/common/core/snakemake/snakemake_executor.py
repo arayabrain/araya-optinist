@@ -219,12 +219,6 @@ def _snakemake_execute_process(
     return snakemake_result
 
 
-# NOTE: The old _snakemake_execute_batch() function (~580 lines) has been completely
-# replaced by BatchSnakemakeExecutor and removed from this file.
-# See:
-# studio.app.common.core.cloud_batch.batch_snakemake_executor.BatchSnakemakeExecutor
-
-
 def delete_dependencies(
     workspace_id: str,
     unique_id: str,
