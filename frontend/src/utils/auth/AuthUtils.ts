@@ -1,3 +1,16 @@
+import { routingService } from "utils/routing/RoutingService"
+
+// Import setLoggingOut from axios - using dynamic import to avoid circular dependency
+let setLoggingOutFn: ((value: boolean) => void) | null = null
+
+const getSetLoggingOut = async () => {
+  if (!setLoggingOutFn) {
+    const axiosModule = await import("utils/axios")
+    setLoggingOutFn = axiosModule.setLoggingOut
+  }
+  return setLoggingOutFn
+}
+
 export const saveToken = (access_token: string) => {
   localStorage.setItem("access_token", access_token)
 }
@@ -18,10 +31,41 @@ export const removeRefreshToken = () => {
   return localStorage.removeItem("refresh_token")
 }
 
-export const logout = () => {
+export const logout = async () => {
+  // Set logout flag to prevent token refresh during logout
+  const setLoggingOut = await getSetLoggingOut()
+  setLoggingOut(true)
+
+  // Call backend logout endpoint for free tier users (fire and forget)
+  try {
+    const { logoutFreeUserApi } = await import("api/users/UsersMe")
+    await logoutFreeUserApi()
+  } catch (e) {
+    // Ignore errors - logout should proceed even if API call fails
+  }
+
+  // Remove tokens synchronously first - this is the critical step
   removeRefreshToken()
   removeToken()
   removeExToken()
+
+  // Clear dismissed warnings so they can appear again for the next user
+  localStorage.removeItem("dismissedWarnings")
+  // Clear session storage to prevent stale state on browser back
+  sessionStorage.removeItem("storage-refreshed-on-login")
+
+  // Clear premium routing information on logout
+  try {
+    routingService.clearRoutingInfo()
+  } catch (e) {
+    // Ignore if routing service isn't available
+  }
+
+  // Reset logout flag immediately after token removal
+  // This ensures any pending checks see the cleared tokens
+  setLoggingOut(false)
+
+  // Navigate to login - this is safe now that tokens are removed and flag is reset
   window.location.href = "/login"
 }
 

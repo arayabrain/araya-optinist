@@ -10,8 +10,12 @@ import Loading from "components/common/Loading"
 import { LogsFloatingButton } from "components/common/LogsFloatingButton"
 import Header from "components/Layout/Header"
 import LeftMenu from "components/Layout/LeftMenu"
+import InactivityWarning from "components/Premium/InactivityWarning"
+import PremiumAssignmentManager from "components/Premium/PremiumAssignmentManager"
+import PremiumNotificationManager from "components/Premium/PremiumNotificationManager"
 import ModalLogs from "components/Workspace/FlowChart/ModalLogs"
 import { APP_BAR_HEIGHT } from "const/Layout"
+import { PremiumAssignmentProvider } from "contexts/PremiumAssignmentContext"
 import { selectLogsModalIsOpen } from "store/slice/LogsModal/LogsModalSelectors"
 import { closeLogsModal } from "store/slice/LogsModal/LogsModalSlice"
 import { selectModeStandalone } from "store/slice/Standalone/StandaloneSeclector"
@@ -49,13 +53,19 @@ const Layout = ({ children }: { children?: ReactNode }) => {
 
   const checkPublicRouteAccess = async () => {
     const isAuthPage = ["/login", "/register"].includes(location.pathname)
+    const token = getToken()
 
     // For all public routes, if there's a token, fetch user data to show correct header
     if (!user) {
-      const token = getToken()
       if (token) {
         try {
           await dispatch(getMe())
+          // Revalidate token after async operation - logout may have occurred during getMe()
+          const currentToken = getToken()
+          if (!currentToken) {
+            // Token was removed during getMe(), user logged out - stay on current page
+            return
+          }
           // If on login/register page and successfully authenticated, redirect to dashboard
           if (isAuthPage) {
             navigate("/dashboard", { replace: true })
@@ -65,52 +75,109 @@ const Layout = ({ children }: { children?: ReactNode }) => {
         }
       }
     } else if (isAuthPage) {
+      // If user exists in Redux but no token, this is a logout race condition
+      // Stay on auth page and let Redux state clear
+      if (!token) {
+        return
+      }
+      // Revalidate token before navigation - user might have logged out
+      const currentToken = getToken()
+      if (!currentToken) {
+        // Token was removed, don't navigate
+        return
+      }
       // If user is already logged in and trying to access login/register, redirect to dashboard
       navigate("/dashboard", { replace: true })
     }
   }
 
   const checkAuth = async () => {
-    if (user) {
-      if (loading) setLoading(false)
-      return
-    }
     const token = getToken()
     const isLogin = location.pathname === "/login"
 
-    try {
-      if (token) {
-        await dispatch(getMe())
-
-        // Refresh workspace storage only once per session to ensure accurate limit warnings
-        if (!storageRefreshedOnLogin) {
-          try {
-            const { refreshAllWorkspacesStorageApi } = await import(
-              "api/workspace"
-            )
-            await refreshAllWorkspacesStorageApi()
-
-            // Mark as refreshed in session storage
-            sessionStorage.setItem("storage-refreshed-on-login", "true")
-            setStorageRefreshedOnLogin(true)
-          } catch (storageError) {
-            // Don't fail login if storage refresh fails
-            // eslint-disable-next-line no-console
-            console.warn(
-              "Failed to refresh workspace storage usage on login:",
-              storageError,
-            )
-
-            // Still mark as attempted so we don't keep retrying
-            sessionStorage.setItem("storage-refreshed-on-login", "true")
-            setStorageRefreshedOnLogin(true)
-          }
-        }
-
-        if (isLogin) navigate("/dashboard")
+    // Always check token first, even if Redux has user data
+    // This prevents logout issues where user navigates to protected pages after logout
+    if (!token) {
+      // No token means user is logged out, clear any stale Redux state
+      if (user) {
+        // Token was removed but Redux state hasn't cleared yet
+        // Force navigation to login to trigger cleanup
+        navigate("/login", { replace: true })
+        if (loading) setLoading(false)
         return
-      } else if (!isLogin) throw new Error("fail auth")
+      }
+      if (!isLogin) {
+        navigate("/login", { replace: true })
+      }
+      if (loading) setLoading(false)
+      return
+    }
+
+    // If we have a token and user data, auth is valid
+    // But verify they're in sync - if we have user but no token, this is a logout race condition
+    if (user && token) {
+      if (loading) setLoading(false)
+      return
+    }
+
+    // Have token but no user data - fetch user
+    try {
+      await dispatch(getMe())
+
+      // Revalidate token after getMe() - logout may have occurred during async operation
+      let currentToken = getToken()
+      if (!currentToken) {
+        // Token was removed during getMe(), user logged out
+        navigate("/login", { replace: true })
+        if (loading) setLoading(false)
+        return
+      }
+
+      // Refresh workspace storage only once per session to ensure accurate limit warnings
+      if (!storageRefreshedOnLogin) {
+        try {
+          const { refreshAllWorkspacesStorageApi } = await import(
+            "api/workspace"
+          )
+          await refreshAllWorkspacesStorageApi()
+
+          // Revalidate token after storage refresh - logout may have occurred
+          currentToken = getToken()
+          if (!currentToken) {
+            navigate("/login", { replace: true })
+            if (loading) setLoading(false)
+            return
+          }
+
+          // Mark as refreshed in session storage
+          sessionStorage.setItem("storage-refreshed-on-login", "true")
+          setStorageRefreshedOnLogin(true)
+        } catch (storageError) {
+          // Don't fail login if storage refresh fails
+          // eslint-disable-next-line no-console
+          console.warn(
+            "Failed to refresh workspace storage usage on login:",
+            storageError,
+          )
+
+          // Still mark as attempted so we don't keep retrying
+          sessionStorage.setItem("storage-refreshed-on-login", "true")
+          setStorageRefreshedOnLogin(true)
+        }
+      }
+
+      // Final token revalidation before navigation to authorized page
+      currentToken = getToken()
+      if (!currentToken) {
+        // Token was removed, user logged out - redirect to login
+        navigate("/login", { replace: true })
+        if (loading) setLoading(false)
+        return
+      }
+
+      if (isLogin) navigate("/dashboard")
     } catch {
+      // Token is invalid or getMe failed - clear auth and redirect
       navigate("/login", { replace: true })
     } finally {
       if (loading) setLoading(false)
@@ -122,12 +189,10 @@ const Layout = ({ children }: { children?: ReactNode }) => {
   }
 
   if (requiresAuth(location.pathname)) {
-    return (
-      <>
-        <Loading loading={loading} />
-        {!loading && <AuthedLayout>{children}</AuthedLayout>}
-      </>
-    )
+    if (loading) {
+      return <Loading loading={true} />
+    }
+    return <AuthedLayout>{children}</AuthedLayout>
   }
 
   return <UnauthedLayout>{children}</UnauthedLayout>
@@ -152,17 +217,25 @@ const AuthedLayout: FC<{ children: ReactNode }> = ({ children }) => {
   }
 
   return (
-    <LayoutWrapper>
-      <Header handleDrawerOpen={handleDrawerOpen} />
-      <ContentBodyWrapper>
-        <LeftMenu open={open} handleDrawerClose={handleDrawerClose} />
-        <ChildrenWrapper>{children}</ChildrenWrapper>
-      </ContentBodyWrapper>
-      {/* Global limit alert modal for authenticated users */}
-      <LimitAlert showAsModal={true} autoCheck={true} />
-      {!isStandalone && <LogsFloatingButton />}
-      {logsModalOpen && <ModalLogs isOpen onClose={handleLogsModalClose} />}
-    </LayoutWrapper>
+    <PremiumAssignmentProvider>
+      <LayoutWrapper>
+        <Header handleDrawerOpen={handleDrawerOpen} />
+        <ContentBodyWrapper>
+          <LeftMenu open={open} handleDrawerClose={handleDrawerClose} />
+          <ChildrenWrapper>{children}</ChildrenWrapper>
+        </ContentBodyWrapper>
+        {/* Premium assignment manager for automatic instance assignment */}
+        <PremiumAssignmentManager />
+        {/* Premium notification manager for user feedback */}
+        <PremiumNotificationManager />
+        {/* Inactivity warning for premium users */}
+        <InactivityWarning />
+        {/* Global limit alert modal for authenticated users */}
+        <LimitAlert showAsModal={true} autoCheck={true} />
+        {!isStandalone && <LogsFloatingButton />}
+        {logsModalOpen && <ModalLogs isOpen onClose={handleLogsModalClose} />}
+      </LayoutWrapper>
+    </PremiumAssignmentProvider>
   )
 }
 
