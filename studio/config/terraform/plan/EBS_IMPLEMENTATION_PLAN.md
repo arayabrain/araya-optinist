@@ -1,16 +1,6 @@
-# EBS Implementation Plan: FREE_MANAGER_STORAGE_ARCHITECTURE
+# EBS Storage
 
 ## Executive Summary
-
-**Problem:** EFS accumulated ~200GB garbage data without cleanup, costing ~$60/month for studio_data alone.
-
-**Solution:** Migrate user data from EFS to EBS with automated sync/cleanup mechanism.
-
-**Results:**
--  Cost reduction: ~$52/month savings (~54% reduction: $96 → $44/month)
--  Automated cleanup on logout (1-hour grace period)
--  S3 as source of truth with local EBS caching
--  Background sync for published experiments (5-min eventual consistency)
 
 ## Key Architectural Constraints
 
@@ -79,19 +69,19 @@ These are the fundamental constraints that the EBS implementation satisfies:
 
 ### Safety Guarantees
 
-| Guarantee | Mechanism |
-|-----------|-----------|
-| No data loss | S3 backup verified before local deletion |
-| No workflow interruption | Cleanup only when `active_workflow_count = 0` |
-| No user disruption | 1-hour grace period after logout |
-| Eventual consistency | Published experiments available within 5 minutes |
-| Graceful degradation | Frontend handles 202/503 responses |
+| Guarantee                | Mechanism                                        |
+|--------------------------|--------------------------------------------------|
+| No data loss             | S3 backup verified before local deletion         |
+| No workflow interruption | Cleanup only when `active_workflow_count = 0`    |
+| No user disruption       | 1-hour grace period after logout                 |
+| Eventual consistency     | Published experiments available within 5 minutes |
+| Graceful degradation     | Frontend handles 202/503 responses               |
 
 ---
 
-## Implementation Details
+## Details
 
-### 1. Workflow Tracking  (Already Complete)
+### 1. Workflow Tracking
 
 **Files:** `workflow_tracking.py`, `workflow_runner.py`, `snakemake_executor.py`
 
@@ -100,7 +90,7 @@ These are the fundamental constraints that the EBS implementation satisfies:
 - Decrements on completion/failure
 - Prevents cleanup during active workflows
 
-### 2. Frontend Logout Integration  (Newly Implemented)
+### 2. Frontend Logout Integration
 
 **Files Modified:**
 - `frontend/src/api/users/UsersMe.ts` - Added `logoutFreeUserApi()`
@@ -111,7 +101,7 @@ These are the fundamental constraints that the EBS implementation satisfies:
 - Updates `logged_out_at` timestamp in DB
 - Proceeds even if API call fails
 
-### 3. Frontend 202/503 Response Handling  (Newly Implemented)
+### 3. Frontend 202/503 Response Handling
 
 **File Modified:** `frontend/src/components/Dataview/WorkflowDetailsView.tsx`
 
@@ -152,16 +142,6 @@ These are the fundamental constraints that the EBS implementation satisfies:
 - Automatic retry on concurrent modification (max 3 attempts)
 - Returns 409 Conflict if retries exhausted
 - Prevents lost updates and race conditions
-
----
-
-## Database Migrations
-
-| Migration ID   | Purpose | Fields Added |
-|----------------|---------|--------------|
-| `a5b9c8d7e6f5` | Track sync status | `local_sync_status` (pending/synced/error) |
-                 | Track logout time | `logged_out_at` (timestamp) |
-                 | Optimistic locking | `version` (integer) |
 
 ---
 
@@ -286,21 +266,21 @@ sequenceDiagram
 
 ---
 
-## Files Modified/Created
+## Files
 
-### Backend (Already Staged)
+### Backend
 - `studio/app/common/core/workflow/workflow_tracking.py`
 - `studio/app/common/core/background/sync_job.py`
 - `studio/app/common/core/background/cleanup_job.py`
 - `studio/app/common/routers/dataview.py`
 - `studio/alembic/versions/a5b9c8d7e6f5_*.py`
 
-### Frontend (Newly Implemented)
+### Frontend
 - `frontend/src/api/users/UsersMe.ts`
 - `frontend/src/utils/auth/AuthUtils.ts`
 - `frontend/src/components/Dataview/WorkflowDetailsView.tsx`
 
-### Testing (Newly Created)
+### Testing
 - `studio/tests/app/common/core/workflow/test_workflow_tracking.py`
 - `studio/tests/app/common/core/background/test_sync_job.py`
 - `studio/tests/app/common/core/background/test_cleanup_job.py`
@@ -308,8 +288,6 @@ sequenceDiagram
 - `studio/tests/app/common/routers/test_users_me_logout.py`
 - `studio/tests/README.md`
 - `.github/workflows/test_new_features.yml`
-
-**Total:** 17 files modified/created, 38 tests, ~1200 lines of test code
 
 ---
 
