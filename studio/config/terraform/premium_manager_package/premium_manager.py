@@ -1,18 +1,26 @@
 """
-Premium Manager Lambda Function
+Premium Manager Lambda Function - Compute & Capacity Management
 
 PRIMARY RESPONSIBILITIES:
 - Real-time assignment of premium users to instances (API-triggered)
 - Real-time release of premium users from instances (API-triggered)
-- Immediate scaling and instance management for user requests
+- Scaling and instance management (both real-time and scheduled)
 - ALB routing rule creation and deletion
+- Scheduled monitoring (every 15 min) to make scaling decisions
+- Standby pool management (ensure capacity, cleanup excess)
+
+SCALING STRATEGY:
+- Triggered by: User logout, scheduled monitoring (every 15 min)
+- Algorithm: scale_down_if_possible() - conservative (keeps active_users + 1)
+- Coordinates with: premium_cleanup (which cleans data, not compute)
 
 ARCHITECTURE NOTES:
-- This Lambda handles REAL-TIME operations triggered by user actions
-- Scheduled maintenance (cleanup, reconciliation) is handled by premium_cleanup.py
-- Some functions exist in both Lambdas for different purposes:
-  - premium_manager: Immediate operations during user login/logout
-  - premium_cleanup: Scheduled maintenance operations (hourly)
+- This Lambda handles ALL compute and capacity decisions
+- Data cleanup is handled by premium_cleanup.py (removes:
+     stale assignments, orphaned resources)
+- Division of labor:
+  - premium_manager: ALL scaling decisions, instance lifecycle, capacity management
+  - premium_cleanup: Data hygiene, resource reconciliation (hourly)
 
 Required Environment Variables:
 - RDS_HOST: Database host (format: host:port)
@@ -29,6 +37,7 @@ Required Environment Variables:
 import json
 import os
 import time
+from datetime import datetime, timedelta
 from typing import Any, Dict
 
 import boto3
@@ -1299,6 +1308,236 @@ def get_premium_user_status(user_id: str) -> Dict[str, Any]:
         }
 
 
+def is_premium_scaling_in_progress() -> bool:
+    """
+    Check if a premium scaling operation is in progress using CloudWatch metrics.
+    Returns True if scaling operation started within last 15 minutes.
+    """
+    cloudwatch = boto3.client("cloudwatch")
+
+    try:
+        response = cloudwatch.get_metric_data(
+            MetricDataQueries=[
+                {
+                    "Id": "scaling_lock",
+                    "MetricStat": {
+                        "Metric": {
+                            "Namespace": "OptiNiSt/PremiumManager",
+                            "MetricName": "ScalingInProgress",
+                        },
+                        "Period": 900,  # 15 minutes
+                        "Stat": "Maximum",
+                    },
+                }
+            ],
+            StartTime=datetime.utcnow() - timedelta(minutes=15),
+            EndTime=datetime.utcnow(),
+        )
+
+        values = response["MetricDataResults"][0]["Values"]
+        if values and max(values) > 0:
+            print("Scaling lock detected (operation in progress)")
+            return True
+
+        return False
+
+    except Exception as e:
+        print(f"Error checking scaling lock: {str(e)}")
+        return False
+
+
+def set_premium_scaling_lock(in_progress: bool) -> None:
+    """
+    Set or clear the premium scaling lock using CloudWatch metrics.
+
+    Args:
+        in_progress: True to set lock, False to clear lock
+    """
+    cloudwatch = boto3.client("cloudwatch")
+
+    try:
+        cloudwatch.put_metric_data(
+            Namespace="OptiNiSt/PremiumManager",
+            MetricData=[
+                {
+                    "MetricName": "ScalingInProgress",
+                    "Value": 1 if in_progress else 0,
+                    "Unit": "None",
+                    "Timestamp": datetime.utcnow(),
+                }
+            ],
+        )
+        print(f"Scaling lock {'set' if in_progress else 'cleared'}")
+
+    except Exception as e:
+        print(f"Error setting scaling lock: {str(e)}")
+
+
+def publish_premium_metrics(
+    active_users: int, idle_users: int, running_instances: int, idle_instances: int
+) -> None:
+    """
+    Publish premium tier monitoring metrics to CloudWatch.
+
+    Metrics published to namespace OptiNiSt/PremiumManager:
+    - ActivePremiumUsers: Count of users with active assignments
+    - IdlePremiumUsers: Count of users with inactive/no assignments
+    - RunningInstances: Count of running EC2 instances
+    - IdleInstances: Count of instances with no assigned users
+    """
+    cloudwatch = boto3.client("cloudwatch")
+
+    try:
+        cloudwatch.put_metric_data(
+            Namespace="OptiNiSt/PremiumManager",
+            MetricData=[
+                {
+                    "MetricName": "ActivePremiumUsers",
+                    "Value": active_users,
+                    "Unit": "Count",
+                    "Timestamp": datetime.utcnow(),
+                },
+                {
+                    "MetricName": "IdlePremiumUsers",
+                    "Value": idle_users,
+                    "Unit": "Count",
+                    "Timestamp": datetime.utcnow(),
+                },
+                {
+                    "MetricName": "RunningInstances",
+                    "Value": running_instances,
+                    "Unit": "Count",
+                    "Timestamp": datetime.utcnow(),
+                },
+                {
+                    "MetricName": "IdleInstances",
+                    "Value": idle_instances,
+                    "Unit": "Count",
+                    "Timestamp": datetime.utcnow(),
+                },
+            ],
+        )
+        print(
+            f"Published metrics: active_users={active_users}, idle_users={idle_users}, "
+            f"running_instances={running_instances}, idle_instances={idle_instances}"
+        )
+
+    except Exception as e:
+        print(f"Error publishing metrics: {str(e)}")
+
+
+def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """
+    Handle scheduled monitoring events for premium tier.
+
+    Responsibilities:
+    - Check if scaling is already in progress (prevent concurrent operations)
+    - Call scale_down_if_possible() to stop instances with NO assigned users
+    - Publish monitoring metrics to CloudWatch
+    - Update ECS service desired count
+
+    Triggered every 15 minutes by CloudWatch Events.
+    Coordinates with premium_cleanup lambda (runs hourly).
+
+    Returns:
+        Dictionary with monitoring and scaling results
+    """
+    print(f"Premium monitoring triggered by event: {json.dumps(event)}")
+
+    try:
+        # 1. Check if scaling is already in progress (prevent concurrent operations)
+        if is_premium_scaling_in_progress():
+            print("Scaling already in progress, skipping this run")
+            return {
+                "statusCode": 200,
+                "body": json.dumps(
+                    {
+                        "status": "skipped",
+                        "message": "Scaling operation already in progress",
+                    }
+                ),
+            }
+
+        # 2. Set scaling lock
+        set_premium_scaling_lock(True)
+
+        try:
+            # 3. Get current state
+            active_users = count_active_premium_users()
+            total_premium_users = count_total_premium_users()
+            all_instances = get_all_premium_instances_with_states()
+            running_instances = [i for i in all_instances if i["state"] == "running"]
+
+            # Count instances with no assigned users
+            idle_instances = 0
+            for instance in running_instances:
+                instance_id = instance["instance_id"]
+                assigned_users = get_assigned_users_for_instance(instance_id)
+                if not assigned_users:
+                    idle_instances += 1
+
+            print(
+                f"Monitoring: {active_users} active users, "
+                f"{total_premium_users} total users, "
+                f"{len(running_instances)} running instances, "
+                f"{idle_instances} idle instances"
+            )
+
+            # 4. Publish metrics to CloudWatch
+            publish_premium_metrics(
+                active_users=active_users,
+                idle_users=total_premium_users - active_users,
+                running_instances=len(running_instances),
+                idle_instances=idle_instances,
+            )
+
+            # 5. Call existing scaling logic to stop idle instances
+            scale_down_if_possible()
+
+            # 6. Update ECS service desired count to match running instances
+            update_premium_service_desired_count()
+
+            # 7. Cleanup failed standby instances
+            # (remove DB entries for terminated instances)
+            cleanup_failed_standby_instances()
+
+            return {
+                "statusCode": 200,
+                "body": json.dumps(
+                    {
+                        "status": "success",
+                        "active_users": active_users,
+                        "running_instances": len(running_instances),
+                        "idle_instances": idle_instances,
+                    }
+                ),
+            }
+
+        finally:
+            # Always clear the scaling lock
+            set_premium_scaling_lock(False)
+
+    except Exception as e:
+        error_msg = f"Error in scheduled monitoring: {str(e)}"
+        print(error_msg)
+        import traceback
+
+        traceback.print_exc()
+
+        # Clear lock on error
+        try:
+            set_premium_scaling_lock(False)
+        except Exception as e:
+            error_msg = f"Error in removing lock: {str(e)}"
+            print(error_msg)
+            pass
+
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"status": "error", "error": error_msg}),
+        }
+
+
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Handle premium user assignment lifecycle events and scheduled cleanup
@@ -1389,22 +1628,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 ),
             }
 
-        # Scheduled cleanup is now handled by separate premium_cleanup Lambda
+        # Handle scheduled monitoring events
         if (
             event.get("source") == "aws.events"
             and event.get("detail-type") == "Scheduled Event"
         ):
-            return {
-                "statusCode": 400,
-                "body": json.dumps(
-                    {
-                        "error": "Scheduled events should be handled by "
-                        "premium_cleanup Lambda",
-                        "message": "This Lambda only handles real-time "
-                        "assignment operations",
-                    }
-                ),
-            }
+            print("Scheduled monitoring event received")
+            return handle_scheduled_monitoring(event, context)
 
         # Handle API Gateway events
         http_method = event.get("httpMethod", "POST")
