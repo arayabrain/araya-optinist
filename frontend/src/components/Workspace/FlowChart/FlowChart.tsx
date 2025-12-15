@@ -96,16 +96,17 @@ const FlowChart = memo(function FlowChart(props: UseRunPipelineReturnType) {
   const [errorUrl, setErrorUrl] = useState("")
   const [dialogFilterNodeId, setFilterDialogNodeId] = useState("")
   const [nodeRefresh, setNodeRefresh] = useState(false)
+  const [leftSidebarOpen, setLeftSidebarOpen] = useState(true)
 
   const handleRefreshAlgoList = async () => {
     setNodeRefresh(true)
 
     try {
-      await dispatch(getAlgoList()) // Ensure it waits for the API call to finish
+      await dispatch(getAlgoList()).unwrap()
+      handleClickVariant("success", "Algorithm List Refreshed")
     } catch (error) {
       handleClickVariant("error", "Failed to get Algorithm List")
     } finally {
-      handleClickVariant("success", "Algorithm List Refreshed")
       setNodeRefresh(false)
     }
   }
@@ -196,7 +197,10 @@ const FlowChart = memo(function FlowChart(props: UseRunPipelineReturnType) {
         }}
       >
         <DndProvider backend={HTML5Backend}>
-          <LeftSidebarContainer>
+          <LeftSidebarContainer
+            isOpen={leftSidebarOpen}
+            onToggle={() => setLeftSidebarOpen(!leftSidebarOpen)}
+          >
             <Box overflow="auto" marginRight={2}>
               <CurrentPipelineInfo />
             </Box>

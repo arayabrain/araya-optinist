@@ -21,6 +21,7 @@ import {
 } from "@mui/material"
 
 import Loading from "components/common/Loading"
+import { WORKSPACE_TYPE } from "const/Workspace"
 import { publicDataviewReproduceWorkflow } from "store/slice/Dataview/DataviewActions"
 import { DataviewType } from "store/slice/Dataview/DataviewType"
 import { selectFlowNodes } from "store/slice/FlowElement/FlowElementSelectors"
@@ -100,7 +101,8 @@ export const WorkflowDetailsView = ({
 
   const handleClose = () => {
     // Clean up the flow elements when closing
-    dispatch(clearFlowElements())
+    const workspaceType = WORKSPACE_TYPE.DEFAULT // Currently a fixed value
+    dispatch(clearFlowElements({ workspaceType }))
     dispatch(clearCurrentPipeline())
     setParamsDialog({ open: false, params: null, nodeId: "", functionName: "" })
     onClose()
