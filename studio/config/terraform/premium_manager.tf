@@ -60,6 +60,44 @@ resource "aws_lambda_function" "premium_manager" {
 
 # CloudWatch Events Rule for Migration Queue Processing (every 2 minutes)
 
+# CloudWatch Events Rule for Premium Manager (every 15 minutes)
+resource "aws_cloudwatch_event_rule" "premium_manager_schedule" {
+  name                = "subscr-premium-manager-schedule"
+  description         = "Trigger premium manager every 15 minutes for monitoring and scaling"
+  schedule_expression = "rate(15 minutes)"
+  state               = "ENABLED"
+
+  tags = {
+    Name    = "Premium Manager Schedule"
+    Type    = "Premium-CloudWatch"
+    Service = "premium-tier"
+  }
+}
+
+# CloudWatch Events Target for Manager
+resource "aws_cloudwatch_event_target" "premium_manager_target" {
+  rule      = aws_cloudwatch_event_rule.premium_manager_schedule.name
+  target_id = "PremiumManagerTarget"
+  arn       = aws_lambda_function.premium_manager.arn
+
+  input = jsonencode({
+    source      = "aws.events"
+    detail-type = "Scheduled Event"
+    detail = {
+      action = "monitor"
+    }
+  })
+}
+
+# Lambda Permission for Manager CloudWatch Events
+resource "aws_lambda_permission" "allow_cloudwatch_manager" {
+  statement_id  = "AllowExecutionFromCloudWatchManager"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.premium_manager.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.premium_manager_schedule.arn
+}
+
 # CloudWatch Events Rule for Premium Cleanup (every hour)
 resource "aws_cloudwatch_event_rule" "premium_cleanup_schedule" {
   name                = "subscr-premium-cleanup-schedule"
