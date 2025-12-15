@@ -12,7 +12,6 @@ from typing import Dict, List
 from fastapi import HTTPException, status
 from psutil import AccessDenied, NoSuchProcess, Process, ZombieProcess, process_iter
 
-from studio.app.common.core.cloud_batch.batch_observation import BatchObservationHandler
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptFunction
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_writer import ExptConfigWriter
@@ -63,13 +62,6 @@ class WorkflowResult:
           - Check and update the workflow execution status
           - Response with the confirmed workflow execution status
         """
-        # For batch mode, update node status from S3 and return results from config
-        # This reads pickle files directly from S3 and updates experiment.yaml
-        if BatchObservationHandler.should_use_batch_observation():
-            expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
-            return await BatchObservationHandler.observe_batch_nodes_from_s3(
-                self.workspace_id, self.unique_id, observe_node_ids, expt_config
-            )
 
         expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
 
@@ -95,35 +87,19 @@ class WorkflowResult:
         # If the workflow status observation is ongoing (maybe workflow is incomplete),
         # check whether the actual process exists (local) or batch jobs (remote).
         if is_workflow_observation_ongoing:
-            if not BatchObservationHandler.should_use_batch_observation():
-                # Local execution: check workflow process exists
-                current_process = self.monitor.search_process()
+            # Check workflow process exists
+            current_process = self.monitor.search_process()
 
-                # error handling for process not found
-                if current_process is None:
-                    workflow_error = WorkflowErrorInfo(
-                        has_error=True, error_log="No Snakemake process found."
-                    )
-
-                # re-run observe node list (reflects workflow error)
-                node_results = await self.__observe_nodes(
-                    observe_node_ids, expt_config, workflow_error
-                )
-            else:
-                # Batch execution: check if any batch jobs have failed
-                # Throttled to every 60 seconds to avoid excessive AWS API calls
-                batch_error = await BatchObservationHandler.check_batch_job_failures(
-                    self.workspace_id, self.unique_id, observe_node_ids
+            # error handling for process not found
+            if current_process is None:
+                workflow_error = WorkflowErrorInfo(
+                    has_error=True, error_log="No Snakemake process found."
                 )
 
-                # If batch jobs failed, update workflow_error and re-observe
-                if batch_error.has_error:
-                    workflow_error = batch_error
-
-                    # re-run observe node list (reflects workflow error)
-                    node_results = await self.__observe_nodes(
-                        observe_node_ids, expt_config, workflow_error
-                    )
+            # re-run observe node list (reflects workflow error)
+            node_results = await self.__observe_nodes(
+                observe_node_ids, expt_config, workflow_error
+            )
 
         return node_results
 

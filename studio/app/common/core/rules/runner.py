@@ -9,9 +9,6 @@ from pathlib import Path
 
 from filelock import FileLock
 
-from studio.app.common.core.cloud_batch.batch_execution_handler import (
-    BatchExecutionHandler,
-)
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk import Rule
@@ -42,9 +39,6 @@ class Runner:
     def run(cls, __rule: Rule, last_output, run_script_path: str):
         try:
             logger.info("start rule runner")
-
-            # Detect execution context and log batch information
-            is_batch = BatchExecutionHandler.detect_and_log_execution_context()
 
             # write pid file
             workflow_dirpath = str(Path(__rule.output).parent.parent)
@@ -80,8 +74,6 @@ class Runner:
                 output_info,
             )
 
-            # Handle output based on execution context
-            BatchExecutionHandler.log_output_handling(is_batch)
             # Save output (locally or to EFS/S3 as configured)
             PickleWriter.write(__rule.output, output_info)
 
@@ -138,7 +130,7 @@ class Runner:
         ids = ExptOutputPathIds(workflow_dirpath)
         pid_file_path = cls.__get_pid_file_path(ids.workspace_id, ids.unique_id)
 
-        # Ensure parent directory exists (important for AWS Batch with S3 storage)
+        # Ensure parent directory exists
         os.makedirs(os.path.dirname(pid_file_path), exist_ok=True)
 
         with open(pid_file_path, "w") as f:

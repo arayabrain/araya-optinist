@@ -7,7 +7,6 @@ import subprocess
 from pathlib import Path
 from typing import Dict
 
-from studio.app.common.core.cloud_batch.batch_path_handler import BatchPathHandler
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk import Rule
 from studio.app.common.core.snakemake.snakemake_reader import SmkConfigReader
@@ -24,45 +23,17 @@ logger = AppLogger.get_logger()
 class SmkUtils:
     @classmethod
     def input(cls, details):
-        logger.debug(
-            f"SmkUtils.input() called with type: {details.get('type')}, "
-            f"input: {details.get('input')}"
-        )
-
         if NodeTypeUtil.check_nodetype_from_filetype(details["type"]) == NodeType.DATA:
             if details["type"] in [FILETYPE.IMAGE]:
-                paths = [
-                    BatchPathHandler.make_relative_path(
-                        join_filepath([DIRPATH.INPUT_DIR, x])
-                    )
-                    for x in details["input"]
-                ]
-                logger.debug(f"Generated IMAGE input paths: {paths}")
-                return paths
+                return [join_filepath([DIRPATH.INPUT_DIR, x]) for x in details["input"]]
             else:
-                path = BatchPathHandler.make_relative_path(
-                    join_filepath([DIRPATH.INPUT_DIR, details["input"]])
-                )
-                logger.debug(f"Generated DATA input path: {path}")
-                return path
+                return join_filepath([DIRPATH.INPUT_DIR, details["input"]])
         else:
-            paths = [
-                BatchPathHandler.make_relative_path(
-                    join_filepath([DIRPATH.OUTPUT_DIR, x])
-                )
-                for x in details["input"]
-            ]
-            logger.debug(f"Generated OUTPUT input paths: {paths}")
-            return paths
+            return [join_filepath([DIRPATH.OUTPUT_DIR, x]) for x in details["input"]]
 
     @classmethod
     def output(cls, details):
-        logger.debug(f"SmkUtils.output() called with output: {details.get('output')}")
-        path = BatchPathHandler.make_relative_path(
-            join_filepath([DIRPATH.OUTPUT_DIR, details["output"]])
-        )
-        logger.debug(f"Generated output path: {path}")
-        return path
+        return join_filepath([DIRPATH.OUTPUT_DIR, details["output"]])
 
     @classmethod
     def dict2leaf(cls, root_dict: dict, path_list):

@@ -1,28 +1,14 @@
-from studio.app.common.core.cloud_batch.batch_path_handler import BatchPathHandler
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
-from studio.app.common.core.snakemake.snakemake_reader import SmkConfigReader
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.workflow.workflow import ProcessType
 from studio.app.dir_path import DIRPATH
 
 from studio.app.common.core.workflow.workflow import NodeType, NodeTypeUtil
-from studio.app.common.core.mode import MODE
 
-if MODE.IN_SNAKEMAKE_BATCH:
-    _config_path = SmkConfigReader.get_batch_config_path()
-else:
-    _config_path = "snakemake.yaml"
-
-configfile: _config_path
-
-# Compute paths outside rule definition to avoid Snakemake parsing issues
-all_outputs = [
-    BatchPathHandler.make_relative_path(join_filepath([DIRPATH.OUTPUT_DIR, x]))
-    for x in config["last_output"]
-]
+configfile: "snakemake.yaml"
 
 rule all:
-    input: all_outputs
+	input: [join_filepath([DIRPATH.OUTPUT_DIR, x]) for x in config["last_output"]]
 
 
 for rule_name, details in config["rules"].items():

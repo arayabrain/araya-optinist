@@ -31,13 +31,6 @@ class TimeSeriesData(BaseData):
         assert data.ndim <= 2, "TimeSeries Dimension Error"
 
         if isinstance(data, str):
-            from studio.app.common.core.cloud_batch.storage_utils import (
-                ensure_file_available_to_batch,
-            )
-
-            # Ensure file is downloaded from S3 if running in batch mode
-            data = ensure_file_available_to_batch(data)
-
             header = params.get("setHeader", None) if isinstance(params, dict) else None
             self.data = pd.read_csv(data, header=header).values
         else:

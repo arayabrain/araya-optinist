@@ -2,7 +2,6 @@ import os
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-from studio.app.common.core.cloud_batch.batch_path_handler import BatchPathHandler
 from studio.app.common.core.snakemake.smk import SmkParam
 from studio.app.common.core.workflow.workflow import OutputPath
 from studio.app.dir_path import DIRPATH
@@ -74,21 +73,11 @@ class ExptOutputPathIds:
 
         output_dir_normalized = self.output_dir.replace("\\", "/")
 
-        # Check if this is a Batch S3 path and extract IDs accordingly
-        is_batch_s3 = BatchPathHandler.is_batch_s3_path(output_dir_normalized)
-
-        if is_batch_s3:
-            # Extract IDs from S3 storage path
-            splitted_ids = BatchPathHandler.extract_ids_from_s3_path(
-                output_dir_normalized
-            )
-        else:
-            # Local/EFS mode: compute relative path from DIRPATH.OUTPUT_DIR
-            output_relative_dir = os.path.relpath(
-                output_dir_normalized,
-                DIRPATH.OUTPUT_DIR.replace("\\", "/"),
-            ).replace("\\", "/")
-            splitted_ids = output_relative_dir.split("/")
+        output_relative_dir = os.path.relpath(
+            output_dir_normalized,
+            DIRPATH.OUTPUT_DIR.replace("\\", "/"),
+        ).replace("\\", "/")
+        splitted_ids = output_relative_dir.split("/")
 
         ids_count = len(splitted_ids)
 

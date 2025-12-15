@@ -893,10 +893,6 @@ resource "aws_ecs_task_definition" "autoscaling" {
           value = "2"
         },
         {
-          name  = "USE_AWS_BATCH"
-          value = "false"
-        },
-        {
           name  = "LOG_LEVEL"
           value = "DEBUG"
         },
@@ -1122,10 +1118,6 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "REMOTE_STORAGE_TYPE"
           value = "2"
-        },
-        {
-          name  = "USE_AWS_BATCH"
-          value = "false"
         },
         {
           name  = "LOG_LEVEL"

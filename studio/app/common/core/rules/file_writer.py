@@ -1,8 +1,5 @@
 import h5py
 
-from studio.app.common.core.cloud_batch.snakemake_storage import (
-    resolve_snakemake_storage_path,
-)
 from studio.app.common.core.snakemake.smk import Rule
 from studio.app.common.dataclass import CsvData, ImageData, TimeSeriesData
 from studio.app.const import FILETYPE
@@ -15,7 +12,7 @@ from studio.app.optinist.routers.mat import MatGetter
 class FileWriter:
     @classmethod
     def csv(cls, rule_config: Rule, nodeType):
-        input_path = resolve_snakemake_storage_path(rule_config.input)
+        input_path = rule_config.input
 
         info = {rule_config.return_arg: CsvData(input_path, rule_config.params, "")}
         nwbfile = rule_config.nwbfile
@@ -41,7 +38,7 @@ class FileWriter:
 
     @classmethod
     def image(cls, rule_config: Rule):
-        input_path = resolve_snakemake_storage_path(rule_config.input)
+        input_path = rule_config.input
 
         info = {rule_config.return_arg: ImageData(input_path, "")}
         nwbfile = rule_config.nwbfile
@@ -51,7 +48,7 @@ class FileWriter:
 
     @classmethod
     def hdf5(cls, rule_config: Rule):
-        input_path = resolve_snakemake_storage_path(rule_config.input)
+        input_path = rule_config.input
         nwbfile = rule_config.nwbfile
 
         with h5py.File(input_path, "r") as f:
@@ -61,14 +58,14 @@ class FileWriter:
 
     @classmethod
     def mat(cls, rule_config: Rule):
-        input_path = resolve_snakemake_storage_path(rule_config.input)
+        input_path = rule_config.input
         nwbfile = rule_config.nwbfile
         data = MatGetter.data(input_path, rule_config.matPath)
         return cls.get_info_from_array_data(rule_config, nwbfile, data)
 
     @classmethod
     def microscope(cls, rule_config: Rule):
-        input_path = resolve_snakemake_storage_path(rule_config.input)
+        input_path = rule_config.input
 
         info = {rule_config.return_arg: MicroscopeData(input_path)}
         nwbfile = rule_config.nwbfile

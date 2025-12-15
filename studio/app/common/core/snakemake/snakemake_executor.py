@@ -16,10 +16,6 @@ from snakemake.api import (
 )
 
 from studio.app.common.core.cloud.cloud_utils import update_user_storage_after_workflow
-from studio.app.common.core.cloud_batch.batch_config import BATCH_CONFIG
-from studio.app.common.core.cloud_batch.batch_snakemake_executor import (
-    BatchSnakemakeExecutor,
-)
 from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
 )
@@ -52,7 +48,6 @@ def snakemake_execute(
 ):
     """
     Main entry point for Snakemake execution.
-    Determines whether to use local or AWS Batch execution based on configuration.
 
     Args:
         workspace_id: Workspace ID
@@ -62,16 +57,7 @@ def snakemake_execute(
     """
     client_id = get_client_id_for_subprocess()
 
-    if BATCH_CONFIG.USE_AWS_BATCH:
-        # BATCH: This should ALWAYS appear if batch mode is enabled
-        print(f"BATCH: USE_AWS_BATCH=True, client_id={client_id}", flush=True)
-        logger.info("Starting AWS Batch execution mode")
-        logger.debug("BATCH: If you see this, optinist logging works!")
-
-        # Use BatchSnakemakeExecutor for all batch execution logic
-        batch_executor = BatchSnakemakeExecutor(workspace_id, unique_id)
-        future_result = asyncio.run(batch_executor.execute_batch_workflow(params))
-    else:
+    try:
         logger.info("Starting local execution mode")
         with ProcessPoolExecutor(max_workers=1) as executor:
             logger.info("start snakemake running process.")
@@ -85,21 +71,24 @@ def snakemake_execute(
             )
             future_result = future.result()
 
-    # Update user storage after workflow completion
-    asyncio.run(update_user_storage_after_workflow(workspace_id))
+        # Update user storage after workflow completion
+        asyncio.run(update_user_storage_after_workflow(workspace_id))
 
-    # Decrement workflow count for free tier users (for load balancing)
-    if user_id is not None:
-        try:
-            from studio.app.common.core.workflow.workflow_tracking import (
-                decrement_workflow_count,
-            )
+        return future_result
 
-            decrement_workflow_count(user_id)
-        except Exception as e:
-            logger.error(f"Failed to decrement workflow count: {e}")
+    finally:
+        # Decrement workflow count in finally block to ensure it ALWAYS runs
+        # This prevents workflow count leaks when exceptions occur during execution
+        if user_id is not None:
+            try:
+                from studio.app.common.core.workflow.workflow_tracking import (
+                    decrement_workflow_count,
+                )
 
-    return future_result
+                decrement_workflow_count(user_id)
+                logger.info(f"Decremented workflow count for user {user_id}")
+            except Exception as e:
+                logger.error(f"Failed to decrement workflow count: {e}", exc_info=True)
 
 
 @with_client_id_context  # Automatically set client_id for logging
@@ -233,12 +222,6 @@ def _snakemake_execute_process(
             )
 
     return snakemake_result
-
-
-# NOTE: The old _snakemake_execute_batch() function (~580 lines) has been completely
-# replaced by BatchSnakemakeExecutor and removed from this file.
-# See:
-# studio.app.common.core.cloud_batch.batch_snakemake_executor.BatchSnakemakeExecutor
 
 
 def delete_dependencies(
