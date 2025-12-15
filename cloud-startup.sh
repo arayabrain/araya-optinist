@@ -1,6 +1,25 @@
 #!/bin/bash
 set -e  # Exit immediately if a command exits with a non-zero status
 
+# --- Subscription Plan Constants ---
+# These values are used as fallbacks when SUBSCRIPTION_PLANS_CONFIG is not provided.
+# Using constants improves readability and makes future updates easier.
+
+# 'Free' plan details
+readonly FREE_PLAN_ID=1
+readonly FREE_PLAN_NAME="'Free'"
+readonly FREE_PLAN_PRICE=0
+
+# 'Premium' plan details
+readonly PREMIUM_PLAN_ID=2
+readonly PREMIUM_PLAN_NAME="'Premium'"
+readonly PREMIUM_PLAN_PRICE=2999
+
+# Common attributes for subscription plans
+readonly DEFAULT_BILLING_CYCLE_DAYS=30
+readonly CURRENCY_USD=840  # ISO 4217 numeric code for USD
+readonly STATUS_ACTIVE=1   # Plan status: 1 = Active
+
 # Map infrastructure environment variables (DB_*) to application expected variables (MYSQL_*)
 # This allows the application's config.py to find the correct environment variables
 # while maintaining infrastructure naming conventions
@@ -144,7 +163,9 @@ else
     echo "SUBSCRIPTION_PLANS_CONFIG not provided, using fallback values..."
     mysql --skip-ssl -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" ${MYSQL_DATABASE} <<-EOSQL
         INSERT IGNORE INTO subscription_plans (id, name, price, billing_cycle, currency, status)
-        VALUES (1, 'Free', 0, 30, 840, 1), (2, 'Premium', 2999, 30, 840, 1);
+        VALUES
+            (${FREE_PLAN_ID}, ${FREE_PLAN_NAME}, ${FREE_PLAN_PRICE}, ${DEFAULT_BILLING_CYCLE_DAYS}, ${CURRENCY_USD}, ${STATUS_ACTIVE}),
+            (${PREMIUM_PLAN_ID}, ${PREMIUM_PLAN_NAME}, ${PREMIUM_PLAN_PRICE}, ${DEFAULT_BILLING_CYCLE_DAYS}, ${CURRENCY_USD}, ${STATUS_ACTIVE});
 EOSQL
 fi
 
