@@ -186,6 +186,12 @@ variable "frontend_port" {
   default     = "443"
 }
 
+variable "admin_storage_quota_bytes" {
+  description = "Storage quota for admin user in bytes"
+  type        = number
+  default     = 214748364800  # 200 GB
+}
+
 # Data sources
 data "aws_caller_identity" "current" {}
 
