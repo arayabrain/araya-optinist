@@ -51,7 +51,72 @@ resource "local_file" "app_setup_script" {
 #!/usr/bin/env bash
 set -e
 
+# ============================================================================
+# CONFIGURATION CONSTANTS
+# ============================================================================
+
+# Logging
 LOGFILE="/var/log/app-setup.log"
+
+# Database Configuration
+MYSQL_PORT=3306
+DB_INIT_SQL_FILE="/tmp/init_optinist_db.sql"
+DB_INIT_FILE_PERMISSIONS=644
+
+# Retry Parameters
+DB_CONNECTION_MAX_ATTEMPTS=30
+DB_CONNECTION_RETRY_DELAY=10
+DB_INIT_MAX_ATTEMPTS=10
+DB_INIT_RETRY_DELAY=30
+ECS_AGENT_MAX_ATTEMPTS=10
+ECS_AGENT_RETRY_DELAY=30
+
+# Default IDs
+DEFAULT_ORG_ID=1
+DEFAULT_USER_ID=1
+ADMIN_ROLE_ID=1
+
+# Role Definitions
+ROLE_ADMIN_ID=1
+ROLE_ADMIN_NAME="admin"
+ROLE_DATA_MANAGER_ID=10
+ROLE_DATA_MANAGER_NAME="data manager"
+ROLE_OPERATOR_ID=20
+ROLE_OPERATOR_NAME="operator"
+ROLE_GUEST_OPERATOR_ID=30
+ROLE_GUEST_OPERATOR_NAME="guest operator"
+
+# Tax Configuration
+TAX_TYPE="sales_tax"
+TAX_NAME="Sales Tax"
+TAX_RATE=0.10
+TAX_IS_ACTIVE=1
+
+# Subscription Configuration
+# Free plan details
+FREE_PLAN_ID=1
+FREE_PLAN_NAME="'Free'"
+FREE_PLAN_PRICE=0
+
+# Premium plan details
+PREMIUM_PLAN_ID=2
+PREMIUM_PLAN_NAME="'Premium'"
+PREMIUM_PLAN_PRICE=2999
+
+# Common subscription attributes
+DEFAULT_BILLING_CYCLE_DAYS=30
+CURRENCY_USD=840  # ISO 4217 numeric code for USD
+STATUS_ACTIVE=1   # Plan status: 1 = Active
+
+# Admin subscription settings
+ADMIN_SUBSCRIPTION_DAYS=365
+
+# Storage Configuration
+ADMIN_STORAGE_USAGE_BYTES=0
+ADMIN_STORAGE_QUOTA_BYTES=${var.admin_storage_quota_bytes}
+
+# ============================================================================
+
 exec > $LOGFILE 2>&1
 
 echo "$(date): Starting application setup script"
@@ -79,7 +144,7 @@ retry_command() {
 
 # Wait for ECS agent to be ready
 echo "$(date): Waiting for ECS agent to be ready"
-retry_command 10 30 "curl -s http://localhost:51678/v1/metadata >/dev/null"
+retry_command $$ECS_AGENT_MAX_ATTEMPTS $$ECS_AGENT_RETRY_DELAY "curl -s http://localhost:51678/v1/metadata >/dev/null"
 
 # Create config files
 echo "$(date): Creating configuration files"
@@ -111,26 +176,39 @@ echo "$(date): Starting database initialization"
 # Install MySQL client for database initialization
 echo "$(date): Installing MySQL client"
 apt-get update
-apt-get install -y mysql-client-core-8.0
+apt-get install -y mysql-client-core-8.0 python3-pip
 
-retry_command 30 10 "nc -z ${replace(aws_db_instance.main.endpoint, ":3306", "")} 3306"
+retry_command $$DB_CONNECTION_MAX_ATTEMPTS $$DB_CONNECTION_RETRY_DELAY "nc -z ${replace(aws_db_instance.main.endpoint, ":3306", "")} $$MYSQL_PORT"
 
 # Initialize database tables and users
 echo "$(date): Initializing database tables"
-cat > /tmp/init_optinist_db.sql << 'INIT_SQL'
+cat > $$DB_INIT_SQL_FILE << 'INIT_SQL'
+-- Ensure user has mysql_native_password authentication for RDS Proxy compatibility
+-- This is needed because RDS Proxy with MySQL 8.0 requires mysql_native_password
+-- when using MYSQL_NATIVE_PASSWORD client authentication type
+ALTER USER '${var.mysql_user}'@'%' IDENTIFIED WITH mysql_native_password BY '${var.mysql_password}';
+FLUSH PRIVILEGES;
+
+-- Create database if it doesn't exist
+-- This ensures the application's database exists before proceeding
+CREATE DATABASE IF NOT EXISTS ${var.mysql_database};
 USE ${var.mysql_database};
 
 -- Insert initial data
 INSERT IGNORE INTO organization (name) VALUES ('${var.optinist_org_name}');
-INSERT IGNORE INTO roles (id, role) VALUES (1, 'admin'), (10, 'data manager'), (20, 'operator'), (30, 'guest operator');
+INSERT IGNORE INTO roles (id, role) VALUES
+  ($$ROLE_ADMIN_ID, '$$ROLE_ADMIN_NAME'),
+  ($$ROLE_DATA_MANAGER_ID, '$$ROLE_DATA_MANAGER_NAME'),
+  ($$ROLE_OPERATOR_ID, '$$ROLE_OPERATOR_NAME'),
+  ($$ROLE_GUEST_OPERATOR_ID, '$$ROLE_GUEST_OPERATOR_NAME');
 
 -- Default admin user with S3 bucket info
 INSERT IGNORE INTO users (uid, organization_id, name, email, active, attributes)
-VALUES ('${var.optinist_admin_uid}', 1, '${var.optinist_admin_name}', '${var.optinist_admin_email}', true, '{"remote_bucket_name": "${aws_s3_bucket.app_storage.id}"}');
+VALUES ('${var.optinist_admin_uid}', $$DEFAULT_ORG_ID, '${var.optinist_admin_name}', '${var.optinist_admin_email}', true, '{"remote_bucket_name": "${aws_s3_bucket.app_storage.id}"}');
 
-INSERT IGNORE INTO user_roles (user_id, role_id) VALUES (1, 1);
+INSERT IGNORE INTO user_roles (user_id, role_id) VALUES ($$DEFAULT_USER_ID, $$ADMIN_ROLE_ID);
 
-UPDATE users SET attributes = JSON_MERGE_PATCH(IFNULL(attributes,'{}'), '{"remote_bucket_name": "${aws_s3_bucket.app_storage.id}"}') WHERE id = 1;
+UPDATE users SET attributes = JSON_MERGE_PATCH(IFNULL(attributes,'{}'), '{"remote_bucket_name": "${aws_s3_bucket.app_storage.id}"}') WHERE id = $$DEFAULT_USER_ID;
 
 -- Subscription plans initialization
 %{for plan in var.subscription_plans~}
@@ -149,28 +227,68 @@ ON DUPLICATE KEY UPDATE
   stripe_price_id = VALUES(stripe_price_id);
 %{endfor~}
 
+-- Tax rates initialization
+INSERT IGNORE INTO taxes (tax_type, tax_name, tax_rate, is_active, effective_date)
+VALUES ('$$TAX_TYPE', '$$TAX_NAME', $$TAX_RATE, $$TAX_IS_ACTIVE, CURDATE());
+
+-- Admin user storage quota initialization
+INSERT IGNORE INTO user_storage_usage (user_id, storage_usage_bytes, storage_quota_bytes)
+VALUES ($$DEFAULT_USER_ID, $$ADMIN_STORAGE_USAGE_BYTES, $$ADMIN_STORAGE_QUOTA_BYTES);
+
+-- Admin user premium subscription
+INSERT IGNORE INTO subscription_users (plan_id, user_id, expiration)
+VALUES ($$PREMIUM_PLAN_ID, $$DEFAULT_USER_ID, DATE_ADD(NOW(), INTERVAL $$ADMIN_SUBSCRIPTION_DAYS DAY));
+
 INIT_SQL
 
-chmod 644 /tmp/init_optinist_db.sql
+chmod $$DB_INIT_FILE_PERMISSIONS $$DB_INIT_SQL_FILE
 
 # Wait for database to be ready and execute initialization
-max_attempts=10
+max_attempts=$$DB_INIT_MAX_ATTEMPTS
 attempt=1
-while [ $attempt -le $max_attempts ]; do
-  echo "$(date): Attempting to initialize database (attempt $attempt/$max_attempts)"
-  if mysql -h ${replace(aws_db_instance.main.endpoint, ":3306", "")} -P 3306 -u ${var.mysql_user} -p'${var.mysql_password}' ${var.mysql_database} < /tmp/init_optinist_db.sql; then
-    echo "$(date): Database initialization successful"
+while [ $$attempt -le $$max_attempts ]; do
+  echo "$$(date): Attempting to initialize database (attempt $$attempt/$$max_attempts)"
+  if mysql -h ${replace(aws_db_instance.main.endpoint, ":3306", "")} -P $$MYSQL_PORT -u ${var.mysql_user} -p'${var.mysql_password}' ${var.mysql_database} < $$DB_INIT_SQL_FILE; then
+    echo "$$(date): Database initialization successful"
     break
   else
-    echo "$(date): Database initialization attempt $attempt failed, waiting to retry..."
-    sleep 30
-    attempt=$((attempt+1))
+    echo "$$(date): Database initialization attempt $$attempt failed, waiting to retry..."
+    sleep $$DB_INIT_RETRY_DELAY
+    attempt=$$((attempt+1))
   fi
 done
 
-if [ $attempt -gt $max_attempts ]; then
-  echo "$(date): ERROR: Failed to initialize the database after $max_attempts attempts"
+if [ $$attempt -gt $$max_attempts ]; then
+  echo "$$(date): ERROR: Failed to initialize the database after $$max_attempts attempts"
 fi
+
+# Firebase Admin Email Verification
+echo "$$(date): Verifying admin email in Firebase"
+
+# Install dependencies for Firebase Admin SDK
+echo "$$(date): Installing firebase-admin..."
+python3 -m pip install firebase-admin
+
+# Run verification script
+echo "$$(date): Running Firebase verification script..."
+python3 -c "
+from firebase_admin import auth, credentials, initialize_app
+import sys
+
+try:
+    initialize_app(credentials.Certificate('/opt/optinist/optinist-for-cloud/studio/config/auth/firebase_private.json'))
+except ValueError:
+    pass  # App already initialized
+
+try:
+    admin_uid = '${var.optinist_admin_uid}'
+    auth.update_user(admin_uid, email_verified=True)
+    print(f'Successfully verified email for user: {admin_uid}')
+except Exception as e:
+    print(f'ERROR: Firebase email verification failed: {e}', file=sys.stderr)
+    sys.exit(1)
+" || echo "$$(date): WARNING: Firebase email verification script encountered an issue."
+
 
 echo "$(date): Application setup completed successfully"
 EOF
