@@ -24,16 +24,6 @@ axios.interceptors.request.use(
     const token = getToken()
     const exToken = getExToken()
 
-    // Log token info for debugging (only first/last 10 chars for security)
-    if (token) {
-      const tokenPreview = `${token.substring(0, 10)}...${token.substring(token.length - 10)}`
-      // eslint-disable-next-line no-console
-      console.log(`[Auth] Request to ${config.url} with token: ${tokenPreview}`)
-    } else {
-      // eslint-disable-next-line no-console
-      console.warn(`[Auth] Request to ${config.url} WITHOUT token`)
-    }
-
     config.headers!.Authorization = `Bearer ${token}`
     if (exToken) {
       config.headers!.ExToken = exToken
@@ -112,23 +102,21 @@ axios.interceptors.response.use(
 
     if (error?.response?.status === 401) {
       // eslint-disable-next-line no-console
-      console.log(
-        "[Auth] 401 error detected:",
+      console.error(
+        "401 error detected:",
         originalRequest?.url,
         error.response?.data,
       )
 
       // Prevent token refresh during logout
       if (isLoggingOut) {
-        // eslint-disable-next-line no-console
-        console.log("[Auth] User is logging out, skipping token refresh")
         return Promise.reject(error)
       }
 
       // Prevent refresh loop - don't retry refresh endpoint itself
       if (originalRequest?.url?.includes("/auth/refresh")) {
         // eslint-disable-next-line no-console
-        console.error("[Auth] Refresh token is invalid or expired, logging out")
+        console.error("Refresh token is invalid or expired, logging out")
         logout()
         return Promise.reject(error)
       }
@@ -136,14 +124,12 @@ axios.interceptors.response.use(
       // Prevent infinite retry loops
       if (originalRequest._retry) {
         // eslint-disable-next-line no-console
-        console.error("[Auth] Token refresh retry failed, logging out")
+        console.error("Token refresh retry failed, logging out")
         logout()
         return Promise.reject(error)
       }
 
       if (isRefreshing) {
-        // eslint-disable-next-line no-console
-        console.log("[Auth] Already refreshing, queuing request")
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject })
         })
@@ -159,13 +145,8 @@ axios.interceptors.response.use(
       originalRequest._retry = true
       isRefreshing = true
 
-      // eslint-disable-next-line no-console
-      console.log("[Auth] Attempting token refresh...")
-
       try {
         const { access_token } = await refreshTokenApi()
-        // eslint-disable-next-line no-console
-        console.log("[Auth] Token refresh successful")
         saveToken(access_token)
         originalRequest.headers.Authorization = `Bearer ${access_token}`
 
@@ -175,7 +156,7 @@ axios.interceptors.response.use(
         return axiosLibrary(originalRequest)
       } catch (e) {
         // eslint-disable-next-line no-console
-        console.error("[Auth] Token refresh failed:", e)
+        console.error("Token refresh failed:", e)
         processQueue(e, null)
         isRefreshing = false
 
@@ -184,7 +165,7 @@ axios.interceptors.response.use(
           (e?.response?.status === 400 || e?.response?.status === 401)
         ) {
           // eslint-disable-next-line no-console
-          console.error("[Auth] Invalid refresh token, logging out")
+          console.error("Invalid refresh token, logging out")
           logout()
         }
         throw e

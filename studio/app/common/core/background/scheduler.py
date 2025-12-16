@@ -19,15 +19,11 @@ logger = AppLogger.get_logger()
 
 
 class BackgroundScheduler:
-    """Singleton scheduler for background jobs"""
+    """
+    Static class for managing background jobs scheduler.
+    """
 
-    _instance = None
     _scheduler: AsyncIOScheduler = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
 
     @classmethod
     def initialize(cls):
