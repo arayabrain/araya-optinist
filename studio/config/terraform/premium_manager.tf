@@ -329,8 +329,8 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
       },
       # EC2 CreateTags (unrestricted to allow tagging new instances)
       {
-        Effect = "Allow"
-        Action = "ec2:CreateTags"
+        Effect   = "Allow"
+        Action   = "ec2:CreateTags"
         Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
       },
       # EC2 RunInstances (requires multiple resource types)
@@ -419,20 +419,20 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
       },
       # CloudWatch metrics (requires wildcard)
       {
-        Effect = "Allow"
-        Action = "cloudwatch:PutMetricData"
+        Effect   = "Allow"
+        Action   = "cloudwatch:PutMetricData"
         Resource = "*"
       },
       # ASG Describe (read-only)
       {
-        Effect = "Allow"
-        Action = "autoscaling:DescribeAutoScalingGroups"
+        Effect   = "Allow"
+        Action   = "autoscaling:DescribeAutoScalingGroups"
         Resource = "*"
       },
       # RDS Describe (read-only)
       {
-        Effect = "Allow"
-        Action = "rds:DescribeDBInstances"
+        Effect   = "Allow"
+        Action   = "rds:DescribeDBInstances"
         Resource = "*"
       },
       # S3 access (already scoped)
@@ -451,8 +451,8 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
       },
       # IAM PassRole (already scoped)
       {
-        Effect = "Allow"
-        Action = "iam:PassRole"
+        Effect   = "Allow"
+        Action   = "iam:PassRole"
         Resource = aws_iam_role.ecs_instance_role.arn
         Condition = {
           StringEquals = {
@@ -462,8 +462,8 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
       },
       # Lambda self-invocation (already scoped)
       {
-        Effect = "Allow"
-        Action = "lambda:InvokeFunction"
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
         Resource = aws_lambda_function.premium_manager.arn
       }
     ]
