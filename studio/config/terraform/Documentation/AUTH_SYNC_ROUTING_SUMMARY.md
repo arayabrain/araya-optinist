@@ -60,18 +60,18 @@ This document describes the features being added to `develop-subscription` from 
 
 ## Architecture Overview
 
-### Before: Simple Authentication Flow (develop-subscription)
+### Before: Previous Authentication Flow (develop-subscription)
 
 ```mermaid
 graph TB
-    subgraph "Simple Authentication Flow"
+    subgraph "Previous Authentication Flow"
         A[User Login] --> B[POST /auth/login]
         B --> C[Validate Credentials]
         C --> D[Query User + Role]
         D --> E[Generate JWT Token]
         E --> F[Return access_token]
         F --> G[Store in localStorage]
-
+        
         I[API Request] --> J{Has Token?}
         J -->|Yes| K[Add Authorization Header]
         J -->|No| L[Redirect to Login]
@@ -1070,137 +1070,3 @@ ALTER TABLE free_user_assignments
 
 CREATE INDEX idx_logged_out_at ON free_user_assignments(logged_out_at);
 ```
-
-### Dependencies Added
-
-**Backend (pyproject.toml):**
-```toml
-APScheduler = "^3.10.0"  # Background job scheduling
-```
-
-**Frontend (package.json):**
-No new dependencies - enhancements use existing libraries
-
----
-
-## Testing Checklist
-
-### Frontend Testing
-
-- [ ] Test login flow (verify subscription data in response)
-- [ ] Test logout flow (verify no race conditions with token refresh)
-- [ ] Test concurrent 401s (verify single refresh, queued requests)
-- [ ] Test logout during token refresh (verify queue cleared)
-- [ ] Test token removal during getMe (verify graceful exit)
-- [ ] Test SPA routing (verify refresh works on all routes)
-- [ ] Test deep linking (verify routes accessible directly)
-
-### Backend Testing
-
-- [ ] Test auth endpoint (verify subscription joins)
-- [ ] Test subscription status calculation (Free/Premium/LimitGrace/Expired)
-- [ ] Test grace period calculation (30 days after expiration)
-- [ ] Test storage quota in auth response
-- [ ] Test SPA middleware (verify index.html served for SPA routes)
-- [ ] Test SPA middleware (verify API routes not intercepted)
-
-### Background Sync Testing
-
-- [ ] Test sync job (verify experiments synced from S3)
-- [ ] Test file locking (verify no concurrent runs)
-- [ ] Test retry logic (verify failed syncs retried)
-- [ ] Test CloudWatch metrics (verify metrics published)
-- [ ] Test optimistic locking (verify version field prevents conflicts)
-
-### Monitoring
-
-- [ ] Add CloudWatch alarms for sync job failures
-- [ ] Add CloudWatch metrics dashboard
-- [ ] Monitor login latency (subscription joins may add ~50-100ms)
-- [ ] Monitor sync job duration
-- [ ] Monitor sync error rate
-
----
-
-## Migration Notes
-
-### Deploying to develop-subscription
-
-When merging `feature/auth-sync-routing-frontend` into `develop-subscription`:
-
-1. **Database Migration**
-   ```bash
-   # Run alembic migration
-   alembic upgrade head
-
-   # This adds:
-   # - experiment_records.local_sync_status
-   # - experiment_records.version
-   # - free_user_assignments.logged_out_at
-   # - Indexes for sync queries
-   ```
-
-2. **Environment Variables**
-   - Set `SYNC_JOB_ENABLED=true` to enable background sync
-   - Configure `SYNC_JOB_INTERVAL` (default: 5 minutes)
-   - Ensure S3 credentials configured
-
-3. **Frontend Build**
-   - Rebuild frontend with enhanced axios interceptor
-   - Clear browser cache (localStorage/sessionStorage format may differ)
-
-4. **Testing**
-   - Test login/logout flows thoroughly
-   - Verify subscription data appears correctly
-   - Monitor sync job logs for first few runs
-
-5. **Rollback Plan**
-   - If issues occur, can disable sync job with `SYNC_JOB_ENABLED=false`
-   - Database migration can be reverted with `alembic downgrade -1`
-   - Frontend can revert to previous build
-
----
-
-## Key Files Modified/Added
-
-### Frontend Changes
-- ✅ `frontend/src/utils/axios.ts` - Enhanced interceptor with queue (150+ lines added)
-- ✅ `frontend/src/utils/auth/AuthUtils.ts` - Coordinated logout (29 lines)
-- ✅ `frontend/src/components/Layout/index.tsx` - Multiple token checks (135 lines)
-
-### Backend Changes
-- ✅ `studio/app/common/core/auth/auth_dependencies.py` - Subscription joins (92 lines modified)
-- ✅ `studio/app/common/routers/auth.py` - Limit warnings (28 lines modified)
-- ✅ `studio/app/common/schemas/users.py` - Subscription fields added (30 lines)
-
-### New Files Added
-- ✅ `studio/app/common/core/middleware/spa_routing_middleware.py` (113 lines)
-- ✅ `studio/app/common/core/background/scheduler.py` (160 lines)
-- ✅ `studio/app/common/core/background/sync_job.py` (432 lines)
-- ✅ `studio/alembic/versions/a5b9c8d7e6f5_add_sync_logout_and_versioning.py` (91 lines)
-
-### Tests Added
-- ✅ `studio/tests/app/common/core/background/test_sync_job.py` (65 lines)
-
----
-
-## Summary of Additions
-
-This merge adds significant functionality to `develop-subscription`:
-
-**Authentication Enhancements:**
-- Token refresh queue prevents duplicate refresh API calls
-- Logout coordination prevents race conditions
-- Subscription/storage data available in auth context
-- Multiple token revalidations protect against logout during async ops
-
-**Routing Enhancements:**
-- SPA routing middleware handles deep links and refresh
-- Clear separation between API and SPA routes
-
-**Background Jobs:**
-- Automated S3 sync with file locking
-- Retry logic and CloudWatch metrics
-- Database tracking of sync status
-
-**Total Changes:** 28 files, 4960 insertions(+), 3319 deletions(-)
