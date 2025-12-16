@@ -84,7 +84,7 @@ resource "aws_lb_target_group" "autoscaling" {
 
   stickiness {
     type            = "lb_cookie"
-    cookie_duration = 300  # 5 minutes (matches Lambda check interval for fast rebalancing)
+    cookie_duration = 300 # 5 minutes (matches Lambda check interval for fast rebalancing)
     enabled         = true
   }
 

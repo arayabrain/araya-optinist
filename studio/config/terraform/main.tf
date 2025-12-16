@@ -125,7 +125,7 @@ variable "subscription_plans" {
     stripe_product_id = string
     stripe_price_id   = string
     storage_quota_gb  = number
-    features          = map(list(object({
+    features = map(list(object({
       text      = string
       isPremium = bool
     })))
@@ -189,7 +189,7 @@ variable "frontend_port" {
 variable "admin_storage_quota_bytes" {
   description = "Storage quota for admin user in bytes"
   type        = number
-  default     = 214748364800  # 200 GB
+  default     = 214748364800 # 200 GB
 }
 
 # Data sources

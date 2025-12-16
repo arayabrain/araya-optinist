@@ -516,8 +516,8 @@ resource "aws_db_instance" "main" {
 }
 
 resource "aws_db_proxy" "main" {
-  name                   = "subscr-optinist-rds-proxy"
-  engine_family          = "MYSQL"
+  name          = "subscr-optinist-rds-proxy"
+  engine_family = "MYSQL"
   auth {
     auth_scheme               = "SECRETS"
     secret_arn                = aws_secretsmanager_secret.rds_credentials.arn
