@@ -19,7 +19,12 @@ from studio.app.common.core.auth.auth_helper import (
 from studio.app.common.core.dataview.dataview_services import DataviewService
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
-from studio.app.common.core.subscription.constants import PlanName, SubscriptionStatus
+from studio.app.common.core.subscription.constants import (
+    PlanName,
+    SubscriptionPeriods,
+    SubscriptionPlanIds,
+    SubscriptionStatus,
+)
 from studio.app.common.db.database import get_db
 from studio.app.common.models import User as UserModel
 from studio.app.common.models import UserRole as UserRoleModel
@@ -31,6 +36,92 @@ from studio.app.common.models.subscription import (
 )
 from studio.app.common.models.workspace import Workspace
 from studio.app.common.schemas.users import User
+
+
+def _enrich_user_with_basic_attributes(
+    user: UserModel,
+    role_id: int,
+    data_usage: int,
+    subscription_plan_name: Optional[str],
+    storage_usage_bytes: Optional[int],
+    storage_quota_bytes: Optional[int],
+) -> None:
+    """
+    Enrich user object with basic attributes (role, storage, plan name).
+
+    Args:
+        user: User model to enrich
+        role_id: User's role ID
+        data_usage: Total data usage
+        subscription_plan_name: Name of subscription plan
+        storage_usage_bytes: Storage usage in bytes
+        storage_quota_bytes: Storage quota in bytes
+    """
+    user.__dict__["role_id"] = role_id
+    user.__dict__["data_usage"] = data_usage
+    user.__dict__["subscription_plan_name"] = (
+        subscription_plan_name or PlanName.FREE.value
+    )
+    user.__dict__["storage_usage_bytes"] = storage_usage_bytes or 0
+    user.__dict__["storage_quota_bytes"] = storage_quota_bytes or 0
+    user.__dict__["storage_usage_percent"] = round(
+        (storage_usage_bytes or 0) / (storage_quota_bytes or 1) * 100, 2
+    )
+
+
+def _enrich_user_with_subscription_status(
+    user: UserModel,
+    subscription_expiration: Optional[datetime],
+    subscription_plan_id: Optional[int],
+    subscription_plan_name: Optional[str],
+) -> None:
+    """
+    Calculate and set subscription status and days remaining.
+
+    Args:
+        user: User model to enrich
+        subscription_expiration: Subscription expiration datetime
+        subscription_plan_id: ID of subscription plan
+        subscription_plan_name: Name of subscription plan (fallback)
+    """
+    now = datetime.now(timezone.utc)
+
+    if subscription_expiration and subscription_plan_id:
+        # Make sure expiration is timezone-aware
+        if subscription_expiration.tzinfo is None:
+            subscription_expiration = subscription_expiration.replace(
+                tzinfo=timezone.utc
+            )
+
+        days_remaining = (subscription_expiration - now).days
+
+        if subscription_plan_id == SubscriptionPlanIds.FREE:
+            user.__dict__["subscription_status"] = SubscriptionStatus.FREE.value
+            user.__dict__["subscription_days_remaining"] = None
+        elif subscription_plan_id == SubscriptionPlanIds.PREMIUM:
+            if days_remaining > 0:
+                user.__dict__["subscription_status"] = SubscriptionStatus.PREMIUM.value
+                user.__dict__["subscription_days_remaining"] = days_remaining
+            elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
+                user.__dict__[
+                    "subscription_status"
+                ] = SubscriptionStatus.LIMIT_GRACE.value
+                user.__dict__["subscription_days_remaining"] = (
+                    SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
+                )  # Days left in grace period
+            else:
+                user.__dict__["subscription_status"] = SubscriptionStatus.EXPIRED.value
+                user.__dict__["subscription_days_remaining"] = None
+        else:
+            user.__dict__["subscription_status"] = (
+                subscription_plan_name or PlanName.UNKNOWN.value
+            )
+            user.__dict__["subscription_days_remaining"] = (
+                days_remaining if days_remaining > 0 else None
+            )
+    else:
+        user.__dict__["subscription_status"] = SubscriptionStatus.FREE.value
+        user.__dict__["subscription_days_remaining"] = None
 
 
 async def get_current_user_with_dataview_outputs_check(
@@ -99,61 +190,23 @@ async def get_current_user(
             subscription_plan_id,
         ) = user_data
 
-        authed_user.__dict__["role_id"] = role_id
-        authed_user.__dict__["data_usage"] = data_usage
-        authed_user.__dict__["subscription_plan_name"] = (
-            subscription_plan_name or PlanName.FREE.value
+        # Enrich user with basic attributes
+        _enrich_user_with_basic_attributes(
+            authed_user,
+            role_id,
+            data_usage,
+            subscription_plan_name,
+            storage_usage_bytes,
+            storage_quota_bytes,
         )
-        authed_user.__dict__["storage_usage_bytes"] = storage_usage_bytes or 0
-        authed_user.__dict__["storage_quota_bytes"] = storage_quota_bytes or 0
-        authed_user.__dict__["storage_usage_percent"] = round(
-            (storage_usage_bytes or 0) / (storage_quota_bytes or 1) * 100, 2
+
+        # Calculate and set subscription status
+        _enrich_user_with_subscription_status(
+            authed_user,
+            subscription_expiration,
+            subscription_plan_id,
+            subscription_plan_name,
         )
-
-        # Calculate subscription status and days remaining
-        now = datetime.now(timezone.utc)
-        if subscription_expiration and subscription_plan_id:
-            # Make sure expiration is timezone-aware
-            if subscription_expiration.tzinfo is None:
-                subscription_expiration = subscription_expiration.replace(
-                    tzinfo=timezone.utc
-                )
-
-            days_remaining = (subscription_expiration - now).days
-
-            if subscription_plan_id == 1:  # Free plan
-                authed_user.__dict__[
-                    "subscription_status"
-                ] = SubscriptionStatus.FREE.value
-                authed_user.__dict__["subscription_days_remaining"] = None
-            elif subscription_plan_id == 2:  # Premium plan
-                if days_remaining > 0:
-                    authed_user.__dict__[
-                        "subscription_status"
-                    ] = SubscriptionStatus.PREMIUM.value
-                    authed_user.__dict__["subscription_days_remaining"] = days_remaining
-                elif days_remaining >= -30:  # Grace period (30 days after expiration)
-                    authed_user.__dict__[
-                        "subscription_status"
-                    ] = SubscriptionStatus.LIMIT_GRACE.value
-                    authed_user.__dict__["subscription_days_remaining"] = (
-                        30 + days_remaining
-                    )  # Days left in grace period
-                else:
-                    authed_user.__dict__[
-                        "subscription_status"
-                    ] = SubscriptionStatus.EXPIRED.value
-                    authed_user.__dict__["subscription_days_remaining"] = None
-            else:
-                authed_user.__dict__["subscription_status"] = (
-                    subscription_plan_name or PlanName.UNKNOWN.value
-                )
-                authed_user.__dict__["subscription_days_remaining"] = (
-                    days_remaining if days_remaining > 0 else None
-                )
-        else:
-            authed_user.__dict__["subscription_status"] = SubscriptionStatus.FREE.value
-            authed_user.__dict__["subscription_days_remaining"] = None
 
         return User.from_orm(authed_user)
 

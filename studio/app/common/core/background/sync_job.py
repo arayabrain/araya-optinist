@@ -5,11 +5,11 @@ Runs every 5 minutes, downloads experiments with local_sync_status='pending'.
 """
 
 import asyncio
-import fcntl
 import os
 from datetime import datetime
 from typing import List, Tuple
 
+from filelock import FileLock, Timeout
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
@@ -26,23 +26,6 @@ logger = AppLogger.get_logger()
 class PublishedExperimentSyncJob:
     """Background job to sync published experiments"""
 
-    @staticmethod
-    def _cleanup_stale_lock():
-        """
-        Remove stale lock files older than 1 hour.
-        This prevents permanent lockout if a process crashes.
-        """
-        try:
-            lock_file = SyncStatusConstants.LOCK_FILE
-            if os.path.exists(lock_file):
-                file_age = datetime.now().timestamp() - os.path.getmtime(lock_file)
-                # If lock file is older than 1 hour, consider it stale
-                if file_age > 3600:  # 1 hour in seconds
-                    logger.warning(f"Removing stale lock file (age: {file_age:.0f}s)")
-                    os.unlink(lock_file)
-        except Exception as e:
-            logger.warning(f"Error cleaning up stale lock: {e}")
-
     @classmethod
     async def run(cls):
         """
@@ -53,46 +36,21 @@ class PublishedExperimentSyncJob:
         4. Update sync status in database
         5. Handle errors with retry logic
         """
-        # Acquire file lock to prevent multiple instances syncing simultaneously
-        lock_fd = None
-        lock_acquired = False
+        # Use FileLock for cross-platform file locking
+        # timeout=0 means non-blocking (skip if lock is already held)
+        lock = FileLock(SyncStatusConstants.LOCK_FILE, timeout=0)
+
         try:
-            # Clean up stale lock files (older than 1 hour)
-            cls._cleanup_stale_lock()
+            with lock:
+                logger.info("Starting published experiment sync job")
+                await cls._run_sync_logic()
 
-            lock_fd = open(SyncStatusConstants.LOCK_FILE, "w")
-            # Write PID to lock file for debugging
-            lock_fd.write(str(os.getpid()))
-            lock_fd.flush()
-
-            # Try to acquire exclusive lock (non-blocking)
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                lock_acquired = True
-            except IOError:
-                # Another instance is already running
-                logger.debug("Sync job already running, skipping this execution")
-                return
-
-            logger.info("Starting published experiment sync job")
-
-            # Run actual sync logic
-            await cls._run_sync_logic()
-
+        except Timeout:
+            # Another instance is already running
+            logger.debug("Sync job already running, skipping this execution")
+            return
         except Exception as e:
             logger.error(f"Fatal error in sync job: {e}", exc_info=True)
-        finally:
-            # Release lock and clean up lock file
-            if lock_fd:
-                try:
-                    if lock_acquired:
-                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                    lock_fd.close()
-                    # Delete lock file after successful completion
-                    if os.path.exists(SyncStatusConstants.LOCK_FILE):
-                        os.unlink(SyncStatusConstants.LOCK_FILE)
-                except Exception as e:
-                    logger.warning(f"Error cleaning up lock file: {e}")
 
     @classmethod
     async def _run_sync_logic(cls):
