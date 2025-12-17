@@ -47,6 +47,8 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
+from aws_constants import ECSTaskStatus
+
 # Add project root and Lambda package directories to path
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
@@ -281,8 +283,8 @@ class TestLambdaIntegration:
                             "arn:aws:ecs:region:account:"
                             "task-definition/optinist-premium"
                         ),
-                        "lastStatus": "RUNNING",
-                        "desiredStatus": "RUNNING",
+                        "lastStatus": ECSTaskStatus.RUNNING,
+                        "desiredStatus": ECSTaskStatus.RUNNING,
                     }
                 ]
             }

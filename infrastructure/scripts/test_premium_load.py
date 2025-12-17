@@ -56,9 +56,12 @@ from typing import Dict, Optional
 
 import boto3
 import requests
+from aws_constants import ECSTaskStatus
 
 # Add current directory to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Add parent directory for shared infrastructure imports
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 try:
     from get_jwt_tokens import generate_jwt_tokens
@@ -211,7 +214,7 @@ class PremiumInstanceMonitor:
             for page in paginator.paginate(
                 cluster=self.cluster_name,
                 serviceName=self.service_name,
-                desiredStatus="RUNNING",
+                desiredStatus=ECSTaskStatus.RUNNING,
             ):
                 task_arns.extend(page["taskArns"])
 

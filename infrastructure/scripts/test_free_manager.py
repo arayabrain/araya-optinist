@@ -52,7 +52,11 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 import boto3
+from aws_constants import ECSTaskStatus
 from botocore.exceptions import ClientError
+
+# Add parent directory for shared infrastructure imports
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 
 class FreeManagerTester:
@@ -246,7 +250,7 @@ class FreeManagerTester:
             response = self.ecs_client.list_tasks(
                 cluster=self.cluster_name,
                 serviceName=self.free_service_name,
-                desiredStatus="RUNNING",
+                desiredStatus=ECSTaskStatus.RUNNING,
             )
 
             task_arns = response.get("taskArns", [])

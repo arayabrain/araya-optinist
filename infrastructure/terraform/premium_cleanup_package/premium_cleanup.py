@@ -18,11 +18,16 @@ Coordinates with premium_manager which handles all compute/capacity decisions.
 
 import json
 import os
+import sys
 import time
 from typing import Any, Dict, List
 
 import boto3
 import pymysql
+from aws_constants import ECSTaskStatus
+
+# Add parent directory to path for shared imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 
 def get_required_env_var(var_name: str, default_value: str = None) -> str:
@@ -138,7 +143,7 @@ def check_instance_readiness(instance_id: str) -> bool:
         for task in task_details["tasks"]:
             if (
                 task.get("taskDefinitionArn", "").find("premium") != -1
-                and task.get("lastStatus") == "RUNNING"
+                and task.get("lastStatus") == ECSTaskStatus.RUNNING
             ):
                 print(f"Premium task running and ready on instance {instance_id}")
                 return True

@@ -38,10 +38,12 @@ Required Environment Variables:
 
 import json
 import os
+import sys
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 import boto3
+from aws_constants import ECSTaskStatus
 
 # Import utility functions
 from free_user_utils import (
@@ -51,6 +53,9 @@ from free_user_utils import (
     is_distribution_balanced,
     migrate_user_to_instance,
 )
+
+# Add parent directory to path for shared imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 
 def get_required_env_var(var_name: str, default_value: str = None) -> str:
@@ -574,7 +579,9 @@ def get_service_info(cluster_name: str, service_name: str) -> Dict[str, int]:
     # List tasks
     print("\nQuerying ECS tasks")
     tasks_response = ecs_client.list_tasks(
-        cluster=cluster_name, serviceName=service_name, desiredStatus="RUNNING"
+        cluster=cluster_name,
+        serviceName=service_name,
+        desiredStatus=ECSTaskStatus.RUNNING,
     )
     task_arns = tasks_response.get("taskArns", [])
     print(f"Running tasks: {len(task_arns)}")

@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
+import os
 import subprocess
 import sys
 import time
 from typing import Optional
 
+from aws_constants import BatchJobStatus, ECSTaskStatus
 from colorama import Fore, init
+
+# Add parent directory for shared infrastructure imports
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 init()
 
@@ -156,7 +161,7 @@ def stop_all_tasks() -> bool:
             "--cluster",
             "subscr-optinist-cloud-cluster",
             "--desired-status",
-            "RUNNING",
+            ECSTaskStatus.RUNNING,
             "--query",
             "taskArns[]",
             "--output",
@@ -229,7 +234,7 @@ def check_tasks_stopped() -> bool:
                 "--cluster",
                 "subscr-optinist-cloud-cluster",
                 "--desired-status",
-                "RUNNING",
+                ECSTaskStatus.RUNNING,
                 "--query",
                 "length(taskArns)",
                 "--output",
@@ -851,7 +856,13 @@ def shutdown_batch_environments() -> bool:
         print(f"{Colors.YELLOW}Canceling jobs in queue: {queue_name}{Colors.NC}")
 
         # Get all non-terminal jobs
-        for status in ["SUBMITTED", "PENDING", "RUNNABLE", "STARTING", "RUNNING"]:
+        for status in [
+            BatchJobStatus.SUBMITTED,
+            BatchJobStatus.PENDING,
+            BatchJobStatus.RUNNABLE,
+            BatchJobStatus.STARTING,
+            BatchJobStatus.RUNNING,
+        ]:
             jobs_output = run_command(
                 [
                     "aws",
