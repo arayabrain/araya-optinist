@@ -71,7 +71,7 @@ graph TB
         D --> E[Generate JWT Token]
         E --> F[Return access_token]
         F --> G[Store in localStorage]
-        
+
         I[API Request] --> J{Has Token?}
         J -->|Yes| K[Add Authorization Header]
         J -->|No| L[Redirect to Login]

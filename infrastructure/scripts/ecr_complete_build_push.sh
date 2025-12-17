@@ -100,11 +100,11 @@ echo ""
 echo "Getting frontend configuration..."
 
 # Try to get from terraform first
-if command -v terraform >/dev/null 2>&1 && [ -f "main.tf" ]; then
+if command -v terraform >/dev/null 2>&1 && [ -f "../terraform/main.tf" ]; then
     echo "Attempting to get configuration from Terraform outputs..."
-    AUTOSCALING_HOST=$(terraform output -raw domain_name)
-    AUTOSCALING_PORT=$(terraform output -raw domain_port)
-    AUTOSCALING_PROTO=$(terraform output -raw domain_protocol)
+    AUTOSCALING_HOST=$(terraform -chdir=../terraform output -raw domain_name)
+    AUTOSCALING_PORT=$(terraform -chdir=../terraform output -raw domain_port)
+    AUTOSCALING_PROTO=$(terraform -chdir=../terraform output -raw domain_protocol)
 fi
 
 # If terraform outputs not available, prompt user
@@ -154,7 +154,7 @@ aws ecr get-login-password --region $REGION | docker login --username AWS --pass
 
 # Build frontend with configuration
 echo "Building frontend for all-in-one with ${AUTOSCALING_PROTO}://${AUTOSCALING_HOST}:${AUTOSCALING_PORT}"
-cd ../../../frontend
+cd ../../frontend
 cat > .env.production << ENV_EOF
 REACT_APP_SERVER_HOST=${AUTOSCALING_HOST}
 REACT_APP_SERVER_PORT=${AUTOSCALING_PORT}

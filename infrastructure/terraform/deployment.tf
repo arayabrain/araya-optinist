@@ -34,8 +34,8 @@ ENV_EOF
 
       # Build and push image
       echo "Building and pushing Docker image..."
-      chmod +x ecr_build_push.sh
-      ./ecr_build_push.sh
+      chmod +x ../scripts/ecr_build_push.sh
+      ../scripts/ecr_build_push.sh
 
       echo "Waiting for ECR image to be available..."
       sleep 60

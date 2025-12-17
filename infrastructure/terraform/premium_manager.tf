@@ -153,7 +153,7 @@ resource "null_resource" "install_dependencies" {
   triggers = {
     code_changes = md5(join("", [
       filesha256("${path.module}/premium_manager_package/premium_manager.py"),
-      filesha256("${path.module}/../../app/common/core/premium/premium_assignment_service.py")
+      filesha256("${path.module}/../../studio/app/common/core/premium/premium_assignment_service.py")
     ]))
   }
 }
