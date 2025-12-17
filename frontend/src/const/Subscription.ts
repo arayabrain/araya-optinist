@@ -30,3 +30,9 @@ export const SubscriptionAlertThresholds = {
   WARNING: 90,
   CRITICAL: 100,
 } as const
+
+// Storage usage display thresholds (for visual indicators)
+export const StorageDisplayThresholds = {
+  NEAR_LIMIT_PERCENT: 80, // Show warning color when usage exceeds this
+  OVER_LIMIT_PERCENT: 100, // Show error color when usage exceeds this
+} as const

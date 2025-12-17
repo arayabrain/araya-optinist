@@ -10,16 +10,19 @@ import React, { useEffect, useState } from "react"
 import { Alert, Button, Snackbar } from "@mui/material"
 
 import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
+import { PREMIUM_TIMING } from "store/slice/Subscriptions/SubscriptionType"
 
 const InactivityWarning: React.FC = () => {
   const { showInactivityWarning, dismissInactivityWarning, recordActivity } =
     usePremiumAssignment()
-  const [countdown, setCountdown] = useState(60) // 60 minutes countdown
+  const [countdown, setCountdown] = useState<number>(
+    PREMIUM_TIMING.INACTIVITY_WARNING_DURATION_MINUTES,
+  )
 
   // Countdown timer for the warning
   useEffect(() => {
     if (!showInactivityWarning) {
-      setCountdown(60) // Reset countdown when warning is dismissed
+      setCountdown(PREMIUM_TIMING.INACTIVITY_WARNING_DURATION_MINUTES)
       return
     }
 
@@ -31,7 +34,7 @@ const InactivityWarning: React.FC = () => {
         }
         return prev - 1
       })
-    }, 60 * 1000) // Update every minute
+    }, PREMIUM_TIMING.WARNING_UPDATE_INTERVAL_MS)
 
     return () => clearInterval(countdownInterval)
   }, [showInactivityWarning])

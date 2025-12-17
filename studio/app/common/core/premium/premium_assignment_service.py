@@ -15,6 +15,7 @@ import boto3
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.constants import SubscriptionType
+from studio.app.common.core.utils.config_handler import is_local_environment
 
 logger = AppLogger.get_logger()
 
@@ -69,6 +70,7 @@ class PremiumAssignmentService:
         expired_users = [
             user_id
             for user_id, timestamp in _assignment_attempts.items()
+            # Keep entries for 2x rate limit (60s) to ensure rate limiting works
             if current_time - timestamp > _RATE_LIMIT_SECONDS * 2
         ]
         for user_id in expired_users:
@@ -127,13 +129,7 @@ class PremiumAssignmentService:
                 }
 
             # Local development mode - skip Lambda call if running on localhost
-            mysql_server = os.environ.get("MYSQL_SERVER", "")
-            database_url = os.environ.get("DATABASE_URL", "")
-            if (
-                "localhost" in mysql_server
-                or "localhost" in database_url
-                or "127.0.0.1" in database_url
-            ):
+            if is_local_environment():
                 logger.info(
                     f"Local dev mode: Simulating premium assignment for user {user_id}"
                 )
