@@ -8,7 +8,7 @@ WHERE TO RUN:
 
 REQUIREMENTS:
 - AWS credentials configured (boto3 access)
-- Terraform outputs available in ../config/terraform
+- Terraform outputs available in terraform
 - Python 3.8+ with boto3
 - Access to ECS cluster and Lambda functions
 
@@ -951,8 +951,8 @@ def main():
     )
     parser.add_argument(
         "--terraform-dir",
-        default="../config/terraform",
-        help="Path to Terraform directory (default: ../config/terraform)",
+        default="terraform",
+        help="Path to Terraform directory (default: terraform)",
     )
     parser.add_argument(
         "--region",

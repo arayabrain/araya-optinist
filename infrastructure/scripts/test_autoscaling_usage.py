@@ -11,7 +11,7 @@ WHERE TO RUN:
 REQUIREMENTS:
 - AWS credentials configured (boto3 access)
 - IAM permissions: ecs:*, asg:*, cloudwatch:*, rds:*
-- Terraform outputs available in ../config/terraform
+- Terraform outputs available in terraform
 - Python 3.8+ with boto3, pymysql, requests
 - ** NETWORK ACCESS to private RDS database **
 - Test users: optinist_test_user_free_7, optinist_test_user_free_8
@@ -181,8 +181,7 @@ class AutoscalingUsageTest:
         # Get configuration from Terraform
         try:
             result = os.popen(
-                f"cd {Path(__file__).parent.parent}/config/terraform && "
-                "terraform output -json"
+                f"cd {Path(__file__).parent}/terraform && " "terraform output -json"
             ).read()
             outputs = json.loads(result)
 
@@ -278,7 +277,7 @@ class AutoscalingUsageTest:
             logging.error("Install with: pip install firebase-admin")
             return False
 
-        terraform_dir = Path(__file__).parent.parent / "config" / "terraform"
+        terraform_dir = Path(__file__).parent / "terraform"
         test_users = [self.config.load_generator_user, self.config.new_user]
 
         # Generate tokens for all free users

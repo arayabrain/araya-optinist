@@ -274,5 +274,5 @@ def print_configuration_help():
     print(
         "3. Set environment variables (PREMIUM_USER_EMAIL, PREMIUM_USER_PASSWORD, etc.)"
     )
-    print("4. Ensure terraform.tfvars exists in studio/config/terraform/")
+    print("4. Ensure terraform.tfvars exists in infrastructure/terraform/")
     print("See README_PRIORITY_TESTING.md for detailed setup instructions.")

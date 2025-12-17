@@ -43,7 +43,7 @@ except ImportError:
     pyrebase_app = None
 
 
-def get_terraform_outputs(terraform_dir: str = "../config/terraform") -> Dict:
+def get_terraform_outputs(terraform_dir: str = "terraform") -> Dict:
     """Get Terraform outputs including test_users"""
     try:
         result = subprocess.run(
@@ -69,7 +69,7 @@ def get_terraform_outputs(terraform_dir: str = "../config/terraform") -> Dict:
 
 def initialize_firebase_admin(
     service_account_path: Optional[str] = None,
-    terraform_dir: str = "../config/terraform",
+    terraform_dir: str = "terraform",
 ) -> bool:
     """Initialize Firebase Admin SDK"""
     if firebase_admin._apps:
@@ -134,8 +134,8 @@ def initialize_firebase_admin(
             # If still no cred, try default paths
             if not cred:
                 default_paths = [
+                    "../../studio/config/auth/firebase_private.json",
                     "studio/config/firebase-service-account.json",
-                    "../config/firebase-service-account.json",
                     "firebase-service-account.json",
                 ]
                 for path in default_paths:
@@ -260,7 +260,7 @@ def create_firebase_id_token(firebase_uid: str, email: str) -> Optional[str]:
 def generate_jwt_tokens(
     environment: str = "local",
     api_url: str = None,
-    terraform_dir: str = "../config/terraform",
+    terraform_dir: str = "terraform",
     service_account_path: str = None,
     user_type: str = "free",
     multi_free: bool = False,
@@ -445,8 +445,8 @@ if __name__ == "__main__":
     parser.add_argument("--api-url", help="API URL (optional, for reference)")
     parser.add_argument(
         "--terraform-dir",
-        default="../config/terraform",
-        help="Path to Terraform directory (default: ../config/terraform)",
+        default="terraform",
+        help="Path to Terraform directory (default: terraform)",
     )
     parser.add_argument(
         "--service-account-path", help="Path to Firebase service account JSON file"

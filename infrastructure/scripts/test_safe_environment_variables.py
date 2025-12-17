@@ -20,7 +20,7 @@ aws ecs execute-command \
 REQUIREMENTS:
 - No actual AWS services needed (uses mocks)
 - No database connection required (uses mocks)
-- Requires premium_manager.py in config/terraform/premium_manager_package/
+- Requires premium_manager.py in terraform/premium_manager_package/
 - Python 3.7+ with unittest.mock
 
 WHAT IT TESTS:

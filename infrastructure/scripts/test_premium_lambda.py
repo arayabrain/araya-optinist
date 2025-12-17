@@ -7,7 +7,7 @@ WHERE TO RUN:
 - Local development machine - Works (with proper setup)
 
 REQUIREMENTS:
-- Lambda function code must be in config/terraform/premium_manager_package/
+- Lambda function code must be in terraform/premium_manager_package/
 - Mocked AWS services (boto3, pymysql)
 - Python 3.7+
 

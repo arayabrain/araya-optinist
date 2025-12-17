@@ -1203,8 +1203,8 @@ def main():
 
     parser.add_argument(
         "--terraform-dir",
-        default="../config/terraform",
-        help="Path to Terraform directory (default: ../config/terraform)",
+        default="terraform",
+        help="Path to Terraform directory (default: terraform)",
     )
     parser.add_argument(
         "--api-url",
