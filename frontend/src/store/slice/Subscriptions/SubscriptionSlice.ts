@@ -1,6 +1,5 @@
 import { createSlice, PayloadAction } from "@reduxjs/toolkit"
 
-import { SUBSCRIPTION_USER_STATUS } from "pages/Account"
 import {
   cancelSubscription,
   createCheckoutSession,
@@ -12,6 +11,7 @@ import {
 } from "store/slice/Subscriptions/SubscriptionActions"
 import {
   SUBSCRIPTION_SLICE_NAME,
+  SUBSCRIPTION_USER_STATUS,
   SubscriptionState,
   UserSubscription,
 } from "store/slice/Subscriptions/SubscriptionType"

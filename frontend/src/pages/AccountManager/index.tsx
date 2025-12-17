@@ -53,6 +53,7 @@ import Loading from "components/common/Loading"
 import PaginationCustom from "components/common/PaginationCustom"
 import SelectError from "components/common/SelectError"
 import { regexEmail, regexIgnoreS, regexPassword } from "const/Auth"
+import { SUBSCRIPTION_STATUS } from "store/slice/Subscriptions/SubscriptionType"
 import {
   deleteUser,
   createUser,
@@ -721,14 +722,15 @@ const AccountManager = () => {
       sortable: false,
       filterable: false,
       renderCell: (params: GridRenderCellParams<GridValidRowModel>) => {
-        const status = params.row?.subscription_status || "Free"
+        const status =
+          params.row?.subscription_status || SUBSCRIPTION_STATUS.FREE
         const daysRemaining = params.row?.subscription_days_remaining
 
         let statusText = status
         if (daysRemaining !== null && daysRemaining !== undefined) {
-          if (status === "Premium") {
+          if (status === SUBSCRIPTION_STATUS.PREMIUM) {
             statusText = `Premium (${daysRemaining} days left)`
-          } else if (status === "Limit Grace") {
+          } else if (status === SUBSCRIPTION_STATUS.LIMIT_GRACE) {
             statusText = `Limit Grace (${daysRemaining} days left)`
           }
         }
