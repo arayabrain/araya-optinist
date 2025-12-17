@@ -6,10 +6,15 @@
  */
 
 import { UserDTO } from "api/users/UsersApiDTO"
+import {
+  SUBSCRIPTION_PLAN,
+  SUBSCRIPTION_STATUS,
+  USER_TIER,
+} from "store/slice/Subscriptions/SubscriptionType"
 
 export interface RoutingInfo {
   user_id: string
-  user_tier: "premium" | "free"
+  user_tier: USER_TIER
   requires_premium_routing: boolean
   routing_headers: Record<string, string>
 }
@@ -46,11 +51,11 @@ class RoutingService {
 
     this.routingInfo = {
       user_id: user.id?.toString() || "",
-      user_tier: isPremium ? "premium" : "free",
+      user_tier: isPremium ? USER_TIER.PREMIUM : USER_TIER.FREE,
       requires_premium_routing: isPremium,
       routing_headers: isPremium
         ? {
-            "X-User-Tier": "premium",
+            "X-User-Tier": USER_TIER.PREMIUM,
             "X-User-ID": user.id?.toString() || "",
           }
         : {},
@@ -77,7 +82,7 @@ class RoutingService {
   /**
    * Get current user tier
    */
-  getUserTier(): "premium" | "free" | null {
+  getUserTier(): USER_TIER | null {
     return this.routingInfo?.user_tier || null
   }
 
@@ -94,9 +99,9 @@ class RoutingService {
    */
   private isPremiumUser(user: UserDTO): boolean {
     return (
-      user.subscription_plan_name === "Premium" &&
-      (user.subscription_status === "Premium" ||
-        user.subscription_status === "Limit Grace")
+      user.subscription_plan_name === SUBSCRIPTION_PLAN.PREMIUM &&
+      (user.subscription_status === SUBSCRIPTION_STATUS.PREMIUM ||
+        user.subscription_status === SUBSCRIPTION_STATUS.LIMIT_GRACE)
     )
   }
 

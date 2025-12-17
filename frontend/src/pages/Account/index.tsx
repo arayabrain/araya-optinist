@@ -32,6 +32,10 @@ import {
   selectUserSubscriptionLoading,
 } from "store/slice/Subscriptions/SubscriptionSelector"
 import {
+  SUBSCRIPTION_PLAN,
+  SUBSCRIPTION_USER_STATUS,
+} from "store/slice/Subscriptions/SubscriptionType"
+import {
   deleteMe,
   getMe,
   updateMe,
@@ -40,18 +44,6 @@ import {
 import { selectCurrentUser, selectLoading } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
-
-export enum SUBSCRIPTION_USER_STATUS {
-  FREE = 1,
-  SUBSCRIBED = 2,
-  EXPIRED = 3,
-  CANCELED = 4,
-}
-
-enum SUBSCRIPTION_PLAN {
-  FREE = "Free",
-  PREMIUM = "Premium",
-}
 
 const Account = () => {
   const user = useSelector(selectCurrentUser)

@@ -4,11 +4,12 @@
  * Handles API calls for premium user instance assignment and management.
  */
 
+import { USER_TIER } from "store/slice/Subscriptions/SubscriptionType"
 import axios from "utils/axios"
 
 export interface RoutingInfo {
   user_id: string
-  user_tier: "premium" | "free"
+  user_tier: USER_TIER
   requires_premium_routing: boolean
   routing_headers: Record<string, string>
 }
@@ -37,7 +38,7 @@ export interface PremiumAssignment {
 
 export interface PremiumStatusResult {
   user_id: number
-  subscription_type: "premium" | "free"
+  subscription_type: USER_TIER
   is_premium: boolean
   assignment: PremiumAssignment | null
   migration_ready?: boolean
@@ -49,7 +50,7 @@ export interface PremiumHeartbeatResult {
   message: string
   updated: boolean
   user_id: number
-  user_tier: "premium" | "free"
+  user_tier: USER_TIER
   assignment_active: boolean
   activity_update?: boolean
   error?: string

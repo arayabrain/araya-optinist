@@ -24,6 +24,10 @@ import {
   PremiumStatusResult,
   RoutingInfo,
 } from "api/premium/PremiumAssignmentApi"
+import {
+  SUBSCRIPTION_PLAN,
+  SUBSCRIPTION_STATUS,
+} from "store/slice/Subscriptions/SubscriptionType"
 import { RootState } from "store/store"
 import { routingService } from "utils/routing/RoutingService"
 
@@ -85,9 +89,9 @@ export const PremiumAssignmentProvider: React.FC<{
 
   // Calculate premium user status
   const isPremiumUser =
-    currentUser?.subscription_plan_name === "Premium" &&
-    (currentUser?.subscription_status === "Premium" ||
-      currentUser?.subscription_status === "Limit Grace")
+    currentUser?.subscription_plan_name === SUBSCRIPTION_PLAN.PREMIUM &&
+    (currentUser?.subscription_status === SUBSCRIPTION_STATUS.PREMIUM ||
+      currentUser?.subscription_status === SUBSCRIPTION_STATUS.LIMIT_GRACE)
 
   // Update state when premium status changes
   useEffect(() => {
