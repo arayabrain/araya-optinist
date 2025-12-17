@@ -1,3 +1,4 @@
+import { LIMIT_ALERT_TYPE } from "store/slice/Subscriptions/SubscriptionType"
 import axios from "utils/axios"
 
 export interface StorageAlert {
@@ -64,7 +65,7 @@ export const refreshStorageUsageApi =
 // Limit Alert Types
 export interface LimitAlert {
   has_alert: boolean
-  alert_type: "storage" | "grace" | "overdue"
+  alert_type: LIMIT_ALERT_TYPE
   days_remaining: number
   excess_data_bytes: number
   excess_data_gb: number

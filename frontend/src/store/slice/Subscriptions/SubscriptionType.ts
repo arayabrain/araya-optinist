@@ -1,5 +1,40 @@
 export const SUBSCRIPTION_SLICE_NAME = "subscription"
 
+// Subscription plan names (matches backend PlanName enum)
+export enum SUBSCRIPTION_PLAN {
+  FREE = "Free",
+  PREMIUM = "Premium",
+}
+
+// User tier identifiers for API/routing (matches backend SubscriptionType enum)
+export enum USER_TIER {
+  PREMIUM = "premium",
+  FREE = "free",
+}
+
+// Subscription user status (matches backend SubscriptionUserStatus enum)
+export enum SUBSCRIPTION_USER_STATUS {
+  FREE = 1,
+  SUBSCRIBED = 2,
+  EXPIRED = 3,
+  CANCELED = 4,
+}
+
+// Subscription status labels (matches backend SubscriptionStatus enum)
+export enum SUBSCRIPTION_STATUS {
+  FREE = "Free",
+  PREMIUM = "Premium",
+  LIMIT_GRACE = "Limit Grace",
+  EXPIRED = "Expired",
+}
+
+// Limit alert types (used in storage and subscription warnings)
+export enum LIMIT_ALERT_TYPE {
+  STORAGE = "storage",
+  GRACE = "grace",
+  OVERDUE = "overdue",
+}
+
 // Feature interface for type safety
 export interface PlanFeature {
   text: string

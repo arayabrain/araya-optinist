@@ -38,6 +38,7 @@ import type {
   SubscriptionPlan,
   PlanFeature,
 } from "store/slice/Subscriptions/SubscriptionType"
+import { SUBSCRIPTION_PLAN } from "store/slice/Subscriptions/SubscriptionType"
 import { selectCurrentUser } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 import {
@@ -89,11 +90,6 @@ const SubscriptionPlans = () => {
   const isDowngrade = (planId: number) => {
     const plan = plans.find((p) => p.id === planId)
     return plan?.price === 0
-  }
-
-  enum SUBSCRIPTION_PLAN {
-    FREE = "Free",
-    PREMIUM = "Premium",
   }
 
   const handleReactivatePlan = async (planId: number) => {
@@ -366,7 +362,10 @@ const SubscriptionPlans = () => {
             const isProcessing = isPlanProcessing(plan.id)
 
             return (
-              <PlanCard key={plan.id} isHighlighted={plan.name === "Premium"}>
+              <PlanCard
+                key={plan.id}
+                isHighlighted={plan.name === SUBSCRIPTION_PLAN.PREMIUM}
+              >
                 <PlanHeader>
                   <PlanTitle variant="h4">{plan.name}</PlanTitle>
 
