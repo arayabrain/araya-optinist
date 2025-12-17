@@ -53,6 +53,7 @@ import Loading from "components/common/Loading"
 import PaginationCustom from "components/common/PaginationCustom"
 import SelectError from "components/common/SelectError"
 import { regexEmail, regexIgnoreS, regexPassword } from "const/Auth"
+import { SubscriptionStatusLabels } from "const/Subscription"
 import {
   deleteUser,
   createUser,
@@ -726,10 +727,10 @@ const AccountManager = () => {
 
         let statusText = status
         if (daysRemaining !== null && daysRemaining !== undefined) {
-          if (status === "Premium") {
-            statusText = `Premium (${daysRemaining} days left)`
-          } else if (status === "Limit Grace") {
-            statusText = `Limit Grace (${daysRemaining} days left)`
+          if (status === SubscriptionStatusLabels.PREMIUM) {
+            statusText = `${SubscriptionStatusLabels.PREMIUM} (${daysRemaining} days left)`
+          } else if (status === SubscriptionStatusLabels.LIMIT_GRACE) {
+            statusText = `${SubscriptionStatusLabels.LIMIT_GRACE} (${daysRemaining} days left)`
           }
         }
 

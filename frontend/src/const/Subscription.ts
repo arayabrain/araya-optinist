@@ -30,3 +30,9 @@ export const SubscriptionAlertThresholds = {
   WARNING: 90,
   CRITICAL: 100,
 } as const
+
+export const SubscriptionStatusLabels = {
+  FREE: "Free",
+  PREMIUM: "Premium",
+  LIMIT_GRACE: "Limit Grace",
+} as const
