@@ -35,6 +35,14 @@ export enum LIMIT_ALERT_TYPE {
   OVERDUE = "overdue",
 }
 
+// Premium instance timing constants (in minutes)
+export const PREMIUM_TIMING = {
+  // Duration of inactivity warning countdown before instance is released
+  INACTIVITY_WARNING_DURATION_MINUTES: 60,
+  // Interval for updating the countdown display (in milliseconds)
+  WARNING_UPDATE_INTERVAL_MS: 60 * 1000, // 1 minute
+} as const
+
 // Feature interface for type safety
 export interface PlanFeature {
   text: string

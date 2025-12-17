@@ -107,6 +107,7 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
             return {
                 "message": result["message"],
                 "assigned": False,
+                # Default retry interval: 180 seconds (3 minutes)
                 "retry_after": result.get("retry_after", 180),
                 "scaling_in_progress": True,
             }
