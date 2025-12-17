@@ -36,13 +36,18 @@ Required Environment Variables:
 
 import json
 import os
+import sys
 import time
 from datetime import datetime, timedelta
 from typing import Any, Dict
 
 import boto3
 import pymysql
+from aws_constants import ECSTaskStatus
 from botocore.exceptions import ClientError
+
+# Add parent directory to path for shared imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 
 def get_required_env_var(var_name: str, default_value: str = None) -> str:
@@ -2643,7 +2648,10 @@ def check_instance_readiness(instance_id: str) -> bool:
             print(f"- Task: {task_def_arn}")
             print(f"Status: {last_status} (desired: {desired_status})")
 
-            if "premium" in task_def_arn.lower() and last_status == "RUNNING":
+            if (
+                "premium" in task_def_arn.lower()
+                and last_status == ECSTaskStatus.RUNNING
+            ):
                 premium_tasks_running += 1
                 print("Premium task running!")
 
