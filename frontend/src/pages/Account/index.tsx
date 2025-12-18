@@ -26,15 +26,12 @@ import { isRejectedWithValue } from "@reduxjs/toolkit"
 import ChangePasswordModal from "components/Account/ChangePasswordModal"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
+import { PlanName, SubscriptionUserStatus } from "const/Subscription"
 import { getUserSubscription } from "store/slice/Subscriptions/SubscriptionActions"
 import {
   selectUserSubscription,
   selectUserSubscriptionLoading,
 } from "store/slice/Subscriptions/SubscriptionSelector"
-import {
-  SUBSCRIPTION_PLAN,
-  SUBSCRIPTION_USER_STATUS,
-} from "store/slice/Subscriptions/SubscriptionType"
 import {
   deleteMe,
   getMe,
@@ -190,11 +187,11 @@ const Account = () => {
 
   const determineSubscriptionButtonStatus = () => {
     if (!userSubscription) {
-      return SUBSCRIPTION_USER_STATUS.FREE
+      return SubscriptionUserStatus.FREE
     } else if (userSubscription.is_expired) {
-      return SUBSCRIPTION_USER_STATUS.EXPIRED
+      return SubscriptionUserStatus.EXPIRED
     } else {
-      return SUBSCRIPTION_USER_STATUS.SUBSCRIBED
+      return SubscriptionUserStatus.SUBSCRIBED
     }
   }
 
@@ -203,7 +200,7 @@ const Account = () => {
     const status = determineSubscriptionButtonStatus()
 
     // For users who never had a subscription (completely free users)
-    if (status === SUBSCRIPTION_USER_STATUS.FREE) {
+    if (status === SubscriptionUserStatus.FREE) {
       return (
         <Button
           variant="contained"
@@ -219,12 +216,12 @@ const Account = () => {
 
     // For users with subscription records (active or expired)
     if (
-      status === SUBSCRIPTION_USER_STATUS.SUBSCRIBED ||
-      status === SUBSCRIPTION_USER_STATUS.EXPIRED
+      status === SubscriptionUserStatus.SUBSCRIBED ||
+      status === SubscriptionUserStatus.EXPIRED
     ) {
       return (
         <Box sx={{ ml: 2, display: "flex", gap: 1 }}>
-          {status === SUBSCRIPTION_USER_STATUS.EXPIRED && (
+          {status === SubscriptionUserStatus.EXPIRED && (
             <Button
               variant="contained"
               color="primary"
@@ -258,7 +255,7 @@ const Account = () => {
 
     if (
       userSubscription.is_expired ||
-      userSubscription.status === SUBSCRIPTION_USER_STATUS.CANCELED
+      userSubscription.status === SubscriptionUserStatus.CANCELED
     ) {
       return (
         <Typography variant="caption" color="error" sx={{ ml: 1 }}>
@@ -276,7 +273,7 @@ const Account = () => {
     }
 
     // Show expiration date for all active paid subscriptions (not FREE tier)
-    if (userSubscription.status === SUBSCRIPTION_USER_STATUS.SUBSCRIBED) {
+    if (userSubscription.status === SubscriptionUserStatus.SUBSCRIBED) {
       return (
         <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
           (Renew on {expirationDate.toLocaleDateString()})
@@ -349,7 +346,7 @@ const Account = () => {
           <BoxData>
             {userSubscription?.plan_name && !userSubscription.is_expired
               ? userSubscription.plan_name
-              : SUBSCRIPTION_PLAN.FREE}
+              : PlanName.FREE}
           </BoxData>
           {getExpirationInfo()}
         </Box>

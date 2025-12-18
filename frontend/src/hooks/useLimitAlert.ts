@@ -8,7 +8,7 @@ import {
   LimitAlert,
   LimitAlertStatus,
 } from "api/storage/StorageAlerts"
-import { LIMIT_ALERT_TYPE } from "store/slice/Subscriptions/SubscriptionType"
+import { LimitAlertType } from "const/Subscription"
 
 interface UseLimitAlertReturn {
   alert: LimitAlert | null
@@ -66,11 +66,9 @@ export const useLimitAlert = (
           (!alert || newAlert.alert_type !== alert.alert_type)
         ) {
           const severity =
-            newAlert.alert_type === LIMIT_ALERT_TYPE.OVERDUE
-              ? "error"
-              : "warning"
+            newAlert.alert_type === LimitAlertType.OVERDUE ? "error" : "warning"
           const autoHideDuration =
-            newAlert.alert_type === LIMIT_ALERT_TYPE.OVERDUE ? 15000 : 10000
+            newAlert.alert_type === LimitAlertType.OVERDUE ? 15000 : 10000
 
           enqueueSnackbar(
             `Account Alert: ${newAlert.days_remaining} days remaining to resolve storage issue`,
