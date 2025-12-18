@@ -70,7 +70,7 @@ async def get_my_storage_alert(
                 from datetime import datetime, timezone
 
                 alert = {
-                    "user_id": current_user.id,
+                    "user_id": current_user.uid,
                     "alert_level": alert_level,
                     "storage_usage_bytes": current_usage,
                     "storage_quota_bytes": storage_quota,
@@ -321,7 +321,7 @@ async def check_limit_warning_status(
             "has_warning": warning is not None,
             "warning_type": warning.get("warning_type") if warning else None,
             "days_remaining": warning.get("days_remaining") if warning else None,
-            "user_id": current_user.id,
+            "user_id": current_user.uid,
         }
 
     except Exception as e:

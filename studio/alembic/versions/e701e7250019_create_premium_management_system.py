@@ -10,6 +10,7 @@ Create Date: 2025-09-18 16:00:00.000000
 """
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import mysql
 
 # revision identifiers, used by Alembic.
 revision = "e701e7250019"
@@ -25,8 +26,12 @@ def upgrade() -> None:
     # Create premium_user_assignments table with all columns
     op.create_table(
         "premium_user_assignments",
+        # Primary key
+        sa.Column(
+            "id", mysql.BIGINT(unsigned=True), nullable=False, autoincrement=True
+        ),
         # Original table columns (b301b4120016)
-        sa.Column("user_id", sa.VARCHAR(255), primary_key=True, nullable=False),
+        sa.Column("user_id", mysql.BIGINT(unsigned=True), nullable=False),
         sa.Column("instance_id", sa.VARCHAR(20), nullable=False),
         sa.Column("target_group_arn", sa.VARCHAR(512), nullable=False),
         sa.Column("alb_rule_arn", sa.VARCHAR(512), nullable=False),
@@ -91,6 +96,10 @@ def upgrade() -> None:
             sa.TIMESTAMP,
             nullable=True,
         ),
+        # Constraints
+        sa.PrimaryKeyConstraint("id"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], name="fk_premium_user"),
+        sa.UniqueConstraint("user_id", name="uq_premium_user_id"),
     )
 
     # Create all indexes

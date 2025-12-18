@@ -2,15 +2,30 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import INTEGER, TIMESTAMP, VARCHAR
+from sqlalchemy.dialects.mysql import BIGINT
 from sqlalchemy.sql.functions import current_timestamp
-from sqlmodel import Column, Field, SQLModel
+from sqlmodel import Column, Field, ForeignKey, SQLModel
 
 
 class FreeUserAssignment(SQLModel, table=True):
     __tablename__ = "free_user_assignments"
 
-    user_id: str = Field(
-        sa_column=Column(VARCHAR(255), primary_key=True, nullable=False)
+    id: Optional[int] = Field(
+        sa_column=Column(
+            BIGINT(unsigned=True),
+            primary_key=True,
+            nullable=False,
+            autoincrement=True,
+        ),
+        default=None,
+    )
+    user_id: int = Field(
+        sa_column=Column(
+            BIGINT(unsigned=True),
+            ForeignKey("users.id"),
+            unique=True,
+            nullable=False,
+        )
     )
     instance_id: str = Field(sa_column=Column(VARCHAR(20), nullable=False))
     assigned_at: Optional[datetime] = Field(

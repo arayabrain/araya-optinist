@@ -10,6 +10,7 @@ Create Date: 2025-11-14 10:00:00.000000
 """
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import mysql
 
 # revision identifiers, used by Alembic.
 revision = "f801f8250020"
@@ -25,8 +26,12 @@ def upgrade() -> None:
     # Create free_user_assignments table with all columns
     op.create_table(
         "free_user_assignments",
+        # Primary key
+        sa.Column(
+            "id", mysql.BIGINT(unsigned=True), nullable=False, autoincrement=True
+        ),
         # Core assignment columns
-        sa.Column("user_id", sa.VARCHAR(255), primary_key=True, nullable=False),
+        sa.Column("user_id", mysql.BIGINT(unsigned=True), nullable=False),
         sa.Column("instance_id", sa.VARCHAR(20), nullable=False),
         sa.Column(
             "assigned_at",
@@ -75,11 +80,22 @@ def upgrade() -> None:
             nullable=True,
             comment="Timestamp of last migration event",
         ),
+        sa.Column(
+            "logged_out_at",
+            sa.TIMESTAMP,
+            nullable=True,
+            comment="Timestamp when user explicitly logged out",
+        ),
+        # Constraints
+        sa.PrimaryKeyConstraint("id"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], name="fk_free_user"),
+        sa.UniqueConstraint("user_id", name="uq_free_user_id"),
     )
 
     # Create indexes for efficient queries
     op.create_index("idx_instance_id", "free_user_assignments", ["instance_id"])
     op.create_index("idx_last_activity", "free_user_assignments", ["last_activity"])
+    op.create_index("idx_logged_out_at", "free_user_assignments", ["logged_out_at"])
     op.create_index(
         "idx_active_workflow_count", "free_user_assignments", ["active_workflow_count"]
     )

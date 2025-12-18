@@ -50,13 +50,13 @@ class RoutingService {
     const isPremium = this.isPremiumUser(user)
 
     this.routingInfo = {
-      user_id: user.id?.toString() || "",
+      user_id: user.uid || "",
       user_tier: isPremium ? USER_TIER.PREMIUM : USER_TIER.FREE,
       requires_premium_routing: isPremium,
       routing_headers: isPremium
         ? {
             "X-User-Tier": USER_TIER.PREMIUM,
-            "X-User-ID": user.id?.toString() || "",
+            "X-User-ID": user.uid || "",
           }
         : {},
     }

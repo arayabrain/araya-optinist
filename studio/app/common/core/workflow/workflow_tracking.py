@@ -39,7 +39,7 @@ def increment_workflow_count(user_id: Optional[int]) -> None:
             # Use SQLAlchemy's update() for atomic increment (prevents race conditions)
             stmt = (
                 update(FreeUserAssignment)
-                .where(FreeUserAssignment.user_id == str(user_id))
+                .where(FreeUserAssignment.user_id == user_id)
                 .values(
                     active_workflow_count=FreeUserAssignment.active_workflow_count + 1,
                     last_workflow_start=func.now(),
@@ -89,7 +89,7 @@ def decrement_workflow_count(user_id: Optional[int]) -> None:
             # Use SQLAlchemy's update() with greatest() for atomic decrement
             stmt = (
                 update(FreeUserAssignment)
-                .where(FreeUserAssignment.user_id == str(user_id))
+                .where(FreeUserAssignment.user_id == user_id)
                 .values(
                     active_workflow_count=func.greatest(
                         0, FreeUserAssignment.active_workflow_count - 1
@@ -135,7 +135,7 @@ def get_active_workflow_count(user_id: int) -> int:
     try:
         with session_scope() as session:
             statement = select(FreeUserAssignment).where(
-                FreeUserAssignment.user_id == str(user_id)
+                FreeUserAssignment.user_id == user_id
             )
             assignment = session.exec(statement).first()
 

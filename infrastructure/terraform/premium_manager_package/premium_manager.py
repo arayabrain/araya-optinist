@@ -43,11 +43,12 @@ from typing import Any, Dict
 
 import boto3
 import pymysql
-from aws_constants import ECSTaskStatus
 from botocore.exceptions import ClientError
 
 # Add parent directory to path for shared imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+
+from aws_constants import ECSTaskStatus  # noqa: E402
 
 
 def get_required_env_var(var_name: str, default_value: str = None) -> str:
@@ -143,8 +144,32 @@ def with_transaction(func):
     return wrapper
 
 
+def get_user_id_from_uid(connection, user_uid: str) -> int:
+    """
+    Look up the numeric database user ID from the Firebase UID.
+
+    Args:
+        connection: Database connection
+        user_uid: Firebase UID string
+
+    Returns:
+        Numeric user ID from the users table
+
+    Raises:
+        ValueError: If user not found
+    """
+    with connection.cursor() as cursor:
+        cursor.execute("""SELECT id FROM users WHERE uid = %s""", (user_uid,))
+        result = cursor.fetchone()
+
+        if not result:
+            raise ValueError(f"User not found with UID: {user_uid}")
+
+        return result["id"]
+
+
 @with_transaction
-def _increment_assignment_attempts_transaction(connection, user_id: str) -> int:
+def _increment_assignment_attempts_transaction(connection, user_id: int) -> int:
     """Internal function: Increment assignment attempts for
     retry scenarios with transaction safety"""
     with connection.cursor() as cursor:
@@ -1647,12 +1672,22 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         if http_method == "GET":
             # Handle status request (GET /premium/status?user_id=xxx)
             query_params = event.get("queryStringParameters") or {}
-            user_id = query_params.get("user_id")
+            user_uid = query_params.get("user_id")
 
-            if not user_id:
+            if not user_uid:
                 return {
                     "statusCode": 400,
                     "body": json.dumps({"error": "Missing user_id query parameter"}),
+                }
+
+            # Convert Firebase UID to numeric database ID
+            try:
+                with get_db_connection() as conn:
+                    user_id = get_user_id_from_uid(conn, user_uid)
+            except ValueError as e:
+                return {
+                    "statusCode": 404,
+                    "body": json.dumps({"error": str(e)}),
                 }
 
             return get_premium_user_status(user_id)
@@ -1670,12 +1705,22 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 body_data = body or {}
 
             action = body_data.get("action")
-            user_id = body_data.get("user_id")
+            user_uid = body_data.get("user_id")
 
-            if not action or not user_id:
+            if not action or not user_uid:
                 return {
                     "statusCode": 400,
                     "body": json.dumps({"error": "Missing action or user_id"}),
+                }
+
+            # Convert Firebase UID to numeric database ID
+            try:
+                with get_db_connection() as conn:
+                    user_id = get_user_id_from_uid(conn, user_uid)
+            except ValueError as e:
+                return {
+                    "statusCode": 404,
+                    "body": json.dumps({"error": str(e)}),
                 }
 
             if action == "assign":

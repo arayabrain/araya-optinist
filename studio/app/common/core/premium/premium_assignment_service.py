@@ -89,12 +89,13 @@ class PremiumAssignmentService:
             _assignment_attempts.clear()
             logger.info(f"Cleared entire rate limit cache ({count} entries)")
 
-    async def assign_premium_user(self, user_id: int) -> Dict[str, any]:
+    async def assign_premium_user(self, user_id: int, user_uid: str) -> Dict[str, any]:
         """
         Assign a premium user to a dedicated instance with race condition prevention.
 
         Args:
-            user_id: The ID of the premium user to assign
+            user_id: The database ID of the premium user (for internal tracking)
+            user_uid: The Firebase UID of the premium user (sent to Lambda)
 
         Returns:
             Dict containing assignment result:
@@ -139,7 +140,10 @@ class PremiumAssignmentService:
                     "instance_id": "local-dev-instance",
                 }
 
-            logger.info(f"Assigning premium user {user_id} to dedicated instance")
+            logger.info(
+                f"Assigning premium user "
+                f"{user_id} (uid: {user_uid}) to dedicated instance"
+            )
 
             # Prepare the assignment request
             # Format as Lambda expects from API Gateway (with body field)
@@ -148,7 +152,7 @@ class PremiumAssignmentService:
                 "body": json.dumps(
                     {
                         "action": "assign",
-                        "user_id": str(user_id),
+                        "user_id": user_uid,
                         "tier": SubscriptionType.PREMIUM.value,
                     }
                 ),
@@ -242,12 +246,13 @@ class PremiumAssignmentService:
                 "requires_retry": False,
             }
 
-    async def release_premium_user(self, user_id: int) -> Dict[str, any]:
+    async def release_premium_user(self, user_id: int, user_uid: str) -> Dict[str, any]:
         """
         Release a premium user from their assigned instance and clear rate limiting.
 
         Args:
-            user_id: The ID of the premium user to release
+            user_id: The database ID of the premium user (for internal tracking)
+            user_uid: The Firebase UID of the premium user (sent to Lambda)
 
         Returns:
             Dict containing release result:
@@ -256,7 +261,10 @@ class PremiumAssignmentService:
             - released_instance: str (if successful)
         """
         try:
-            logger.info(f"Releasing premium user {user_id} from assigned instance")
+            logger.info(
+                f"Releasing premium user "
+                f"{user_id} (uid: {user_uid}) from assigned instance"
+            )
 
             # Clear rate limiting for this user on release/logout
             if user_id in _assignment_attempts:
@@ -270,7 +278,7 @@ class PremiumAssignmentService:
                 "body": json.dumps(
                     {
                         "action": "release",
-                        "user_id": str(user_id),
+                        "user_id": user_uid,
                         "tier": SubscriptionType.PREMIUM.value,
                     }
                 ),
@@ -355,23 +363,29 @@ class PremiumAssignmentService:
                 "warnings": [f"Exception during release: {str(e)}"],
             }
 
-    async def get_premium_user_status(self, user_id: int) -> Optional[Dict[str, any]]:
+    async def get_premium_user_status(
+        self, user_id: int, user_uid: str
+    ) -> Optional[Dict[str, any]]:
         """
         Get the current assignment status of a premium user.
 
         Args:
-            user_id: The ID of the premium user
+            user_id: The database ID of the premium user (for logging)
+            user_uid: The Firebase UID of the premium user (sent to Lambda)
 
         Returns:
             Dict containing assignment status or None if not assigned
         """
         try:
-            logger.info(f"Getting assignment status for premium user {user_id}")
+            logger.info(
+                f"Getting assignment status for "
+                f"premium user {user_id} (uid: {user_uid})"
+            )
 
             # Call the premium manager Lambda function with GET method simulation
             payload = {
                 "httpMethod": "GET",
-                "queryStringParameters": {"user_id": str(user_id)},
+                "queryStringParameters": {"user_id": user_uid},
             }
 
             lambda_client = self._get_lambda_client()
@@ -408,19 +422,23 @@ class PremiumAssignmentService:
             logger.error(f"Error getting status for premium user {user_id}: {str(e)}")
             return None
 
-    async def update_user_activity(self, user_id: int) -> Dict[str, any]:
+    async def update_user_activity(self, user_id: int, user_uid: str) -> Dict[str, any]:
         """
         Update activity timestamp for a premium user to prevent stale
         assignment cleanup.
 
         Args:
-            user_id: The ID of the premium user
+            user_id: The database ID of the premium user (for logging)
+            user_uid: The Firebase UID of the premium user (sent to Lambda)
 
         Returns:
             Dict containing update result
         """
         try:
-            logger.info(f"Updating activity timestamp for premium user {user_id}")
+            logger.info(
+                f"Updating activity timestamp for "
+                f"premium user {user_id} (uid: {user_uid})"
+            )
 
             # Prepare the activity update request
             # We'll use a special action for activity updates
@@ -429,7 +447,7 @@ class PremiumAssignmentService:
                 "body": json.dumps(
                     {
                         "action": "update_activity",
-                        "user_id": str(user_id),
+                        "user_id": user_uid,
                         "tier": SubscriptionType.PREMIUM.value,
                     }
                 ),
