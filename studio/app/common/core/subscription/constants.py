@@ -119,6 +119,21 @@ class StripeWebhookEvent(StrEnum):
     CUSTOMER_SUBSCRIPTION_DELETED = "customer.subscription.deleted"
     SUBSCRIPTION_SCHEDULE_RELEASED = "subscription_schedule.released"
     INVOICE_PAYMENT_SUCCEEDED = "invoice.payment_succeeded"
+    INVOICE_CREATED = "invoice.created"
+    INVOICE_FINALIZED = "invoice.finalized"
+
+
+# ============================================================================
+# Invoice Status
+# ============================================================================
+class InvoiceStatus(StrEnum):
+    """Stripe invoice status values"""
+
+    DRAFT = "draft"
+    OPEN = "open"
+    PAID = "paid"
+    UNCOLLECTIBLE = "uncollectible"
+    VOID = "void"
 
 
 # ============================================================================

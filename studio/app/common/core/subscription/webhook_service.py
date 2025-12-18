@@ -13,6 +13,7 @@ from studio.app.common.core.subscription.constants import (
     DUPLICATE_PURCHASE_WINDOW_MINUTES,
     RECENT_SUBSCRIPTION_WINDOW_DAYS,
     CancellationReason,
+    InvoiceStatus,
     PaymentStatus,
     StripeWebhookEvent,
     SubscriptionCurrencyType,
@@ -956,7 +957,7 @@ class WebhookService:
             )
 
             # Check if invoice is in draft status
-            if invoice_status == "draft":
+            if invoice_status == InvoiceStatus.DRAFT:
                 logger.info(f"Webhook: Finalizing draft invoice {invoice_id}")
 
                 # Ensure payment method is set before finalizing
