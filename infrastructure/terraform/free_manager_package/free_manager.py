@@ -43,19 +43,20 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 import boto3
-from aws_constants import ECSTaskStatus
+
+# Add parent directory to path for shared imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+
+from aws_constants import ECSTaskStatus  # noqa: E402
 
 # Import utility functions
-from free_user_utils import (
+from free_user_utils import (  # noqa: E402
     count_active_free_users,
     get_idle_users_for_instance,
     get_users_per_instance,
     is_distribution_balanced,
     migrate_user_to_instance,
 )
-
-# Add parent directory to path for shared imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 
 def get_required_env_var(var_name: str, default_value: str = None) -> str:

@@ -5,11 +5,12 @@ import sys
 import time
 from typing import Optional
 
-from aws_constants import BatchJobStatus, ECSTaskStatus
 from colorama import Fore, init
 
 # Add parent directory for shared infrastructure imports
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+from aws_constants import BatchJobStatus, ECSTaskStatus  # noqa: E402
 
 init()
 

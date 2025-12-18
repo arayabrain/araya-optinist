@@ -52,11 +52,12 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 import boto3
-from aws_constants import ECSTaskStatus
 from botocore.exceptions import ClientError
 
 # Add parent directory for shared infrastructure imports
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+from aws_constants import ECSTaskStatus  # noqa: E402
 
 
 class FreeManagerTester:
