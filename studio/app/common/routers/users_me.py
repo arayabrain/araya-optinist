@@ -1,8 +1,7 @@
-from datetime import datetime
 from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.cloud.cloud_utils import (
