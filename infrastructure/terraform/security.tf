@@ -274,9 +274,6 @@ resource "aws_iam_role_policy" "ecs_instance_s3_access" {
         Resource = [
           aws_s3_bucket.app_storage.arn,
           "${aws_s3_bucket.app_storage.arn}/*",
-          # COMMENTED OUT - Batch resources disabled
-          # aws_s3_bucket.app_storage_batch.arn,
-          # "${aws_s3_bucket.app_storage_batch.arn}/*"
         ]
       }
     ]
@@ -357,24 +354,6 @@ resource "aws_s3_bucket_policy" "app_storage" {
           "${aws_s3_bucket.app_storage.arn}/*"
         ]
       },
-      # COMMENTED OUT - Batch resources disabled
-      # {
-      #   Sid    = "AllowBatchJobAccess"
-      #   Effect = "Allow"
-      #   Principal = {
-      #     AWS = aws_iam_role.batch_job.arn
-      #   }
-      #   Action = [
-      #     "s3:GetObject",
-      #     "s3:PutObject",
-      #     "s3:ListBucket",
-      #     "s3:DeleteObject"
-      #   ]
-      #   Resource = [
-      #     aws_s3_bucket.app_storage.arn,
-      #     "${aws_s3_bucket.app_storage.arn}/*"
-      #   ]
-      # },
       {
         Sid    = "AllowALBLogsAccess"
         Effect = "Allow"
@@ -476,20 +455,6 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
       {
         Effect = "Allow"
         Action = [
-          # COMMENTED OUT - Batch resources disabled
-          # "batch:SubmitJob",
-          # "batch:DescribeJobs",
-          # "batch:ListJobs",
-          # "batch:CancelJob",
-          # "batch:TerminateJob",
-          # "batch:RegisterJobDefinition",
-          # "batch:DeregisterJobDefinition",
-          # "batch:DescribeJobQueues",
-          # "batch:DescribeComputeEnvironments",
-          # "batch:UpdateComputeEnvironment",
-          # "batch:TagResource",
-          # "batch:UntagResource",
-          # "batch:DescribeJobDefinitions",
           "logs:GetLogEvents",
           "logs:DescribeLogGroups",
           "logs:DescribeLogStreams",
@@ -649,14 +614,6 @@ resource "aws_security_group" "alb" {
   ingress {
     from_port        = 443
     to_port          = 443
-    protocol         = "tcp"
-    cidr_blocks      = ["0.0.0.0/0"]
-    ipv6_cidr_blocks = ["::/0"]
-  }
-
-  ingress {
-    from_port        = 8000
-    to_port          = 8000
     protocol         = "tcp"
     cidr_blocks      = ["0.0.0.0/0"]
     ipv6_cidr_blocks = ["::/0"]
