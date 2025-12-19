@@ -44,9 +44,9 @@ def test_month_calculations():
         is_month_end_preserved = start_date.day >= 28 and new_expiration.day >= 28
 
         status = (
-            "✓ PASS"
+            "PASS"
             if is_month_end_preserved or start_date.day == new_expiration.day
-            else "⚠ NOTE"
+            else "NOTE"
         )
 
         print(f"{status} {description}")
@@ -160,7 +160,7 @@ if __name__ == "__main__":
     create_test_webhook_payload(datetime(2025, 1, 31))
 
     print("\n" + "=" * 70)
-    print("✓ ALL TESTS COMPLETED")
+    print("ALL TESTS COMPLETED")
     print("=" * 70)
     print("\nKey Findings:")
     print("1. relativedelta(months=1) correctly handles month-end dates")
