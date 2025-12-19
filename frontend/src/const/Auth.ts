@@ -1,3 +1,10 @@
+// Authentication paths
+export const AUTH_PATHS = {
+  LOGIN: "/login",
+  REGISTER: "/register",
+  LOGOUT: "/logout",
+} as const
+
 export const regexPassword =
   /^(?=.*\d)(?=.*[!#$%&()*+,-./@_|])(?=.*[a-zA-Z]).{6,255}$/
 
