@@ -547,9 +547,9 @@ async def test_check_user_storage_alerts_missing_storage_record_premium_plan(
                         if result is not None:
                             assert result["alert_level"] == "critical"
                             # Should use premium plan quota
-                            # (100GB = 107_374_182_400 bytes precisely)
-                            assert result["storage_quota_bytes"] >= 100_000_000_000
-                            assert result["storage_quota_bytes"] <= 110_000_000_000
+                            # (200GB = 214_748_364_800 bytes precisely)
+                            assert result["storage_quota_bytes"] >= 200_000_000_000
+                            assert result["storage_quota_bytes"] <= 220_000_000_000
 
 
 @pytest.mark.asyncio

@@ -183,7 +183,7 @@ class StorageQuota:
     """Constants for storage quota limits"""
 
     FREE = 5  # 5 GB for free plan
-    PREMIUM = 100  # 100 GB for premium plan
+    PREMIUM = 200  # 200 GB for premium plan
     CRITICAL_THRESHOLD_PERCENT = 90  # 90% usage threshold for critical warning
     DANGER_THRESHOLD_PERCENT = 100  # 100% usage threshold for danger warning
 

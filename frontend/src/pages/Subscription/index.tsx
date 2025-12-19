@@ -18,6 +18,7 @@ import {
   DialogActions,
 } from "@mui/material"
 
+import { PlanName } from "const/Subscription"
 import {
   getSubscriptionPlan,
   getUserSubscription,
@@ -91,11 +92,6 @@ const SubscriptionPlans = () => {
     return plan?.price === 0
   }
 
-  enum SUBSCRIPTION_PLAN {
-    FREE = "Free",
-    PREMIUM = "Premium",
-  }
-
   const handleReactivatePlan = async (planId: number) => {
     if (!user?.id) {
       // Handle case where user is not logged in
@@ -111,19 +107,15 @@ const SubscriptionPlans = () => {
 
       // Check if the action was fulfilled
       if (reactivateSubscription.fulfilled.match(resultAction)) {
-        // Successfully reactivated
         // eslint-disable-next-line no-console
         console.log("Subscription reactivated successfully")
       } else {
-        // Handle error case
         // eslint-disable-next-line no-console
         console.error("Failed to reactivate subscription:", resultAction.error)
-        // You might want to show an error message to the user here
       }
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error("Error reactivating subscription:", error)
-      // Handle error - maybe show a toast notification
     } finally {
       setProcessingPlanId(null)
     }
@@ -223,7 +215,7 @@ const SubscriptionPlans = () => {
     const billingCycle = getBillingCycleText(plan.billing_cycle)
 
     if (plan.price === 0) {
-      return SUBSCRIPTION_PLAN.FREE
+      return PlanName.FREE
     }
 
     const basePrice = (plan.price / 100).toFixed(0)
@@ -341,7 +333,7 @@ const SubscriptionPlans = () => {
 
       {/* Current subscription status */}
       {userSubscription &&
-        userSubscription.plan_name !== SUBSCRIPTION_PLAN.FREE &&
+        userSubscription.plan_name !== PlanName.FREE &&
         !isSubscriptionExpired && (
           <SubscriptionStatus>
             <Typography variant="body1">
@@ -370,7 +362,10 @@ const SubscriptionPlans = () => {
             const isProcessing = isPlanProcessing(plan.id)
 
             return (
-              <PlanCard key={plan.id} isHighlighted={plan.name === "Premium"}>
+              <PlanCard
+                key={plan.id}
+                isHighlighted={plan.name === PlanName.PREMIUM}
+              >
                 <PlanHeader>
                   <PlanTitle variant="h4">{plan.name}</PlanTitle>
 

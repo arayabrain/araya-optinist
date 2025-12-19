@@ -93,9 +93,6 @@ export const resendVerificationEmailApi = async (
   email: string,
 ): Promise<{ success: boolean; message: string }> => {
   try {
-    // eslint-disable-next-line no-console
-    console.log("Resending verification email...")
-
     // ===================================
     // Call backend to resend verification email
     // ===================================
