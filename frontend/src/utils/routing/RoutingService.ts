@@ -6,10 +6,11 @@
  */
 
 import { UserDTO } from "api/users/UsersApiDTO"
+import { PlanName, SubscriptionStatus, UserTier } from "const/Subscription"
 
 export interface RoutingInfo {
   user_id: string
-  user_tier: "premium" | "free"
+  user_tier: UserTier
   requires_premium_routing: boolean
   routing_headers: Record<string, string>
 }
@@ -39,6 +40,27 @@ class RoutingService {
   }
 
   /**
+   * Update routing information for a user
+   */
+  updateRoutingInfo(user: UserDTO): void {
+    const isPremium = this.isPremiumUser(user)
+
+    this.routingInfo = {
+      user_id: user.uid || "",
+      user_tier: isPremium ? UserTier.PREMIUM : UserTier.FREE,
+      requires_premium_routing: isPremium,
+      routing_headers: isPremium
+        ? {
+            "X-User-Tier": UserTier.PREMIUM,
+            "X-User-ID": user.uid || "",
+          }
+        : {},
+    }
+
+    this.lastFetch = Date.now()
+  }
+
+  /**
    * Clear routing information (on logout)
    */
   clearRoutingInfo(): void {
@@ -56,7 +78,7 @@ class RoutingService {
   /**
    * Get current user tier
    */
-  getUserTier(): "premium" | "free" | null {
+  getUserTier(): UserTier | null {
     return this.routingInfo?.user_tier || null
   }
 
@@ -69,37 +91,19 @@ class RoutingService {
   }
 
   /**
-   * Update routing information for a user
-   */
-  updateRoutingInfo(user: UserDTO): void {
-    const isPremium = this.isPremiumUser(user)
-
-    this.routingInfo = {
-      user_id: user.id?.toString() || "",
-      user_tier: isPremium ? "premium" : "free",
-      requires_premium_routing: isPremium,
-      routing_headers: isPremium
-        ? {
-            "X-User-Tier": "premium",
-            "X-User-ID": user.id?.toString() || "",
-          }
-        : {},
-    }
-
-    this.lastFetch = Date.now()
-  }
-
-  /**
    * Determine if a user is premium based on subscription info
    */
   private isPremiumUser(user: UserDTO): boolean {
     return (
-      user.subscription_plan_name === "Premium" &&
-      (user.subscription_status === "Premium" ||
-        user.subscription_status === "Limit Grace")
+      user.subscription_plan_name === PlanName.PREMIUM &&
+      (user.subscription_status === SubscriptionStatus.PREMIUM ||
+        user.subscription_status === SubscriptionStatus.LIMIT_GRACE)
     )
   }
 
+  /**
+   * Get current routing information
+   */
   getCurrentRoutingInfo(): RoutingInfo | null {
     return this.routingInfo
   }

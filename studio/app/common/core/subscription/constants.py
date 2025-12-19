@@ -318,6 +318,25 @@ class SyncStatusConstants:
 # Configuration Constants
 # ============================================================================
 
+
+# Authentication routes
+class AuthPaths:
+    """Authentication-related URL paths"""
+
+    LOGIN = "/login"
+    REGISTER = "/register"
+    LOGOUT = "/logout"
+
+
+# Time constants (in seconds)
+class TimeConstants:
+    """Time-related constants in seconds"""
+
+    ONE_HOUR = 3600  # 1 hour
+    ONE_DAY = 86400  # 24 hours
+    ONE_WEEK = 604800  # 7 days
+
+
 # Trial subscription configuration
 TRIAL_PERIOD_DAYS = 30  # Number of days for trial subscription period
 

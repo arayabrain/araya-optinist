@@ -32,7 +32,6 @@ export const createCheckoutSessionApi = async (planId: number) => {
 
 export const reactivateSubscriptionApi = async (user_id: number) => {
   const response = await axios.post(`/api/subsc/mgmts/reactivate/${user_id}`)
-  console.log("Reactivation response:", response.data)
   return response.data
 }
 
