@@ -111,6 +111,8 @@ export const resendVerificationEmailApi = async (
         message: "Email is already verified",
       }
     }
+    // eslint-disable-next-line no-console
+    console.log("Verification email resent!")
 
     return {
       success: true,

@@ -19,6 +19,12 @@ interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
   _retryWithoutPremium?: boolean
 }
 
+// Extend AxiosRequestConfig to include custom retry property
+interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
+  _retry?: boolean
+  _retryWithoutPremium?: boolean
+}
+
 const axios = axiosLibrary.create({
   baseURL: BASE_URL,
   timeout: 600000,
