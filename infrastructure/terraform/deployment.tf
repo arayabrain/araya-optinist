@@ -58,6 +58,13 @@ set -e
 # Logging
 LOGFILE="/var/log/app-setup.log"
 
+# Application Paths
+APP_CONFIG_BASE="/opt/optinist/optinist-for-cloud/studio/config"
+APP_CONFIG_AUTH_DIR="$${APP_CONFIG_BASE}/auth"
+FIREBASE_PRIVATE_KEY_PATH="$${APP_CONFIG_AUTH_DIR}/firebase_private.json"
+FIREBASE_CONFIG_PATH="$${APP_CONFIG_AUTH_DIR}/firebase_config.json"
+APP_ENV_PATH="$${APP_CONFIG_BASE}/.env"
+
 # Database Configuration
 MYSQL_PORT=3306
 DB_INIT_SQL_FILE="/tmp/init_optinist_db.sql"
@@ -148,10 +155,10 @@ retry_command $$ECS_AGENT_MAX_ATTEMPTS $$ECS_AGENT_RETRY_DELAY "curl -s http://l
 
 # Create config files
 echo "$(date): Creating configuration files"
-mkdir -p /opt/optinist/optinist-for-cloud/studio/config/auth
+mkdir -p $$APP_CONFIG_AUTH_DIR
 
 # Create .env file
-cat > /opt/optinist/optinist-for-cloud/studio/config/.env << 'CONFIG_ENV'
+cat > $$APP_ENV_PATH << 'CONFIG_ENV'
 SECRET_KEY='${var.optinist_secret_key}'
 USE_FIREBASE_TOKEN=True
 MYSQL_SERVER=${aws_db_proxy.main.endpoint}
@@ -162,11 +169,11 @@ S3_DEFAULT_BUCKET_NAME=${aws_s3_bucket.app_storage.id}
 CONFIG_ENV
 
 # Create Firebase config files
-cat > /opt/optinist/optinist-for-cloud/studio/config/auth/firebase_config.json << 'FIREBASE_CONFIG'
+cat > $$FIREBASE_CONFIG_PATH << 'FIREBASE_CONFIG'
 ${var.firebase_config_json}
 FIREBASE_CONFIG
 
-cat > /opt/optinist/optinist-for-cloud/studio/config/auth/firebase_private.json << 'FIREBASE_PRIVATE'
+cat > $$FIREBASE_PRIVATE_KEY_PATH << 'FIREBASE_PRIVATE'
 ${var.firebase_private_json}
 FIREBASE_PRIVATE
 
@@ -276,7 +283,7 @@ from firebase_admin import auth, credentials, initialize_app
 import sys
 
 try:
-    initialize_app(credentials.Certificate('/opt/optinist/optinist-for-cloud/studio/config/auth/firebase_private.json'))
+    initialize_app(credentials.Certificate('$$FIREBASE_PRIVATE_KEY_PATH'))
 except ValueError:
     pass  # App already initialized
 
