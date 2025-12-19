@@ -43,11 +43,17 @@ from typing import Any, Dict
 
 import boto3
 import pymysql
-from aws_constants import ECSTaskStatus
 from botocore.exceptions import ClientError
 
 # Add parent directory to path for shared imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+
+from aws_constants import ECSTaskStatus  # noqa: E402
+
+# Constants
+# Default fallback value for premium user count in development/testing scenarios
+# Used when database queries fail or no premium users exist
+DEFAULT_DEVELOPMENT_CAPACITY = 3
 
 
 def get_required_env_var(var_name: str, default_value: str = None) -> str:
@@ -529,12 +535,12 @@ def count_total_premium_users():
 
                 # Last resort fallback for development/testing
                 print("All database queries failed, using development fallback")
-                return 3  # Conservative estimate for development
+                return DEFAULT_DEVELOPMENT_CAPACITY  # Conservative estimate
 
     except Exception as e:
         print(f"Error counting total premium users: {str(e)}")
         # Fallback to a reasonable default if we can't query the database
-        return 3
+        return DEFAULT_DEVELOPMENT_CAPACITY
 
 
 def get_dynamic_max_capacity():
@@ -559,7 +565,9 @@ def get_dynamic_max_capacity():
     #   - Safety buffer for concurrent logins
     if total_premium_subscribers == 0:
         # Development/testing scenario - minimal capacity
-        max_capacity = 3  # Allow testing with 2 running + 1 standby
+        max_capacity = (
+            DEFAULT_DEVELOPMENT_CAPACITY  # Allow testing with 2 running + 1 standby
+        )
     else:
         # Production scenario - scale based on subscriber count
         max_capacity = min(total_premium_subscribers + EXTRA_CAPACITY, ABSOLUTE_MAX)
@@ -573,7 +581,7 @@ def get_dynamic_max_capacity():
     calculated_capacity = (
         total_premium_subscribers + EXTRA_CAPACITY
         if total_premium_subscribers > 0
-        else 3
+        else DEFAULT_DEVELOPMENT_CAPACITY
     )
     print(
         f"- Logic: {total_premium_subscribers} subscribers + "
