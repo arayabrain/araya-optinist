@@ -57,22 +57,28 @@ def snakemake_execute(
     """
     client_id = get_client_id_for_subprocess()
 
-    with ProcessPoolExecutor(max_workers=1) as executor:
-        logger.info("start snakemake running process.")
+    try:
+        logger.info("Starting local execution mode")
+        with ProcessPoolExecutor(max_workers=1) as executor:
+            logger.info("start snakemake running process.")
 
-        future = executor.submit(
-            _snakemake_execute_process,
-            workspace_id,
-            unique_id,
-            params,
-            client_id=client_id,
-        )
-        future_result = future.result()
+            future = executor.submit(
+                _snakemake_execute_process,
+                workspace_id,
+                unique_id,
+                params,
+                client_id=client_id,
+            )
+            future_result = future.result()
 
         # Update user storage after workflow completion
         asyncio.run(update_user_storage_after_workflow(workspace_id))
 
-        # Decrement workflow count for free tier users (for load balancing)
+        return future_result
+
+    finally:
+        # Decrement workflow count in finally block to ensure it ALWAYS runs
+        # This prevents workflow count leaks when exceptions occur during execution
         if user_id is not None:
             try:
                 from studio.app.common.core.workflow.workflow_tracking import (
@@ -80,10 +86,9 @@ def snakemake_execute(
                 )
 
                 decrement_workflow_count(user_id)
+                logger.info(f"Decremented workflow count for user {user_id}")
             except Exception as e:
-                logger.error(f"Failed to decrement workflow count: {e}")
-
-        return future_result
+                logger.error(f"Failed to decrement workflow count: {e}", exc_info=True)
 
 
 @with_client_id_context  # Automatically set client_id for logging
