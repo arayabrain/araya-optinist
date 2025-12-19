@@ -37,6 +37,30 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CW_C
                     "cpu_usage_iowait"
                 ],
                 "totalcpu": true
+            },
+            "procstat": [
+                {
+                    "pattern": ".*",
+                    "measurement": [
+                        "cpu_usage",
+                        "memory_rss"
+                    ],
+                    "metrics_collection_interval": 60
+                }
+            ]
+        }
+    },
+    "logs": {
+        "logs_collected": {
+            "files": {
+                "collect_list": [
+                    {
+                        "file_path": "/proc/loadavg",
+                        "log_group_name": "/aws/ec2/loadavg",
+                        "log_stream_name": "{instance_id}",
+                        "timezone": "UTC"
+                    }
+                ]
             }
         }
     }

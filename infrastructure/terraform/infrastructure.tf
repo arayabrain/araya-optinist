@@ -498,7 +498,7 @@ resource "aws_db_instance" "main" {
   password                        = var.mysql_password
   skip_final_snapshot             = true
   final_snapshot_identifier       = "${var.mysql_database}-final-snapshot"
-  backup_retention_period         = 365
+  backup_retention_period         = 35
   monitoring_interval             = 60
   monitoring_role_arn             = aws_iam_role.rds_monitoring.arn
   publicly_accessible             = false

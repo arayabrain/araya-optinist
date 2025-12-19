@@ -3,7 +3,7 @@
 # ==================================================
 resource "aws_cloudwatch_log_group" "ecs" {
   name              = "/ecs/subscr-optinist-cloud-taskdef"
-  retention_in_days = 7
+  retention_in_days = 365
 
   tags = {
     Name = "subscr-optinist-cloud-logs"
@@ -91,6 +91,164 @@ resource "aws_cloudwatch_log_metric_filter" "user_cpu_usage" {
   }
 }
 
+# ==================================================
+# Load Average Monitoring
+# ==================================================
+resource "aws_cloudwatch_metric_alarm" "load_average_high" {
+  alarm_name          = "subscr-optinist-load-average-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "procstat_cpu_usage"
+  namespace           = "CWAgent"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "80"
+  alarm_description   = "System load average is high"
+
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.main.name
+  }
+}
+
+# ==================================================
+# I/O Wait Monitoring
+# ==================================================
+resource "aws_cloudwatch_metric_alarm" "high_iowait" {
+  alarm_name          = "subscr-optinist-high-iowait"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "cpu_usage_iowait"
+  namespace           = "CWAgent"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "30"
+  alarm_description   = "High I/O wait time detected"
+
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.main.name
+  }
+}
+
+# ==================================================
+# RDS Monitoring Alarms
+# ==================================================
+resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
+  alarm_name          = "subscr-optinist-rds-cpu-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/RDS"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "80"
+  alarm_description   = "RDS CPU utilization is high"
+
+  dimensions = {
+    DBInstanceIdentifier = aws_db_instance.main.id
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
+  alarm_name          = "subscr-optinist-rds-connections-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "DatabaseConnections"
+  namespace           = "AWS/RDS"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "80"
+  alarm_description   = "RDS connection count is high"
+
+  dimensions = {
+    DBInstanceIdentifier = aws_db_instance.main.id
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "rds_storage_low" {
+  alarm_name          = "subscr-optinist-rds-storage-low"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "FreeStorageSpace"
+  namespace           = "AWS/RDS"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "10737418240"
+  alarm_description   = "RDS free storage space is low"
+
+  dimensions = {
+    DBInstanceIdentifier = aws_db_instance.main.id
+  }
+}
+
+# ==================================================
+# EFS Monitoring Alarms
+# ==================================================
+resource "aws_cloudwatch_metric_alarm" "efs_burst_credit_balance" {
+  alarm_name          = "subscr-optinist-efs-burst-credits-low"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "BurstCreditBalance"
+  namespace           = "AWS/EFS"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "1000000000000"
+  alarm_description   = "EFS burst credits running low"
+
+  dimensions = {
+    FileSystemId = aws_efs_file_system.snmk.id
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "efs_throughput_high" {
+  alarm_name          = "subscr-optinist-efs-throughput-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "PercentIOLimit"
+  namespace           = "AWS/EFS"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "80"
+  alarm_description   = "EFS approaching I/O limit"
+
+  dimensions = {
+    FileSystemId = aws_efs_file_system.snmk.id
+  }
+}
+
+# ==================================================
+# ALB Monitoring Alarms
+# ==================================================
+resource "aws_cloudwatch_metric_alarm" "alb_5xx_errors" {
+  alarm_name          = "subscr-optinist-alb-5xx-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "HTTPCode_Target_5XX_Count"
+  namespace           = "AWS/ApplicationELB"
+  period              = "60"
+  statistic           = "Sum"
+  threshold           = "10"
+  alarm_description   = "ALB target 5XX errors exceeded threshold"
+
+  dimensions = {
+    LoadBalancer = aws_lb.autoscaling.arn_suffix
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "alb_response_time_high" {
+  alarm_name          = "subscr-optinist-alb-response-time-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "TargetResponseTime"
+  namespace           = "AWS/ApplicationELB"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "5"
+  alarm_description   = "ALB response time is too high"
+
+  dimensions = {
+    LoadBalancer = aws_lb.autoscaling.arn_suffix
+  }
+}
 
 # CloudWatch Dashboard for monitoring both Free and Premium tiers
 resource "aws_cloudwatch_dashboard" "main" {
@@ -245,28 +403,6 @@ resource "aws_cloudwatch_dashboard" "main" {
           period  = 300
         }
       },
-      # Row 4: Batch Processing Metrics
-      # COMMENTED OUT - Batch resources disabled
-      # {
-      #   type   = "metric"
-      #   x      = 0
-      #   y      = 18
-      #   width  = 12
-      #   height = 6
-      #   properties = {
-      #     metrics = [
-      #       ["AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.batch.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Batch CPU" }],
-      #       ["AWS/ECS", "MemoryUtilization", "ServiceName", aws_ecs_service.batch.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Batch Memory" }],
-      #       ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", aws_lb.batch.arn_suffix, { "label" : "Batch Requests" }],
-      #       ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", aws_lb.batch.arn_suffix, { "label" : "Batch Response Time" }]
-      #     ]
-      #     view    = "timeSeries"
-      #     stacked = false
-      #     region  = "ap-northeast-1"
-      #     title   = "Batch Processing Performance"
-      #     period  = 300
-      #   }
-      # },
       # Row 4: System Health Overview
       {
         type   = "metric"
