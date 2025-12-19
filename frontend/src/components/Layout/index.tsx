@@ -14,6 +14,7 @@ import InactivityWarning from "components/Premium/InactivityWarning"
 import PremiumAssignmentManager from "components/Premium/PremiumAssignmentManager"
 import PremiumNotificationManager from "components/Premium/PremiumNotificationManager"
 import ModalLogs from "components/Workspace/FlowChart/ModalLogs"
+import { AUTH_PATHS } from "const/Auth"
 import { APP_BAR_HEIGHT } from "const/Layout"
 import { PremiumAssignmentProvider } from "contexts/PremiumAssignmentContext"
 import { selectLogsModalIsOpen } from "store/slice/LogsModal/LogsModalSelectors"
@@ -52,7 +53,9 @@ const Layout = ({ children }: { children?: ReactNode }) => {
   }, [location.pathname, user])
 
   const checkPublicRouteAccess = async () => {
-    const isAuthPage = ["/login", "/register"].includes(location.pathname)
+    const isAuthPage = (
+      [AUTH_PATHS.LOGIN, AUTH_PATHS.REGISTER] as string[]
+    ).includes(location.pathname)
     const token = getToken()
 
     // For all public routes, if there's a token, fetch user data to show correct header
@@ -93,7 +96,7 @@ const Layout = ({ children }: { children?: ReactNode }) => {
 
   const checkAuth = async () => {
     const token = getToken()
-    const isLogin = location.pathname === "/login"
+    const isLogin = location.pathname === AUTH_PATHS.LOGIN
 
     // Always check token first, even if Redux has user data
     // This prevents logout issues where user navigates to protected pages after logout
@@ -102,12 +105,12 @@ const Layout = ({ children }: { children?: ReactNode }) => {
       if (user) {
         // Token was removed but Redux state hasn't cleared yet
         // Force navigation to login to trigger cleanup
-        navigate("/login", { replace: true })
+        navigate(AUTH_PATHS.LOGIN, { replace: true })
         if (loading) setLoading(false)
         return
       }
       if (!isLogin) {
-        navigate("/login", { replace: true })
+        navigate(AUTH_PATHS.LOGIN, { replace: true })
       }
       if (loading) setLoading(false)
       return
@@ -128,7 +131,7 @@ const Layout = ({ children }: { children?: ReactNode }) => {
       let currentToken = getToken()
       if (!currentToken) {
         // Token was removed during getMe(), user logged out
-        navigate("/login", { replace: true })
+        navigate(AUTH_PATHS.LOGIN, { replace: true })
         if (loading) setLoading(false)
         return
       }
@@ -144,7 +147,7 @@ const Layout = ({ children }: { children?: ReactNode }) => {
           // Revalidate token after storage refresh - logout may have occurred
           currentToken = getToken()
           if (!currentToken) {
-            navigate("/login", { replace: true })
+            navigate(AUTH_PATHS.LOGIN, { replace: true })
             if (loading) setLoading(false)
             return
           }
@@ -170,7 +173,7 @@ const Layout = ({ children }: { children?: ReactNode }) => {
       currentToken = getToken()
       if (!currentToken) {
         // Token was removed, user logged out - redirect to login
-        navigate("/login", { replace: true })
+        navigate(AUTH_PATHS.LOGIN, { replace: true })
         if (loading) setLoading(false)
         return
       }
@@ -178,7 +181,7 @@ const Layout = ({ children }: { children?: ReactNode }) => {
       if (isLogin) navigate("/dashboard")
     } catch {
       // Token is invalid or getMe failed - clear auth and redirect
-      navigate("/login", { replace: true })
+      navigate(AUTH_PATHS.LOGIN, { replace: true })
     } finally {
       if (loading) setLoading(false)
     }
