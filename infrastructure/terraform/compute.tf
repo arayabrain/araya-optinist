@@ -142,7 +142,7 @@ resource "aws_launch_template" "ecs" {
     enabled = true
   }
 
-  user_data = base64encode(templatefile("${path.module}/scripts/ecs-user-data.sh", {
+  user_data = base64encode(templatefile("${path.module}/../scripts/ecs-user-data.sh", {
     tier                  = "free"
     cluster_name          = aws_ecs_cluster.main.name
     git_branch            = var.git_branch
@@ -334,7 +334,7 @@ resource "aws_launch_template" "premium" {
     enabled = true
   }
 
-  user_data = base64encode(templatefile("${path.module}/scripts/ecs-user-data.sh", {
+  user_data = base64encode(templatefile("${path.module}/../scripts/ecs-user-data.sh", {
     tier                  = "premium"
     cluster_name          = aws_ecs_cluster.main.name
     git_branch            = var.git_branch
