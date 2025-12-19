@@ -1,9 +1,9 @@
 export function convertBytes(bytes: number) {
-  if (!bytes) return ""
-  const KB = 1000
-  const MB = KB * 1000
-  const GB = MB * 1000
-  const TB = GB * 1000
+  if (!bytes) return "0 Bytes"
+  const KB = 1024
+  const MB = KB * 1024
+  const GB = MB * 1024
+  const TB = GB * 1024
 
   let result = bytes
   let unit = "Bytes"
