@@ -18,6 +18,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware import (
     ClientIdLoggingMiddleware,
     FreeUserActivityMiddleware,
+    SecureRoutingMiddleware,
     SPARoutingMiddleware,
 )
 from studio.app.common.core.mode import MODE
@@ -195,6 +196,9 @@ app.add_middleware(ClientIdLoggingMiddleware)
 
 # Add FreeUserActivityMiddleware to track free tier user activity
 app.add_middleware(FreeUserActivityMiddleware)
+
+# Add SecureRoutingMiddleware to generate HMAC-signed routing tokens
+app.add_middleware(SecureRoutingMiddleware)
 
 
 @app.get("/is_standalone", response_model=bool, tags=["others"])

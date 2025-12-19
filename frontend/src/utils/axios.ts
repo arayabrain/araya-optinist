@@ -190,7 +190,14 @@ const handleUnauthorizedError = async (
 }
 
 axios.interceptors.response.use(
-  async (res) => res,
+  async (res) => {
+    // Capture X-Routing-Token from response headers
+    const routingToken = res.headers["x-routing-token"]
+    if (routingToken) {
+      routingService.updateRoutingToken(routingToken)
+    }
+    return res
+  },
   async (error) => {
     if (error?.response?.status === 401) {
       return handleUnauthorizedError(error)
@@ -203,13 +210,12 @@ axios.interceptors.response.use(
     ) {
       // Premium instance not ready, falling back to free tier until migration
 
-      // Retry request without premium headers to use free tier
+      // Retry request without routing token to use free tier
       if (error.config && !error.config._retryWithoutPremium) {
         const retryConfig = { ...error.config }
 
-        // Remove premium routing headers for free tier fallback
-        delete retryConfig.headers["X-User-Tier"]
-        delete retryConfig.headers["X-User-ID"]
+        // Remove routing token for free tier fallback
+        delete retryConfig.headers["X-Routing-Token"]
 
         // Mark as retry to prevent infinite loops
         retryConfig._retryWithoutPremium = true
