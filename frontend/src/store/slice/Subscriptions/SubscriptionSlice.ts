@@ -1,5 +1,6 @@
 import { createSlice, PayloadAction } from "@reduxjs/toolkit"
 
+import { SubscriptionUserStatus } from "const/Subscription"
 import {
   cancelSubscription,
   createCheckoutSession,
@@ -11,7 +12,6 @@ import {
 } from "store/slice/Subscriptions/SubscriptionActions"
 import {
   SUBSCRIPTION_SLICE_NAME,
-  SUBSCRIPTION_USER_STATUS,
   SubscriptionState,
   UserSubscription,
 } from "store/slice/Subscriptions/SubscriptionType"
@@ -109,8 +109,7 @@ const subscriptionSlice = createSlice({
                 user_id: Number(action.payload.user_id) || 0,
                 expiration: String(action.payload.expiration || ""),
                 status:
-                  Number(action.payload.status) ||
-                  SUBSCRIPTION_USER_STATUS.FREE,
+                  Number(action.payload.status) || SubscriptionUserStatus.FREE,
                 is_expired: Boolean(action.payload.is_expired),
                 scheduled_downgrade: Boolean(
                   action.payload.scheduled_downgrade,
@@ -186,7 +185,7 @@ const subscriptionSlice = createSlice({
         state.loading = true
         state.error = null
       })
-      .addCase(reactivateSubscription.fulfilled, (state) => {
+      .addCase(reactivateSubscription.fulfilled, (state, _action) => {
         state.loading = false
         if (state.userSubscription) {
           state.userSubscription.scheduled_downgrade = false

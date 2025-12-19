@@ -18,6 +18,7 @@ import {
   DialogActions,
 } from "@mui/material"
 
+import { PlanName } from "const/Subscription"
 import {
   getSubscriptionPlan,
   getUserSubscription,
@@ -38,7 +39,6 @@ import type {
   SubscriptionPlan,
   PlanFeature,
 } from "store/slice/Subscriptions/SubscriptionType"
-import { SUBSCRIPTION_PLAN } from "store/slice/Subscriptions/SubscriptionType"
 import { selectCurrentUser } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 import {
@@ -107,19 +107,15 @@ const SubscriptionPlans = () => {
 
       // Check if the action was fulfilled
       if (reactivateSubscription.fulfilled.match(resultAction)) {
-        // Successfully reactivated
         // eslint-disable-next-line no-console
         console.log("Subscription reactivated successfully")
       } else {
-        // Handle error case
         // eslint-disable-next-line no-console
         console.error("Failed to reactivate subscription:", resultAction.error)
-        // You might want to show an error message to the user here
       }
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error("Error reactivating subscription:", error)
-      // Handle error - maybe show a toast notification
     } finally {
       setProcessingPlanId(null)
     }
@@ -219,7 +215,7 @@ const SubscriptionPlans = () => {
     const billingCycle = getBillingCycleText(plan.billing_cycle)
 
     if (plan.price === 0) {
-      return SUBSCRIPTION_PLAN.FREE
+      return PlanName.FREE
     }
 
     const basePrice = (plan.price / 100).toFixed(0)
@@ -337,7 +333,7 @@ const SubscriptionPlans = () => {
 
       {/* Current subscription status */}
       {userSubscription &&
-        userSubscription.plan_name !== SUBSCRIPTION_PLAN.FREE &&
+        userSubscription.plan_name !== PlanName.FREE &&
         !isSubscriptionExpired && (
           <SubscriptionStatus>
             <Typography variant="body1">
@@ -368,7 +364,7 @@ const SubscriptionPlans = () => {
             return (
               <PlanCard
                 key={plan.id}
-                isHighlighted={plan.name === SUBSCRIPTION_PLAN.PREMIUM}
+                isHighlighted={plan.name === PlanName.PREMIUM}
               >
                 <PlanHeader>
                   <PlanTitle variant="h4">{plan.name}</PlanTitle>

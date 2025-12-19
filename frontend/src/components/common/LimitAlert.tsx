@@ -20,10 +20,9 @@ import {
 
 import {
   getMyLimitAlertApi,
-  LimitAlert as LimitAlertType,
+  LimitAlert as LimitAlertData,
 } from "api/storage/StorageAlerts"
-import { SubscriptionPeriods } from "const/Subscription"
-import { LIMIT_ALERT_TYPE } from "store/slice/Subscriptions/SubscriptionType"
+import { SubscriptionPeriods, LimitAlertType } from "const/Subscription"
 import { getToken } from "utils/auth/AuthUtils"
 
 interface LimitAlertProps {
@@ -39,7 +38,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
 }) => {
   const { enqueueSnackbar: _enqueueSnackbar } = useSnackbar()
   const navigate = useNavigate()
-  const [alert, setAlert] = useState<LimitAlertType | null>(null)
+  const [alert, setAlert] = useState<LimitAlertData | null>(null)
   const [loading, setLoading] = useState(true)
   const [dismissed, setDismissed] = useState(() => {
     // Check if this alert was already dismissed in localStorage
@@ -123,8 +122,8 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
   // Determine what actions to show based on alert type and conditions
   const hasStorageIssue = alert.excess_data_gb > 0
   const hasSubscriptionIssue =
-    alert.alert_type === LIMIT_ALERT_TYPE.GRACE ||
-    alert.alert_type === LIMIT_ALERT_TYPE.OVERDUE
+    alert.alert_type === LimitAlertType.GRACE ||
+    alert.alert_type === LimitAlertType.OVERDUE
 
   // Only show upgrade button if:
   // 1. User has subscription expiration issues (was premium, now expired), OR
@@ -134,26 +133,26 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
   const showUpgradeButton = hasSubscriptionIssue || isFreeUserWithStorageIssue
   const showManageFilesButton = hasStorageIssue
 
-  const getSeverity = (alertType: LIMIT_ALERT_TYPE) => {
+  const getSeverity = (alertType: LimitAlertType) => {
     switch (alertType) {
-      case LIMIT_ALERT_TYPE.OVERDUE:
+      case LimitAlertType.OVERDUE:
         return "error"
-      case LIMIT_ALERT_TYPE.STORAGE:
+      case LimitAlertType.STORAGE:
         return "warning"
-      case LIMIT_ALERT_TYPE.GRACE:
+      case LimitAlertType.GRACE:
         return "warning"
       default:
         return "warning"
     }
   }
 
-  const getTitle = (alertType: LIMIT_ALERT_TYPE) => {
+  const getTitle = (alertType: LimitAlertType) => {
     switch (alertType) {
-      case LIMIT_ALERT_TYPE.OVERDUE:
+      case LimitAlertType.OVERDUE:
         return "Data Cleanup Overdue"
-      case LIMIT_ALERT_TYPE.STORAGE:
+      case LimitAlertType.STORAGE:
         return "Storage Limit Exceeded"
-      case LIMIT_ALERT_TYPE.GRACE:
+      case LimitAlertType.GRACE:
         return "Premium Subscription Expired"
       default:
         return "Storage Alert"
