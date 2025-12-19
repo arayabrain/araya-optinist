@@ -1,4 +1,8 @@
-import axiosLibrary from "axios"
+import axiosLibrary, {
+  AxiosError,
+  AxiosResponse,
+  InternalAxiosRequestConfig,
+} from "axios"
 
 import { refreshTokenApi } from "api/auth/Auth"
 import { BASE_URL } from "const/API"
@@ -7,6 +11,12 @@ import {
   isDataviewPublicOutputsRequest,
   DATAVIEW_PUBLIC_REQUEST_KEY,
 } from "utils/DataviewUtils"
+
+// Extend AxiosRequestConfig to include custom retry property
+interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
+  _retry?: boolean
+  _retryWithoutPremium?: boolean
+}
 
 const axios = axiosLibrary.create({
   baseURL: BASE_URL,
@@ -90,81 +100,95 @@ export const waitForLogoutComplete = async () => {
   }
 }
 
+/**
+ * Handle 401 Unauthorized errors by refreshing the access token and retrying the request
+ */
+const handleUnauthorizedError = async (
+  error: AxiosError,
+): Promise<AxiosResponse> => {
+  // Guard: originalRequest must exist to proceed
+  if (!error.config) {
+    return Promise.reject(error)
+  }
+
+  const originalRequest = error.config as CustomAxiosRequestConfig
+
+  // eslint-disable-next-line no-console
+  console.error(
+    "401 error detected:",
+    originalRequest.url,
+    error.response?.data,
+  )
+
+  // Prevent token refresh during logout
+  if (isLoggingOut) {
+    return Promise.reject(error)
+  }
+
+  // Prevent refresh loop - don't retry refresh endpoint itself
+  if (originalRequest.url?.includes("/auth/refresh")) {
+    // eslint-disable-next-line no-console
+    console.error("Refresh token is invalid or expired, logging out")
+    logout()
+    return Promise.reject(error)
+  }
+
+  // Prevent infinite retry loops
+  if (originalRequest._retry) {
+    // eslint-disable-next-line no-console
+    console.error("Token refresh retry failed, logging out")
+    logout()
+    return Promise.reject(error)
+  }
+
+  if (isRefreshing) {
+    return new Promise((resolve, reject) => {
+      failedQueue.push({ resolve, reject })
+    })
+      .then((token) => {
+        originalRequest.headers.Authorization = `Bearer ${token}`
+        return axiosLibrary(originalRequest)
+      })
+      .catch((err) => {
+        return Promise.reject(err)
+      })
+  }
+
+  originalRequest._retry = true
+  isRefreshing = true
+
+  try {
+    const { access_token } = await refreshTokenApi()
+    saveToken(access_token)
+    originalRequest.headers.Authorization = `Bearer ${access_token}`
+
+    processQueue(null, access_token)
+    isRefreshing = false
+
+    return axiosLibrary(originalRequest)
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error("Token refresh failed:", e)
+    processQueue(e, null)
+    isRefreshing = false
+
+    if (
+      axiosLibrary.isAxiosError(e) &&
+      (e?.response?.status === 400 || e?.response?.status === 401)
+    ) {
+      // eslint-disable-next-line no-console
+      console.error("Invalid refresh token, logging out")
+      logout()
+    }
+    throw e
+  }
+}
+
 axios.interceptors.response.use(
   async (res) => res,
   async (error) => {
-    const originalRequest = error.config
-
     if (error?.response?.status === 401) {
-      // eslint-disable-next-line no-console
-      console.error(
-        "401 error detected:",
-        originalRequest?.url,
-        error.response?.data,
-      )
-
-      // Prevent token refresh during logout
-      if (isLoggingOut) {
-        return Promise.reject(error)
-      }
-
-      // Prevent refresh loop - don't retry refresh endpoint itself
-      if (originalRequest?.url?.includes("/auth/refresh")) {
-        // eslint-disable-next-line no-console
-        console.error("Refresh token is invalid or expired, logging out")
-        logout()
-        return Promise.reject(error)
-      }
-
-      // Prevent infinite retry loops
-      if (originalRequest._retry) {
-        // eslint-disable-next-line no-console
-        console.error("Token refresh retry failed, logging out")
-        logout()
-        return Promise.reject(error)
-      }
-
-      if (isRefreshing) {
-        return new Promise((resolve, reject) => {
-          failedQueue.push({ resolve, reject })
-        })
-          .then((token) => {
-            originalRequest.headers.Authorization = `Bearer ${token}`
-            return axiosLibrary(originalRequest)
-          })
-          .catch((err) => {
-            return Promise.reject(err)
-          })
-      }
-
-      originalRequest._retry = true
-      isRefreshing = true
-
-      try {
-        const { access_token } = await refreshTokenApi()
-        saveToken(access_token)
-        originalRequest.headers.Authorization = `Bearer ${access_token}`
-
-        processQueue(null, access_token)
-        isRefreshing = false
-
-        return axiosLibrary(originalRequest)
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error("Token refresh failed:", e)
-        processQueue(e, null)
-        isRefreshing = false
-
-        if (
-          axiosLibrary.isAxiosError(e) &&
-          (e?.response?.status === 400 || e?.response?.status === 401)
-        ) {
-          // eslint-disable-next-line no-console
-          console.error("Invalid refresh token, logging out")
-          logout()
-        }
-        throw e
-      }
+      return handleUnauthorizedError(error)
     }
 
     return Promise.reject(error)
