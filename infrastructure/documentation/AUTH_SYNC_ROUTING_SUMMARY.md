@@ -41,7 +41,7 @@ This document describes the features being added to `develop-subscription` from 
 **After:** Custom ASGI middleware intercepts Accept: text/html requests
 
 **Benefits:**
-- Adds 113 lines of custom middleware to handle SPA routing edge cases
+- Adds 114 lines of custom middleware to handle SPA routing edge cases
 - Backend can serve index.html for SPA routes
 - Better handling of deep-linking and browser refresh
 
@@ -537,7 +537,7 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
 
 ### 6. Backend: SPA Routing Middleware Added
 
-**File:** `studio/app/common/core/middleware/spa_routing_middleware.py` (NEW - 113 lines)
+**File:** `studio/app/common/core/middleware/spa_routing_middleware.py` (NEW - 114 lines)
 
 #### What Was Added
 
@@ -600,13 +600,13 @@ class SPARoutingMiddleware:
 
 #### Files Added:
 
-1. **`studio/app/common/core/background/sync_job.py`** (432 lines)
+1. **`studio/app/common/core/background/sync_job.py`** (391 lines)
    - S3 sync job with file locking
    - Parallel downloads with semaphore (max 3 concurrent)
    - Retry logic with exponential backoff
    - CloudWatch metrics publishing
 
-2. **`studio/app/common/core/background/scheduler.py`** (160 lines)
+2. **`studio/app/common/core/background/scheduler.py`** (157 lines)
    - APScheduler wrapper for job management
    - S3 configuration validation
    - Job lifecycle (add/start/shutdown)
@@ -614,10 +614,10 @@ class SPARoutingMiddleware:
 3. **`studio/app/common/core/background/__init__.py`**
    - Exports for background job system
 
-4. **`studio/alembic/versions/a5b9c8d7e6f5_add_sync_logout_and_versioning.py`** (91 lines)
+4. **`studio/alembic/versions/a5b9c8d7e6f5_add_sync_logout_and_versioning.py`** (106 lines)
    - Migration adding `local_sync_status` to experiments (VARCHAR(20): pending, synced, error)
-   - Migration adding `logged_out_at` to free user assignments (TIMESTAMP)
    - Migration adding `version` for optimistic locking (INTEGER)
+   - Note: `logged_out_at` for free user assignments was added in earlier migration f801f8250020
 
 #### What Background Jobs Do:
 
@@ -658,7 +658,7 @@ class PublishedExperimentSyncJob:
 ```sql
 -- experiment_records table
 ALTER TABLE experiment_records
-  ADD COLUMN local_sync_status VARCHAR(20) DEFAULT 'pending',
+  ADD COLUMN local_sync_status VARCHAR(20) DEFAULT 'synced',
   ADD COLUMN version INTEGER DEFAULT 0;
 
 CREATE INDEX idx_local_sync_status ON experiment_records(local_sync_status);
@@ -1056,7 +1056,7 @@ SYNC_LOCK_FILE              # Path to lock file (default: /tmp/sync.lock)
 **Experiments Table:**
 ```sql
 ALTER TABLE experiment_records
-  ADD COLUMN local_sync_status VARCHAR(20) DEFAULT 'pending',
+  ADD COLUMN local_sync_status VARCHAR(20) DEFAULT 'synced',
   ADD COLUMN version INTEGER DEFAULT 0;
 
 CREATE INDEX idx_local_sync_status ON experiment_records(local_sync_status);
@@ -1065,6 +1065,7 @@ CREATE INDEX idx_publish_sync_status ON experiment_records(publish_status, local
 
 **Free User Assignments Table:**
 ```sql
+-- Note: logged_out_at was added in migration f801f8250020
 ALTER TABLE free_user_assignments
   ADD COLUMN logged_out_at TIMESTAMP NULL;
 
