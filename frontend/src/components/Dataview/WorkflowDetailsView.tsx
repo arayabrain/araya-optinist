@@ -2,7 +2,10 @@ import { useEffect, useState } from "react"
 import { useDispatch, useSelector } from "react-redux"
 
 import AssignmentOutlinedIcon from "@mui/icons-material/AssignmentOutlined"
+import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline"
+import HourglassEmptyIcon from "@mui/icons-material/HourglassEmpty"
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -60,6 +63,12 @@ export const WorkflowDetailsView = ({
   const dispatch = useDispatch<AppDispatch>()
   const flowNodes = useSelector(selectFlowNodes)
   const [loading, setLoading] = useState(false)
+  const [syncStatus, setSyncStatus] = useState<{
+    pending: boolean
+    error: boolean
+    message: string
+  }>({ pending: false, error: false, message: "" })
+  const [retryCount, setRetryCount] = useState(0)
   const [paramsDialog, setParamsDialog] = useState<{
     open: boolean
     params: Record<string, unknown> | null
@@ -75,6 +84,7 @@ export const WorkflowDetailsView = ({
   useEffect(() => {
     if (open && dataviewRecord) {
       setLoading(true)
+      setSyncStatus({ pending: false, error: false, message: "" })
       const api = is_public
         ? publicDataviewReproduceWorkflow
         : reproduceWorkflow
@@ -85,9 +95,45 @@ export const WorkflowDetailsView = ({
         }),
       )
         .unwrap()
-        .finally(() => setLoading(false))
+        .then(() => {
+          setLoading(false)
+        })
+        .catch((error) => {
+          setLoading(false)
+          // Handle 202 (pending sync) and 503 (sync error) for public dataview
+          if (is_public && error?.response) {
+            const status = error.response.status
+            const data = error.response.data
+
+            if (status === 202) {
+              // Experiment is published but not yet synced
+              setSyncStatus({
+                pending: true,
+                error: false,
+                message:
+                  data?.message ||
+                  "Publishing in progress, check back in a few minutes.",
+              })
+              // Auto-retry after 30 seconds (max 10 retries = 5 minutes)
+              if (retryCount < 10) {
+                setTimeout(() => {
+                  setRetryCount(retryCount + 1)
+                }, 30000)
+              }
+            } else if (status === 503) {
+              // Sync failed or download error
+              setSyncStatus({
+                pending: false,
+                error: true,
+                message:
+                  data?.message ||
+                  "Experiment temporarily unavailable, please try again later.",
+              })
+            }
+          }
+        })
     }
-  }, [open, dataviewRecord, is_public, dispatch])
+  }, [open, dataviewRecord, is_public, dispatch, retryCount])
 
   // Extract algorithm nodes from flowNodes
   const nodeDetails: NodeDetails[] = flowNodes
@@ -202,7 +248,54 @@ export const WorkflowDetailsView = ({
           </Box>
         </DialogTitle>
         <DialogContent dividers>
-          {loading || flowNodes.length === 0 ? (
+          {syncStatus.pending ? (
+            <Box
+              sx={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                py: 4,
+                gap: 2,
+              }}
+            >
+              <HourglassEmptyIcon
+                sx={{ fontSize: 48, color: "warning.main" }}
+              />
+              <Alert severity="info" sx={{ width: "100%" }}>
+                <Typography variant="body1" gutterBottom>
+                  {syncStatus.message}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Experiments are typically available within 5 minutes. This
+                  page will auto-retry.
+                </Typography>
+              </Alert>
+            </Box>
+          ) : syncStatus.error ? (
+            <Box
+              sx={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                py: 4,
+                gap: 2,
+              }}
+            >
+              <ErrorOutlineIcon sx={{ fontSize: 48, color: "error.main" }} />
+              <Alert severity="error" sx={{ width: "100%" }}>
+                <Typography variant="body1">{syncStatus.message}</Typography>
+              </Alert>
+              <Button
+                variant="outlined"
+                onClick={() => {
+                  setRetryCount(0)
+                  setSyncStatus({ pending: false, error: false, message: "" })
+                }}
+              >
+                Retry
+              </Button>
+            </Box>
+          ) : loading || flowNodes.length === 0 ? (
             <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
               <Loading loading={loading} />
             </Box>

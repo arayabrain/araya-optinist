@@ -6,7 +6,7 @@ from sqlalchemy.dialects.mysql import BIGINT
 from sqlmodel import JSON, Column, DateTime, Field, ForeignKey, Relationship, String
 
 from studio.app.common.models.base import Base, TimestampMixin
-from studio.app.common.schemas.dataview import PublishStatus
+from studio.app.common.schemas.dataview import LocalSyncStatus, PublishStatus
 
 
 class ExperimentRecord(Base, TimestampMixin, table=True):
@@ -41,6 +41,25 @@ class ExperimentRecord(Base, TimestampMixin, table=True):
             default=PublishStatus.off.value,
             comment="0: private, 1: public",
         )
+    )
+
+    local_sync_status: str = Field(
+        sa_column=Column(
+            String(20),
+            nullable=False,
+            default=LocalSyncStatus.synced.value,
+            comment="Sync status on local storage: pending, synced, error",
+        )
+    )
+
+    version: int = Field(
+        sa_column=Column(
+            Integer(),
+            nullable=False,
+            default=0,
+            comment="Version number for optimistic locking",
+        ),
+        default=0,
     )
 
     workspace: Optional["Workspace"] = Relationship(  # noqa: F821

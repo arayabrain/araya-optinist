@@ -199,16 +199,28 @@ class DataviewService:
         ids: List[int],
         flag: PublishFlags,
     ):
+        from studio.app.common.schemas.dataview import LocalSyncStatus
+
+        # Build update dict with publish_status and local_sync_status
+        update_dict = {ExperimentRecord.publish_status: int(flag == PublishFlags.on)}
+
+        # Set sync status when publishing/unpublishing
+        if flag == PublishFlags.on:
+            update_dict[
+                ExperimentRecord.local_sync_status
+            ] = LocalSyncStatus.pending.value
+        else:
+            update_dict[
+                ExperimentRecord.local_sync_status
+            ] = LocalSyncStatus.synced.value
+
         db.query(ExperimentRecord).filter(
             Workspace.id == ExperimentRecord.workspace_id,
             User.id == Workspace.user_id,
             User.id == user_id,
             User.active.is_(True),
             ExperimentRecord.id.in_(ids),
-        ).update(
-            {ExperimentRecord.publish_status: int(flag == PublishFlags.on)},
-            synchronize_session=False,
-        )
+        ).update(update_dict, synchronize_session=False)
 
         db.commit()
 
