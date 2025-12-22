@@ -3,6 +3,7 @@ from sqlmodel import Session
 
 from studio.app.common.core.auth import auth
 from studio.app.common.core.auth.auth_dependencies import get_admin_user
+from studio.app.common.core.cloud.cloud_utils import calculate_limit_warning
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
@@ -23,12 +24,37 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
 
         # Operate remote storage data.
         if RemoteStorageController.is_available():
+            # Get bucket name with fallback logic
+            from studio.app.common.core.auth.auth_dependencies import (
+                _get_user_remote_bucket_name,
+            )
+
+            remote_bucket_name = _get_user_remote_bucket_name(user)
+
             # Immediately after successful login,
             #   download all experiments metadata.
             async with RemoteStorageSimpleReader(
-                user.remote_bucket_name
+                remote_bucket_name
             ) as remote_storage_controller:
                 await remote_storage_controller.download_all_experiments_metas()
+
+        # Check for limit warnings after successful login
+        try:
+            limit_warning = await calculate_limit_warning(user.id)
+            if limit_warning:
+                logger.warning(
+                    f"User {user.id} ({user.email}) has limit warning: "
+                    f"{limit_warning['warning_type']} - "
+                    f"{limit_warning['days_remaining']} days remaining, "
+                    f"{limit_warning['excess_data_gb']} GB over limit"
+                )
+            else:
+                logger.warning(f"No limit warning for user {user.id}")
+        except Exception as warning_error:
+            # Don't fail login due to warning check failure
+            logger.warning(
+                f"Failed to check limit warning for user " f"{user.id}: {warning_error}"
+            )
 
     except HTTPException as e:
         logger.error(e, exc_info=True)

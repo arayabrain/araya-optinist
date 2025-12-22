@@ -65,7 +65,7 @@ def _get_fallback_storage_quota(user_id: int) -> Dict[str, Any]:
 
         # Set quotas based on Subscription Type
         if subscription_type == SubscriptionType.PREMIUM:
-            default_quota_bytes = StorageQuota.PREMIUM * StorageSize.GB  # 100GB
+            default_quota_bytes = StorageQuota.PREMIUM * StorageSize.GB  # 200GB
             logger.info(
                 f"Using paid plan quota for user {user_id} ({plan_name}): "
                 f"{StorageQuota.PREMIUM}GB"
@@ -250,7 +250,7 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
                     result = db.execute(statement).first()
 
                     if result and result.plan_name == PlanName.PREMIUM:
-                        default_quota = StorageQuota.PREMIUM * StorageSize.GB  # 100GB
+                        default_quota = StorageQuota.PREMIUM * StorageSize.GB  # 200GB
                     else:
                         default_quota = StorageQuota.FREE * StorageSize.GB  # 5GB
 

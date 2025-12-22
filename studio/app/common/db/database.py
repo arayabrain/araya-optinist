@@ -12,6 +12,10 @@ def get_new_engine():
         DATABASE_CONFIG.DATABASE_URL,
         pool_recycle=360,
         pool_size=DATABASE_CONFIG.POOL_SIZE,
+        max_overflow=20,  # Allow up to 20 additional connections beyond pool_size
+        pool_pre_ping=True,  # Verify connections before using them
+        pool_timeout=30,  # Wait up to 30 seconds for a connection
+        echo_pool=False,  # Set to True for debugging connection pool
     )
 
 

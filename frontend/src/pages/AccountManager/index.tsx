@@ -15,9 +15,11 @@ import { useSnackbar, VariantType } from "notistack"
 import DeleteIcon from "@mui/icons-material/Delete"
 import EditIcon from "@mui/icons-material/Edit"
 import LoginIcon from "@mui/icons-material/Login"
+import ReplayIcon from "@mui/icons-material/Replay"
 import {
   Box,
   Button,
+  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -51,6 +53,10 @@ import Loading from "components/common/Loading"
 import PaginationCustom from "components/common/PaginationCustom"
 import SelectError from "components/common/SelectError"
 import { regexEmail, regexIgnoreS, regexPassword } from "const/Auth"
+import {
+  StorageDisplayThresholds,
+  SubscriptionStatus,
+} from "const/Subscription"
 import {
   deleteUser,
   createUser,
@@ -285,6 +291,7 @@ const AccountManager = () => {
   const listUser = useSelector(selectListUser)
   const loading = useSelector(selectLoading)
   const [loadingProxyLogin, setLoadingProxyLogin] = useState(false)
+  const [loadingRefresh, setLoadingRefresh] = useState(false)
   const user = useSelector(selectCurrentUser)
   const admin = useSelector(isAdmin)
 
@@ -354,9 +361,12 @@ const AccountManager = () => {
 
   const { enqueueSnackbar } = useSnackbar()
 
-  const handleClickVariant = (variant: VariantType, mess: string) => {
-    enqueueSnackbar(mess, { variant })
-  }
+  const handleClickVariant = useCallback(
+    (variant: VariantType, mess: string) => {
+      enqueueSnackbar(mess, { variant })
+    },
+    [enqueueSnackbar],
+  )
 
   useEffect(() => {
     if (!admin) navigate("/dashboard")
@@ -606,6 +616,18 @@ const AccountManager = () => {
     setLoadingProxyLogin(false)
   }, [dispatch, navigate, userWaitingProxy?.uid])
 
+  const handleRefreshStorage = useCallback(async () => {
+    setLoadingRefresh(true)
+    try {
+      await dispatch(getListUser({ ...filterParams, ...sortParams, ...params }))
+      handleClickVariant("success", "Storage data refreshed successfully!")
+    } catch (error) {
+      handleClickVariant("error", "Failed to refresh storage data")
+    } finally {
+      setLoadingRefresh(false)
+    }
+  }, [dispatch, filterParams, sortParams, params, handleClickVariant])
+
   const columns: GridColDef[] = [
     {
       headerName: "ID",
@@ -697,6 +719,72 @@ const AccountManager = () => {
       },
     },
     {
+      headerName: "Subscription Status",
+      field: "subscription_status",
+      minWidth: 180,
+      sortable: false,
+      filterable: false,
+      renderCell: (params: GridRenderCellParams<GridValidRowModel>) => {
+        const status =
+          params.row?.subscription_status || SubscriptionStatus.FREE
+        const daysRemaining = params.row?.subscription_days_remaining
+
+        let statusText = status
+        if (daysRemaining !== null && daysRemaining !== undefined) {
+          if (status === SubscriptionStatus.PREMIUM) {
+            statusText = `${SubscriptionStatus.PREMIUM} (${daysRemaining} days left)`
+          } else if (status === SubscriptionStatus.LIMIT_GRACE) {
+            statusText = `${SubscriptionStatus.LIMIT_GRACE} (${daysRemaining} days left)`
+          }
+        }
+
+        return <span>{statusText}</span>
+      },
+    },
+    {
+      headerName: "Storage Usage",
+      field: "storage_usage_percent",
+      minWidth: 150,
+      sortable: false,
+      filterable: false,
+      renderCell: (params: GridRenderCellParams<GridValidRowModel>) => {
+        const usageBytes = params.row?.storage_usage_bytes || 0
+        const quotaBytes = params.row?.storage_quota_bytes || 0
+        const percentage = params.row?.storage_usage_percent || 0
+
+        if (quotaBytes === 0) return "No Quota"
+
+        const isOverLimit =
+          percentage > StorageDisplayThresholds.OVER_LIMIT_PERCENT
+        const isNearLimit =
+          percentage > StorageDisplayThresholds.NEAR_LIMIT_PERCENT &&
+          percentage <= StorageDisplayThresholds.OVER_LIMIT_PERCENT
+
+        return (
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
+            <Typography
+              variant="body2"
+              color={isOverLimit ? "error" : "textPrimary"}
+            >
+              {convertBytes(usageBytes)} / {convertBytes(quotaBytes)}
+            </Typography>
+            <Typography
+              variant="caption"
+              color={
+                isOverLimit
+                  ? "error"
+                  : isNearLimit
+                    ? "warning"
+                    : "textSecondary"
+              }
+            >
+              {percentage.toFixed(1)}% used
+            </Typography>
+          </Box>
+        )
+      },
+    },
+    {
       headerName: "Bucket name",
       field: "remote_bucket_name",
       minWidth: 200,
@@ -781,6 +869,16 @@ const AccountManager = () => {
         }}
       >
         <Button
+          variant="outlined"
+          onClick={handleRefreshStorage}
+          disabled={loadingRefresh}
+          endIcon={
+            loadingRefresh ? <CircularProgress size={16} /> : <ReplayIcon />
+          }
+        >
+          Reload
+        </Button>
+        <Button
           sx={{
             background: "#000000c4",
             "&:hover": { backgroundColor: "#00000090" },
@@ -852,7 +950,7 @@ const AccountManager = () => {
           dataEdit={dataEdit}
         />
       ) : null}
-      <Loading loading={loading || loadingProxyLogin} />
+      <Loading loading={loading || loadingProxyLogin || loadingRefresh} />
     </AccountManagerWrapper>
   )
 }

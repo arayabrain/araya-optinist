@@ -34,7 +34,7 @@ loggers:
   optinist:
     level: DEBUG
   snakemake:
-    level: INFO
+    level: DEBUG
     handlers: [console, rotating_file]
     propagate: false
 root:

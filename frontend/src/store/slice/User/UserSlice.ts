@@ -16,11 +16,14 @@ import {
 import { USER_SLICE_NAME, User } from "store/slice/User/UserType"
 import {
   removeExToken,
+  removeRefreshToken,
   removeToken,
   saveExToken,
   saveRefreshToken,
   saveToken,
 } from "utils/auth/AuthUtils"
+import { setLoggingOut } from "utils/axios"
+import { routingService } from "utils/routing/RoutingService"
 
 const initialState: User = {
   currentUser: undefined,
@@ -34,8 +37,25 @@ export const userSlice = createSlice({
   initialState,
   reducers: {
     logout: () => {
+      // Set logout flag to prevent token refresh during logout
+      setLoggingOut(true)
+
+      // Remove tokens synchronously first - this is the critical step
       removeToken()
+      removeRefreshToken()
       removeExToken()
+
+      // Clear dismissed warnings so they can appear again for the next user
+      localStorage.removeItem("dismissedWarnings")
+      // Clear session storage to prevent stale state on browser back
+      sessionStorage.removeItem("storage-refreshed-on-login")
+      // Clear premium routing information
+      routingService.clearRoutingInfo()
+
+      // Reset logout flag immediately after cleanup
+      // This ensures any pending checks see the cleared state
+      setLoggingOut(false)
+
       return initialState
     },
     resetUserSearch: (state) => {
@@ -46,6 +66,10 @@ export const userSlice = createSlice({
     builder
       .addCase(getMe.fulfilled, (state, action) => {
         state.currentUser = action.payload
+        // Update routing information when user data is loaded
+        if (action.payload) {
+          routingService.updateRoutingInfo(action.payload)
+        }
       })
       .addCase(getListUser.fulfilled, (state, action) => {
         state.listUser = action.payload
@@ -102,7 +126,10 @@ export const userSlice = createSlice({
         isAnyOf(login.rejected, getMe.rejected, deleteMe.fulfilled),
         () => {
           removeToken()
+          removeRefreshToken()
           removeExToken()
+          // Clear premium routing information on auth failure
+          routingService.clearRoutingInfo()
           return initialState
         },
       )
