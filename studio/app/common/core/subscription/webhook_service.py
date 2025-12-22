@@ -1058,7 +1058,7 @@ class WebhookService:
                     if (
                         finalized_invoice.get("default_payment_method")
                         and finalized_invoice.get("amount_due", 0) > 0
-                        and finalized_invoice.get("status") == "open"
+                        and finalized_invoice.get("status") == InvoiceStatus.OPEN
                     ):
                         try:
                             logger.info(
@@ -1074,7 +1074,7 @@ class WebhookService:
                             return {
                                 "success": True,
                                 "invoice_id": invoice_id,
-                                "previous_status": "draft",
+                                "previous_status": InvoiceStatus.DRAFT,
                                 "new_status": paid_invoice.get("status"),
                                 "message": "Invoice finalized and payment attempted",
                                 "webhook_processed": True,
@@ -1092,7 +1092,7 @@ class WebhookService:
                     return {
                         "success": True,
                         "invoice_id": invoice_id,
-                        "previous_status": "draft",
+                        "previous_status": InvoiceStatus.DRAFT,
                         "new_status": finalized_invoice.get("status"),
                         "message": "Invoice finalized successfully",
                         "webhook_processed": True,
@@ -1194,7 +1194,7 @@ class WebhookService:
                     return {
                         "success": True,
                         "invoice_id": invoice_id,
-                        "previous_status": "open",
+                        "previous_status": InvoiceStatus.OPEN,
                         "new_status": paid_invoice.get("status"),
                         "message": "Invoice payment attempted successfully",
                         "webhook_processed": True,
