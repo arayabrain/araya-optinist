@@ -2860,7 +2860,23 @@ def update_premium_service_desired_count():
 
 
 def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bool:
-    """Migrate user from shared instance to dedicated instance"""
+    """
+    Migrate user from shared instance to dedicated instance.
+
+    IMPORTANT: Only migrates users with no active workflows to prevent
+    workflow interruption and data loss.
+    """
+    # Import the utility function
+    from premium_user_utils import can_migrate_user
+
+    # Check if user can be safely migrated (no active workflows)
+    if not can_migrate_user(user_id):
+        print(
+            f"Cannot migrate user {user_id}: user has active workflows running. "
+            f"Will retry on next migration attempt."
+        )
+        return False
+
     elbv2 = boto3.client("elbv2")
 
     try:
@@ -2868,7 +2884,8 @@ def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bo
             with connection.cursor() as cursor:
                 # Get current assignment
                 cursor.execute(
-                    """SELECT instance_id, target_group_arn, alb_rule_arn
+                    """SELECT instance_id, target_group_arn,
+                       alb_rule_arn, active_workflow_count
                        FROM premium_user_assignments WHERE user_id = %s""",
                     (user_id,),
                 )
@@ -2876,6 +2893,15 @@ def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bo
 
                 if not assignment:
                     print(f"No assignment found for user {user_id}")
+                    return False
+
+                # Double-check workflow count (defense in depth)
+                active_workflows = assignment.get("active_workflow_count", 0) or 0
+                if active_workflows > 0:
+                    print(
+                        f"Cannot migrate user {user_id}: {active_workflows} "
+                        f"active workflows detected in assignment record"
+                    )
                     return False
 
                 old_instance_id = assignment["instance_id"]
@@ -3404,6 +3430,10 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
     """
     Optimize shared instances by migrating users to available dedicated instances.
     Called during assignment operations to improve resource allocation.
+
+    IMPORTANT: Only migrates users with no active workflows (active_workflow_count = 0)
+    to prevent workflow interruption. Users with running workflows are automatically
+    skipped and will be migrated on subsequent attempts after their workflows complete.
 
     Uses dynamic instance discovery by tags instead of hardcoded PREMIUM_INSTANCE_IDS,
     ensuring newly created/started instances are included in migration checks.

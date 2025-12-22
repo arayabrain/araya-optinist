@@ -96,6 +96,26 @@ def upgrade() -> None:
             sa.TIMESTAMP,
             nullable=True,
         ),
+        # Workflow tracking columns (added 2025-12-22)
+        sa.Column(
+            "active_workflow_count",
+            sa.INTEGER,
+            nullable=False,
+            server_default="0",
+            comment="Number of active workflows running for this user",
+        ),
+        sa.Column(
+            "last_workflow_start",
+            sa.TIMESTAMP,
+            nullable=True,
+            comment="Timestamp of last workflow start",
+        ),
+        sa.Column(
+            "last_workflow_end",
+            sa.TIMESTAMP,
+            nullable=True,
+            comment="Timestamp of last workflow completion",
+        ),
         # Constraints
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], name="fk_premium_user"),
@@ -121,11 +141,21 @@ def upgrade() -> None:
         "idx_standby_created_at", "premium_user_assignments", ["standby_created_at"]
     )
 
+    # Workflow tracking index (added 2025-12-22)
+    op.create_index(
+        "idx_workflow_recovery",
+        "premium_user_assignments",
+        ["active_workflow_count", "last_workflow_start"],
+    )
+
 
 def downgrade() -> None:
     """Drop the entire premium_user_assignments table and all related objects."""
 
     # Drop all indexes first
+
+    # Workflow tracking index (added 2025-12-22)
+    op.drop_index("idx_workflow_recovery", "premium_user_assignments")
 
     # Instance state tracking indexes (c501c5230017)
     op.drop_index("idx_standby_created_at", "premium_user_assignments")
