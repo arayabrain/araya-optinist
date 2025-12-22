@@ -1163,7 +1163,7 @@ class WebhookService:
             )
 
             # Only attempt payment if invoice is open and has amount due
-            if invoice_status == "open" and amount_due > 0:
+            if invoice_status == InvoiceStatus.OPEN and amount_due > 0:
                 # Check if payment method exists
                 if not default_pm:
                     logger.warning(
