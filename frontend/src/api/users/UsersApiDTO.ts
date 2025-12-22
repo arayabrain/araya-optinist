@@ -18,8 +18,6 @@ export type UserDTO = {
   storage_usage_bytes?: number
   storage_quota_bytes?: number
   storage_usage_percent?: number
-  subscription_plan_name?: string
-  subscription_status?: string
   created_at?: string
   updated_at?: string
 }

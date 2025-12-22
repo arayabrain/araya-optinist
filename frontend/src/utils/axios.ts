@@ -11,6 +11,13 @@ import {
   isDataviewPublicOutputsRequest,
   DATAVIEW_PUBLIC_REQUEST_KEY,
 } from "utils/DataviewUtils"
+import { routingService } from "utils/routing/RoutingService"
+
+// Extend AxiosRequestConfig to include custom retry property
+interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
+  _retry?: boolean
+  _retryWithoutPremium?: boolean
+}
 
 // Extend AxiosRequestConfig to include custom retry property
 interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
@@ -37,6 +44,10 @@ axios.interceptors.request.use(
     if (exToken) {
       config.headers!.ExToken = exToken
     }
+
+    // Add premium routing headers for ALB-based routing
+    const routingHeaders = routingService.getRoutingHeaders()
+    Object.assign(config.headers!, routingHeaders)
 
     // Check whether the access is to public output data (HTTP header setting)
     if (config.url && isDataviewPublicOutputsRequest(config.url)) {
@@ -187,6 +198,8 @@ const handleUnauthorizedError = async (
 axios.interceptors.response.use(
   async (res) => res,
   async (error) => {
+    const originalRequest = error.config
+
     if (error?.response?.status === 401) {
       return handleUnauthorizedError(error)
     }

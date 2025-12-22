@@ -26,6 +26,12 @@ export const SubscriptionAlertThresholds = {
   CRITICAL: 100,
 } as const
 
+// Storage usage display thresholds (for visual indicators)
+export const StorageDisplayThresholds = {
+  NEAR_LIMIT_PERCENT: 80, // Show warning color when usage exceeds this
+  OVER_LIMIT_PERCENT: 100, // Show error color when usage exceeds this
+} as const
+
 // Subscription plan names (matches backend PlanName enum)
 export enum PlanName {
   FREE = "Free",
@@ -60,3 +66,11 @@ export enum LimitAlertType {
   GRACE = "grace",
   OVERDUE = "overdue",
 }
+
+// Premium instance timing constants (in minutes)
+export const PremiumTiming = {
+  // Duration of inactivity warning countdown before instance is released
+  INACTIVITY_WARNING_DURATION_MINUTES: 60,
+  // Interval for updating the countdown display (in milliseconds)
+  WARNING_UPDATE_INTERVAL_MS: 60 * 1000, // 1 minute
+} as const
