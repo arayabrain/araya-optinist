@@ -162,8 +162,8 @@ resource "aws_iam_role_policy" "free_manager_lambda_policy" {
       },
       # ASG Describe (read-only)
       {
-        Effect = "Allow"
-        Action = "autoscaling:DescribeAutoScalingGroups"
+        Effect   = "Allow"
+        Action   = "autoscaling:DescribeAutoScalingGroups"
         Resource = "*"
       },
       # ASG Management (scoped to free tier ASG)
@@ -264,7 +264,7 @@ resource "aws_cloudwatch_event_rule" "free_manager_asg_events" {
   description = "Trigger free manager on ASG lifecycle events for immediate ECS sync"
 
   event_pattern = jsonencode({
-    source      = ["aws.autoscaling"]
+    source = ["aws.autoscaling"]
     detail-type = [
       "EC2 Instance Launch Successful",
       "EC2 Instance Terminate Successful",

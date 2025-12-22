@@ -99,7 +99,7 @@ class FreeUserActivityMiddleware:
                         authed_user = getattr(state, "user", None)
 
                     if authed_user:
-                        user_id = str(authed_user.id)
+                        user_id = authed_user.id
                         subscription_status = getattr(
                             authed_user,
                             "subscription_status",
