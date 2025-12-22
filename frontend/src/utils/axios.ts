@@ -39,6 +39,10 @@ axios.interceptors.request.use(
       config.headers!.ExToken = exToken
     }
 
+    // Add premium routing headers for ALB-based routing
+    const routingHeaders = routingService.getRoutingHeaders()
+    Object.assign(config.headers!, routingHeaders)
+
     // Check whether the access is to public output data (HTTP header setting)
     if (config.url && isDataviewPublicOutputsRequest(config.url)) {
       config.headers![DATAVIEW_PUBLIC_REQUEST_KEY] = "true"

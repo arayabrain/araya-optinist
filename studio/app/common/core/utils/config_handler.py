@@ -60,6 +60,41 @@ def get_env_bool(key: str, default: bool = False) -> bool:
     return value.lower() in ("true", "1", "yes", "on")
 
 
+def is_local_environment() -> bool:
+    """
+    Detect if the application is running in a local development environment.
+
+    Checks MYSQL_SERVER and DATABASE_URL environment variables for localhost
+    indicators including:
+    - "localhost" hostname
+    - IPv4 loopback: 127.0.0.1
+    - IPv6 loopback: ::1
+
+    Returns:
+        bool: True if running in local development environment
+
+    Examples:
+        >>> # DATABASE_URL=postgresql://user:pass@localhost:5432/db
+        >>> is_local_environment()
+        True
+        >>> # DATABASE_URL=postgresql://user:pass@[::1]:5432/db
+        >>> is_local_environment()
+        True
+        >>> # DATABASE_URL=postgresql://user:pass@prod-db.example.com:5432/db
+        >>> is_local_environment()
+        False
+    """
+    mysql_server = os.environ.get("MYSQL_SERVER", "")
+    database_url = os.environ.get("DATABASE_URL", "")
+
+    localhost_indicators = ("localhost", "127.0.0.1", "::1")
+
+    return any(
+        indicator in mysql_server or indicator in database_url
+        for indicator in localhost_indicators
+    )
+
+
 def differential_deep_merge(d1: dict, d2: dict) -> dict:
     """
     Deep merge only the differences to avoid destroying existing elements

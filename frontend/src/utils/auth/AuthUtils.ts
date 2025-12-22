@@ -1,3 +1,5 @@
+import { routingService } from "utils/routing/RoutingService"
+
 // Import setLoggingOut from axios - using dynamic import to avoid circular dependency
 let setLoggingOutFn: ((value: boolean) => void) | null = null
 
@@ -43,6 +45,13 @@ export const logout = async () => {
   localStorage.removeItem("dismissedWarnings")
   // Clear session storage to prevent stale state on browser back
   sessionStorage.removeItem("storage-refreshed-on-login")
+
+  // Clear premium routing information on logout
+  try {
+    routingService.clearRoutingInfo()
+  } catch (e) {
+    // Ignore if routing service isn't available
+  }
 
   // Reset logout flag immediately after token removal
   // This ensures any pending checks see the cleared tokens

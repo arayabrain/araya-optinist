@@ -53,7 +53,10 @@ import Loading from "components/common/Loading"
 import PaginationCustom from "components/common/PaginationCustom"
 import SelectError from "components/common/SelectError"
 import { regexEmail, regexIgnoreS, regexPassword } from "const/Auth"
-import { SubscriptionStatus } from "const/Subscription"
+import {
+  StorageDisplayThresholds,
+  SubscriptionStatus,
+} from "const/Subscription"
 import {
   deleteUser,
   createUser,
@@ -751,8 +754,11 @@ const AccountManager = () => {
 
         if (quotaBytes === 0) return "No Quota"
 
-        const isOverLimit = percentage > 100
-        const isNearLimit = percentage > 80 && percentage <= 100
+        const isOverLimit =
+          percentage > StorageDisplayThresholds.OVER_LIMIT_PERCENT
+        const isNearLimit =
+          percentage > StorageDisplayThresholds.NEAR_LIMIT_PERCENT &&
+          percentage <= StorageDisplayThresholds.OVER_LIMIT_PERCENT
 
         return (
           <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
