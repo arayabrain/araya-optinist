@@ -6,6 +6,7 @@ import pytest
 
 from studio.app.common.core.auth.auth_dependencies import _get_user_remote_bucket_name
 from studio.app.common.core.experiment.experiment import ExptFunction
+from studio.app.common.core.mode import MODE
 from studio.app.common.core.rules.runner import Runner
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
@@ -20,6 +21,8 @@ from studio.app.common.core.workflow.workflow_result import (
 )
 from studio.app.dir_path import DIRPATH
 
+# Set test mode before getting bucket name at module level
+MODE.IS_TEST = True
 remote_bucket_name = _get_user_remote_bucket_name()
 workspace_id = "default"
 unique_id = "result_test"

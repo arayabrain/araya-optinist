@@ -1,7 +1,8 @@
+import time
 import uuid
 from dataclasses import asdict
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from fastapi import BackgroundTasks
 
@@ -10,6 +11,7 @@ from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
 )
 from studio.app.common.core.experiment.experiment_writer import ExptConfigWriter
+from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.rules.runner import Runner
 from studio.app.common.core.snakemake.smk import FlowConfig, ForceRun, Rule, SmkParam
 from studio.app.common.core.snakemake.snakemake_executor import (
@@ -49,13 +51,32 @@ class WorkflowRunner:
         workspace_id: str,
         unique_id: str,
         runItem: RunItem,
+        user_id: Optional[int] = None,
     ) -> None:
         self.remote_bucket_name = remote_bucket_name
         self.workspace_id = workspace_id
         self.unique_id = unique_id
         self.runItem = runItem
+        self.user_id = user_id
         self.nodeDict = self.runItem.nodeDict
         self.edgeDict = self.runItem.edgeDict
+        self.logger = AppLogger.get_logger()
+
+        # Log workflow start with timing
+        self.workflow_start_time = time.time()
+        self.logger.info(
+            f"WORKFLOW START: {self.runItem.name} "
+            f"(ID: {self.unique_id}, User: {self.user_id}, "
+            f"Workspace: {self.workspace_id}) "
+            f"at {time.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+        # Track workflow start for free tier users (for load balancing)
+        from studio.app.common.core.workflow.workflow_tracking import (
+            increment_workflow_count,
+        )
+
+        increment_workflow_count(self.user_id)
 
         WorkflowConfigWriter(
             self.workspace_id,
@@ -73,6 +94,23 @@ class WorkflowRunner:
         ).write()
 
         Runner.clear_pid_file(self.workspace_id, self.unique_id)
+
+    def log_workflow_completion(self, status: str = "completed"):
+        """Log workflow completion with timing information."""
+        if hasattr(self, "workflow_start_time"):
+            end_time = time.time()
+            duration = end_time - self.workflow_start_time
+            self.logger.info(
+                f"WORKFLOW {status.upper()}: {self.runItem.name} "
+                f"(ID: {self.unique_id}, User: {self.user_id}) "
+                f"completed in {duration:.2f}s at {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        else:
+            self.logger.info(
+                f"WORKFLOW {status.upper()}: {self.runItem.name} "
+                f"(ID: {self.unique_id}, User: {self.user_id}) "
+                f"at {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
 
     @staticmethod
     def create_workflow_unique_id() -> str:
@@ -135,7 +173,11 @@ class WorkflowRunner:
             )
 
         background_tasks.add_task(
-            snakemake_execute, self.workspace_id, self.unique_id, snakemake_params
+            snakemake_execute,
+            self.workspace_id,
+            self.unique_id,
+            snakemake_params,
+            self.user_id,
         )
 
     def finish_workflow_without_run(
