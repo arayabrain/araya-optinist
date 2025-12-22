@@ -382,7 +382,7 @@ resource "aws_cloudwatch_dashboard" "main" {
           period  = 300
         }
       },
-      # Row 3: Premium-specific Metrics
+      # Row 3: Free and Premium Tier User Metrics
       {
         type   = "metric"
         x      = 12
@@ -391,6 +391,7 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
+            ["OptiNiSt/FreeUsers", "ActiveLogins", { "label" : "Active Free Tier Users" }],
             ["OptiNiSt/Premium", "ActiveAssignments", { "label" : "Active Premium Users" }],
             ["OptiNiSt/Premium", "InstanceUtilization", { "label" : "Premium Instance Utilization %" }],
 #            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Duration" }],
@@ -399,7 +400,7 @@ resource "aws_cloudwatch_dashboard" "main" {
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
-          title   = "Premium Tier Operations"
+          title   = "User Tier Operations: Free & Premium"
           period  = 300
         }
       },
