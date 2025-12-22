@@ -382,55 +382,6 @@ resource "aws_cloudwatch_log_group" "free_cleanup_logs" {
 }
 
 # ===========================
-# CloudWatch Dashboard
-# ===========================
-
-resource "aws_cloudwatch_dashboard" "free_tier_monitoring" {
-  dashboard_name = "subscr-free-tier-monitoring"
-
-  dashboard_body = jsonencode({
-    widgets = [
-      {
-        type = "metric"
-        properties = {
-          metrics = [
-            ["OptiNiSt/FreeUsers", "ActiveLogins", { label = "Active Free Tier Users", stat = "Average" }]
-          ]
-          period = 300
-          stat   = "Average"
-          region = var.aws_region
-          title  = "Active Free Tier Users"
-          yAxis = {
-            left = {
-              min = 0
-            }
-          }
-        }
-      },
-      {
-        type = "metric"
-        properties = {
-          metrics = [
-            ["AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.autoscaling.name, "ClusterName", aws_ecs_cluster.main.name, { label = "Free Tier CPU" }],
-            ["AWS/ECS", "MemoryUtilization", "ServiceName", aws_ecs_service.autoscaling.name, "ClusterName", aws_ecs_cluster.main.name, { label = "Free Tier Memory" }]
-          ]
-          period = 300
-          stat   = "Average"
-          region = var.aws_region
-          title  = "Free Tier Service Metrics"
-          yAxis = {
-            left = {
-              min = 0
-              max = 100
-            }
-          }
-        }
-      }
-    ]
-  })
-}
-
-# ===========================
 # Outputs
 # ===========================
 

@@ -826,7 +826,7 @@ def is_distribution_balanced() -> bool:
 | `InstanceCount` | Number of ECS instances running | Count | OptiNiSt/FreeManager |
 | `RebalancedUsers` | Users migrated in last operation | Count | OptiNiSt/FreeManager |
 
-**Dashboard:** `subscr-free-tier-monitoring`
+**Dashboard:** `subscr-optinist-monitoring` (integrated with premium tier monitoring)
 
 ### Key Log Events
 
@@ -1146,7 +1146,7 @@ aws ecs describe-services \
 - **EventBridge Rules:**
   - `subscr-free-manager-schedule` (5 min monitoring)
   - `subscr-free-manager-asg-events` (ASG lifecycle)
-- **CloudWatch Dashboard:** `subscr-free-tier-monitoring`
+- **CloudWatch Dashboard:** `subscr-optinist-monitoring` (unified free & premium monitoring)
 - **RDS Table:** `free_user_assignments`
 
 ---
