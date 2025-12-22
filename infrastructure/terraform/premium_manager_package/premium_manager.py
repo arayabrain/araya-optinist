@@ -34,6 +34,8 @@ Required Environment Variables:
 - PREMIUM_IDLE_TIMEOUT_HOURS: Must match premium_cleanup.py value
 """
 
+import hashlib
+import hmac
 import json
 import os
 import sys
@@ -54,6 +56,30 @@ from aws_constants import ECSTaskStatus  # noqa: E402
 # Default fallback value for premium user count in development/testing scenarios
 # Used when database queries fail or no premium users exist
 DEFAULT_DEVELOPMENT_CAPACITY = 3
+
+
+def generate_routing_id(uid: str, secret_key: str) -> str:
+    """Generate non-reversible routing ID from UID using HMAC-SHA256
+
+    Creates a cryptographically secure, non-reversible identifier from the user's UID.
+    This routing ID is used in ALB routing rules instead of exposing the raw UID.
+
+    Security properties:
+    - Cannot be reverse-engineered to extract the UID
+    - Deterministic (same UID always produces same routing_id)
+    - Requires the secret key to generate (client cannot forge)
+
+    Args:
+        uid: Firebase user ID
+        secret_key: Secret key for HMAC signature
+
+    Returns:
+        16-character hex string (64 bits of entropy)
+    """
+    signature = hmac.new(
+        secret_key.encode("utf-8"), uid.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return signature[:16]  # 16 hex chars = 64 bits
 
 
 def get_required_env_var(var_name: str, default_value: str = None) -> str:
@@ -2278,6 +2304,14 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             )
 
         # 9. Create ALB listener rule for user routing
+        # Generate non-reversible routing ID from user_id
+        routing_secret_key = get_required_env_var("ROUTING_SECRET_KEY")
+        routing_id = generate_routing_id(user_id, routing_secret_key)
+        print(
+            f"Generated routing_id for user: {routing_id[:8]}... "
+            f"(truncated for security)"
+        )
+
         # Get next available priority dynamically to avoid conflicts
         priority = get_next_available_priority(alb_listener_arn, start_priority=100)
 
@@ -2295,8 +2329,8 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                 {
                     "Field": "http-header",
                     "HttpHeaderConfig": {
-                        "HttpHeaderName": "X-User-ID",
-                        "Values": [user_id],
+                        "HttpHeaderName": "X-Routing-ID",
+                        "Values": [routing_id],
                     },
                 },
             ],

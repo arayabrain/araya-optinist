@@ -1,16 +1,18 @@
 /**
  * Routing Service for Premium User ALB Header Management
  *
- * Handles the logic for managing HMAC-signed routing tokens issued by the backend.
- * The backend generates cryptographically signed tokens that cannot be forged,
- * preventing header spoofing attacks on ALB routing.
+ * Handles the logic for managing non-reversible routing IDs issued by the backend.
+ * The backend generates cryptographically secure routing IDs from user UIDs using
+ * HMAC-SHA256, which cannot be forged or reverse-engineered.
  *
  * Security Flow:
- * 1. Backend validates user authentication
- * 2. Backend generates HMAC-signed token (uid|tier|timestamp|signature)
- * 3. Backend sends token in X-Routing-Token response header
- * 4. Frontend stores token and includes it in subsequent requests
- * 5. ALB/Backend verifies signature before routing decisions
+ * 1. Backend validates Firebase JWT authentication
+ * 2. Backend generates non-reversible routing_id from UID (HMAC-SHA256)
+ * 3. Backend sends routing_id in X-Routing-ID response header
+ * 4. Frontend stores routing_id and includes it in subsequent requests
+ * 5. ALB routes based on routing_id, backend validates against JWT UID
+ *
+ * Privacy: User UID is never exposed to the client, only the opaque routing_id
  */
 
 import { UserDTO } from "api/users/UsersApiDTO"
@@ -36,7 +38,7 @@ class RoutingService {
   private routingToken: string | null = null
   private lastFetch: number = 0
   private readonly CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
-  private readonly STORAGE_KEY = "routing_token"
+  private readonly STORAGE_KEY = "routing_id"
 
   constructor() {
     // Load token from localStorage on initialization
@@ -45,7 +47,7 @@ class RoutingService {
 
   /**
    * Get routing headers for the current user request
-   * Returns the backend-issued HMAC-signed token
+   * Returns the backend-issued non-reversible routing ID
    */
   getRoutingHeaders(): Record<string, string> {
     if (!this.routingToken) {
@@ -53,13 +55,13 @@ class RoutingService {
     }
 
     return {
-      "X-Routing-Token": this.routingToken,
+      "X-Routing-ID": this.routingToken,
     }
   }
 
   /**
-   * Update routing token from backend response header
-   * Called by axios response interceptor when X-Routing-Token header is present
+   * Update routing ID from backend response header
+   * Called by axios response interceptor when X-Routing-ID header is present
    */
   updateRoutingToken(token: string): void {
     this.routingToken = token
@@ -94,7 +96,7 @@ class RoutingService {
   }
 
   /**
-   * Get current routing token (for debugging)
+   * Get current routing ID (for debugging)
    */
   getRoutingToken(): string | null {
     return this.routingToken
@@ -141,7 +143,7 @@ class RoutingService {
   }
 
   /**
-   * Load routing token from localStorage
+   * Load routing ID from localStorage
    */
   private loadTokenFromStorage(): void {
     try {
@@ -150,29 +152,29 @@ class RoutingService {
         this.routingToken = token
       }
     } catch (e) {
-      console.warn("Failed to load routing token from localStorage:", e)
+      console.warn("Failed to load routing ID from localStorage:", e)
     }
   }
 
   /**
-   * Save routing token to localStorage
+   * Save routing ID to localStorage
    */
   private saveTokenToStorage(token: string): void {
     try {
       localStorage.setItem(this.STORAGE_KEY, token)
     } catch (e) {
-      console.warn("Failed to save routing token to localStorage:", e)
+      console.warn("Failed to save routing ID to localStorage:", e)
     }
   }
 
   /**
-   * Clear routing token from localStorage
+   * Clear routing ID from localStorage
    */
   private clearTokenFromStorage(): void {
     try {
       localStorage.removeItem(this.STORAGE_KEY)
     } catch (e) {
-      console.warn("Failed to clear routing token from localStorage:", e)
+      console.warn("Failed to clear routing ID from localStorage:", e)
     }
   }
 }

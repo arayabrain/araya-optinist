@@ -1,561 +1,641 @@
-# Security Update: ALB Routing Authentication
+# Security Update: ALB Routing with Non-Reversible Routing IDs
 
 ## Executive Summary
 
-This document outlines the security update for ALB (Application Load Balancer) routing to fix a critical vulnerability where client-controlled HTTP headers can be spoofed to access other users' premium instances.
+This document outlines the security update for ALB (Application Load Balancer) routing to fix a critical vulnerability where client-controlled HTTP headers expose user IDs and can be spoofed to access other users' premium instances.
 
-**Current Vulnerability**: The ALB routing system uses client-controlled headers (`X-User-Tier` and `X-User-ID`) set by frontend JavaScript. Malicious users can modify these headers via browser DevTools or HTTP proxy to impersonate other premium users.
+**Current Vulnerability**: The ALB routing system uses client-controlled headers (`X-User-ID` and `X-User-Tier`) set by frontend JavaScript. This exposes Firebase UIDs to clients and allows malicious users to modify headers via browser DevTools or HTTP proxy to impersonate premium users.
 
-**Selected Solution**: HMAC Signed Routing Headers (Option 2)
-
----
-
-## Option Evaluation
-
-### Option 1: AWS ALB Native JWT Verification
-
-#### Overview
-Use AWS's new ALB JWT verification feature (released November 2025) to validate Firebase ID tokens at the infrastructure layer.
-
-How It Works
-
-Client Request: Authorization: Bearer <firebase_token>
-↓
-ALB Pre-Routing Action: Verify JWT
-├─ Fetch Firebase public keys
-├─ Verify signature cryptographically
-├─ Validate expiration
-└─ Extract claims (uid, email, etc.)
-↓
-ALB Listener Rule: Match JWT.uid claim
-├─ If uid == "premium_user_123" → Route to dedicated instance
-└─ Else → Route to free tier pool
-↓
-Backend receives validated request
-
-Security Benefits
-
-✅ Cryptographically secure: JWT signature verified with Firebase's public keys
-✅ Cannot be forged: Client cannot create valid JWTs without Firebase private key
-✅ No client-controlled routing: Routing based on verified token claims, not arbitrary headers
-✅ Defense in depth: Both ALB and backend validate tokens
-✅ Industry standard: OAuth 2.0 / OIDC best practices
-
-Trade-offs
-
-Pros:
-- Strongest security - eliminates header spoofing completely
-- AWS-native feature (no custom crypto code to maintain)
-- Offloads verification from backend to ALB (better performance)
-- Standards-compliant
-- Clean long-term architecture
-
-Cons:
-- NEW feature (Nov 2025) - limited production testing, may have edge cases
-- Not available through terraform at this time (new feature as of November 2025)
-- Requires Premium Manager Lambda refactoring (change rule creation from http-header to jwt-claim conditions)
-- Tight coupling to Firebase (can't easily switch auth providers)
-- Requires public key rotation handling
-
-#### Status: NOT AVAILABLE IN TERRAFORM
-
-**Research Findings** (December 2025):
-- AWS released native ALB JWT verification feature in November 2025
-- Feature is available in AWS Console and CLI
-- **Terraform AWS provider does NOT currently support this feature**
-- A feature request is open on GitHub for Terraform support
-- No dedicated resource type (`type = "jwt-validation"`) available in `aws_lb_listener_rule`
-
-#### Why We're Not Implementing This Now
-
-1. **Terraform Incompatibility**: Our infrastructure is fully managed by Terraform. Using AWS CLI workarounds (local-exec provisioner) would:
-   - Break Terraform's declarative model
-   - Create state management conflicts
-   - Make rollbacks and updates difficult
-   - Introduce local environment dependencies
-
-2. **Management Conflicts**: Mixing Terraform and manual AWS CLI configuration creates:
-   - State drift issues
-   - Difficult troubleshooting
-   - Inconsistent infrastructure as code
-   - Risk during terraform apply/destroy operations
-
-3. **Not Recommended**: To avoid management conflicts and maintain clean infrastructure code, we should not proceed with this option at this time.
-
-#### Future Consideration
-
-This option can be **reconsidered when**:
-- Terraform AWS provider adds native support for ALB JWT verification
-- Provider version includes `authenticate-jwt` action type
-- Terraform documentation is updated with examples
-
-**Action**: Monitor the GitHub issue and AWS provider release notes. When support becomes available, Option 1 would provide the cleanest long-term architecture.
+**Selected Solution**: Non-Reversible Routing IDs derived from JWT validation
 
 ---
 
-### Option 2: HMAC Signed Routing Headers (SELECTED)
+## Solution: Non-Reversible Routing ID System
 
-#### Overview
-Backend validates JWT and issues cryptographically signed routing tokens. Backend middleware verifies HMAC signatures and controls all routing decisions. Clients cannot forge tokens without the backend secret key.
+### Overview
 
-**Note**: This implementation uses backend-only verification without Lambda@Edge. See "Why No Lambda@Edge?" section below for architectural rationale.
+Backend validates Firebase JWT and generates cryptographically secure, **non-reversible routing identifiers** from user IDs. Clients receive opaque routing IDs that cannot be reverse-engineered to extract the UID, preventing both UID exposure and header spoofing.
 
-#### Why This Option
+### Core Concept
 
-1. **Fully Terraform-Managed**: All infrastructure as code with proper state tracking
-2. **Proven Security**: HMAC-SHA256 is cryptographically secure and well-tested
-3. **Simple Architecture**: Backend-only verification, no edge functions required
-4. **No Management Conflicts**: Pure Terraform resources, no CLI workarounds
-5. **Strong Security**: Prevents header spoofing completely
-6. **Easier Operations**: Single deployment surface (backend containers only)
+Replace raw UID exposure with: `routing_id = HMAC-SHA256(uid, SECRET_KEY).hex()[:16]`
 
-#### Security Benefits
-
-✅ **Cryptographically Secure**: HMAC-SHA256 prevents forgery without secret key
-✅ **Tamper-Proof**: Any header modification invalidates the signature
-✅ **Backend-Controlled**: Only backend can issue valid routing tokens
-✅ **Timestamp Validation**: Prevents replay attacks (5-minute token expiration)
-✅ **No Client Spoofing**: Client cannot generate valid signatures without secret
+**Security Properties:**
+1. **Non-reversible**: Cannot extract UID from routing_id (one-way hash)
+2. **Deterministic**: Same UID always produces same routing_id (consistent routing)
+3. **Backend-verifiable**: Backend regenerates from JWT to validate headers
+4. **Client-agnostic**: Client stores opaque identifier without UID knowledge
 
 ---
 
-## Implementation Plan: HMAC Signed Routing Headers
-
-### Architecture Flow
+## Architecture Flow
 
 ```
-1. Client Request → ALB → Backend
-   Authorization: Bearer <firebase_token>
+Initial Request:
+1. Client → Request with JWT → ALB (default route to free tier)
+2. Backend validates JWT → Extracts UID → Queries tier (cached)
+3. Backend generates routing_id = HMAC-SHA256(uid, SECRET)[:16]
+4. Backend sends response with headers:
+   X-Routing-ID: a3f2e8b9c1d4e567
+   X-User-Tier: premium
+5. Client caches routing headers (localStorage)
 
-2. Backend Middleware (SecureRoutingMiddleware)
-   ├─ Validates Firebase JWT (existing auth)
-   ├─ Extracts UID from validated token
-   ├─ Gets subscription tier from user object
-   └─ Generates HMAC-signed routing token
+Subsequent Requests:
+6. Client → Request with JWT + X-Routing-ID + X-User-Tier
+7. ALB evaluates listener rules:
+   IF X-User-Tier == 'premium' AND X-Routing-ID matches
+   THEN forward to premium target group
+8. Backend validates:
+   - Extract UID from JWT
+   - Regenerate routing_id from UID
+   - Compare with header
+   - Log mismatch but allow (graceful degradation)
+9. Backend sends response (refreshes headers)
 
-3. HMAC Token Generation
-   message = "uid|tier|timestamp"
-   signature = HMAC-SHA256(message, secret_key)
-   token = base64(message|signature)
-
-4. Backend Response
-   X-Routing-Token: <signed_token>
-   (Token included in every response header)
-
-5. Subsequent Client Requests
-   X-Routing-Token: <signed_token>
-   (Frontend includes token in request headers)
-
-6. Backend Validation (Implicit)
-   ├─ Token provides cryptographic proof of authorization
-   ├─ Backend serves requests only for authenticated users
-   ├─ Invalid/missing tokens → authentication fails
-   └─ Security enforced at application level
-
-7. ALB Listener Rules (Functional Routing)
-   ├─ Premium Manager Lambda maintains routing rules
-   ├─ Routes to dedicated instances for performance
-   ├─ Backend validates all authorization decisions
-   └─ ALB routing is optimization, not security
-```
-
-**Security Architecture**:
-- **Backend is the sole authority**: Only valid HMAC tokens grant access
-- **ALB provides routing optimization**: Directs premium users to dedicated instances
-- **Defense in depth**: Even if ALB mis-routes, backend rejects unauthorized requests
-- **No reliance on client headers**: Client cannot forge cryptographic signatures
-
-### Implementation Phases
-
-#### Phase 1: Secret Management (Terraform)
-
-**Tasks**:
-1. Create AWS Secrets Manager secret for HMAC key
-   - Secret name: `subscr-premium-routing-hmac-key`
-   - Generate secure 256-bit random key (64 characters)
-   - Store in Secrets Manager
-
-2. Update IAM roles for secret access
-   - Grant ECS Task Role read access to secret
-   - Update `/infrastructure/terraform/security.tf`
-
-**Files to Modify**:
-- `infrastructure/terraform/security.tf`
-
-**Terraform Resources**:
-```hcl
-# HMAC secret for routing token generation
-resource "random_password" "routing_hmac_key" {
-  length  = 64
-  special = true
-}
-
-resource "aws_secretsmanager_secret" "routing_hmac_key" {
-  name        = "subscr-premium-routing-hmac-key"
-  description = "HMAC secret key for premium routing token verification"
-}
-
-resource "aws_secretsmanager_secret_version" "routing_hmac_key" {
-  secret_id = aws_secretsmanager_secret.routing_hmac_key.id
-  secret_string = jsonencode({
-    key = random_password.routing_hmac_key.result
-  })
-}
-
-# IAM policy for ECS Task Role to access HMAC secret
-resource "aws_iam_role_policy" "ecs_task_routing_secret" {
-  name = "subscr-ecs-task-routing-secret"
-  role = aws_iam_role.ecs_task.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = ["secretsmanager:GetSecretValue"]
-        Resource = [aws_secretsmanager_secret.routing_hmac_key.arn]
-      }
-    ]
-  })
-}
+Subscription Change:
+10. Stripe webhook → Update DB tier → Invalidate tier cache
+11. Next request → Cache miss → Fresh tier query
+12. Response with new tier (premium→free removes routing_id)
+13. Client updates cached headers
 ```
 
 ---
 
-#### Phase 2: Backend Middleware (Python)
+## Security Benefits
 
-**Tasks**:
-1. Create secure routing middleware
-   - File: `/studio/app/common/core/middleware/secure_routing_middleware.py`
-   - Extract authenticated user from request state (set by FastAPI auth dependencies)
-   - Generate HMAC-SHA256 signed token for authenticated users
-   - Set `X-Routing-Token` response header on all authenticated responses
-   - Cache HMAC secret key from AWS Secrets Manager (5-minute TTL)
+### Threats Mitigated
 
-2. Register middleware in FastAPI application
-   - Update `/studio/__main_unit__.py` to import and register middleware
-   - Update `/studio/app/common/core/middleware/__init__.py` to export middleware
-   - Add after `FreeUserActivityMiddleware`
+✅ **Header Spoofing**: Client cannot forge routing_id without SECRET_KEY
+✅ **UID Exposure**: UID never visible to client (even to legitimate user)
+✅ **User Impersonation**: Routing_id tied to JWT UID validation
+✅ **Unauthorized Premium Access**: ALB rules + backend validation
+✅ **Privacy Compliance**: User IDs not exposed in network traffic
 
-**Files to Modify**:
-- `studio/app/common/core/middleware/secure_routing_middleware.py` (CREATE)
-- `studio/app/common/core/middleware/__init__.py`
-- `studio/__main_unit__.py`
+### Attack Scenario Analysis
 
-**Implementation Details**:
+**Attack 1: Client modifies routing_id**
+- **Action**: Malicious user changes `X-Routing-ID` to access another instance
+- **Defense**:
+  - Backend regenerates routing_id from JWT UID → detects mismatch
+  - ALB rule won't match anyway (wrong routing_id for their JWT)
+  - Request logged for monitoring
+  - Graceful degradation (allow but track)
+
+**Attack 2: Client sniffs another user's routing_id**
+- **Action**: Client captures another premium user's routing_id from network
+- **Defense**:
+  - Different JWT UID → routing_id validation fails
+  - ALB routes to wrong instance (no data access due to JWT mismatch)
+  - Backend detects and logs the attempt
+
+**Attack 3: Subscription downgrade delay**
+- **Action**: User downgrades but continues using premium routing_id
+- **Defense**:
+  - Webhook immediately invalidates tier cache
+  - Next request: fresh tier query → tier='free'
+  - Response headers exclude routing_id
+  - Client cache updated (routing_id removed)
+  - Immediate routing change (no 5-minute delay)
+
+---
+
+## Implementation Details
+
+### Phase 1: Backend Middleware (Python)
+
+**File**: `studio/app/common/core/middleware/secure_routing_middleware.py`
+
+**Add routing ID generation:**
 ```python
-# secure_routing_middleware.py
 import hmac
 import hashlib
-import base64
-from datetime import datetime
-import boto3
-from functools import lru_cache
+import os
 
-class SecureRoutingMiddleware:
-    """Generates HMAC-signed routing tokens for verified users"""
+ROUTING_SECRET_KEY = os.environ.get('ROUTING_SECRET_KEY', 'dev-key-not-for-production')
 
-    def __init__(self, app):
-        self.app = app
-        self._secret_key = None
-
-    @property
-    def secret_key(self):
-        """Lazy load secret from AWS Secrets Manager with caching"""
-        if self._secret_key is None:
-            self._secret_key = self._fetch_secret()
-        return self._secret_key
-
-    def _fetch_secret(self):
-        """Fetch HMAC secret from Secrets Manager"""
-        # Implementation with boto3
-
-    def generate_routing_token(self, uid: str, tier: str) -> str:
-        """Generate HMAC-signed routing token"""
-        timestamp = int(datetime.utcnow().timestamp())
-        message = f"{uid}|{tier}|{timestamp}"
-        signature = hmac.new(
-            self.secret_key.encode(),
-            message.encode(),
-            hashlib.sha256
-        ).hexdigest()
-        token = base64.b64encode(f"{message}|{signature}".encode()).decode()
-        return token
-
-    async def __call__(self, scope, receive, send):
-        # Extract UID from validated JWT
-        # Query subscription tier (with cache)
-        # Generate token
-        # Set response header
+def generate_routing_id(uid: str, secret_key: str) -> str:
+    """Generate non-reversible routing ID from UID using HMAC-SHA256"""
+    signature = hmac.new(
+        secret_key.encode('utf-8'),
+        uid.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    return signature[:16]  # 16 hex chars = 64 bits (sufficient uniqueness)
 ```
 
-**Caching Strategy**:
-- Secret key: Cached in memory (lazy load, refresh on error)
-- Subscription tier: Retrieved from authenticated user object (already cached by auth system)
-- Minimizes AWS API calls and database queries
+**Update response headers (replace lines 147-157):**
+```python
+async def send_wrapper(message: Message) -> None:
+    if message["type"] == "http.response.start":
+        headers = list(message.get("headers", []))
+        headers.append((b"x-user-tier", tier.encode()))
+
+        # Only add routing ID for premium users
+        if tier == 'premium':
+            routing_id = generate_routing_id(uid, ROUTING_SECRET_KEY)
+            headers.append((b"x-routing-id", routing_id.encode()))
+            logger.debug(f"Added routing ID for premium user")
+
+        message["headers"] = headers
+
+    await send(message)
+```
+
+**Add validation for incoming requests:**
+```python
+# After extracting UID from JWT (after line 135)
+routing_id_header = headers.get(b"x-routing-id", b"").decode()
+if routing_id_header:
+    expected_routing_id = generate_routing_id(uid, ROUTING_SECRET_KEY)
+    if routing_id_header != expected_routing_id:
+        logger.warning(
+            f"Routing ID mismatch detected. "
+            f"Expected: {expected_routing_id[:8]}..., "
+            f"Got: {routing_id_header[:8]}..."
+        )
+        # Log but allow (graceful degradation)
+        # Could reject with 403 for stricter security
+```
+
+**Add cache invalidation function:**
+```python
+def invalidate_user_tier_cache(uid: str) -> None:
+    """
+    Invalidate tier cache for specific user.
+    Called by subscription webhooks on tier changes.
+    """
+    if uid in _tier_cache:
+        del _tier_cache[uid]
+        logger.info(f"Invalidated tier cache for user")
+```
 
 ---
 
-### Why No Lambda@Edge?
+### Phase 2: Premium Manager Lambda (Python)
 
-**Initial Consideration**: The original plan included Lambda@Edge to verify HMAC tokens at the edge before requests reach the backend.
+**File**: `infrastructure/terraform/premium_manager_package/premium_manager.py`
 
-**Architectural Limitation**: Lambda@Edge **cannot be directly attached to Application Load Balancers**. Lambda@Edge is designed to work with CloudFront distributions, which would require:
-
+**Add routing ID generation (same algorithm as middleware):**
+```python
+def generate_routing_id(uid: str, secret_key: str) -> str:
+    """Generate non-reversible routing ID from UID"""
+    import hmac
+    import hashlib
+    signature = hmac.new(
+        secret_key.encode('utf-8'),
+        uid.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    return signature[:16]
 ```
-Client → CloudFront → Lambda@Edge → ALB → Backend
+
+**Update ALB rule creation (lines 2284-2304):**
+```python
+# In assign_premium_user function
+routing_secret_key = get_required_env_var("ROUTING_SECRET_KEY")
+routing_id = generate_routing_id(user_id, routing_secret_key)
+
+rule_response = elbv2.create_rule(
+    ListenerArn=alb_listener_arn,
+    Priority=priority,
+    Conditions=[
+        {
+            "Field": "http-header",
+            "HttpHeaderConfig": {
+                "HttpHeaderName": "X-User-Tier",
+                "Values": ["premium"],
+            },
+        },
+        {
+            "Field": "http-header",
+            "HttpHeaderConfig": {
+                "HttpHeaderName": "X-Routing-ID",  # Changed from X-User-ID
+                "Values": [routing_id],            # Changed from user_id
+            },
+        },
+    ],
+    Actions=[{"Type": "forward", "TargetGroupArn": target_group_arn}],
+)
 ```
 
-**Problems with This Approach**:
-1. **Added Complexity**: Introduces CloudFront as an additional service layer
-2. **Cost Increase**: CloudFront + Lambda@Edge pricing on top of ALB costs
-3. **Operational Overhead**: Two routing layers (CloudFront + ALB) to manage
-4. **Deployment Complexity**: Lambda@Edge must be deployed to us-east-1 regardless of application region
-5. **Cold Start Latency**: Edge functions can add 1-2 seconds on first request
-6. **Secret Management**: Requires coordinating secret access between Lambda@Edge and backend
-
-**Simplified Architecture Decision**:
-Move token verification to the backend middleware, eliminating the need for CloudFront and Lambda@Edge entirely.
-
-**Why This Works**:
-1. **Security Equivalence**: HMAC token verification provides the same security whether done at the edge or backend
-2. **Backend as Gatekeeper**: Even if ALB mis-routes a request, backend validates tokens before serving data
-3. **Simpler Deployment**: Single deployment surface (backend containers)
-4. **Lower Cost**: No CloudFront or Lambda@Edge charges
-5. **Easier Testing**: Standard backend testing, no edge function simulation needed
-6. **Better Observability**: All security logic in one place
-
-**Security Model**:
-- **Client cannot forge tokens**: Only backend has the secret key
-- **Tampering detected**: HMAC signature verification catches any modifications
-- **Replay protection**: Timestamp validation (5-minute window)
-- **Defense in depth**: Backend is the ultimate authority, not ALB routing
-
-**Functional Routing Still Works**:
-- Premium Manager Lambda continues creating ALB listener rules
-- ALB routes premium users to dedicated instances (performance optimization)
-- If client spoofs headers and gets mis-routed, backend rejects invalid tokens
-- ALB routing becomes a performance feature, not a security boundary
+**Optional: Store routing_id in database**
+```python
+# Add to premium_user_assignments table insert
+# Allows Lambda to look up existing routing_id without regeneration
+cursor.execute(
+    """INSERT INTO premium_user_assignments
+       (user_id, routing_id, instance_id, target_group_arn, rule_arn, ...)
+       VALUES (%s, %s, %s, %s, %s, ...)""",
+    (user_id, routing_id, instance_id, target_group_arn, rule_arn, ...)
+)
+```
 
 ---
 
-#### Phase 3: Frontend Updates (TypeScript)
+### Phase 3: Subscription Webhooks (Python)
 
-**Tasks**:
-1. Update RoutingService to handle backend-issued tokens
-   - File: `/frontend/src/utils/routing/RoutingService.ts`
-   - Remove client-controlled header setting logic (`X-User-Tier`, `X-User-ID`)
-   - Add `routingToken` storage with localStorage persistence
-   - Add `updateRoutingToken()` method to receive backend tokens
-   - Modify `getRoutingHeaders()` to return `X-Routing-Token` instead
+**File**: `studio/app/common/core/subscription/webhook_service.py`
 
-2. Update axios interceptors
-   - File: `/frontend/src/utils/axios.ts`
-   - Add response interceptor to capture `X-Routing-Token` from backend
-   - Update 503 error handling to use new token-based routing
-   - Request interceptor already calls `getRoutingHeaders()` (no changes needed)
+**Add cache invalidation to all subscription change handlers:**
 
-**Files to Modify**:
-- `frontend/src/utils/routing/RoutingService.ts`
-- `frontend/src/utils/axios.ts`
+```python
+from studio.app.common.core.middleware.secure_routing_middleware import invalidate_user_tier_cache
 
-**Implementation Details**:
+def handle_checkout_completed(session_data: Dict, db: Session) -> Dict:
+    """Handle successful checkout - user upgraded to premium"""
+    # ... existing logic ...
+
+    # Invalidate tier cache for immediate routing update
+    user = db.query(User).filter(User.id == user_id).first()
+    if user:
+        invalidate_user_tier_cache(user.uid)
+        logger.info(f"Invalidated tier cache after premium upgrade")
+
+    # ... rest of handler ...
+
+def handle_subscription_deleted(subscription_data: Dict, db: Session) -> Dict:
+    """Handle subscription cancellation - user downgraded to free"""
+    # ... existing logic ...
+
+    # Invalidate cache so next request reflects free tier immediately
+    invalidate_user_tier_cache(user.uid)
+    logger.info(f"Invalidated tier cache after subscription cancellation")
+
+    # ... rest of handler ...
+
+def handle_subscription_schedule_released(schedule_data: Dict, db: Session) -> Dict:
+    """Handle plan changes"""
+    # ... existing logic ...
+
+    # Invalidate cache for tier change
+    invalidate_user_tier_cache(user.uid)
+    logger.info(f"Invalidated tier cache after plan change")
+
+    # ... rest of handler ...
+```
+
+---
+
+### Phase 4: Frontend Updates (TypeScript)
+
+**File**: `frontend/src/utils/routing/RoutingService.ts`
+
+**Update header name (minimal changes needed):**
 ```typescript
-// RoutingService.ts
 export class RoutingService {
   private routingToken: string | null = null;
+  private readonly STORAGE_KEY = "routing_id";  // Changed from routing_token
 
-  // Called when receiving backend response
-  updateRoutingToken(token: string) {
-    this.routingToken = token;
-    localStorage.setItem('routing_token', token);
-  }
-
-  getRoutingToken(): string | null {
+  /**
+   * Get routing headers for current user request
+   * Returns backend-issued routing ID (opaque, non-reversible)
+   */
+  getRoutingHeaders(): Record<string, string> {
     if (!this.routingToken) {
-      this.routingToken = localStorage.getItem('routing_token');
+      return {}
     }
-    return this.routingToken;
+
+    return {
+      "X-Routing-ID": this.routingToken,  // Changed from X-Routing-Token
+    }
   }
 
-  clearRoutingToken() {
-    this.routingToken = null;
-    localStorage.removeItem('routing_token');
+  /**
+   * Update routing ID from backend response header
+   * Called by axios response interceptor
+   */
+  updateRoutingToken(token: string): void {
+    this.routingToken = token
+    this.saveTokenToStorage(token)
   }
+
+  // ... rest of class unchanged ...
 }
+```
 
-// axios.ts - Request interceptor
-axios.interceptors.request.use((config) => {
-  // Add Authorization header (existing)
-  const token = getAccessToken();
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
+**File**: `frontend/src/utils/axios.ts`
 
-  // Add routing token if available
-  const routingToken = routingService.getRoutingToken();
-  if (routingToken) {
-    config.headers['X-Routing-Token'] = routingToken;
-  }
+**Update response interceptor (lines 194-198):**
+```typescript
+axios.interceptors.response.use(
+  async (res) => {
+    // Capture routing headers from response
+    const routingId = res.headers["x-routing-id"]
+    const userTier = res.headers["x-user-tier"]
 
-  return config;
-});
+    if (routingId && userTier) {
+      // Premium user - store routing ID
+      routingService.updateRoutingToken(routingId)
+    } else if (!routingId && userTier === 'free') {
+      // User downgraded to free - clear routing ID
+      routingService.clearRoutingInfo()
+    }
 
-// Response interceptor - capture routing token
-axios.interceptors.response.use((response) => {
-  const routingToken = response.headers['x-routing-token'];
-  if (routingToken) {
-    routingService.updateRoutingToken(routingToken);
-  }
-  return response;
-});
+    return res
+  },
+  // ... error handler unchanged ...
+)
 ```
 
 ---
 
-#### Phase 4: Testing & Validation
+### Phase 5: Infrastructure Configuration (Terraform)
 
-**Test Scenarios**:
+**File**: `infrastructure/terraform/premium_manager.tf`
 
-1. **Valid Token Flow**
-   - User logs in → Receives routing token
-   - Subsequent requests include token
-   - ALB routes correctly to premium instance
+**Add ROUTING_SECRET_KEY environment variable:**
+```hcl
+resource "aws_lambda_function" "premium_manager" {
+  # ... existing config ...
 
-2. **Expired Token**
-   - Wait 6 minutes (past 5-minute TTL)
-   - Send request with old token
-   - Expect: Token rejected, new token issued
+  environment {
+    variables = {
+      # ... existing environment variables ...
+      ROUTING_SECRET_KEY = var.routing_secret_key
+    }
+  }
+}
+```
 
-3. **Tampered Signature**
-   - Modify token signature
-   - Send request
-   - Expect: 403 Forbidden
+**File**: `infrastructure/terraform/main.tf`
 
-4. **Modified UID in Token**
-   - Extract token, change UID
-   - Re-encode and send
-   - Expect: Signature verification fails, 403 Forbidden
+**Add variable for secret key:**
+```hcl
+variable "routing_secret_key" {
+  description = "Secret key for generating non-reversible routing IDs (HMAC-SHA256)"
+  type        = string
+  sensitive   = true
+}
+```
 
-5. **Replay Attack**
-   - Capture valid token
-   - Use same token after expiration
-   - Expect: Timestamp validation fails, 403 Forbidden
+**Generate secret key:**
+```bash
+# Generate a secure 256-bit (64 hex chars) random key
+openssl rand -hex 32
+```
 
-6. **Missing Token**
-   - Send request without routing token
-   - Expect: Rejected or routed to default (free tier)
+**Add to terraform.tfvars:**
+```hcl
+routing_secret_key = "your_generated_64_character_hex_string_here"
+```
 
-7. **Token Refresh**
-   - Backend issues new token periodically
-   - Frontend updates stored token
-   - Verify seamless transitions
-
-**Monitoring**:
-- CloudWatch metrics for Lambda invocations
-- Failed signature verification count
-- Token expiration rate
-- ALB routing decisions
-
----
-
-## Security Considerations
-
-### Threat Model
-
-**Mitigated Threats**:
-- ✅ Header spoofing (primary vulnerability)
-- ✅ User impersonation
-- ✅ Unauthorized access to premium instances
-- ✅ Replay attacks (timestamp validation)
-- ✅ Token tampering (HMAC signature)
-
-**Remaining Considerations**:
-- Secret key rotation strategy
-- Token revocation mechanism
-- Rate limiting on token generation
-- Monitoring for brute-force attempts
-
-### Secret Management
-
-**HMAC Secret Key**:
-- Stored in AWS Secrets Manager
-- 256-bit random key
-- Accessed via IAM roles (no credentials in code)
-- Cached in Lambda/backend (5-minute TTL)
-- Rotation plan: Manual rotation with gradual rollover
-
-**Rotation Strategy**:
-1. Generate new secret (secret-v2)
-2. Backend accepts both old and new signatures (grace period)
-3. Issue new tokens with new secret
-4. After grace period (24 hours), remove old secret
-5. Update Secrets Manager to use new secret exclusively
+**Backend environment variables (ECS, Docker):**
+```bash
+# Add to ECS task definition, docker-compose, etc.
+ROUTING_SECRET_KEY=same_value_as_terraform_variable
+```
 
 ---
 
-## Performance Impact
+## Security Analysis
 
-**Expected Overhead**:
-- HMAC generation (backend): < 1ms per request
-- Token verification (Lambda): 1-2ms per request
-- Secrets Manager API calls: Cached (negligible after first call)
-- Total latency increase: **2-3ms per request**
+### Comparison: Original vs. New Approach
 
-**Optimization**:
-- Cache subscription tier queries (5-minute TTL)
-- Cache secret key in memory
-- Use in-process caching for frequent lookups
+| Aspect | Original (feature/aws-autoscaling) | New (Routing ID) |
+|--------|-----------------------------------|------------------|
+| **UID Visibility** | Exposed in `X-User-ID` header | Never exposed (HMAC hash) |
+| **Header Control** | Client-controlled | Backend-issued, client-cached |
+| **Spoofing Risk** | High (client sets headers) | None (can't forge HMAC) |
+| **Privacy** | UID visible in network traffic | Opaque 16-char hex string |
+| **Validation** | None | Backend regenerates & validates |
+| **Cache Invalidation** | N/A | Webhook-triggered (immediate) |
+| **Complexity** | Simple (but insecure) | Simple (and secure) |
+
+### Security Guarantees
+
+1. **UID Privacy**: ✅ Client never sees UID
+   - Routing ID is cryptographic one-way hash
+   - Even network sniffing reveals only opaque identifier
+   - No reverse-engineering possible without SECRET_KEY
+
+2. **Header Spoofing Prevention**: ✅ Backend-controlled
+   - Client cannot generate valid routing_id (lacks SECRET_KEY)
+   - Backend validates routing_id matches JWT UID
+   - Mismatch detection and logging
+
+3. **Tier Change Responsiveness**: ✅ Immediate
+   - Webhook invalidates cache on subscription change
+   - No 5-minute delay (TTL-free)
+   - Next request fetches fresh tier from database
+
+4. **JWT as Source of Truth**: ✅ Always validated
+   - Routing headers are supplemental (routing only)
+   - JWT validation happens first (existing middleware)
+   - Authentication and authorization remain JWT-based
 
 ---
 
-## Cost Analysis
+## Testing & Validation
 
-**New AWS Resources**:
-- AWS Secrets Manager: $0.40/month per secret + $0.05 per 10,000 API calls
-- Minimal cost increase: **< $5/month for typical traffic**
+### Unit Tests
 
-**No Additional Costs**:
-- If verification done in backend middleware only
-- Uses existing ECS tasks and Secrets Manager
+**File**: `studio/tests/app/common/core/middleware/test_secure_routing_middleware.py`
+
+**Test Coverage:**
+- Routing ID generation (determinism, uniqueness)
+- Routing ID validation (match/mismatch detection)
+- Cache invalidation (tier changes trigger cache clear)
+- Header injection (correct headers in response)
+- Premium vs. free tier behavior
+- Secret key loading and error handling
+
+### Integration Tests
+
+**File**: `infrastructure/scripts/test_jwt_routing_security.py`
+
+**Test Scenarios:**
+1. **Valid JWT Flow**
+   - User logs in → receives routing_id
+   - Subsequent requests include routing_id
+   - ALB routes to premium instance
+   - Backend validates routing_id
+
+2. **Tier Change Flow**
+   - User upgrades: free → premium
+   - Webhook invalidates cache
+   - Next request: fresh tier query
+   - Response includes routing_id
+   - ALB routing updates immediately
+
+3. **Downgrade Flow**
+   - User downgrades: premium → free
+   - Webhook invalidates cache
+   - Next request: tier='free'
+   - Response excludes routing_id
+   - Client clears cached routing_id
+
+4. **Routing ID Mismatch**
+   - Client sends invalid routing_id
+   - Backend detects mismatch
+   - Request logged (monitoring)
+   - Request allowed (graceful degradation)
+
+5. **Missing Routing ID**
+   - Premium user sends request without routing_id
+   - ALB default rule routes to free tier
+   - Backend issues new routing_id in response
+   - Client caches for future requests
+
+### Manual Testing
+
+```bash
+# 1. Get Firebase JWT
+./infrastructure/scripts/get_jwt_tokens.py
+
+# 2. Test login and routing ID issuance
+curl -H "Authorization: Bearer <firebase_jwt>" \
+     https://your-alb-url.amazonaws.com/api/auth/login
+
+# Expected: Response headers include x-routing-id and x-user-tier
+
+# 3. Test subsequent request with routing ID
+curl -H "Authorization: Bearer <firebase_jwt>" \
+     -H "X-Routing-ID: <routing_id_from_login>" \
+     -H "X-User-Tier: premium" \
+     https://your-alb-url.amazonaws.com/api/workflows
+
+# Expected: ALB routes to premium instance
+
+# 4. Test invalid routing ID
+curl -H "Authorization: Bearer <firebase_jwt>" \
+     -H "X-Routing-ID: invalid123456789" \
+     -H "X-User-Tier: premium" \
+     https://your-alb-url.amazonaws.com/api/workflows
+
+# Expected: Backend logs mismatch, request still processed
+```
+
+---
+
+## Performance & Monitoring
+
+### Expected Performance
+
+**HMAC Generation**:
+- Algorithm: SHA256 (fastest secure hash)
+- Latency: <0.5ms per request
+- No caching needed (fast enough for every request)
+
+**Database Queries**:
+- Without cache: 1 query per request (too high)
+- With cache: 1 query per user every 5 minutes (acceptable)
+- With invalidation: Queries only on cache miss or tier change (optimal)
+
+**Memory Footprint**:
+```
+Per user in cache:
+- UID: ~28 bytes (Firebase UID)
+- Tier: ~8 bytes (string 'premium' or 'free')
+- Timestamp: 8 bytes (float)
+- Routing ID: Not cached (regenerated from UID)
+Total: ~50 bytes per user
+
+10,000 users: ~500 KB (negligible)
+```
+
+### Monitoring Metrics
+
+**Key Metrics**:
+1. `routing_id_generation_time_ms` - HMAC generation latency
+   - **Alert**: >10ms (should be <1ms)
+
+2. `routing_id_mismatch_count` - Validation failures
+   - **Alert**: >10/hour (potential attack or client bug)
+
+3. `tier_cache_hit_rate` - Cache effectiveness
+   - **Target**: >90% (5-minute TTL should be effective)
+
+4. `tier_cache_invalidation_count` - Subscription changes
+   - **Track**: Monitor against Stripe webhook volume
+
+**Logging**:
+```python
+# Info level
+logger.info(f"Generated routing ID for premium user")
+logger.info(f"Invalidated tier cache after subscription change")
+
+# Warning level
+logger.warning(f"Routing ID mismatch: expected {expected[:8]}..., got {actual[:8]}...")
+
+# Debug level (disabled in production)
+logger.debug(f"Routing ID: {routing_id}, Tier: {tier}, UID hash: {uid_hash}")
+```
 
 ---
 
 ## Files Modified Summary
 
-### Infrastructure (Terraform)
-- `infrastructure/terraform/security.tf` - Secrets Manager, IAM roles
-- `infrastructure/terraform/lambda_edge.tf` - Lambda function (if using Lambda@Edge)
-- `infrastructure/terraform/compute.tf` - ALB integration (if using Lambda@Edge)
+### Must Modify
+1. **`studio/app/common/core/middleware/secure_routing_middleware.py`**
+   - Add `generate_routing_id()` function
+   - Update response headers to use routing_id
+   - Add validation for incoming routing_id
+   - Export `invalidate_user_tier_cache()`
 
-### Backend (Python)
-- `studio/app/common/core/middleware/secure_routing_middleware.py` (CREATE)
-- `studio/__main_unit__.py` - Register middleware
+2. **`infrastructure/terraform/premium_manager_package/premium_manager.py`**
+   - Add `generate_routing_id()` function (lines ~2250)
+   - Update ALB rule creation (lines 2284-2304)
+   - Change `X-User-ID` → `X-Routing-ID`
 
-### Frontend (TypeScript)
-- `frontend/src/utils/routing/RoutingService.ts` - Token management
-- `frontend/src/utils/axios.ts` - Interceptor updates
+3. **`studio/app/common/core/subscription/webhook_service.py`**
+   - Import `invalidate_user_tier_cache`
+   - Add cache invalidation to:
+     - `handle_checkout_completed`
+     - `handle_subscription_deleted`
+     - `handle_subscription_schedule_released`
 
-### Lambda (Python) - Optional
-- `infrastructure/terraform/lambda_edge/routing_verifier.py` (CREATE) - If using Lambda verification
+4. **`frontend/src/utils/routing/RoutingService.ts`**
+   - Change header name: `X-Routing-Token` → `X-Routing-ID`
+   - Update storage key for clarity
+
+5. **`frontend/src/utils/axios.ts`**
+   - Update response interceptor (lines 194-198)
+   - Capture both `x-routing-id` and `x-user-tier`
+   - Handle tier changes (clear routing_id on downgrade)
+
+6. **`infrastructure/terraform/premium_manager.tf`**
+   - Add `ROUTING_SECRET_KEY` environment variable
+
+7. **`infrastructure/terraform/main.tf`**
+   - Add `routing_secret_key` variable (sensitive)
+
+### Test Files
+8. **`studio/tests/app/common/core/middleware/test_secure_routing_middleware.py`**
+   - Update tests for routing_id generation
+   - Test validation logic
+   - Test cache invalidation
+
+9. **`infrastructure/scripts/test_jwt_routing_security.py`**
+   - Integration tests for routing flow
+   - Security tests (mismatch detection, etc.)
 
 ---
 
 ## Success Criteria
 
-✅ No client-controlled routing headers
-✅ All routing decisions based on verified backend-issued tokens
-✅ HMAC signature verification passes 100% for valid tokens
-✅ Invalid/expired tokens rejected with 403
-✅ Performance impact < 5ms per request
-✅ Zero security incidents related to header spoofing
-✅ Clean Terraform state (no manual AWS CLI configuration)
+✅ **No UID exposure** - Client never sees Firebase UID in any header or response
+✅ **No header spoofing** - Routing ID cannot be forged without SECRET_KEY
+✅ **Immediate cache invalidation** - Subscription changes reflect in <1 second
+✅ **Backend validation** - Routing ID mismatch detected and logged
+✅ **Performance** - HMAC generation <1ms, cache hit rate >90%
+✅ **ALB routing** - Premium users correctly routed to dedicated instances
+✅ **Clean architecture** - No Lambda@Edge, no complex infrastructure
+✅ **JWT-centric** - Reuses existing Firebase JWT validation
+
+---
+
+**Optional Enhancement:**
+- Store `ROUTING_SECRET_KEY` in AWS Secrets Manager: +$0.40/month
+- Recommended for production security (secret rotation, audit logs)
 
 ---
 
 ## References
 
-- [AWS Secrets Manager Documentation](https://docs.aws.amazon.com/secretsmanager/)
-- [HMAC-SHA256 Specification](https://datatracker.ietf.org/doc/html/rfc2104)
-- [Lambda@Edge Documentation](https://docs.aws.amazon.com/lambda/latest/dg/lambda-edge.html)
-- Original analysis: `/Users/milesd/.claude/plans/ethereal-tumbling-reef.md`
+- [HMAC-SHA256 Specification (RFC 2104)](https://datatracker.ietf.org/doc/html/rfc2104)
+- [Firebase JWT Verification](https://firebase.google.com/docs/auth/admin/verify-id-tokens)
+- [AWS ALB Listener Rules Documentation](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/listener-update-rules.html)
+- Plan development: `/Users/milesd/.claude/plans/temporal-seeking-bubble.md`
+- Original vulnerability analysis: Feature branch `feature/aws-autoscaling`
+
+---

@@ -197,7 +197,7 @@ app.add_middleware(ClientIdLoggingMiddleware)
 # Add FreeUserActivityMiddleware to track free tier user activity
 app.add_middleware(FreeUserActivityMiddleware)
 
-# Add SecureRoutingMiddleware to generate HMAC-signed routing tokens
+# Add SecureRoutingMiddleware to add routing headers based on JWT validation
 app.add_middleware(SecureRoutingMiddleware)
 
 
