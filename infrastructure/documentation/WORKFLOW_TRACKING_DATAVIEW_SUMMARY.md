@@ -139,7 +139,7 @@ def decrement_workflow_count(user_id: Optional[int]) -> None:
 **Integration Points:**
 
 - **workflow_runner.py** (lines 74-79): Increments count in `__init__`
-- **snakemake_executor.py**: Decrements count after workflow execution
+- **studio/app/common/core/snakemake/snakemake_executor.py** (lines 80-91): Decrements count after workflow execution
 
 **Race Condition Prevention:**
 
@@ -187,10 +187,10 @@ stmt = (
 
 **File:** `studio/app/common/routers/dataview.py`
 
-**Publish Endpoint** (lines 276-377):
+**Publish Endpoint** (lines 275-377):
 
 ```python
-@router.put("/publish/{id}/{flag}")
+@router.post("/publish/{id}/{flag}")
 async def publish_dataview_records(
     id: int,
     flag: PublishFlags,
@@ -229,7 +229,7 @@ if result.rowcount == 0:
     # Retry or raise 409 Conflict
 ```
 
-**Public Access Endpoint** (lines 196-271):
+**Public Access Endpoint** (lines 194-272):
 
 ```python
 @public_router.get("/{workspace_id}/{unique_id}/reproduce")
@@ -321,7 +321,7 @@ const [syncStatus, setSyncStatus] = useState<{
 const [retryCount, setRetryCount] = useState(0)
 ```
 
-**Auto-Retry Logic** (lines 107-130):
+**Auto-Retry Logic** (lines 108-122):
 
 ```typescript
 if (status === 202) {
@@ -663,9 +663,8 @@ AWS_REGION                  # AWS region (e.g., us-east-1)
 ### Frontend
 
 **In WorkflowDetailsView.tsx:**
-- Auto-retry logic (lines 107-130)
-- Pending state UI (lines 251-275)
-- Error state UI (lines 276-296)
+- Auto-retry logic (lines 108-122)
+- Pending/error state handling (lines 104-133)
 
 ---
 
@@ -674,8 +673,8 @@ AWS_REGION                  # AWS region (e.g., us-east-1)
 ### Unit Tests
 
 **New Test Files:**
-- `test_workflow_tracking.py` (lines 163) - Tests increment/decrement/race conditions
-- `test_dataview_publish.py` (lines 285) - Tests optimistic locking scenarios
+- `studio/tests/app/common/core/workflow/test_workflow_tracking.py` (163 lines, 11 tests) - Tests increment/decrement/race conditions
+- `studio/tests/app/common/routers/test_dataview_publish.py` (285 lines, 9 tests) - Tests optimistic locking scenarios
 
 **Key Test Cases:**
 1. Concurrent workflow start/end (race condition)
@@ -731,19 +730,18 @@ Experiment {workspace_id}/{unique_id} is pending sync, returning 202
 ## Summary of Changes
 
 ### Files Modified
-- `studio/app/common/core/workflow/workflow_runner.py` - Add workflow tracking calls
-- `studio/app/common/routers/dataview.py` - Optimistic locking + S3 download
+- `studio/app/common/core/workflow/workflow_runner.py` - Add workflow tracking calls (lines 74-79)
+- `studio/app/common/core/snakemake/snakemake_executor.py` - Decrement workflow count (lines 80-91)
+- `studio/app/common/routers/dataview.py` - Optimistic locking + S3 download (lines 194-377)
 - `studio/app/common/core/dataview/dataview_services.py` - Bulk publish with sync status
-- `studio/app/common/models/experiment.py` - Add local_sync_status + version fields
+- `studio/app/common/models/experiment.py` - Add local_sync_status + version fields (lines 46-63)
 - `frontend/src/components/Dataview/WorkflowDetailsView.tsx` - Handle 202/503 status codes
 
 ### Files Added
 - `studio/app/common/core/workflow/workflow_tracking.py` (NEW) - Workflow count management
 - `studio/app/common/models/free_user.py` (NEW) - Free user assignment model
-- `studio/app/common/core/workflow/test_workflow_tracking.py` (NEW) - Unit tests
-- `studio/app/common/routers/test_dataview_publish.py` (NEW) - Publish tests
-
-### Files Updated (Lock Files)
-- `frontend/yarn.lock` - Frontend dependency updates
-- `poetry.lock` - Backend dependency updates
-- `.gitignore` - Add .claude and Lambda deployment package exclusions
+- `studio/app/common/schemas/dataview.py` - LocalSyncStatus enum
+- `studio/tests/app/common/core/workflow/test_workflow_tracking.py` (NEW) - 11 unit tests
+- `studio/tests/app/common/routers/test_dataview_publish.py` (NEW) - 9 publish tests
+- `studio/alembic/versions/a5b9c8d7e6f5_add_sync_logout_and_versioning.py` - Database migration
+- `studio/alembic/versions/f801f8250020_create_free_user_tracking_system.py` - Database migration
