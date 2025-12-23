@@ -19,14 +19,6 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionStatus,
     SubscriptionType,
 )
-from studio.app.common.core.premium.premium_assignment_service import (
-    premium_assignment_service,
-)
-from studio.app.common.core.subscription.constants import (
-    PlanName,
-    SubscriptionStatus,
-    SubscriptionType,
-)
 from studio.app.common.core.users import crud_users
 from studio.app.common.db.database import get_db
 from studio.app.common.models import FreeUserAssignment
@@ -38,12 +30,6 @@ logger = AppLogger.get_logger()
 
 @router.get("", response_model=User)
 async def me(current_user: User = Depends(get_current_user)):
-    """
-    Get current user information including subscription tier for premium routing.
-    This endpoint is enhanced to support ALB header-based routing for premium users.
-    """
-    # The current_user already includes subscription_plan_name and subscription_type
-    # from auth_dependencies.get_current_user(), so we can return it directly
     """
     Get current user information including subscription tier for premium routing.
     This endpoint is enhanced to support ALB header-based routing for premium users.
@@ -338,60 +324,6 @@ async def update_password(
     return await crud_users.update_password(
         db, current_user.id, data, organization_id=current_user.organization.id
     )
-
-
-@router.post("/premium/heartbeat", response_model=Dict)
-async def premium_heartbeat(current_user: User = Depends(get_current_user)):
-    """
-    Update activity timestamp for premium users to prevent stale assignment cleanup.
-    Should be called every 2-5 minutes by frontend for premium users.
-    """
-    # Only premium users need heartbeat tracking
-    if current_user.subscription_type != SubscriptionType.PREMIUM.value:
-        return {
-            "message": "Heartbeat not needed for non-premium users",
-            "updated": False,
-            "user_tier": current_user.subscription_type,
-        }
-
-    try:
-        logger.info(f"Processing heartbeat for premium user {current_user.id}")
-
-        activity_result = await premium_assignment_service.update_user_activity(
-            current_user.id
-        )
-
-        # Check if the update was successful
-        if activity_result.get("success", False):
-            return {
-                "message": "Premium user heartbeat recorded",
-                "updated": True,
-                "user_id": current_user.uid,
-                "user_tier": current_user.subscription_type,
-                "assignment_active": True,
-                "activity_update": activity_result,
-            }
-        else:
-            # User might not have an active assignment - not an error
-            return {
-                "message": "No active premium assignment found",
-                "updated": False,
-                "user_id": current_user.uid,
-                "user_tier": current_user.subscription_type,
-                "assignment_active": False,
-                "activity_update": activity_result,
-            }
-
-    except Exception as e:
-        logger.error(f"Error processing heartbeat for user {current_user.id}: {e}")
-        # Don't fail the heartbeat - return success to keep frontend happy
-        return {
-            "message": "Heartbeat processed with warnings",
-            "updated": True,
-            "user_id": current_user.uid,
-            "user_tier": current_user.subscription_type,
-            "error": str(e),
-        }
 
 
 @router.delete("", response_model=bool)
