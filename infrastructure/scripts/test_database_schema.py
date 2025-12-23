@@ -224,7 +224,8 @@ class TestDatabaseSchema:
 
         # Read our migration file to verify it has the correct enum
         migration_file = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "studio",
             "alembic",
             "versions",
             "e701e7250019_create_premium_management_system.py",
@@ -677,7 +678,8 @@ class TestDatabaseSchema:
 
         # Read the migration file to verify the logic
         migration_file = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "studio",
             "alembic",
             "versions",
             "61f6f5b6d03f_add_user_storage_usage_table.py",
@@ -733,7 +735,8 @@ class TestDatabaseSchema:
         print("=" * 50)
 
         alembic_versions_dir = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "studio",
             "alembic",
             "versions",
         )

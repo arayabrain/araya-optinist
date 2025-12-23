@@ -3,7 +3,7 @@
 Premium API Integration Tests
 
 WHERE TO RUN:
-- Local development machine - Recommended
+- Local development machine - Should work
 - Cloud ECS container - Should work
 
 It is recommended to test on the cloud instance.
@@ -61,6 +61,7 @@ class TestPremiumAPIIntegration:
         self.test_user_id = 12345
         self.test_user_data = {
             "id": self.test_user_id,
+            "uid": str(self.test_user_id),  # uid is string in the User model
             "email": "test@example.com",
             "subscription_type": "premium",
             "subscription_plan_name": "Premium",
@@ -159,7 +160,7 @@ class TestPremiumAPIIntegration:
                 assert isinstance(result, dict), "Endpoint should return dict"
                 assert result["message"] == "Activity updated successfully"
                 assert result["updated"] is True
-                assert result["user_id"] == self.test_user_id
+                assert result["user_id"] == str(self.test_user_id)  # uid is string
                 assert result["user_tier"] == "premium"
                 assert result["assignment_active"] is True
 
@@ -213,7 +214,8 @@ class TestPremiumAPIIntegration:
                 result = loop.run_until_complete(run_test())
 
             print("Non-premium user heartbeat test passed")
-            print(f"Response: {json.dumps(result, indent=2)}")
+            # Don't serialize result - may contain non-serializable objects
+            print(f"Response: {result}")
 
     def test_heartbeat_error_handling(self):
         """Test heartbeat endpoint error handling"""
@@ -253,7 +255,8 @@ class TestPremiumAPIIntegration:
                 result = loop.run_until_complete(run_test())
 
             print("Heartbeat error handling test passed")
-            print(f"Error response: {json.dumps(result, indent=2)}")
+            # Don't serialize result - may contain non-serializable objects
+            print(f"Error response: {result}")
 
     def test_assign_release_status_endpoints(self):
         """Test the core assign/release/status endpoints work"""

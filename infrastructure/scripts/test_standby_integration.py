@@ -3,7 +3,7 @@
 Premium Standby Pool System Tests
 
 WHERE TO RUN:
-- Local development machine - Recommended
+- Local development machine - Should work
 - Cloud ECS container - Should work
 
 It is recommended to test on the cloud instance.

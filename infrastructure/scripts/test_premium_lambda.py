@@ -56,15 +56,11 @@ sys.path.insert(0, script_dir)
 sys.path.insert(0, project_root)
 
 # Add Lambda package directories to path
-lambda_package_dir = os.path.join(
-    project_root, "config", "terraform", "premium_manager_package"
-)
+lambda_package_dir = os.path.join(project_root, "terraform", "premium_manager_package")
 if os.path.exists(lambda_package_dir):
     sys.path.insert(0, lambda_package_dir)
 
-cleanup_package_dir = os.path.join(
-    project_root, "config", "terraform", "premium_cleanup_package"
-)
+cleanup_package_dir = os.path.join(project_root, "terraform", "premium_cleanup_package")
 if os.path.exists(cleanup_package_dir):
     sys.path.insert(0, cleanup_package_dir)
 
