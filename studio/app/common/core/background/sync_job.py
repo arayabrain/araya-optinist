@@ -214,11 +214,12 @@ class PublishedExperimentSyncJob:
             for attempt in range(max_retries):
                 try:
                     logger.info(
-                        f"Downloading from S3 (attempt {attempt + 1}/{max_retries}): "
+                        f"Downloading from S3 with selective sync "
+                        f"(attempt {attempt + 1}/{max_retries}): "
                         f"{workspace_id}/{unique_id}"
                     )
                     success = await s3_controller.download_experiment(
-                        workspace_id, unique_id
+                        workspace_id, unique_id, sync_mode="essential_only"
                     )
 
                     if success:

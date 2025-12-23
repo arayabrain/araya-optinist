@@ -7,6 +7,7 @@ import aioboto3
 import boto3
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.file_filter import FileSyncFilter
 from studio.app.common.core.storage.remote_storage_controller import (
     BaseRemoteStorageController,
     RemoteSyncLockFileUtil,
@@ -501,7 +502,20 @@ class S3StorageController(BaseRemoteStorageController):
 
         return True
 
-    async def download_experiment(self, workspace_id: str, unique_id: str) -> bool:
+    async def download_experiment(
+        self, workspace_id: str, unique_id: str, sync_mode: str = "all"
+    ) -> bool:
+        """
+        Download experiment from S3 to local storage.
+
+        Args:
+            workspace_id: Workspace identifier
+            unique_id: Unique experiment identifier
+            sync_mode: 'all' or 'essential_only' (need for dataview)
+
+        Returns:
+            True if download successful, False otherwise
+        """
         # make paths
         experiment_local_path = self._make_experiment_local_path(
             workspace_id, unique_id
@@ -510,11 +524,15 @@ class S3StorageController(BaseRemoteStorageController):
             workspace_id, unique_id
         )
         logger.info(
-            "Download data from remote storage (S3). [%s] [%s -> %s]",
+            "Download data from remote storage (S3). [%s] [%s -> %s] sync_mode=%s",
             self.bucket_name,
             experiment_local_path,
             experiment_remote_path,
+            sync_mode,
         )
+
+        # Initialize file filter and metrics tracking
+        file_filter = FileSyncFilter()
 
         # ----------------------------------------
         # exec downloading
@@ -561,6 +579,16 @@ class S3StorageController(BaseRemoteStorageController):
                 if filename in coordination_files:
                     logger.debug(
                         f"Skipping coordination file from S3 download: {filename}"
+                    )
+                    continue
+
+                # Apply file filtering for selective sync
+                should_sync, reason = file_filter.should_sync_file(
+                    s3_file_path, sync_mode
+                )
+                if not should_sync:
+                    logger.info(
+                        f"Skipping {s3_file_path}: {reason} ({file_size:,} bytes)"
                     )
                     continue
 

@@ -192,6 +192,8 @@ const handleUnauthorizedError = async (
 axios.interceptors.response.use(
   async (res) => res,
   async (error) => {
+    const originalRequest = error.config
+
     if (error?.response?.status === 401) {
       return handleUnauthorizedError(error)
     }
