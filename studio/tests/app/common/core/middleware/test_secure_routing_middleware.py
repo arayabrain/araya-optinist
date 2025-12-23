@@ -144,9 +144,7 @@ class TestTierCaching:
         _tier_cache[TEST_UID] = (TEST_TIER_PREMIUM, time.time())
 
         # Should return cached value without DB query
-        with patch(
-            "studio.app.common.core.utils.database_handler.get_db"
-        ) as mock_get_db:
+        with patch("studio.app.common.db.database.get_db") as mock_get_db:
             tier = get_user_tier_cached(TEST_UID)
             assert tier == TEST_TIER_PREMIUM
             mock_get_db.assert_not_called()
@@ -174,7 +172,7 @@ class TestTierCaching:
         subscription_data = (mock_subscription, mock_plan)
 
         with patch(
-            "studio.app.common.core.utils.database_handler.get_db",
+            "studio.app.common.db.database.get_db",
             return_value=iter([mock_db]),
         ), patch(
             "studio.app.common.core.subscription.subscription_service."
@@ -212,7 +210,7 @@ class TestTierCaching:
         subscription_data = (mock_subscription, mock_plan)
 
         with patch(
-            "studio.app.common.core.utils.database_handler.get_db",
+            "studio.app.common.db.database.get_db",
             return_value=iter([mock_db]),
         ), patch(
             "studio.app.common.core.subscription.subscription_service."
@@ -240,7 +238,7 @@ class TestTierCaching:
         mock_db.query().filter().first.return_value = mock_user
 
         with patch(
-            "studio.app.common.core.utils.database_handler.get_db",
+            "studio.app.common.db.database.get_db",
             return_value=iter([mock_db]),
         ), patch(
             "studio.app.common.core.subscription.subscription_service."

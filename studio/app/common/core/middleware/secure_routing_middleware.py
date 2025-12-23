@@ -111,7 +111,7 @@ def get_user_tier_cached(uid: str) -> str:
         from studio.app.common.core.subscription.subscription_service import (
             SubscriptionService,
         )
-        from studio.app.common.core.utils.database_handler import get_db
+        from studio.app.common.db.database import get_db
         from studio.app.common.models.user import User
 
         db = next(get_db())
