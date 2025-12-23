@@ -26,7 +26,8 @@ class TestLogoutFreeUser:
         mock_assignment.user_id = "123"
         mock_assignment.logged_out_at = None
         """Test successful logout for free tier user"""
-        mock_db.exec.return_value.first.return_value = mock_assignment
+        # Mock execute() to return a row-like tuple
+        mock_db.execute.return_value.first.return_value = (mock_assignment,)
 
         result = await logout_free_user(current_user=mock_free_user, db=mock_db)
 
@@ -57,7 +58,8 @@ class TestLogoutFreeUser:
         mock_free_user.id = 123
         mock_free_user.subscription_type = SubscriptionType.FREE.value
         """Test logout when user has no assignment"""
-        mock_db.exec.return_value.first.return_value = None
+        # Mock execute() to return None
+        mock_db.execute.return_value.first.return_value = None
 
         result = await logout_free_user(current_user=mock_free_user, db=mock_db)
 
@@ -74,7 +76,8 @@ class TestLogoutFreeUser:
         mock_assignment.user_id = "123"
         mock_assignment.logged_out_at = None
         """Test that logout updates logged_out_at timestamp"""
-        mock_db.exec.return_value.first.return_value = mock_assignment
+        # Mock execute() to return a row-like tuple
+        mock_db.execute.return_value.first.return_value = (mock_assignment,)
 
         before = datetime.now()
         result = await logout_free_user(current_user=mock_free_user, db=mock_db)
@@ -94,7 +97,8 @@ class TestLogoutFreeUser:
         mock_assignment.user_id = "123"
         mock_assignment.logged_out_at = None
         """Test logout handles exceptions gracefully"""
-        mock_db.exec.return_value.first.return_value = mock_assignment
+        # Mock execute() to return a row-like tuple
+        mock_db.execute.return_value.first.return_value = (mock_assignment,)
         mock_db.commit.side_effect = Exception("Database error")
 
         result = await logout_free_user(current_user=mock_free_user, db=mock_db)
