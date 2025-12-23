@@ -254,9 +254,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         results["premium_inactivity"] = check_premium_user_inactivity()
 
         free_logged_out = results["free_inactivity"].get("logged_out", 0)
-        premium_logged_out = results["premium_inactivity"].get(
-            "logged_out", 0
-        )
+        premium_logged_out = results["premium_inactivity"].get("logged_out", 0)
         total_logged_out = free_logged_out + premium_logged_out
 
         workflows_recovered = results["workflow_recovery"].get("recovered", 0)
@@ -276,7 +274,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "statusCode": 200,
             "body": json.dumps(
                 {
-                    "message": f"Common user management complete. Recovered {workflows_recovered} workflows, logged out {total_logged_out} inactive users.",
+                    "message": f"Common user management complete. "
+                    f"Recovered {workflows_recovered} workflows, logged out "
+                    f"{total_logged_out} inactive users.",
                     "results": results,
                 }
             ),
