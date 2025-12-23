@@ -190,7 +190,8 @@ async def logout_free_user(
         statement = select(FreeUserAssignment).where(
             FreeUserAssignment.user_id == current_user.id
         )
-        assignment = db.exec(statement).first()
+        result_row = db.execute(statement).first()
+        assignment = result_row[0] if result_row else None
 
         if assignment:
             # Update logged_out_at timestamp
