@@ -19,12 +19,6 @@ interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
   _retryWithoutPremium?: boolean
 }
 
-// Extend AxiosRequestConfig to include custom retry property
-interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
-  _retry?: boolean
-  _retryWithoutPremium?: boolean
-}
-
 const axios = axiosLibrary.create({
   baseURL: BASE_URL,
   timeout: 600000,
@@ -202,6 +196,36 @@ axios.interceptors.response.use(
 
     if (error?.response?.status === 401) {
       return handleUnauthorizedError(error)
+    }
+
+    // Handle premium routing failures gracefully
+    if (
+      error?.response?.status === 503 &&
+      routingService.requiresPremiumRouting()
+    ) {
+      // Premium instance not ready, falling back to free tier until migration
+
+      // Retry request without premium headers to use free tier
+      if (error.config && !error.config._retryWithoutPremium) {
+        const retryConfig = { ...error.config }
+
+        // Remove premium routing headers for free tier fallback
+        delete retryConfig.headers["X-User-Tier"]
+        delete retryConfig.headers["X-User-ID"]
+
+        // Mark as retry to prevent infinite loops
+        retryConfig._retryWithoutPremium = true
+
+        try {
+          // eslint-disable-next-line no-console
+          console.log("Using free tier while premium instance provisions")
+          return await axiosLibrary(retryConfig)
+        } catch (retryError) {
+          // eslint-disable-next-line no-console
+          console.error("Free tier fallback also failed:", retryError)
+          // Let the original error bubble up
+        }
+      }
     }
 
     return Promise.reject(error)

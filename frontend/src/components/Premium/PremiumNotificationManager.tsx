@@ -76,7 +76,7 @@ const PremiumNotificationManager: FC = () => {
     closeSnackbar,
   ])
 
-  // Show temporary assignment warning when user is assigned to main instance
+  // Show temporary assignment notification when user is assigned to main instance
   useEffect(() => {
     if (
       isPremiumUser &&
@@ -86,13 +86,11 @@ const PremiumNotificationManager: FC = () => {
       !hasShownTempAssignmentWarning
     ) {
       const key = enqueueSnackbar(
-        "You've been temporarily assigned to the main shared instance. " +
-          "Please refrain from running workflows until transferred to your " +
-          "premium instance to avoid losing progress. " +
-          "This may take a few minutes.",
+        "You've been temporarily assigned to the shared compute resources. " +
+          "Your dedicated premium resource will be ready shortly.",
         {
           variant: "info",
-          persist: true, // Keep notification until explicitly dismissed
+          autoHideDuration: 10000, // Auto-dismiss after 10 seconds
         },
       )
 

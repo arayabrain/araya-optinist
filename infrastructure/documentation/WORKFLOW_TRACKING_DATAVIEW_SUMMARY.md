@@ -508,12 +508,31 @@ WHERE user_id = ?
 
 **Problem:** Workflow crashes before calling decrement_workflow_count().
 
-**Solution:** Free Manager reconciliation (planned):
-- Periodically check for stale active_workflow_count
-- If last_workflow_start > 2 hours and no running Snakemake process
-- Reset active_workflow_count = 0
+**Solution:** Common User Manager reconciliation (IMPLEMENTED):
+- Runs every 10 minutes via scheduled Lambda
+- Checks for stale active_workflow_count (>30 minutes old)
+- Resets active_workflow_count = 0 for both free and premium users
+- See: `infrastructure/terraform/common_user_manager_package/common_user_manager.py`
 
-**Current Behavior:** User remains "protected" until manual intervention
+**Implementation:**
+```python
+def recover_stale_workflow_counts() -> Dict[str, int]:
+    """Reset stale workflow counts (>30 min old) for both free and premium users."""
+    # Recover free user workflow counts
+    free_sql = """
+        UPDATE free_user_assignments
+        SET active_workflow_count = 0
+        WHERE active_workflow_count > 0
+        AND last_workflow_start < DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+    """
+    # Recover premium user workflow counts
+    premium_sql = """
+        UPDATE premium_user_assignments
+        SET active_workflow_count = 0
+        WHERE active_workflow_count > 0
+        AND last_workflow_start < DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+    """
+```
 
 ### 3. Concurrent Publish Operations
 
