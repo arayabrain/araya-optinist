@@ -18,6 +18,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.subscription.constants import (
     PlanName,
+    S3Pagination,
     StorageQuota,
     StorageSize,
     SubscriptionStatus,
@@ -114,11 +115,16 @@ class S3StorageMonitor:
                         object_count = 0
                         for page in page_iterator:
                             if "Contents" in page:
-                                for obj in page["Contents"]:
-                                    object_size = obj["Size"]
-                                    total_size += object_size
-                                    prefix_size += object_size
-                                    object_count += 1
+                                # Process page and release memory immediately
+                                page_size = sum(obj["Size"] for obj in page["Contents"])
+                                page_count = len(page["Contents"])
+
+                                total_size += page_size
+                                prefix_size += page_size
+                                object_count += page_count
+
+                                # Explicitly clear page reference to help GC
+                                del page
 
                     except Exception as e:
                         logger.warning(f"Failed to get size for prefix {prefix}: {e}")
@@ -130,6 +136,125 @@ class S3StorageMonitor:
 
         logger.info(
             f"Calculated S3 storage size for user {user_id}: {total_size:,} bytes"
+        )
+        return total_size
+
+    async def get_user_s3_storage_size_streaming(self, user_id: int) -> int:
+        """
+        Memory-efficient version of get_user_s3_storage_size using explicit cleanup.
+
+        This version processes S3 pages one at a time with explicit memory release,
+        minimizing memory footprint. Recommended for users with large storage.
+
+        Args:
+            user_id: The user ID to check storage for
+
+        Returns:
+            Total storage size in bytes
+        """
+        total_size = 0
+        s3_client = None
+
+        try:
+            # Get all workspaces the user has access to
+            from sqlmodel import or_, select
+
+            from studio.app.common import models as common_model
+            from studio.app.common.db.database import session_scope
+
+            with session_scope() as db:
+                workspaces_query = (
+                    select(common_model.Workspace.id)
+                    .join(
+                        common_model.WorkspacesShareUser,
+                        common_model.Workspace.id
+                        == common_model.WorkspacesShareUser.workspace_id,
+                        isouter=True,
+                    )
+                    .filter(
+                        common_model.Workspace.deleted.is_(False),
+                        or_(
+                            common_model.WorkspacesShareUser.user_id == user_id,
+                            common_model.Workspace.user_id == user_id,
+                        ),
+                    )
+                )
+                workspace_ids = db.execute(workspaces_query).scalars().all()
+
+            logger.info(
+                f"[Streaming] Checking S3 storage for user {user_id} "
+                f"across {len(workspace_ids)} workspaces"
+            )
+
+            # Create S3 client with explicit lifecycle management
+            s3_client = boto3.client("s3")
+
+            # Check both input and output directories for each workspace
+            for workspace_id in workspace_ids:
+                prefixes = [
+                    f"app/studio_data/"
+                    f"{S3StorageController.S3_INPUT_DIR}/{workspace_id}/",
+                    f"app/studio_data/"
+                    f"{S3StorageController.S3_OUTPUT_DIR}/{workspace_id}/",
+                ]
+
+                for prefix in prefixes:
+                    paginator = None
+                    try:
+                        # Use paginator with streaming approach
+                        paginator = s3_client.get_paginator("list_objects_v2")
+                        page_iterator = paginator.paginate(
+                            Bucket=self.bucket_name,
+                            Prefix=prefix,
+                            PaginationConfig={
+                                "PageSize": S3Pagination.PAGE_SIZE,
+                            },
+                        )
+
+                        prefix_size = 0
+                        for page in page_iterator:
+                            if "Contents" in page:
+                                # Calculate size and immediately discard page
+                                page_size = sum(obj["Size"] for obj in page["Contents"])
+                                prefix_size += page_size
+                                total_size += page_size
+
+                            # Force page cleanup
+                            page = None
+
+                        logger.debug(
+                            f"[Streaming] Prefix {prefix}: {prefix_size:,} bytes"
+                        )
+
+                    except Exception as e:
+                        logger.warning(
+                            f"[Streaming] Failed to get size for prefix {prefix}: {e}"
+                        )
+                        continue
+                    finally:
+                        # Explicitly cleanup paginator
+                        if paginator:
+                            del paginator
+
+        except Exception as e:
+            logger.error(
+                f"[Streaming] Failed to calculate S3 storage size for "
+                f"user {user_id}: {e}"
+            )
+            return 0
+        finally:
+            # Ensure S3 client is properly closed
+            if s3_client:
+                try:
+                    s3_client.close()
+                except Exception as close_error:
+                    logger.warning(
+                        f"[Streaming] Error closing S3 client: {close_error}"
+                    )
+
+        logger.info(
+            f"[Streaming] Calculated S3 storage size for user {user_id}: "
+            f"{total_size:,} bytes"
         )
         return total_size
 

@@ -1,0 +1,209 @@
+"""
+Storage Reconciliation Background Job
+
+Periodically reconciles user storage usage by comparing incremental tracking
+with actual S3 storage. This ensures accuracy and catches any drift from
+failed incremental updates.
+
+Runs every 60 minutes to balance accuracy vs. cost/performance.
+"""
+
+
+from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.mode import MODE
+from studio.app.common.core.subscription.constants import StorageReconciliation
+
+logger = AppLogger.get_logger()
+
+
+class StorageReconciliationJob:
+    """
+    Background job to reconcile storage usage for all users.
+
+    This job:
+    1. Gets all active users with storage records
+    2. For each user, does a full S3 scan to get actual storage
+    3. Always updates database with fresh S3 value
+    4. Logs warning if drift was significant (for monitoring)
+
+    The incremental tracking (upload/delete) should keep storage accurate,
+    but this job catches edge cases like:
+    - Failed increment/decrement operations
+    - Manual S3 changes outside the app
+    - Race conditions during concurrent operations
+
+    Note: Since the S3 scan is the expensive operation, we always update
+    the database after scanning. The threshold is only used for logging.
+    """
+
+    # Thresholds for logging warnings (not for deciding whether to update)
+    DRIFT_THRESHOLD_PERCENT = StorageReconciliation.DRIFT_THRESHOLD_PERCENT
+    DRIFT_THRESHOLD_BYTES = StorageReconciliation.DRIFT_THRESHOLD_BYTES
+
+    @classmethod
+    async def run(cls):
+        """
+        Run storage reconciliation for all users.
+
+        This is an async function that will be scheduled by BackgroundScheduler.
+        """
+        if MODE.IS_STANDALONE:
+            logger.debug("Standalone mode - skipping storage reconciliation")
+            return
+
+        logger.info("Starting storage reconciliation job")
+
+        try:
+            # Get all users with storage records
+            from studio.app.common.db.database import session_scope
+
+            reconciled_count = 0
+            drift_detected_count = 0
+            error_count = 0
+
+            with session_scope() as db:
+                # Get users who had activity since last scan (delta > 0)
+                # This avoids scanning inactive users
+                storage_records = db.execute(
+                    """
+                    SELECT user_id, storage_usage_bytes,
+                    delta_since_last_scan, last_full_scan
+                    FROM user_storage_usage
+                    WHERE delta_since_last_scan > 0 OR last_full_scan IS NULL
+                    """
+                ).fetchall()
+
+                total_users = len(storage_records)
+                logger.info(
+                    f"Reconciling storage for {total_users} users with activity "
+                    f"since last scan"
+                )
+
+                for row in storage_records:
+                    user_id = row[0]
+                    db_storage = row[1]
+                    delta = row[2]
+                    last_scan = row[3]
+
+                    try:
+                        # Use the shared scan and reset function
+                        from studio.app.common.core.cloud.cloud_utils import (
+                            _perform_full_scan_and_reset_delta,
+                        )
+
+                        # Get storage before scan for drift logging
+                        logger.info(
+                            f"Reconciling user {user_id}: "
+                            f"current={db_storage:,} bytes, "
+                            f"delta={delta:,} bytes, "
+                            f"last_scan={last_scan or 'never'}"
+                        )
+
+                        # Perform scan and reset delta
+                        await _perform_full_scan_and_reset_delta(user_id)
+
+                        # Get updated storage to log drift
+                        with session_scope() as update_db:
+                            query_result = update_db.execute(
+                                "SELECT storage_usage_bytes FROM user_storage_usage "
+                                "WHERE user_id = %s",
+                                (user_id,),
+                            )
+                            result_row = query_result.first()
+                            actual_storage = result_row[0] if result_row else db_storage
+
+                        drift_bytes = abs(actual_storage - db_storage)
+                        drift_percent = (
+                            (drift_bytes / db_storage * 100) if db_storage > 0 else 0
+                        )
+
+                        # Log drift for monitoring
+                        if (
+                            drift_percent > cls.DRIFT_THRESHOLD_PERCENT
+                            or drift_bytes > cls.DRIFT_THRESHOLD_BYTES
+                        ):
+                            logger.warning(
+                                f"Significant storage drift corrected for user "
+                                f"{user_id}: "
+                                f"DB={db_storage:,} bytes → "
+                                f"S3={actual_storage:,} bytes "
+                                f"(drift: {drift_bytes:,} bytes, "
+                                f"{drift_percent:.1f}%)"
+                            )
+                            drift_detected_count += 1
+                        else:
+                            logger.debug(
+                                f"Storage reconciled for user {user_id}: "
+                                f"{db_storage:,} → {actual_storage:,} bytes "
+                                f"(drift: {drift_bytes:,} bytes, {drift_percent:.1f}%)"
+                            )
+
+                        reconciled_count += 1
+
+                    except Exception as user_error:
+                        logger.error(
+                            f"Failed to reconcile storage for user {user_id}: "
+                            f"{user_error}"
+                        )
+                        error_count += 1
+                        continue
+
+            logger.info(
+                f"Storage reconciliation completed: "
+                f"{reconciled_count}/{total_users} users reconciled, "
+                f"{drift_detected_count} drifts corrected, "
+                f"{error_count} errors"
+            )
+
+        except Exception as e:
+            logger.error(f"Storage reconciliation job failed: {e}", exc_info=True)
+
+    @classmethod
+    async def reconcile_user_storage(cls, user_id: int) -> bool:
+        """
+        Reconcile storage for a specific user (useful for manual triggers).
+
+        Args:
+            user_id: User ID to reconcile
+
+        Returns:
+            True if reconciliation successful, False otherwise
+        """
+        try:
+            from studio.app.common.core.cloud.cloud_utils import (
+                _calculate_live_storage_usage,
+                get_user_storage_usage,
+                update_user_storage_usage,
+            )
+
+            # Get current database value
+            storage_info = get_user_storage_usage(user_id)
+            if not storage_info:
+                logger.warning(
+                    f"No storage record found for user {user_id}, "
+                    f"skipping reconciliation"
+                )
+                return False
+
+            db_storage = storage_info["storage_usage_bytes"]
+
+            # Calculate actual S3 storage
+            actual_storage = await _calculate_live_storage_usage(user_id)
+
+            # Update database
+            update_user_storage_usage(user_id, actual_storage)
+
+            drift_bytes = abs(actual_storage - db_storage)
+            drift_percent = (drift_bytes / db_storage * 100) if db_storage > 0 else 0
+
+            logger.info(
+                f"Reconciled storage for user {user_id}: "
+                f"{db_storage:,} → {actual_storage:,} bytes "
+                f"(drift: {drift_bytes:,} bytes, {drift_percent:.1f}%)"
+            )
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to reconcile storage for user {user_id}: {e}")
+            return False

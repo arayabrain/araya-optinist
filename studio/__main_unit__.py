@@ -22,12 +22,18 @@ from studio.app.common.core.middleware import (
 )
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
-from studio.app.common.core.subscription.constants import SyncStatusConstants
+from studio.app.common.core.subscription.constants import (
+    StorageReconciliation,
+    SyncStatusConstants,
+)
 
 # Background job imports (only used in non-standalone mode)
 if not MODE.IS_STANDALONE:
     from studio.app.common.core.background.cleanup_job import DataCleanupJob
     from studio.app.common.core.background.scheduler import BackgroundScheduler
+    from studio.app.common.core.background.storage_reconciliation_job import (
+        StorageReconciliationJob,
+    )
     from studio.app.common.core.background.sync_job import PublishedExperimentSyncJob
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
@@ -99,6 +105,13 @@ async def lifespan(app: FastAPI):
             func=DataCleanupJob.run,
             interval_minutes=SyncStatusConstants.CLEANUP_INTERVAL_MINUTES,
             job_id="data_cleanup",
+        )
+
+        # Add storage reconciliation job (every 60 minutes)
+        BackgroundScheduler.add_job(
+            func=StorageReconciliationJob.run,
+            interval_minutes=StorageReconciliation.INTERVAL_MINUTES,
+            job_id="storage_reconciliation",
         )
 
         # Start scheduler

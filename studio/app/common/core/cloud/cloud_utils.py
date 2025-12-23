@@ -10,6 +10,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.constants import (
     PlanName,
     StorageQuota,
+    StorageScanTriggers,
     StorageSize,
     SubscriptionLifecycleStatus,
     SubscriptionPeriods,
@@ -276,6 +277,155 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
 
     except Exception as e:
         logger.warning(f"Failed to update storage usage for user {user_id}: {e}")
+        return False
+
+
+def increment_user_storage(user_id: int, bytes_added: int) -> bool:
+    """
+    Increment storage usage by a specific amount (e.g., after uploading files).
+
+    This is much more efficient than recalculating total storage from S3.
+    Use this when you know exactly how many bytes were added.
+
+    Args:
+        user_id: User ID to update
+        bytes_added: Number of bytes to add to current usage
+
+    Returns:
+        True if successful, False otherwise
+    """
+    if bytes_added <= 0:
+        logger.debug(
+            f"Skipping storage increment for user {user_id}: {bytes_added} bytes"
+        )
+        return True
+
+    try:
+        from sqlalchemy import update
+
+        with session_scope() as db:
+            try:
+                # Try to find existing storage usage record
+                query_result = db.execute(
+                    select(UserStorageUsage).where(UserStorageUsage.user_id == user_id)
+                )
+                result_row = query_result.first()
+                existing_usage = result_row[0] if result_row else None
+
+                if existing_usage:
+                    # Increment existing record using SQL-level operation for safety
+                    stmt = (
+                        update(UserStorageUsage)
+                        .where(UserStorageUsage.user_id == user_id)
+                        .values(
+                            storage_usage_bytes=UserStorageUsage.storage_usage_bytes
+                            + bytes_added,
+                            delta_since_last_scan=UserStorageUsage.delta_since_last_scan
+                            + bytes_added,
+                            last_updated=SubscriptionService.get_current_datetime(),
+                        )
+                    )
+                    db.execute(stmt)
+                    new_total = existing_usage.storage_usage_bytes + bytes_added
+                    new_delta = existing_usage.delta_since_last_scan + bytes_added
+                    logger.info(
+                        f"Incremented storage for user {user_id}: "
+                        f"+{bytes_added:,} bytes (new total: {new_total:,} bytes, "
+                        f"delta since scan: {new_delta:,} bytes)"
+                    )
+                else:
+                    # Create new record if it doesn't exist
+                    logger.warning(
+                        f"No storage record found for user {user_id}, creating with "
+                        f"initial value: {bytes_added} bytes"
+                    )
+                    update_user_storage_usage(user_id, bytes_added)
+
+                return True
+
+            except Exception as orm_error:
+                logger.warning(
+                    f"UserStorageUsage table not accessible: {orm_error}, "
+                    "skipping storage increment"
+                )
+                return True  # Return True since we're in fallback mode
+
+    except Exception as e:
+        logger.error(f"Failed to increment storage for user {user_id}: {e}")
+        return False
+
+
+def decrement_user_storage(user_id: int, bytes_removed: int) -> bool:
+    """
+    Decrement storage usage by a specific amount (e.g., after deleting files).
+
+    This is much more efficient than recalculating total storage from S3.
+    Use this when you know exactly how many bytes were removed.
+    Ensures storage never goes below 0.
+
+    Args:
+        user_id: User ID to update
+        bytes_removed: Number of bytes to subtract from current usage
+
+    Returns:
+        True if successful, False otherwise
+    """
+    if bytes_removed <= 0:
+        logger.debug(
+            f"Skipping storage decrement for user {user_id}: {bytes_removed} bytes"
+        )
+        return True
+
+    try:
+        from sqlalchemy import func, update
+
+        with session_scope() as db:
+            try:
+                # Use SQL-level operation with greatest() to ensure never goes below 0
+                stmt = (
+                    update(UserStorageUsage)
+                    .where(UserStorageUsage.user_id == user_id)
+                    .values(
+                        storage_usage_bytes=func.greatest(
+                            0, UserStorageUsage.storage_usage_bytes - bytes_removed
+                        ),
+                        delta_since_last_scan=UserStorageUsage.delta_since_last_scan
+                        + bytes_removed,
+                        last_updated=SubscriptionService.get_current_datetime(),
+                    )
+                )
+                result = db.execute(stmt)
+
+                if result.rowcount > 0:
+                    # Get updated value for logging
+                    query_result = db.execute(
+                        select(UserStorageUsage).where(
+                            UserStorageUsage.user_id == user_id
+                        )
+                    )
+                    result_row = query_result.first()
+                    if result_row:
+                        new_total = result_row[0].storage_usage_bytes
+                        logger.info(
+                            f"Decremented storage for user {user_id}: "
+                            f"-{bytes_removed:,} bytes (new total: {new_total:,} bytes)"
+                        )
+                else:
+                    logger.warning(
+                        f"No storage record found for user {user_id} to decrement"
+                    )
+
+                return True
+
+            except Exception as orm_error:
+                logger.warning(
+                    f"UserStorageUsage table not accessible: {orm_error}, "
+                    "skipping storage decrement"
+                )
+                return True  # Return True since we're in fallback mode
+
+    except Exception as e:
+        logger.error(f"Failed to decrement storage for user {user_id}: {e}")
         return False
 
 
@@ -865,10 +1015,127 @@ class CloudDebug:
             logger.error(f"Failed to print admin user details: {e}")
 
 
+async def _should_trigger_full_scan(user_id: int) -> bool:
+    """
+    Determine if a full S3 scan is needed for a user.
+
+    Triggers scan if:
+    1. Delta since last scan > 5% of current storage OR > 200MB
+    2. Last scan was > 60 minutes ago (and delta > 0)
+    3. Never scanned before (last_full_scan is NULL)
+
+    Args:
+        user_id: User ID to check
+
+    Returns:
+        True if full scan needed, False otherwise
+    """
+    try:
+        storage_info = get_user_storage_usage(user_id)
+        if not storage_info:
+            return False  # No storage record, nothing to scan
+
+        # Get delta and last scan time from DB
+        with session_scope() as db:
+            query_result = db.execute(
+                select(UserStorageUsage).where(UserStorageUsage.user_id == user_id)
+            )
+            result_row = query_result.first()
+            if not result_row:
+                return False
+
+            storage_record = result_row[0]
+            delta = storage_record.delta_since_last_scan
+            last_scan = storage_record.last_full_scan
+            current_storage = storage_record.storage_usage_bytes
+
+            # Never scanned before
+            if last_scan is None:
+                logger.info(
+                    f"User {user_id} has never been scanned, triggering initial scan"
+                )
+                return True
+
+            # Check if delta exceeds thresholds
+            if delta > 0:
+                delta_percent = (
+                    (delta / current_storage * 100) if current_storage > 0 else 0
+                )
+
+                if (
+                    delta_percent > StorageScanTriggers.DELTA_THRESHOLD_PERCENT
+                    or delta > StorageScanTriggers.DELTA_THRESHOLD_BYTES
+                ):
+                    logger.info(
+                        f"Delta threshold exceeded for user {user_id}: "
+                        f"{delta:,} bytes ({delta_percent:.1f}%)"
+                    )
+                    return True
+
+                # Check if it's been > 60 min since last scan (hourly reconciliation)
+                time_since_scan = (
+                    SubscriptionService.get_current_datetime() - last_scan
+                ).total_seconds() / 60
+
+                if time_since_scan > StorageScanTriggers.SCAN_INTERVAL_MINUTES:
+                    logger.info(
+                        f"Hourly reconciliation needed for user {user_id}: "
+                        f"{time_since_scan:.0f} minutes since last scan"
+                    )
+                    return True
+
+            return False
+
+    except Exception as e:
+        logger.error(f"Failed to check if scan needed for user {user_id}: {e}")
+        return False
+
+
+async def _perform_full_scan_and_reset_delta(user_id: int) -> None:
+    """
+    Perform full S3 scan and reset delta counter.
+
+    Args:
+        user_id: User ID to scan
+    """
+    try:
+        from sqlalchemy import update
+
+        # Do expensive S3 scan
+        actual_storage = await _calculate_live_storage_usage(user_id)
+
+        # Update DB with S3 value and reset delta
+        with session_scope() as db:
+            stmt = (
+                update(UserStorageUsage)
+                .where(UserStorageUsage.user_id == user_id)
+                .values(
+                    storage_usage_bytes=actual_storage,
+                    delta_since_last_scan=0,  # Reset delta
+                    last_full_scan=SubscriptionService.get_current_datetime(),
+                    last_updated=SubscriptionService.get_current_datetime(),
+                )
+            )
+            db.execute(stmt)
+
+        logger.info(
+            f"Full S3 scan completed for user {user_id}: "
+            f"{actual_storage:,} bytes (delta reset)"
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to perform full scan for user {user_id}: {e}")
+
+
 async def update_user_storage_after_workflow(workspace_id: str) -> None:
     """
     Update user storage usage after workflow completion.
-    Gets the user who owns the workspace and updates their live storage usage.
+
+    Storage is updated incrementally during upload/delete operations.
+    This function checks if a full S3 scan is needed based on:
+    1. Delta since last scan > 5% or > 200MB
+    2. OR last scan was > 60 minutes ago (hourly reconciliation)
+
     Args:
         workspace_id: The workspace ID to update storage for
     """
@@ -882,7 +1149,7 @@ async def update_user_storage_after_workflow(workspace_id: str) -> None:
         try:
             workspace_id_int = int(workspace_id)
         except ValueError:
-            logger.info(
+            logger.debug(
                 f"Skipping storage update for maintenance workspace: {workspace_id}"
             )
             return
@@ -897,8 +1164,21 @@ async def update_user_storage_after_workflow(workspace_id: str) -> None:
             user_id = result_row[0] if result_row else None
 
             if user_id:
-                await get_current_user_storage_usage(user_id, force_live=True)
-                logger.info(f"Updated live storage usage for user {user_id}")
+                # Check if full S3 scan is needed
+                needs_scan = await _should_trigger_full_scan(user_id)
+
+                if needs_scan:
+                    logger.info(
+                        f"Triggering full S3 scan for user {user_id} "
+                        f"(delta threshold exceeded or hourly check)"
+                    )
+                    await _perform_full_scan_and_reset_delta(user_id)
+                else:
+                    logger.debug(
+                        f"Skipping S3 scan for user {user_id} "
+                        f"(incremental tracking within threshold)"
+                    )
+
     except Exception as e:
         logger.warning(
             f"Failed to update user storage usage after workflow completion: {e}"

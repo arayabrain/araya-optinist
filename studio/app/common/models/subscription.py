@@ -235,6 +235,23 @@ class UserStorageUsage(SQLModel, table=True):
             DateTime, nullable=False, server_default=func.current_timestamp()
         ),
     )
+    delta_since_last_scan: int = Field(
+        sa_column=Column(
+            BIGINT,
+            nullable=False,
+            default=0,
+            server_default="0",
+            comment="Cumulative bytes changed since last full S3 scan",
+        )
+    )
+    last_full_scan: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(
+            DateTime,
+            nullable=True,
+            comment="Timestamp of last full S3 storage scan",
+        ),
+    )
 
     @property
     def storage_usage_percent(self) -> float:

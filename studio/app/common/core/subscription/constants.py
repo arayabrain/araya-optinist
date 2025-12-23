@@ -369,3 +369,34 @@ PAYMENT_METHOD_TYPE_LINK = "link"
 
 # Setup intent usage
 SETUP_INTENT_USAGE_OFF_SESSION = "off_session"
+
+
+# ============================================================================
+# Storage Reconciliation Constants
+# ============================================================================
+class StorageReconciliation:
+    """Constants for storage reconciliation background job"""
+
+    # Job scheduling
+    INTERVAL_MINUTES = 60  # Run every 60 minutes
+
+    # Drift detection thresholds (for logging warnings)
+    DRIFT_THRESHOLD_PERCENT = 5.0  # 5% drift
+    DRIFT_THRESHOLD_BYTES = 100 * 1024 * 1024  # 100 MB
+
+
+class StorageScanTriggers:
+    """Constants for triggering full S3 storage scans"""
+
+    # Delta thresholds for triggering scans
+    DELTA_THRESHOLD_PERCENT = 5.0  # 5% of current storage
+    DELTA_THRESHOLD_BYTES = 200 * 1024 * 1024  # 200 MB
+
+    # Time-based scan interval
+    SCAN_INTERVAL_MINUTES = 60  # Hourly reconciliation
+
+
+class S3Pagination:
+    """Constants for S3 pagination and streaming"""
+
+    PAGE_SIZE = 1000  # Process 1000 objects at a time
