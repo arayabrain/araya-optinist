@@ -956,8 +956,8 @@ def main():
     )
     parser.add_argument(
         "--terraform-dir",
-        default="terraform",
-        help="Path to Terraform directory (default: terraform)",
+        default="../config/terraform",
+        help="Path to Terraform directory (default: ../config/terraform)",
     )
     parser.add_argument(
         "--region",

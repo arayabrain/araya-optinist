@@ -150,7 +150,6 @@ class TestSafeEnvironmentVariables:
             with patch("pymysql.connect") as mock_connect:
                 premium_manager_path = os.path.join(
                     os.path.dirname(os.path.dirname(__file__)),
-                    "config",
                     "terraform",
                     "premium_manager_package",
                 )
@@ -214,7 +213,6 @@ class TestSafeEnvironmentVariables:
             with patch("boto3.client"):
                 premium_manager_path = os.path.join(
                     os.path.dirname(os.path.dirname(__file__)),
-                    "config",
                     "terraform",
                     "premium_manager_package",
                 )
@@ -241,7 +239,6 @@ class TestSafeEnvironmentVariables:
             with patch("boto3.client"):
                 premium_manager_path = os.path.join(
                     os.path.dirname(os.path.dirname(__file__)),
-                    "config",
                     "terraform",
                     "premium_manager_package",
                 )
@@ -270,7 +267,6 @@ class TestSafeEnvironmentVariables:
             with patch("boto3.client"):
                 premium_manager_path = os.path.join(
                     os.path.dirname(os.path.dirname(__file__)),
-                    "config",
                     "terraform",
                     "premium_manager_package",
                 )
