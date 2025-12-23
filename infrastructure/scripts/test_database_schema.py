@@ -3,7 +3,7 @@
 Database Schema Tests
 
 WHERE TO RUN:
-- Local development machine - Recommended
+- Local development machine - Works
 - Cloud ECS container - Works
 - CI/CD pipeline - Ideal for automation
 

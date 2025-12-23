@@ -53,6 +53,7 @@ RUN bash run_download_model_files.sh && rm run_download_model_files.sh
 COPY frontend/build /app/frontend/build
 COPY studio /app/studio
 COPY sample_data /app/sample_data
+COPY infrastructure/scripts /app/scripts
 COPY main.py alembic.ini ./
 
 ENV OPTINIST_DIR=/app/studio_data

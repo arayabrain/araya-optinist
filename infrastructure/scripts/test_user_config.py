@@ -112,7 +112,7 @@ def load_test_users_unified() -> Union[List[Dict], Dict[str, Dict], None]:
 
     # Method 2: Try terraform.tfvars (returns list format)
     terraform_path = (
-        get_project_root() / "studio" / "config" / "terraform" / "terraform.tfvars"
+        get_project_root() / "infrastructure" / "terraform" / "terraform.tfvars"
     )
     if terraform_path.exists():
         try:
