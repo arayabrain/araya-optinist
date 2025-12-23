@@ -19,6 +19,14 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionStatus,
     SubscriptionType,
 )
+from studio.app.common.core.premium.premium_assignment_service import (
+    premium_assignment_service,
+)
+from studio.app.common.core.subscription.constants import (
+    PlanName,
+    SubscriptionStatus,
+    SubscriptionType,
+)
 from studio.app.common.core.users import crud_users
 from studio.app.common.db.database import get_db
 from studio.app.common.models import FreeUserAssignment
@@ -30,6 +38,12 @@ logger = AppLogger.get_logger()
 
 @router.get("", response_model=User)
 async def me(current_user: User = Depends(get_current_user)):
+    """
+    Get current user information including subscription tier for premium routing.
+    This endpoint is enhanced to support ALB header-based routing for premium users.
+    """
+    # The current_user already includes subscription_plan_name and subscription_type
+    # from auth_dependencies.get_current_user(), so we can return it directly
     """
     Get current user information including subscription tier for premium routing.
     This endpoint is enhanced to support ALB header-based routing for premium users.

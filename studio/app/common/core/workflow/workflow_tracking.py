@@ -1,11 +1,13 @@
 """
-Workflow Tracking for Free Tier Users
+Workflow Tracking for Free and Premium Tier Users
 
-This module provides functions to track active workflows for free tier users.
-This enables the Free Manager Lambda to:
+This module provides functions to track active workflows for
+both free and premium tier users.
+This enables the Manager Lambdas to:
 1. Know when a user has active workflows running
-2. Avoid migrating users with running workflows
+2. Avoid migrating/reassigning users with running workflows
 3. Only migrate idle users safely
+4. Recover from crashes where workflow counts get stuck
 """
 
 from typing import Optional
@@ -15,16 +17,17 @@ from sqlmodel import select
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
 from studio.app.common.db.database import session_scope
-from studio.app.common.models import FreeUserAssignment
+from studio.app.common.models import FreeUserAssignment, PremiumUserAssignment
 
 logger = AppLogger.get_logger()
 
 
 def increment_workflow_count(user_id: Optional[int]) -> None:
     """
-    Increment the active_workflow_count for a free tier user.
+    Increment the active_workflow_count for a user (free or premium tier).
 
-    Called when a workflow starts.
+    Called when a workflow starts. Automatically detects whether the user is
+    in free or premium tier and updates the appropriate table.
 
     Args:
         user_id: User ID of the user starting the workflow
@@ -36,7 +39,7 @@ def increment_workflow_count(user_id: Optional[int]) -> None:
         from sqlalchemy import func, update
 
         with session_scope() as session:
-            # Use SQLAlchemy's update() for atomic increment (prevents race conditions)
+            # Try free tier first
             stmt = (
                 update(FreeUserAssignment)
                 .where(FreeUserAssignment.user_id == user_id)
@@ -47,17 +50,38 @@ def increment_workflow_count(user_id: Optional[int]) -> None:
             )
 
             result = session.execute(stmt)
+
+            if result.rowcount > 0:
+                session.commit()
+                logger.info(
+                    f"Incremented workflow count for user {user_id} "
+                    f"(free tier workflow started)"
+                )
+                return
+
+            # Try premium tier
+            stmt = (
+                update(PremiumUserAssignment)
+                .where(PremiumUserAssignment.user_id == user_id)
+                .values(
+                    active_workflow_count=PremiumUserAssignment.active_workflow_count
+                    + 1,
+                    last_workflow_start=func.now(),
+                )
+            )
+
+            result = session.execute(stmt)
             session.commit()
 
             if result.rowcount > 0:
                 logger.info(
                     f"Incremented workflow count for user {user_id} "
-                    f"(free tier workflow started)"
+                    f"(premium tier workflow started)"
                 )
             else:
                 logger.info(
-                    f"User {user_id} not in free_user_assignments table "
-                    f"(likely premium user or not tracked yet)"
+                    f"User {user_id} not in free or premium assignments table "
+                    f"(not tracked yet or standalone mode)"
                 )
 
     except Exception as e:
@@ -69,7 +93,7 @@ def increment_workflow_count(user_id: Optional[int]) -> None:
 
 def decrement_workflow_count(user_id: Optional[int]) -> None:
     """
-    Decrement the active_workflow_count for a free tier user.
+    Decrement the active_workflow_count for a user (free or premium tier).
 
     Called when a workflow completes (success or failure).
 
@@ -86,7 +110,7 @@ def decrement_workflow_count(user_id: Optional[int]) -> None:
         from sqlalchemy import func, update
 
         with session_scope() as session:
-            # Use SQLAlchemy's update() with greatest() for atomic decrement
+            # Try free tier first
             stmt = (
                 update(FreeUserAssignment)
                 .where(FreeUserAssignment.user_id == user_id)
@@ -99,17 +123,39 @@ def decrement_workflow_count(user_id: Optional[int]) -> None:
             )
 
             result = session.execute(stmt)
+
+            if result.rowcount > 0:
+                session.commit()
+                logger.info(
+                    f"Decremented workflow count for user {user_id} "
+                    f"(free tier workflow completed)"
+                )
+                return
+
+            # Try premium tier
+            stmt = (
+                update(PremiumUserAssignment)
+                .where(PremiumUserAssignment.user_id == user_id)
+                .values(
+                    active_workflow_count=func.greatest(
+                        0, PremiumUserAssignment.active_workflow_count - 1
+                    ),
+                    last_workflow_end=func.now(),
+                )
+            )
+
+            result = session.execute(stmt)
             session.commit()
 
             if result.rowcount > 0:
                 logger.info(
                     f"Decremented workflow count for user {user_id} "
-                    f"(free tier workflow completed)"
+                    f"(premium tier workflow completed)"
                 )
             else:
                 logger.info(
-                    f"User {user_id} not in free_user_assignments table "
-                    f"(likely premium user or not tracked yet)"
+                    f"User {user_id} not in free or premium assignments table "
+                    f"(not tracked yet or standalone mode)"
                 )
 
     except Exception as e:
@@ -121,7 +167,7 @@ def decrement_workflow_count(user_id: Optional[int]) -> None:
 
 def get_active_workflow_count(user_id: int) -> int:
     """
-    Get the current active_workflow_count for a user.
+    Get the current active_workflow_count for a user (free or premium tier).
 
     Args:
         user_id: User ID to query
@@ -134,6 +180,7 @@ def get_active_workflow_count(user_id: int) -> int:
 
     try:
         with session_scope() as session:
+            # Try free tier first
             statement = select(FreeUserAssignment).where(
                 FreeUserAssignment.user_id == user_id
             )
@@ -141,6 +188,16 @@ def get_active_workflow_count(user_id: int) -> int:
 
             if assignment:
                 return assignment.active_workflow_count or 0
+
+            # Try premium tier
+            statement = select(PremiumUserAssignment).where(
+                PremiumUserAssignment.user_id == user_id
+            )
+            assignment = session.exec(statement).first()
+
+            if assignment:
+                return assignment.active_workflow_count or 0
+
             return 0
 
     except Exception as e:

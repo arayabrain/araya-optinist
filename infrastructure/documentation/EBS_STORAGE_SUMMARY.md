@@ -90,16 +90,20 @@ These are the fundamental constraints that the EBS implementation satisfies:
 - Decrements on completion/failure
 - Prevents cleanup during active workflows
 
-### 2. Frontend Logout Integration
+### 2. Logout Integration
 
-**Files Modified:**
+**Backend:**
+- `studio/app/common/routers/users_me.py` - `/api/users/me/free/logout` endpoint
+- Updates `logged_out_at` timestamp in `free_user_assignments` table
+
+**Frontend:**
 - `frontend/src/api/users/UsersMe.ts` - Added `logoutFreeUserApi()`
 - `frontend/src/utils/auth/AuthUtils.ts` - Integrated API call (fire-and-forget)
 
 **Behavior:**
 - Calls `/api/users/me/free/logout` on logout
 - Updates `logged_out_at` timestamp in DB
-- Proceeds even if API call fails
+- Proceeds even if API call fails (non-blocking)
 
 ### 3. Frontend 202/503 Response Handling
 
@@ -176,11 +180,11 @@ These are the fundamental constraints that the EBS implementation satisfies:
 
 ### CI/CD Integration
 
-**File:** `.github/workflows/test_new_features.yml`
+**File:** `.github/workflows/tests.yml`
 
-**Triggers:** Push/PR to main/develop branches
+**Triggers:** Push/PR events
 
-**Jobs:** workflow-tracking, background-jobs, dataview-endpoints, integration-tests, edge-cases
+**Note:** Test suite can be run locally with `pytest` in the studio directory
 
 ---
 
@@ -269,11 +273,13 @@ sequenceDiagram
 ## Files
 
 ### Backend
-- `studio/app/common/core/workflow/workflow_tracking.py`
-- `studio/app/common/core/background/sync_job.py`
-- `studio/app/common/core/background/cleanup_job.py`
-- `studio/app/common/routers/dataview.py`
-- `studio/alembic/versions/a5b9c8d7e6f5_*.py`
+- `studio/app/common/core/workflow/workflow_tracking.py` - Workflow count tracking
+- `studio/app/common/core/background/sync_job.py` - Background sync (every 5 min)
+- `studio/app/common/core/background/cleanup_job.py` - Data cleanup (every 60 min)
+- `studio/app/common/routers/dataview.py` - Publish/access endpoints
+- `studio/app/common/routers/users_me.py` - Logout endpoint
+- `studio/alembic/versions/a5b9c8d7e6f5_add_sync_logout_and_versioning.py` - Database migration
+- `studio/alembic/versions/f801f8250020_create_free_user_tracking_system.py` - Database migration
 
 ### Frontend
 - `frontend/src/api/users/UsersMe.ts`
@@ -281,10 +287,9 @@ sequenceDiagram
 - `frontend/src/components/Dataview/WorkflowDetailsView.tsx`
 
 ### Testing
-- `studio/tests/app/common/core/workflow/test_workflow_tracking.py`
-- `studio/tests/app/common/core/background/test_sync_job.py`
-- `studio/tests/app/common/core/background/test_cleanup_job.py`
-- `studio/tests/app/common/routers/test_dataview_publish.py`
-- `studio/tests/app/common/routers/test_users_me_logout.py`
-- `studio/tests/README.md`
-- `.github/workflows/test_new_features.yml`
+- `studio/tests/app/common/core/workflow/test_workflow_tracking.py` (11 tests)
+- `studio/tests/app/common/core/background/test_sync_job.py` (3 tests)
+- `studio/tests/app/common/core/background/test_cleanup_job.py` (10 tests)
+- `studio/tests/app/common/routers/test_dataview_publish.py` (9 tests)
+- `studio/tests/app/common/routers/test_users_me_logout.py` (5 tests)
+- `.github/workflows/tests.yml` - CI/CD integration

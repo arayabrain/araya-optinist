@@ -235,11 +235,13 @@ This deploys:
 ## Monitoring
 
 ### CloudWatch Dashboard
-Access: CloudWatch Console → Dashboards → "subscr-free-tier-monitoring"
+Access: CloudWatch Console → Dashboards → "subscr-optinist-monitoring"
 
-Displays:
-- Active Free Tier Users (line chart)
-- Free Tier Service CPU/Memory (line chart)
+The main dashboard displays comprehensive monitoring including:
+- Active Free Tier Users (integrated with premium tier metrics)
+- Free Tier Service CPU/Memory (alongside premium comparison)
+- Autoscaling metrics and instance counts
+- Infrastructure health (RDS, EFS, ALB)
 
 ### CloudWatch Metrics
 **Namespace**: `OptiNiSt/FreeUsers`
