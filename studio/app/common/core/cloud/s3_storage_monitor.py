@@ -139,12 +139,60 @@ class S3StorageMonitor:
         )
         return total_size
 
+    def _stream_s3_objects(self, s3_client, bucket: str, prefix: str):
+        """
+        Generator that yields S3 objects one page at a time
+        without accumulating metadata.
+
+        This true streaming approach prevents boto3 paginator from accumulating
+        internal state across all pages, which can cause OOM for large datasets.
+
+        Args:
+            s3_client: Boto3 S3 client
+            bucket: S3 bucket name
+            prefix: Prefix to filter objects
+
+        Yields:
+            Individual pages from S3 list_objects_v2
+        """
+        continuation_token = None
+
+        while True:
+            # Build request parameters
+            params = {
+                "Bucket": bucket,
+                "Prefix": prefix,
+                "MaxKeys": S3Pagination.PAGE_SIZE,
+            }
+
+            if continuation_token:
+                params["ContinuationToken"] = continuation_token
+
+            # Fetch single page
+            response = s3_client.list_objects_v2(**params)
+
+            # Yield the page
+            yield response
+
+            # Check if more pages exist
+            if not response.get("IsTruncated"):
+                break
+
+            continuation_token = response.get("NextContinuationToken")
+
     async def get_user_s3_storage_size_streaming(self, user_id: int) -> int:
         """
-        Memory-efficient version of get_user_s3_storage_size using explicit cleanup.
+        Memory-efficient version using true streaming with generator pattern.
 
-        This version processes S3 pages one at a time with explicit memory release,
-        minimizing memory footprint. Recommended for users with large storage.
+        This version uses a custom generator to fetch S3 pages one at a time
+        without boto3's paginator accumulating metadata. This prevents OOM
+        even for users with millions of objects.
+
+        Key improvements over standard pagination:
+        - No paginator metadata accumulation
+        - Manual continuation token management
+        - Immediate page garbage collection
+        - Minimal memory footprint (constant, not linear with object count)
 
         Args:
             user_id: The user ID to check storage for
@@ -199,42 +247,36 @@ class S3StorageMonitor:
                 ]
 
                 for prefix in prefixes:
-                    paginator = None
                     try:
-                        # Use paginator with streaming approach
-                        paginator = s3_client.get_paginator("list_objects_v2")
-                        page_iterator = paginator.paginate(
-                            Bucket=self.bucket_name,
-                            Prefix=prefix,
-                            PaginationConfig={
-                                "PageSize": S3Pagination.PAGE_SIZE,
-                            },
-                        )
-
+                        # Use custom generator for true streaming
+                        # (no metadata accumulation)
                         prefix_size = 0
-                        for page in page_iterator:
+                        page_count = 0
+
+                        for page in self._stream_s3_objects(
+                            s3_client, self.bucket_name, prefix
+                        ):
                             if "Contents" in page:
-                                # Calculate size and immediately discard page
+                                # Process page immediately and calculate size
                                 page_size = sum(obj["Size"] for obj in page["Contents"])
                                 prefix_size += page_size
                                 total_size += page_size
+                                page_count += 1
 
-                            # Force page cleanup
-                            page = None
+                            # Page is automatically clears
+                            # collected when loop continues
 
-                        logger.debug(
-                            f"[Streaming] Prefix {prefix}: {prefix_size:,} bytes"
-                        )
+                        if page_count > 0:
+                            logger.debug(
+                                f"[Streaming] Prefix {prefix}: {prefix_size:,} bytes "
+                                f"({page_count} pages)"
+                            )
 
                     except Exception as e:
                         logger.warning(
                             f"[Streaming] Failed to get size for prefix {prefix}: {e}"
                         )
                         continue
-                    finally:
-                        # Explicitly cleanup paginator
-                        if paginator:
-                            del paginator
 
         except Exception as e:
             logger.error(

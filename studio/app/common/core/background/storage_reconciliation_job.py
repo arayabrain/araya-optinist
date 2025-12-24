@@ -8,6 +8,7 @@ failed incremental updates.
 Runs every 60 minutes to balance accuracy vs. cost/performance.
 """
 
+import asyncio
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
@@ -21,7 +22,7 @@ class StorageReconciliationJob:
     Background job to reconcile storage usage for all users.
 
     This job:
-    1. Gets all active users with storage records
+    1. Gets all active users with storage records in batches
     2. For each user, does a full S3 scan to get actual storage
     3. Always updates database with fresh S3 value
     4. Logs warning if drift was significant (for monitoring)
@@ -34,11 +35,9 @@ class StorageReconciliationJob:
 
     Note: Since the S3 scan is the expensive operation, we always update
     the database after scanning. The threshold is only used for logging.
-    """
 
-    # Thresholds for logging warnings (not for deciding whether to update)
-    DRIFT_THRESHOLD_PERCENT = StorageReconciliation.DRIFT_THRESHOLD_PERCENT
-    DRIFT_THRESHOLD_BYTES = StorageReconciliation.DRIFT_THRESHOLD_BYTES
+    Uses batch processing to prevent OOM when many users need reconciliation.
+    """
 
     @classmethod
     async def run(cls):
@@ -54,32 +53,60 @@ class StorageReconciliationJob:
         logger.info("Starting storage reconciliation job")
 
         try:
-            # Get all users with storage records
+            # Get all users with storage records in batches
             from studio.app.common.db.database import session_scope
 
             reconciled_count = 0
             drift_detected_count = 0
             error_count = 0
+            offset = 0
+            total_users = 0
 
+            # First, get total count for logging
             with session_scope() as db:
-                # Get users who had activity since last scan (delta > 0)
-                # This avoids scanning inactive users
-                storage_records = db.execute(
+                count_result = db.execute(
                     """
-                    SELECT user_id, storage_usage_bytes,
-                    delta_since_last_scan, last_full_scan
+                    SELECT COUNT(*)
                     FROM user_storage_usage
                     WHERE delta_since_last_scan > 0 OR last_full_scan IS NULL
                     """
-                ).fetchall()
+                )
+                total_users = count_result.scalar() or 0
 
-                total_users = len(storage_records)
+            logger.info(
+                f"Starting reconciliation for {total_users} users with activity "
+                f"since last scan (processing in batches "
+                f"of {StorageReconciliation.BATCH_SIZE})"
+            )
+
+            # Process users in batches to prevent OOM
+            while True:
+                # Fetch next batch of users
+                with session_scope() as db:
+                    batch_records = db.execute(
+                        """
+                        SELECT user_id, storage_usage_bytes,
+                        delta_since_last_scan, last_full_scan
+                        FROM user_storage_usage
+                        WHERE delta_since_last_scan > 0 OR last_full_scan IS NULL
+                        ORDER BY user_id
+                        LIMIT %s OFFSET %s
+                        """,
+                        (StorageReconciliation.BATCH_SIZE, offset),
+                    ).fetchall()
+
+                # Exit if no more users to process
+                if not batch_records:
+                    break
+
                 logger.info(
-                    f"Reconciling storage for {total_users} users with activity "
-                    f"since last scan"
+                    f"Processing batch "
+                    f"{offset // StorageReconciliation.BATCH_SIZE + 1}: "
+                    f"{len(batch_records)} users (offset: {offset})"
                 )
 
-                for row in storage_records:
+                # Process each user in the batch
+                for row in batch_records:
                     user_id = row[0]
                     db_storage = row[1]
                     delta = row[2]
@@ -119,8 +146,8 @@ class StorageReconciliationJob:
 
                         # Log drift for monitoring
                         if (
-                            drift_percent > cls.DRIFT_THRESHOLD_PERCENT
-                            or drift_bytes > cls.DRIFT_THRESHOLD_BYTES
+                            drift_percent > StorageReconciliation.DRIFT_THRESH_PERCENT
+                            or drift_bytes > StorageReconciliation.DRIFT_THRESH_BYTES
                         ):
                             logger.warning(
                                 f"Significant storage drift corrected for user "
@@ -140,6 +167,11 @@ class StorageReconciliationJob:
 
                         reconciled_count += 1
 
+                        # Rate limiting to avoid S3 API throttling and spread load
+                        await asyncio.sleep(
+                            StorageReconciliation.RATE_LIMIT_DELAY_SECONDS
+                        )
+
                     except Exception as user_error:
                         logger.error(
                             f"Failed to reconcile storage for user {user_id}: "
@@ -147,6 +179,14 @@ class StorageReconciliationJob:
                         )
                         error_count += 1
                         continue
+
+                # Move to next batch
+                offset += StorageReconciliation.BATCH_SIZE
+
+                logger.info(
+                    f"Batch completed. Progress: {reconciled_count + error_count}/"
+                    f"{total_users} users processed"
+                )
 
             logger.info(
                 f"Storage reconciliation completed: "

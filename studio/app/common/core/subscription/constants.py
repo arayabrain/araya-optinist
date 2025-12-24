@@ -381,8 +381,18 @@ class StorageReconciliation:
     INTERVAL_MINUTES = 60  # Run every 60 minutes
 
     # Drift detection thresholds (for logging warnings)
-    DRIFT_THRESHOLD_PERCENT = 5.0  # 5% drift
-    DRIFT_THRESHOLD_BYTES = 100 * 1024 * 1024  # 100 MB
+    DRIFT_THRESH_PERCENT = 5.0  # 5% drift
+    DRIFT_THRESH_BYTES = 100 * 1024 * 1024  # 100 MB
+
+    # Batch processing configuration
+    BATCH_SIZE = 10  # Process 10 users at a time to prevent OOM
+    RATE_LIMIT_DELAY_SECONDS = 0.5  # 0.5s delay between users to avoid S3 throttling
+
+    # PostgreSQL advisory lock namespace for storage scans
+    # This namespace ID is multiplied by 1000000 and added to user_id
+    # to create unique lock keys: lock_key = ADVISORY_LOCK_NAMESPACE * 1000000 + user_id
+    # Range: 12345000000 - 12345999999 (supports up to 1M users)
+    ADVISORY_LOCK_NAMESPACE = 12345
 
 
 class StorageScanTriggers:

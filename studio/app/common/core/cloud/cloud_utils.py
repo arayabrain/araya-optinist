@@ -542,10 +542,11 @@ async def _calculate_live_storage_usage(user_id: int) -> int:
                     )
 
             # Use S3 storage calculation with user's bucket
+            # (streaming version for memory efficiency)
             from studio.app.common.core.cloud.s3_storage_monitor import S3StorageMonitor
 
             monitor = S3StorageMonitor(user_bucket_name)
-            return await monitor.get_user_s3_storage_size(user_id)
+            return await monitor.get_user_s3_storage_size_streaming(user_id)
         else:
             # Use local storage calculation
             return await _calculate_local_user_storage(user_id)
@@ -1093,13 +1094,41 @@ async def _should_trigger_full_scan(user_id: int) -> bool:
 
 async def _perform_full_scan_and_reset_delta(user_id: int) -> None:
     """
-    Perform full S3 scan and reset delta counter.
+    Perform full S3 scan and reset delta counter with advisory lock protection.
+
+    Uses PostgreSQL advisory locks to prevent concurrent scans of the same user.
+    If another process is already scanning this user, this function returns early.
 
     Args:
         user_id: User ID to scan
     """
+    lock_acquired = False
+
     try:
-        from sqlalchemy import update
+        from sqlalchemy import text, update
+
+        from studio.app.common.core.subscription.constants import StorageReconciliation
+
+        # Try to acquire advisory lock for this user (non-blocking)
+        # Lock ID is based on user_id to ensure uniqueness
+        # Namespace prevents conflicts with other advisory locks in the system
+        lock_key = StorageReconciliation.ADVISORY_LOCK_NAMESPACE * 1000000 + user_id
+
+        with session_scope() as db:
+            # Try to acquire lock (returns true if acquired, false if already locked)
+            lock_result = db.execute(
+                text("SELECT pg_try_advisory_lock(:lock_key)"),
+                {"lock_key": lock_key},
+            )
+            lock_acquired = lock_result.scalar()
+
+        if not lock_acquired:
+            logger.info(
+                f"Skipping scan for user {user_id}: another process is already scanning"
+            )
+            return
+
+        logger.debug(f"Acquired advisory lock for user {user_id} scan")
 
         # Do expensive S3 scan
         actual_storage = await _calculate_live_storage_usage(user_id)
@@ -1125,6 +1154,21 @@ async def _perform_full_scan_and_reset_delta(user_id: int) -> None:
 
     except Exception as e:
         logger.error(f"Failed to perform full scan for user {user_id}: {e}")
+    finally:
+        # Always release the lock if we acquired it
+        if lock_acquired:
+            try:
+                with session_scope() as db:
+                    db.execute(
+                        text("SELECT pg_advisory_unlock(:lock_key)"),
+                        {"lock_key": lock_key},
+                    )
+                logger.debug(f"Released advisory lock for user {user_id}")
+            except Exception as unlock_error:
+                logger.warning(
+                    f"Failed to release advisory lock for user {user_id}: "
+                    f"{unlock_error}"
+                )
 
 
 async def update_user_storage_after_workflow(workspace_id: str) -> None:
