@@ -89,7 +89,11 @@ async def lifespan(app: FastAPI):
     )
 
     # Initialize background job scheduler
-    if not MODE.IS_STANDALONE:
+    # Can be disabled with DISABLE_BACKGROUND_SCHEDULER=1 env var
+    # (e.g., when using cron)
+    disable_scheduler = os.environ.get("DISABLE_BACKGROUND_SCHEDULER", "0") == "1"
+
+    if not MODE.IS_STANDALONE and not disable_scheduler:
         logger.info("Initializing background job scheduler")
         BackgroundScheduler.initialize()
 
@@ -117,11 +121,15 @@ async def lifespan(app: FastAPI):
         # Start scheduler
         BackgroundScheduler.start()
         logger.info("Background job scheduler started")
+    elif disable_scheduler:
+        logger.info(
+            "Background scheduler disabled by DISABLE_BACKGROUND_SCHEDULER env var"
+        )
 
     yield
 
     # Shutdown event
-    if not MODE.IS_STANDALONE:
+    if not MODE.IS_STANDALONE and not disable_scheduler:
         BackgroundScheduler.shutdown()
         logger.info("Background job scheduler shut down")
 

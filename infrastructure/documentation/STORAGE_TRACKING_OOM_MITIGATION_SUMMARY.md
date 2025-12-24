@@ -496,7 +496,7 @@ class StorageReconciliationJob:
 
             # Process each user in batch
             for row in batch_records:
-                user_id = row[0]
+                user_id, db_storage, delta, last_scan = row
 
                 try:
                     # Perform full S3 scan and reset delta
@@ -864,6 +864,247 @@ def increment_user_storage(user_id: int, bytes_added: int) -> bool:
 ```
 
 **Impact:** Upload/delete succeeds even if tracking fails. Next reconciliation corrects.
+
+---
+
+## Background Job Deployment Options
+
+### Default: In-Process Scheduler (Single Worker Only)
+
+**File:** `studio/__main_unit__.py`
+
+The background reconciliation job runs via APScheduler inside the FastAPI process:
+
+```python
+# Add storage reconciliation job (every 60 minutes)
+BackgroundScheduler.add_job(
+    func=StorageReconciliationJob.run,
+    interval_minutes=StorageReconciliation.INTERVAL_MINUTES,  # 60
+    job_id="storage_reconciliation",
+)
+```
+
+**⚠️ Multi-Worker Problem:**
+
+When FastAPI runs with multiple workers (`--workers > 1`):
+- Each worker initializes its own BackgroundScheduler
+- Each scheduler runs the same jobs independently
+- Results in duplicate job execution (N × workers)
+- Potential for race conditions and resource waste
+
+**Example:**
+```bash
+# With 4 workers, each job runs 4× as often!
+uvicorn studio.__main_unit__:app --workers 4
+# → Sync job: every 5 min × 4 workers = 20 executions/hour (expected: 12)
+# → Cleanup job: every 60 min × 4 workers = 4 executions/hour (expected: 1)
+# → Reconciliation job: every 60 min × 4 workers = 4 executions/hour (expected: 1)
+```
+
+---
+
+### Recommended: Cron-Based Execution (Production)
+
+For production deployments with multiple workers, **use cron instead of BackgroundScheduler** to avoid duplicate job execution.
+
+#### Benefits
+
+✅ **No duplicate execution** - Jobs run once per schedule, not once per worker
+✅ **Independent of web processes** - Jobs continue even if FastAPI crashes
+✅ **Better observability** - Separate logs, easier to monitor
+✅ **Resource isolation** - Heavy jobs don't impact web request performance
+✅ **Easier scaling** - Web workers can scale independently of job execution
+
+#### Implementation
+
+**1. Disable Built-In Scheduler**
+
+Set the environment variable:
+
+```bash
+export DISABLE_BACKGROUND_SCHEDULER=1
+```
+
+Add to your deployment configuration:
+
+**Docker Compose:**
+```yaml
+services:
+  web:
+    environment:
+      - DISABLE_BACKGROUND_SCHEDULER=1
+    command: uvicorn studio.__main_unit__:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+**Systemd:**
+```ini
+[Service]
+Environment="DISABLE_BACKGROUND_SCHEDULER=1"
+ExecStart=/usr/bin/uvicorn studio.__main_unit__:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+**2. Create Cron Jobs**
+
+Three CLI scripts are provided in `studio/scripts/`:
+- `run_published_experiment_sync.py` - Syncs published experiments from S3 (every 5 min)
+- `run_data_cleanup.py` - Cleans up logged-out user data (every 60 min)
+- `run_storage_reconciliation.py` - Reconciles storage usage with S3 (every 60 min)
+
+**Option A: User Crontab**
+
+```bash
+crontab -e
+```
+
+Add:
+```cron
+# OptiNiSt Background Jobs
+
+# Sync published experiments every 5 minutes
+*/5 * * * * cd /opt/optinist-for-cloud && /opt/venv/bin/python studio/scripts/run_published_experiment_sync.py >> /var/log/optinist/sync.log 2>&1
+
+# Data cleanup every hour
+0 * * * * cd /opt/optinist-for-cloud && /opt/venv/bin/python studio/scripts/run_data_cleanup.py >> /var/log/optinist/cleanup.log 2>&1
+
+# Storage reconciliation every hour (offset 5 min to avoid collision)
+5 * * * * cd /opt/optinist-for-cloud && /opt/venv/bin/python studio/scripts/run_storage_reconciliation.py >> /var/log/optinist/reconciliation.log 2>&1
+```
+
+**Option B: System Crontab**
+
+Create `/etc/cron.d/optinist-jobs`:
+
+```cron
+# /etc/cron.d/optinist-jobs
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+OPTINIST_ROOT=/opt/optinist-for-cloud
+PYTHON_BIN=/opt/optinist-for-cloud/venv/bin/python
+LOG_DIR=/var/log/optinist
+
+*/5 * * * * optinist cd $OPTINIST_ROOT && $PYTHON_BIN studio/scripts/run_published_experiment_sync.py >> $LOG_DIR/sync.log 2>&1
+0 * * * * optinist cd $OPTINIST_ROOT && $PYTHON_BIN studio/scripts/run_data_cleanup.py >> $LOG_DIR/cleanup.log 2>&1
+5 * * * * optinist cd $OPTINIST_ROOT && $PYTHON_BIN studio/scripts/run_storage_reconciliation.py >> $LOG_DIR/reconciliation.log 2>&1
+```
+
+**Option C: Systemd Timers (Recommended)**
+
+Systemd timers provide better logging and monitoring than cron.
+
+**Service Files:**
+
+`/etc/systemd/system/optinist-reconciliation.service`:
+```ini
+[Unit]
+Description=OptiNiSt Storage Reconciliation Job
+After=network.target
+
+[Service]
+Type=oneshot
+User=optinist
+WorkingDirectory=/opt/optinist-for-cloud
+Environment="S3_DEFAULT_BUCKET_NAME=your-bucket"
+Environment="DATABASE_URL=postgresql://..."
+ExecStart=/opt/venv/bin/python studio/scripts/run_storage_reconciliation.py
+StandardOutput=journal
+StandardError=journal
+```
+
+`/etc/systemd/system/optinist-reconciliation.timer`:
+```ini
+[Unit]
+Description=Run OptiNiSt Reconciliation every hour
+Requires=optinist-reconciliation.service
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+
+[Install]
+WantedBy=timers.target
+```
+
+**Enable and start:**
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now optinist-reconciliation.timer
+sudo systemctl list-timers optinist-*
+sudo journalctl -u optinist-reconciliation.service -f
+```
+
+**3. Required Environment Variables**
+
+CLI scripts require the same environment as the FastAPI app:
+
+```bash
+# Required
+export S3_DEFAULT_BUCKET_NAME=my-bucket
+export DATABASE_URL=postgresql://user:pass@host:5432/db
+# AWS credentials via IAM role or:
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+
+# Optional
+export INSTANCE_ID=$(ec2-metadata --instance-id | cut -d " " -f 2)
+export DATA_DIR=/opt/optinist-data
+```
+
+**4. Log Rotation**
+
+Configure logrotate to prevent logs from growing indefinitely:
+
+`/etc/logrotate.d/optinist`:
+```
+/var/log/optinist/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 0640 optinist optinist
+}
+```
+
+**5. Monitoring**
+
+All background jobs publish CloudWatch metrics:
+
+- **Namespace:** `OptiNiSt/BackgroundJobs`
+- **Metrics:**
+  - `ExperimentsSynced` - Number of experiments synced
+  - `SyncErrors` - Sync failures
+  - `DataCleanupCount` - Users cleaned up
+  - `CleanupErrors` - Cleanup failures
+
+**Recommended Alarms:**
+
+```bash
+# High sync error rate
+aws cloudwatch put-metric-alarm \
+  --alarm-name optinist-high-sync-error-rate \
+  --metric-name SyncErrorRate \
+  --namespace OptiNiSt/BackgroundJobs \
+  --statistic Average \
+  --period 300 \
+  --threshold 50 \
+  --comparison-operator GreaterThanThreshold
+```
+
+#### Testing
+
+Manually test CLI scripts before deployment:
+
+```bash
+cd /opt/optinist-for-cloud
+python studio/scripts/run_published_experiment_sync.py
+python studio/scripts/run_data_cleanup.py
+python studio/scripts/run_storage_reconciliation.py
+```
+
+Exit codes:
+- `0` = Success
+- `1` = Failure
 
 ---
 

@@ -107,10 +107,7 @@ class StorageReconciliationJob:
 
                 # Process each user in the batch
                 for row in batch_records:
-                    user_id = row[0]
-                    db_storage = row[1]
-                    delta = row[2]
-                    last_scan = row[3]
+                    user_id, db_storage, delta, last_scan = row
 
                     try:
                         # Use the shared scan and reset function
