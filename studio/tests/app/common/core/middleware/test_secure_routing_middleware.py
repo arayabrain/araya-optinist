@@ -47,6 +47,7 @@ class TestJWTExtraction:
         from studio.app.common.core.middleware.secure_routing_middleware import (
             SecureRoutingMiddleware,
         )
+        from studio.app.common.core.mode import MODE
 
         mock_app = AsyncMock()
         middleware = SecureRoutingMiddleware(app=mock_app)
@@ -65,23 +66,25 @@ class TestJWTExtraction:
         async def mock_receive():
             return {"type": "http.request"}
 
-        # Mock Firebase verification via auth_helper
-        with patch(
-            "studio.app.common.core.middleware.secure_routing_middleware."
-            "extract_uid_from_firebase_jwt"
-        ) as mock_extract:
-            mock_extract.return_value = (TEST_UID, None)
-
-            # Mock tier lookup
+        # Mock standalone mode to False
+        with patch.object(MODE, "IS_STANDALONE", False):
+            # Mock Firebase verification via auth_helper
             with patch(
-                "studio.app.common.core.middleware."
-                "secure_routing_middleware.get_user_tier_cached",
-                return_value=TEST_TIER_PREMIUM,
-            ):
-                await middleware(scope, mock_receive, mock_send)
+                "studio.app.common.core.middleware.secure_routing_middleware."
+                "extract_uid_from_firebase_jwt"
+            ) as mock_extract:
+                mock_extract.return_value = (TEST_UID, None)
 
-                # Verify extraction was called
-                mock_extract.assert_called_once_with(TEST_JWT_TOKEN)
+                # Mock tier lookup
+                with patch(
+                    "studio.app.common.core.middleware."
+                    "secure_routing_middleware.get_user_tier_cached",
+                    return_value=TEST_TIER_PREMIUM,
+                ):
+                    await middleware(scope, mock_receive, mock_send)
+
+                    # Verify extraction was called
+                    mock_extract.assert_called_once_with(TEST_JWT_TOKEN)
 
     @pytest.mark.asyncio
     async def test_missing_authorization_header(self):
@@ -358,6 +361,7 @@ class TestRoutingIDValidation:
         from studio.app.common.core.middleware.secure_routing_middleware import (
             SecureRoutingMiddleware,
         )
+        from studio.app.common.core.mode import MODE
 
         mock_app = AsyncMock()
         middleware = SecureRoutingMiddleware(app=mock_app)
@@ -376,31 +380,33 @@ class TestRoutingIDValidation:
         async def mock_send(message):
             sent_messages.append(message)
 
-        # Mock Firebase verification via auth_helper
-        with patch(
-            "studio.app.common.core.middleware.secure_routing_middleware."
-            "extract_uid_from_firebase_jwt"
-        ) as mock_extract:
-            mock_extract.return_value = (TEST_UID, None)
-
-            # Mock tier lookup
+        # Mock standalone mode to False
+        with patch.object(MODE, "IS_STANDALONE", False):
+            # Mock Firebase verification via auth_helper
             with patch(
                 "studio.app.common.core.middleware.secure_routing_middleware."
-                "get_user_tier_cached",
-                return_value=TEST_TIER_PREMIUM,
-            ), patch(
-                "studio.app.common.core.middleware.secure_routing_middleware.logger"
-            ) as mock_logger:
-                await middleware(scope, AsyncMock(), mock_send)
+                "extract_uid_from_firebase_jwt"
+            ) as mock_extract:
+                mock_extract.return_value = (TEST_UID, None)
 
-                # Should log warning about mismatch and return 403
-                mock_logger.warning.assert_called_once()
-                warning_call = mock_logger.warning.call_args[0][0]
-                assert "Routing ID mismatch" in warning_call
+                # Mock tier lookup
+                with patch(
+                    "studio.app.common.core.middleware.secure_routing_middleware."
+                    "get_user_tier_cached",
+                    return_value=TEST_TIER_PREMIUM,
+                ), patch(
+                    "studio.app.common.core.middleware.secure_routing_middleware.logger"
+                ) as mock_logger:
+                    await middleware(scope, AsyncMock(), mock_send)
 
-                # Verify 403 response was sent
-                assert len(sent_messages) == 2
-                assert sent_messages[0]["status"] == 403
+                    # Should log warning about mismatch and return 403
+                    mock_logger.warning.assert_called_once()
+                    warning_call = mock_logger.warning.call_args[0][0]
+                    assert "Routing ID mismatch" in warning_call
+
+                    # Verify 403 response was sent
+                    assert len(sent_messages) == 2
+                    assert sent_messages[0]["status"] == 403
 
 
 class TestCacheInvalidation:
@@ -450,6 +456,7 @@ class TestHeaderInjection:
             SecureRoutingMiddleware,
             generate_routing_id,
         )
+        from studio.app.common.core.mode import MODE
 
         mock_app = AsyncMock()
         middleware = SecureRoutingMiddleware(app=mock_app)
@@ -468,38 +475,40 @@ class TestHeaderInjection:
         async def mock_receive():
             return {"type": "http.request"}
 
-        # Mock Firebase verification via auth_helper
-        with patch(
-            "studio.app.common.core.middleware.secure_routing_middleware."
-            "extract_uid_from_firebase_jwt"
-        ) as mock_extract:
-            mock_extract.return_value = (TEST_UID, None)
-
-            # Mock tier lookup
+        # Mock standalone mode to False
+        with patch.object(MODE, "IS_STANDALONE", False):
+            # Mock Firebase verification via auth_helper
             with patch(
                 "studio.app.common.core.middleware.secure_routing_middleware."
-                "get_user_tier_cached",
-                return_value=TEST_TIER_PREMIUM,
-            ):
-                # Mock the app to send a response
-                async def mock_app_impl(scope, receive, send):
-                    await send(
-                        {
-                            "type": "http.response.start",
-                            "status": 200,
-                            "headers": [],
-                        }
-                    )
+                "extract_uid_from_firebase_jwt"
+            ) as mock_extract:
+                mock_extract.return_value = (TEST_UID, None)
 
-                middleware.app = mock_app_impl
-                await middleware(scope, mock_receive, mock_send)
+                # Mock tier lookup
+                with patch(
+                    "studio.app.common.core.middleware.secure_routing_middleware."
+                    "get_user_tier_cached",
+                    return_value=TEST_TIER_PREMIUM,
+                ):
+                    # Mock the app to send a response
+                    async def mock_app_impl(scope, receive, send):
+                        await send(
+                            {
+                                "type": "http.response.start",
+                                "status": 200,
+                                "headers": [],
+                            }
+                        )
 
-                # Check that headers were added
-                response_start = sent_messages[0]
-                headers = dict(response_start["headers"])
-                assert b"x-user-tier" in headers
-                assert headers[b"x-user-tier"] == TEST_TIER_PREMIUM.encode()
-                assert b"x-routing-id" in headers
+                    middleware.app = mock_app_impl
+                    await middleware(scope, mock_receive, mock_send)
+
+                    # Check that headers were added
+                    response_start = sent_messages[0]
+                    headers = dict(response_start["headers"])
+                    assert b"x-user-tier" in headers
+                    assert headers[b"x-user-tier"] == TEST_TIER_PREMIUM.encode()
+                    assert b"x-routing-id" in headers
                 # Verify routing ID is correct HMAC
                 expected_routing_id = generate_routing_id(TEST_UID, ROUTING_SECRET_KEY)
                 assert headers[b"x-routing-id"] == expected_routing_id.encode()
@@ -510,6 +519,7 @@ class TestHeaderInjection:
         from studio.app.common.core.middleware.secure_routing_middleware import (
             SecureRoutingMiddleware,
         )
+        from studio.app.common.core.mode import MODE
 
         mock_app = AsyncMock()
         middleware = SecureRoutingMiddleware(app=mock_app)
@@ -528,39 +538,41 @@ class TestHeaderInjection:
         async def mock_receive():
             return {"type": "http.request"}
 
-        # Mock Firebase verification via auth_helper
-        with patch(
-            "studio.app.common.core.middleware.secure_routing_middleware."
-            "extract_uid_from_firebase_jwt"
-        ) as mock_extract:
-            mock_extract.return_value = (TEST_UID, None)
-
-            # Mock tier lookup
+        # Mock standalone mode to False
+        with patch.object(MODE, "IS_STANDALONE", False):
+            # Mock Firebase verification via auth_helper
             with patch(
                 "studio.app.common.core.middleware.secure_routing_middleware."
-                "get_user_tier_cached",
-                return_value=TEST_TIER_FREE,
-            ):
-                # Mock the app to send a response
-                async def mock_app_impl(scope, receive, send):
-                    await send(
-                        {
-                            "type": "http.response.start",
-                            "status": 200,
-                            "headers": [],
-                        }
-                    )
+                "extract_uid_from_firebase_jwt"
+            ) as mock_extract:
+                mock_extract.return_value = (TEST_UID, None)
 
-                middleware.app = mock_app_impl
-                await middleware(scope, mock_receive, mock_send)
+                # Mock tier lookup
+                with patch(
+                    "studio.app.common.core.middleware.secure_routing_middleware."
+                    "get_user_tier_cached",
+                    return_value=TEST_TIER_FREE,
+                ):
+                    # Mock the app to send a response
+                    async def mock_app_impl(scope, receive, send):
+                        await send(
+                            {
+                                "type": "http.response.start",
+                                "status": 200,
+                                "headers": [],
+                            }
+                        )
 
-                # Check that headers were added
-                response_start = sent_messages[0]
-                headers = dict(response_start["headers"])
-                assert b"x-user-tier" in headers
-                assert headers[b"x-user-tier"] == TEST_TIER_FREE.encode()
-                # Free tier should NOT have routing ID
-                assert b"x-routing-id" not in headers
+                    middleware.app = mock_app_impl
+                    await middleware(scope, mock_receive, mock_send)
+
+                    # Check that headers were added
+                    response_start = sent_messages[0]
+                    headers = dict(response_start["headers"])
+                    assert b"x-user-tier" in headers
+                    assert headers[b"x-user-tier"] == TEST_TIER_FREE.encode()
+                    # Free tier should NOT have routing ID
+                    assert b"x-routing-id" not in headers
 
 
 class TestMiddlewareIntegration:
