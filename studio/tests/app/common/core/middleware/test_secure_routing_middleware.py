@@ -65,9 +65,12 @@ class TestJWTExtraction:
         async def mock_receive():
             return {"type": "http.request"}
 
-        # Mock Firebase verification
-        with patch("firebase_admin.auth.verify_id_token") as mock_verify:
-            mock_verify.return_value = {"uid": TEST_UID}
+        # Mock Firebase verification via auth_helper
+        with patch(
+            "studio.app.common.core.middleware.secure_routing_middleware."
+            "extract_uid_from_firebase_jwt"
+        ) as mock_extract:
+            mock_extract.return_value = (TEST_UID, None)
 
             # Mock tier lookup
             with patch(
@@ -77,8 +80,8 @@ class TestJWTExtraction:
             ):
                 await middleware(scope, mock_receive, mock_send)
 
-                # Verify Firebase was called
-                mock_verify.assert_called_once_with(TEST_JWT_TOKEN)
+                # Verify extraction was called
+                mock_extract.assert_called_once_with(TEST_JWT_TOKEN)
 
     @pytest.mark.asyncio
     async def test_missing_authorization_header(self):
@@ -117,9 +120,12 @@ class TestJWTExtraction:
             "headers": [(b"authorization", b"Bearer invalid_token")],
         }
 
-        # Mock Firebase verification failure
-        with patch("firebase_admin.auth.verify_id_token") as mock_verify:
-            mock_verify.side_effect = Exception("Invalid token")
+        # Mock Firebase verification failure via auth_helper
+        with patch(
+            "studio.app.common.core.middleware.secure_routing_middleware."
+            "extract_uid_from_firebase_jwt"
+        ) as mock_extract:
+            mock_extract.return_value = (None, "Invalid token")
 
             await middleware(scope, AsyncMock(), AsyncMock())
 
@@ -328,9 +334,12 @@ class TestRoutingIDValidation:
             ],
         }
 
-        # Mock Firebase verification
-        with patch("firebase_admin.auth.verify_id_token") as mock_verify:
-            mock_verify.return_value = {"uid": TEST_UID}
+        # Mock Firebase verification via auth_helper
+        with patch(
+            "studio.app.common.core.middleware.secure_routing_middleware."
+            "extract_uid_from_firebase_jwt"
+        ) as mock_extract:
+            mock_extract.return_value = (TEST_UID, None)
 
             # Mock tier lookup
             with patch(
@@ -362,9 +371,17 @@ class TestRoutingIDValidation:
             ],
         }
 
-        # Mock Firebase verification
-        with patch("firebase_admin.auth.verify_id_token") as mock_verify:
-            mock_verify.return_value = {"uid": TEST_UID}
+        sent_messages = []
+
+        async def mock_send(message):
+            sent_messages.append(message)
+
+        # Mock Firebase verification via auth_helper
+        with patch(
+            "studio.app.common.core.middleware.secure_routing_middleware."
+            "extract_uid_from_firebase_jwt"
+        ) as mock_extract:
+            mock_extract.return_value = (TEST_UID, None)
 
             # Mock tier lookup
             with patch(
@@ -374,12 +391,16 @@ class TestRoutingIDValidation:
             ), patch(
                 "studio.app.common.core.middleware.secure_routing_middleware.logger"
             ) as mock_logger:
-                await middleware(scope, AsyncMock(), AsyncMock())
+                await middleware(scope, AsyncMock(), mock_send)
 
-                # Should log warning about mismatch
+                # Should log warning about mismatch and return 403
                 mock_logger.warning.assert_called_once()
                 warning_call = mock_logger.warning.call_args[0][0]
                 assert "Routing ID mismatch" in warning_call
+
+                # Verify 403 response was sent
+                assert len(sent_messages) == 2
+                assert sent_messages[0]["status"] == 403
 
 
 class TestCacheInvalidation:
@@ -447,9 +468,12 @@ class TestHeaderInjection:
         async def mock_receive():
             return {"type": "http.request"}
 
-        # Mock Firebase verification
-        with patch("firebase_admin.auth.verify_id_token") as mock_verify:
-            mock_verify.return_value = {"uid": TEST_UID}
+        # Mock Firebase verification via auth_helper
+        with patch(
+            "studio.app.common.core.middleware.secure_routing_middleware."
+            "extract_uid_from_firebase_jwt"
+        ) as mock_extract:
+            mock_extract.return_value = (TEST_UID, None)
 
             # Mock tier lookup
             with patch(
@@ -504,9 +528,12 @@ class TestHeaderInjection:
         async def mock_receive():
             return {"type": "http.request"}
 
-        # Mock Firebase verification
-        with patch("firebase_admin.auth.verify_id_token") as mock_verify:
-            mock_verify.return_value = {"uid": TEST_UID}
+        # Mock Firebase verification via auth_helper
+        with patch(
+            "studio.app.common.core.middleware.secure_routing_middleware."
+            "extract_uid_from_firebase_jwt"
+        ) as mock_extract:
+            mock_extract.return_value = (TEST_UID, None)
 
             # Mock tier lookup
             with patch(
@@ -551,11 +578,14 @@ class TestMiddlewareIntegration:
 
         scope = {"type": "http", "path": "/health", "headers": []}
 
-        with patch("firebase_admin.auth.verify_id_token") as mock_verify:
+        with patch(
+            "studio.app.common.core.middleware.secure_routing_middleware."
+            "extract_uid_from_firebase_jwt"
+        ) as mock_extract:
             await middleware(scope, AsyncMock(), AsyncMock())
 
             # Should not verify JWT for health check
-            mock_verify.assert_not_called()
+            mock_extract.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_middleware_skips_auth_endpoints(self):
@@ -570,11 +600,14 @@ class TestMiddlewareIntegration:
         for path in ["/api/auth/login", "/api/auth/refresh"]:
             scope = {"type": "http", "path": path, "headers": []}
 
-            with patch("firebase_admin.auth.verify_id_token") as mock_verify:
+            with patch(
+                "studio.app.common.core.middleware.secure_routing_middleware."
+                "extract_uid_from_firebase_jwt"
+            ) as mock_extract:
                 await middleware(scope, AsyncMock(), AsyncMock())
 
                 # Should not verify JWT for auth endpoints
-                mock_verify.assert_not_called()
+                mock_extract.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_middleware_skips_standalone_mode(self):
@@ -594,12 +627,13 @@ class TestMiddlewareIntegration:
         }
 
         with patch.object(MODE, "IS_STANDALONE", True), patch(
-            "firebase_admin.auth.verify_id_token"
-        ) as mock_verify:
+            "studio.app.common.core.middleware.secure_routing_middleware."
+            "extract_uid_from_firebase_jwt"
+        ) as mock_extract:
             await middleware(scope, AsyncMock(), AsyncMock())
 
             # Should not verify JWT in standalone mode
-            mock_verify.assert_not_called()
+            mock_extract.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_middleware_handles_websocket(self):
@@ -613,11 +647,14 @@ class TestMiddlewareIntegration:
 
         scope = {"type": "websocket", "path": "/ws"}
 
-        with patch("firebase_admin.auth.verify_id_token") as mock_verify:
+        with patch(
+            "studio.app.common.core.middleware.secure_routing_middleware."
+            "extract_uid_from_firebase_jwt"
+        ) as mock_extract:
             await middleware(scope, AsyncMock(), AsyncMock())
 
             # Should not verify JWT for websocket
-            mock_verify.assert_not_called()
+            mock_extract.assert_not_called()
             mock_app.assert_called_once()
 
 
