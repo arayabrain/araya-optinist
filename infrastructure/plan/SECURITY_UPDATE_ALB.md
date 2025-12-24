@@ -441,7 +441,7 @@ ROUTING_SECRET_KEY=same_value_as_terraform_variable
 
 ### Integration Tests
 
-**File**: `infrastructure/scripts/test_jwt_routing_security.py`
+**File**: `infrastructure/scripts/test_alb_routing_security.py`
 
 **Test Scenarios:**
 1. **Valid JWT Flow**
@@ -605,7 +605,7 @@ logger.debug(f"Routing ID: {routing_id}, Tier: {tier}, UID hash: {uid_hash}")
    - Test validation logic
    - Test cache invalidation
 
-9. **`infrastructure/scripts/test_jwt_routing_security.py`**
+9. **`infrastructure/scripts/test_alb_routing_security.py`**
    - Integration tests for routing flow
    - Security tests (mismatch detection, etc.)
 
