@@ -44,9 +44,7 @@ logger = AppLogger.get_logger()
 
 
 def snakemake_execute(
-    workspace_id: str,
-    unique_id: str,
-    params: SmkParam,
+    workspace_id: str, unique_id: str, params: SmkParam, user_id: int = None
 ):
     """
     Main entry point for Snakemake execution.
@@ -55,27 +53,42 @@ def snakemake_execute(
         workspace_id: Workspace ID
         unique_id: Unique ID for the workflow
         params: Snakemake parameters
+        user_id: User ID (for tracking free tier workflow counts)
     """
     client_id = get_client_id_for_subprocess()
 
-    with ProcessPoolExecutor(max_workers=1) as executor:
-        logger.info("start snakemake running process.")
+    try:
+        logger.info("Starting local execution mode")
+        with ProcessPoolExecutor(max_workers=1) as executor:
+            logger.info("start snakemake running process.")
 
-        future = executor.submit(
-            _snakemake_execute_process,
-            workspace_id,
-            unique_id,
-            params,
-            client_id=client_id,
-        )
-        future_result = future.result()
+            future = executor.submit(
+                _snakemake_execute_process,
+                workspace_id,
+                unique_id,
+                params,
+                client_id=client_id,
+            )
+            future_result = future.result()
 
         # Update user storage after workflow completion
         asyncio.run(update_user_storage_after_workflow(workspace_id))
 
-        logger.info("Finished snakemake running process. result: %s", future_result)
-
         return future_result
+
+    finally:
+        # Decrement workflow count in finally block to ensure it ALWAYS runs
+        # This prevents workflow count leaks when exceptions occur during execution
+        if user_id is not None:
+            try:
+                from studio.app.common.core.workflow.workflow_tracking import (
+                    decrement_workflow_count,
+                )
+
+                decrement_workflow_count(user_id)
+                logger.info(f"Decremented workflow count for user {user_id}")
+            except Exception as e:
+                logger.error(f"Failed to decrement workflow count: {e}", exc_info=True)
 
 
 @with_client_id_context  # Automatically set client_id for logging
