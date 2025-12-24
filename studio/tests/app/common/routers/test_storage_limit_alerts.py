@@ -575,7 +575,7 @@ async def test_check_limit_warning_has_warning(mock_current_user):
         assert result["has_warning"] is True
         assert result["warning_type"] == "subscription"
         assert result["days_remaining"] == 5
-        assert result["user_id"] == 1
+        assert result["user_id"] == "test-user-123"
 
 
 @pytest.mark.asyncio
@@ -595,4 +595,4 @@ async def test_check_limit_warning_no_warning(mock_current_user):
         assert result["has_warning"] is False
         assert result["warning_type"] is None
         assert result["days_remaining"] is None
-        assert result["user_id"] == 1
+        assert result["user_id"] == "test-user-123"

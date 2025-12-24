@@ -138,7 +138,8 @@ class TestGetActiveWorkflowCount:
         """Test successful retrieval of workflow count"""
         mock_assignment = MagicMock()
         mock_assignment.active_workflow_count = 3
-        mock_session.exec.return_value.first.return_value = mock_assignment
+        # Mock execute() to return a row-like tuple
+        mock_session.execute.return_value.first.return_value = (mock_assignment,)
 
         count = get_active_workflow_count(user_id=123)
 
@@ -146,7 +147,8 @@ class TestGetActiveWorkflowCount:
 
     def test_get_active_workflow_count_no_assignment(self, mock_session):
         """Test retrieval when user has no assignment"""
-        mock_session.exec.return_value.first.return_value = None
+        # Mock execute() to return None
+        mock_session.execute.return_value.first.return_value = None
 
         count = get_active_workflow_count(user_id=123)
 
@@ -156,7 +158,8 @@ class TestGetActiveWorkflowCount:
         """Test retrieval when count is None"""
         mock_assignment = MagicMock()
         mock_assignment.active_workflow_count = None
-        mock_session.exec.return_value.first.return_value = mock_assignment
+        # Mock execute() to return a row-like tuple
+        mock_session.execute.return_value.first.return_value = (mock_assignment,)
 
         count = get_active_workflow_count(user_id=123)
 

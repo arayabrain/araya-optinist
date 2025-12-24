@@ -218,16 +218,20 @@ class TestInvoicePaymentSucceeded:
         mock_db.rollback.assert_called()
 
     def test_user_not_found(self, mock_db, invoice_data_subscription_cycle):
-        """Test error handling when user is not found"""
+        """Test handling when user is not found"""
         # Mock user not found
         mock_db.query.return_value.filter.return_value.first.return_value = None
 
-        with pytest.raises(Exception):  # Should raise HTTPException
-            WebhookService.handle_subscription_payment_succeeded(
-                mock_db, invoice_data_subscription_cycle
-            )
+        # Should return success response instead of raising exception
+        result = WebhookService.handle_subscription_payment_succeeded(
+            mock_db, invoice_data_subscription_cycle
+        )
 
-        mock_db.rollback.assert_called()
+        # Verify it returns success with skipped flag
+        assert result["success"] is True
+        assert result["skipped"] is True
+        assert result["reason"] == "missing_user_account"
+        assert result["webhook_processed"] is True
 
     def test_subscription_not_found(
         self, mock_db, mock_user_account, invoice_data_subscription_cycle

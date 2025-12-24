@@ -20,6 +20,8 @@ from studio.app.common.core.utils.pickle_handler import PickleReader
 from studio.app.common.core.workflow.workflow import Edge, Node, NodeData
 from studio.app.dir_path import DIRPATH
 
+# Set test mode before getting bucket name at module level
+MODE.IS_TEST = True
 remote_bucket_name = _get_user_remote_bucket_name()
 workspace_id = "default"
 unique_id = "smk_exec_lccd"
