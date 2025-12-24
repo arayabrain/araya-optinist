@@ -18,13 +18,15 @@ resource "null_resource" "install_free_manager_dependencies" {
     command = <<-EOT
       mkdir -p ${path.module}/free_manager_package
       /usr/bin/python3 -m pip install pymysql boto3 -t ${path.module}/free_manager_package/ --no-cache-dir
+      cp ${path.module}/../aws_constants.py ${path.module}/free_manager_package/aws_constants.py
     EOT
   }
 
   triggers = {
     code_changes = md5(join("", [
       filesha256("${path.module}/free_manager_package/free_manager.py"),
-      filesha256("${path.module}/free_manager_package/free_user_utils.py")
+      filesha256("${path.module}/free_manager_package/free_user_utils.py"),
+      filesha256("${path.module}/../aws_constants.py")
     ]))
   }
 }

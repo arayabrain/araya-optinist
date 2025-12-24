@@ -117,7 +117,7 @@ Users with active workflows are **never migrated** during rebalancing:
 
 Waits up to 17 minutes for new instances to become operational:
 - **Lifecycle Hook**: ~5 minutes
-- **EC2 Launch**: ~5 minutes
+- **EC2 Launch**: ~5 minutes  
 - **ECS Task Start**: ~7 minutes
 - **Total**: ~17 minutes for full readiness
 

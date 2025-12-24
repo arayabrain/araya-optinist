@@ -53,9 +53,14 @@ RUN bash run_download_model_files.sh && rm run_download_model_files.sh
 COPY frontend/build /app/frontend/build
 COPY studio /app/studio
 COPY sample_data /app/sample_data
+COPY infrastructure/scripts /app/scripts
+COPY infrastructure/aws_constants.py /app/
+COPY infrastructure/terraform/premium_manager_package /app/terraform/premium_manager_package
+COPY infrastructure/terraform/premium_cleanup_package /app/terraform/premium_cleanup_package
+COPY infrastructure/terraform/free_manager_package /app/terraform/free_manager_package
+COPY infrastructure/terraform/common_user_manager_package /app/terraform/common_user_manager_package
 COPY main.py alembic.ini ./
 
-# Information for use within the AWS environment
 ENV OPTINIST_DIR=/app/studio_data
 
 # Copy the cloud-startup.sh script

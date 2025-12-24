@@ -249,43 +249,37 @@ graph TB
 ```python
 class FreeUserActivityMiddleware:
     """
-    ASGI Middleware to track free tier user activity.
+    Middleware to track free tier user activity.
 
     For each HTTP request from a free tier user:
     1. Extract user_id from auth token
     2. Check subscription_status = "Free"
     3. Update free_user_assignments table:
-       - last_activity = NOW() (manually set)
+       - last_activity = NOW()
        - instance_id = current_instance
-
-    Note: Updates run asynchronously in background tasks to avoid blocking requests.
-    Activity updates are throttled to once per minute per user to reduce DB load.
     """
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        # Skip non-HTTP requests and health checks
-        if scope["type"] != "http" or scope.get("path") in ["/health", "/api/auth/login"]:
-            await self.app(scope, receive, send)
-            return
+    async def __call__(self, request: Request):
+        # Extract user from auth token
+        user = get_authenticated_user(request)
 
-        # Extract user from request state (set by auth middleware)
-        state = scope.get("state", {})
-        authed_user = state.get("user") if isinstance(state, dict) else getattr(state, "user", None)
+        if user and user.subscription_status == "Free":
+            # Get current instance ID
+            instance_id = os.environ.get("INSTANCE_ID")
 
-        if authed_user and authed_user.subscription_status == "Free":
-            user_id = str(authed_user.id)
+            # Update activity tracking
+            update_free_user_activity(
+                user_id=user.id,
+                instance_id=instance_id,
+                last_activity=datetime.now()
+            )
 
-            # Throttle updates (only once per minute per user)
-            if _should_update_activity(user_id):
-                # Schedule background update (non-blocking)
-                asyncio.create_task(_update_free_user_activity_async(user_id))
-
-        await self.app(scope, receive, send)
+        return await self.app(request)
 ```
 
 ### 2. Free Manager Lambda
 
-**File:** `infrastructure/terraform/free_manager_package/free_manager.py`
+**File:** `studio/config/terraform/free_manager_package/free_manager.py`
 
 **Handler:** `handler(event, context)` (lines 86-118)
 
@@ -450,7 +444,7 @@ def scale_service(cluster_name: str, service_name: str, desired_count: int):
 
 ### 3. Multi-Instance Rebalancing
 
-**File:** `infrastructure/terraform/free_manager_package/free_manager.py`
+**File:** `studio/config/terraform/free_manager_package/free_manager.py`
 
 **Function:** `rebalance_idle_users_multi(available_instances)` (lines 648-776)
 
@@ -539,7 +533,7 @@ def rebalance_idle_users_multi(available_instances: List[str]) -> List[str]:
 
 ### 4. Workflow Protection
 
-**File:** `infrastructure/terraform/free_manager_package/free_user_utils.py`
+**File:** `studio/config/terraform/free_manager_package/free_user_utils.py`
 
 **Function:** `migrate_user_to_instance(user_id, new_instance_id)` (lines 211-258)
 
@@ -926,8 +920,6 @@ ASG_NAME                        # Auto Scaling Group name
 # Scaling Configuration
 FREE_USER_THRESHOLD             # Users to trigger scaling (default: 5)
 FREE_IDLE_THRESHOLD_MINUTES     # Activity threshold minutes (default: 10)
-                                # Note: Used for counting "active" users (activity < 10 min)
-                                # Migration eligibility: Users with active_workflow_count = 0
 MAX_FREE_INSTANCES              # Maximum instances (default: 10)
 
 # Lambda Configuration
@@ -948,23 +940,19 @@ MAX_FREE_INSTANCES              # Maximum instances (default: 10)
 
 ```sql
 CREATE TABLE free_user_assignments (
-    id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-    user_id BIGINT UNSIGNED NOT NULL UNIQUE,
-        -- Foreign key to users.id
-        -- UNIQUE constraint ensures one assignment per user
+    user_id VARCHAR(255) PRIMARY KEY,
     instance_id VARCHAR(20) NOT NULL,
     assigned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_activity TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        -- DB has ON UPDATE CURRENT_TIMESTAMP, middleware also manually updates
-        -- Throttled to once per minute per user to reduce DB load
     active_workflow_count INT NOT NULL DEFAULT 0,
     last_workflow_start TIMESTAMP NULL,
     last_workflow_end TIMESTAMP NULL,
     migration_count INT NOT NULL DEFAULT 0,
     last_migration TIMESTAMP NULL,
-    logged_out_at TIMESTAMP NULL,
-        -- Timestamp when user explicitly logged out
-    FOREIGN KEY (user_id) REFERENCES users(id)
+
+    INDEX idx_last_activity (last_activity),
+    INDEX idx_instance_id (instance_id),
+    INDEX idx_active_workflows (active_workflow_count)
 );
 ```
 

@@ -165,7 +165,7 @@ def cleanup_test_user_sessions(connection, user_emails: List[str]) -> Dict[str, 
                     "sessions_deleted": 0,
                 }
 
-            user_ids = [str(user["id"]) for user in users]
+            user_ids = [user["id"] for user in users]
             print(f"Found {len(user_ids)} users to clean up")
 
             # Delete free_user_assignments for these users

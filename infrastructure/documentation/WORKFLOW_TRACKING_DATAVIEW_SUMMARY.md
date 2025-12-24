@@ -147,7 +147,7 @@ def decrement_workflow_count(user_id: Optional[int]) -> None:
 # Atomic increment using SQLAlchemy's update()
 stmt = (
     update(FreeUserAssignment)
-    .where(FreeUserAssignment.user_id == str(user_id))
+    .where(FreeUserAssignment.user_id == user_id)
     .values(
         active_workflow_count=FreeUserAssignment.active_workflow_count + 1,
         last_workflow_start=func.now(),

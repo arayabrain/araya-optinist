@@ -130,6 +130,9 @@ class Runner:
         ids = ExptOutputPathIds(workflow_dirpath)
         pid_file_path = cls.__get_pid_file_path(ids.workspace_id, ids.unique_id)
 
+        # Ensure parent directory exists
+        os.makedirs(os.path.dirname(pid_file_path), exist_ok=True)
+
         with open(pid_file_path, "w") as f:
             json.dump(asdict(pid_data), f)
 
