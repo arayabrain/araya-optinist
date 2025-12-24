@@ -6,6 +6,7 @@ import axiosLibrary, {
 
 import { refreshTokenApi } from "api/auth/Auth"
 import { BASE_URL } from "const/API"
+import { UserTier } from "const/Subscription"
 import { getExToken, getToken, logout, saveToken } from "utils/auth/AuthUtils"
 import {
   isDataviewPublicOutputsRequest,
@@ -230,7 +231,19 @@ const handlePremiumRoutingError = async (
 }
 
 axios.interceptors.response.use(
-  async (res) => res,
+  async (res) => {
+    // Capture X-Routing-ID and X-User-Tier from response headers
+    const routingId = res.headers["x-routing-id"]
+    const userTier = res.headers["x-user-tier"]
+
+    if (routingId && userTier) {
+      routingService.updateRoutingToken(routingId) // Store routing_id
+    } else if (!routingId && userTier === UserTier.FREE) {
+      routingService.clearRoutingInfo() // User downgraded to free
+    }
+
+    return res
+  },
   async (error) => {
     if (error?.response?.status === 401) {
       return handleUnauthorizedError(error)
@@ -243,13 +256,12 @@ axios.interceptors.response.use(
     ) {
       // Premium instance not ready, falling back to free tier until migration
 
-      // Retry request without premium headers to use free tier
+      // Retry request without routing ID to use free tier
       if (error.config && !error.config._retryWithoutPremium) {
         const retryConfig = { ...error.config }
 
-        // Remove premium routing headers for free tier fallback
-        delete retryConfig.headers["X-User-Tier"]
-        delete retryConfig.headers["X-User-ID"]
+        // Remove routing ID for free tier fallback
+        delete retryConfig.headers["X-Routing-ID"]
 
         // Mark as retry to prevent infinite loops
         retryConfig._retryWithoutPremium = true

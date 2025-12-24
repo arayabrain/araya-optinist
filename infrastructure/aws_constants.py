@@ -40,3 +40,8 @@ class BatchJobStatus:
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
+
+
+class SubscriptionType:
+    FREE = "free"
+    PREMIUM = "premium"

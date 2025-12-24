@@ -8,6 +8,9 @@ from fastapi import HTTPException
 from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.middleware.secure_routing_middleware import (
+    invalidate_user_tier_cache,
+)
 from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.constants import (
     DUPLICATE_PURCHASE_WINDOW_MINUTES,
@@ -27,6 +30,7 @@ from studio.app.common.models.subscription import (
     SubscriptionUserPurchase,
     UserSubscription,
 )
+from studio.app.common.models.user import User
 
 logger = AppLogger.get_logger()
 
@@ -342,6 +346,12 @@ class WebhookService:
             # 10. Commit all changes
             db.commit()
 
+            # 11. Invalidate tier cache for immediate routing update
+            user = db.query(User).filter(User.id == user_id).first()
+            if user:
+                invalidate_user_tier_cache(user.uid)
+                logger.info("Invalidated tier cache after premium upgrade for user")
+
             logger.info(
                 f"Webhook: Successfully processed checkout for user {user_id}, "
                 f"plan {plan_id}, session {session_id}"
@@ -498,6 +508,14 @@ class WebhookService:
 
                 db.commit()
 
+                # Invalidate cache so next request reflects free tier immediately
+                user = db.query(User).filter(User.id == user_account.user_id).first()
+                if user:
+                    invalidate_user_tier_cache(user.uid)
+                    logger.info(
+                        "Invalidated tier cache after subscription cancellation"
+                    )
+
                 logger.info(f"Cancelled subscription for user {user_account.user_id}")
 
     @classmethod
@@ -603,6 +621,10 @@ class WebhookService:
                 )
 
             db.commit()
+
+            # Invalidate cache for immediate tier change
+            invalidate_user_tier_cache(user.uid)
+            logger.info("Invalidated tier cache after plan change")
 
             logger.info(
                 f"Successfully updated subscription for user {user.id} to plan "

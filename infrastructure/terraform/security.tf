@@ -552,6 +552,27 @@ resource "aws_iam_role_policy" "ecs_task_lambda_invoke" {
   })
 }
 
+# Secrets Manager access for routing HMAC key
+resource "aws_iam_role_policy" "ecs_task_routing_secret" {
+  name = "subscr-ecs-task-routing-secret"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          aws_secretsmanager_secret.routing_hmac_key.arn
+        ]
+      }
+    ]
+  })
+}
+
 
 # ===============
 # Security groups
@@ -788,6 +809,24 @@ resource "aws_secretsmanager_secret_version" "rds_credentials" {
   secret_string = jsonencode({
     username = var.mysql_user
     password = var.mysql_password
+  })
+}
+
+# Store HMAC secret for routing token verification
+resource "random_password" "routing_hmac_key" {
+  length  = 64
+  special = true
+}
+
+resource "aws_secretsmanager_secret" "routing_hmac_key" {
+  name        = "subscr-premium-routing-hmac-key"
+  description = "HMAC secret key for premium routing token verification"
+}
+
+resource "aws_secretsmanager_secret_version" "routing_hmac_key" {
+  secret_id = aws_secretsmanager_secret.routing_hmac_key.id
+  secret_string = jsonencode({
+    key = random_password.routing_hmac_key.result
   })
 }
 
