@@ -2285,7 +2285,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                 HealthyThresholdCount=2,
                 UnhealthyThresholdCount=3,
                 Tags=[
-                    {"Key": "UserID", "Value": user_id},
+                    {"Key": "UserID", "Value": str(user_id)},
                     {"Key": "Type", "Value": "premium-user"},
                     {"Key": "Service", "Value": "optinist-premium"},
                     {"Key": "Shared", "Value": str(is_shared)},
@@ -2957,7 +2957,7 @@ def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bo
                         HealthyThresholdCount=2,
                         UnhealthyThresholdCount=3,
                         Tags=[
-                            {"Key": "UserID", "Value": user_id},
+                            {"Key": "UserID", "Value": str(user_id)},
                             {"Key": "Type", "Value": "premium-user"},
                             {"Key": "Service", "Value": "optinist-premium"},
                         ],
