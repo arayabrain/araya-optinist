@@ -377,9 +377,10 @@ class S3StorageMonitor:
 
             with session_scope() as db:
                 # Check if storage record exists
-                existing_usage = db.exec(
+                result_row = db.execute(
                     select(UserStorageUsage).where(UserStorageUsage.user_id == user_id)
                 ).first()
+                existing_usage = result_row[0] if result_row else None
 
                 if existing_usage:
                     # Update quota if needed

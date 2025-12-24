@@ -2329,8 +2329,8 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                 {
                     "Field": "http-header",
                     "HttpHeaderConfig": {
-                        "HttpHeaderName": "X-Routing-ID",
-                        "Values": [routing_id],
+                        "HttpHeaderName": "X-User-ID",
+                        "Values": [str(user_id)],
                     },
                 },
             ],

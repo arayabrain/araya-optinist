@@ -3,7 +3,7 @@
 Safe Environment Variable Tests
 
 WHERE TO RUN:
-- Local development machine - Recommended
+- Local development machine - Should work
 - Cloud ECS container - Should work
 - CI/CD pipeline - Excellent for regression testing
 
@@ -91,7 +91,6 @@ class TestSafeEnvironmentVariables:
             # Import function after setting environment
             premium_manager_path = os.path.join(
                 os.path.dirname(os.path.dirname(__file__)),
-                "config",
                 "terraform",
                 "premium_manager_package",
             )
@@ -124,7 +123,6 @@ class TestSafeEnvironmentVariables:
         with patch.dict(os.environ, {}, clear=True):
             premium_manager_path = os.path.join(
                 os.path.dirname(os.path.dirname(__file__)),
-                "config",
                 "terraform",
                 "premium_manager_package",
             )
@@ -152,7 +150,6 @@ class TestSafeEnvironmentVariables:
             with patch("pymysql.connect") as mock_connect:
                 premium_manager_path = os.path.join(
                     os.path.dirname(os.path.dirname(__file__)),
-                    "config",
                     "terraform",
                     "premium_manager_package",
                 )
@@ -216,7 +213,6 @@ class TestSafeEnvironmentVariables:
             with patch("boto3.client"):
                 premium_manager_path = os.path.join(
                     os.path.dirname(os.path.dirname(__file__)),
-                    "config",
                     "terraform",
                     "premium_manager_package",
                 )
@@ -243,7 +239,6 @@ class TestSafeEnvironmentVariables:
             with patch("boto3.client"):
                 premium_manager_path = os.path.join(
                     os.path.dirname(os.path.dirname(__file__)),
-                    "config",
                     "terraform",
                     "premium_manager_package",
                 )
@@ -272,7 +267,6 @@ class TestSafeEnvironmentVariables:
             with patch("boto3.client"):
                 premium_manager_path = os.path.join(
                     os.path.dirname(os.path.dirname(__file__)),
-                    "config",
                     "terraform",
                     "premium_manager_package",
                 )
@@ -327,7 +321,6 @@ class TestSafeEnvironmentVariables:
 
         manager_file = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
-            "config",
             "terraform",
             "premium_manager_package",
             "premium_manager.py",

@@ -164,7 +164,7 @@ class PublishedExperimentSyncJob:
                 .limit(SyncStatusConstants.MAX_SYNC_PER_RUN)
             )
 
-            result = db.exec(statement)
+            result = db.execute(statement)
 
             return [(str(row[0]), row[1], row[2]) for row in result]
 

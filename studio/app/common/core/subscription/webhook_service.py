@@ -736,17 +736,24 @@ class WebhookService:
                 logger.info(f"Webhook: User account query result: {user_account}")
 
                 if not user_account:
-                    logger.error(
+                    logger.warning(
                         f"Webhook: No user account found for customer_id: {customer_id}"
                     )
-                    logger.error(
+                    logger.warning(
                         "Webhook: This likely means the user hasn't completed initial "
-                        "checkout or the customer_id wasn't stored correctly"
+                        "checkout or the customer_id wasn't stored correctly. "
+                        "This could be from test webhooks, incomplete checkouts, "
+                        "or deleted users. Acknowledging webhook to prevent retries."
                     )
-                    raise HTTPException(
-                        status_code=404,
-                        detail=f"User not found for customer_id: {customer_id}",
-                    )
+                    # Return success to acknowledge webhook and prevent Stripe retries
+                    # This is normal for test data, incomplete checkouts, etc.
+                    return {
+                        "success": True,
+                        "message": f"User not found for customer_id: {customer_id}",
+                        "webhook_processed": True,
+                        "skipped": True,
+                        "reason": "missing_user_account",
+                    }
 
                 user_id = user_account.user_id
                 logger.info(f"Webhook: Found user_id: {user_id}")
