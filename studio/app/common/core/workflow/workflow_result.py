@@ -62,7 +62,6 @@ class WorkflowResult:
           - Check and update the workflow execution status
           - Response with the confirmed workflow execution status
         """
-
         expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
 
         # validate args
@@ -85,9 +84,9 @@ class WorkflowResult:
         )
 
         # If the workflow status observation is ongoing (maybe workflow is incomplete),
-        # check whether the actual process exists (local) or batch jobs (remote).
+        # check whether the actual process exists.
         if is_workflow_observation_ongoing:
-            # Check workflow process exists
+            # check workflow process exists
             current_process = self.monitor.search_process()
 
             # error handling for process not found

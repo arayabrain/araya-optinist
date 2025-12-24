@@ -40,12 +40,7 @@ class SmkConfigReader:
     @classmethod
     def get_config_yaml_path(cls, workspace_id: str, unique_id: str) -> str:
         path = join_filepath(
-            [
-                DIRPATH.OUTPUT_DIR,
-                workspace_id,
-                unique_id,
-                DIRPATH.SNAKEMAKE_CONFIG_YML,
-            ]
+            [DIRPATH.OUTPUT_DIR, workspace_id, unique_id, DIRPATH.SNAKEMAKE_CONFIG_YML]
         )
         return path
 
@@ -53,7 +48,6 @@ class SmkConfigReader:
     def read(cls, workspace_id: str, unique_id: str) -> dict:
         filepath = cls.get_config_yaml_path(workspace_id, unique_id)
         config = ConfigReader.read(filepath)
-
         assert config, f"Invalid config yaml file: [{filepath}] [{config}]"
 
         return config

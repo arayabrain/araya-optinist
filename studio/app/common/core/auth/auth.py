@@ -25,6 +25,7 @@ async def authenticate_user(db: Session, data: UserAuth) -> Tuple[Token, UserMod
         user = pyrebase_app.auth().sign_in_with_email_and_password(
             data.email, data.password
         )
+
         user_db: UserModel = (
             db.query(UserModel)
             .filter(UserModel.uid == user["localId"], UserModel.active.is_(True))
@@ -54,7 +55,6 @@ async def authenticate_user(db: Session, data: UserAuth) -> Tuple[Token, UserMod
             )
 
         assert user_db is not None, "Invalid user uid"
-
         ex_token = create_access_token(subject=user_db.uid)
         token = Token(
             access_token=user["idToken"],

@@ -66,18 +66,16 @@ class ExptOutputPathIds:
         Extract each ID from output_path
         - output_dir format
           - {DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}/{function_id}
-
         """
-        if not self.output_dir:
-            return
-
-        output_dir_normalized = self.output_dir.replace("\\", "/")
-
-        output_relative_dir = os.path.relpath(
-            output_dir_normalized,
-            DIRPATH.OUTPUT_DIR.replace("\\", "/"),
-        ).replace("\\", "/")
-        splitted_ids = output_relative_dir.split("/")
+        if self.output_dir:
+            output_relative_dir = os.path.relpath(
+                self.output_dir.replace("\\", "/"),
+                DIRPATH.OUTPUT_DIR.replace("\\", "/"),
+            ).replace("\\", "/")
+            splitted_ids = output_relative_dir.split("/")
+        else:
+            output_relative_dir = None
+            splitted_ids = []
 
         ids_count = len(splitted_ids)
 
@@ -88,5 +86,5 @@ class ExptOutputPathIds:
         else:
             assert False, (
                 "Invalid path specified: "
-                f"[ids_count: {ids_count}] [path: {output_dir_normalized}]"
+                f"[ids_count: {ids_count}] [path: {output_relative_dir}]"
             )

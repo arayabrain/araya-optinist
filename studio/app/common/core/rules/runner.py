@@ -40,7 +40,7 @@ class Runner:
         try:
             logger.info("start rule runner")
 
-            # write pid file
+            # Write pid file
             workflow_dirpath = str(Path(__rule.output).parent.parent)
             cls.write_pid_file(workflow_dirpath, __rule.type, run_script_path)
 
@@ -74,7 +74,7 @@ class Runner:
                 output_info,
             )
 
-            # Save output (locally or to EFS/S3 as configured)
+            # Save the processing result of the Function(Node) (.pkl)
             PickleWriter.write(__rule.output, output_info)
 
             # Save NWB data through Workflow
