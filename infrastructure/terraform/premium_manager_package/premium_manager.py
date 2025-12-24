@@ -1042,7 +1042,7 @@ def try_reserve_instance_transaction(
             print(f"Instance {instance_id} already reserved/assigned")
             return False
 
-        # Create a temporary reservation
+        # Create a temporary reservation using actual user_id
         cursor.execute(
             """INSERT INTO premium_user_assignments
                (user_id, instance_id, target_group_arn, alb_rule_arn,
@@ -1051,7 +1051,7 @@ def try_reserve_instance_transaction(
                VALUES (%s, %s, 'reserving', 'reserving', 'active',
                        'reserving', 0, 1, NOW())
             """,
-            (f"reserving-{user_id}", instance_id),
+            (user_id, instance_id),
         )
         print(f"Reserved instance {instance_id} for user {user_id}")
         return True
@@ -1076,7 +1076,7 @@ def release_instance_reservation(instance_id: str, user_id: str):
                        WHERE instance_id = %s
                        AND user_id = %s
                        AND target_group_arn = 'reserving'""",
-                    (instance_id, f"reserving-{user_id}"),
+                    (instance_id, user_id),
                 )
                 connection.commit()
                 print(f"Released reservation for instance {instance_id}")
@@ -2366,7 +2366,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                        WHERE instance_id = %s
                        AND user_id = %s
                        AND target_group_arn = 'reserving'""",
-                    (instance_id, f"reserving-{user_id}"),
+                    (instance_id, user_id),
                 )
                 connection.commit()
 
