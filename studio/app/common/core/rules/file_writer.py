@@ -12,9 +12,9 @@ from studio.app.optinist.routers.mat import MatGetter
 class FileWriter:
     @classmethod
     def csv(cls, rule_config: Rule, nodeType):
-        input_path = rule_config.input
-
-        info = {rule_config.return_arg: CsvData(input_path, rule_config.params, "")}
+        info = {
+            rule_config.return_arg: CsvData(rule_config.input, rule_config.params, "")
+        }
         nwbfile = rule_config.nwbfile
 
         if nodeType == FILETYPE.CSV:
@@ -38,9 +38,7 @@ class FileWriter:
 
     @classmethod
     def image(cls, rule_config: Rule):
-        input_path = rule_config.input
-
-        info = {rule_config.return_arg: ImageData(input_path, "")}
+        info = {rule_config.return_arg: ImageData(rule_config.input, "")}
         nwbfile = rule_config.nwbfile
         nwbfile["image_series"]["external_file"] = info[rule_config.return_arg]
         info["nwbfile"] = {"input": nwbfile}
@@ -48,26 +46,22 @@ class FileWriter:
 
     @classmethod
     def hdf5(cls, rule_config: Rule):
-        input_path = rule_config.input
         nwbfile = rule_config.nwbfile
 
-        with h5py.File(input_path, "r") as f:
+        with h5py.File(rule_config.input, "r") as f:
             data = f[rule_config.hdf5Path][:]
 
         return cls.get_info_from_array_data(rule_config, nwbfile, data)
 
     @classmethod
     def mat(cls, rule_config: Rule):
-        input_path = rule_config.input
         nwbfile = rule_config.nwbfile
-        data = MatGetter.data(input_path, rule_config.matPath)
+        data = MatGetter.data(rule_config.input, rule_config.matPath)
         return cls.get_info_from_array_data(rule_config, nwbfile, data)
 
     @classmethod
     def microscope(cls, rule_config: Rule):
-        input_path = rule_config.input
-
-        info = {rule_config.return_arg: MicroscopeData(input_path)}
+        info = {rule_config.return_arg: MicroscopeData(rule_config.input)}
         nwbfile = rule_config.nwbfile
         nwbfile["image_series"]["external_file"] = info[rule_config.return_arg]
         info["nwbfile"] = {"input": nwbfile}
