@@ -394,8 +394,8 @@ resource "aws_cloudwatch_dashboard" "main" {
             ["OptiNiSt/FreeUsers", "ActiveLogins", { "label" : "Active Free Tier Users" }],
             ["OptiNiSt/Premium", "ActiveAssignments", { "label" : "Active Premium Users" }],
             ["OptiNiSt/Premium", "InstanceUtilization", { "label" : "Premium Instance Utilization %" }],
-#            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Duration" }],
-#            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Errors" }]
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Duration" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Errors" }]
           ]
           view    = "timeSeries"
           stacked = false

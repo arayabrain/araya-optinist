@@ -24,10 +24,11 @@ from typing import Any, Dict, List
 
 import boto3
 import pymysql
-from aws_constants import ECSTaskStatus
 
 # Add parent directory to path for shared imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+
+from aws_constants import ECSTaskStatus  # noqa: E402
 
 
 def get_required_env_var(var_name: str, default_value: str = None) -> str:
