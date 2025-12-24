@@ -445,7 +445,7 @@ Total: ~50 bytes per user
 
 ### Integration Tests
 
-**File:** `infrastructure/scripts/test_jwt_routing_security.py`
+**File:** `infrastructure/scripts/test_alb_routing_security.py`
 
 **Scenarios:**
 1. Valid JWT flow (login → routing_id → premium routing)

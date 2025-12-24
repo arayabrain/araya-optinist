@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-JWT-Based Routing Integration Tests (Non-Reversible Routing IDs)
+ALB Routing Integration Tests (Non-Reversible Routing IDs)
 
-Tests the JWT-based routing with HMAC-SHA256 non-reversible routing IDs.
+Tests the ALB routing with HMAC-SHA256 non-reversible routing IDs.
 
 WHAT IT TESTS:
 1. Valid JWT flow - User authenticates and receives routing headers
@@ -16,14 +16,14 @@ WHAT IT TESTS:
 
 HOW TO RUN:
   # Auto-generate tokens (recommended)
-  python infrastructure/scripts/test_jwt_routing_security.py \
+  python infrastructure/scripts/test_alb_routing_security.py \
       --api-url https://your-alb-url.amazonaws.com
 
   # Use existing token
   export FIREBASE_TOKEN="your_token"
   export TEST_USER_UID="user_uid"
   export TEST_USER_TIER="premium"
-  python infrastructure/scripts/test_jwt_routing_security.py \
+  python infrastructure/scripts/test_alb_routing_security.py \
       --api-url https://your-alb-url.amazonaws.com
 
 REQUIREMENTS:
