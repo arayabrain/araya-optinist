@@ -369,3 +369,44 @@ PAYMENT_METHOD_TYPE_LINK = "link"
 
 # Setup intent usage
 SETUP_INTENT_USAGE_OFF_SESSION = "off_session"
+
+
+# ============================================================================
+# Storage Reconciliation Constants
+# ============================================================================
+class StorageReconciliation:
+    """Constants for storage reconciliation background job"""
+
+    # Job scheduling
+    INTERVAL_MINUTES = 60  # Run every 60 minutes
+
+    # Drift detection thresholds (for logging warnings)
+    DRIFT_THRESH_PERCENT = 5.0  # 5% drift
+    DRIFT_THRESH_BYTES = 100 * 1024 * 1024  # 100 MB
+
+    # Batch processing configuration
+    BATCH_SIZE = 10  # Process 10 users at a time to prevent OOM
+    RATE_LIMIT_DELAY_SECONDS = 0.5  # 0.5s delay between users to avoid S3 throttling
+
+    # PostgreSQL advisory lock namespace for storage scans
+    # This namespace ID is multiplied by 1000000 and added to user_id
+    # to create unique lock keys: lock_key = ADVISORY_LOCK_NAMESPACE * 1000000 + user_id
+    # Range: 12345000000 - 12345999999 (supports up to 1M users)
+    ADVISORY_LOCK_NAMESPACE = 12345
+
+
+class StorageScanTriggers:
+    """Constants for triggering full S3 storage scans"""
+
+    # Delta thresholds for triggering scans
+    DELTA_THRESHOLD_PERCENT = 5.0  # 5% of current storage
+    DELTA_THRESHOLD_BYTES = 200 * 1024 * 1024  # 200 MB
+
+    # Time-based scan interval
+    SCAN_INTERVAL_MINUTES = 60  # Hourly reconciliation
+
+
+class S3Pagination:
+    """Constants for S3 pagination and streaming"""
+
+    PAGE_SIZE = 1000  # Process 1000 objects at a time

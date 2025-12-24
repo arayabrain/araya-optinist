@@ -23,12 +23,18 @@ from studio.app.common.core.middleware import (
 )
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
-from studio.app.common.core.subscription.constants import SyncStatusConstants
+from studio.app.common.core.subscription.constants import (
+    StorageReconciliation,
+    SyncStatusConstants,
+)
 
 # Background job imports (only used in non-standalone mode)
 if not MODE.IS_STANDALONE:
     from studio.app.common.core.background.cleanup_job import DataCleanupJob
     from studio.app.common.core.background.scheduler import BackgroundScheduler
+    from studio.app.common.core.background.storage_reconciliation_job import (
+        StorageReconciliationJob,
+    )
     from studio.app.common.core.background.sync_job import PublishedExperimentSyncJob
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
@@ -84,7 +90,11 @@ async def lifespan(app: FastAPI):
     )
 
     # Initialize background job scheduler
-    if not MODE.IS_STANDALONE:
+    # Can be disabled with DISABLE_BACKGROUND_SCHEDULER=1 env var
+    # (e.g., when using cron)
+    disable_scheduler = os.environ.get("DISABLE_BACKGROUND_SCHEDULER", "0") == "1"
+
+    if not MODE.IS_STANDALONE and not disable_scheduler:
         logger.info("Initializing background job scheduler")
         BackgroundScheduler.initialize()
 
@@ -102,14 +112,25 @@ async def lifespan(app: FastAPI):
             job_id="data_cleanup",
         )
 
+        # Add storage reconciliation job (every 60 minutes)
+        BackgroundScheduler.add_job(
+            func=StorageReconciliationJob.run,
+            interval_minutes=StorageReconciliation.INTERVAL_MINUTES,
+            job_id="storage_reconciliation",
+        )
+
         # Start scheduler
         BackgroundScheduler.start()
         logger.info("Background job scheduler started")
+    elif disable_scheduler:
+        logger.info(
+            "Background scheduler disabled by DISABLE_BACKGROUND_SCHEDULER env var"
+        )
 
     yield
 
     # Shutdown event
-    if not MODE.IS_STANDALONE:
+    if not MODE.IS_STANDALONE and not disable_scheduler:
         BackgroundScheduler.shutdown()
         logger.info("Background job scheduler shut down")
 
