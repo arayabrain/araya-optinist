@@ -219,36 +219,6 @@ def extract_uid_from_jwt_token(ex_token: str) -> Tuple[Optional[str], Optional[s
         return None, f"JWT token validation failed: {e}"
 
 
-def extract_uid_from_firebase_jwt(token: str) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Extract user_id (uid) from Firebase JWT token string
-
-    This is a convenience wrapper that reuses existing Firebase token verification
-    logic with caching. Returns a tuple matching the signature of other extract_uid_*
-    functions. Used by ASGI middleware for Firebase JWT verification.
-
-    Args:
-        token: Firebase ID token string
-
-    Returns:
-        Tuple of (uid, error_message). If successful, error_message is None.
-    """
-    # Check cache first (reuses existing caching logic)
-    cached_uid = _get_cached_uid(token)
-    if cached_uid is not None:
-        return cached_uid, None
-
-    # Verify token using existing sync verification
-    uid = _verify_firebase_token_sync(token)
-
-    # Cache the result (reuses existing caching logic)
-    if uid is not None:
-        _cache_uid(token, uid)
-        return uid, None
-    else:
-        return None, "Firebase token validation failed"
-
-
 def _extract_token_from_request(request: Request) -> Optional[str]:
     """
     Extract authentication token from request headers based on configured auth method
