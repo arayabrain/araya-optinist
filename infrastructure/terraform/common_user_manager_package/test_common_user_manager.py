@@ -25,7 +25,7 @@ os.environ[
 
 @pytest.fixture
 def mock_db_connection():
-    """Mock database connection"""
+    """Mock database connection (pymysql)"""
     with patch("common_user_manager.get_db_connection") as mock_conn:
         mock_context = MagicMock()
         mock_cursor = MagicMock()
@@ -38,6 +38,16 @@ def mock_db_connection():
 
 
 @pytest.fixture
+def mock_sqlalchemy_session():
+    """Mock SQLAlchemy session"""
+    with patch("common_user_manager.get_sqlalchemy_session") as mock_session_ctx:
+        mock_session = MagicMock()
+        mock_session_ctx.return_value.__enter__ = Mock(return_value=mock_session)
+        mock_session_ctx.return_value.__exit__ = Mock(return_value=False)
+        yield mock_session
+
+
+@pytest.fixture
 def mock_boto3():
     """Mock boto3 clients"""
     with patch("common_user_manager.boto3") as mock_boto:
@@ -47,34 +57,43 @@ def mock_boto3():
 class TestRecoverStaleWorkflowCounts:
     """Tests for recover_stale_workflow_counts function"""
 
-    def test_no_stale_workflows(self, mock_db_connection):
+    def test_no_stale_workflows(self, mock_sqlalchemy_session):
         """Test when no stale workflows exist"""
-        mock_context, mock_cursor = mock_db_connection
-        mock_cursor.execute.return_value = 0  # No rows affected
+        mock_result = MagicMock()
+        mock_result.rowcount = 0
+        mock_sqlalchemy_session.execute.return_value = mock_result
 
         result = common_user_manager.recover_stale_workflow_counts()
 
         assert result["recovered"] == 0
+        assert result["free"] == 0
+        assert result["premium"] == 0
         assert "error" not in result
-        mock_cursor.execute.assert_called_once()
-        mock_context.commit.assert_called_once()
+        assert mock_sqlalchemy_session.execute.call_count == 2  # free + premium
 
-    def test_recovers_stale_workflows(self, mock_db_connection):
+    def test_recovers_stale_workflows(self, mock_sqlalchemy_session):
         """Test when stale workflows are found and recovered"""
-        mock_context, mock_cursor = mock_db_connection
-        mock_cursor.execute.return_value = 3  # 3 rows affected
+        mock_result_free = MagicMock()
+        mock_result_free.rowcount = 2
+        mock_result_premium = MagicMock()
+        mock_result_premium.rowcount = 1
+        mock_sqlalchemy_session.execute.side_effect = [
+            mock_result_free,
+            mock_result_premium,
+        ]
 
         result = common_user_manager.recover_stale_workflow_counts()
 
         assert result["recovered"] == 3
+        assert result["free"] == 2
+        assert result["premium"] == 1
         assert "error" not in result
-        mock_cursor.execute.assert_called_once()
-        mock_context.commit.assert_called_once()
 
-    def test_database_error(self, mock_db_connection):
+    def test_database_error(self, mock_sqlalchemy_session):
         """Test handling of database errors"""
-        mock_context, mock_cursor = mock_db_connection
-        mock_cursor.execute.side_effect = Exception("Database connection failed")
+        mock_sqlalchemy_session.execute.side_effect = Exception(
+            "Database connection failed"
+        )
 
         result = common_user_manager.recover_stale_workflow_counts()
 
@@ -247,7 +266,7 @@ class TestHandler:
         assert "results" in body
 
     def test_handler_with_errors(self, mock_db_connection):
-        """Test handler when operations fail"""
+        """Test handler gracefully handles operation failures (resilient behavior)"""
         mock_context, mock_cursor = mock_db_connection
         mock_cursor.execute.side_effect = Exception("Critical database error")
 
@@ -257,9 +276,15 @@ class TestHandler:
 
         result = common_user_manager.handler(event, context)
 
-        assert result["statusCode"] == 500
+        # Handler should return 200 (resilient) but operations should report errors
+        assert result["statusCode"] == 200
         body = json.loads(result["body"])
-        assert "error" in body
+        assert "results" in body
+        # Check that operations reported errors in their results
+        assert "error" in body["results"]["free_inactivity"]
+        assert "error" in body["results"]["premium_inactivity"]
+        assert body["results"]["free_inactivity"]["logged_out"] == 0
+        assert body["results"]["premium_inactivity"]["logged_out"] == 0
 
 
 class TestEnvironmentVariables:

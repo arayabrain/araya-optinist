@@ -12,10 +12,67 @@ premium_manager and free_manager lambdas.
 
 import json
 import os
+from contextlib import contextmanager
+from datetime import datetime, timedelta
 from typing import Any, Dict
 
 import boto3
 import pymysql
+from sqlalchemy import (
+    TIMESTAMP,
+    Column,
+    Integer,
+    MetaData,
+    Table,
+    create_engine,
+    or_,
+    update,
+)
+from sqlalchemy.dialects.mysql import BIGINT
+from sqlalchemy.orm import Session
+
+# ============================================================================
+# Constants
+# ============================================================================
+
+# Database connection
+DB_PORT_DEFAULT = 3306
+
+# Workflow recovery timeouts
+WORKFLOW_USER_INACTIVITY_HOURS = 2  # User must be inactive for this long
+WORKFLOW_VERY_OLD_HOURS = 4  # Workflows older than this are assumed crashed
+
+# User inactivity logout timeouts (can be overridden by env vars)
+FREE_IDLE_TIMEOUT_HOURS_DEFAULT = 2
+PREMIUM_IDLE_TIMEOUT_HOURS_DEFAULT = 2
+
+# ============================================================================
+# Table Metadata Definitions (defined once at module level for efficiency)
+# ============================================================================
+
+metadata = MetaData()
+
+# FreeUserAssignment table
+FREE_USERS_TABLE = Table(
+    "free_user_assignments",
+    metadata,
+    Column("id", BIGINT(unsigned=True), primary_key=True),
+    Column("active_workflow_count", Integer),
+    Column("last_activity", TIMESTAMP),
+    Column("last_workflow_start", TIMESTAMP),
+    Column("last_workflow_end", TIMESTAMP),
+)
+
+# PremiumUserAssignment table
+PREMIUM_USERS_TABLE = Table(
+    "premium_user_assignments",
+    metadata,
+    Column("id", BIGINT(unsigned=True), primary_key=True),
+    Column("active_workflow_count", Integer),
+    Column("last_activity", TIMESTAMP),
+    Column("last_workflow_start", TIMESTAMP),
+    Column("last_workflow_end", TIMESTAMP),
+)
 
 
 def get_required_env_var(var_name: str, default_value: str = None) -> str:
@@ -26,18 +83,29 @@ def get_required_env_var(var_name: str, default_value: str = None) -> str:
 
 
 def get_db_connection():
-    from contextlib import contextmanager
+    """
+    Get pymysql connection (legacy).
+
+    Note: This function uses pymysql directly for backward compatibility with
+    existing inactivity check functions. New code should use get_sqlalchemy_session().
+    """
 
     @contextmanager
     def connection_context():
         conn = None
         try:
             rds_host = get_required_env_var("RDS_HOST")
-            host = rds_host.split(":")[0] if ":" in rds_host else rds_host
+            # Parse host and port from RDS_HOST (format: "host:port" or "host")
+            if ":" in rds_host:
+                host, port_str = rds_host.split(":", 1)
+                port = int(port_str)
+            else:
+                host = rds_host
+                port = DB_PORT_DEFAULT
 
             conn = pymysql.connect(
                 host=host,
-                port=3306,
+                port=port,
                 user=get_required_env_var("RDS_USER"),
                 password=get_required_env_var("RDS_PASSWORD"),
                 database=get_required_env_var("RDS_DATABASE"),
@@ -51,44 +119,155 @@ def get_db_connection():
     return connection_context()
 
 
-def recover_stale_workflow_counts() -> Dict[str, int]:
-    """Reset stale workflow counts (>30 min old) for both free and premium users."""
+@contextmanager
+def get_sqlalchemy_session():
+    """
+    Get SQLAlchemy session for type-safe database operations.
+
+    Note: Creates a new engine per call for Lambda compatibility.
+    Lambda functions should not maintain persistent connections across invocations.
+    """
+    rds_host = get_required_env_var("RDS_HOST")
+    # Parse host and port from RDS_HOST (format: "host:port" or "host")
+    if ":" in rds_host:
+        host, port_str = rds_host.split(":", 1)
+        port = int(port_str)
+    else:
+        host = rds_host
+        port = DB_PORT_DEFAULT
+
+    user = get_required_env_var("RDS_USER")
+    password = get_required_env_var("RDS_PASSWORD")
+    database = get_required_env_var("RDS_DATABASE")
+
+    # Create SQLAlchemy engine (disposed after use for Lambda)
+    connection_string = (
+        f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}" "?charset=utf8mb4"
+    )
+    engine = create_engine(connection_string, pool_pre_ping=True)
+
+    session = Session(engine)
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                # Recover free user workflow counts
-                free_sql = """
-                    UPDATE free_user_assignments
-                    SET active_workflow_count = 0
-                    WHERE active_workflow_count > 0
-                    AND last_workflow_start < DATE_SUB(NOW(), INTERVAL 30 MINUTE)
-                """
-                free_affected = cursor.execute(free_sql)
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+        engine.dispose()
 
-                # Recover premium user workflow counts
-                premium_sql = """
-                    UPDATE premium_user_assignments
-                    SET active_workflow_count = 0
-                    WHERE active_workflow_count > 0
-                    AND last_workflow_start < DATE_SUB(NOW(), INTERVAL 30 MINUTE)
-                """
-                premium_affected = cursor.execute(premium_sql)
 
-                conn.commit()
+def recover_stale_workflow_counts() -> Dict[str, int]:
+    """
+    Reset stale workflow counts for both free and premium users using hybrid approach.
 
-                total_affected = free_affected + premium_affected
+    Only resets counts when ANY of these conditions are met:
+    1. User is inactive (last_activity >WORKFLOW_USER_INACTIVITY_HOURS) AND
+       workflow has completed (last_workflow_end >= last_workflow_start)
+    2. User is inactive (last_activity >WORKFLOW_USER_INACTIVITY_HOURS) AND
+       workflow started >WORKFLOW_VERY_OLD_HOURS ago (very old, likely crashed)
 
-                if total_affected > 0:
-                    print(
-                        f"Recovered {total_affected} stale workflow counts "
-                        f"(free: {free_affected}, premium: {premium_affected})"
+    This ensures we don't reset counts for:
+    - Long-running workflows with active user sessions (last_activity is recent)
+    - Recent workflows where user is still working
+    - Workflows that might legitimately take 2-4 hours with inactive user
+
+    Uses existing heartbeat system (last_activity) to determine user activity.
+    """
+    try:
+        with get_sqlalchemy_session() as session:
+            now = datetime.utcnow()
+            user_inactive_threshold = now - timedelta(
+                hours=WORKFLOW_USER_INACTIVITY_HOURS
+            )
+            workflow_very_old_threshold = now - timedelta(hours=WORKFLOW_VERY_OLD_HOURS)
+
+            # Recover free user workflow counts
+            # Note: NULL handling - users with NULL
+            # last_activity are excluded by < comparison
+            free_stmt = (
+                update(FREE_USERS_TABLE)
+                .where(FREE_USERS_TABLE.c.active_workflow_count > 0)
+                .where(FREE_USERS_TABLE.c.last_activity.isnot(None))
+                .where(FREE_USERS_TABLE.c.last_activity < user_inactive_threshold)
+                .where(
+                    or_(
+                        # Workflow has completed (decrement failed)
+                        # Both timestamps must exist and end >= start
+                        (
+                            FREE_USERS_TABLE.c.last_workflow_end.isnot(None)
+                            & FREE_USERS_TABLE.c.last_workflow_start.isnot(None)
+                            & (
+                                FREE_USERS_TABLE.c.last_workflow_end
+                                >= FREE_USERS_TABLE.c.last_workflow_start
+                            )
+                        ),
+                        # Workflow is very old - likely crashed
+                        # Start timestamp must exist and be very old
+                        (
+                            FREE_USERS_TABLE.c.last_workflow_start.isnot(None)
+                            & (
+                                FREE_USERS_TABLE.c.last_workflow_start
+                                < workflow_very_old_threshold
+                            )
+                        ),
                     )
+                )
+                .values(active_workflow_count=0)
+            )
 
-                return {
-                    "recovered": total_affected,
-                    "free": free_affected,
-                    "premium": premium_affected,
-                }
+            free_result = session.execute(free_stmt)
+            free_affected = free_result.rowcount
+
+            # Recover premium user workflow counts
+            premium_stmt = (
+                update(PREMIUM_USERS_TABLE)
+                .where(PREMIUM_USERS_TABLE.c.active_workflow_count > 0)
+                .where(PREMIUM_USERS_TABLE.c.last_activity.isnot(None))
+                .where(PREMIUM_USERS_TABLE.c.last_activity < user_inactive_threshold)
+                .where(
+                    or_(
+                        # Workflow has completed (decrement failed)
+                        (
+                            PREMIUM_USERS_TABLE.c.last_workflow_end.isnot(None)
+                            & PREMIUM_USERS_TABLE.c.last_workflow_start.isnot(None)
+                            & (
+                                PREMIUM_USERS_TABLE.c.last_workflow_end
+                                >= PREMIUM_USERS_TABLE.c.last_workflow_start
+                            )
+                        ),
+                        # Workflow is very old - likely crashed
+                        (
+                            PREMIUM_USERS_TABLE.c.last_workflow_start.isnot(None)
+                            & (
+                                PREMIUM_USERS_TABLE.c.last_workflow_start
+                                < workflow_very_old_threshold
+                            )
+                        ),
+                    )
+                )
+                .values(active_workflow_count=0)
+            )
+
+            premium_result = session.execute(premium_stmt)
+            premium_affected = premium_result.rowcount
+
+            # Note: session.commit() is called by context manager on line 76
+
+            total_affected = free_affected + premium_affected
+
+            if total_affected > 0:
+                print(
+                    f"Recovered {total_affected} stale workflow counts "
+                    f"(free: {free_affected}, premium: {premium_affected})"
+                )
+
+            return {
+                "recovered": total_affected,
+                "free": free_affected,
+                "premium": premium_affected,
+            }
 
     except Exception as e:
         print(f"Failed to recover stale workflow counts: {e}")
@@ -96,9 +275,13 @@ def recover_stale_workflow_counts() -> Dict[str, int]:
 
 
 def check_free_user_inactivity() -> Dict[str, int]:
-    """Check and logout inactive free users (>2 hours)"""
+    """Check and logout inactive free users"""
     try:
-        timeout_hours = int(get_required_env_var("FREE_IDLE_TIMEOUT_HOURS", "2"))
+        timeout_hours = int(
+            get_required_env_var(
+                "FREE_IDLE_TIMEOUT_HOURS", str(FREE_IDLE_TIMEOUT_HOURS_DEFAULT)
+            )
+        )
 
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -138,9 +321,13 @@ def check_free_user_inactivity() -> Dict[str, int]:
 
 
 def check_premium_user_inactivity() -> Dict[str, int]:
-    """Check and logout inactive premium users (>2 hours)"""
+    """Check and logout inactive premium users"""
     try:
-        timeout_hours = int(get_required_env_var("PREMIUM_IDLE_TIMEOUT_HOURS", "2"))
+        timeout_hours = int(
+            get_required_env_var(
+                "PREMIUM_IDLE_TIMEOUT_HOURS", str(PREMIUM_IDLE_TIMEOUT_HOURS_DEFAULT)
+            )
+        )
         elbv2 = boto3.client("elbv2")
 
         with get_db_connection() as conn:
