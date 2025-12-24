@@ -18,7 +18,7 @@ Architecture:
 3. Query user tier with caching (webhook-triggered invalidation)
 4. Generate non-reversible routing_id from UID (HMAC-SHA256)
 5. Add x-user-tier and x-routing-id headers for ALB routing
-6. Validate routing_id on incoming requests (detect spoofing)
+6. Validate routing_id on incoming requests (reject with 403 if spoofed)
 """
 
 import hashlib
@@ -148,14 +148,16 @@ class SecureRoutingMiddleware:
     - Queries user tier with caching (webhook-triggered invalidation)
     - Generates non-reversible routing_id from UID (HMAC-SHA256)
     - Adds x-user-tier and x-routing-id headers for ALB routing
-    - Validates incoming routing_id headers to detect spoofing
+    - Validates incoming routing_id headers and rejects mismatches with 403
 
     Security:
     - UID never exposed to client (only non-reversible routing_id)
     - Client cannot forge routing_id without SECRET_KEY
-    - Backend validates routing_id matches JWT UID
+    - Backend validates routing_id matches JWT UID and rejects spoofing attempts
     - Immediate cache invalidation on subscription changes
     """
+
+    SKIP_AUTH_PATHS = ["/health", "/api/auth/login", "/api/auth/refresh"]
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -174,7 +176,7 @@ class SecureRoutingMiddleware:
         path = scope.get("path", "")
 
         # Skip health check and auth endpoints
-        if path in ["/health", "/api/auth/login", "/api/auth/refresh"]:
+        if path in self.SKIP_AUTH_PATHS:
             await self.app(scope, receive, send)
             return
 
@@ -206,12 +208,23 @@ class SecureRoutingMiddleware:
             expected_routing_id = generate_routing_id(uid, ROUTING_SECRET_KEY)
             if routing_id_header != expected_routing_id:
                 logger.warning(
-                    f"Routing ID mismatch detected. "
+                    f"Routing ID mismatch detected - rejecting request. "
                     f"Expected: {expected_routing_id[:8]}..., "
                     f"Got: {routing_id_header[:8]}..."
                 )
-                # Log but allow request (graceful degradation)
-                # Could reject with 403 for stricter security
+                # Reject with 403 for stricter security
+                response = {
+                    "type": "http.response.start",
+                    "status": 403,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+                await send(response)
+                body = {
+                    "type": "http.response.body",
+                    "body": b'{"detail":"Invalid routing ID"}',
+                }
+                await send(body)
+                return
 
         # Add routing headers for ALB
         async def send_wrapper(message: Message) -> None:

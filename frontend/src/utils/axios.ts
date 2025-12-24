@@ -6,6 +6,7 @@ import axiosLibrary, {
 
 import { refreshTokenApi } from "api/auth/Auth"
 import { BASE_URL } from "const/API"
+import { UserTier } from "const/Subscription"
 import { getExToken, getToken, logout, saveToken } from "utils/auth/AuthUtils"
 import {
   isDataviewPublicOutputsRequest,
@@ -197,7 +198,7 @@ axios.interceptors.response.use(
 
     if (routingId && userTier) {
       routingService.updateRoutingToken(routingId) // Store routing_id
-    } else if (!routingId && userTier === "free") {
+    } else if (!routingId && userTier === UserTier.FREE) {
       routingService.clearRoutingInfo() // User downgraded to free
     }
 
