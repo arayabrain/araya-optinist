@@ -189,11 +189,49 @@ const handleUnauthorizedError = async (
   }
 }
 
+/**
+ * Handle 503 Service Unavailable errors for premium routing by falling back to free tier
+ */
+const handlePremiumRoutingError = async (
+  error: AxiosError,
+): Promise<AxiosResponse> => {
+  // Guard: originalRequest must exist to proceed
+  if (!error.config) {
+    return Promise.reject(error)
+  }
+
+  const originalRequest = error.config as CustomAxiosRequestConfig
+
+  // Prevent infinite retry loops
+  if (originalRequest._retryWithoutPremium) {
+    return Promise.reject(error)
+  }
+
+  // Premium instance not ready, falling back to free tier
+  const retryConfig = { ...originalRequest }
+
+  // Remove premium routing headers for free tier fallback
+  delete retryConfig.headers["X-User-Tier"]
+  delete retryConfig.headers["X-User-ID"]
+
+  // Mark as retry to prevent infinite loops
+  retryConfig._retryWithoutPremium = true
+
+  try {
+    // eslint-disable-next-line no-console
+    console.log("Using free tier while premium instance provisions")
+    return await axiosLibrary(retryConfig)
+  } catch (retryError) {
+    // eslint-disable-next-line no-console
+    console.error("Free tier fallback also failed:", retryError)
+    // Let the original error bubble up
+    return Promise.reject(error)
+  }
+}
+
 axios.interceptors.response.use(
   async (res) => res,
   async (error) => {
-    const originalRequest = error.config
-
     if (error?.response?.status === 401) {
       return handleUnauthorizedError(error)
     }
