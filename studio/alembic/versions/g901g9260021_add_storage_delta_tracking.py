@@ -1,7 +1,7 @@
 """add_storage_delta_tracking
 
 Revision ID: g901g9260021
-Revises: f801f8250020
+Revises: a5b9c8d7e6f5
 Create Date: 2025-12-23 17:00:00.000000
 
 """
@@ -10,7 +10,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "g901g9260021"
-down_revision = "f801f8250020"
+down_revision = "a5b9c8d7e6f5"
 branch_labels = None
 depends_on = None
 
