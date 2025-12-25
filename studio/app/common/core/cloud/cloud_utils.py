@@ -489,6 +489,11 @@ def _is_storage_data_fresh(storage_info: Dict, max_cache_age_minutes: int) -> bo
         # Convert to datetime if it's not already
         if isinstance(last_updated, str):
             last_updated = datetime.fromisoformat(last_updated.replace("Z", "+00:00"))
+        # Handle datetime objects from database (timezone-naive from MySQL DateTime)
+        elif isinstance(last_updated, datetime):
+            if last_updated.tzinfo is None:
+                # Assume UTC for timezone-naive datetimes from database
+                last_updated = last_updated.replace(tzinfo=timezone.utc)
 
         age_minutes = (
             SubscriptionService.get_current_datetime() - last_updated

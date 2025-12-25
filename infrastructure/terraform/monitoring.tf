@@ -98,12 +98,12 @@ resource "aws_cloudwatch_metric_alarm" "load_average_high" {
   alarm_name          = "subscr-optinist-load-average-high"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "2"
-  metric_name         = "procstat_cpu_usage"
-  namespace           = "CWAgent"
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
   period              = "300"
   statistic           = "Average"
   threshold           = "80"
-  alarm_description   = "System load average is high"
+  alarm_description   = "EC2 CPU utilization is high"
 
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.main.name
@@ -404,6 +404,43 @@ resource "aws_cloudwatch_dashboard" "main" {
           period  = 300
         }
       },
+      # Row 4: EC2 Load Average and I/O Wait
+      {
+        type   = "metric"
+        x      = 0
+        y      = 18
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "EC2 CPU Utilization %" }],
+            ["CWAgent", "cpu_usage_iowait", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "I/O Wait %" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-1"
+          title   = "EC2 Performance: CPU & I/O Wait"
+          period  = 300
+          yAxis = {
+            left = {
+              min = 0
+              max = 100
+            }
+          }
+          annotations = {
+            horizontal = [
+              {
+                label = "High CPU Threshold (80%)"
+                value = 80
+              },
+              {
+                label = "High I/O Wait Threshold (30%)"
+                value = 30
+              }
+            ]
+          }
+        }
+      },
       # Row 4: System Health Overview
       {
         type   = "metric"
@@ -413,17 +450,37 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS CPU" }],
-            ["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS Connections" }],
-            ["AWS/EFS", "ClientConnections", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Connections" }],
-            ["AWS/EFS", "DataReadIOBytes", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Read I/O" }],
-            ["AWS/EFS", "DataWriteIOBytes", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Write I/O" }]
+            ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS CPU %", "yAxis" : "left" }],
+            ["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS Connections", "yAxis" : "right" }],
+            ["AWS/RDS", "FreeStorageSpace", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS Free Storage (Bytes)", "yAxis" : "right" }],
+            ["AWS/EFS", "ClientConnections", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Connections", "yAxis" : "right" }],
+            ["AWS/EFS", "PercentIOLimit", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS I/O Limit %", "yAxis" : "left" }],
+            ["AWS/EFS", "BurstCreditBalance", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Burst Credits", "yAxis" : "right" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
           title   = "Infrastructure Health: RDS & EFS"
           period  = 300
+          yAxis = {
+            left = {
+              label = "Percentage"
+              min   = 0
+              max   = 100
+            }
+          }
+          annotations = {
+            horizontal = [
+              {
+                label = "RDS CPU High (80%)"
+                value = 80
+              },
+              {
+                label = "EFS I/O Limit High (80%)"
+                value = 80
+              }
+            ]
+          }
         }
       },
       # Row 5: Autoscaling Activity and Events
