@@ -8,6 +8,9 @@ from fastapi import HTTPException
 from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.middleware.secure_routing_middleware import (
+    invalidate_user_tier_cache,
+)
 from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.constants import (
     DUPLICATE_PURCHASE_WINDOW_MINUTES,
@@ -27,6 +30,7 @@ from studio.app.common.models.subscription import (
     SubscriptionUserPurchase,
     UserSubscription,
 )
+from studio.app.common.models.user import User
 
 logger = AppLogger.get_logger()
 
@@ -342,6 +346,12 @@ class WebhookService:
             # 10. Commit all changes
             db.commit()
 
+            # 11. Invalidate tier cache for immediate routing update
+            user = db.query(User).filter(User.id == user_id).first()
+            if user:
+                invalidate_user_tier_cache(user.uid)
+                logger.info("Invalidated tier cache after premium upgrade for user")
+
             logger.info(
                 f"Webhook: Successfully processed checkout for user {user_id}, "
                 f"plan {plan_id}, session {session_id}"
@@ -498,6 +508,14 @@ class WebhookService:
 
                 db.commit()
 
+                # Invalidate cache so next request reflects free tier immediately
+                user = db.query(User).filter(User.id == user_account.user_id).first()
+                if user:
+                    invalidate_user_tier_cache(user.uid)
+                    logger.info(
+                        "Invalidated tier cache after subscription cancellation"
+                    )
+
                 logger.info(f"Cancelled subscription for user {user_account.user_id}")
 
     @classmethod
@@ -603,6 +621,10 @@ class WebhookService:
                 )
 
             db.commit()
+
+            # Invalidate cache for immediate tier change
+            invalidate_user_tier_cache(user.uid)
+            logger.info("Invalidated tier cache after plan change")
 
             logger.info(
                 f"Successfully updated subscription for user {user.id} to plan "
@@ -714,17 +736,24 @@ class WebhookService:
                 logger.info(f"Webhook: User account query result: {user_account}")
 
                 if not user_account:
-                    logger.error(
+                    logger.warning(
                         f"Webhook: No user account found for customer_id: {customer_id}"
                     )
-                    logger.error(
+                    logger.warning(
                         "Webhook: This likely means the user hasn't completed initial "
-                        "checkout or the customer_id wasn't stored correctly"
+                        "checkout or the customer_id wasn't stored correctly. "
+                        "This could be from test webhooks, incomplete checkouts, "
+                        "or deleted users. Acknowledging webhook to prevent retries."
                     )
-                    raise HTTPException(
-                        status_code=404,
-                        detail=f"User not found for customer_id: {customer_id}",
-                    )
+                    # Return success to acknowledge webhook and prevent Stripe retries
+                    # This is normal for test data, incomplete checkouts, etc.
+                    return {
+                        "success": True,
+                        "message": f"User not found for customer_id: {customer_id}",
+                        "webhook_processed": True,
+                        "skipped": True,
+                        "reason": "missing_user_account",
+                    }
 
                 user_id = user_account.user_id
                 logger.info(f"Webhook: Found user_id: {user_id}")

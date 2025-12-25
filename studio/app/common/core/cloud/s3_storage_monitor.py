@@ -18,6 +18,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.subscription.constants import (
     PlanName,
+    S3Pagination,
     StorageQuota,
     StorageSize,
     SubscriptionStatus,
@@ -114,11 +115,16 @@ class S3StorageMonitor:
                         object_count = 0
                         for page in page_iterator:
                             if "Contents" in page:
-                                for obj in page["Contents"]:
-                                    object_size = obj["Size"]
-                                    total_size += object_size
-                                    prefix_size += object_size
-                                    object_count += 1
+                                # Process page and release memory immediately
+                                page_size = sum(obj["Size"] for obj in page["Contents"])
+                                page_count = len(page["Contents"])
+
+                                total_size += page_size
+                                prefix_size += page_size
+                                object_count += page_count
+
+                                # Explicitly clear page reference to help GC
+                                del page
 
                     except Exception as e:
                         logger.warning(f"Failed to get size for prefix {prefix}: {e}")
@@ -130,6 +136,167 @@ class S3StorageMonitor:
 
         logger.info(
             f"Calculated S3 storage size for user {user_id}: {total_size:,} bytes"
+        )
+        return total_size
+
+    def _stream_s3_objects(self, s3_client, bucket: str, prefix: str):
+        """
+        Generator that yields S3 objects one page at a time
+        without accumulating metadata.
+
+        This true streaming approach prevents boto3 paginator from accumulating
+        internal state across all pages, which can cause OOM for large datasets.
+
+        Args:
+            s3_client: Boto3 S3 client
+            bucket: S3 bucket name
+            prefix: Prefix to filter objects
+
+        Yields:
+            Individual pages from S3 list_objects_v2
+        """
+        continuation_token = None
+
+        while True:
+            # Build request parameters
+            params = {
+                "Bucket": bucket,
+                "Prefix": prefix,
+                "MaxKeys": S3Pagination.PAGE_SIZE,
+            }
+
+            if continuation_token:
+                params["ContinuationToken"] = continuation_token
+
+            # Fetch single page
+            response = s3_client.list_objects_v2(**params)
+
+            # Yield the page
+            yield response
+
+            # Check if more pages exist
+            if not response.get("IsTruncated"):
+                break
+
+            continuation_token = response.get("NextContinuationToken")
+
+    async def get_user_s3_storage_size_streaming(self, user_id: int) -> int:
+        """
+        Memory-efficient version using true streaming with generator pattern.
+
+        This version uses a custom generator to fetch S3 pages one at a time
+        without boto3's paginator accumulating metadata. This prevents OOM
+        even for users with millions of objects.
+
+        Key improvements over standard pagination:
+        - No paginator metadata accumulation
+        - Manual continuation token management
+        - Immediate page garbage collection
+        - Minimal memory footprint (constant, not linear with object count)
+
+        Args:
+            user_id: The user ID to check storage for
+
+        Returns:
+            Total storage size in bytes
+        """
+        total_size = 0
+        s3_client = None
+
+        try:
+            # Get all workspaces the user has access to
+            from sqlmodel import or_, select
+
+            from studio.app.common import models as common_model
+            from studio.app.common.db.database import session_scope
+
+            with session_scope() as db:
+                workspaces_query = (
+                    select(common_model.Workspace.id)
+                    .join(
+                        common_model.WorkspacesShareUser,
+                        common_model.Workspace.id
+                        == common_model.WorkspacesShareUser.workspace_id,
+                        isouter=True,
+                    )
+                    .filter(
+                        common_model.Workspace.deleted.is_(False),
+                        or_(
+                            common_model.WorkspacesShareUser.user_id == user_id,
+                            common_model.Workspace.user_id == user_id,
+                        ),
+                    )
+                )
+                workspace_ids = db.execute(workspaces_query).scalars().all()
+
+            logger.info(
+                f"[Streaming] Checking S3 storage for user {user_id} "
+                f"across {len(workspace_ids)} workspaces"
+            )
+
+            # Create S3 client with explicit lifecycle management
+            s3_client = boto3.client("s3")
+
+            # Check both input and output directories for each workspace
+            for workspace_id in workspace_ids:
+                prefixes = [
+                    f"app/studio_data/"
+                    f"{S3StorageController.S3_INPUT_DIR}/{workspace_id}/",
+                    f"app/studio_data/"
+                    f"{S3StorageController.S3_OUTPUT_DIR}/{workspace_id}/",
+                ]
+
+                for prefix in prefixes:
+                    try:
+                        # Use custom generator for true streaming
+                        # (no metadata accumulation)
+                        prefix_size = 0
+                        page_count = 0
+
+                        for page in self._stream_s3_objects(
+                            s3_client, self.bucket_name, prefix
+                        ):
+                            if "Contents" in page:
+                                # Process page immediately and calculate size
+                                page_size = sum(obj["Size"] for obj in page["Contents"])
+                                prefix_size += page_size
+                                total_size += page_size
+                                page_count += 1
+
+                            # Page is automatically clears
+                            # collected when loop continues
+
+                        if page_count > 0:
+                            logger.debug(
+                                f"[Streaming] Prefix {prefix}: {prefix_size:,} bytes "
+                                f"({page_count} pages)"
+                            )
+
+                    except Exception as e:
+                        logger.warning(
+                            f"[Streaming] Failed to get size for prefix {prefix}: {e}"
+                        )
+                        continue
+
+        except Exception as e:
+            logger.error(
+                f"[Streaming] Failed to calculate S3 storage size for "
+                f"user {user_id}: {e}"
+            )
+            return 0
+        finally:
+            # Ensure S3 client is properly closed
+            if s3_client:
+                try:
+                    s3_client.close()
+                except Exception as close_error:
+                    logger.warning(
+                        f"[Streaming] Error closing S3 client: {close_error}"
+                    )
+
+        logger.info(
+            f"[Streaming] Calculated S3 storage size for user {user_id}: "
+            f"{total_size:,} bytes"
         )
         return total_size
 
@@ -377,9 +544,10 @@ class S3StorageMonitor:
 
             with session_scope() as db:
                 # Check if storage record exists
-                existing_usage = db.exec(
+                result_row = db.execute(
                     select(UserStorageUsage).where(UserStorageUsage.user_id == user_id)
                 ).first()
+                existing_usage = result_row[0] if result_row else None
 
                 if existing_usage:
                     # Update quota if needed
