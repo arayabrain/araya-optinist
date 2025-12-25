@@ -1,7 +1,7 @@
 """
 Cloud utilities for user context and subscription management.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from sqlmodel import select
@@ -697,6 +697,9 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                             f"User {user_id} subscription has None expiration date"
                         )
                         return None
+                    # Ensure subscription_end is timezone-aware for comparison
+                    if subscription_end.tzinfo is None:
+                        subscription_end = subscription_end.replace(tzinfo=timezone.utc)
                 else:
                     logger.error(
                         f"User {user_id} subscription object missing "
