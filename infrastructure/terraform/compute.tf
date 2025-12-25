@@ -715,6 +715,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
           value = var.stripe_webhook_secret
         },
         {
+          name  = "ROUTING_SECRET_KEY"
+          value = var.routing_secret_key
+        },
+        {
           name  = "SKIP_STORAGE_CHECKS"
           value = "false"
         },
@@ -936,6 +940,10 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "STRIPE_WEBHOOK_SECRET"
           value = var.stripe_webhook_secret
+        },
+        {
+          name  = "ROUTING_SECRET_KEY"
+          value = var.routing_secret_key
         },
         {
           name  = "SKIP_STORAGE_CHECKS"

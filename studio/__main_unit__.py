@@ -18,6 +18,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware import (
     ClientIdLoggingMiddleware,
     FreeUserActivityMiddleware,
+    SecureRoutingMiddleware,
     SPARoutingMiddleware,
 )
 from studio.app.common.core.mode import MODE
@@ -217,6 +218,9 @@ app.add_middleware(ClientIdLoggingMiddleware)
 # Add FreeUserActivityMiddleware to track free tier user activity
 app.add_middleware(FreeUserActivityMiddleware)
 
+# Add SecureRoutingMiddleware to add routing headers based on JWT validation
+app.add_middleware(SecureRoutingMiddleware)
+
 
 @app.get("/is_standalone", response_model=bool, tags=["others"])
 async def is_standalone():
@@ -272,6 +276,7 @@ def main(develop_mode: bool = False):
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--reload", action="store_true")
+    timeout_keep_alive = 60
     args = parser.parse_args()
 
     logging_config = AppLogger.get_logging_config()
@@ -292,6 +297,7 @@ def main(develop_mode: bool = False):
             port=args.port,
             log_config=logging_config,
             workers=args.workers,
+            timeout_keep_alive=timeout_keep_alive,
             reload=reload,
             **reload_options,
         )
@@ -302,5 +308,6 @@ def main(develop_mode: bool = False):
             port=args.port,
             log_config=logging_config,
             workers=args.workers,
+            timeout_keep_alive=timeout_keep_alive,
             reload=False,
         )
