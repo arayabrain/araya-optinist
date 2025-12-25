@@ -100,7 +100,8 @@ class TestVerifyNoActiveWorkflows:
         ) as mock:
             mock_session = MagicMock()
             mock.return_value.__enter__.return_value = mock_session
-            mock_session.exec.return_value.first.return_value = mock_assignment
+            # Mock execute() to return a row-like tuple
+            mock_session.execute.return_value.first.return_value = (mock_assignment,)
 
             result = DataCleanupJob._verify_no_active_workflows("123")
 
@@ -116,7 +117,8 @@ class TestVerifyNoActiveWorkflows:
         ) as mock:
             mock_session = MagicMock()
             mock.return_value.__enter__.return_value = mock_session
-            mock_session.exec.return_value.first.return_value = mock_assignment
+            # Mock execute() to return a row-like tuple
+            mock_session.execute.return_value.first.return_value = (mock_assignment,)
 
             result = DataCleanupJob._verify_no_active_workflows("123")
 
@@ -145,8 +147,15 @@ class TestHandleOrphanedData:
             ) as mock:
                 mock_session = MagicMock()
                 mock.return_value.__enter__.return_value = mock_session
-                mock_session.exec.return_value.all.return_value = [mock_assignment]
+                # Mock execute() to return row-like tuples
+                mock_session.execute.return_value.all.return_value = [
+                    (mock_assignment,)
+                ]
                 mock_session.get.return_value = MagicMock(id=123)
+                # Mock Workspace query for _cleanup_orphaned_assignment
+                mock_session.execute.return_value.all.return_value = [
+                    (mock_assignment,)
+                ]
 
                 with patch.dict("os.environ", {"INSTANCE_ID": "i-current"}):
                     with patch.object(
@@ -173,7 +182,10 @@ class TestHandleOrphanedData:
             ) as mock:
                 mock_session = MagicMock()
                 mock.return_value.__enter__.return_value = mock_session
-                mock_session.exec.return_value.all.return_value = [mock_assignment]
+                # Mock execute() to return row-like tuples
+                mock_session.execute.return_value.all.return_value = [
+                    (mock_assignment,)
+                ]
 
                 with patch.dict("os.environ", {"INSTANCE_ID": "i-current"}):
                     DataCleanupJob._handle_orphaned_data()
@@ -198,7 +210,10 @@ class TestHandleOrphanedData:
             ) as mock:
                 mock_session = MagicMock()
                 mock.return_value.__enter__.return_value = mock_session
-                mock_session.exec.return_value.all.return_value = [mock_assignment]
+                # Mock execute() to return row-like tuples
+                mock_session.execute.return_value.all.return_value = [
+                    (mock_assignment,)
+                ]
 
                 with patch.dict("os.environ", {"INSTANCE_ID": "i-current"}):
                     DataCleanupJob._handle_orphaned_data()

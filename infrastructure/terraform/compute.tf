@@ -675,10 +675,6 @@ resource "aws_ecs_task_definition" "autoscaling" {
           value = "2"
         },
         {
-          name  = "USE_AWS_BATCH"
-          value = "false"
-        },
-        {
           name  = "LOG_LEVEL"
           value = "DEBUG"
         },
@@ -717,6 +713,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
         {
           name  = "STRIPE_WEBHOOK_SECRET"
           value = var.stripe_webhook_secret
+        },
+        {
+          name  = "ROUTING_SECRET_KEY"
+          value = var.routing_secret_key
         },
         {
           name  = "SKIP_STORAGE_CHECKS"
@@ -906,10 +906,6 @@ resource "aws_ecs_task_definition" "premium" {
           value = "2"
         },
         {
-          name  = "USE_AWS_BATCH"
-          value = "false"
-        },
-        {
           name  = "LOG_LEVEL"
           value = "DEBUG"
         },
@@ -944,6 +940,10 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "STRIPE_WEBHOOK_SECRET"
           value = var.stripe_webhook_secret
+        },
+        {
+          name  = "ROUTING_SECRET_KEY"
+          value = var.routing_secret_key
         },
         {
           name  = "SKIP_STORAGE_CHECKS"

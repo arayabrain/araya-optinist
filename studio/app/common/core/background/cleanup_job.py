@@ -138,7 +138,7 @@ class DataCleanupJob:
                 .limit(SyncStatusConstants.MAX_USERS_PER_RUN)
             )
 
-            result = db.exec(statement)
+            result = db.execute(statement)
 
             users = []
             for row in result:
@@ -325,7 +325,8 @@ class DataCleanupJob:
             statement = select(FreeUserAssignment).where(
                 FreeUserAssignment.user_id == user_id
             )
-            assignment = db.exec(statement).first()
+            result_row = db.execute(statement).first()
+            assignment = result_row[0] if result_row else None
 
             if not assignment:
                 return True  # Assignment removed, safe to proceed
@@ -350,12 +351,13 @@ class DataCleanupJob:
         """
         with session_scope() as db:
             # Get the assignment to delete
-            assignment = db.exec(
+            result_row = db.execute(
                 select(FreeUserAssignment).where(
                     FreeUserAssignment.user_id == user_id,
                     FreeUserAssignment.logged_out_at.is_not(None),
                 )
             ).first()
+            assignment = result_row[0] if result_row else None
 
             if assignment:
                 db.delete(assignment)
@@ -392,14 +394,14 @@ class DataCleanupJob:
                 logger.warning(f"User {assignment.user_id} not found")
                 return False
 
-            workspaces = db.exec(
+            workspaces_result = db.execute(
                 select(Workspace).where(
                     Workspace.user_id == user.id,
                     Workspace.deleted == 0,
                 )
             ).all()
 
-            workspace_ids = [str(w.id) for w in workspaces]
+            workspace_ids = [str(row[0].id) for row in workspaces_result]
             cls._cleanup_user_data(assignment.user_id, workspace_ids)
 
             # Remove assignment
@@ -441,9 +443,10 @@ class DataCleanupJob:
 
             with session_scope() as db:
                 # Get all user assignments
-                assignments = db.exec(select(FreeUserAssignment)).all()
+                assignments_result = db.execute(select(FreeUserAssignment)).all()
 
-                for assignment in assignments:
+                for row in assignments_result:
+                    assignment = row[0]
                     # Check if assigned instance still exists
                     try:
                         response = ec2.describe_instances(

@@ -18,6 +18,7 @@ from typing import Any, Dict
 
 import boto3
 import pymysql
+from aws_constants import SubscriptionType
 from sqlalchemy import (
     TIMESTAMP,
     Column,
@@ -265,8 +266,8 @@ def recover_stale_workflow_counts() -> Dict[str, int]:
 
             return {
                 "recovered": total_affected,
-                "free": free_affected,
-                "premium": premium_affected,
+                SubscriptionType.FREE: free_affected,
+                SubscriptionType.PREMIUM: premium_affected,
             }
 
     except Exception as e:
@@ -301,7 +302,7 @@ def check_free_user_inactivity() -> Dict[str, int]:
                     return {"logged_out": 0}
 
                 # Delete inactive assignments
-                user_ids = [str(u["user_id"]) for u in inactive_users]
+                user_ids = [u["user_id"] for u in inactive_users]
                 placeholders = ",".join(["%s"] * len(user_ids))
                 cursor.execute(
                     f"DELETE FROM free_user_assignments "

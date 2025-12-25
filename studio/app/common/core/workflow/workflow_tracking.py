@@ -184,7 +184,8 @@ def get_active_workflow_count(user_id: int) -> int:
             statement = select(FreeUserAssignment).where(
                 FreeUserAssignment.user_id == user_id
             )
-            assignment = session.exec(statement).first()
+            result_row = session.execute(statement).first()
+            assignment = result_row[0] if result_row else None
 
             if assignment:
                 return assignment.active_workflow_count or 0
@@ -193,7 +194,8 @@ def get_active_workflow_count(user_id: int) -> int:
             statement = select(PremiumUserAssignment).where(
                 PremiumUserAssignment.user_id == user_id
             )
-            assignment = session.exec(statement).first()
+            result_row = session.execute(statement).first()
+            assignment = result_row[0] if result_row else None
 
             if assignment:
                 return assignment.active_workflow_count or 0

@@ -26,3 +26,12 @@ export const deleteMeApi = async (): Promise<string> => {
   const response = await axios.delete("/users/me")
   return response.data
 }
+
+export const logoutFreeUserApi = async (): Promise<{
+  message: string
+  logged_out: boolean
+  cleanup_after_minutes?: number
+}> => {
+  const response = await axios.post("/users/me/free/logout")
+  return response.data
+}

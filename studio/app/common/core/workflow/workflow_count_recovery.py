@@ -61,14 +61,15 @@ def recover_stale_workflow_counts(
                 FreeUserAssignment.active_workflow_count > 0,
                 FreeUserAssignment.last_workflow_start < stale_cutoff,
             )
-            stale_assignments = session.exec(stmt).all()
+            stale_assignments_result = session.execute(stmt).all()
 
-            if not stale_assignments:
+            if not stale_assignments_result:
                 logger.info("No stale workflow counts found")
                 return 0, []
 
             # Reset counts for stale workflows
-            for assignment in stale_assignments:
+            for row in stale_assignments_result:
+                assignment = row[0]
                 update_stmt = (
                     update(FreeUserAssignment)
                     .where(FreeUserAssignment.user_id == assignment.user_id)
