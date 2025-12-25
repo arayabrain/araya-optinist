@@ -41,7 +41,7 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import boto3
 import pymysql
@@ -235,7 +235,7 @@ def _increment_assignment_attempts_transaction(connection, user_id: int) -> int:
             return 1
 
 
-def increment_assignment_attempts(user_id: str) -> int:
+def increment_assignment_attempts(user_id: int) -> int:
     """Increment assignment attempts for retry scenarios"""
     return _increment_assignment_attempts_transaction(user_id)
 
@@ -243,7 +243,7 @@ def increment_assignment_attempts(user_id: str) -> int:
 @with_transaction
 def _store_user_assignment_transaction(
     connection,
-    user_id: str,
+    user_id: Optional[int],
     instance_id: str,
     target_group_arn: str,
     rule_arn: str,
@@ -251,9 +251,21 @@ def _store_user_assignment_transaction(
     is_shared: bool = False,
     is_standby: bool = False,
 ):
-    """Internal function: Store user assignment with transaction safety"""
+    """Internal function: Store user assignment with transaction safety
+
+    Args:
+        user_id: User ID (int) or None for standby instances
+        instance_id: EC2 instance ID
+        target_group_arn: ALB target group ARN
+        rule_arn: ALB listener rule ARN
+        instance_state: Current state of instance
+        is_shared: Whether instance is shared
+        is_standby: Whether this is a standby pool assignment (user_id should be None)
+    """
     with connection.cursor() as cursor:
         # Check if user already has assignment with lock to prevent race conditions
+        # For standby instances (user_id=None), WHERE user_id = NULL returns no results
+        # This allows multiple standby instances with user_id=NULL
         cursor.execute(
             """SELECT user_id, assignment_attempts FROM premium_user_assignments
                WHERE user_id = %s FOR UPDATE""",
@@ -313,7 +325,7 @@ def _store_user_assignment_transaction(
 
 
 def store_user_assignment(
-    user_id: str,
+    user_id: Optional[int],
     instance_id: str,
     target_group_arn: str,
     rule_arn: str,
@@ -334,7 +346,7 @@ def store_user_assignment(
 
 
 @with_transaction
-def _remove_user_assignment_transaction(connection, user_id: str):
+def _remove_user_assignment_transaction(connection, user_id: int):
     """Internal function: Remove user assignment with transaction safety"""
     with connection.cursor() as cursor:
         # Get assignment details before deletion with lock to prevent race conditions
@@ -362,7 +374,7 @@ def _remove_user_assignment_transaction(connection, user_id: str):
     return assignment
 
 
-def remove_user_assignment(user_id: str):
+def remove_user_assignment(user_id: int):
     """Remove user assignment from RDS with proper transaction isolation"""
     return _remove_user_assignment_transaction(user_id)
 
@@ -641,7 +653,7 @@ def get_dynamic_max_capacity():
     return max_capacity
 
 
-def update_instance_state(user_id: str, new_state: str):
+def update_instance_state(user_id: int, new_state: str):
     """Update instance state for a user assignment"""
     try:
         with get_db_connection() as connection:
@@ -919,8 +931,9 @@ def register_orphaned_stopped_instances():
             instance_id = instance["instance_id"]
             try:
                 # Store as standby assignment with is_standby flag
+                # Use NULL user_id for standby instances (no real user assigned)
                 store_user_assignment(
-                    user_id=f"standby-{instance_id}",
+                    user_id=None,
                     instance_id=instance_id,
                     target_group_arn="standby",
                     rule_arn="standby",
@@ -1022,7 +1035,7 @@ def create_running_instance():
 
 @with_transaction
 def try_reserve_instance_transaction(
-    connection, instance_id: str, user_id: str
+    connection, instance_id: str, user_id: int
 ) -> bool:
     """
     Try to reserve an instance for a user using database-level locking.
@@ -1057,7 +1070,7 @@ def try_reserve_instance_transaction(
         return True
 
 
-def try_reserve_instance(instance_id: str, user_id: str) -> bool:
+def try_reserve_instance(instance_id: str, user_id: int) -> bool:
     """Try to reserve an instance for assignment"""
     try:
         return try_reserve_instance_transaction(instance_id, user_id)
@@ -1066,7 +1079,7 @@ def try_reserve_instance(instance_id: str, user_id: str) -> bool:
         return False
 
 
-def release_instance_reservation(instance_id: str, user_id: str):
+def release_instance_reservation(instance_id: str, user_id: int):
     """Release a reservation if assignment fails"""
     try:
         with get_db_connection() as connection:
@@ -1230,8 +1243,9 @@ def create_and_stop_standby_instance():
         )
 
         # Store in assignments table as standby with is_standby flag
+        # Use NULL for standby instances (no real user assigned)
         store_user_assignment(
-            user_id=f"standby-{instance_id}",
+            user_id=None,
             instance_id=instance_id,
             target_group_arn="standby",
             rule_arn="standby",
@@ -1312,7 +1326,7 @@ def start_standby_instance(instance_id: str):
         return False
 
 
-def get_premium_user_status(user_id: str) -> Dict[str, Any]:
+def get_premium_user_status(user_id: int) -> Dict[str, Any]:
     """Get premium user assignment status"""
     print(f"get_premium_user_status called for user_id={user_id}")
     try:
@@ -1828,7 +1842,7 @@ def get_next_available_priority(listener_arn: str, start_priority: int = 100) ->
         raise
 
 
-def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
+def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
     """Enhanced assignment with standby pool support -
     prefer stopped instances for fast startup"""
 
@@ -1853,6 +1867,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         # 0. Register any orphaned stopped instances as standby first
+        # Uses NULL user_id for standby instances (no real user)
         register_orphaned_stopped_instances()
 
         # 1. Get comprehensive instance state information
@@ -2306,7 +2321,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         # 9. Create ALB listener rule for user routing
         # Generate non-reversible routing ID from user_id
         routing_secret_key = get_required_env_var("ROUTING_SECRET_KEY")
-        routing_id = generate_routing_id(user_id, routing_secret_key)
+        routing_id = generate_routing_id(str(user_id), routing_secret_key)
         print(
             f"Generated routing_id for user: {routing_id[:8]}... "
             f"(truncated for security)"
@@ -2893,7 +2908,7 @@ def update_premium_service_desired_count():
         traceback.print_exc()
 
 
-def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bool:
+def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bool:
     """
     Migrate user from shared instance to dedicated instance.
 
@@ -3022,7 +3037,7 @@ def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bo
         return False
 
 
-def release_premium_user(user_id: str) -> Dict[str, Any]:
+def release_premium_user(user_id: int) -> Dict[str, Any]:
     """Release premium user from assigned instance
     (always succeeds to prevent logout blocking)"""
 
@@ -3305,8 +3320,9 @@ def convert_running_instance_to_standby(instance_id: str):
         )
 
         # Add to standby pool in database with is_standby flag
+        # Use NULL for standby instances (no real user assigned)
         store_user_assignment(
-            user_id=f"standby-{instance_id}",
+            user_id=None,
             instance_id=instance_id,
             target_group_arn="standby",
             rule_arn="standby",
@@ -3605,7 +3621,7 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
 
 
 @with_transaction
-def update_user_activity_timestamp(connection, user_id: str) -> bool:
+def update_user_activity_timestamp(connection, user_id: int) -> bool:
     """Update activity timestamp for a user with proper transaction isolation"""
     with connection.cursor() as cursor:
         cursor.execute(
@@ -3619,7 +3635,7 @@ def update_user_activity_timestamp(connection, user_id: str) -> bool:
         return cursor.rowcount > 0
 
 
-def handle_activity_update(user_id: str) -> Dict[str, Any]:
+def handle_activity_update(user_id: int) -> Dict[str, Any]:
     """Handle heartbeat activity update for a premium user"""
     try:
         print(f" Processing activity update for user {user_id}")
@@ -3669,7 +3685,7 @@ def handle_activity_update(user_id: str) -> Dict[str, Any]:
 # cleanup_stale_assignments function moved to premium_cleanup Lambda
 
 
-def update_user_activity(user_id: str) -> bool:
+def update_user_activity(user_id: int) -> bool:
     """Update last_activity timestamp for a user's assignment"""
     try:
         with get_db_connection() as connection:
