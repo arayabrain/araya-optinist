@@ -163,7 +163,8 @@ class TestSafeEnvironmentVariables:
                 from premium_manager import get_db_connection
 
                 try:
-                    get_db_connection()
+                    with get_db_connection():
+                        pass
                     assert False, "Should have raised ValueError for missing RDS_HOST"
                 except ValueError as e:
                     assert "RDS_HOST" in str(e)
