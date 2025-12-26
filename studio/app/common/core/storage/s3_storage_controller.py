@@ -776,7 +776,7 @@ class S3StorageController(BaseRemoteStorageController):
             async for obj in objects_to_delete:
                 keys_to_delete.append({"Key": obj.key})
                 # Track size for storage update
-                total_bytes_deleted += obj.size
+                total_bytes_deleted += await obj.size
 
             if keys_to_delete:
                 logger.info(
