@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from sqlalchemy import BIGINT, JSON, TIMESTAMP, Boolean, DateTime
@@ -162,7 +162,7 @@ class SubscriptionUserPurchase(SQLModel, table=True):
     )
     user_id: int = Field(sa_column=Column(BIGINT, nullable=False))
     created_at: Optional[datetime] = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(TIMESTAMP, server_default=func.current_timestamp()),
     )
     updated_at: Optional[datetime] = Field(
@@ -187,7 +187,7 @@ class SubscriptionCancellation(SQLModel, table=True):
         description="FK to subscription_user_purchases.id",
     )
     cancelled_at: Optional[datetime] = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(TIMESTAMP, server_default=func.current_timestamp()),
     )
     reason: Optional[CancellationReason] = Field(
@@ -224,13 +224,13 @@ class UserStorageUsage(SQLModel, table=True):
     )
     storage_quota_bytes: int = Field(sa_column=Column(BIGINT, nullable=False))
     last_updated: Optional[datetime] = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(
             DateTime, nullable=False, server_default=func.current_timestamp()
         ),
     )
     created_at: Optional[datetime] = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(
             DateTime, nullable=False, server_default=func.current_timestamp()
         ),

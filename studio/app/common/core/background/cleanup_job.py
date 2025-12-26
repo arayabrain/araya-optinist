@@ -17,7 +17,7 @@ This ensures:
 
 import os
 import shutil
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
 
 from sqlalchemy import func
@@ -114,7 +114,7 @@ class DataCleanupJob:
         """
         with session_scope() as db:
             # Calculate cutoff time (1 hour ago)
-            cutoff_time = datetime.now() - timedelta(
+            cutoff_time = datetime.now(timezone.utc) - timedelta(
                 minutes=SyncStatusConstants.LOGOUT_GRACE_PERIOD_MINUTES
             )
 

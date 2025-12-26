@@ -1082,6 +1082,10 @@ async def _should_trigger_full_scan(user_id: int) -> bool:
                     return True
 
                 # Check if it's been > 60 min since last scan (hourly reconciliation)
+                # Ensure last_scan is timezone-aware (assume UTC if naive)
+                if last_scan.tzinfo is None:
+                    last_scan = last_scan.replace(tzinfo=timezone.utc)
+
                 time_since_scan = (
                     SubscriptionService.get_current_datetime() - last_scan
                 ).total_seconds() / 60

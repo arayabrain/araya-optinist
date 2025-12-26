@@ -18,7 +18,7 @@ See: https://github.com/encode/starlette/issues/1012
 import asyncio
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Tuple
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -254,7 +254,7 @@ def _update_free_user_activity_sync(user_id: str) -> bool:
 
         # Update database using SQLAlchemy merge() for atomic upsert
         with session_scope() as session:
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
 
             assignment = FreeUserAssignment(
                 user_id=user_id,
