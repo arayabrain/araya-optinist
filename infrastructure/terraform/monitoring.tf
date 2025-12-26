@@ -568,6 +568,80 @@ resource "aws_cloudwatch_dashboard" "main" {
             ]
           }
         }
+      },
+      # Row 6: Background Jobs & Storage Reconciliation
+      {
+        type   = "metric"
+        x      = 0
+        y      = 30
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Storage Reconciliation Duration (ms)", "yAxis" : "left" }],
+            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Storage Reconciliation Runs", "yAxis" : "right", "stat" : "Sum" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Storage Reconciliation Errors", "yAxis" : "right", "stat" : "Sum" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.common_user_manager.function_name, { "label" : "User Manager Duration (ms)", "yAxis" : "left" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.common_user_manager.function_name, { "label" : "User Manager Errors", "yAxis" : "right", "stat" : "Sum" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-1"
+          title   = "Background Jobs: Lambda Performance"
+          period  = 3600
+          yAxis = {
+            left = {
+              label = "Duration (ms)"
+              min   = 0
+            }
+            right = {
+              label = "Count"
+              min   = 0
+            }
+          }
+          annotations = {
+            horizontal = [
+              {
+                label = "Storage Reconciliation Timeout (15 min)"
+                value = 900000
+                yAxis = "left"
+              }
+            ]
+          }
+        }
+      },
+      # Row 6: Lambda Health & Cleanup Operations
+      {
+        type   = "metric"
+        x      = 12
+        y      = 30
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.free_manager.function_name, { "label" : "Free Manager Duration (ms)" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.free_manager.function_name, { "label" : "Free Manager Errors", "yAxis" : "right" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_cleanup.function_name, { "label" : "Premium Cleanup Duration (ms)" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_cleanup.function_name, { "label" : "Premium Cleanup Errors", "yAxis" : "right" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.free_cleanup.function_name, { "label" : "Free Cleanup Duration (ms)" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.free_cleanup.function_name, { "label" : "Free Cleanup Errors", "yAxis" : "right" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-1"
+          title   = "Lambda Operations: Manager & Cleanup Jobs"
+          period  = 3600
+          yAxis = {
+            left = {
+              label = "Duration (ms)"
+              min   = 0
+            }
+            right = {
+              label = "Error Count"
+              min   = 0
+            }
+          }
+        }
       }
     ]
   })

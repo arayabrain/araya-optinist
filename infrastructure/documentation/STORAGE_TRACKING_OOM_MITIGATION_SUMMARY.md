@@ -1114,6 +1114,117 @@ Exit codes:
 
 ---
 
+### Lambda-Based Execution
+
+**Lambda Function**: `subscr-storage-reconciliation`
+
+The Lambda is fully implemented and deployed via Terraform:
+
+**Files:**
+- `infrastructure/terraform/storage_reconciliation.tf` - Lambda infrastructure
+- `infrastructure/terraform/storage_reconciliation_package/storage_reconciliation.py` - Lambda handler
+- `infrastructure/terraform/storage_reconciliation_package/README.md` - Documentation
+
+**Key Features:**
+- ✅ **Batch processing** - 10 users at a time to prevent OOM
+- ✅ **True streaming** - Generator-based S3 scanning (constant memory)
+- ✅ **Distributed locks** - MySQL GET_LOCK prevents concurrent scans
+- ✅ **Rate limiting** - 0.5s delay between users
+- ✅ **Drift detection** - Logs warnings when drift exceeds 5% or 100MB
+- ✅ **Standalone** - No dependencies on Studio codebase
+
+**Infrastructure:**
+```hcl
+# Terraform configuration (storage_reconciliation.tf)
+resource "aws_lambda_function" "storage_reconciliation" {
+  function_name = "subscr-storage-reconciliation"
+  runtime       = "python3.9"
+  timeout       = 900  # 15 minutes
+  memory_size   = 128  # MB
+
+  environment {
+    variables = {
+      RDS_HOST               = aws_db_proxy.main.endpoint
+      S3_DEFAULT_BUCKET_NAME = aws_s3_bucket.app_storage.id
+    }
+  }
+}
+
+# Hourly schedule
+resource "aws_cloudwatch_event_rule" "storage_reconciliation_schedule" {
+  schedule_expression = "rate(1 hour)"
+  state               = "ENABLED"
+}
+```
+
+**Deployment:**
+```bash
+# Deploy Lambda
+cd infrastructure/terraform
+terraform apply
+
+# Verify deployment
+aws lambda list-functions --query 'Functions[?FunctionName==`subscr-storage-reconciliation`]'
+
+# Test manually
+aws lambda invoke \
+  --function-name subscr-storage-reconciliation \
+  --payload '{"source": "manual-test"}' \
+  response.json && cat response.json
+```
+
+**Monitoring:**
+
+CloudWatch Dashboard (`subscr-optinist-monitoring`) includes:
+- Storage Reconciliation Duration (Row 6, left)
+- Invocation count and error rate
+- Comparison with other background jobs
+
+**CloudWatch Alarms:**
+- `subscr-storage-reconciliation-errors` - Alert on any errors
+- `subscr-storage-reconciliation-duration-high` - Alert if execution > 10 minutes
+
+**View Logs:**
+```bash
+aws logs tail /aws/lambda/subscr-storage-reconciliation --follow
+```
+
+**Query Drift Warnings:**
+```bash
+aws logs filter-log-events \
+  --log-group-name /aws/lambda/subscr-storage-reconciliation \
+  --filter-pattern "Significant drift" \
+  --start-time $(date -u -d '1 day ago' +%s)000
+```
+
+#### Lambda vs Cron Comparison
+
+| Aspect | Lambda (Implemented) | Cron (Documented) |
+|--------|---------------------|-------------------|
+| Deployment | Terraform apply | Manual cron setup |
+| Monitoring | CloudWatch built-in | Custom logging |
+| Scaling | Automatic | N/A |
+| Isolation | Complete | Shared with web server |
+| Multi-worker safe | Yes | Yes |
+| Cost | ~$4/month | Free (uses existing EC2) |
+| Setup time | 5 minutes | 30+ minutes |
+| Dependencies | Standalone | Full Studio codebase |
+
+#### When to Use Each Approach
+
+**Use Lambda** (current implementation):
+- ✅ AWS deployments with Terraform
+- ✅ Want built-in monitoring and alarms
+- ✅ Prefer serverless architecture
+- ✅ Need quick deployment
+
+**Use Cron** (documented alternative):
+- If running on-premise or non-AWS
+- If you need to reuse Studio codebase directly
+- If Lambda timeout (15 min) is insufficient
+
+---
+
 ### Unit Tests
 
 ```python
