@@ -50,6 +50,12 @@ HOW TO RUN:
 
 EXPECTED RESULT:
   All 7 tests should pass
+
+PERFORMANCE IMPACT:
+  Light - All tests use mocks, no real AWS services or database
+  - No impact on other users
+  - Safe to run anytime
+
 """
 
 import os

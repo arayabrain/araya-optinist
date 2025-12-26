@@ -80,6 +80,13 @@ HOW TO RUN:
 EXPECTED RUNTIME:
   26-32 minutes (includes 6 min cookie expiration + 14-20 min Lambda execution)
 
+PERFORMANCE IMPACT:
+  HEAVY - Invokes Free Manager Lambda to scale ASG and rebalance users
+  - Scales ASG from 1 to 2 instances (launches new EC2 instances)
+  - Migrates 6 test users across instances
+  - Will affect other free tier users during scaling and rebalancing
+  - Use during maintenance windows or off-peak hours
+
 """
 
 import json

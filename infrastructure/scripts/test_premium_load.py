@@ -2,7 +2,7 @@
 """
 Premium Instance Load Test
 
-RUNTIME ENVIRONMENT:
+WHERE TO RUN:
 Run locally (with AWS credentials and Terraform state)
 
 WHAT IT TESTS:
@@ -40,6 +40,14 @@ Usage:
     python test_premium_load.py --workspaces 5 --workflows 5  # Lighter load
     python test_premium_load.py --duration 1800  # 30 minute monitoring
     python test_premium_load.py --skip-token-gen  # Use existing tokens.json
+
+PERFORMANCE IMPACT:
+  HEAVY - Stress tests a single premium instance with concurrent workflows
+  - Submits 10 concurrent workflows by default
+  - Monitors instance for 15+ minutes
+  - Will affect the premium user on the tested instance
+  - Use on dedicated test instances or during maintenance windows
+
 """
 
 import argparse

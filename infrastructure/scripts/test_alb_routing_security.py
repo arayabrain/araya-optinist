@@ -14,6 +14,15 @@ WHAT IT TESTS:
 7. Invalid JWT handling - Verify graceful handling of bad tokens
 8. Cache behavior - Verify tier caching works
 
+WHERE TO RUN:
+- Actual server/production environment (makes HTTP requests to deployed ALB)
+- Requires access to deployed API endpoint with routing configured
+
+PERFORMANCE IMPACT:
+- Light - Makes simple GET requests to check routing headers
+- No workflows or heavy operations
+- Safe to run without affecting other users
+
 HOW TO RUN:
   # Auto-generate tokens (recommended)
   python infrastructure/scripts/test_alb_routing_security.py \

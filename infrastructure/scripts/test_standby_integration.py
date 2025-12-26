@@ -46,6 +46,13 @@ HOW TO RUN:
 EXPECTED RESULT:
   All 9 functional tests should pass
   Cost savings analysis should show true standby pool benefits
+
+PERFORMANCE IMPACT:
+  Light - All AWS and database operations are mocked
+  - Tests standby pool logic with mock data
+  - No impact on other users
+  - Safe to run anytime
+
 """
 
 import json

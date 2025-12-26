@@ -2,7 +2,7 @@
 """
 Premium Instance Provisioning Test
 
-RUNTIME ENVIRONMENT:
+WHERE TO RUN:
 Run locally (with AWS credentials and Terraform state)
 
 WHAT IT TESTS:
@@ -28,6 +28,15 @@ Usage:
     python test_premium_instance_provisioning.py --terraform-dir /path/to/terraform
     python test_premium_instance_provisioning.py --skip-token-gen
         # Use existing tokens.json
+
+PERFORMANCE IMPACT:
+  HEAVY - Provisions real EC2 instances and modifies production infrastructure
+  - Creates new premium EC2 instances
+  - Starts/stops instances during testing
+  - Migrates users between instances
+  - Will affect premium users during instance provisioning
+  - Use during maintenance windows or off-peak hours
+
 """
 
 import argparse
