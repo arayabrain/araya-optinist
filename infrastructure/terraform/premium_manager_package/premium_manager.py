@@ -1337,7 +1337,8 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
                 print(f"Executing query for user_id={user_id}")
                 cursor.execute(
                     """SELECT instance_id, target_group_arn, alb_rule_arn, status,
-                    assigned_at FROM premium_user_assignments WHERE user_id = %s""",
+                    assigned_at, is_shared FROM premium_user_assignments
+                    WHERE user_id = %s""",
                     (user_id,),
                 )
                 assignment = cursor.fetchone()
@@ -1355,7 +1356,8 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
                 print(
                     f"Found assignment - "
                     f"instance_id={assignment['instance_id']}, "
-                    f"status={assignment['status']}"
+                    f"status={assignment['status']}, "
+                    f"is_shared={assignment['is_shared']}"
                 )
                 return {
                     "statusCode": 200,
@@ -1369,6 +1371,7 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
                             "assigned_at": assignment["assigned_at"].isoformat()
                             if assignment["assigned_at"]
                             else None,
+                            "is_shared": bool(assignment["is_shared"]),
                         }
                     ),
                 }
@@ -3525,8 +3528,20 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                 ):
                     available_instances.append(instance_id)
                     print(f"Instance {instance_id} is available for migration")
-                elif len(assigned_users) > 1:  # Shared instance
-                    shared_instances.append((instance_id, assigned_users))
+                elif assigned_users:
+                    # Check if this is a shared instance:
+                    # 1. Multiple users on the instance, OR
+                    # 2. Any user has is_shared=1 flag (incorrectly marked as shared)
+                    has_shared_flag = any(
+                        user.get("is_shared", 0) == 1 for user in assigned_users
+                    )
+                    if len(assigned_users) > 1 or has_shared_flag:
+                        shared_instances.append((instance_id, assigned_users))
+                        print(
+                            f"Instance {instance_id} marked for migration: "
+                            f"{len(assigned_users)} users, "
+                            f"has_shared_flag={has_shared_flag}"
+                        )
 
         # Only migrate if we have available instances
         if not available_instances or not shared_instances:
@@ -3569,17 +3584,38 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                 break
 
             # For autoscaling pool, migrate ALL users (it's a temporary assignment)
-            # For premium instances, migrate all but one user
-            # (keep first user, migrate others)
+            # For premium instances with multiple users, keep first user (without
+            # is_shared flag), migrate others
+            # For single user with is_shared=1 flag, migrate them too
+            # (incorrect assignment)
             if instance_id == "autoscaling-pool":
                 users_to_migrate = users  # Migrate all users from autoscaling pool
                 print(f"Migrating ALL {len(users)} users from autoscaling pool")
-            else:
-                users_to_migrate = users[1:]  # Keep first user, migrate others
+            elif len(users) == 1:
+                # Single user incorrectly marked as shared - migrate them
+                users_to_migrate = users
                 print(
-                    f"Migrating {len(users_to_migrate)} users from "
-                    f"shared premium instance"
+                    f"Migrating single user {users[0].get('user_id')} "
+                    f"incorrectly marked as shared"
                 )
+            else:
+                # Multiple users - migrate all with is_shared=1,
+                # or keep first and migrate rest
+                users_with_shared_flag = [
+                    u for u in users if u.get("is_shared", 0) == 1
+                ]
+                if users_with_shared_flag:
+                    users_to_migrate = users_with_shared_flag
+                    print(
+                        f"Migrating {len(users_to_migrate)} users with is_shared flag "
+                        f"from {instance_id}"
+                    )
+                else:
+                    users_to_migrate = users[1:]  # Keep first user, migrate others
+                    print(
+                        f"Migrating {len(users_to_migrate)} users from "
+                        f"shared premium instance"
+                    )
 
             for user_dict in users_to_migrate:
                 # Extract user_id from the dictionary returned by
