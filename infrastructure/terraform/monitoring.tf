@@ -391,17 +391,28 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["OptiNiSt/FreeUsers", "ActiveLogins", { "label" : "Active Free Tier Users" }],
-            ["OptiNiSt/Premium", "ActiveAssignments", { "label" : "Active Premium Users" }],
-            ["OptiNiSt/Premium", "InstanceUtilization", { "label" : "Premium Instance Utilization %" }],
-            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Duration" }],
-            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Errors" }]
+            ["OptiNiSt/FreeUsers", "ActiveLogins", { "label" : "Active Free Tier Users", "yAxis" : "left" }],
+            ["OptiNiSt/Premium", "ActiveAssignments", { "label" : "Active Premium Users", "yAxis" : "left" }],
+            ["OptiNiSt/Premium", "InstanceUtilization", { "label" : "Premium Instance Utilization %", "yAxis" : "right" }],
+            ["OptiNiSt/Application", "UserCPUUsage", { "label" : "User CPU Usage", "stat" : "Average", "yAxis" : "right" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Duration (ms)", "yAxis" : "right" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Errors", "yAxis" : "left" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
           title   = "User Tier Operations: Free & Premium"
           period  = 300
+          yAxis = {
+            left = {
+              label = "Count"
+              min   = 0
+            }
+            right = {
+              label = "Utilization / Duration"
+              min   = 0
+            }
+          }
         }
       },
       # Row 4: EC2 Load Average and I/O Wait
@@ -413,18 +424,26 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "EC2 CPU Utilization %" }],
-            ["CWAgent", "cpu_usage_iowait", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "I/O Wait %" }]
+            ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "EC2 CPU Utilization %", "yAxis" : "left" }],
+            ["CWAgent", "cpu_usage_iowait", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "I/O Wait %", "yAxis" : "left" }],
+            ["CWAgent", "system_load1", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Load Average (1 min)", "yAxis" : "right" }],
+            ["CWAgent", "system_load5", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Load Average (5 min)", "yAxis" : "right" }],
+            ["CWAgent", "system_load15", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Load Average (15 min)", "yAxis" : "right" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
-          title   = "EC2 Performance: CPU & I/O Wait"
+          title   = "EC2 Performance: CPU, I/O Wait & Load Average"
           period  = 300
           yAxis = {
             left = {
-              min = 0
-              max = 100
+              label = "Percentage"
+              min   = 0
+              max   = 100
+            }
+            right = {
+              label = "Load Average"
+              min   = 0
             }
           }
           annotations = {
@@ -432,10 +451,12 @@ resource "aws_cloudwatch_dashboard" "main" {
               {
                 label = "High CPU Threshold (80%)"
                 value = 80
+                yAxis = "left"
               },
               {
                 label = "High I/O Wait Threshold (30%)"
                 value = 30
+                yAxis = "left"
               }
             ]
           }
