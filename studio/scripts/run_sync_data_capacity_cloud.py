@@ -315,11 +315,22 @@ class CloudWorkspaceDataCapacityService:
                 #     f"total={total_data_usage:,}"
                 # )
 
-                # Update yaml file
-                WorkspaceDataCapacityService._update_exp_data_usage_yaml(
-                    workspace_id, unique_id, total_data_usage
-                )
+                # Update yaml file - skip if experiment.yaml is invalid/corrupted
+                try:
+                    WorkspaceDataCapacityService._update_exp_data_usage_yaml(
+                        workspace_id, unique_id, total_data_usage
+                    )
+                except (AssertionError, ValueError) as yaml_error:
+                    # Log warning if experiment.yaml is invalid but continue processing
+                    logger.warning(
+                        f"Skipping YAML update for experiment "
+                        f"{workspace_id}/{unique_id}: "
+                        f"Invalid or corrupted experiment.yaml file ({yaml_error}). "
+                        f"Data usage will still be tracked in database."
+                    )
 
+                # Add experiment record even if YAML update failed
+                # This ensures data usage is tracked in the database
                 exp_records.append(
                     ExperimentRecord(
                         workspace_id=workspace_id,
@@ -330,7 +341,7 @@ class CloudWorkspaceDataCapacityService:
 
             except Exception as e:
                 logger.error(
-                    f"Failed to update experiment {workspace_id}/{unique_id}: {e}"
+                    f"Failed to process experiment {workspace_id}/{unique_id}: {e}"
                 )
 
         # Update database records
