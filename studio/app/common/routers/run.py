@@ -1,3 +1,4 @@
+import os
 from typing import Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
@@ -10,9 +11,12 @@ from studio.app.common.core.cloud.cloud_utils import (
     get_current_user_storage_usage,
     get_user_storage_usage,
 )
+from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteStorageController,
     RemoteStorageLockError,
+    RemoteStorageSimpleReader,
 )
 from studio.app.common.core.workflow.workflow import (
     DataFilterParam,
@@ -162,8 +166,26 @@ async def run_result(
     uid: str,
     nodeDict: NodeItem,
     background_tasks: BackgroundTasks,
+    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     try:
+        # Sync from S3 if experiment config file missing locally
+        # This handles cross-instance scenarios when ALB routes user to
+        # different instance
+        if RemoteStorageController.is_available():
+            experiment_yaml_path = ExptConfigReader.get_config_yaml_path(
+                workspace_id, uid
+            )
+            if not os.path.exists(experiment_yaml_path):
+                logger.info(
+                    f"Experiment config not found locally, downloading from S3: "
+                    f"[{workspace_id}/{uid}]"
+                )
+                async with RemoteStorageSimpleReader(
+                    remote_bucket_name
+                ) as remote_storage:
+                    await remote_storage.download_all_experiments_metas([workspace_id])
+
         res = await WorkflowResult(workspace_id, uid).observe(
             nodeDict.pendingNodeIdList
         )

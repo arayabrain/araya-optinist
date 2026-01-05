@@ -184,8 +184,9 @@ def _update_free_user_activity_sync(user_id: str) -> bool:
 
     This method:
     1. Gets current instance ID from EC2 metadata
-    2. Upserts record in free_user_assignments table using merge()
-    3. Updates last_activity timestamp
+    2. Queries for existing record by user_id
+    3. Updates if exists, inserts if not (proper upsert)
+    4. Updates last_activity timestamp
 
     Returns:
         True if update successful, False otherwise
@@ -199,22 +200,45 @@ def _update_free_user_activity_sync(user_id: str) -> bool:
         if not instance_id or instance_id == "local":
             return False
 
-        # Update database using SQLAlchemy merge() for atomic upsert
+        # Update database with proper upsert logic
         with session_scope() as session:
-            now = datetime.now()
+            from datetime import timezone
 
-            assignment = FreeUserAssignment(
-                user_id=user_id,
-                instance_id=instance_id,
-                assigned_at=now,
-                last_activity=now,
+            # Use timezone-aware datetime to match database schema
+            now = datetime.now(timezone.utc)
+
+            # Query for existing record by user_id (unique constraint field)
+            existing = (
+                session.query(FreeUserAssignment)
+                .filter(FreeUserAssignment.user_id == user_id)
+                .first()
             )
 
-            merged = session.merge(assignment)
-
-            # For existing records, ensure we update the timestamps
-            merged.last_activity = now
-            merged.instance_id = instance_id
+            if existing:
+                # Update existing record
+                existing.instance_id = instance_id
+                existing.last_activity = now
+                logger = AppLogger.get_logger()
+                logger.debug(
+                    f"Updated free user activity: user_id={user_id}, "
+                    f"instance_id={instance_id}"
+                )
+            else:
+                # Insert new record
+                new_assignment = FreeUserAssignment(
+                    user_id=user_id,
+                    instance_id=instance_id,
+                    assigned_at=now,
+                    last_activity=now,
+                    active_workflow_count=0,
+                    migration_count=0,
+                )
+                session.add(new_assignment)
+                logger = AppLogger.get_logger()
+                logger.debug(
+                    f"Created free user assignment: user_id={user_id}, "
+                    f"instance_id={instance_id}"
+                )
 
             session.commit()
             return True
