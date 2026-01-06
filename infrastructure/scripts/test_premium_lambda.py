@@ -40,6 +40,13 @@ HOW TO RUN:
 
 EXPECTED RESULT:
   All 6 tests should pass
+
+PERFORMANCE IMPACT:
+  Light - All AWS services and database are mocked
+  - Tests Lambda handler code directly with mock events
+  - No impact on other users
+  - Safe to run anytime
+
 """
 
 import json

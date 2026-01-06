@@ -573,6 +573,28 @@ resource "aws_iam_role_policy" "ecs_task_routing_secret" {
   })
 }
 
+# ECS metadata access for instance ID retrieval
+# Required by cloud-startup.sh to get EC2 instance ID via ECS API fallback
+# when EC2 metadata service is unavailable
+resource "aws_iam_role_policy" "ecs_task_metadata" {
+  name = "subscr-ecs-task-metadata-access"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeTasks",
+          "ecs:DescribeContainerInstances"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 
 # ===============
 # Security groups

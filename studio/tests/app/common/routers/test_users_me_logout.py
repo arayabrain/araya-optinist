@@ -4,7 +4,7 @@ Integration tests for free user logout endpoint.
 Tests logout tracking and cleanup scheduling.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -79,9 +79,9 @@ class TestLogoutFreeUser:
         # Mock execute() to return a row-like tuple
         mock_db.execute.return_value.first.return_value = (mock_assignment,)
 
-        before = datetime.now()
+        before = datetime.now(timezone.utc)
         result = await logout_free_user(current_user=mock_free_user, db=mock_db)
-        after = datetime.now()
+        after = datetime.now(timezone.utc)
 
         assert result["logged_out"] is True
         assert mock_assignment.logged_out_at is not None

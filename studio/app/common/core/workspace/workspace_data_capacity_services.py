@@ -130,8 +130,20 @@ class WorkspaceDataCapacityService:
                 unique_id = exp_folder.name
                 data_usage = get_folder_size(exp_folder.as_posix())
 
-                cls._update_exp_data_usage_yaml(workspace_id, unique_id, data_usage)
+                # Update yaml file - skip if experiment.yaml is invalid/corrupted
+                try:
+                    cls._update_exp_data_usage_yaml(workspace_id, unique_id, data_usage)
+                except (AssertionError, ValueError) as yaml_error:
+                    # Log warning if experiment.yaml is invalid but continue processing
+                    logger.warning(
+                        f"Skipping YAML update for experiment "
+                        f"{workspace_id}/{unique_id}: "
+                        f"Invalid or corrupted experiment.yaml file ({yaml_error}). "
+                        f"Data usage will still be tracked in database."
+                    )
 
+                # Add experiment record even if YAML update failed
+                # This ensures data usage is tracked in the database
                 exp_records.append(
                     ExperimentRecord(
                         workspace_id=workspace_id,
@@ -140,9 +152,7 @@ class WorkspaceDataCapacityService:
                     )
                 )
             except Exception as e:
-                logger.error(
-                    f"Failed to update Record information [{exp_folder}] [{e}]"
-                )
+                logger.error(f"Failed to process experiment [{exp_folder}] [{e}]")
 
         if cls.is_available():
             if delete_existing:

@@ -17,6 +17,9 @@ sys.path.append(ROOT_DIRPATH)
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.logger_context_helpers import (
+    init_client_id_from_snakemake_config,
+)
 from studio.app.common.core.rules.runner import Runner
 from studio.app.common.core.snakemake.smk import Rule
 from studio.app.common.core.snakemake.snakemake_reader import RuleConfigReader
@@ -101,6 +104,9 @@ class PostProcessRunner:
 
 
 if __name__ == "__main__":
+    # Initialize client_id from snakemake config
+    init_client_id_from_snakemake_config(snakemake.config)
+
     logger.debug(
         "post process startup debug logging\n"
         f"[snakemake.input: {snakemake.input}]\n"

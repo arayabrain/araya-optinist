@@ -41,6 +41,14 @@ EXPECTED RESULT:
 EXPECTED RUNTIME:
   - Normal run (no scaling): ~2-3 minutes
   - Scale-up scenario: ~10-12 minutes (Lambda waits for instances internally)
+
+PERFORMANCE IMPACT:
+  HEAVY - Invokes Free Manager Lambda which may scale ASG and rebalance users
+  - Scales ECS service and ASG when user count exceeds threshold
+  - Rebalances users across instances during scaling
+  - Will affect free tier users during scaling operations
+  - Use during maintenance windows or off-peak hours
+
 """
 
 import argparse

@@ -50,6 +50,12 @@ HOW TO RUN:
 
 EXPECTED RESULT:
   All 7 tests should pass
+
+PERFORMANCE IMPACT:
+  Light - All tests use mocks, no real AWS services or database
+  - No impact on other users
+  - Safe to run anytime
+
 """
 
 import os
@@ -157,7 +163,8 @@ class TestSafeEnvironmentVariables:
                 from premium_manager import get_db_connection
 
                 try:
-                    get_db_connection()
+                    with get_db_connection():
+                        pass
                     assert False, "Should have raised ValueError for missing RDS_HOST"
                 except ValueError as e:
                     assert "RDS_HOST" in str(e)

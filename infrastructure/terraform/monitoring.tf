@@ -98,12 +98,12 @@ resource "aws_cloudwatch_metric_alarm" "load_average_high" {
   alarm_name          = "subscr-optinist-load-average-high"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "2"
-  metric_name         = "procstat_cpu_usage"
-  namespace           = "CWAgent"
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
   period              = "300"
   statistic           = "Average"
   threshold           = "80"
-  alarm_description   = "System load average is high"
+  alarm_description   = "EC2 CPU utilization is high"
 
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.main.name
@@ -391,17 +391,75 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["OptiNiSt/FreeUsers", "ActiveLogins", { "label" : "Active Free Tier Users" }],
-            ["OptiNiSt/Premium", "ActiveAssignments", { "label" : "Active Premium Users" }],
-            ["OptiNiSt/Premium", "InstanceUtilization", { "label" : "Premium Instance Utilization %" }],
-            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Duration" }],
-            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Errors" }]
+            ["OptiNiSt/FreeUsers", "ActiveLogins", { "label" : "Active Free Tier Users", "yAxis" : "left" }],
+            ["OptiNiSt/Premium", "ActiveAssignments", { "label" : "Active Premium Users", "yAxis" : "left" }],
+            ["OptiNiSt/Premium", "InstanceUtilization", { "label" : "Premium Instance Utilization %", "yAxis" : "right" }],
+            ["OptiNiSt/Application", "UserCPUUsage", { "label" : "User CPU Usage", "stat" : "Average", "yAxis" : "right" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Duration (ms)", "yAxis" : "right" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Errors", "yAxis" : "left" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
           title   = "User Tier Operations: Free & Premium"
           period  = 300
+          yAxis = {
+            left = {
+              label = "Count"
+              min   = 0
+            }
+            right = {
+              label = "Utilization / Duration"
+              min   = 0
+            }
+          }
+        }
+      },
+      # Row 4: EC2 Load Average and I/O Wait
+      {
+        type   = "metric"
+        x      = 0
+        y      = 18
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "EC2 CPU Utilization %", "yAxis" : "left" }],
+            ["CWAgent", "cpu_usage_iowait", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "I/O Wait %", "yAxis" : "left" }],
+            ["CWAgent", "system_load1", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Load Average (1 min)", "yAxis" : "right" }],
+            ["CWAgent", "system_load5", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Load Average (5 min)", "yAxis" : "right" }],
+            ["CWAgent", "system_load15", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Load Average (15 min)", "yAxis" : "right" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-1"
+          title   = "EC2 Performance: CPU, I/O Wait & Load Average"
+          period  = 300
+          yAxis = {
+            left = {
+              label = "Percentage"
+              min   = 0
+              max   = 100
+            }
+            right = {
+              label = "Load Average"
+              min   = 0
+            }
+          }
+          annotations = {
+            horizontal = [
+              {
+                label = "High CPU Threshold (80%)"
+                value = 80
+                yAxis = "left"
+              },
+              {
+                label = "High I/O Wait Threshold (30%)"
+                value = 30
+                yAxis = "left"
+              }
+            ]
+          }
         }
       },
       # Row 4: System Health Overview
@@ -413,17 +471,37 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS CPU" }],
-            ["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS Connections" }],
-            ["AWS/EFS", "ClientConnections", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Connections" }],
-            ["AWS/EFS", "DataReadIOBytes", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Read I/O" }],
-            ["AWS/EFS", "DataWriteIOBytes", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Write I/O" }]
+            ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS CPU %", "yAxis" : "left" }],
+            ["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS Connections", "yAxis" : "right" }],
+            ["AWS/RDS", "FreeStorageSpace", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS Free Storage (Bytes)", "yAxis" : "right" }],
+            ["AWS/EFS", "ClientConnections", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Connections", "yAxis" : "right" }],
+            ["AWS/EFS", "PercentIOLimit", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS I/O Limit %", "yAxis" : "left" }],
+            ["AWS/EFS", "BurstCreditBalance", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Burst Credits", "yAxis" : "right" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
           title   = "Infrastructure Health: RDS & EFS"
           period  = 300
+          yAxis = {
+            left = {
+              label = "Percentage"
+              min   = 0
+              max   = 100
+            }
+          }
+          annotations = {
+            horizontal = [
+              {
+                label = "RDS CPU High (80%)"
+                value = 80
+              },
+              {
+                label = "EFS I/O Limit High (80%)"
+                value = 80
+              }
+            ]
+          }
         }
       },
       # Row 5: Autoscaling Activity and Events
@@ -488,6 +566,80 @@ resource "aws_cloudwatch_dashboard" "main" {
                 value = 80
               }
             ]
+          }
+        }
+      },
+      # Row 6: Background Jobs & Storage Reconciliation
+      {
+        type   = "metric"
+        x      = 0
+        y      = 30
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Storage Reconciliation Duration (ms)", "yAxis" : "left" }],
+            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Storage Reconciliation Runs", "yAxis" : "right", "stat" : "Sum" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Storage Reconciliation Errors", "yAxis" : "right", "stat" : "Sum" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.common_user_manager.function_name, { "label" : "User Manager Duration (ms)", "yAxis" : "left" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.common_user_manager.function_name, { "label" : "User Manager Errors", "yAxis" : "right", "stat" : "Sum" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-1"
+          title   = "Background Jobs: Lambda Performance"
+          period  = 3600
+          yAxis = {
+            left = {
+              label = "Duration (ms)"
+              min   = 0
+            }
+            right = {
+              label = "Count"
+              min   = 0
+            }
+          }
+          annotations = {
+            horizontal = [
+              {
+                label = "Storage Reconciliation Timeout (15 min)"
+                value = 900000
+                yAxis = "left"
+              }
+            ]
+          }
+        }
+      },
+      # Row 6: Lambda Health & Cleanup Operations
+      {
+        type   = "metric"
+        x      = 12
+        y      = 30
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.free_manager.function_name, { "label" : "Free Manager Duration (ms)" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.free_manager.function_name, { "label" : "Free Manager Errors", "yAxis" : "right" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_cleanup.function_name, { "label" : "Premium Cleanup Duration (ms)" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_cleanup.function_name, { "label" : "Premium Cleanup Errors", "yAxis" : "right" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.free_cleanup.function_name, { "label" : "Free Cleanup Duration (ms)" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.free_cleanup.function_name, { "label" : "Free Cleanup Errors", "yAxis" : "right" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-1"
+          title   = "Lambda Operations: Manager & Cleanup Jobs"
+          period  = 3600
+          yAxis = {
+            left = {
+              label = "Duration (ms)"
+              min   = 0
+            }
+            right = {
+              label = "Error Count"
+              min   = 0
+            }
           }
         }
       }

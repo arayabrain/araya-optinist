@@ -8,7 +8,7 @@ Triggered by CloudWatch Events on a schedule.
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 import boto3
@@ -73,7 +73,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     "premium_metrics": premium_metrics,
                     "free_metrics": free_metrics,
                     "utilization": utilization,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
             ),
         }
@@ -85,7 +85,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "body": json.dumps(
                 {
                     "message": f"Cost tracking failed: {str(e)}",
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
             ),
         }
@@ -223,7 +223,7 @@ def publish_cost_metrics(
                         "MetricName": metric["MetricName"],
                         "Value": metric["Value"],
                         "Unit": metric["Unit"],
-                        "Timestamp": datetime.utcnow(),
+                        "Timestamp": datetime.now(timezone.utc),
                     }
                 ],
             )

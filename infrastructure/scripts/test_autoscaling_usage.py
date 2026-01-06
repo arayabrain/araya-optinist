@@ -66,6 +66,12 @@ HOW TO RUN:
 EXPECTED RUNTIME:
   20-30 minutes (workflow submission + alarm trigger + instance launch)
 
+PERFORMANCE IMPACT:
+  HEAVY - Submits 30 concurrent workflows to trigger CloudWatch alarms
+  - Designed to stress CPU/Memory and trigger ASG scaling
+  - Will affect other users on the free tier instance during test
+  - Use during maintenance windows or off-peak hours
+
 """
 
 import json

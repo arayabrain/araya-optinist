@@ -21,6 +21,7 @@ import {
 } from "@mui/material"
 
 import { DisplayDataItem } from "components/Workspace/Visualize/DisplayDataItem"
+import { WORKSPACE_TYPE } from "const/Workspace"
 import { publicDataviewReproduceWorkflow } from "store/slice/Dataview/DataviewActions"
 import { DATA_TYPE } from "store/slice/DisplayData/DisplayDataType"
 import { clearFlowElements } from "store/slice/FlowElement/FlowElementSlice"
@@ -125,7 +126,8 @@ export const useDataviewVisualizationCleanup = (open: boolean) => {
         dispatch(deleteAllItemForWorkflowDialog())
 
         // Reproduced workflow store cleanup
-        dispatch(clearFlowElements())
+        const workspaceType = WORKSPACE_TYPE.DEFAULT // Currently a fixed value
+        dispatch(clearFlowElements({ workspaceType }))
         dispatch(clearCurrentPipeline())
       }
     }

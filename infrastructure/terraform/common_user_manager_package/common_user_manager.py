@@ -13,7 +13,7 @@ premium_manager and free_manager lambdas.
 import json
 import os
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 import boto3
@@ -178,7 +178,7 @@ def recover_stale_workflow_counts() -> Dict[str, int]:
     """
     try:
         with get_sqlalchemy_session() as session:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             user_inactive_threshold = now - timedelta(
                 hours=WORKFLOW_USER_INACTIVITY_HOURS
             )
