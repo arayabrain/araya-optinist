@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react"
 import { useDispatch } from "react-redux"
 import { useNavigate } from "react-router-dom"
 
+import { CheckoutValidationStatus } from "api/subscriptions/SubscriptionsApiDTO"
 import Loading from "components/common/Loading"
 import { validateSession } from "components/utils/ValidateCheckoutSession"
 import PaymentResult from "pages/Subscription/payment_result"
@@ -13,13 +14,14 @@ const Thanks: React.FC = () => {
   const searchParams = new URLSearchParams(window.location.search)
   const sessionId = searchParams.get("session_id")
 
-  const [isValidSession, setIsValidSession] = useState(false)
+  const [validationStatus, setValidationStatus] =
+    useState<CheckoutValidationStatus | null>(null)
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
     validateSession(
       sessionId,
-      setIsValidSession,
+      setValidationStatus,
       setIsLoading,
       dispatch,
       navigate,
@@ -31,8 +33,16 @@ const Thanks: React.FC = () => {
     return <Loading loading={true} />
   }
 
-  if (isValidSession) {
+  if (validationStatus === "success") {
     return <PaymentResult type="success" />
+  }
+
+  if (validationStatus === "payment_failed") {
+    return <PaymentResult type="payment_failed" />
+  }
+
+  if (validationStatus === "webhook_failed") {
+    return <PaymentResult type="webhook_failed" />
   }
 
   return null

@@ -8,3 +8,13 @@ export type SubscriptionPlanDTO = {
   status: boolean
   created_at: string
 }
+
+export type CheckoutValidationStatus =
+  | "success"
+  | "payment_failed"
+  | "webhook_failed"
+
+export type CheckoutValidationResponse = {
+  status: CheckoutValidationStatus
+  message?: string
+}

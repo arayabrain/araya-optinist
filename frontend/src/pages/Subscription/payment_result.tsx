@@ -7,13 +7,11 @@ import GitHubIcon from "@mui/icons-material/GitHub"
 import { Box, Button, Typography, Card, CardContent } from "@mui/material"
 
 interface PaymentResultProps {
-  type?: "success" | "failed"
+  type?: "success" | "payment_failed" | "webhook_failed"
 }
 
 const PaymentResult: React.FC<PaymentResultProps> = ({ type = "success" }) => {
   const navigate = useNavigate()
-
-  const isSuccess = type === "success"
 
   interface Config {
     icon: React.ReactNode
@@ -27,7 +25,10 @@ const PaymentResult: React.FC<PaymentResultProps> = ({ type = "success" }) => {
     buttonAction: () => void
   }
 
-  const config: Record<"success" | "failed", Config> = {
+  const config: Record<
+    "success" | "payment_failed" | "webhook_failed",
+    Config
+  > = {
     success: {
       icon: <CheckIcon sx={{ fontSize: "3rem", color: "white" }} />,
       circleColor: "#10b981",
@@ -39,20 +40,34 @@ const PaymentResult: React.FC<PaymentResultProps> = ({ type = "success" }) => {
       buttonHoverColor: "#2563eb",
       buttonAction: () => navigate("/dashboard"),
     },
-    failed: {
+    payment_failed: {
       icon: <CloseIcon sx={{ fontSize: "3rem", color: "white" }} />,
       circleColor: "#ef4444",
       title: "Payment Failed",
-      subtitle: "We are not able to process your payment",
-      description: "Please check your payment information and try again.",
+      subtitle: "We were unable to process your payment",
+      description:
+        "Please check your payment information and try again. Common issues include insufficient funds, expired cards, or incorrect billing details.",
       buttonText: "Try Again",
       buttonColor: "#ef4444",
       buttonHoverColor: "#dc2626",
       buttonAction: () => navigate("/subscription"),
     },
+    webhook_failed: {
+      icon: <CloseIcon sx={{ fontSize: "3rem", color: "white" }} />,
+      circleColor: "#f59e0b",
+      title: "Activation Pending",
+      subtitle:
+        "Payment successful, but subscription activation is in progress",
+      description:
+        "Your payment was processed successfully, but there was a delay in activating your subscription. Please wait a few minutes and refresh, or contact support if this persists.",
+      buttonText: "Contact Support",
+      buttonColor: "#f59e0b",
+      buttonHoverColor: "#d97706",
+      buttonAction: () => navigate("/subscription"),
+    },
   }
 
-  const currentConfig = config[isSuccess ? "success" : "failed"]
+  const currentConfig = config[type]
 
   const styles = {
     pageWrapper: {

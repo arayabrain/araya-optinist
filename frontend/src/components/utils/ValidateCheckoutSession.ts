@@ -5,11 +5,17 @@ import {
   validateCheckoutSessionApi,
   validateFailedCheckoutSessionApi,
 } from "api/subscriptions/Subscriptions"
+import {
+  CheckoutValidationResponse,
+  CheckoutValidationStatus,
+} from "api/subscriptions/SubscriptionsApiDTO"
 import { AppDispatch } from "store/store"
 
 export const validateSession = async (
   sessionId: string | null,
-  setIsValidSession: React.Dispatch<React.SetStateAction<boolean>>,
+  setIsValidSession: React.Dispatch<
+    React.SetStateAction<CheckoutValidationStatus | null>
+  >,
   setIsLoading: React.Dispatch<React.SetStateAction<boolean>>,
   dispatch: AppDispatch,
   navigate: NavigateFunction,
@@ -31,13 +37,24 @@ export const validateSession = async (
     }
 
     // Check if the validation was successful
-    if (result.payload === true || result.meta?.requestStatus === "fulfilled") {
-      setIsValidSession(true)
+    const response = result.payload as CheckoutValidationResponse
+    if (response && response.status) {
+      setIsValidSession(response.status)
+    } else {
+      // On thanks page, show failed result instead of navigating away
+      if (isThanksPage) {
+        setIsValidSession("webhook_failed")
+      } else {
+        navigate("/subscription", { replace: true })
+      }
+    }
+  } catch (error) {
+    // On thanks page, show failed result instead of navigating away
+    if (isThanksPage) {
+      setIsValidSession("webhook_failed")
     } else {
       navigate("/subscription", { replace: true })
     }
-  } catch (error) {
-    navigate("/subscription", { replace: true })
   } finally {
     setIsLoading(false)
   }
