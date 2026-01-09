@@ -50,6 +50,37 @@ class SubscriptionPlans(SQLModel, table=True):
         default=None,
         description="Stripe price ID for this subscription plan",
     )
+    # New fields for flexible plan management
+    tier: str = Field(
+        sa_column=Column(String(50), nullable=False, server_default="free"),
+        default="free",
+        description="Plan tier identifier (free, premium, enterprise, etc.)",
+    )
+    display_order: int = Field(
+        sa_column=Column(BIGINT, nullable=False, server_default="0"),
+        default=0,
+        description="Display order for plan selection UI (lower = shown first)",
+    )
+    is_featured: bool = Field(
+        sa_column=Column(Boolean, nullable=False, server_default="0"),
+        default=False,
+        description="Whether this plan should be highlighted in UI",
+    )
+    max_storage_gb: Optional[int] = Field(
+        sa_column=Column(BIGINT, nullable=True),
+        default=None,
+        description="Maximum storage quota in GB for this plan",
+    )
+    description: Optional[str] = Field(
+        sa_column=Column(Text, nullable=True),
+        default=None,
+        description="Detailed description of the plan",
+    )
+    plan_metadata: Optional[Dict[str, Any]] = Field(
+        sa_column=Column("metadata", JSON, nullable=True),
+        default=None,
+        description="Extensible metadata field for future plan attributes",
+    )
     created_at: Optional[datetime] = Field(
         sa_column_kwargs={"server_default": current_timestamp()},
     )
@@ -57,6 +88,11 @@ class SubscriptionPlans(SQLModel, table=True):
     @property
     def formatted_price(self) -> str:
         return f"${self.price/100:.2f}" if self.price else "Free"
+
+    @property
+    def is_premium_tier(self) -> bool:
+        """Check if this plan is premium or higher tier"""
+        return self.tier in ["premium", "enterprise", "professional"]
 
 
 class UserSubscription(SQLModel, table=True):

@@ -116,7 +116,7 @@ async def get_user_with_context(db: Session, user_id: int) -> User:
                     (storage_usage_bytes or 0) / (storage_quota_bytes or 1) * 100, 2
                 )
 
-                # Calculate subscription status and days remaining
+                # Calculate subscription status and days remaining (tier-based)
                 now = datetime.now(timezone.utc)
                 if subscription_expiration and subscription_plan_id:
                     # Make sure expiration is timezone-aware
@@ -127,12 +127,23 @@ async def get_user_with_context(db: Session, user_id: int) -> User:
 
                     days_remaining = (subscription_expiration - now).days
 
-                    if subscription_plan_id == SubscriptionPlanIds.FREE:
+                    # Query plan tier from database (data-driven approach)
+                    from studio.app.common.models.subscription import SubscriptionPlans
+
+                    plan = (
+                        db.query(SubscriptionPlans)
+                        .filter(SubscriptionPlans.id == subscription_plan_id)
+                        .first()
+                    )
+
+                    # Determine status based on plan tier
+                    if plan and plan.tier == "free":
                         user.__dict__[
                             "subscription_status"
                         ] = SubscriptionStatus.FREE.value
                         user.__dict__["subscription_days_remaining"] = None
-                    elif subscription_plan_id == SubscriptionPlanIds.PREMIUM:
+                    elif plan and plan.is_premium_tier:
+                        # Premium tier logic (covers premium, enterprise, professional, etc.)
                         if days_remaining > 0:
                             user.__dict__[
                                 "subscription_status"
@@ -153,6 +164,7 @@ async def get_user_with_context(db: Session, user_id: int) -> User:
                             ] = SubscriptionStatus.EXPIRED.value
                             user.__dict__["subscription_days_remaining"] = None
                     else:
+                        # Unknown tier or plan not found - fallback to plan name
                         user.__dict__["subscription_status"] = (
                             subscription_plan_name or PlanName.UNKNOWN.value
                         )
@@ -269,7 +281,7 @@ async def list_user(
                 (storage_usage_bytes or 0) / (storage_quota_bytes or 1) * 100, 2
             )
 
-            # Calculate subscription status and days remaining
+            # Calculate subscription status and days remaining (tier-based)
             now = datetime.now(timezone.utc)
             if subscription_expiration and subscription_plan_id:
                 # Make sure expiration is timezone-aware
@@ -280,10 +292,21 @@ async def list_user(
 
                 days_remaining = (subscription_expiration - now).days
 
-                if subscription_plan_id == SubscriptionPlanIds.FREE:
+                # Query plan tier from database (data-driven approach)
+                from studio.app.common.models.subscription import SubscriptionPlans
+
+                plan = (
+                    db.query(SubscriptionPlans)
+                    .filter(SubscriptionPlans.id == subscription_plan_id)
+                    .first()
+                )
+
+                # Determine status based on plan tier
+                if plan and plan.tier == "free":
                     user.__dict__["subscription_status"] = SubscriptionStatus.FREE.value
                     user.__dict__["subscription_days_remaining"] = None
-                elif subscription_plan_id == SubscriptionPlanIds.PREMIUM:
+                elif plan and plan.is_premium_tier:
+                    # Premium tier logic (covers premium, enterprise, professional, etc.)
                     if days_remaining > 0:
                         user.__dict__[
                             "subscription_status"
@@ -302,6 +325,7 @@ async def list_user(
                         ] = SubscriptionStatus.EXPIRED.value
                         user.__dict__["subscription_days_remaining"] = None
                 else:
+                    # Unknown tier or plan not found - fallback to plan name
                     user.__dict__["subscription_status"] = (
                         subscription_plan_name or PlanName.UNKNOWN.value
                     )

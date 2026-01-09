@@ -139,17 +139,55 @@ class SubscriptionService:
         return cancellation is not None
 
     @staticmethod
-    def get_subscription_status(plan_data_id: int, is_cancelled: bool) -> int:
-        # Determine status based on plan ID and cancellation state
+    def get_subscription_status(
+        db: Session, plan_data_id: int, is_cancelled: bool
+    ) -> int:
+        """
+        Determine subscription status based on plan tier and cancellation state.
+
+        This method uses data-driven approach by querying the plan's tier from
+        the database instead of hardcoded plan ID checks, enabling flexible
+        plan management without code changes.
+
+        Args:
+            db: Database session
+            plan_data_id: Subscription plan ID
+            is_cancelled: Whether subscription is cancelled
+
+        Returns:
+            SubscriptionUserStatus enum value
+        """
+        # Check cancellation first
         if is_cancelled:
-            subscription_status = SubscriptionUserStatus.CANCELED
-        elif plan_data_id == SubscriptionPlanType.MONTHLY:
-            subscription_status = SubscriptionUserStatus.FREE
-        elif plan_data_id == SubscriptionPlanType.YEARLY:
-            subscription_status = SubscriptionUserStatus.SUBSCRIBED
+            return SubscriptionUserStatus.CANCELED
+
+        # Query plan tier from database (data-driven approach)
+        plan = (
+            db.query(SubscriptionPlans)
+            .filter(SubscriptionPlans.id == plan_data_id)
+            .first()
+        )
+
+        # If plan not found, default to FREE
+        if not plan:
+            logger.warning(
+                f"Plan ID {plan_data_id} not found in database, defaulting to FREE status"
+            )
+            return SubscriptionUserStatus.FREE
+
+        # Use tier-based logic instead of hardcoded plan IDs
+        if plan.tier == "free":
+            return SubscriptionUserStatus.FREE
+        elif plan.is_premium_tier:
+            # Covers premium, enterprise, professional, and any future premium tiers
+            return SubscriptionUserStatus.SUBSCRIBED
         else:
-            subscription_status = SubscriptionUserStatus.FREE
-        return subscription_status
+            # Unknown tier, default to FREE for safety
+            logger.warning(
+                f"Unknown plan tier '{plan.tier}' for plan ID {plan_data_id}, "
+                f"defaulting to FREE status"
+            )
+            return SubscriptionUserStatus.FREE
 
     @staticmethod
     def get_plan_by_id(db: Session, plan_id: int) -> SubscriptionPlans:
