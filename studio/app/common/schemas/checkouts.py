@@ -18,8 +18,11 @@ class CheckoutValidationResponse(BaseModel):
 
     status values:
     - "success": Payment succeeded and webhook updated database
-    - "payment_failed": Payment itself failed (card declined, insufficient funds, etc.)
-    - "webhook_failed": Payment succeeded but webhook didn't update database (internal error)
+    - "payment_failed": Payment itself failed
+      (card declined, insufficient funds, etc.)
+    - "webhook_failed": Payment succeeded but webhook didn't update
+      database (internal error)
     """
+
     status: str  # "success", "payment_failed", or "webhook_failed"
     message: Optional[str] = None
