@@ -100,7 +100,9 @@ class SubscriptionService:
         query = db.query(SubscriptionPlans).filter(SubscriptionPlans.tier == tier)
 
         if active_only:
-            query = query.filter(SubscriptionPlans.status == SubscriptionStatusType.ACTIVE)
+            query = query.filter(
+                SubscriptionPlans.status == SubscriptionStatusType.ACTIVE
+            )
 
         # If multiple plans with same tier exist, return the one with lowest price
         return query.order_by(SubscriptionPlans.price.asc()).first()
