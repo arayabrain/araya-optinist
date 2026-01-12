@@ -19,14 +19,10 @@ from studio.app.common.core.storage.remote_storage_controller import (
 from studio.app.common.core.subscription.constants import (
     PlanName,
     SubscriptionPeriods,
-    SubscriptionPlanIds,
     SubscriptionStatus,
 )
 from studio.app.common.core.subscription.stripe_service import StripeService
-from studio.app.common.core.subscription.subscription_service import (
-    SubscriptionService,
-    SubscriptionUserStatus,
-)
+from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.workspace.workspace_services import WorkspaceService
 from studio.app.common.models import Role as RoleModel
 from studio.app.common.models import User as UserModel
@@ -138,30 +134,30 @@ async def get_user_with_context(db: Session, user_id: int) -> User:
 
                     # Determine status based on plan tier
                     if plan and plan.tier == "free":
-                        user.__dict__[
-                            "subscription_status"
-                        ] = SubscriptionStatus.FREE.value
+                        user.__dict__["subscription_status"] = (
+                            SubscriptionStatus.FREE.value
+                        )
                         user.__dict__["subscription_days_remaining"] = None
                     elif plan and plan.is_premium_tier:
-                        # Premium tier logic (covers premium, enterprise, professional, etc.)
+                        # Premium tier logic (premium, enterprise, professional, etc.)
                         if days_remaining > 0:
-                            user.__dict__[
-                                "subscription_status"
-                            ] = SubscriptionStatus.PREMIUM.value
-                            user.__dict__[
-                                "subscription_days_remaining"
-                            ] = days_remaining
+                            user.__dict__["subscription_status"] = (
+                                SubscriptionStatus.PREMIUM.value
+                            )
+                            user.__dict__["subscription_days_remaining"] = (
+                                days_remaining
+                            )
                         elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
-                            user.__dict__[
-                                "subscription_status"
-                            ] = SubscriptionStatus.LIMIT_GRACE.value
+                            user.__dict__["subscription_status"] = (
+                                SubscriptionStatus.LIMIT_GRACE.value
+                            )
                             user.__dict__["subscription_days_remaining"] = (
                                 SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
                             )  # Days left in grace period
                         else:
-                            user.__dict__[
-                                "subscription_status"
-                            ] = SubscriptionStatus.EXPIRED.value
+                            user.__dict__["subscription_status"] = (
+                                SubscriptionStatus.EXPIRED.value
+                            )
                             user.__dict__["subscription_days_remaining"] = None
                     else:
                         # Unknown tier or plan not found - fallback to plan name
@@ -306,23 +302,23 @@ async def list_user(
                     user.__dict__["subscription_status"] = SubscriptionStatus.FREE.value
                     user.__dict__["subscription_days_remaining"] = None
                 elif plan and plan.is_premium_tier:
-                    # Premium tier logic (covers premium, enterprise, professional, etc.)
+                    # Premium tier logic (premium, enterprise, professional, etc.)
                     if days_remaining > 0:
-                        user.__dict__[
-                            "subscription_status"
-                        ] = SubscriptionStatus.PREMIUM.value
+                        user.__dict__["subscription_status"] = (
+                            SubscriptionStatus.PREMIUM.value
+                        )
                         user.__dict__["subscription_days_remaining"] = days_remaining
                     elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
-                        user.__dict__[
-                            "subscription_status"
-                        ] = SubscriptionStatus.LIMIT_GRACE.value
+                        user.__dict__["subscription_status"] = (
+                            SubscriptionStatus.LIMIT_GRACE.value
+                        )
                         user.__dict__["subscription_days_remaining"] = (
                             SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
                         )  # Days left in grace period
                     else:
-                        user.__dict__[
-                            "subscription_status"
-                        ] = SubscriptionStatus.EXPIRED.value
+                        user.__dict__["subscription_status"] = (
+                            SubscriptionStatus.EXPIRED.value
+                        )
                         user.__dict__["subscription_days_remaining"] = None
                 else:
                     # Unknown tier or plan not found - fallback to plan name
@@ -518,11 +514,12 @@ async def create_user(
 
             user_db.attributes = {"remote_bucket_name": new_bucket_name}
 
-        # Create subscription user record
+        # Create subscription user record with free plan
         # expiration is set to current time for free plan.
         # Since its non nullable and must have a value
+        free_plan_id = SubscriptionService.get_default_plan_id(db)
         subscription = UserSubscription(
-            plan_id=SubscriptionUserStatus.FREE,
+            plan_id=free_plan_id,
             user_id=user_db.id,
             expiration=SubscriptionService.get_current_datetime(),
         )

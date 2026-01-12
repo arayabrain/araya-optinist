@@ -158,20 +158,6 @@ const Account = () => {
   const onClickManage = () => {
     navigate("/subscription/manage")
   }
-  // Not used in cloud implementation. Comment to remove ESLint warning.
-  // const getRole = (role?: number) => {
-  //   if (!role) return
-  //   let newRole = ""
-  //   switch (role) {
-  //     case ROLE.ADMIN:
-  //       newRole = "Admin"
-  //       break
-  //     case ROLE.OPERATOR:
-  //       newRole = "Operator"
-  //       break
-  //   }
-  //   return newRole
-  // }
 
   const handleName = (event: KeyboardEvent) => {
     if (event.key === "Escape") {

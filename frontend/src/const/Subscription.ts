@@ -32,16 +32,35 @@ export const StorageDisplayThresholds = {
   OVER_LIMIT_PERCENT: 100, // Show error color when usage exceeds this
 } as const
 
-// Subscription plan names (matches backend PlanName enum)
+// Subscription plan names (extensible for multiple tiers)
+// Note: These are display names. Actual tier identifiers come from the backend
 export enum PlanName {
   FREE = "Free",
   PREMIUM = "Premium",
+  UNKNOWN = "Unknown",
 }
 
 // User tier identifiers for API/routing (matches backend SubscriptionType enum)
+// Extensible to support any tier
 export enum UserTier {
-  PREMIUM = "premium",
   FREE = "free",
+  PREMIUM = "premium",
+}
+
+// Helper to get PlanName enum from tier string
+export const getPlanNameFromTier = (tier?: string): string => {
+  if (!tier) return PlanName.UNKNOWN
+
+  const tierLower = tier.toLowerCase()
+  switch (tierLower) {
+    case "free":
+      return PlanName.FREE
+    case "premium":
+      return PlanName.PREMIUM
+    default:
+      // Capitalize first letter for unknown tiers
+      return tier.charAt(0).toUpperCase() + tier.slice(1)
+  }
 }
 
 // Subscription user status (matches backend SubscriptionUserStatus enum)

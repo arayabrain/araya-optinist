@@ -45,6 +45,8 @@ import {
   getBillingCycleText,
   getCurrencySymbol,
   getPlanFeatures,
+  isFreePlan,
+  sortPlans,
 } from "utils/subscriptions/SubscriptionUtils"
 
 const SubscriptionPlans = () => {
@@ -87,9 +89,9 @@ const SubscriptionPlans = () => {
   }
 
   // Check if the selected plan is a downgrade (free plan)
-  const isDowngrade = (planId: number) => {
+  const isDowngradePlan = (planId: number) => {
     const plan = plans.find((p) => p.id === planId)
-    return plan?.price === 0
+    return plan ? isFreePlan(plan) : false
   }
 
   const handleReactivatePlan = async (planId: number) => {
@@ -122,8 +124,7 @@ const SubscriptionPlans = () => {
   }
 
   const handleUpgradeClick = async (planId: number) => {
-    // Check if it's a downgrade (free plan)
-    if (isDowngrade(planId)) {
+    if (isDowngradePlan(planId)) {
       setSelectedPlanId(planId)
       setShowDowngradeDialog(true)
     } else {
@@ -206,8 +207,8 @@ const SubscriptionPlans = () => {
     }
   }
 
-  // Filter only active plans
-  const activePlans = plans.filter((plan) => plan.status === true)
+  // Filter only active plans and sort by display order
+  const activePlans = sortPlans(plans.filter((plan) => plan.status === true))
 
   // Get price display for a plan
   const getPriceDisplay = (plan: SubscriptionPlan) => {
@@ -215,7 +216,7 @@ const SubscriptionPlans = () => {
     const billingCycle = getBillingCycleText(plan.billing_cycle)
 
     if (plan.price === 0) {
-      return PlanName.FREE
+      return "Free"
     }
 
     const basePrice = (plan.price / 100).toFixed(0)
@@ -362,10 +363,7 @@ const SubscriptionPlans = () => {
             const isProcessing = isPlanProcessing(plan.id)
 
             return (
-              <PlanCard
-                key={plan.id}
-                isHighlighted={plan.name === PlanName.PREMIUM}
-              >
+              <PlanCard key={plan.id} isHighlighted={plan.is_featured || false}>
                 <PlanHeader>
                   <PlanTitle variant="h4">{plan.name}</PlanTitle>
 

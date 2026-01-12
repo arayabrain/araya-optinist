@@ -80,6 +80,7 @@ export const safeParseFeatures = (
 }
 
 // Helper function to safely convert plan data
+// Now includes tier-based fields for multi-plan support
 export const safeConvertPlan = (
   planData: Record<string, unknown>,
 ): SubscriptionPlan => {
@@ -93,6 +94,33 @@ export const safeConvertPlan = (
       features: safeParseFeatures(planData.features),
       status: Boolean(planData.status),
       created_at: String(planData.created_at || ""),
+      // New tier-based fields
+      tier: planData.tier ? String(planData.tier) : undefined,
+      display_order: planData.display_order
+        ? Number(planData.display_order)
+        : undefined,
+      is_featured:
+        planData.is_featured !== undefined
+          ? Boolean(planData.is_featured)
+          : undefined,
+      max_storage_gb:
+        planData.max_storage_gb !== undefined
+          ? planData.max_storage_gb === null
+            ? null
+            : Number(planData.max_storage_gb)
+          : undefined,
+      description: planData.description
+        ? String(planData.description)
+        : undefined,
+      stripe_product_id: planData.stripe_product_id
+        ? String(planData.stripe_product_id)
+        : undefined,
+      stripe_price_id: planData.stripe_price_id
+        ? String(planData.stripe_price_id)
+        : undefined,
+      metadata: planData.metadata
+        ? (planData.metadata as Record<string, unknown>)
+        : undefined,
     }
   } catch (error) {
     return {
@@ -104,6 +132,7 @@ export const safeConvertPlan = (
       features: {},
       status: false,
       created_at: "",
+      tier: "free",
     }
   }
 }
@@ -168,4 +197,96 @@ export const getAccurateTimeUTC = async () => {
   } catch (error) {
     return new Date() // JavaScript Date is UTC internally
   }
+}
+
+// ============================================================================
+// Tier-Based Helper Functions (Multi-Plan Support)
+// ============================================================================
+
+/**
+ * Check if a plan is a free tier plan
+ * Uses tier field if available, falls back to price check
+ */
+export const isFreePlan = (plan: SubscriptionPlan): boolean => {
+  if (plan.tier) {
+    return plan.tier === "free"
+  }
+  // Fallback to price-based check
+  return plan.price === 0
+}
+
+/**
+ * Check if a plan is premium tier or higher
+ * Includes: premium, enterprise, professional, and any custom premium tiers
+ */
+export const isPremiumTierPlan = (plan: SubscriptionPlan): boolean => {
+  if (plan.tier) {
+    const premiumTiers = ["premium", "enterprise", "professional", "team"]
+    return premiumTiers.includes(plan.tier.toLowerCase())
+  }
+  // Fallback to price-based check
+  return plan.price > 0
+}
+
+/**
+ * Get plan tier display name
+ * Returns a user-friendly tier name
+ */
+export const getPlanTierDisplayName = (plan: SubscriptionPlan): string => {
+  if (!plan.tier) {
+    return plan.price === 0 ? "Free" : "Premium"
+  }
+
+  // Capitalize first letter
+  return plan.tier.charAt(0).toUpperCase() + plan.tier.slice(1)
+}
+
+/**
+ * Check if plan A is an upgrade from plan B
+ * Based on price comparison (higher price = upgrade)
+ */
+export const isUpgrade = (
+  planA: SubscriptionPlan,
+  planB: SubscriptionPlan,
+): boolean => {
+  return planA.price > planB.price
+}
+
+/**
+ * Check if plan A is a downgrade from plan B
+ * Based on price comparison (lower price = downgrade)
+ */
+export const isDowngrade = (
+  planA: SubscriptionPlan,
+  planB: SubscriptionPlan,
+): boolean => {
+  return planA.price < planB.price
+}
+
+/**
+ * Get storage display text from plan
+ * Returns formatted storage quota (e.g., "5GB", "200GB", "Unlimited")
+ */
+export const getStorageDisplayText = (plan: SubscriptionPlan): string => {
+  if (!plan.max_storage_gb) {
+    return plan.max_storage_gb === null ? "Unlimited" : "Not specified"
+  }
+  return `${plan.max_storage_gb}GB`
+}
+
+/**
+ * Sort plans by display order or price
+ * Returns a new sorted array
+ */
+export const sortPlans = (plans: SubscriptionPlan[]): SubscriptionPlan[] => {
+  return [...plans].sort((a, b) => {
+    // First sort by display_order if available
+    if (a.display_order !== undefined && b.display_order !== undefined) {
+      return a.display_order - b.display_order
+    }
+    // Fallback to price sorting (free first, then by ascending price)
+    if (a.price === 0 && b.price > 0) return -1
+    if (a.price > 0 && b.price === 0) return 1
+    return a.price - b.price
+  })
 }

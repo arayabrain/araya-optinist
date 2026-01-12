@@ -22,7 +22,9 @@ class SubscriptionPlanResponse(BaseModel):
     is_featured: bool = Field(..., description="Whether plan is featured in UI")
     max_storage_gb: Optional[int] = Field(None, description="Storage quota in GB")
     description: Optional[str] = Field(None, description="Plan description")
-    plan_metadata: Optional[Dict[str, Any]] = Field(None, description="Extensible metadata", alias="metadata")
+    plan_metadata: Optional[Dict[str, Any]] = Field(
+        None, description="Extensible metadata", alias="metadata"
+    )
 
     @validator("features", pre=True)
     def parse_features(cls, v):
