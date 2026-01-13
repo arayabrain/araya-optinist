@@ -573,6 +573,33 @@ resource "aws_iam_role_policy" "ecs_task_routing_secret" {
   })
 }
 
+# Secrets Manager access for all OptiNiSt application secrets
+# This allows ECS instances to read secrets for app_setup.sh
+resource "aws_iam_role_policy" "ecs_instance_secrets_access" {
+  name = "subscr-ecs-instance-secrets-access"
+  role = aws_iam_role.ecs_instance_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Resource = [
+          aws_secretsmanager_secret.firebase_config.arn,
+          aws_secretsmanager_secret.firebase_private_key.arn,
+          aws_secretsmanager_secret.database_config.arn,
+          aws_secretsmanager_secret.app_config.arn,
+          aws_secretsmanager_secret.stripe_config.arn
+        ]
+      }
+    ]
+  })
+}
+
 # ECS metadata access for instance ID retrieval
 # Required by cloud-startup.sh to get EC2 instance ID via ECS API fallback
 # when EC2 metadata service is unavailable
@@ -852,6 +879,111 @@ resource "aws_secretsmanager_secret_version" "routing_hmac_key" {
   })
 }
 
+# ============================================================================
+# Firebase and Application Secrets
+# ============================================================================
+# These secrets enable deployment without terraform.tfvars access
+# Once created by Terraform, they can be read via AWS CLI by team members
+
+# Firebase web application configuration
+resource "aws_secretsmanager_secret" "firebase_config" {
+  name        = "subscr-optinist/firebase/config"
+  description = "Firebase web application configuration for OptiNiSt"
+
+  tags = {
+    Name        = "OptiNiSt Firebase Config"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "firebase_config" {
+  secret_id     = aws_secretsmanager_secret.firebase_config.id
+  secret_string = var.firebase_config_json
+}
+
+# Firebase service account private key
+resource "aws_secretsmanager_secret" "firebase_private_key" {
+  name        = "subscr-optinist/firebase/private-key"
+  description = "Firebase service account private key for OptiNiSt"
+
+  tags = {
+    Name        = "OptiNiSt Firebase Private Key"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "firebase_private_key" {
+  secret_id     = aws_secretsmanager_secret.firebase_private_key.id
+  secret_string = var.firebase_private_json
+}
+
+# Database credentials (consolidated for app_setup.sh)
+resource "aws_secretsmanager_secret" "database_config" {
+  name        = "subscr-optinist/database/config"
+  description = "MySQL/MariaDB database configuration for OptiNiSt"
+
+  tags = {
+    Name        = "OptiNiSt Database Config"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "database_config" {
+  secret_id = aws_secretsmanager_secret.database_config.id
+  secret_string = jsonencode({
+    username = var.mysql_user
+    password = var.mysql_password
+    database = var.mysql_database
+  })
+}
+
+# Application configuration secrets
+resource "aws_secretsmanager_secret" "app_config" {
+  name        = "subscr-optinist/app/config"
+  description = "OptiNiSt application configuration secrets"
+
+  tags = {
+    Name        = "OptiNiSt App Config"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "app_config" {
+  secret_id = aws_secretsmanager_secret.app_config.id
+  secret_string = jsonencode({
+    secret_key         = var.optinist_secret_key
+    routing_secret_key = var.routing_secret_key
+    org_name           = var.optinist_org_name
+    admin_name         = var.optinist_admin_name
+    admin_email        = var.optinist_admin_email
+    admin_uid          = var.optinist_admin_uid
+  })
+}
+
+# Stripe configuration
+resource "aws_secretsmanager_secret" "stripe_config" {
+  name        = "subscr-optinist/stripe/config"
+  description = "Stripe API keys and webhook secrets for OptiNiSt"
+
+  tags = {
+    Name        = "OptiNiSt Stripe Config"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "stripe_config" {
+  secret_id = aws_secretsmanager_secret.stripe_config.id
+  secret_string = jsonencode({
+    secret_key     = var.stripe_secret_key
+    webhook_secret = var.stripe_webhook_secret
+  })
+}
+
 # ==============
 # Key generation
 # ==============
@@ -891,4 +1023,31 @@ resource "local_file" "private_key" {
   content         = tls_private_key.subscr_optinist_cloud_key.private_key_pem # Fixed reference
   filename        = "${path.module}/subscr-optinist-cloud-private-key.pem"
   file_permission = "0400"
+}
+
+# ============================================================================
+# Outputs for Secrets Manager
+# ============================================================================
+# These outputs help team members find and access secrets via AWS CLI
+
+output "secrets_manager_secret_names" {
+  description = "Names of Secrets Manager secrets (use with AWS CLI: aws secretsmanager get-secret-value --secret-id <name>)"
+  value = {
+    firebase_config      = aws_secretsmanager_secret.firebase_config.name
+    firebase_private_key = aws_secretsmanager_secret.firebase_private_key.name
+    database_config      = aws_secretsmanager_secret.database_config.name
+    app_config           = aws_secretsmanager_secret.app_config.name
+    stripe_config        = aws_secretsmanager_secret.stripe_config.name
+  }
+}
+
+output "secrets_manager_secret_arns" {
+  description = "ARNs of all Secrets Manager secrets"
+  value = {
+    firebase_config      = aws_secretsmanager_secret.firebase_config.arn
+    firebase_private_key = aws_secretsmanager_secret.firebase_private_key.arn
+    database_config      = aws_secretsmanager_secret.database_config.arn
+    app_config           = aws_secretsmanager_secret.app_config.arn
+    stripe_config        = aws_secretsmanager_secret.stripe_config.arn
+  }
 }
