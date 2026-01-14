@@ -94,6 +94,13 @@ async def reproduce_experiment(
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     try:
+        # Sync experiment metadata from S3 if not present locally
+        # This handles cross-instance scenarios when ALB routes user to a
+        # different instance after migration
+        await ExptConfigReader.ensure_synced_async(
+            workspace_id, unique_id, remote_bucket_name
+        )
+
         experiment_config_path = ExptConfigReader.get_config_yaml_path(
             workspace_id, unique_id
         )

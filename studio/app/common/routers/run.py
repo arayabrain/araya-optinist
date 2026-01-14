@@ -10,6 +10,7 @@ from studio.app.common.core.cloud.cloud_utils import (
     get_current_user_storage_usage,
     get_user_storage_usage,
 )
+from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageLockError,
@@ -162,8 +163,16 @@ async def run_result(
     uid: str,
     nodeDict: NodeItem,
     background_tasks: BackgroundTasks,
+    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     try:
+        # Sync experiment metadata from S3 if not present locally
+        # This handles cross-instance scenarios when ALB routes user to a
+        # different instance after migration
+        await ExptConfigReader.ensure_synced_async(
+            workspace_id, uid, remote_bucket_name
+        )
+
         res = await WorkflowResult(workspace_id, uid).observe(
             nodeDict.pendingNodeIdList
         )

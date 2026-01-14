@@ -879,6 +879,25 @@ resource "aws_secretsmanager_secret_version" "routing_hmac_key" {
   })
 }
 
+# Internal API secret for Lambda-to-backend communication
+# Used to authenticate internal sync endpoints called by Lambda managers
+resource "random_password" "internal_api_secret" {
+  length  = 64
+  special = false  # Avoid special chars for easier URL/header handling
+}
+
+resource "aws_secretsmanager_secret" "internal_api_secret" {
+  name        = "subscr-internal-api-secret"
+  description = "Secret for internal API authentication between Lambda and backend"
+}
+
+resource "aws_secretsmanager_secret_version" "internal_api_secret" {
+  secret_id = aws_secretsmanager_secret.internal_api_secret.id
+  secret_string = jsonencode({
+    key = random_password.internal_api_secret.result
+  })
+}
+
 # ============================================================================
 # Firebase and Application Secrets
 # ============================================================================

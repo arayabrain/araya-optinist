@@ -75,8 +75,9 @@ class FreeUserActivityMiddleware:
         # Get request path
         path = scope.get("path", "")
 
-        # Skip health check and auth endpoints to avoid overhead
-        if path in SKIP_AUTH_PATHS:
+        # Skip health check, auth endpoints, and internal API endpoints
+        # Internal endpoints use their own auth (shared secret, not JWT)
+        if path in SKIP_AUTH_PATHS or path.startswith("/internal/"):
             await self.app(scope, receive, send)
             return
 

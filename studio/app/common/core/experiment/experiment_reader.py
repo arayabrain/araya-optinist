@@ -38,6 +38,55 @@ class ExptConfigReader:
         return path
 
     @classmethod
+    async def ensure_synced_async(
+        cls,
+        workspace_id: str,
+        unique_id: str,
+        remote_bucket_name: str,
+    ) -> bool:
+        """
+        Ensure experiment metadata exists locally, syncing from S3 if needed.
+
+        Call this before read() in async contexts to handle cross-instance
+        scenarios where a user has been migrated to a new instance.
+
+        Args:
+            workspace_id: Workspace ID containing the experiment
+            unique_id: Unique ID of the experiment
+            remote_bucket_name: S3 bucket name for the user
+
+        Returns:
+            True if config exists (or was synced), False if sync failed
+        """
+        from studio.app.common.core.storage.remote_storage_controller import (
+            RemoteStorageController,
+            RemoteStorageSimpleReader,
+        )
+
+        config_path = cls.get_config_yaml_path(workspace_id, unique_id)
+
+        # If config exists locally, no sync needed
+        if os.path.exists(config_path):
+            return True
+
+        # Check if remote storage is available
+        if not RemoteStorageController.is_available():
+            return False
+
+        logger.info(
+            f"Experiment config not found locally, syncing from S3: "
+            f"[{workspace_id}/{unique_id}]"
+        )
+
+        try:
+            async with RemoteStorageSimpleReader(remote_bucket_name) as controller:
+                await controller.download_all_experiments_metas([workspace_id])
+            return os.path.exists(config_path)
+        except Exception as e:
+            logger.warning(f"Failed to sync experiment from S3: {e}", exc_info=True)
+            return False
+
+    @classmethod
     def read(cls, workspace_id: str, unique_id: str) -> ExptConfig:
         filepath = cls.get_config_yaml_path(workspace_id, unique_id)
         config = ConfigReader.read(filepath)
