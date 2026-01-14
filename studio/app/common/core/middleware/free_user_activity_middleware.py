@@ -19,7 +19,7 @@ import asyncio
 import os
 import threading
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import Optional
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
