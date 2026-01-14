@@ -236,9 +236,6 @@ class SecureRoutingMiddleware:
                 if tier == "premium":
                     routing_id = generate_routing_id(uid, ROUTING_SECRET_KEY)
                     headers.append((b"x-routing-id", routing_id.encode()))
-                    logger.debug(f"Added routing ID for premium user (tier={tier})")
-                else:
-                    logger.debug(f"Added tier header for free user (tier={tier})")
 
                 message["headers"] = headers
 

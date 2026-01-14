@@ -29,6 +29,7 @@ resource "aws_lambda_function" "premium_manager" {
       RDS_USER                     = var.mysql_user
       RDS_PASSWORD                 = var.mysql_password
       RDS_DATABASE                 = var.mysql_database
+      ROUTING_SECRET_KEY           = var.routing_secret_key
       # Dynamic capacity settings (use existing ABSOLUTE_MAX + minimal new ones)
       PREMIUM_SAFETY_BUFFER      = "1" # Extra instances for quick response
       PREMIUM_STANDBY_POOL_SIZE  = "1" # Number of stopped instances to maintain
@@ -147,13 +148,15 @@ resource "null_resource" "install_dependencies" {
     command = <<-EOT
       mkdir -p ${path.module}/premium_manager_package
       /usr/bin/python3 -m pip install pymysql -t ${path.module}/premium_manager_package/ --no-cache-dir
+      cp ${path.module}/../aws_constants.py ${path.module}/premium_manager_package/aws_constants.py
     EOT
   }
 
   triggers = {
     code_changes = md5(join("", [
       filesha256("${path.module}/premium_manager_package/premium_manager.py"),
-      filesha256("${path.module}/../../studio/app/common/core/premium/premium_assignment_service.py")
+      filesha256("${path.module}/../../studio/app/common/core/premium/premium_assignment_service.py"),
+      filesha256("${path.module}/../aws_constants.py")
     ]))
   }
 }
@@ -232,11 +235,15 @@ resource "null_resource" "install_cleanup_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
       /usr/bin/python3 -m pip install pymysql -t ${path.module}/premium_cleanup_package/ --no-cache-dir
+      cp ${path.module}/../aws_constants.py ${path.module}/premium_cleanup_package/aws_constants.py
     EOT
   }
 
   triggers = {
-    code_changes = filesha256("${path.module}/premium_cleanup_package/premium_cleanup.py")
+    code_changes = md5(join("", [
+      filesha256("${path.module}/premium_cleanup_package/premium_cleanup.py"),
+      filesha256("${path.module}/../aws_constants.py")
+    ]))
   }
 }
 
