@@ -135,30 +135,30 @@ async def get_user_with_context(db: Session, user_id: int) -> User:
                     # Determine status based on plan price
                     # (data-driven: price=0 is free, price>0 is premium)
                     if plan and not plan.is_premium:
-                        user.__dict__["subscription_status"] = (
-                            SubscriptionStatus.FREE.value
-                        )
+                        user.__dict__[
+                            "subscription_status"
+                        ] = SubscriptionStatus.FREE.value
                         user.__dict__["subscription_days_remaining"] = None
                     elif plan and plan.is_premium:
                         # Paid plan logic (any plan with price > 0)
                         if days_remaining > 0:
-                            user.__dict__["subscription_status"] = (
-                                SubscriptionStatus.PREMIUM.value
-                            )
-                            user.__dict__["subscription_days_remaining"] = (
-                                days_remaining
-                            )
+                            user.__dict__[
+                                "subscription_status"
+                            ] = SubscriptionStatus.PREMIUM.value
+                            user.__dict__[
+                                "subscription_days_remaining"
+                            ] = days_remaining
                         elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
-                            user.__dict__["subscription_status"] = (
-                                SubscriptionStatus.LIMIT_GRACE.value
-                            )
+                            user.__dict__[
+                                "subscription_status"
+                            ] = SubscriptionStatus.LIMIT_GRACE.value
                             user.__dict__["subscription_days_remaining"] = (
                                 SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
                             )  # Days left in grace period
                         else:
-                            user.__dict__["subscription_status"] = (
-                                SubscriptionStatus.EXPIRED.value
-                            )
+                            user.__dict__[
+                                "subscription_status"
+                            ] = SubscriptionStatus.EXPIRED.value
                             user.__dict__["subscription_days_remaining"] = None
                     else:
                         # Unknown tier or plan not found - fallback to plan name
@@ -306,21 +306,21 @@ async def list_user(
                 elif plan and plan.is_premium:
                     # Paid plan logic (any plan with price > 0)
                     if days_remaining > 0:
-                        user.__dict__["subscription_status"] = (
-                            SubscriptionStatus.PREMIUM.value
-                        )
+                        user.__dict__[
+                            "subscription_status"
+                        ] = SubscriptionStatus.PREMIUM.value
                         user.__dict__["subscription_days_remaining"] = days_remaining
                     elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
-                        user.__dict__["subscription_status"] = (
-                            SubscriptionStatus.LIMIT_GRACE.value
-                        )
+                        user.__dict__[
+                            "subscription_status"
+                        ] = SubscriptionStatus.LIMIT_GRACE.value
                         user.__dict__["subscription_days_remaining"] = (
                             SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
                         )  # Days left in grace period
                     else:
-                        user.__dict__["subscription_status"] = (
-                            SubscriptionStatus.EXPIRED.value
-                        )
+                        user.__dict__[
+                            "subscription_status"
+                        ] = SubscriptionStatus.EXPIRED.value
                         user.__dict__["subscription_days_remaining"] = None
                 else:
                     # Unknown tier or plan not found - fallback to plan name

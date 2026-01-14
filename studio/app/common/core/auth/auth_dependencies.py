@@ -116,9 +116,9 @@ def _enrich_user_with_subscription_status(
                 user.__dict__["subscription_status"] = SubscriptionStatus.PREMIUM.value
                 user.__dict__["subscription_days_remaining"] = days_remaining
             elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
-                user.__dict__["subscription_status"] = (
-                    SubscriptionStatus.LIMIT_GRACE.value
-                )
+                user.__dict__[
+                    "subscription_status"
+                ] = SubscriptionStatus.LIMIT_GRACE.value
                 user.__dict__["subscription_days_remaining"] = (
                     SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
                 )  # Days left in grace period

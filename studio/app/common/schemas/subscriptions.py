@@ -16,7 +16,9 @@ class SubscriptionPlanResponse(BaseModel):
     currency: int = Field(..., description="1=USD, 2=JPY")
     status: bool = Field(..., description="True=Active, False=Inactive")
     created_at: datetime
-    tier: str = Field(..., description="Plan tier (e.g., 'free', 'premium', 'enterprise')")
+    tier: str = Field(
+        ..., description="Plan tier (e.g., 'free', 'premium', 'enterprise')"
+    )
     display_order: int = Field(..., description="Display order for UI sorting")
     is_featured: bool = Field(..., description="Whether plan is featured in UI")
     stripe_price_id: Optional[str] = Field(
