@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -195,7 +195,7 @@ async def logout_free_user(
 
         if assignment:
             # Update logged_out_at timestamp
-            assignment.logged_out_at = datetime.now()
+            assignment.logged_out_at = datetime.now(timezone.utc)
             db.add(assignment)
             db.commit()
 

@@ -1,7 +1,7 @@
 """
 Cloud utilities for user context and subscription management.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from sqlmodel import select
@@ -489,6 +489,11 @@ def _is_storage_data_fresh(storage_info: Dict, max_cache_age_minutes: int) -> bo
         # Convert to datetime if it's not already
         if isinstance(last_updated, str):
             last_updated = datetime.fromisoformat(last_updated.replace("Z", "+00:00"))
+        # Handle datetime objects from database (timezone-naive from MySQL DateTime)
+        elif isinstance(last_updated, datetime):
+            if last_updated.tzinfo is None:
+                # Assume UTC for timezone-naive datetimes from database
+                last_updated = last_updated.replace(tzinfo=timezone.utc)
 
         age_minutes = (
             SubscriptionService.get_current_datetime() - last_updated
@@ -697,6 +702,9 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                             f"User {user_id} subscription has None expiration date"
                         )
                         return None
+                    # Ensure subscription_end is timezone-aware for comparison
+                    if subscription_end.tzinfo is None:
+                        subscription_end = subscription_end.replace(tzinfo=timezone.utc)
                 else:
                     logger.error(
                         f"User {user_id} subscription object missing "
@@ -1074,6 +1082,10 @@ async def _should_trigger_full_scan(user_id: int) -> bool:
                     return True
 
                 # Check if it's been > 60 min since last scan (hourly reconciliation)
+                # Ensure last_scan is timezone-aware (assume UTC if naive)
+                if last_scan.tzinfo is None:
+                    last_scan = last_scan.replace(tzinfo=timezone.utc)
+
                 time_since_scan = (
                     SubscriptionService.get_current_datetime() - last_scan
                 ).total_seconds() / 60

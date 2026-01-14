@@ -252,6 +252,44 @@ def test_is_storage_data_fresh_exactly_at_boundary():
     assert result is False
 
 
+def test_is_storage_data_fresh_timezone_naive_datetime():
+    """Test that timezone-naive datetime objects (from MySQL DateTime) work correctly
+
+    This regression test ensures that datetime objects from MySQL DateTime columns
+    (which are timezone-naive) are handled correctly and don't cause the error:
+    "can't subtract offset-naive and offset-aware datetimes"
+    """
+    # Simulate what SQLAlchemy returns from MySQL DateTime column (timezone-naive)
+    # Use utcnow() to match server time (MySQL stores in UTC for DateTime columns)
+    naive_datetime = datetime.utcnow() - timedelta(minutes=10)
+    assert naive_datetime.tzinfo is None  # Verify it's timezone-naive
+
+    storage_info = {"last_updated": naive_datetime}
+
+    result = _is_storage_data_fresh(
+        storage_info, SubscriptionPeriods.MAX_CACHE_AGE_MINUTES
+    )
+
+    # Should work without exception and return True (data is fresh)
+    assert result is True
+
+
+def test_is_storage_data_fresh_timezone_naive_datetime_stale():
+    """Test that stale timezone-naive datetime is correctly identified as stale"""
+    # Timezone-naive datetime older than cache window (use utcnow for consistency)
+    naive_datetime = datetime.utcnow() - timedelta(minutes=30)
+    assert naive_datetime.tzinfo is None
+
+    storage_info = {"last_updated": naive_datetime}
+
+    result = _is_storage_data_fresh(
+        storage_info, SubscriptionPeriods.MAX_CACHE_AGE_MINUTES
+    )
+
+    # Should work without exception and return False (data is stale)
+    assert result is False
+
+
 # ============================================================================
 # Tests for get_current_user_storage_usage()
 # ============================================================================
