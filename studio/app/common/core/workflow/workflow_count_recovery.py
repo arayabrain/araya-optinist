@@ -12,7 +12,7 @@ USAGE:
 - Can also be manually triggered for immediate recovery
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
 
 from sqlmodel import select
@@ -52,7 +52,9 @@ def recover_stale_workflow_counts(
     try:
         from sqlalchemy import update
 
-        stale_cutoff = datetime.utcnow() - timedelta(minutes=stale_threshold_minutes)
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(
+            minutes=stale_threshold_minutes
+        )
         recovered_users = []
 
         with session_scope() as session:

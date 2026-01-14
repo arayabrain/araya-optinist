@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple, Union
 
 from jose import ExpiredSignatureError, JWTError, jwt
@@ -17,7 +17,7 @@ def _create_token(
     token_data = {"sub": subject, "token_type": token_type}
 
     token_data.update(
-        {"exp": datetime.utcnow() + expires_delta} if expires_delta else {}
+        {"exp": datetime.now(timezone.utc) + expires_delta} if expires_delta else {}
     )
     token_data.update(user_claims if user_claims else {})
 
