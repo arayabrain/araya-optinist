@@ -38,7 +38,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 import boto3
@@ -1367,8 +1367,8 @@ def is_premium_scaling_in_progress() -> bool:
                     },
                 }
             ],
-            StartTime=datetime.utcnow() - timedelta(minutes=15),
-            EndTime=datetime.utcnow(),
+            StartTime=datetime.now(timezone.utc) - timedelta(minutes=15),
+            EndTime=datetime.now(timezone.utc),
         )
 
         values = response["MetricDataResults"][0]["Values"]
@@ -1400,7 +1400,7 @@ def set_premium_scaling_lock(in_progress: bool) -> None:
                     "MetricName": "ScalingInProgress",
                     "Value": 1 if in_progress else 0,
                     "Unit": "None",
-                    "Timestamp": datetime.utcnow(),
+                    "Timestamp": datetime.now(timezone.utc),
                 }
             ],
         )
@@ -1432,25 +1432,25 @@ def publish_premium_metrics(
                     "MetricName": "ActivePremiumUsers",
                     "Value": active_users,
                     "Unit": "Count",
-                    "Timestamp": datetime.utcnow(),
+                    "Timestamp": datetime.now(timezone.utc),
                 },
                 {
                     "MetricName": "IdlePremiumUsers",
                     "Value": idle_users,
                     "Unit": "Count",
-                    "Timestamp": datetime.utcnow(),
+                    "Timestamp": datetime.now(timezone.utc),
                 },
                 {
                     "MetricName": "RunningInstances",
                     "Value": running_instances,
                     "Unit": "Count",
-                    "Timestamp": datetime.utcnow(),
+                    "Timestamp": datetime.now(timezone.utc),
                 },
                 {
                     "MetricName": "IdleInstances",
                     "Value": idle_instances,
                     "Unit": "Count",
-                    "Timestamp": datetime.utcnow(),
+                    "Timestamp": datetime.now(timezone.utc),
                 },
             ],
         )
