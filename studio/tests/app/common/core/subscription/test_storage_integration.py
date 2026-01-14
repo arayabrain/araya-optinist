@@ -40,15 +40,14 @@ async def test_full_storage_tracking_workflow():
 
             # Mock lock acquisition success
             mock_lock_result = Mock()
-            mock_lock_result.scalar.return_value = True
+            mock_lock_result.scalar.return_value = (
+                1  # MySQL GET_LOCK returns 1 on success
+            )
 
             def execute_side_effect(*args, **kwargs):
                 # Return lock result for lock queries, storage result for others
                 query_str = str(args[0]) if args else ""
-                if (
-                    "pg_try_advisory_lock" in query_str
-                    or "pg_advisory_unlock" in query_str
-                ):
+                if "GET_LOCK" in query_str or "RELEASE_LOCK" in query_str:
                     return mock_lock_result
                 return mock_result
 
