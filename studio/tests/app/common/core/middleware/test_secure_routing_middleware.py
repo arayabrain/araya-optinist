@@ -178,7 +178,7 @@ class TestTierCaching:
         mock_subscription = MagicMock()
         mock_plan = MagicMock()
         mock_plan.id = 2  # Premium plan
-        mock_plan.tier = TEST_TIER_PREMIUM  # Set tier attribute
+        mock_plan.tier = TEST_TIER_PREMIUM  # Use tier from database for routing
         subscription_data = (mock_subscription, mock_plan)
 
         with patch(
@@ -217,7 +217,7 @@ class TestTierCaching:
         mock_subscription = MagicMock()
         mock_plan = MagicMock()
         mock_plan.id = 2  # Premium plan
-        mock_plan.tier = TEST_TIER_PREMIUM  # Set tier attribute
+        mock_plan.tier = TEST_TIER_PREMIUM  # Use tier from database for routing
         subscription_data = (mock_subscription, mock_plan)
 
         with patch(

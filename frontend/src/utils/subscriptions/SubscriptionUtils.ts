@@ -80,7 +80,7 @@ export const safeParseFeatures = (
 }
 
 // Helper function to safely convert plan data
-// Now includes tier-based fields for multi-plan support
+// Includes tier-based fields for multi-plan support
 export const safeConvertPlan = (
   planData: Record<string, unknown>,
 ): SubscriptionPlan => {
@@ -94,7 +94,7 @@ export const safeConvertPlan = (
       features: safeParseFeatures(planData.features),
       status: Boolean(planData.status),
       created_at: String(planData.created_at || ""),
-      // New tier-based fields
+      // Plan management fields
       tier: planData.tier ? String(planData.tier) : undefined,
       display_order: planData.display_order
         ? Number(planData.display_order)
@@ -103,23 +103,11 @@ export const safeConvertPlan = (
         planData.is_featured !== undefined
           ? Boolean(planData.is_featured)
           : undefined,
-      max_storage_gb:
-        planData.max_storage_gb !== undefined
-          ? planData.max_storage_gb === null
-            ? null
-            : Number(planData.max_storage_gb)
-          : undefined,
-      description: planData.description
-        ? String(planData.description)
-        : undefined,
       stripe_product_id: planData.stripe_product_id
         ? String(planData.stripe_product_id)
         : undefined,
       stripe_price_id: planData.stripe_price_id
         ? String(planData.stripe_price_id)
-        : undefined,
-      metadata: planData.metadata
-        ? (planData.metadata as Record<string, unknown>)
         : undefined,
     }
   } catch (error) {
@@ -261,17 +249,6 @@ export const isDowngrade = (
   planB: SubscriptionPlan,
 ): boolean => {
   return planA.price < planB.price
-}
-
-/**
- * Get storage display text from plan
- * Returns formatted storage quota (e.g., "5GB", "200GB", "Unlimited")
- */
-export const getStorageDisplayText = (plan: SubscriptionPlan): string => {
-  if (!plan.max_storage_gb) {
-    return plan.max_storage_gb === null ? "Unlimited" : "Not specified"
-  }
-  return `${plan.max_storage_gb}GB`
 }
 
 /**

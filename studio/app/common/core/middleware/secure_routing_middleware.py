@@ -123,8 +123,8 @@ def get_user_tier_cached(uid: str) -> str:
             # Check if user has active subscription
             subscription_data = SubscriptionService.get_user_subscription(db, user.id)
             if subscription_data:
-                subscription, plan = subscription_data
-                # Use tier from plan (data-driven approach)
+                _, plan = subscription_data
+                # Use actual tier from database for granular routing
                 tier = plan.tier if plan and plan.tier else "free"
             else:
                 tier = "free"

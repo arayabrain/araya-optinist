@@ -143,7 +143,7 @@ async def get_user_subscription(
             subscription, subscription_plans = subscription
             sub_data, plan_data = subscription, subscription_plans
 
-            # Check subscription status based on plan tier and cancellation state
+            # Check subscription status based on plan price and cancellation state
             is_cancelled = SubscriptionService.is_subscription_cancelled(
                 db, current_user.id
             )

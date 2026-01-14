@@ -81,31 +81,30 @@ class SubscriptionService:
         )
 
     @staticmethod
-    def get_plan_by_tier(
-        db: Session, tier: str, active_only: bool = True
+    def get_free_plan(
+        db: Session, active_only: bool = True
     ) -> Optional[SubscriptionPlans]:
         """
-        Get a subscription plan by tier (e.g., 'free', 'premium', 'enterprise').
+        Get the free subscription plan (price = 0).
 
-        This enables dynamic plan lookup without hardcoded IDs.
+        Data-driven approach: any plan with price = 0 is considered free.
+        No code changes needed when adding new plans.
 
         Args:
             db: Database session
-            tier: Plan tier identifier ('free', 'premium', 'enterprise', etc.)
             active_only: If True, only return active plans
 
         Returns:
             SubscriptionPlans object or None if not found
         """
-        query = db.query(SubscriptionPlans).filter(SubscriptionPlans.tier == tier)
+        query = db.query(SubscriptionPlans).filter(SubscriptionPlans.price == 0)
 
         if active_only:
             query = query.filter(
                 SubscriptionPlans.status == SubscriptionStatusType.ACTIVE
             )
 
-        # If multiple plans with same tier exist, return the one with lowest price
-        return query.order_by(SubscriptionPlans.price.asc()).first()
+        return query.first()
 
     @staticmethod
     def get_free_plan_id(db: Session) -> Optional[int]:
@@ -113,18 +112,18 @@ class SubscriptionService:
         Get the ID of the free plan dynamically.
 
         Returns:
-            Plan ID of the free tier plan, or None if not found
+            Plan ID of the free plan (price = 0), or None if not found
         """
-        free_plan = __class__.get_plan_by_tier(db, "free")
+        free_plan = __class__.get_free_plan(db)
         return free_plan.id if free_plan else None
 
     @staticmethod
     def get_default_plan_id(db: Session) -> int:
         """
-        Get the default plan ID (free tier) for new users.
+        Get the default plan ID (free plan) for new users.
 
         Returns:
-            Plan ID of the free tier plan
+            Plan ID of the free plan
 
         Raises:
             HTTPException if no free plan is found
@@ -200,11 +199,13 @@ class SubscriptionService:
         db: Session, plan_data_id: int, is_cancelled: bool
     ) -> int:
         """
-        Determine subscription status based on plan tier and cancellation state.
+        Determine subscription status based on plan price and cancellation state.
 
-        This method uses data-driven approach by querying the plan's tier from
-        the database instead of hardcoded plan ID checks, enabling flexible
-        plan management without code changes.
+        Data-driven approach: uses price to determine plan type.
+        - price = 0: FREE plan
+        - price > 0: SUBSCRIBED (paid plan)
+
+        No code changes needed when adding new plans to the database.
 
         Args:
             db: Database session
@@ -218,7 +219,7 @@ class SubscriptionService:
         if is_cancelled:
             return SubscriptionUserStatus.CANCELED
 
-        # Query plan tier from database (data-driven approach)
+        # Query plan from database
         plan = (
             db.query(SubscriptionPlans)
             .filter(SubscriptionPlans.id == plan_data_id)
@@ -233,18 +234,10 @@ class SubscriptionService:
             )
             return SubscriptionUserStatus.FREE
 
-        # Use tier-based logic instead of hardcoded plan IDs
-        if plan.tier == "free":
-            return SubscriptionUserStatus.FREE
-        elif plan.is_premium_tier:
-            # Covers premium, enterprise, professional, and any future premium tiers
+        # Price-based logic: free = price 0, paid = price > 0
+        if plan.is_premium:
             return SubscriptionUserStatus.SUBSCRIBED
         else:
-            # Unknown tier, default to FREE for safety
-            logger.warning(
-                f"Unknown plan tier '{plan.tier}' for plan ID {plan_data_id}, "
-                f"defaulting to FREE status"
-            )
             return SubscriptionUserStatus.FREE
 
     @staticmethod

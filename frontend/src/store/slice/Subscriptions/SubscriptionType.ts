@@ -1,13 +1,10 @@
 export const SUBSCRIPTION_SLICE_NAME = "subscription"
 
-// Feature interface for type safety
 export interface PlanFeature {
   text: string
   isPremium: boolean
 }
 
-// Updated SubscriptionPlan interface to match backend response
-// Supports flexible multi-plan architecture with tier-based logic
 export interface SubscriptionPlan {
   id: number
   name: string
@@ -20,11 +17,8 @@ export interface SubscriptionPlan {
   tier?: string
   display_order?: number
   is_featured?: boolean
-  max_storage_gb?: number | null
-  description?: string
   stripe_product_id?: string
   stripe_price_id?: string
-  metadata?: Record<string, unknown>
 }
 
 export interface UserSubscription {
