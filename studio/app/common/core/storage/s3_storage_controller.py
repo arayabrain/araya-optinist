@@ -393,9 +393,7 @@ class S3StorageController(BaseRemoteStorageController):
 
         return True
 
-    async def download_experiment_meta(
-        self, workspace_id: str, unique_id: str
-    ) -> bool:
+    async def download_experiment_meta(self, workspace_id: str, unique_id: str) -> bool:
         """
         Download metadata files (yaml) for a single experiment from remote
         storage. More efficient than download_all_experiments_metas when only

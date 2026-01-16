@@ -563,17 +563,13 @@ class RemoteStorageController(BaseRemoteStorageController):
         """
         return await self.__controller.download_all_experiments_metas(workspace_ids)
 
-    async def download_experiment_meta(
-        self, workspace_id: str, unique_id: str
-    ) -> bool:
+    async def download_experiment_meta(self, workspace_id: str, unique_id: str) -> bool:
         """
         Download metadata files (yaml) for a single experiment from remote
         storage. More efficient than download_all_experiments_metas when only
         one experiment is needed.
         """
-        return await self.__controller.download_experiment_meta(
-            workspace_id, unique_id
-        )
+        return await self.__controller.download_experiment_meta(workspace_id, unique_id)
 
     async def download_experiment(self, workspace_id: str, unique_id: str) -> bool:
         sync_status_params = {

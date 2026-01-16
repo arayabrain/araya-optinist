@@ -417,9 +417,7 @@ def wait_for_healthy_instances(
         elapsed = int(time.time() - start_time)
 
         if healthy_count >= target_count:
-            print(
-                f"  {healthy_count}/{target_count} healthy ({elapsed}s elapsed)"
-            )
+            print(f"{healthy_count}/{target_count} healthy ({elapsed}s elapsed)")
             return {
                 "status": "ready",
                 "healthy_count": healthy_count,
@@ -429,9 +427,7 @@ def wait_for_healthy_instances(
 
         # Print summary every print_interval seconds
         if elapsed - last_print >= print_interval:
-            print(
-                f"  {healthy_count}/{target_count} healthy ({elapsed}s elapsed)"
-            )
+            print(f"{healthy_count}/{target_count} healthy ({elapsed}s elapsed)")
             last_print = elapsed
 
         time.sleep(poll_interval)
@@ -489,9 +485,7 @@ def scale_ecs_service(desired_count: int) -> dict:
                 "message": f"ECS service already at desired count {current}",
             }
 
-        print(
-            f"Scaling ECS '{service}' from {current} to {desired_count} tasks..."
-        )
+        print(f"Scaling ECS '{service}' from {current} to {desired_count} tasks...")
         ecs_client.update_service(
             cluster=cluster,
             service=service,
@@ -530,7 +524,7 @@ def wait_for_running_tasks(
 
         if running_count >= target_count:
             print(
-                f"  {running_count}/{target_count} tasks running, "
+                f"{running_count}/{target_count} tasks running, "
                 f"{pending_count} pending ({elapsed}s elapsed)"
             )
             return {
@@ -542,7 +536,7 @@ def wait_for_running_tasks(
         # Print summary every print_interval seconds
         if elapsed - last_print >= print_interval:
             print(
-                f"  {running_count}/{target_count} tasks running, "
+                f"{running_count}/{target_count} tasks running, "
                 f"{pending_count} pending ({elapsed}s elapsed)"
             )
             last_print = elapsed
@@ -810,10 +804,10 @@ def main():
         else:
             for u in users:
                 instance = u["instance_id"] or "(no assignment)"
-                print(f"  ID: {u['id']:4d} | {u['email']} | {u['name']}")
-                print(f"         Instance: {instance}")
+                print(f"ID: {u['id']:4d} | {u['email']} | {u['name']}")
+                print(f"Instance: {instance}")
                 if u["last_activity"]:
-                    print(f"         Last Activity: {u['last_activity']}")
+                    print(f"Last Activity: {u['last_activity']}")
                 print()
 
     elif args.command == "status":
@@ -843,7 +837,7 @@ def main():
         else:
             for inst in instances:
                 print(
-                    f"  {inst['instance_id']}: "
+                    f"{inst['instance_id']}: "
                     f"{inst['user_count']} users, "
                     f"latest activity: {inst['latest_activity']}"
                 )
@@ -862,7 +856,7 @@ def main():
             for inst in asg_status["instances"]:
                 health = "✓" if inst["health_status"] == "Healthy" else "✗"
                 print(
-                    f"  {inst['instance_id']}: "
+                    f"{inst['instance_id']}: "
                     f"{inst['lifecycle_state']} ({health} {inst['health_status']})"
                 )
 
