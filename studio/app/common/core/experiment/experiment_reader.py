@@ -80,7 +80,8 @@ class ExptConfigReader:
 
         try:
             async with RemoteStorageSimpleReader(remote_bucket_name) as controller:
-                await controller.download_all_experiments_metas([workspace_id])
+                # Download only this specific experiment's metadata (efficient)
+                await controller.download_experiment_meta(workspace_id, unique_id)
             return os.path.exists(config_path)
         except Exception as e:
             logger.warning(f"Failed to sync experiment from S3: {e}", exc_info=True)

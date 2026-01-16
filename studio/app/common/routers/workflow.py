@@ -49,6 +49,12 @@ async def fetch_last_experiment(
         if last_expt_config:
             unique_id = last_expt_config.unique_id
 
+            # Ensure experiment yaml exists locally before accessing.
+            # Downloads from S3 if not present (handles multi-instance scenarios).
+            await ExptConfigReader.ensure_synced_async(
+                workspace_id, unique_id, remote_bucket_name
+            )
+
             # sync unsynced remote storage data.
             is_remote_synced = False
             if RemoteStorageController.is_available():
@@ -94,9 +100,8 @@ async def reproduce_experiment(
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     try:
-        # Sync experiment metadata from S3 if not present locally
-        # This handles cross-instance scenarios when ALB routes user to a
-        # different instance after migration
+        # Ensure experiment yaml exists locally before accessing.
+        # Downloads from S3 if not present (handles multi-instance scenarios).
         await ExptConfigReader.ensure_synced_async(
             workspace_id, unique_id, remote_bucket_name
         )

@@ -175,9 +175,9 @@ class SecureRoutingMiddleware:
         # Get request path
         path = scope.get("path", "")
 
-        # Skip health check, auth endpoints, and internal API endpoints
-        # Internal endpoints use their own auth (shared secret, not JWT)
-        if path in self.SKIP_AUTH_PATHS or path.startswith("/internal/"):
+        # Skip health check, auth endpoints, and system-internal API endpoints
+        # System-internal endpoints use their own auth (shared secret, not JWT)
+        if path in self.SKIP_AUTH_PATHS or path.startswith("/system-internal/"):
             await self.app(scope, receive, send)
             return
 

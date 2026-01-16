@@ -233,7 +233,7 @@ def trigger_experiment_sync(user_id: int) -> bool:
         )
         return False
 
-    url = f"https://{alb_dns}/internal/sync-experiments/{user_id}"
+    url = f"https://{alb_dns}/system-internal/sync-experiments/{user_id}"
     headers = {
         "X-Internal-Secret": internal_secret,
         "Content-Type": "application/json",

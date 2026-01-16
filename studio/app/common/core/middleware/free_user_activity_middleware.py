@@ -75,9 +75,9 @@ class FreeUserActivityMiddleware:
         # Get request path
         path = scope.get("path", "")
 
-        # Skip health check, auth endpoints, and internal API endpoints
-        # Internal endpoints use their own auth (shared secret, not JWT)
-        if path in SKIP_AUTH_PATHS or path.startswith("/internal/"):
+        # Skip health check, auth endpoints, and system-internal API endpoints
+        # System-internal endpoints use their own auth (shared secret, not JWT)
+        if path in SKIP_AUTH_PATHS or path.startswith("/system-internal/"):
             await self.app(scope, receive, send)
             return
 
@@ -253,22 +253,30 @@ def _update_free_user_activity_sync(user_id: str) -> bool:
         if not instance_id or instance_id == "local":
             return False
 
-        # Update database using SQLAlchemy merge() for atomic upsert
+        # Update database - query first, then update or insert
         with session_scope() as session:
             now = datetime.now(timezone.utc)
 
-            assignment = FreeUserAssignment(
-                user_id=user_id,
-                instance_id=instance_id,
-                assigned_at=now,
-                last_activity=now,
+            # Check if assignment already exists
+            existing = (
+                session.query(FreeUserAssignment)
+                .filter(FreeUserAssignment.user_id == user_id)
+                .first()
             )
 
-            merged = session.merge(assignment)
-
-            # For existing records, ensure we update the timestamps
-            merged.last_activity = now
-            merged.instance_id = instance_id
+            if existing:
+                # Update existing record
+                existing.last_activity = now
+                existing.instance_id = instance_id
+            else:
+                # Insert new record
+                assignment = FreeUserAssignment(
+                    user_id=user_id,
+                    instance_id=instance_id,
+                    assigned_at=now,
+                    last_activity=now,
+                )
+                session.add(assignment)
 
             session.commit()
             return True

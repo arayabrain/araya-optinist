@@ -472,6 +472,8 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
           "ecs:ListClusters",
           "ecs:DescribeClusters",
           "ecs:ListContainerInstances",
+          "ecs:DescribeServices",
+          "ecs:UpdateService",
           "ecr:GetAuthorizationToken",
           "ecr:DescribeRepositories",
           "ecr:BatchCheckLayerAvailability",
@@ -482,6 +484,9 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
           "cloudwatch:ListMetrics",
           "cloudwatch:GetMetricStatistics",
           "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:SetDesiredCapacity",
+          "autoscaling:SuspendProcesses",
+          "autoscaling:ResumeProcesses",
           "lambda:InvokeFunction"
         ]
         Resource = "*"

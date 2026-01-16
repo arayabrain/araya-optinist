@@ -45,24 +45,32 @@ Verify that after a user migration, their experiments are automatically synced t
 
 ### Step 3: Trigger User Migration
 
-Use the test script at `scripts/test_proactive_sync.py`:
+Use the test script at `infrastructure/scripts/test_proactive_sync.py` from inside the ECS container:
 
-1. **Navigate to Terraform directory** (for auto-config):
+1. **Get shell access to ECS container**:
    ```bash
    cd infrastructure/terraform
+   ./container_access.sh
    ```
 
 2. **Find your test user's ID**:
    ```bash
-   python ../../scripts/test_proactive_sync.py --from-terraform find-user user@email.com
+   python /app/scripts/test_proactive_sync.py find-user user@email.com
    ```
 
-3. **Migrate user** (auto-scales if needed):
+3. **Check current ASG/ECS status** (optional):
    ```bash
-   python ../../scripts/test_proactive_sync.py --from-terraform migrate <user_id>
+   python /app/scripts/test_proactive_sync.py asg-status
+   ```
+
+4. **Migrate user** (auto-scales if needed):
+   ```bash
+   python /app/scripts/test_proactive_sync.py migrate <user_id>
    ```
    This will automatically:
-   - Scale ASG to 2 instances if only 1 exists (waits ~3-5 min)
+   - Scale ASG to 2 instances if only 1 exists
+   - Scale ECS service to 2 tasks if only 1 running
+   - Wait for new instance and task to become healthy (~3-5 min)
    - Select a different instance as target
    - Update the database assignment
    - Trigger experiment sync on the new instance
@@ -70,22 +78,21 @@ Use the test script at `scripts/test_proactive_sync.py`:
 
 **Expected output**:
 ```
-Loading configuration from Terraform outputs...
-Fetching secrets from AWS Secrets Manager...
-  ALB DNS: internal-subscr-alb-123456.us-west-2.elb.amazonaws.com
-  DB Host: subscr-rds.abc123.us-west-2.rds.amazonaws.com
-  DB User: optinist
-  Secrets loaded successfully
-
 === Migrating user 42 to (auto-select) ===
-Only 1 instance available. Scaling up...
-Scaling ASG 'subscr-optinist-free-asg' to 2 instances...
-Current capacity: 1, Instances: ['i-0old111222333']
-Requested scale to 2 instances
-Waiting for instances to become healthy...
+Auto-selecting target instance (current: i-0old111222333)...
+Only 1 instance(s) and 1 task(s) available.
+Scaling up ASG and ECS service to 2...
+Scaling ASG 'subscr-optinist-asg' from 1 to 2...
+Waiting for ASG instances to become healthy...
+Waiting for 2 healthy instances (timeout: 300s)...
   1/2 instances healthy (10s elapsed)
-  1/2 instances healthy (20s elapsed)
   2/2 instances healthy (180s elapsed)
+Scaling ECS service 'subscr-optinist-cloud-service' from 1 to 2 tasks...
+Waiting for ECS tasks to start running...
+Waiting for 2 running tasks (timeout: 300s)...
+  1/2 tasks running, 1 pending (10s elapsed)
+  2/2 tasks running, 0 pending (60s elapsed)
+Scaled up ASG in 240s
 Auto-selected target instance: i-0abc123def456
 Status: migrated
 From: i-0old111222333

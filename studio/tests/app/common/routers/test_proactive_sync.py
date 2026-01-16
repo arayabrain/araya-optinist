@@ -28,7 +28,7 @@ from fastapi.testclient import TestClient
 
 
 class TestInternalAPISecurity:
-    """Tests for /internal/sync-experiments endpoint security."""
+    """Tests for /system-internal/sync-experiments endpoint security."""
 
     @pytest.fixture
     def app_with_internal_router(self):
@@ -73,7 +73,7 @@ class TestInternalAPISecurity:
             mock_bucket.return_value = "test-bucket"
 
             response = client.post(
-                "/internal/sync-experiments/1",
+                "/system-internal/sync-experiments/1",
                 headers={"X-Internal-Secret": "test-secret-12345"},
             )
 
@@ -85,7 +85,7 @@ class TestInternalAPISecurity:
     def test_invalid_secret_rejected(self, client):
         """POST with wrong secret should return 403."""
         response = client.post(
-            "/internal/sync-experiments/1",
+            "/system-internal/sync-experiments/1",
             headers={"X-Internal-Secret": "wrong-secret"},
         )
 
@@ -94,7 +94,7 @@ class TestInternalAPISecurity:
 
     def test_missing_secret_rejected(self, client):
         """POST without X-Internal-Secret header should return 422."""
-        response = client.post("/internal/sync-experiments/1")
+        response = client.post("/system-internal/sync-experiments/1")
 
         assert response.status_code == 422  # Missing required header
 
@@ -116,7 +116,7 @@ class TestInternalAPISecurity:
 
             client = TestClient(app)
             response = client.post(
-                "/internal/sync-experiments/1",
+                "/system-internal/sync-experiments/1",
                 headers={"X-Internal-Secret": "any-secret"},
             )
 
@@ -171,14 +171,14 @@ class TestRateLimiting:
 
             # First request should succeed
             response1 = client.post(
-                "/internal/sync-experiments/1",
+                "/system-internal/sync-experiments/1",
                 headers={"X-Internal-Secret": "test-secret"},
             )
             assert response1.status_code == 200
 
             # Second immediate request should be rate limited
             response2 = client.post(
-                "/internal/sync-experiments/1",
+                "/system-internal/sync-experiments/1",
                 headers={"X-Internal-Secret": "test-secret"},
             )
             assert response2.status_code == 429
@@ -204,7 +204,7 @@ class TestRateLimiting:
 
         # First request
         response1 = client.post(
-            "/internal/sync-experiments/2",
+            "/system-internal/sync-experiments/2",
             headers={"X-Internal-Secret": "test-secret"},
         )
         assert response1.status_code == 200
@@ -214,7 +214,7 @@ class TestRateLimiting:
 
         # Second request after cooldown should succeed
         response2 = client.post(
-            "/internal/sync-experiments/2",
+            "/system-internal/sync-experiments/2",
             headers={"X-Internal-Secret": "test-secret"},
         )
         assert response2.status_code == 200
@@ -250,14 +250,14 @@ class TestRateLimiting:
 
         # Request for user 10
         response1 = client.post(
-            "/internal/sync-experiments/10",
+            "/system-internal/sync-experiments/10",
             headers={"X-Internal-Secret": "test-secret"},
         )
         assert response1.status_code == 200
 
         # Request for user 11 should also succeed
         response2 = client.post(
-            "/internal/sync-experiments/11",
+            "/system-internal/sync-experiments/11",
             headers={"X-Internal-Secret": "test-secret"},
         )
         assert response2.status_code == 200
@@ -310,7 +310,7 @@ class TestSyncEndpointLogic:
         client = TestClient(app)
 
         response = client.post(
-            "/internal/sync-experiments/100",
+            "/system-internal/sync-experiments/100",
             headers={"X-Internal-Secret": "test-secret"},
         )
 
@@ -334,7 +334,7 @@ class TestSyncEndpointLogic:
             mock_get_db.return_value = mock_db
 
             response = client.post(
-                "/internal/sync-experiments/99999",
+                "/system-internal/sync-experiments/99999",
                 headers={"X-Internal-Secret": "test-secret"},
             )
 
@@ -473,33 +473,33 @@ class TestLazySync:
 
 
 class TestMiddlewareBypass:
-    """Tests for middleware skipping /internal/ paths."""
+    """Tests for middleware skipping /system-internal/ paths."""
 
     def test_free_user_middleware_skips_internal_paths(self):
-        """FreeUserActivityMiddleware should skip /internal/* routes."""
-        # Verify the logic in middleware checks for /internal/ prefix
+        """FreeUserActivityMiddleware should skip /system-internal/* routes."""
+        # Verify the logic in middleware checks for /system-internal/ prefix
         test_paths = [
-            "/internal/sync-experiments/1",
-            "/internal/health",
-            "/internal/anything",
+            "/system-internal/sync-experiments/1",
+            "/system-internal/health",
+            "/system-internal/anything",
         ]
 
         for path in test_paths:
-            # The middleware checks: path.startswith("/internal/")
+            # The middleware checks: path.startswith("/system-internal/")
             assert path.startswith(
-                "/internal/"
-            ), f"Path {path} should start with /internal/"
+                "/system-internal/"
+            ), f"Path {path} should start with /system-internal/"
 
     def test_secure_routing_middleware_skips_internal_paths(self):
-        """SecureRoutingMiddleware should skip /internal/* routes."""
+        """SecureRoutingMiddleware should skip /system-internal/* routes."""
         # Verify the middleware has the skip logic
-        # The middleware source should contain the /internal/ skip
+        # The middleware source should contain the /system-internal/ skip
         import inspect
 
         import studio.app.common.core.middleware.secure_routing_middleware as srm
 
         source = inspect.getsource(srm.SecureRoutingMiddleware)
-        assert 'startswith("/internal/")' in source
+        assert 'startswith("/system-internal/")' in source
 
     def test_internal_endpoint_accessible_without_bearer_token(self):
         """Internal endpoints should work without JWT (but require secret)."""
@@ -532,7 +532,7 @@ class TestMiddlewareBypass:
 
             # No Bearer token, only internal secret
             response = client.post(
-                "/internal/sync-experiments/1",
+                "/system-internal/sync-experiments/1",
                 headers={"X-Internal-Secret": "test-secret"},
                 # No Authorization header
             )

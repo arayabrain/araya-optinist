@@ -24,7 +24,7 @@ from studio.app.common.db.database import get_db, get_session
 from studio.app.common.models.user import User
 from studio.app.common.models.workspace import Workspace
 
-router = APIRouter(prefix="/internal", tags=["internal"])
+router = APIRouter(prefix="/system-internal", tags=["system-internal"])
 
 logger = AppLogger.get_logger()
 
@@ -135,9 +135,11 @@ async def _download_experiments_for_user(bucket_name: str, user_id: int) -> None
 
         # Get all workspace IDs for this user
         # Workspace.user_id is the foreign key to User.id (integer)
-        workspaces = db.exec(
-            select(Workspace).where(Workspace.user_id == user_id)
-        ).all()
+        workspaces = (
+            db.execute(select(Workspace).where(Workspace.user_id == user_id))
+            .scalars()
+            .all()
+        )
         workspace_ids = [ws.id for ws in workspaces]
 
         if not workspace_ids:
