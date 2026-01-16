@@ -46,14 +46,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         # Initialize AWS clients
         ec2_client = boto3.client("ec2", region_name=region)
         cloudwatch_client = boto3.client("cloudwatch", region_name=region)
+        asg_client = boto3.client("autoscaling", region_name=region)
 
         # Track premium instances (spot fleet)
-        premium_metrics = track_premium_instances(
-            ec2_client, cloudwatch_client, spot_fleet_id
-        )
+        premium_metrics = track_premium_instances(ec2_client, spot_fleet_id)
 
         # Track free tier instances (auto scaling group)
-        free_metrics = track_free_instances(ec2_client, cloudwatch_client, asg_name)
+        free_metrics = track_free_instances(asg_client, asg_name)
 
         # Calculate utilization metrics
         utilization = calculate_premium_utilization(premium_metrics, free_metrics)
@@ -91,9 +90,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
 
 
-def track_premium_instances(
-    ec2_client, cloudwatch_client, spot_fleet_id: str
-) -> Dict[str, Any]:
+def track_premium_instances(ec2_client, spot_fleet_id: str) -> Dict[str, Any]:
     """Track premium instance metrics"""
     try:
         if not spot_fleet_id:
@@ -125,9 +122,7 @@ def track_premium_instances(
         return {"instance_count": 0, "running_instances": 0}
 
 
-def track_free_instances(
-    ec2_client, cloudwatch_client, asg_name: str
-) -> Dict[str, Any]:
+def track_free_instances(asg_client, asg_name: str) -> Dict[str, Any]:
     """Track free tier instance metrics"""
     try:
         if not asg_name:
@@ -135,7 +130,6 @@ def track_free_instances(
             return {"instance_count": 0, "running_instances": 0}
 
         # Get ASG instances
-        asg_client = boto3.client("autoscaling")
         response = asg_client.describe_auto_scaling_groups(
             AutoScalingGroupNames=[asg_name]
         )
