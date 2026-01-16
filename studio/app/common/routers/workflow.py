@@ -55,15 +55,12 @@ async def fetch_last_experiment(
                 workspace_id, unique_id, remote_bucket_name
             )
 
-            # sync unsynced remote storage data.
-            is_remote_synced = False
-            if RemoteStorageController.is_available():
-                is_remote_synced = await force_sync_unsynced_experiment(
-                    remote_bucket_name,
-                    workspace_id,
-                    unique_id,
-                    last_expt_config.success,
-                )
+            # Check remote sync status without triggering full download.
+            # Full data sync is deferred to reproduce_experiment when user
+            # explicitly clicks Reproduce.
+            is_remote_synced = RemoteSyncStatusFileUtil.check_sync_status_success(
+                workspace_id, unique_id
+            )
 
             # fetch workflow
             workflow_config = WorkflowConfigReader.read(workspace_id, unique_id)

@@ -1,34 +1,57 @@
 #!/usr/bin/env python3
 """
-Manual testing script for proactive experiment sync feature.
+Manual testing script for experiment data sync between instances.
 
 Tests that experiment metadata syncs correctly when users are migrated between
 instances, preventing 404 errors when accessing experiments after migration.
 
+Two sync mechanisms are available:
+    - Lazy Sync: On-demand sync when user accesses an experiment (default)
+    - Proactive Sync: Immediate bulk sync triggered via internal API
+
 Run from inside ECS container:
     1. Use infrastructure/terraform/container_access.sh to get shell access
     2. pip install pymysql requests boto3 (if not installed)
-    3. python /path/to/test_proactive_sync.py <command>
+    3. python /path/to/test_data_sync.py <command>
 
 Commands:
-    find-user <email>     Find user by email (partial match)
-    status <user_id>      Get user's current instance assignment
-    list-instances        List all instances with user counts
-    asg-status            Show ASG capacity and instance status
-    migrate <user_id>     Migrate user to different instance (auto-scales if needed)
-    sync <user_id>        Trigger experiment sync for user
+    find-user <email>      Find user by email (partial match)
+    status <user_id>       Get user's current instance assignment
+    list-instances         List all instances with user counts
+    asg-status             Show ASG capacity and instance status
+    migrate <user_id>      Migrate user to different instance (auto-scales if needed)
+    trigger-sync <user_id> Trigger proactive sync via internal API
+    clear-local <user_id>  Clear local experiment files (simulates fresh instance)
 
-Example:
-    python test_proactive_sync.py find-user test@example.com
-    python test_proactive_sync.py status 42
-    python test_proactive_sync.py migrate 42              # Auto-select target
-    python test_proactive_sync.py migrate 42 i-0abc123   # Explicit target instance
-    python test_proactive_sync.py sync 42
+Example commands:
+    python test_data_sync.py find-user test@example.com
+    python test_data_sync.py status 42
+    python test_data_sync.py migrate 42                   # Lazy sync (default)
+    python test_data_sync.py migrate 42 --proactive       # With proactive sync
+    python test_data_sync.py migrate 42 i-0abc123         # Explicit target
+    python test_data_sync.py trigger-sync 42              # Trigger sync only
+    python test_data_sync.py clear-local 42               # Clear all experiments
+    python test_data_sync.py clear-local 42 abc123        # Clear specific experiment
 
-Verification:
-    After migration, check CloudWatch Logs for:
-    - "Initiating experiment sync for user X"
-    - "Experiment sync completed for user X"
+
+Workflow A - Test Lazy Sync:
+    1. Log in with test user and run experiment on current instance
+    2. Find user by email to get user ID
+    3. Clear local experiment files to simulate fresh instance:
+       python test_data_sync.py clear-local <user_id> <unique_id>
+    4. Reproduce the experiment in RECORDS page - confirm no 404 error
+    5. Check logs for: "Experiment config not found locally, syncing from S3"
+
+Workflow B - Test Proactive Sync:
+    1. Log in with test user and run experiment on current instance
+    2. Find user by email to get user ID
+    3. Clear local experiment files:
+       python test_data_sync.py clear-local <user_id>
+    4. Trigger proactive sync:
+       python test_data_sync.py trigger-sync <user_id>
+    5. Check logs for: "Experiment sync initiated" and "sync completed"
+    6. Reproduce experiment - files should already be present (no lazy sync msg)
+
 """
 
 import argparse
@@ -144,7 +167,7 @@ def list_instances() -> list:
 
 
 def migrate_user(user_id: int, target_instance: str) -> dict:
-    """Migrate user to target instance and trigger sync."""
+    """Migrate user to target instance (File sync handled by lazy loading)."""
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -181,42 +204,211 @@ def migrate_user(user_id: int, target_instance: str) -> dict:
             )
             conn.commit()
 
-            result = {
+            return {
                 "status": "migrated",
                 "user_id": user_id,
                 "from_instance": old_instance,
                 "to_instance": target_instance,
             }
-
-            # Trigger sync
-            sync_result = trigger_sync(user_id)
-            result["sync"] = sync_result
-
-            return result
     finally:
         conn.close()
 
 
-def trigger_sync(user_id: int) -> dict:
-    """Trigger experiment sync via internal API (localhost)."""
+def get_user_workspaces(user_id: int) -> list:
+    """Get all workspace IDs for a user."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id FROM workspaces WHERE user_id = %s
+                """,
+                (user_id,),
+            )
+            return [row["id"] for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_workspace_experiments(workspace_id: str) -> list:
+    """Get all experiment unique_ids in a workspace directory."""
+    output_dir = os.environ.get("OUTPUT_DIR", "/tmp/studio/output")
+    workspace_path = os.path.join(output_dir, workspace_id)
+
+    if not os.path.isdir(workspace_path):
+        return []
+
+    # List subdirectories (each is an experiment)
+    experiments = []
+    for item in os.listdir(workspace_path):
+        item_path = os.path.join(workspace_path, item)
+        if os.path.isdir(item_path):
+            experiments.append(item)
+    return experiments
+
+
+def clear_local_experiment(workspace_id: str, unique_id: str) -> dict:
+    """Clear local experiment metadata files.
+
+    Deletes the experiment.yaml, workflow.yaml, and snakemake_config.yaml
+    files for a specific experiment, simulating a fresh instance that
+    needs to sync from S3.
+
+    Args:
+        workspace_id: Workspace ID containing the experiment
+        unique_id: Unique ID of the experiment
+
+    Returns:
+        Dict with status and list of deleted files
+    """
+    output_dir = os.environ.get("OUTPUT_DIR", "/tmp/studio/output")
+    experiment_path = os.path.join(output_dir, workspace_id, unique_id)
+
+    if not os.path.isdir(experiment_path):
+        return {
+            "error": f"Experiment directory not found: {experiment_path}",
+            "workspace_id": workspace_id,
+            "unique_id": unique_id,
+        }
+
+    # Metadata files that lazy sync downloads
+    metadata_files = ["experiment.yaml", "workflow.yaml", "snakemake_config.yaml"]
+    deleted = []
+
+    for filename in metadata_files:
+        filepath = os.path.join(experiment_path, filename)
+        if os.path.isfile(filepath):
+            os.remove(filepath)
+            deleted.append(filename)
+
+    return {
+        "status": "cleared",
+        "workspace_id": workspace_id,
+        "unique_id": unique_id,
+        "deleted_files": deleted,
+        "experiment_path": experiment_path,
+    }
+
+
+def clear_local_experiments_for_user(user_id: int, unique_id: str = None) -> dict:
+    """Clear local experiment files for a user.
+
+    If unique_id is provided, clears only that experiment.
+    Otherwise, clears all experiments across all user's workspaces.
+
+    Args:
+        user_id: User ID to clear experiments for
+        unique_id: Optional specific experiment to clear
+
+    Returns:
+        Dict with status and summary of cleared files
+    """
+    workspaces = get_user_workspaces(user_id)
+
+    if not workspaces:
+        return {"error": f"No workspaces found for user {user_id}"}
+
+    results = []
+    total_deleted = 0
+
+    for workspace_id in workspaces:
+        if unique_id:
+            # Clear specific experiment
+            result = clear_local_experiment(workspace_id, unique_id)
+            if "error" not in result:
+                results.append(result)
+                total_deleted += len(result.get("deleted_files", []))
+                break  # Found the experiment, stop searching
+        else:
+            # Clear all experiments in workspace
+            experiments = get_workspace_experiments(workspace_id)
+            for exp_id in experiments:
+                result = clear_local_experiment(workspace_id, exp_id)
+                if "error" not in result:
+                    results.append(result)
+                    total_deleted += len(result.get("deleted_files", []))
+
+    if not results:
+        if unique_id:
+            return {"error": f"Experiment {unique_id} not found for user {user_id}"}
+        else:
+            return {"error": f"No local experiments found for user {user_id}"}
+
+    return {
+        "status": "cleared",
+        "user_id": user_id,
+        "experiments_cleared": len(results),
+        "files_deleted": total_deleted,
+        "details": results,
+    }
+
+
+def trigger_proactive_sync(user_id: int) -> dict:
+    """Trigger proactive sync via internal API.
+
+    Calls the /system-internal/sync-experiments endpoint to trigger
+    immediate bulk sync of all experiment metadata for the user.
+
+    Requires INTERNAL_API_SECRET and ALB_DNS_NAME environment variables.
+    """
     import requests
 
+    alb_dns = os.environ.get("ALB_DNS_NAME")
     internal_secret = os.environ.get("INTERNAL_API_SECRET")
-    if not internal_secret:
-        return {"error": "INTERNAL_API_SECRET not configured"}
 
-    url = f"http://localhost:8000/system-internal/sync-experiments/{user_id}"
+    if not alb_dns:
+        return {"error": "ALB_DNS_NAME environment variable is required"}
+    if not internal_secret:
+        return {"error": "INTERNAL_API_SECRET environment variable is required"}
+
+    url = f"https://{alb_dns}/system-internal/sync-experiments/{user_id}"
     headers = {
         "X-Internal-Secret": internal_secret,
         "Content-Type": "application/json",
     }
 
     try:
-        response = requests.post(url, headers=headers, timeout=30.0)
-        resp_body = response.json() if response.status_code == 200 else response.text
-        return {"status_code": response.status_code, "response": resp_body}
+        print(f"Triggering proactive sync for user {user_id}...")
+        response = requests.post(url, headers=headers, timeout=30.0, verify=True)
+
+        if response.status_code == 200:
+            return {
+                "status": "sync_initiated",
+                "user_id": user_id,
+                "response": response.json(),
+            }
+        elif response.status_code == 429:
+            return {
+                "error": "Rate limited - sync request too frequent",
+                "status_code": response.status_code,
+            }
+        else:
+            return {
+                "error": f"Sync request failed: {response.status_code}",
+                "status_code": response.status_code,
+                "response": response.text,
+            }
+    except requests.exceptions.SSLError:
+        # Try without SSL verification for internal testing
+        print("SSL verification failed, retrying without verification...")
+        try:
+            response = requests.post(url, headers=headers, timeout=30.0, verify=False)
+            if response.status_code == 200:
+                return {
+                    "status": "sync_initiated",
+                    "user_id": user_id,
+                    "response": response.json(),
+                    "warning": "SSL verification disabled",
+                }
+            else:
+                return {
+                    "error": f"Sync request failed: {response.status_code}",
+                    "status_code": response.status_code,
+                }
+        except Exception as e2:
+            return {"error": f"Request failed: {e2}"}
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": f"Request failed: {e}"}
 
 
 # =============================================================================
@@ -396,7 +588,7 @@ def scale_asg(desired_capacity: int) -> dict:
 
 def wait_for_healthy_instances(
     target_count: int,
-    timeout_seconds: int = 420,
+    timeout_seconds: int = 1000,
     poll_interval: int = 10,
     print_interval: int = 60,
 ) -> dict:
@@ -503,7 +695,7 @@ def scale_ecs_service(desired_count: int) -> dict:
 
 def wait_for_running_tasks(
     target_count: int,
-    timeout_seconds: int = 600,
+    timeout_seconds: int = 1000,
     poll_interval: int = 10,
     print_interval: int = 60,
 ) -> dict:
@@ -652,15 +844,23 @@ def ensure_multiple_instances(current_instance: str) -> dict:
     }
 
 
-def migrate_user_auto(user_id: int, target_instance: str = None) -> dict:
+def migrate_user_auto(
+    user_id: int, target_instance: str = None, proactive: bool = False
+) -> dict:
     """Migrate user to target instance with auto-scaling support.
 
     If target_instance is None, automatically:
     1. Suspend ASG auto-scaling to prevent interference
     2. Scale ASG to 2 if only 1 instance exists
     3. Select a different instance as target
-    4. Migrate and trigger sync
-    5. Resume ASG auto-scaling
+    4. Migrate user
+    5. Optionally trigger proactive sync (if proactive=True)
+    6. Resume ASG auto-scaling
+
+    Args:
+        user_id: User ID to migrate
+        target_instance: Target instance ID (auto-selected if None)
+        proactive: If True, trigger proactive sync after migration
     """
     scaling_suspended = False
     conn = get_db_connection()
@@ -722,11 +922,13 @@ def migrate_user_auto(user_id: int, target_instance: str = None) -> dict:
                 "user_id": user_id,
                 "from_instance": old_instance,
                 "to_instance": target_instance,
+                "sync_mode": "proactive" if proactive else "lazy",
             }
 
-            # Trigger sync
-            sync_result = trigger_sync(user_id)
-            result["sync"] = sync_result
+            # Trigger proactive sync if requested
+            if proactive:
+                sync_result = trigger_proactive_sync(user_id)
+                result["sync_result"] = sync_result
 
             return result
     finally:
@@ -740,7 +942,7 @@ def migrate_user_auto(user_id: int, target_instance: str = None) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Test proactive experiment sync (run from inside ECS container)"
+        description="Test experiment data sync (run from inside ECS container)"
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
@@ -770,10 +972,29 @@ def main():
         default=None,
         help="Target instance ID (optional - auto-selects if not provided)",
     )
+    migrate_parser.add_argument(
+        "--proactive",
+        action="store_true",
+        help="Trigger proactive sync after migration (requires INTERNAL_API_SECRET)",
+    )
 
-    # Sync command
-    sync_parser = subparsers.add_parser("sync", help="Trigger experiment sync for user")
+    # Trigger sync command
+    sync_parser = subparsers.add_parser(
+        "trigger-sync", help="Trigger proactive sync via internal API"
+    )
     sync_parser.add_argument("user_id", type=int, help="User ID to sync")
+
+    # Clear local experiment files command
+    clear_parser = subparsers.add_parser(
+        "clear-local", help="Clear local experiment files (simulates fresh instance)"
+    )
+    clear_parser.add_argument("user_id", type=int, help="User ID")
+    clear_parser.add_argument(
+        "unique_id",
+        nargs="?",
+        default=None,
+        help="Experiment unique_id (optional - clears all if not provided)",
+    )
 
     args = parser.parse_args()
 
@@ -786,8 +1007,6 @@ def main():
 
     # Check required environment variables
     required_vars = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME"]
-    if args.command in ["migrate", "sync"]:
-        required_vars.append("INTERNAL_API_SECRET")
 
     missing = [v for v in required_vars if not os.environ.get(v)]
     if missing:
@@ -874,24 +1093,52 @@ def main():
 
     elif args.command == "migrate":
         target_display = args.target_instance or "(auto-select)"
+        sync_mode = "proactive" if args.proactive else "lazy"
         print(f"\n=== Migrating user {args.user_id} to {target_display} ===")
-        result = migrate_user_auto(args.user_id, args.target_instance)
+        print(f"Sync mode: {sync_mode}")
+        result = migrate_user_auto(args.user_id, args.target_instance, args.proactive)
         if "error" in result:
             print(f"Error: {result['error']}")
         else:
             print(f"Status: {result['status']}")
             print(f"From: {result['from_instance']}")
             print(f"To: {result['to_instance']}")
-            print(f"Sync Result: {result['sync']}")
+            print(f"Sync Mode: {result.get('sync_mode', 'lazy')}")
+            if "sync_result" in result:
+                sync_res = result["sync_result"]
+                if "error" in sync_res:
+                    print(f"Sync Error: {sync_res['error']}")
+                else:
+                    print(f"Sync Status: {sync_res.get('status', 'unknown')}")
 
-    elif args.command == "sync":
-        print(f"\nTriggering sync for user {args.user_id}...")
-        result = trigger_sync(args.user_id)
+    elif args.command == "trigger-sync":
+        print(f"\n=== Triggering proactive sync for user {args.user_id} ===")
+        result = trigger_proactive_sync(args.user_id)
+        if "error" in result:
+            print(f"Error: {result['error']}")
+            if "status_code" in result:
+                print(f"Status Code: {result['status_code']}")
+        else:
+            print(f"Status: {result['status']}")
+            if "warning" in result:
+                print(f"Warning: {result['warning']}")
+            print("Check container logs for sync progress.")
+
+    elif args.command == "clear-local":
+        target = args.unique_id or "all experiments"
+        print(f"\n=== Clearing local files for user {args.user_id} ({target}) ===")
+        result = clear_local_experiments_for_user(args.user_id, args.unique_id)
         if "error" in result:
             print(f"Error: {result['error']}")
         else:
-            print(f"Status Code: {result['status_code']}")
-            print(f"Response: {result['response']}")
+            print(f"Status: {result['status']}")
+            print(f"Experiments cleared: {result['experiments_cleared']}")
+            print(f"Files deleted: {result['files_deleted']}")
+            if result.get("details"):
+                print("\nDetails:")
+                for detail in result["details"]:
+                    print(f"  {detail['workspace_id']}/{detail['unique_id']}:")
+                    print(f"    Deleted: {', '.join(detail['deleted_files'])}")
 
 
 if __name__ == "__main__":

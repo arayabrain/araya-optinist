@@ -317,7 +317,7 @@ class S3StorageController(BaseRemoteStorageController):
 
         # filter target workspaces_dirs
         if workspace_ids:
-            re_ids = "|".join(workspace_ids)
+            re_ids = "|".join(str(wid) for wid in workspace_ids)
             re_ids = f"({re_ids})"
             workspaces_dirs = [
                 w for w in all_workspaces_dirs if re.search(f"/{re_ids}/$", w)
