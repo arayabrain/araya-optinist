@@ -6,7 +6,9 @@ import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends
 
 from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
+from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.snakemake.smk_utils import SmkUtils
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageReader,
@@ -110,6 +112,15 @@ async def sync_visualization_files(
             workspace_id, unique_id, sync_mode="visualization"
         )
 
+        # Also download input files needed for viewing images
+        input_filenames = SmkUtils.get_datatypes_inputs(
+            workspace_id, unique_id, apply_basename=True
+        )
+        for input_filename in input_filenames:
+            await remote_storage_controller.download_input_data(
+                workspace_id, input_filename
+            )
+
     # Trigger background task to download remaining files (PKL/NWB)
     # This prepares Edit ROI while user is viewing results
     background_tasks.add_task(
@@ -117,6 +128,51 @@ async def sync_visualization_files(
     )
 
     return result
+
+
+async def _ensure_visualization_synced(dirpath: str, remote_bucket_name: str) -> None:
+    """
+    On-demand sync for visualization files.
+    Extracts workspace_id and unique_id from dirpath and triggers sync if needed.
+    """
+    if not RemoteStorageController.is_available():
+        return
+
+    if not dirpath.startswith(DIRPATH.OUTPUT_DIR):
+        return
+
+    # Extract IDs from path
+    path_ids = ExptOutputPathIds(dirpath)
+    workspace_id = path_ids.workspace_id
+    unique_id = path_ids.unique_id
+
+    if not workspace_id or not unique_id:
+        return
+
+    # Check if sync is needed
+    is_unsynced = RemoteSyncStatusFileUtil.check_sync_status_unsynced(
+        workspace_id, unique_id
+    )
+
+    if not is_unsynced:
+        return
+
+    logger.info(f"On-demand sync for visualization: {workspace_id}/{unique_id}")
+
+    async with RemoteStorageReader(
+        remote_bucket_name, workspace_id, unique_id
+    ) as remote_storage_controller:
+        await remote_storage_controller.download_experiment(
+            workspace_id, unique_id, sync_mode="visualization"
+        )
+        # Also download input files
+        input_filenames = SmkUtils.get_datatypes_inputs(
+            workspace_id, unique_id, apply_basename=True
+        )
+        for input_filename in input_filenames:
+            await remote_storage_controller.download_input_data(
+                workspace_id, input_filename
+            )
 
 
 def get_initial_timeseries_data(dirpath) -> JsonTimeSeriesData:
@@ -135,7 +191,11 @@ def get_initial_timeseries_data(dirpath) -> JsonTimeSeriesData:
 async def get_inittimedata(
     dirpath: str,
     isFull: Optional[bool] = None,
+    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
+    # On-demand sync if files don't exist
+    await _ensure_visualization_synced(dirpath, remote_bucket_name)
+
     full_json_dirpath = dirpath + ORIGINAL_DATA_EXT
     if isFull and os.path.exists(full_json_dirpath):
         dirpath = full_json_dirpath
@@ -190,7 +250,11 @@ async def get_timedata(
     dirpath: str,
     index: int,
     isFull: Optional[bool] = None,
+    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
+    # On-demand sync if files don't exist
+    await _ensure_visualization_synced(dirpath, remote_bucket_name)
+
     full_json_dirpath = dirpath + ORIGINAL_DATA_EXT
     if isFull and os.path.exists(full_json_dirpath):
         dirpath = full_json_dirpath
@@ -210,7 +274,13 @@ async def get_timedata(
 
 
 @router.get("/alltimedata/{dirpath:path}", response_model=JsonTimeSeriesData)
-async def get_alltimedata(dirpath: str):
+async def get_alltimedata(
+    dirpath: str,
+    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+):
+    # On-demand sync if files don't exist
+    await _ensure_visualization_synced(dirpath, remote_bucket_name)
+
     return_data = get_initial_timeseries_data(dirpath)
 
     for i, path in enumerate(glob(join_filepath([dirpath, "*.json"]))):
@@ -227,7 +297,13 @@ async def get_alltimedata(dirpath: str):
 
 
 @router.get("/data/{filepath:path}", response_model=OutputData)
-async def get_file(filepath: str):
+async def get_file(
+    filepath: str,
+    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+):
+    # On-demand sync if files don't exist
+    await _ensure_visualization_synced(os.path.dirname(filepath), remote_bucket_name)
+
     return JsonReader.read_as_output(filepath)
 
 
@@ -243,7 +319,11 @@ async def get_image(
     start_index: Optional[int] = 0,
     end_index: Optional[int] = 10,
     isFull: Optional[bool] = None,
+    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
+    # On-demand sync if files don't exist
+    await _ensure_visualization_synced(os.path.dirname(filepath), remote_bucket_name)
+
     filename, ext = os.path.splitext(os.path.basename(filepath))
 
     if filename == "cell_roi" and isFull:
