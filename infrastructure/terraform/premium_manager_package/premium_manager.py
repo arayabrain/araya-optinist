@@ -44,7 +44,6 @@ from typing import Any, Dict, Optional
 
 import boto3
 import pymysql
-from botocore.exceptions import ClientError
 
 # Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
 from aws_constants import (
@@ -53,6 +52,7 @@ from aws_constants import (
     PremiumInstanceConfig,
     RoutingHeaders,
 )
+from botocore.exceptions import ClientError
 
 # Constants
 # Default fallback value for premium user count in development/testing scenarios
@@ -450,9 +450,18 @@ def get_all_premium_instances_with_states():
             instance_id = instance["InstanceId"]
 
             # Check multiple criteria for premium instances
-            name_match = PremiumInstanceConfig.INSTANCE_IDENTIFIER in tags.get("Name", "").lower()
-            tier_match = tags.get("Tier", "").lower() == PremiumInstanceConfig.INSTANCE_IDENTIFIER
-            type_match = PremiumInstanceConfig.INSTANCE_IDENTIFIER in tags.get("Type", "").lower()
+            name_match = (
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                in tags.get("Name", "").lower()
+            )
+            tier_match = (
+                tags.get("Tier", "").lower()
+                == PremiumInstanceConfig.INSTANCE_IDENTIFIER
+            )
+            type_match = (
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                in tags.get("Type", "").lower()
+            )
 
             # Debug logging for tag matching
             print(f"Instance {instance_id} tag analysis:")

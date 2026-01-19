@@ -127,9 +127,7 @@ def get_user_tier_cached(uid: str) -> str:
             subscription_data = SubscriptionService.get_user_subscription(db, user.id)
             if subscription_data:
                 _, plan = subscription_data
-                tier = (
-                    "premium" if plan.id == SubscriptionPlanIds.PREMIUM else "free"
-                )
+                tier = "premium" if plan.id == SubscriptionPlanIds.PREMIUM else "free"
             else:
                 tier = "free"
 

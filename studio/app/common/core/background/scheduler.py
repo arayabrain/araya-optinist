@@ -27,9 +27,7 @@ from studio.app.common.core.storage.remote_storage_controller import RemoteStora
 logger = AppLogger.get_logger()
 
 # Lock file path for multi-worker coordination
-_SCHEDULER_LOCK_FILE = os.path.join(
-    tempfile.gettempdir(), "optinist_scheduler.lock"
-)
+_SCHEDULER_LOCK_FILE = os.path.join(tempfile.gettempdir(), "optinist_scheduler.lock")
 
 
 class BackgroundScheduler:
@@ -130,9 +128,7 @@ class BackgroundScheduler:
         try:
             # Atomic file creation - fails if file exists
             fd = os.open(
-                _SCHEDULER_LOCK_FILE,
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o644
+                _SCHEDULER_LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644
             )
             # Write our PID to the lock file for staleness detection
             os.write(fd, f"{os.getpid()}\n".encode())

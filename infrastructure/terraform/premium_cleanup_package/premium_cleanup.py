@@ -65,7 +65,9 @@ def get_db_connection(auto_commit=False):
             rds_host = get_required_env_var("RDS_HOST")
             conn = pymysql.connect(
                 host=rds_host.split(":")[0],
-                port=int(rds_host.split(":")[1]) if ":" in rds_host else DatabaseConfig.DEFAULT_PORT,
+                port=int(rds_host.split(":")[1])
+                if ":" in rds_host
+                else DatabaseConfig.DEFAULT_PORT,
                 user=get_required_env_var("RDS_USER"),
                 password=get_required_env_var("RDS_PASSWORD"),
                 database=get_required_env_var("RDS_DATABASE"),
@@ -145,7 +147,9 @@ def check_instance_readiness(instance_id: str) -> bool:
 
         for task in task_details["tasks"]:
             task_def_arn = task.get("taskDefinitionArn", "")
-            is_premium_task = task_def_arn.find(PremiumInstanceConfig.INSTANCE_IDENTIFIER) != -1
+            is_premium_task = (
+                task_def_arn.find(PremiumInstanceConfig.INSTANCE_IDENTIFIER) != -1
+            )
             if is_premium_task and task.get("lastStatus") == ECSTaskStatus.RUNNING:
                 print(f"Premium task running and ready on instance {instance_id}")
                 return True
@@ -407,9 +411,18 @@ def get_all_premium_instances_with_states():
             instance_id = instance["InstanceId"]
 
             # Check multiple criteria for premium instances
-            name_match = PremiumInstanceConfig.INSTANCE_IDENTIFIER in tags.get("Name", "").lower()
-            tier_match = tags.get("Tier", "").lower() == PremiumInstanceConfig.INSTANCE_IDENTIFIER
-            type_match = PremiumInstanceConfig.INSTANCE_IDENTIFIER in tags.get("Type", "").lower()
+            name_match = (
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                in tags.get("Name", "").lower()
+            )
+            tier_match = (
+                tags.get("Tier", "").lower()
+                == PremiumInstanceConfig.INSTANCE_IDENTIFIER
+            )
+            type_match = (
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                in tags.get("Type", "").lower()
+            )
 
             # Debug logging for tag matching
             print(f"Instance {instance_id} tag analysis:")
