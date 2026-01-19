@@ -26,8 +26,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jwt
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
-from studio.app.common.db.database import session_scope
 from studio.app.common.core.subscription.constants import SubscriptionPlanIds
+from studio.app.common.db.database import session_scope
 from studio.app.common.models import FreeUserAssignment
 
 # Constants
