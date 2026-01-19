@@ -21,12 +21,162 @@ _client_id_context: ContextVar[Optional[str]] = ContextVar(
 )
 
 
+class LoggingConfigHelper:
+    """
+    Common utility class for logging configuration processing
+
+    Note:
+      - This class may be used in forked repositories.
+        Therefore, care must be taken when changing the interface of this class
+        (logging configuration) to avoid breaking changes.
+    """
+
+    @staticmethod
+    def load_and_configure_logging_config(
+        config_file: str,
+        base_dir: str,
+        apply_concurrent: bool = True,
+        filename_modifier: callable = None,
+    ) -> dict:
+        """
+        Load logging config from YAML file and apply standard configurations
+
+        This is a unified method that combines:
+        1. Loading YAML config
+        2. Applying concurrent handler if supported
+        3. Adjusting log file path and creating directory
+
+        Args:
+            config_file: Path to logging config YAML file
+            base_dir: Base directory for log files (e.g., DIRPATH.DATA_DIR)
+            apply_concurrent: Whether to apply concurrent handler (default: True)
+            filename_modifier: Optional callable to modify filename
+                              Function signature: (filename: str) -> str
+
+        Returns:
+            Configured logging configuration dictionary
+        """
+        # Load logging config from YAML
+        with open(config_file, encoding="utf-8") as f:
+            logging_config = yaml.safe_load(f.read())
+
+        # Apply filename modifier if provided
+        if filename_modifier:
+            log_file = (
+                logging_config.get("handlers", {})
+                .get("rotating_file", {})
+                .get("filename")
+            )
+            if log_file:
+                modified_filename = filename_modifier(log_file)
+                logging_config["handlers"]["rotating_file"][
+                    "filename"
+                ] = modified_filename
+
+        # Apply concurrent handler configuration and cleanup
+        logging_config = LoggingConfigHelper._apply_concurrent_handler_if_supported(
+            logging_config, apply_concurrent
+        )
+
+        # Adjust log file path and create directory
+        logging_config = LoggingConfigHelper._adjust_log_file_path(
+            logging_config, base_dir
+        )
+
+        return logging_config
+
+    @staticmethod
+    def _is_native_windows() -> bool:
+        """
+        Check if running on native Windows (not WSL)
+
+        Returns:
+            True if running on native Windows, False otherwise
+        """
+        if platform.system() != "Windows":
+            return False
+
+        # Check WSL Platform
+        if "WSL_DISTRO_NAME" in os.environ or "WSL_INTEROP" in os.environ:
+            return False
+
+        return True
+
+    @staticmethod
+    def _apply_concurrent_handler_if_supported(
+        logging_config: dict, apply_concurrent: bool = True
+    ) -> dict:
+        """
+        Apply concurrent rotating file handler if supported by the platform
+        and cleanup temporary handler configuration
+
+        Args:
+            logging_config: Logging configuration dictionary
+            apply_concurrent: Whether to apply concurrent handler (default: True)
+
+        Returns:
+            Modified logging configuration dictionary
+        """
+        logging_handlers = logging_config.get("handlers", {})
+
+        # Switch rotating_file to concurrent handler for multi-process support
+        if apply_concurrent:
+            if LoggingConfigHelper._is_native_windows():
+                # ATTENTION:
+                # On the Windows Native Platform, "rotating_file_concurrency"
+                # is currently not supported because pywin32 is required to use
+                # concurrent_log_handler. (which is not installed in the conda env).
+                pass
+            else:
+                if ("rotating_file" in logging_handlers) and (
+                    "rotating_file_concurrency" in logging_handlers
+                ):
+                    logging_config["handlers"]["rotating_file"] = logging_config[
+                        "handlers"
+                    ]["rotating_file_concurrency"]
+
+        # Delete unnecessary items (always cleanup, regardless of apply_concurrent)
+        if "rotating_file_concurrency" in logging_handlers:
+            del logging_config["handlers"]["rotating_file_concurrency"]
+
+        return logging_config
+
+    @staticmethod
+    def _adjust_log_file_path(logging_config: dict, base_dir: str) -> dict:
+        """
+        Adjust log file path to absolute path and create log directory if needed
+
+        Args:
+            logging_config: Logging configuration dictionary
+            base_dir: Base directory for log files (e.g., DIRPATH.DATA_DIR)
+
+        Returns:
+            Modified logging configuration dictionary
+        """
+        log_file = (
+            logging_config.get("handlers", {}).get("rotating_file", {}).get("filename")
+        )
+        if log_file:
+            # Adjust to absolute path
+            log_file = f"{base_dir}/{log_file}"
+            logging_config["handlers"]["rotating_file"]["filename"] = log_file
+
+            # Create log output directory if it doesn't exist
+            # ※ Must be done before logging.config.dictConfig()
+            log_dir = os.path.dirname(log_file)
+            if log_dir and not os.path.isdir(log_dir):
+                os.makedirs(log_dir, exist_ok=True)
+
+        return logging_config
+
+
 class AppLogger:
     """
     Generic Application Logger
     """
 
     LOGGER_NAME = "optinist"
+    _initialized = False  # Flag to track if logger has been initialized
 
     class ClientIdFilter(logging.Filter):
         """
@@ -65,20 +215,18 @@ class AppLogger:
             the initialization process is required because it is a separate process.
         """
 
+        # Skip if already initialized
+        if cls._initialized:
+            return
+
         # read logging config
         logging_config = cls.get_logging_config()
 
-        # create log output directory (if none exists)
-        log_file = (
-            logging_config.get("handlers", {}).get("rotating_file", {}).get("filename")
-        )
-        if log_file:
-            log_dir = os.path.dirname(log_file)
-            if not os.path.isdir(log_dir):
-                os.makedirs(log_dir)
-
         # set logging config
         logging.config.dictConfig(logging_config)
+
+        # Mark as initialized
+        cls._initialized = True
 
     @staticmethod
     def get_logging_config() -> dict:
@@ -88,37 +236,12 @@ class AppLogger:
             else f"{DIRPATH.CONFIG_DIR}/logging.multiuser.yaml"
         )
 
-        logging_config = None
-
-        with open(logging_config_file) as file:
-            logging_config = yaml.load(file.read(), yaml.FullLoader)
-
-        logging_handers = logging_config.get("handlers", {})
-
-        # Switch rotating_file depending on platform
-        if __class__.is_native_windows():
-            # ATTENTION:
-            # On the Windows Native Platform, "rotating_file_concurrency"
-            # is currently not supported because pywin32 is required to use
-            # concurrent_log_handler. (which is not installed in the conda env).
-            pass
-        else:
-            if ("rotating_file" in logging_handers) and (
-                "rotating_file_concurrency"
-            ) in logging_handers:
-                logging_config["handlers"]["rotating_file"] = logging_config[
-                    "handlers"
-                ]["rotating_file_concurrency"]
-
-        # Delete unnecessary items
-        if "rotating_file_concurrency" in logging_handers:
-            del logging_config["handlers"]["rotating_file_concurrency"]
-
-        # Adjust log file path (if none exists)
-        log_file = logging_handers.get("rotating_file", {}).get("filename")
-        if log_file:
-            log_file = f"{DIRPATH.DATA_DIR}/{log_file}"
-            logging_config["handlers"]["rotating_file"]["filename"] = log_file
+        # Load and configure logging config (using unified utility method)
+        logging_config = LoggingConfigHelper.load_and_configure_logging_config(
+            config_file=logging_config_file,
+            base_dir=DIRPATH.DATA_DIR,
+            apply_concurrent=True,
+        )
 
         # Add ClientIdFilter configuration to filters section
         CLIENT_ID_FILTER_NAME = "client_id_filter"
@@ -137,13 +260,13 @@ class AppLogger:
 
         return logging_config
 
-    @staticmethod
-    def get_logger() -> logging.Logger:
-        logger = logging.getLogger(__class__.LOGGER_NAME)
+    @classmethod
+    def get_logger(cls) -> logging.Logger:
+        logger = logging.getLogger(cls.LOGGER_NAME)
 
-        # If before initialization, call init
-        if not logger.handlers:
-            __class__.init_logger()
+        # If not initialized yet, call init
+        if not cls._initialized:
+            cls.init_logger()
 
         return logger
 
@@ -192,14 +315,3 @@ class AppLogger:
     @staticmethod
     def format_exc_traceback(e: Exception):
         return "{}: {}\n{}".format(type(e), e, traceback.format_exc())
-
-    @staticmethod
-    def is_native_windows():
-        if platform.system() != "Windows":
-            return False
-
-        # Check WSL Platform
-        if "WSL_DISTRO_NAME" in os.environ or "WSL_INTEROP" in os.environ:
-            return False
-
-        return True
