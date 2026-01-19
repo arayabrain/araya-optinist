@@ -1,63 +1,36 @@
 #!/usr/bin/env python3
 """
-Manual testing script for experiment data sync between instances.
+Test experiment data sync between instances.
 
-Tests that experiment metadata syncs correctly when users are migrated between
-instances, preventing 404 errors when accessing experiments after migration.
+Run from inside ECS container (use container_access.sh to get shell).
 
-Two sync mechanisms are available:
-    - Lazy Sync: On-demand sync when user accesses an experiment (default)
-    - Proactive Sync: Immediate bulk sync triggered via internal API
+Quick Start - Automated Tests:
+    # Test lazy sync (clears files, calls API, verifies sync)
+    python test_data_sync.py test-lazy <email>
 
-Run from inside ECS container:
-    1. Use infrastructure/terraform/container_access.sh to get shell access
-    2. pip install pymysql requests boto3 (if not installed)
-    3. python /path/to/test_data_sync.py <command>
+    # Test proactive sync (clears files, triggers sync API, verifies)
+    python test_data_sync.py test-proactive <email>
 
-Commands:
-    find-user <email>      Find user by email (partial match)
-    status <user_id>       Get user's current instance assignment
-    list-instances         List all instances with user counts
-    asg-status             Show ASG capacity and instance status
-    migrate <user_id>      Migrate user to different instance (auto-scales if needed)
-    trigger-sync <user_id> Trigger proactive sync via internal API
-    clear-local <user_id>  Clear local experiment files (simulates fresh instance)
+Other Commands:
+    status [user_id]    Show system status; with user_id shows experiments
+    migrate <user_id>   Migrate user to different instance
 
-Example commands:
-    python test_data_sync.py find-user test@example.com
-    python test_data_sync.py status 42
-    python test_data_sync.py migrate 42                   # Lazy sync (default)
-    python test_data_sync.py migrate 42 --proactive       # With proactive sync
-    python test_data_sync.py migrate 42 i-0abc123         # Explicit target
-    python test_data_sync.py trigger-sync 42              # Trigger sync only
-    python test_data_sync.py clear-local 42               # Clear all experiments
-    python test_data_sync.py clear-local 42 abc123        # Clear specific experiment
-
-
-Workflow A - Test Lazy Sync:
-    1. Log in with test user and run experiment on current instance
-    2. Find user by email to get user ID
-    3. Clear local experiment files to simulate fresh instance:
-       python test_data_sync.py clear-local <user_id> <unique_id>
-    4. Reproduce the experiment in RECORDS page - confirm no 404 error
-    5. Check logs for: "Experiment config not found locally, syncing from S3"
-
-Workflow B - Test Proactive Sync:
-    1. Log in with test user and run experiment on current instance
-    2. Find user by email to get user ID
-    3. Clear local experiment files:
-       python test_data_sync.py clear-local <user_id>
-    4. Trigger proactive sync:
-       python test_data_sync.py trigger-sync <user_id>
-    5. Check logs for: "Experiment sync initiated" and "sync completed"
-    6. Reproduce experiment - files should already be present (no lazy sync msg)
+Manual Testing (if automated tests fail):
+    1. python test_data_sync.py status <user_id>  # Get workspace/experiment IDs
+    2. python test_data_sync.py clear-local <user_id> <unique_id>
+    3. Reproduce experiment in UI, check logs for sync messages
 
 """
 
 import argparse
+import json
 import os
 import sys
 import time
+from pathlib import Path
+
+import requests
+import yaml
 
 
 def load_config():
@@ -166,68 +139,85 @@ def list_instances() -> list:
         conn.close()
 
 
-def migrate_user(user_id: int, target_instance: str) -> dict:
-    """Migrate user to target instance (File sync handled by lazy loading)."""
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT instance_id, active_workflow_count
-                FROM free_user_assignments
-                WHERE user_id = %s
-                """,
-                (user_id,),
-            )
-            current = cursor.fetchone()
-
-            if not current:
-                return {"error": f"No assignment found for user {user_id}"}
-
-            if current["active_workflow_count"] > 0:
-                return {
-                    "error": f"User has {current['active_workflow_count']} "
-                    "active workflows - cannot migrate"
-                }
-
-            old_instance = current["instance_id"]
-
-            cursor.execute(
-                """
-                UPDATE free_user_assignments
-                SET instance_id = %s,
-                    migration_count = migration_count + 1,
-                    last_migration = NOW()
-                WHERE user_id = %s
-                """,
-                (target_instance, user_id),
-            )
-            conn.commit()
-
-            return {
-                "status": "migrated",
-                "user_id": user_id,
-                "from_instance": old_instance,
-                "to_instance": target_instance,
-            }
-    finally:
-        conn.close()
-
-
 def get_user_workspaces(user_id: int) -> list:
-    """Get all workspace IDs for a user."""
+    """Get all workspaces for a user (returns id and name)."""
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id FROM workspaces WHERE user_id = %s
+                SELECT id, name FROM workspaces WHERE user_id = %s
                 """,
                 (user_id,),
             )
-            return [row["id"] for row in cursor.fetchall()]
+            return cursor.fetchall()
     finally:
         conn.close()
+
+
+def list_experiments_for_user(user_id: int) -> dict:
+    """
+    List all experiments for a user across all workspaces.
+
+    Returns workspace_id, unique_id, and experiment name from local files.
+
+    Args:
+        user_id: User ID to list experiments for
+
+    Returns:
+        Dict with workspaces and their experiments
+    """
+    workspaces = get_user_workspaces(user_id)
+
+    if not workspaces:
+        return {"error": f"No workspaces found for user {user_id}"}
+
+    output_dir = os.environ.get("OUTPUT_DIR", "/tmp/studio/output")
+    results = []
+
+    for ws in workspaces:
+        workspace_id = ws["id"]
+        workspace_name = ws["name"]
+        workspace_path = os.path.join(output_dir, str(workspace_id))
+
+        experiments = []
+        if os.path.isdir(workspace_path):
+            for item in os.listdir(workspace_path):
+                item_path = os.path.join(workspace_path, item)
+                if os.path.isdir(item_path):
+                    # Try to read experiment name from experiment.yaml
+                    exp_name = None
+                    exp_yaml = os.path.join(item_path, "experiment.yaml")
+                    if os.path.isfile(exp_yaml):
+                        try:
+                            with open(exp_yaml) as f:
+                                data = yaml.safe_load(f)
+                                exp_name = data.get("name", "unknown")
+                        except Exception:
+                            exp_name = "(yaml parse error)"
+                    else:
+                        exp_name = "(no experiment.yaml)"
+
+                    experiments.append(
+                        {
+                            "unique_id": item,
+                            "name": exp_name,
+                        }
+                    )
+
+        results.append(
+            {
+                "workspace_id": workspace_id,
+                "workspace_name": workspace_name,
+                "experiments": experiments,
+            }
+        )
+
+    return {
+        "status": "success",
+        "user_id": user_id,
+        "workspaces": results,
+    }
 
 
 def get_workspace_experiments(workspace_id: str) -> list:
@@ -290,6 +280,103 @@ def clear_local_experiment(workspace_id: str, unique_id: str) -> dict:
     }
 
 
+def clear_local_visualization_files(workspace_id: str, unique_id: str) -> dict:
+    """Clear local visualization files (JSON, TIFF) for tiered sync testing.
+
+    Deletes JSON and TIFF files that are downloaded during visualization sync,
+    simulating a fresh instance that needs to sync visualization data from S3.
+
+    Args:
+        workspace_id: Workspace ID containing the experiment
+        unique_id: Unique ID of the experiment
+
+    Returns:
+        Dict with status and counts of deleted files
+    """
+
+    output_dir = os.environ.get("OUTPUT_DIR", "/tmp/studio/output")
+    experiment_path = os.path.join(output_dir, workspace_id, unique_id)
+
+    if not os.path.isdir(experiment_path):
+        return {
+            "error": f"Experiment directory not found: {experiment_path}",
+            "workspace_id": workspace_id,
+            "unique_id": unique_id,
+        }
+
+    json_deleted = 0
+    tiff_deleted = 0
+
+    for root, dirs, files in os.walk(experiment_path):
+        for filename in files:
+            filepath = os.path.join(root, filename)
+            lower_name = filename.lower()
+
+            if lower_name.endswith(".json") and not lower_name.endswith(".yaml"):
+                os.remove(filepath)
+                json_deleted += 1
+            elif lower_name.endswith((".tif", ".tiff")):
+                os.remove(filepath)
+                tiff_deleted += 1
+
+    return {
+        "status": "cleared",
+        "workspace_id": workspace_id,
+        "unique_id": unique_id,
+        "json_files_deleted": json_deleted,
+        "tiff_files_deleted": tiff_deleted,
+        "experiment_path": experiment_path,
+    }
+
+
+def clear_local_edit_roi_files(workspace_id: str, unique_id: str) -> dict:
+    """Clear local PKL and NWB files for Edit ROI sync testing.
+
+    Deletes PKL and NWB files that are needed for Edit ROI functionality,
+    simulating a fresh instance that needs full sync from S3.
+
+    Args:
+        workspace_id: Workspace ID containing the experiment
+        unique_id: Unique ID of the experiment
+
+    Returns:
+        Dict with status and counts of deleted files
+    """
+    output_dir = os.environ.get("OUTPUT_DIR", "/tmp/studio/output")
+    experiment_path = os.path.join(output_dir, workspace_id, unique_id)
+
+    if not os.path.isdir(experiment_path):
+        return {
+            "error": f"Experiment directory not found: {experiment_path}",
+            "workspace_id": workspace_id,
+            "unique_id": unique_id,
+        }
+
+    pkl_deleted = 0
+    nwb_deleted = 0
+
+    for root, dirs, files in os.walk(experiment_path):
+        for filename in files:
+            filepath = os.path.join(root, filename)
+            lower_name = filename.lower()
+
+            if lower_name.endswith(".pkl"):
+                os.remove(filepath)
+                pkl_deleted += 1
+            elif lower_name.endswith(".nwb"):
+                os.remove(filepath)
+                nwb_deleted += 1
+
+    return {
+        "status": "cleared",
+        "workspace_id": workspace_id,
+        "unique_id": unique_id,
+        "pkl_files_deleted": pkl_deleted,
+        "nwb_files_deleted": nwb_deleted,
+        "experiment_path": experiment_path,
+    }
+
+
 def clear_local_experiments_for_user(user_id: int, unique_id: str = None) -> dict:
     """Clear local experiment files for a user.
 
@@ -311,7 +398,8 @@ def clear_local_experiments_for_user(user_id: int, unique_id: str = None) -> dic
     results = []
     total_deleted = 0
 
-    for workspace_id in workspaces:
+    for ws in workspaces:
+        workspace_id = ws["id"]
         if unique_id:
             # Clear specific experiment
             result = clear_local_experiment(workspace_id, unique_id)
@@ -351,8 +439,6 @@ def trigger_proactive_sync(user_id: int) -> dict:
 
     Requires INTERNAL_API_SECRET and ALB_DNS_NAME environment variables.
     """
-    import requests
-
     alb_dns = os.environ.get("ALB_DNS_NAME")
     internal_secret = os.environ.get("INTERNAL_API_SECRET")
 
@@ -940,6 +1026,564 @@ def migrate_user_auto(
                 print(f"Warning: Could not resume scaling: {resume_result['error']}")
 
 
+# =============================================================================
+# API Endpoint Test Functions
+# =============================================================================
+
+# These functions test lazy sync by calling API endpoints that trigger
+# ensure_synced_async() when experiment metadata is missing locally.
+#
+# Prerequisites:
+#   - Must have a valid JWT token (from tokens.json, browser, or auto-generate)
+#   - ALB_DNS_NAME environment variable must be set
+#   - User must have at least one experiment in the workspace
+
+# Import token generation utilities (optional - for auto-generate feature)
+try:
+    from get_jwt_tokens import generate_jwt_tokens
+except ImportError:
+    generate_jwt_tokens = None
+
+
+def get_auth_headers(token: str) -> dict:
+    """Get headers for authenticated API requests."""
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+
+def get_api_base_url() -> str:
+    """Get base URL for API requests."""
+    alb_dns = os.environ.get("ALB_DNS_NAME")
+    if not alb_dns:
+        raise ValueError("ALB_DNS_NAME environment variable is required")
+    return f"https://{alb_dns}"
+
+
+def make_api_request(
+    method: str,
+    url: str,
+    headers: dict,
+    json_body: dict = None,
+    timeout: float = 30.0,
+) -> tuple:
+    """Make an API request with SSL fallback.
+
+    Tries with SSL verification first, falls back to no verification on SSLError.
+
+    Args:
+        method: HTTP method (get, post, patch, delete)
+        url: Request URL
+        headers: Request headers
+        json_body: Optional JSON body for POST/PATCH requests
+        timeout: Request timeout in seconds
+
+    Returns:
+        Tuple of (response, ssl_warning) where ssl_warning is True if SSL was disabled
+
+    Raises:
+        Exception: If request fails completely
+    """
+    request_func = getattr(requests, method.lower())
+    kwargs = {"headers": headers, "timeout": timeout}
+    if json_body is not None:
+        kwargs["json"] = json_body
+
+    try:
+        response = request_func(url, verify=True, **kwargs)
+        return response, False
+    except requests.exceptions.SSLError:
+        response = request_func(url, verify=False, **kwargs)
+        return response, True
+
+
+def load_token_from_file(user_email: str = None) -> str:
+    """
+    Load JWT token from tokens.json file.
+
+    Args:
+        user_email: Email of user to get token for. If None, returns first available.
+
+    Returns:
+        JWT token string, or None if not found
+    """
+    tokens_file = Path(__file__).parent / "tokens.json"
+
+    if not tokens_file.exists():
+        print(f"Token file not found: {tokens_file}")
+        return None
+
+    try:
+        with open(tokens_file) as f:
+            tokens = json.load(f)
+
+        if user_email:
+            if user_email in tokens:
+                return tokens[user_email]
+            else:
+                print(f"Token not found for user: {user_email}")
+                print(f"Available users: {list(tokens.keys())}")
+                return None
+        else:
+            # Return first available token
+            if tokens:
+                first_key = list(tokens.keys())[0]
+                print(f"Using token for: {first_key}")
+                return tokens[first_key]
+            return None
+    except Exception as e:
+        print(f"Error loading tokens: {e}")
+        return None
+
+
+def get_or_generate_token(user_email: str = None, auto_generate: bool = False) -> str:
+    """
+    Get JWT token from file or generate new one.
+
+    Args:
+        user_email: Email of user to get token for
+        auto_generate: If True, generate new tokens if not found
+
+    Returns:
+        JWT token string, or None if not available
+    """
+    # Try loading from file first
+    token = load_token_from_file(user_email)
+    if token:
+        return token
+
+    # Auto-generate if requested and available
+    if auto_generate:
+        if generate_jwt_tokens is None:
+            print("Token generation not available (firebase-admin not installed)")
+            return None
+
+        print("Generating new tokens...")
+        tokens = generate_jwt_tokens(
+            environment="cloud",
+            terraform_dir=str(Path(__file__).parent / "terraform"),
+            user_type="free",
+            multi_free=True,
+        )
+
+        if tokens:
+            return load_token_from_file(user_email)
+
+    return None
+
+
+def test_fetch_last_experiment(workspace_id: str, token: str) -> dict:
+    """
+    Test lazy sync on workspace page load.
+
+    Calls GET /workflow/fetch/{workspace_id} which triggers ensure_synced_async
+    for the last experiment if its metadata is missing locally.
+    """
+    url = f"{get_api_base_url()}/workflow/fetch/{workspace_id}"
+    headers = get_auth_headers(token)
+    endpoint = "GET /workflow/fetch/{workspace_id}"
+
+    try:
+        print(f"Testing fetch_last_experiment for workspace {workspace_id}...")
+        response, ssl_warning = make_api_request("get", url, headers)
+
+        result = {"endpoint": endpoint, "workspace_id": workspace_id}
+        if ssl_warning:
+            result["warning"] = "SSL verification disabled"
+
+        if response.status_code == 200:
+            data = response.json()
+            result.update(
+                {
+                    "status": "success",
+                    "experiment_name": data.get("name", "unknown"),
+                    "unique_id": data.get("unique_id", "unknown"),
+                    "message": "Lazy sync triggered if metadata was missing",
+                }
+            )
+        elif response.status_code == 404:
+            result.update(
+                {
+                    "status": "no_experiment",
+                    "message": "No experiments found in workspace",
+                }
+            )
+        else:
+            result.update(
+                {
+                    "status": "error",
+                    "status_code": response.status_code,
+                    "response": response.text[:500],
+                }
+            )
+        return result
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def test_run_result(workspace_id: str, unique_id: str, token: str) -> dict:
+    """
+    Test lazy sync when viewing experiment results.
+
+    Calls POST /run/result/{workspace_id}/{uid} which triggers ensure_synced_async
+    before fetching results.
+    """
+    url = f"{get_api_base_url()}/run/result/{workspace_id}/{unique_id}"
+    headers = get_auth_headers(token)
+    body = {"pendingNodeIdList": []}
+    endpoint = "POST /run/result/{workspace_id}/{uid}"
+
+    try:
+        print(f"Testing run_result for {workspace_id}/{unique_id}...")
+        response, ssl_warning = make_api_request("post", url, headers, body)
+
+        result = {
+            "endpoint": endpoint,
+            "workspace_id": workspace_id,
+            "unique_id": unique_id,
+        }
+        if ssl_warning:
+            result["warning"] = "SSL verification disabled"
+
+        if response.status_code == 200:
+            result.update(
+                {
+                    "status": "success",
+                    "message": "Lazy sync triggered if metadata was missing",
+                }
+            )
+        elif response.status_code == 404:
+            result.update(
+                {
+                    "status": "not_found",
+                    "message": "Experiment not found (sync may have failed)",
+                }
+            )
+        else:
+            result.update(
+                {
+                    "status": "error",
+                    "status_code": response.status_code,
+                    "response": response.text[:500],
+                }
+            )
+        return result
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def test_experiment_rename(
+    workspace_id: str, unique_id: str, new_name: str, token: str
+) -> dict:
+    """
+    Test lazy sync on experiment rename.
+
+    Calls PATCH /experiments/{workspace_id}/{unique_id}/rename which triggers
+    ensure_synced_async before renaming.
+    """
+    url = f"{get_api_base_url()}/experiments/{workspace_id}/{unique_id}/rename"
+    headers = get_auth_headers(token)
+    body = {"new_name": new_name}
+    endpoint = "PATCH /experiments/{workspace_id}/{unique_id}/rename"
+
+    try:
+        print(f"Testing rename_experiment for {workspace_id}/{unique_id}...")
+        response, ssl_warning = make_api_request("patch", url, headers, body)
+
+        result = {
+            "endpoint": endpoint,
+            "workspace_id": workspace_id,
+            "unique_id": unique_id,
+        }
+        if ssl_warning:
+            result["warning"] = "SSL verification disabled"
+
+        if response.status_code == 200:
+            data = response.json()
+            result.update(
+                {
+                    "status": "success",
+                    "new_name": data.get("name", new_name),
+                    "message": "Lazy sync triggered if metadata was missing",
+                }
+            )
+        elif response.status_code == 404:
+            result.update(
+                {
+                    "status": "not_found",
+                    "message": "Experiment not found (sync may have failed)",
+                }
+            )
+        else:
+            result.update(
+                {
+                    "status": "error",
+                    "status_code": response.status_code,
+                    "response": response.text[:500],
+                }
+            )
+        return result
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def test_visualization_sync(workspace_id: str, unique_id: str, token: str) -> dict:
+    """
+    Test tiered visualization sync endpoint.
+
+    Calls POST /outputs/sync/{workspace_id}/{unique_id} which:
+    1. Downloads only JSON and TIFF files (sync_mode="visualization")
+    2. Triggers background task to download PKL/NWB files
+
+    This tests the new tiered sync approach for faster visualization loading.
+    """
+    url = f"{get_api_base_url()}/outputs/sync/{workspace_id}/{unique_id}"
+    headers = get_auth_headers(token)
+    endpoint = "POST /outputs/sync/{workspace_id}/{unique_id}"
+
+    try:
+        print(f"Testing visualization_sync for {workspace_id}/{unique_id}...")
+        response, ssl_warning = make_api_request("post", url, headers)
+
+        result = {
+            "endpoint": endpoint,
+            "workspace_id": workspace_id,
+            "unique_id": unique_id,
+        }
+        if ssl_warning:
+            result["warning"] = "SSL verification disabled"
+
+        if response.status_code == 200:
+            data = response.json()
+            result.update(
+                {
+                    "status": "success",
+                    "sync_result": data,
+                    "message": "Visualization sync triggered (JSON/TIFF downloaded, "
+                    "PKL/NWB in background)",
+                }
+            )
+        elif response.status_code == 404:
+            result.update(
+                {
+                    "status": "not_found",
+                    "message": "Experiment not found",
+                }
+            )
+        else:
+            result.update(
+                {
+                    "status": "error",
+                    "status_code": response.status_code,
+                    "response": response.text[:500],
+                }
+            )
+        return result
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+# =============================================================================
+# Automated End-to-End Tests
+# =============================================================================
+
+
+def find_user_and_experiment(email: str) -> dict:
+    """Find user by email and get their first experiment.
+
+    Common setup for test functions.
+
+    Returns:
+        Dict with user_id, workspace_id, unique_id, exp_name on success,
+        or dict with "error" and "step" keys on failure.
+    """
+    users = find_user_by_email(email)
+    if not users:
+        return {"error": f"User not found: {email}", "step": 1}
+
+    user = users[0]
+    user_id = user["id"]
+    print(f"      Found: {user['name']} (ID: {user_id})")
+
+    exp_result = list_experiments_for_user(user_id)
+    if exp_result.get("status") != "success":
+        return {"error": "Failed to list experiments", "step": 2}
+
+    workspaces = exp_result.get("workspaces", [])
+    for ws in workspaces:
+        experiments = ws.get("experiments", [])
+        if experiments:
+            return {
+                "user_id": user_id,
+                "workspace_id": ws["workspace_id"],
+                "unique_id": experiments[0]["unique_id"],
+                "exp_name": experiments[0]["name"],
+            }
+
+    return {"error": "No experiments found. Run an experiment first.", "step": 2}
+
+
+def run_test_lazy_sync(email: str) -> dict:
+    """
+    Automated end-to-end test for lazy sync across all endpoints.
+
+    Tests: fetch_last, run_result, rename (each clears files first)
+    """
+    print(f"\n{'='*60}")
+    print(f"LAZY SYNC TEST: {email}")
+    print(f"{'='*60}")
+
+    # Steps 1-2: Find user and experiment
+    print("\n[1/4] Finding user...")
+    print("\n[2/4] Finding experiments...")
+    setup = find_user_and_experiment(email)
+    if "error" in setup:
+        return {"status": "error", "step": setup["step"], "error": setup["error"]}
+
+    user_id = setup["user_id"]
+    workspace_id = setup["workspace_id"]
+    unique_id = setup["unique_id"]
+    exp_name = setup["exp_name"]
+    print(f"      Found: {exp_name} ({workspace_id}/{unique_id})")
+
+    # Step 3: Get token
+    print("\n[3/4] Loading token...")
+    token = load_token_from_file(email)
+    if not token:
+        token = get_or_generate_token(email, auto_generate=True)
+    if not token:
+        return {
+            "status": "error",
+            "step": 3,
+            "error": "No token. Run: python get_jwt_tokens.py --multi-free",
+        }
+    print("      Token loaded")
+
+    # Step 4: Test each endpoint
+    print("\n[4/4] Testing endpoints...")
+    ws_id = str(workspace_id)
+    results = {}
+
+    # Test 1: fetch_last_experiment
+    print("\n      [a] GET /workflow/fetch (fetch_last_experiment)")
+    clear_local_experiment(ws_id, unique_id)
+    result = test_fetch_last_experiment(ws_id, token)
+    results["fetch_last"] = result.get("status") == "success"
+    print(f"          {'PASS' if results['fetch_last'] else 'FAIL'}")
+
+    # Test 2: run_result
+    print("\n      [b] POST /run/result (run_result)")
+    clear_local_experiment(ws_id, unique_id)
+    result = test_run_result(ws_id, unique_id, token)
+    results["run_result"] = result.get("status") == "success"
+    print(f"          {'PASS' if results['run_result'] else 'FAIL'}")
+
+    # Test 3: rename (non-destructive)
+    print("\n      [c] PATCH /experiments/.../rename (rename_experiment)")
+    clear_local_experiment(ws_id, unique_id)
+    # Rename to same name (effectively a no-op but triggers sync)
+    result = test_experiment_rename(ws_id, unique_id, exp_name, token)
+    results["rename"] = result.get("status") == "success"
+    print(f"          {'PASS' if results['rename'] else 'FAIL'}")
+
+    # Test 4: visualization sync (tiered sync - JSON/TIFF first, PKL/NWB background)
+    print("\n      [d] POST /outputs/sync (visualization_sync)")
+    clear_local_visualization_files(ws_id, unique_id)
+    result = test_visualization_sync(ws_id, unique_id, token)
+    results["visualization_sync"] = result.get("status") == "success"
+    print(f"          {'PASS' if results['visualization_sync'] else 'FAIL'}")
+
+    # Summary
+    passed = sum(1 for v in results.values() if v)
+    total = len(results)
+
+    if passed == total:
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "workspace_id": workspace_id,
+            "unique_id": unique_id,
+            "results": results,
+            "message": f"Lazy sync test PASSED ({passed}/{total} endpoints)",
+        }
+    else:
+        return {
+            "status": "partial",
+            "user_id": user_id,
+            "results": results,
+            "message": f"Lazy sync test PARTIAL ({passed}/{total} endpoints)",
+        }
+
+
+def run_test_proactive_sync(email: str) -> dict:
+    """
+    Automated end-to-end test for proactive sync.
+
+    Steps: Find user/experiment, clear files, trigger sync, verify.
+    """
+    print(f"\n{'='*60}")
+    print(f"PROACTIVE SYNC TEST: {email}")
+    print(f"{'='*60}")
+
+    # Steps 1-2: Find user and experiment
+    print("\n[1/5] Finding user...")
+    print("\n[2/5] Finding experiments...")
+    setup = find_user_and_experiment(email)
+    if "error" in setup:
+        return {"status": "error", "step": setup["step"], "error": setup["error"]}
+
+    user_id = setup["user_id"]
+    workspace_id = setup["workspace_id"]
+    unique_id = setup["unique_id"]
+    exp_name = setup["exp_name"]
+    print(f"      Found: {exp_name} ({workspace_id}/{unique_id})")
+
+    # Step 3: Clear local files
+    print("\n[3/5] Clearing local experiment files...")
+    clear_result = clear_local_experiment(str(workspace_id), unique_id)
+    if "error" in clear_result:
+        return {"status": "error", "step": 3, "error": clear_result["error"]}
+
+    deleted = clear_result.get("deleted_files", [])
+    if not deleted:
+        print("      Warning: No files to clear (already missing?)")
+    else:
+        print(f"      Cleared: {', '.join(deleted)}")
+
+    # Step 4: Trigger proactive sync
+    print("\n[4/5] Triggering proactive sync...")
+    sync_result = trigger_proactive_sync(user_id)
+    if "error" in sync_result:
+        return {"status": "error", "step": 4, "error": sync_result["error"]}
+
+    print(f"      Sync initiated: {sync_result.get('status')}")
+
+    # Step 5: Verify files exist (wait a moment for background task)
+    print("\n[5/5] Verifying sync (waiting for background task)...")
+    time.sleep(2)  # Brief wait for background sync
+
+    output_dir = os.environ.get("OUTPUT_DIR", "/tmp/studio/output")
+    exp_yaml = os.path.join(output_dir, str(workspace_id), unique_id, "experiment.yaml")
+
+    if os.path.isfile(exp_yaml):
+        print("      Files synced successfully")
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "workspace_id": workspace_id,
+            "unique_id": unique_id,
+            "message": "Proactive sync test PASSED",
+        }
+    else:
+        print("      Files not yet synced (check logs for sync progress)")
+        return {
+            "status": "pending",
+            "user_id": user_id,
+            "message": "Sync initiated but files not yet present. Check logs.",
+        }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Test experiment data sync (run from inside ECS container)"
@@ -947,19 +1591,33 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
+    # Automated test commands
+    lazy_parser = subparsers.add_parser(
+        "test-lazy", help="Test lazy sync end-to-end (recommended)"
+    )
+    lazy_parser.add_argument("email", help="User email to test")
+
+    proactive_parser = subparsers.add_parser(
+        "test-proactive", help="Test proactive sync end-to-end"
+    )
+    proactive_parser.add_argument("email", help="User email to test")
+
     # Find user command
     find_parser = subparsers.add_parser("find-user", help="Find user by email")
     find_parser.add_argument("email", help="Email address (partial match)")
 
     # Status command
-    status_parser = subparsers.add_parser("status", help="Get user assignment status")
-    status_parser.add_argument("user_id", type=int, help="User ID to check")
-
-    # List instances command
-    subparsers.add_parser("list-instances", help="List all instances with user counts")
-
-    # ASG status command
-    subparsers.add_parser("asg-status", help="Show ASG capacity and instance status")
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Show system status (instances, ASG) and optionally user details",
+    )
+    status_parser.add_argument(
+        "user_id",
+        type=int,
+        nargs="?",
+        default=None,
+        help="User ID (optional - if provided, shows user info and experiments)",
+    )
 
     # Migrate command
     migrate_parser = subparsers.add_parser(
@@ -1015,7 +1673,33 @@ def main():
         sys.exit(1)
 
     # Execute command
-    if args.command == "find-user":
+    if args.command == "test-lazy":
+        result = run_test_lazy_sync(args.email)
+        print(f"\n{'='*60}")
+        if result["status"] == "success":
+            print(f"RESULT: {result['message']}")
+        elif result["status"] == "partial":
+            print(f"RESULT: {result['message']}")
+            for endpoint, passed in result.get("results", {}).items():
+                print(f"  {endpoint}: {'PASS' if passed else 'FAIL'}")
+        else:
+            print(f"RESULT: FAILED at step {result.get('step', '?')}")
+            print(f"Error: {result.get('error', 'Unknown')}")
+        print(f"{'='*60}\n")
+
+    elif args.command == "test-proactive":
+        result = run_test_proactive_sync(args.email)
+        print(f"\n{'='*60}")
+        if result["status"] == "success":
+            print(f"RESULT: {result['message']}")
+        elif result["status"] == "pending":
+            print(f"RESULT: {result['message']}")
+        else:
+            print(f"RESULT: FAILED at step {result.get('step', '?')}")
+            print(f"Error: {result.get('error', 'Unknown')}")
+        print(f"{'='*60}\n")
+
+    elif args.command == "find-user":
         users = find_user_by_email(args.email)
         print(f"\n=== Users matching '{args.email}' ===")
         if not users:
@@ -1030,66 +1714,83 @@ def main():
                 print()
 
     elif args.command == "status":
-        result = get_user_status(args.user_id)
-        print(f"\n=== User Status for ID {args.user_id} ===")
-        if "error" in result:
-            print(f"Error: {result['error']}")
-        else:
-            user = result["user"]
-            print(f"Name: {user['name']}")
-            print(f"Email: {user['email']}")
-
-            assignment = result["assignment"]
-            if assignment:
-                print(f"\nInstance: {assignment['instance_id']}")
-                print(f"Last Activity: {assignment['last_activity']}")
-                print(f"Migration Count: {assignment['migration_count']}")
-                print(f"Active Workflows: {assignment['active_workflow_count']}")
+        # If user_id provided, show user info first
+        if args.user_id:
+            result = get_user_status(args.user_id)
+            print(f"\n=== User Status for ID {args.user_id} ===")
+            if "error" in result:
+                print(f"Error: {result['error']}")
             else:
-                print("\nNo free tier assignment found")
+                user = result["user"]
+                print(f"Name: {user['name']}")
+                print(f"Email: {user['email']}")
 
-    elif args.command == "list-instances":
+                assignment = result["assignment"]
+                if assignment:
+                    print(f"\nAssigned Instance: {assignment['instance_id']}")
+                    print(f"Last Activity: {assignment['last_activity']}")
+                    print(f"Migration Count: {assignment['migration_count']}")
+                    print(f"Active Workflows: {assignment['active_workflow_count']}")
+                else:
+                    print("\nNo free tier assignment found")
+
+                # Show workspaces and experiments
+                exp_result = list_experiments_for_user(args.user_id)
+                if exp_result.get("status") == "success":
+                    workspaces = exp_result.get("workspaces", [])
+                    if workspaces:
+                        print("\n=== Workspaces & Experiments ===")
+                        for ws in workspaces:
+                            ws_name = ws["workspace_name"]
+                            ws_id = ws["workspace_id"]
+                            print(f"\nWorkspace: {ws_name} (ID: {ws_id})")
+                            experiments = ws.get("experiments", [])
+                            if experiments:
+                                for exp in experiments:
+                                    print(f"  - {exp['name']}")
+                                    print(f"    unique_id: {exp['unique_id']}")
+                            else:
+                                print("  (no experiments)")
+                    else:
+                        print("\nNo workspaces found")
+
+        # Always show instance and ASG status
         instances = list_instances()
-        print("\n=== Instances with User Counts (from DB) ===")
+        print("\n=== Instances with User Counts ===")
         if not instances:
             print("No instances found")
         else:
             for inst in instances:
                 print(
-                    f"{inst['instance_id']}: "
+                    f"  {inst['instance_id']}: "
                     f"{inst['user_count']} users, "
-                    f"latest activity: {inst['latest_activity']}"
+                    f"latest: {inst['latest_activity']}"
                 )
 
-    elif args.command == "asg-status":
         print("\n=== ASG Status ===")
         asg_status = get_asg_status()
         if "error" in asg_status:
             print(f"Error: {asg_status['error']}")
         else:
-            print(f"ASG Name: {asg_status['asg_name']}")
-            print(f"Desired Capacity: {asg_status['desired_capacity']}")
-            print(f"Min/Max Size: {asg_status['min_size']}/{asg_status['max_size']}")
-            print(f"Healthy Instances: {asg_status['healthy_count']}")
-            print("\nInstances:")
+            desired = asg_status["desired_capacity"]
+            min_s = asg_status["min_size"]
+            max_s = asg_status["max_size"]
+            print(f"Desired/Min/Max: {desired}/{min_s}/{max_s}")
+            print(f"Healthy: {asg_status['healthy_count']}")
             for inst in asg_status["instances"]:
-                health = "✓" if inst["health_status"] == "Healthy" else "✗"
-                print(
-                    f"{inst['instance_id']}: "
-                    f"{inst['lifecycle_state']} ({health} {inst['health_status']})"
-                )
+                health = "OK" if inst["health_status"] == "Healthy" else "FAIL"
+                iid = inst["instance_id"]
+                state = inst["lifecycle_state"]
+                print(f"  {iid}: {state} ({health})")
 
-        print("\n=== ECS Service Status ===")
+        print("\n=== ECS Service ===")
         ecs_status = get_ecs_service_status()
         if "error" in ecs_status:
             print(f"Error: {ecs_status['error']}")
         else:
-            print(f"Cluster: {ecs_status['cluster']}")
-            print(f"Service: {ecs_status['service']}")
-            print(f"Desired Tasks: {ecs_status['desired_count']}")
-            print(f"Running Tasks: {ecs_status['running_count']}")
-            print(f"Pending Tasks: {ecs_status['pending_count']}")
-            print(f"Service Status: {ecs_status['status']}")
+            running = ecs_status["running_count"]
+            pending = ecs_status["pending_count"]
+            print(f"Tasks: {running} running, {pending} pending")
 
     elif args.command == "migrate":
         target_display = args.target_instance or "(auto-select)"

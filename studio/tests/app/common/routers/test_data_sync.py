@@ -408,9 +408,9 @@ class TestLazySync:
                 "workspace1", "exp1", "test-bucket"
             )
 
-            # Should have tried to sync
-            mock_reader.download_all_experiments_metas.assert_called_once_with(
-                ["workspace1"]
+            # Should have tried to sync the specific experiment
+            mock_reader.download_experiment_meta.assert_called_once_with(
+                "workspace1", "exp1"
             )
             # Result depends on whether file exists after sync (mock returns False)
             assert result is False  # File doesn't exist after mock sync

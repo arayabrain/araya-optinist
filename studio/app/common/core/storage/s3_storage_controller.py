@@ -583,7 +583,10 @@ class S3StorageController(BaseRemoteStorageController):
         Args:
             workspace_id: Workspace identifier
             unique_id: Unique experiment identifier
-            sync_mode: 'all' or 'essential_only' (need for dataview)
+            sync_mode:
+                - 'all': sync everything (default)
+                - 'essential_only': skip large files, sync yaml/json (for dataview)
+                - 'visualization': sync only json and tiff (for viewing results)
 
         Returns:
             True if download successful, False otherwise

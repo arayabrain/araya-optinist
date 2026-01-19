@@ -3,19 +3,120 @@ from glob import glob
 from typing import Optional
 
 import pandas as pd
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks, Depends
 
+from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
+from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteStorageController,
+    RemoteStorageReader,
+    RemoteSyncStatusFileUtil,
+)
 from studio.app.common.core.utils.file_reader import JsonReader, Reader
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
 )
 from studio.app.common.core.utils.json_writer import JsonWriter, save_tiff2json
+from studio.app.common.core.workspace.workspace_dependencies import (
+    is_workspace_available,
+)
 from studio.app.common.schemas.outputs import JsonTimeSeriesData, OutputData
 from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT
 from studio.app.dir_path import DIRPATH
 
 router = APIRouter(prefix="/outputs", tags=["outputs"])
+
+logger = AppLogger.get_logger()
+
+
+async def _background_full_sync(
+    remote_bucket_name: str, workspace_id: str, unique_id: str
+) -> None:
+    """
+    Background task to download remaining experiment files (PKL, NWB) after
+    visualization files have been loaded. This prepares the experiment for
+    Edit ROI without blocking the user.
+    """
+    try:
+        # Check if full sync is still needed
+        is_unsynced = RemoteSyncStatusFileUtil.check_sync_status_unsynced(
+            workspace_id, unique_id
+        )
+
+        if not is_unsynced:
+            logger.debug(
+                f"Background sync skipped - already synced: {workspace_id}/{unique_id}"
+            )
+            return
+
+        logger.info(f"Background full sync starting for {workspace_id}/{unique_id}")
+
+        async with RemoteStorageReader(
+            remote_bucket_name, workspace_id, unique_id
+        ) as remote_storage_controller:
+            await remote_storage_controller.download_experiment(
+                workspace_id, unique_id, sync_mode="all"
+            )
+
+        logger.info(f"Background full sync completed for {workspace_id}/{unique_id}")
+
+    except Exception as e:
+        # Log but don't raise - this is a background task
+        logger.warning(
+            f"Background full sync failed for {workspace_id}/{unique_id}: {e}"
+        )
+
+
+@router.post(
+    "/sync/{workspace_id}/{unique_id}",
+    response_model=bool,
+    dependencies=[Depends(is_workspace_available)],
+    description="""
+    Sync visualization files (JSON, TIFF) from S3 for viewing experiment results.
+    Call this before loading visualization data to ensure files are available locally.
+    Only syncs files needed for visualization, not large PKL/NWB files.
+    Automatically triggers background sync for remaining files (PKL/NWB) for Edit ROI.
+    """,
+)
+async def sync_visualization_files(
+    workspace_id: str,
+    unique_id: str,
+    background_tasks: BackgroundTasks,
+    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+) -> bool:
+    """
+    Lazy-load visualization files from S3.
+    Downloads only JSON and TIFF files needed for viewing results.
+    Then triggers background download of PKL/NWB files for Edit ROI.
+    """
+    if not RemoteStorageController.is_available():
+        return True  # No remote storage, files should be local
+
+    # Check if sync is needed
+    is_unsynced = RemoteSyncStatusFileUtil.check_sync_status_unsynced(
+        workspace_id, unique_id
+    )
+
+    if not is_unsynced:
+        return True  # Already fully synced
+
+    logger.info(f"Syncing visualization files for {workspace_id}/{unique_id} from S3")
+
+    async with RemoteStorageReader(
+        remote_bucket_name, workspace_id, unique_id
+    ) as remote_storage_controller:
+        result = await remote_storage_controller.download_experiment(
+            workspace_id, unique_id, sync_mode="visualization"
+        )
+
+    # Trigger background task to download remaining files (PKL/NWB)
+    # This prepares Edit ROI while user is viewing results
+    background_tasks.add_task(
+        _background_full_sync, remote_bucket_name, workspace_id, unique_id
+    )
+
+    return result
 
 
 def get_initial_timeseries_data(dirpath) -> JsonTimeSeriesData:

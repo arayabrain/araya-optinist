@@ -115,20 +115,10 @@ async def reproduce_experiment(
             experiment_config = ExptConfigReader.read(workspace_id, unique_id)
             workflow_config = WorkflowConfigReader.read(workspace_id, unique_id)
 
-            # sync unsynced remote storage data.
-            is_remote_synced = False
-            if RemoteStorageController.is_available():
-                is_remote_synced = await force_sync_unsynced_experiment(
-                    remote_bucket_name,
-                    workspace_id,
-                    unique_id,
-                    experiment_config.success,
-                )
-
             return WorkflowWithResults(
                 **asdict(experiment_config),
                 **asdict(workflow_config),
-                is_remote_synced=is_remote_synced,
+                is_remote_synced=True,
             )
         else:
             raise HTTPException(

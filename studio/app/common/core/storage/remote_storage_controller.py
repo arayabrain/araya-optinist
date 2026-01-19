@@ -571,7 +571,24 @@ class RemoteStorageController(BaseRemoteStorageController):
         """
         return await self.__controller.download_experiment_meta(workspace_id, unique_id)
 
-    async def download_experiment(self, workspace_id: str, unique_id: str) -> bool:
+    async def download_experiment(
+        self, workspace_id: str, unique_id: str, sync_mode: str = "all"
+    ) -> bool:
+        """
+        Download experiment from remote storage.
+
+        Args:
+            workspace_id: Workspace identifier
+            unique_id: Experiment identifier
+            sync_mode: 'all' (full sync), 'visualization' (json/tiff only),
+                       or 'essential_only' (yaml/json only)
+
+        Note: Only sync_mode='all' updates the sync status file and downloads
+        input data. Partial syncs (visualization, essential_only) leave the
+        status unchanged so that a full sync can still be triggered later.
+        """
+        is_full_sync = sync_mode == "all"
+
         sync_status_params = {
             "remote_bucket_name": self.bucket_name,
             "workspace_id": workspace_id,
@@ -581,32 +598,36 @@ class RemoteStorageController(BaseRemoteStorageController):
         result = False
 
         try:
-            # create sync status file
-            RemoteSyncStatusFileUtil.create_sync_status_file_for_processing(
-                **sync_status_params
-            )
+            # Only update sync status for full syncs
+            if is_full_sync:
+                RemoteSyncStatusFileUtil.create_sync_status_file_for_processing(
+                    **sync_status_params
+                )
 
             # download experiment data
             result = await self.__controller.download_experiment(
-                workspace_id, unique_id
+                workspace_id, unique_id, sync_mode=sync_mode
             )
 
-            # download input data
-            # *Download the input data related to the experiment data as well.
-            input_filenames = SmkUtils.get_datatypes_inputs(
-                workspace_id, unique_id, apply_basename=True
-            )
-            for input_filename in input_filenames:
-                await self.download_input_data(workspace_id, input_filename)
+            # Only download input data and mark success for full syncs
+            if is_full_sync:
+                # Download the input data related to the experiment data as well.
+                input_filenames = SmkUtils.get_datatypes_inputs(
+                    workspace_id, unique_id, apply_basename=True
+                )
+                for input_filename in input_filenames:
+                    await self.download_input_data(workspace_id, input_filename)
 
-            # update sync status file
-            RemoteSyncStatusFileUtil.create_sync_status_file_for_success(
-                **sync_status_params
-            )
+                # update sync status file
+                RemoteSyncStatusFileUtil.create_sync_status_file_for_success(
+                    **sync_status_params
+                )
         except Exception as e:
-            RemoteSyncStatusFileUtil.create_sync_status_file_for_error(
-                **sync_status_params
-            )
+            # Only update error status for full syncs
+            if is_full_sync:
+                RemoteSyncStatusFileUtil.create_sync_status_file_for_error(
+                    **sync_status_params
+                )
             raise e
 
         return result
