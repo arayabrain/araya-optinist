@@ -685,21 +685,21 @@ markers = {main = "platform_system == \"Windows\" or sys_platform == \"win32\"",
 
 [[package]]
 name = "concurrent-log-handler"
-version = "0.9.26"
+version = "0.9.28"
 description = "RotatingFileHandler replacement with concurrency, gzip and Windows support. Size and time based rotation."
 optional = false
 python-versions = ">=3.6"
 groups = ["main"]
 files = [
-    {file = "concurrent_log_handler-0.9.26-py3-none-any.whl", hash = "sha256:0b03a8f1dcb1a03ad292647ee4930b3f9ba2bdb45e55bf2699d2c053f8e6531f"},
-    {file = "concurrent_log_handler-0.9.26.tar.gz", hash = "sha256:8f22bf79724a0152b9e97d9c2dcf4ecb339607c80bf312f68066070243006b49"},
+    {file = "concurrent_log_handler-0.9.28-py3-none-any.whl", hash = "sha256:65db25d05506651a61573937880789fc51c7555e7452303042b5a402fd78939c"},
+    {file = "concurrent_log_handler-0.9.28.tar.gz", hash = "sha256:4cc27969b3420239bd153779266f40d9713ece814e312b7aa753ce62c6eacdb8"},
 ]
 
 [package.dependencies]
 portalocker = ">=1.6.0"
 
 [package.extras]
-dev = ["black", "coverage", "hatch", "pytest", "pytest-cov", "pytest-sugar", "ruff"]
+dev = ["black", "coverage", "hatch", "pytest", "pytest-cov", "pytest-mock", "pytest-sugar", "ruff"]
 
 [[package]]
 name = "configargparse"
@@ -5387,4 +5387,4 @@ testing = ["big-O", "jaraco.functools", "jaraco.itertools", "more-itertools", "p
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.9"
-content-hash = "8805551f52eba2f780462dcacd815ab7d74a198cbb6b842b27050f399a262173"
+content-hash = "72d201223876d0a3a9ec2f439a9763479a89dc810ab395e6522a73f860c73e2d"
