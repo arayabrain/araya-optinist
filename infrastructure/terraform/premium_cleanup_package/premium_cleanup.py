@@ -18,17 +18,19 @@ Coordinates with premium_manager which handles all compute/capacity decisions.
 
 import json
 import os
-import sys
 import time
 from typing import Any, Dict, List
 
 import boto3
 import pymysql
 
-# Add parent directory to path for shared imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
-
-from aws_constants import ECSTaskStatus  # noqa: E402
+# Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
+from aws_constants import (
+    DatabaseConfig,
+    ECSTaskStatus,
+    PremiumInstanceConfig,
+    RoutingHeaders,
+)
 
 
 def get_required_env_var(var_name: str, default_value: str = None) -> str:
@@ -63,7 +65,7 @@ def get_db_connection(auto_commit=False):
             rds_host = get_required_env_var("RDS_HOST")
             conn = pymysql.connect(
                 host=rds_host.split(":")[0],
-                port=int(rds_host.split(":")[1]) if ":" in rds_host else 3306,
+                port=int(rds_host.split(":")[1]) if ":" in rds_host else DatabaseConfig.DEFAULT_PORT,
                 user=get_required_env_var("RDS_USER"),
                 password=get_required_env_var("RDS_PASSWORD"),
                 database=get_required_env_var("RDS_DATABASE"),
@@ -142,10 +144,9 @@ def check_instance_readiness(instance_id: str) -> bool:
         )
 
         for task in task_details["tasks"]:
-            if (
-                task.get("taskDefinitionArn", "").find("premium") != -1
-                and task.get("lastStatus") == ECSTaskStatus.RUNNING
-            ):
+            task_def_arn = task.get("taskDefinitionArn", "")
+            is_premium_task = task_def_arn.find(PremiumInstanceConfig.INSTANCE_IDENTIFIER) != -1
+            if is_premium_task and task.get("lastStatus") == ECSTaskStatus.RUNNING:
                 print(f"Premium task running and ready on instance {instance_id}")
                 return True
 
@@ -275,20 +276,22 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
                 continue
 
             # Check if rule has premium user conditions
-            # (X-User-ID and X-User-Tier headers)
+            # (X-Routing-ID and X-User-Tier headers)
             conditions = rule.get("Conditions", [])
-            has_user_id = any(
+            has_routing_id = any(
                 c.get("Field") == "http-header"
-                and c.get("HttpHeaderConfig", {}).get("HttpHeaderName") == "X-User-ID"
+                and c.get("HttpHeaderConfig", {}).get("HttpHeaderName")
+                == RoutingHeaders.ROUTING_ID
                 for c in conditions
             )
             has_user_tier = any(
                 c.get("Field") == "http-header"
-                and c.get("HttpHeaderConfig", {}).get("HttpHeaderName") == "X-User-Tier"
+                and c.get("HttpHeaderConfig", {}).get("HttpHeaderName")
+                == RoutingHeaders.USER_TIER
                 for c in conditions
             )
 
-            if has_user_id and has_user_tier:
+            if has_routing_id and has_user_tier:
                 premium_rules.append(rule)
 
         print(f"Found {len(premium_rules)} premium user ALB rules")
@@ -392,7 +395,7 @@ def get_all_premium_instances_with_states():
                     "Name": "instance-state-name",
                     "Values": ["pending", "running", "stopping", "stopped"],
                 },
-                # Use OR logic: either Name contains "premium" OR Tier tag is "premium"
+                # Use OR logic: Name/Tier/Type tags contain premium identifier
             ]
         )
 
@@ -404,9 +407,9 @@ def get_all_premium_instances_with_states():
             instance_id = instance["InstanceId"]
 
             # Check multiple criteria for premium instances
-            name_match = "premium" in tags.get("Name", "").lower()
-            tier_match = tags.get("Tier", "").lower() == "premium"
-            type_match = "premium" in tags.get("Type", "").lower()
+            name_match = PremiumInstanceConfig.INSTANCE_IDENTIFIER in tags.get("Name", "").lower()
+            tier_match = tags.get("Tier", "").lower() == PremiumInstanceConfig.INSTANCE_IDENTIFIER
+            type_match = PremiumInstanceConfig.INSTANCE_IDENTIFIER in tags.get("Type", "").lower()
 
             # Debug logging for tag matching
             print(f"Instance {instance_id} tag analysis:")

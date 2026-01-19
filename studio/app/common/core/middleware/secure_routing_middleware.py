@@ -31,6 +31,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jwt
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
+from studio.app.common.core.subscription.constants import SubscriptionPlanIds
 
 logger = AppLogger.get_logger()
 
@@ -107,6 +108,8 @@ def get_user_tier_cached(uid: str) -> str:
             return tier
 
     # Cache miss - query database
+    # Note: Some imports inside function to avoid circular imports at module load time
+    # (SubscriptionService, get_db, User have dependencies that could cause cycles)
     try:
         from studio.app.common.core.subscription.subscription_service import (
             SubscriptionService,
@@ -123,8 +126,10 @@ def get_user_tier_cached(uid: str) -> str:
             # Check if user has active subscription
             subscription_data = SubscriptionService.get_user_subscription(db, user.id)
             if subscription_data:
-                subscription, plan = subscription_data
-                tier = "premium" if plan.id == 2 else "free"  # plan_id 2 = premium
+                _, plan = subscription_data
+                tier = (
+                    "premium" if plan.id == SubscriptionPlanIds.PREMIUM else "free"
+                )
             else:
                 tier = "free"
 
