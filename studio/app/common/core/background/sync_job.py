@@ -317,7 +317,7 @@ class PublishedExperimentSyncJob:
         try:
             import boto3
 
-            cloudwatch = boto3.client("cloudwatch")
+            cloudwatch: "CloudWatchClient" = boto3.client("cloudwatch")
             cloudwatch.put_metric_data(
                 Namespace="OptiNiSt/BackgroundJobs",
                 MetricData=[
@@ -347,7 +347,7 @@ class PublishedExperimentSyncJob:
         try:
             import boto3
 
-            cloudwatch = boto3.client("cloudwatch")
+            cloudwatch: "CloudWatchClient" = boto3.client("cloudwatch")
 
             cloudwatch.put_metric_data(
                 Namespace="OptiNiSt/BackgroundJobs",

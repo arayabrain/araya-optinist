@@ -95,7 +95,7 @@ class S3StorageMonitor:
             logger.info(f"Checking S3 storage for user {user_id} across all workspaces")
 
             # Create sync S3 client for boto3 operations
-            s3_client = boto3.client("s3")
+            s3_client: "S3Client" = boto3.client("s3")
 
             # Check both input and output directories for each workspace
             for workspace_id in workspace_ids:
@@ -238,7 +238,7 @@ class S3StorageMonitor:
             )
 
             # Create S3 client with explicit lifecycle management
-            s3_client = boto3.client("s3")
+            s3_client: "S3Client" = boto3.client("s3")
 
             # Check both input and output directories for each workspace
             for workspace_id in workspace_ids:

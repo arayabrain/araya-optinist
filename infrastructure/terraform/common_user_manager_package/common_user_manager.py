@@ -332,7 +332,7 @@ def check_premium_user_inactivity() -> Dict[str, int]:
                 "PREMIUM_IDLE_TIMEOUT_HOURS", str(PREMIUM_IDLE_TIMEOUT_HOURS_DEFAULT)
             )
         )
-        elbv2 = boto3.client("elbv2")
+        elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
 
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
