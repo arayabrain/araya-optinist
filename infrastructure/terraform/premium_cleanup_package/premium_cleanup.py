@@ -20,10 +20,16 @@ import json
 import os
 import sys
 import time
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 
 import boto3
 import pymysql
+
+if TYPE_CHECKING:
+    from mypy_boto3_ec2 import EC2Client
+    from mypy_boto3_ecs import ECSClient
+    from mypy_boto3_elbv2 import ElasticLoadBalancingv2Client
+    from mypy_boto3_lambda import LambdaClient
 
 # Add parent directory to path for shared imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))

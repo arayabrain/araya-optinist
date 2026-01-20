@@ -7,7 +7,10 @@ Runs every 5 minutes, downloads experiments with local_sync_status='pending'.
 import asyncio
 import os
 from datetime import datetime
-from typing import List, Tuple
+from typing import TYPE_CHECKING, List, Tuple
+
+if TYPE_CHECKING:
+    from mypy_boto3_cloudwatch import CloudWatchClient
 
 from filelock import FileLock, Timeout
 from sqlmodel import select

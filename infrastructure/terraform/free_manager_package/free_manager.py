@@ -40,9 +40,15 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 
 import boto3
+
+if TYPE_CHECKING:
+    from mypy_boto3_autoscaling import AutoScalingClient
+    from mypy_boto3_cloudwatch import CloudWatchClient
+    from mypy_boto3_ec2 import EC2Client
+    from mypy_boto3_ecs import ECSClient
 
 # Add parent directory to path for shared imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
@@ -83,10 +89,10 @@ def get_required_env_var(var_name: str, default_value: str = None) -> str:
 
 
 # Initialize AWS clients
-ecs_client = boto3.client("ecs")
-autoscaling_client = boto3.client("autoscaling")
-cloudwatch_client = boto3.client("cloudwatch")
-ec2_client = boto3.client("ec2")
+ecs_client: "ECSClient" = boto3.client("ecs")
+autoscaling_client: "AutoScalingClient" = boto3.client("autoscaling")
+cloudwatch_client: "CloudWatchClient" = boto3.client("cloudwatch")
+ec2_client: "EC2Client" = boto3.client("ec2")
 
 
 def handler(event, context):

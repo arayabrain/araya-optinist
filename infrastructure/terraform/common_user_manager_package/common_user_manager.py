@@ -14,11 +14,14 @@ import json
 import os
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict
 
 import boto3
 import pymysql
 from aws_constants import SubscriptionType
+
+if TYPE_CHECKING:
+    from mypy_boto3_elbv2 import ElasticLoadBalancingv2Client
 from sqlalchemy import (
     TIMESTAMP,
     Column,

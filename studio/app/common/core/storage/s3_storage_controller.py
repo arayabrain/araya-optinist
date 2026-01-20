@@ -2,9 +2,13 @@ import asyncio
 import os
 import re
 from subprocess import CalledProcessError
+from typing import TYPE_CHECKING
 
 import aioboto3
 import boto3
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.file_filter import FileSyncFilter

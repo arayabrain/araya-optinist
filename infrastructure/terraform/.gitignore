@@ -1,10 +1,1 @@
 # Ignore pymysql packages
-
-# Ignore old Terraform-generated app_setup.sh
-# The static version is now in infrastructure/scripts/app_setup.sh
-app_setup.sh
-
-common_user_manager_package/aws_constants.py
-free_manager_package/aws_constants.py
-premium_manager_package/aws_constants.py
-premium_cleanup_package/aws_constants.py

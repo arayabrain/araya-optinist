@@ -6,9 +6,12 @@ Monitors S3 storage usage and generates alerts when thresholds are exceeded.
 import asyncio
 import os
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import boto3
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
 
 from studio.app.common.core.cloud.cloud_utils import (
     get_user_storage_usage,
