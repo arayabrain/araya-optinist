@@ -74,3 +74,12 @@ export const PremiumTiming = {
   // Interval for updating the countdown display (in milliseconds)
   WARNING_UPDATE_INTERVAL_MS: 60 * 1000, // 1 minute
 } as const
+
+// HTTP header names for ALB routing
+// These headers are used to route premium users to their dedicated instances
+export const RoutingHeaders = {
+  // Secure, non-reversible routing token (HMAC-SHA256)
+  ROUTING_ID: "X-Routing-ID",
+  // User subscription tier indicator
+  USER_TIER: "X-User-Tier",
+} as const

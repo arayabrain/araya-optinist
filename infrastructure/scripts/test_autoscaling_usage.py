@@ -91,6 +91,11 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+# Add parent directory for shared infrastructure imports
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+from aws_constants import DatabaseConfig  # noqa: E402
+
 # Import token generation utilities
 try:
     from get_jwt_tokens import generate_jwt_tokens
@@ -330,7 +335,7 @@ class AutoscalingUsageTest:
 
         return pymysql.connect(
             host=self.config.db_host,
-            port=3306,
+            port=DatabaseConfig.DEFAULT_PORT,
             user=self.config.db_user,
             password=self.config.db_password,
             database=self.config.db_name,

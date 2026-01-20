@@ -18,20 +18,27 @@ Coordinates with premium_manager which handles all compute/capacity decisions.
 
 import json
 import os
-import sys
 import time
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 
 import boto3
 import pymysql
 
-# Add parent directory to path for shared imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+# Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
+from aws_constants import (
+    DatabaseConfig,
+    ECSTaskStatus,
+    PremiumInstanceConfig,
+    RoutingHeaders,
+)
 
-from aws_constants import ECSTaskStatus  # noqa: E402
+if TYPE_CHECKING:
+    from mypy_boto3_ec2 import EC2Client
+    from mypy_boto3_ecs import ECSClient
+    from mypy_boto3_elbv2 import ElasticLoadBalancingv2Client
 
 
-def get_required_env_var(var_name: str, default_value: str = None) -> str:
+def get_required_env_var(var_name: str, default_value: str | None = None) -> str:
     """Safely get required environment variable with helpful error message"""
     value = os.environ.get(var_name, default_value)
     if value is None or value == "":
@@ -63,7 +70,9 @@ def get_db_connection(auto_commit=False):
             rds_host = get_required_env_var("RDS_HOST")
             conn = pymysql.connect(
                 host=rds_host.split(":")[0],
-                port=int(rds_host.split(":")[1]) if ":" in rds_host else 3306,
+                port=int(rds_host.split(":")[1])
+                if ":" in rds_host
+                else DatabaseConfig.DEFAULT_PORT,
                 user=get_required_env_var("RDS_USER"),
                 password=get_required_env_var("RDS_PASSWORD"),
                 database=get_required_env_var("RDS_DATABASE"),
@@ -123,7 +132,7 @@ def get_assigned_users_for_instance(instance_id: str) -> List[str]:
 
 def check_instance_readiness(instance_id: str) -> bool:
     """Check if an instance has a running ECS task and is ready for user assignment"""
-    ecs = boto3.client("ecs")
+    ecs: "ECSClient" = boto3.client("ecs")
     cluster_name = get_required_env_var("CLUSTER_NAME")
 
     try:
@@ -142,10 +151,11 @@ def check_instance_readiness(instance_id: str) -> bool:
         )
 
         for task in task_details["tasks"]:
-            if (
-                task.get("taskDefinitionArn", "").find("premium") != -1
-                and task.get("lastStatus") == ECSTaskStatus.RUNNING
-            ):
+            task_def_arn = task.get("taskDefinitionArn", "")
+            is_premium_task = (
+                task_def_arn.find(PremiumInstanceConfig.INSTANCE_IDENTIFIER) != -1
+            )
+            if is_premium_task and task.get("lastStatus") == ECSTaskStatus.RUNNING:
                 print(f"Premium task running and ready on instance {instance_id}")
                 return True
 
@@ -196,7 +206,7 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
             print(f"Found {len(stale_assignments)} stale assignments to clean")
 
             # Clean up AWS resources for each stale assignment
-            elbv2 = boto3.client("elbv2")
+            elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
             cleaned_count = 0
 
             for assignment in stale_assignments:
@@ -261,7 +271,7 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
     try:
         print("Scanning for orphaned ALB resources...")
 
-        elbv2 = boto3.client("elbv2")
+        elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
         alb_listener_arn = get_required_env_var("ALB_LISTENER_ARN")
 
         # Get all ALB listener rules
@@ -275,20 +285,22 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
                 continue
 
             # Check if rule has premium user conditions
-            # (X-User-ID and X-User-Tier headers)
+            # (X-Routing-ID and X-User-Tier headers)
             conditions = rule.get("Conditions", [])
-            has_user_id = any(
+            has_routing_id = any(
                 c.get("Field") == "http-header"
-                and c.get("HttpHeaderConfig", {}).get("HttpHeaderName") == "X-User-ID"
+                and c.get("HttpHeaderConfig", {}).get("HttpHeaderName")
+                == RoutingHeaders.ROUTING_ID
                 for c in conditions
             )
             has_user_tier = any(
                 c.get("Field") == "http-header"
-                and c.get("HttpHeaderConfig", {}).get("HttpHeaderName") == "X-User-Tier"
+                and c.get("HttpHeaderConfig", {}).get("HttpHeaderName")
+                == RoutingHeaders.USER_TIER
                 for c in conditions
             )
 
-            if has_user_id and has_user_tier:
+            if has_routing_id and has_user_tier:
                 premium_rules.append(rule)
 
         print(f"Found {len(premium_rules)} premium user ALB rules")
@@ -383,7 +395,7 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
 
 def get_all_premium_instances_with_states():
     """Get all premium instances with their AWS states (copied from premium_manager)"""
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
     try:
         # Get instances with premium tags (use multiple filters for robust discovery)
         response = ec2.describe_instances(
@@ -392,7 +404,7 @@ def get_all_premium_instances_with_states():
                     "Name": "instance-state-name",
                     "Values": ["pending", "running", "stopping", "stopped"],
                 },
-                # Use OR logic: either Name contains "premium" OR Tier tag is "premium"
+                # Use OR logic: Name/Tier/Type tags contain premium identifier
             ]
         )
 
@@ -404,9 +416,18 @@ def get_all_premium_instances_with_states():
             instance_id = instance["InstanceId"]
 
             # Check multiple criteria for premium instances
-            name_match = "premium" in tags.get("Name", "").lower()
-            tier_match = tags.get("Tier", "").lower() == "premium"
-            type_match = "premium" in tags.get("Type", "").lower()
+            name_match = (
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                in tags.get("Name", "").lower()
+            )
+            tier_match = (
+                tags.get("Tier", "").lower()
+                == PremiumInstanceConfig.INSTANCE_IDENTIFIER
+            )
+            type_match = (
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                in tags.get("Type", "").lower()
+            )
 
             # Debug logging for tag matching
             print(f"Instance {instance_id} tag analysis:")
@@ -461,7 +482,7 @@ def get_standby_pool_status() -> Dict[str, Any]:
         # Use dynamic tag-based discovery instead of hardcoded list
         all_instances = get_all_premium_instances_with_states()
 
-        status = {
+        status: Dict[str, Any] = {
             "total_instances": len(all_instances),
             "running": 0,
             "stopped": 0,
@@ -711,7 +732,7 @@ def cleanup_test_user_assignments(connection, user_emails: List[str]) -> Dict[st
             print(f"Found {len(assignments)} assignments to clean up")
 
             # Clean up AWS resources for each assignment
-            elbv2 = boto3.client("elbv2")
+            elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
             cleaned_count = 0
 
             for assignment in assignments:
@@ -801,7 +822,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         # Otherwise, proceed with normal scheduled cleanup
         # Initialize results
-        results = {
+        results: Dict[str, Any] = {
             "cleanup_stats": {},
             "orphaned_cleanup_stats": {},
             "reconciliation_stats": {},

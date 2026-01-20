@@ -294,15 +294,53 @@ VALUES ($PREMIUM_PLAN_ID, $DEFAULT_USER_ID, DATE_ADD(NOW(), INTERVAL $ADMIN_SUBS
 
 INIT_SQL
 
-# Substitute variables in SQL file
-sed -i "s/\${MYSQL_USER}/$MYSQL_USER/g" "$DB_INIT_SQL_FILE"
-sed -i "s/\${MYSQL_PASSWORD}/$MYSQL_PASSWORD/g" "$DB_INIT_SQL_FILE"
-sed -i "s/\${MYSQL_DATABASE}/$MYSQL_DATABASE/g" "$DB_INIT_SQL_FILE"
-sed -i "s/\${OPTINIST_ORG_NAME}/$OPTINIST_ORG_NAME/g" "$DB_INIT_SQL_FILE"
-sed -i "s/\${OPTINIST_ADMIN_UID}/$OPTINIST_ADMIN_UID/g" "$DB_INIT_SQL_FILE"
-sed -i "s/\${OPTINIST_ADMIN_NAME}/$OPTINIST_ADMIN_NAME/g" "$DB_INIT_SQL_FILE"
-sed -i "s/\${OPTINIST_ADMIN_EMAIL}/$OPTINIST_ADMIN_EMAIL/g" "$DB_INIT_SQL_FILE"
-sed -i "s/\${S3_BUCKET}/$S3_BUCKET/g" "$DB_INIT_SQL_FILE"
+# Substitute variables in SQL file using Python for safe escaping
+# This handles special characters in passwords and other values that could break sed or SQL
+# Export variables so Python can access them safely from the environment
+export MYSQL_USER MYSQL_PASSWORD MYSQL_DATABASE
+export OPTINIST_ORG_NAME OPTINIST_ADMIN_UID OPTINIST_ADMIN_NAME OPTINIST_ADMIN_EMAIL
+export S3_BUCKET DB_INIT_SQL_FILE
+
+python3 << 'PYSUBST'
+import os
+import sys
+
+# Read the SQL template
+sql_file = os.environ.get('DB_INIT_SQL_FILE')
+if not sql_file:
+    print("ERROR: DB_INIT_SQL_FILE not set", file=sys.stderr)
+    sys.exit(1)
+
+with open(sql_file, 'r') as f:
+    content = f.read()
+
+# Variables to substitute (read from environment)
+var_names = [
+    'MYSQL_USER',
+    'MYSQL_PASSWORD',
+    'MYSQL_DATABASE',
+    'OPTINIST_ORG_NAME',
+    'OPTINIST_ADMIN_UID',
+    'OPTINIST_ADMIN_NAME',
+    'OPTINIST_ADMIN_EMAIL',
+    'S3_BUCKET'
+]
+
+# Perform substitutions with proper SQL escaping
+for var_name in var_names:
+    value = os.environ.get(var_name, '')
+    # Escape single quotes for SQL (double them)
+    safe_value = value.replace("'", "''")
+    # Replace the placeholder ${VAR_NAME}
+    placeholder = '${' + var_name + '}'
+    content = content.replace(placeholder, safe_value)
+
+# Write the result
+with open(sql_file, 'w') as f:
+    f.write(content)
+
+print("SQL variable substitution completed successfully")
+PYSUBST
 
 chmod $DB_INIT_FILE_PERMISSIONS "$DB_INIT_SQL_FILE"
 

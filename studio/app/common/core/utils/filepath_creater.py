@@ -29,5 +29,4 @@ def create_directory(dirpath, delete_dir=False):
             # by another process or due to filesystem delays
             pass
 
-    if not os.path.exists(dirpath):
-        os.makedirs(dirpath)
+    os.makedirs(dirpath, exist_ok=True)

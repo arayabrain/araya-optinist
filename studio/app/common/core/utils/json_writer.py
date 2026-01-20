@@ -15,25 +15,22 @@ from studio.app.common.schemas.outputs import PlotMetaData
 
 class JsonWriter:
     @classmethod
-    def write(cls, filepath, data):
-        # Ensure parent directory exists before writing
+    def _ensure_parent_dir_exists(cls, filepath):
+        """Ensure parent directory exists before writing."""
         parent_dir = os.path.dirname(filepath)
         if parent_dir:
             create_directory(parent_dir)
-        # Convert to JSON string first to avoid pandas'
-        # check_parent_directory validation
+
+    @classmethod
+    def write(cls, filepath, data):
+        cls._ensure_parent_dir_exists(filepath)
         json_str = pd.DataFrame(data).to_json(indent=4)
         with open(filepath, "w") as f:
             f.write(json_str)
 
     @classmethod
     def write_as_split(cls, filepath, data):
-        # Ensure parent directory exists before writing
-        parent_dir = os.path.dirname(filepath)
-        if parent_dir:
-            create_directory(parent_dir)
-        # Convert to JSON string first to avoid pandas'
-        # check_parent_directory validation
+        cls._ensure_parent_dir_exists(filepath)
         json_str = pd.DataFrame(data).to_json(indent=4, orient="split")
         with open(filepath, "w") as f:
             f.write(json_str)

@@ -16,7 +16,12 @@
  */
 
 import { UserDTO } from "api/users/UsersApiDTO"
-import { PlanName, SubscriptionStatus, UserTier } from "const/Subscription"
+import {
+  PlanName,
+  RoutingHeaders,
+  SubscriptionStatus,
+  UserTier,
+} from "const/Subscription"
 
 export interface RoutingInfo {
   user_id: string
@@ -55,7 +60,7 @@ class RoutingService {
     }
 
     return {
-      "X-Routing-ID": this.routingToken,
+      [RoutingHeaders.ROUTING_ID]: this.routingToken,
     }
   }
 
