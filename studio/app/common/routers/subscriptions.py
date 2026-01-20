@@ -23,6 +23,7 @@ from studio.app.common.core.subscription.subscription_service import Subscriptio
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.db.database import get_db
 from studio.app.common.models.subscription import SubscriptionPlans
+from studio.app.common.models.user import User as UserModel
 from studio.app.common.schemas.checkouts import (
     CheckoutSessionRequest,
     CheckoutValidationResponse,
@@ -40,7 +41,6 @@ from studio.app.common.schemas.subscriptions import (
     UpdateSubscriptionResponse,
     UserSubscriptionResponse,
 )
-from studio.app.common.models.user import User as UserModel
 from studio.app.common.schemas.users import User
 
 # Load callback URL at module level (doesn't require secrets for module import)
