@@ -14,13 +14,17 @@ import json
 import os
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict
 
 import boto3
 import pymysql
 
 # Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
 from aws_constants import DatabaseConfig, SubscriptionType
+
+if TYPE_CHECKING:
+    from mypy_boto3_elbv2 import ElasticLoadBalancingv2Client
+
 from sqlalchemy import (
     TIMESTAMP,
     Column,
@@ -328,7 +332,7 @@ def check_premium_user_inactivity() -> Dict[str, int]:
                 "PREMIUM_IDLE_TIMEOUT_HOURS", str(PREMIUM_IDLE_TIMEOUT_HOURS_DEFAULT)
             )
         )
-        elbv2 = boto3.client("elbv2")
+        elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
 
         with get_db_connection() as conn:
             with conn.cursor() as cursor:

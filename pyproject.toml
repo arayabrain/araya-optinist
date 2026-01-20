@@ -109,6 +109,8 @@ flake8 = "6.1.*"
 isort = "5.*"
 pre-commit = "*"
 codespell = "*"
+boto3-stubs = { extras = ["autoscaling", "cloudwatch", "ec2", "ecs", "elbv2", "lambda", "s3"], version = "^1.38" }
+mypy = "^1.19.1"
 
 [tool.poetry.group.doc]
 optional = true
