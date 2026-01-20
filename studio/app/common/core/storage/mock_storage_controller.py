@@ -258,7 +258,9 @@ class MockStorageController(BaseRemoteStorageController):
 
         return True
 
-    async def download_experiment(self, workspace_id: str, unique_id: str) -> bool:
+    async def download_experiment(
+        self, workspace_id: str, unique_id: str, sync_mode: str = "all"
+    ) -> bool:
         # make paths
         experiment_local_path = self._make_experiment_local_path(
             workspace_id, unique_id
