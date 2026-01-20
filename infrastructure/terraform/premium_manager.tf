@@ -35,6 +35,10 @@ resource "aws_lambda_function" "premium_manager" {
       PREMIUM_SAFETY_BUFFER      = "1" # Extra instances for quick response
       PREMIUM_STANDBY_POOL_SIZE  = "1" # Number of stopped instances to maintain
       PREMIUM_IDLE_TIMEOUT_HOURS = "3" # Hours before idle instances are converted to standby
+
+      # Internal API configuration for experiment sync after migration
+      ALB_DNS_NAME        = aws_lb.autoscaling.dns_name
+      INTERNAL_API_SECRET = random_password.internal_api_secret.result
     }
   }
 

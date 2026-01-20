@@ -322,7 +322,7 @@ class S3StorageController(BaseRemoteStorageController):
 
         # filter target workspaces_dirs
         if workspace_ids:
-            re_ids = "|".join(workspace_ids)
+            re_ids = "|".join(str(wid) for wid in workspace_ids)
             re_ids = f"({re_ids})"
             workspaces_dirs = [
                 w for w in all_workspaces_dirs if re.search(f"/{re_ids}/$", w)
@@ -396,6 +396,72 @@ class S3StorageController(BaseRemoteStorageController):
                             logger.debug(f"Skip download: {file_remote_path}")
                             continue
 
+        return True
+
+    async def download_experiment_meta(self, workspace_id: str, unique_id: str) -> bool:
+        """
+        Download metadata files (yaml) for a single experiment from remote
+        storage. More efficient than download_all_experiments_metas when only
+        one experiment is needed.
+
+        Downloads: experiment.yaml, workflow.yaml, snakemake_config.yaml
+        """
+        metadata_filenames = [
+            DIRPATH.EXPERIMENT_YML,
+            DIRPATH.SNAKEMAKE_CONFIG_YML,
+            DIRPATH.WORKFLOW_YML,
+        ]
+
+        # Construct the S3 path for this specific experiment
+        experiment_prefix = (
+            f"app/studio_data/{__class__.S3_OUTPUT_DIR}/{workspace_id}/{unique_id}/"
+        )
+
+        logger.info(
+            f"Downloading experiment metadata from S3: [{self.bucket_name}]"
+            f"[{workspace_id}/{unique_id}]"
+        )
+
+        downloaded_count = 0
+        async with self.__get_s3_client() as __s3_client:
+            for metadata_filename in metadata_filenames:
+                file_remote_path = experiment_prefix + metadata_filename
+                file_local_path = os.path.join(
+                    DIRPATH.DATA_DIR,
+                    __class__.S3_OUTPUT_DIR,
+                    workspace_id,
+                    unique_id,
+                    metadata_filename,
+                )
+
+                # Skip if file already exists locally
+                if os.path.isfile(file_local_path):
+                    logger.debug(f"Skip download (exists): {file_remote_path}")
+                    continue
+
+                try:
+                    # Create local directory if needed
+                    os.makedirs(os.path.dirname(file_local_path), exist_ok=True)
+
+                    # Download file from S3
+                    await __s3_client.download_file(
+                        self.bucket_name,
+                        file_remote_path,
+                        file_local_path,
+                    )
+                    downloaded_count += 1
+                    logger.debug(f"Downloaded: {file_remote_path}")
+                except Exception as e:
+                    # File may not exist in S3 - this is OK for optional files
+                    logger.debug(
+                        f"Could not download [{self.bucket_name}]"
+                        f"[{file_remote_path}]: {e}"
+                    )
+
+        logger.info(
+            f"Downloaded {downloaded_count} metadata files for "
+            f"[{workspace_id}/{unique_id}]"
+        )
         return True
 
     async def __download_all_experiments_metas_via_aws_cli(self) -> bool:
@@ -522,7 +588,10 @@ class S3StorageController(BaseRemoteStorageController):
         Args:
             workspace_id: Workspace identifier
             unique_id: Unique experiment identifier
-            sync_mode: 'all' or 'essential_only' (need for dataview)
+            sync_mode:
+                - 'all': sync everything (default)
+                - 'essential_only': skip large files, sync yaml/json (for dataview)
+                - 'visualization': sync only json and tiff (for viewing results)
 
         Returns:
             True if download successful, False otherwise
