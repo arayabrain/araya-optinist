@@ -18,17 +18,19 @@ Coordinates with premium_manager which handles all compute/capacity decisions.
 
 import json
 import os
-import sys
 import time
 from typing import Any, Dict, List
 
 import boto3
 import pymysql
 
-# Add parent directory to path for shared imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
-
-from aws_constants import ECSTaskStatus  # noqa: E402
+# Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
+from aws_constants import (
+    DatabaseConfig,
+    ECSTaskStatus,
+    PremiumInstanceConfig,
+    RoutingHeaders,
+)
 
 
 def get_required_env_var(var_name: str, default_value: str = None) -> str:
@@ -63,7 +65,9 @@ def get_db_connection(auto_commit=False):
             rds_host = get_required_env_var("RDS_HOST")
             conn = pymysql.connect(
                 host=rds_host.split(":")[0],
-                port=int(rds_host.split(":")[1]) if ":" in rds_host else 3306,
+                port=int(rds_host.split(":")[1])
+                if ":" in rds_host
+                else DatabaseConfig.DEFAULT_PORT,
                 user=get_required_env_var("RDS_USER"),
                 password=get_required_env_var("RDS_PASSWORD"),
                 database=get_required_env_var("RDS_DATABASE"),
@@ -142,10 +146,11 @@ def check_instance_readiness(instance_id: str) -> bool:
         )
 
         for task in task_details["tasks"]:
-            if (
-                task.get("taskDefinitionArn", "").find("premium") != -1
-                and task.get("lastStatus") == ECSTaskStatus.RUNNING
-            ):
+            task_def_arn = task.get("taskDefinitionArn", "")
+            is_premium_task = (
+                task_def_arn.find(PremiumInstanceConfig.INSTANCE_IDENTIFIER) != -1
+            )
+            if is_premium_task and task.get("lastStatus") == ECSTaskStatus.RUNNING:
                 print(f"Premium task running and ready on instance {instance_id}")
                 return True
 
@@ -275,20 +280,22 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
                 continue
 
             # Check if rule has premium user conditions
-            # (X-User-ID and X-User-Tier headers)
+            # (X-Routing-ID and X-User-Tier headers)
             conditions = rule.get("Conditions", [])
-            has_user_id = any(
+            has_routing_id = any(
                 c.get("Field") == "http-header"
-                and c.get("HttpHeaderConfig", {}).get("HttpHeaderName") == "X-User-ID"
+                and c.get("HttpHeaderConfig", {}).get("HttpHeaderName")
+                == RoutingHeaders.ROUTING_ID
                 for c in conditions
             )
             has_user_tier = any(
                 c.get("Field") == "http-header"
-                and c.get("HttpHeaderConfig", {}).get("HttpHeaderName") == "X-User-Tier"
+                and c.get("HttpHeaderConfig", {}).get("HttpHeaderName")
+                == RoutingHeaders.USER_TIER
                 for c in conditions
             )
 
-            if has_user_id and has_user_tier:
+            if has_routing_id and has_user_tier:
                 premium_rules.append(rule)
 
         print(f"Found {len(premium_rules)} premium user ALB rules")
@@ -381,16 +388,97 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
         }
 
 
+def get_all_premium_instances_with_states():
+    """Get all premium instances with their AWS states (copied from premium_manager)"""
+    ec2 = boto3.client("ec2")
+    try:
+        # Get instances with premium tags (use multiple filters for robust discovery)
+        response = ec2.describe_instances(
+            Filters=[
+                {
+                    "Name": "instance-state-name",
+                    "Values": ["pending", "running", "stopping", "stopped"],
+                },
+                # Use OR logic: Name/Tier/Type tags contain premium identifier
+            ]
+        )
+
+        # Apply tag filtering in Python for more flexible matching
+        def is_premium_instance(instance):
+            tags = {
+                tag.get("Key"): tag.get("Value") for tag in instance.get("Tags", [])
+            }
+            instance_id = instance["InstanceId"]
+
+            # Check multiple criteria for premium instances
+            name_match = (
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                in tags.get("Name", "").lower()
+            )
+            tier_match = (
+                tags.get("Tier", "").lower()
+                == PremiumInstanceConfig.INSTANCE_IDENTIFIER
+            )
+            type_match = (
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                in tags.get("Type", "").lower()
+            )
+
+            # Debug logging for tag matching
+            print(f"Instance {instance_id} tag analysis:")
+            print(f"- Name: '{tags.get('Name', '')}' -> name_match: {name_match}")
+            print(f"- Tier: '{tags.get('Tier', '')}' -> tier_match: {tier_match}")
+            print(f"- Type: '{tags.get('Type', '')}' -> type_match: {type_match}")
+            print(f"- All tags: {tags}")
+
+            result = name_match or tier_match or type_match
+            print(f"- Final match result: {result}")
+            return result
+
+        instances = []
+        all_instances_found = 0
+
+        for reservation in response["Reservations"]:
+            for instance in reservation["Instances"]:
+                all_instances_found += 1
+                instance_id = instance["InstanceId"]
+                state = instance["State"]["Name"]
+
+                print(f"Evaluating instance {instance_id} (state: {state})")
+
+                # Only include premium instances
+                if is_premium_instance(instance):
+                    instance_data = {
+                        "instance_id": instance["InstanceId"],
+                        "instance_type": instance["InstanceType"],
+                        "state": instance["State"]["Name"],
+                        "launch_time": instance.get("LaunchTime"),
+                    }
+                    instances.append(instance_data)
+                    print(f"Added premium instance: {instance_data}")
+                else:
+                    print(f" Skipped non-premium instance: {instance_id}")
+
+        print("Instance discovery summary:")
+        print(f"- Total instances found in AWS: {all_instances_found}")
+        print(f"- Premium instances matched: {len(instances)}")
+        print(f"- Premium instance IDs: {[i['instance_id'] for i in instances]}")
+        print(f"- States: {[(i['instance_id'], i['state']) for i in instances]}")
+
+        return instances
+    except Exception as e:
+        print(f"Error getting premium instances: {str(e)}")
+        return []
+
+
 def get_standby_pool_status() -> Dict[str, Any]:
     """Get detailed status of the premium standby pool"""
     try:
-        ec2 = boto3.client("ec2")
-        premium_instance_ids = get_required_env_var("PREMIUM_INSTANCE_IDS").split(",")
-
-        instances_response = ec2.describe_instances(InstanceIds=premium_instance_ids)
+        # Use dynamic tag-based discovery instead of hardcoded list
+        all_instances = get_all_premium_instances_with_states()
 
         status = {
-            "total_instances": len(premium_instance_ids),
+            "total_instances": len(all_instances),
             "running": 0,
             "stopped": 0,
             "failed": 0,
@@ -399,30 +487,29 @@ def get_standby_pool_status() -> Dict[str, Any]:
             "health_issues": [],
         }
 
-        for reservation in instances_response["Reservations"]:
-            for instance in reservation["Instances"]:
-                instance_id = instance["InstanceId"]
-                instance_state = instance["State"]["Name"]
+        for instance in all_instances:
+            instance_id = instance["instance_id"]
+            instance_state = instance["state"]
 
-                if instance_state == "running":
-                    status["running"] += 1
-                    assigned_users = get_assigned_users_for_instance(instance_id)
-                    status["assigned_users"] += len(assigned_users)
+            if instance_state == "running":
+                status["running"] += 1
+                assigned_users = get_assigned_users_for_instance(instance_id)
+                status["assigned_users"] += len(assigned_users)
 
-                    if not assigned_users:
-                        status["idle_running"] += 1
-                        if not check_instance_readiness(instance_id):
-                            status["health_issues"].append(
-                                f"Instance {instance_id} running but not ready"
-                            )
+                if not assigned_users:
+                    status["idle_running"] += 1
+                    if not check_instance_readiness(instance_id):
+                        status["health_issues"].append(
+                            f"Instance {instance_id} running but not ready"
+                        )
 
-                elif instance_state == "stopped":
-                    status["stopped"] += 1
-                else:
-                    status["failed"] += 1
-                    status["health_issues"].append(
-                        f"Instance {instance_id} in {instance_state} state"
-                    )
+            elif instance_state == "stopped":
+                status["stopped"] += 1
+            else:
+                status["failed"] += 1
+                status["health_issues"].append(
+                    f"Instance {instance_id} in {instance_state} state"
+                )
 
         return status
 
@@ -480,18 +567,15 @@ def reconcile_instance_states() -> Dict[str, Any]:
     Moved from premium_manager as this is maintenance, not real-time operation
     """
     try:
-        # Get all instances from AWS
-        ec2 = boto3.client("ec2")
-        premium_instance_ids = get_required_env_var("PREMIUM_INSTANCE_IDS").split(",")
-        instances_response = ec2.describe_instances(InstanceIds=premium_instance_ids)
+        # Get all instances from AWS using dynamic tag-based discovery
+        all_instances = get_all_premium_instances_with_states()
 
         aws_instance_map = {}
-        for reservation in instances_response["Reservations"]:
-            for instance in reservation["Instances"]:
-                aws_instance_map[instance["InstanceId"]] = {
-                    "instance_id": instance["InstanceId"],
-                    "state": instance["State"]["Name"],
-                }
+        for instance in all_instances:
+            aws_instance_map[instance["instance_id"]] = {
+                "instance_id": instance["instance_id"],
+                "state": instance["state"],
+            }
 
         # Get all assignments from database
         cleanup_count = 0

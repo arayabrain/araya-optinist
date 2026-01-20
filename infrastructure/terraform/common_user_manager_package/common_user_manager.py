@@ -18,7 +18,9 @@ from typing import Any, Dict
 
 import boto3
 import pymysql
-from aws_constants import SubscriptionType
+
+# Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
+from aws_constants import DatabaseConfig, SubscriptionType
 from sqlalchemy import (
     TIMESTAMP,
     Column,
@@ -35,9 +37,6 @@ from sqlalchemy.orm import Session
 # ============================================================================
 # Constants
 # ============================================================================
-
-# Database connection
-DB_PORT_DEFAULT = 3306
 
 # Workflow recovery timeouts
 WORKFLOW_USER_INACTIVITY_HOURS = 2  # User must be inactive for this long
@@ -102,7 +101,7 @@ def get_db_connection():
                 port = int(port_str)
             else:
                 host = rds_host
-                port = DB_PORT_DEFAULT
+                port = DatabaseConfig.DEFAULT_PORT
 
             conn = pymysql.connect(
                 host=host,
@@ -135,7 +134,7 @@ def get_sqlalchemy_session():
         port = int(port_str)
     else:
         host = rds_host
-        port = DB_PORT_DEFAULT
+        port = DatabaseConfig.DEFAULT_PORT
 
     user = get_required_env_var("RDS_USER")
     password = get_required_env_var("RDS_PASSWORD")

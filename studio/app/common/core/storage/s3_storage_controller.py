@@ -5,7 +5,9 @@ from subprocess import CalledProcessError
 
 import aioboto3
 import boto3
+from sqlmodel import select
 
+from studio.app.common import models as common_model
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.file_filter import FileSyncFilter
 from studio.app.common.core.storage.remote_storage_controller import (
@@ -15,7 +17,11 @@ from studio.app.common.core.storage.remote_storage_controller import (
     StorageDirectoryType,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.db.database import session_scope
 from studio.app.dir_path import DIRPATH
+
+# NOTE: cloud_utils imports are kept inside functions to avoid circular imports:
+# cloud_utils.py → s3_storage_monitor.py → s3_storage_controller.py → cloud_utils.py
 
 logger = AppLogger.get_logger()
 
@@ -687,6 +693,7 @@ class S3StorageController(BaseRemoteStorageController):
         # do upload data to remote storage
         target_files_count = len(adjusted_target_files)
         loop = asyncio.get_event_loop()
+        total_bytes_uploaded = 0
 
         for index, (local_abs_path, s3_file_path, file_size) in enumerate(
             adjusted_target_files
@@ -707,9 +714,41 @@ class S3StorageController(BaseRemoteStorageController):
                 await loop.run_in_executor(
                     None, upload_file, local_abs_path, s3_file_path
                 )
+                total_bytes_uploaded += file_size
             except Exception as e:
                 logger.error(f"Failed to upload experiment file {s3_file_path}: {e}")
                 return False
+
+        # Update user storage with the total bytes uploaded (incremental approach)
+        if total_bytes_uploaded > 0:
+            try:
+                # Get user_id from workspace_id
+                # Import cloud_utils here to avoid circular imports
+                from studio.app.common.core.cloud.cloud_utils import (
+                    increment_user_storage,
+                )
+
+                workspace_id_int = int(workspace_id)
+                with session_scope() as db:
+                    query_result = db.execute(
+                        select(common_model.Workspace.user_id).where(
+                            common_model.Workspace.id == workspace_id_int
+                        )
+                    )
+                    result_row = query_result.first()
+                    user_id = result_row[0] if result_row else None
+
+                if user_id:
+                    increment_user_storage(user_id, total_bytes_uploaded)
+                    logger.info(
+                        f"Incremented storage for user {user_id} by "
+                        f"{total_bytes_uploaded:,} bytes after upload"
+                    )
+            except Exception as storage_error:
+                logger.warning(
+                    f"Failed to update storage after upload: {storage_error}"
+                )
+                # Don't fail the upload if storage tracking fails
 
         return True
 
@@ -723,15 +762,59 @@ class S3StorageController(BaseRemoteStorageController):
         # exec deleting
         # ----------------------------------------
 
+        # Track total bytes deleted for storage update
+        total_bytes_deleted = 0
+
         # do delete data from remote storage
         async with self.__get_s3_resource() as __s3_resource:
             bucket = await __s3_resource.Bucket(self.bucket_name)
 
             objects_to_delete = bucket.objects.filter(Prefix=experiment_remote_path)
-            keys_to_delete = [{"Key": obj.key} async for obj in objects_to_delete]
+
+            # Collect keys and sizes before deletion
+            keys_to_delete = []
+            async for obj in objects_to_delete:
+                keys_to_delete.append({"Key": obj.key})
+                # Track size for storage update
+                total_bytes_deleted += await obj.size
 
             if keys_to_delete:
+                logger.info(
+                    f"Deleting {len(keys_to_delete)} objects "
+                    f"({total_bytes_deleted:,} bytes) from {experiment_remote_path}"
+                )
                 await bucket.delete_objects(Delete={"Objects": keys_to_delete})
+
+        # Update user storage with the total bytes deleted (incremental approach)
+        if total_bytes_deleted > 0:
+            try:
+                # Get user_id from workspace_id
+                # Import cloud_utils here to avoid circular imports
+                from studio.app.common.core.cloud.cloud_utils import (
+                    decrement_user_storage,
+                )
+
+                workspace_id_int = int(workspace_id)
+                with session_scope() as db:
+                    query_result = db.execute(
+                        select(common_model.Workspace.user_id).where(
+                            common_model.Workspace.id == workspace_id_int
+                        )
+                    )
+                    result_row = query_result.first()
+                    user_id = result_row[0] if result_row else None
+
+                if user_id:
+                    decrement_user_storage(user_id, total_bytes_deleted)
+                    logger.info(
+                        f"Decremented storage for user {user_id} by "
+                        f"{total_bytes_deleted:,} bytes after deletion"
+                    )
+            except Exception as storage_error:
+                logger.warning(
+                    f"Failed to update storage after deletion: {storage_error}"
+                )
+                # Don't fail the deletion if storage tracking fails
 
         return True
 

@@ -40,3 +40,41 @@ class BatchJobStatus:
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
+
+
+class PremiumInstanceConfig:
+    """
+    Configuration constants for premium EC2 instances.
+
+    These values are used for identifying and filtering premium instances
+    in EC2, ECS, and ALB operations.
+    """
+
+    # Identifier used in EC2 instance Name/Tier/Type tags
+    INSTANCE_IDENTIFIER = "premium"
+
+
+class RoutingHeaders:
+    """
+    HTTP header names for ALB routing.
+
+    These headers are used to route premium users to their dedicated instances.
+    This is the single source of truth for routing header constants.
+    Frontend equivalent: frontend/src/const/Subscription.ts (RoutingHeaders)
+    """
+
+    # Secure, non-reversible routing token (HMAC-SHA256)
+    ROUTING_ID = "X-Routing-ID"
+    # User subscription tier indicator
+    USER_TIER = "X-User-Tier"
+
+
+class DatabaseConfig:
+    """
+    Database connection configuration constants.
+
+    Centralized database settings used across all Lambda packages.
+    """
+
+    # Default MySQL port (standard MySQL port)
+    DEFAULT_PORT = 3306
