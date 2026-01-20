@@ -30,7 +30,6 @@ tensorflow-*.whl
 terraform.*
 .terraform*
 *.pem
-app_setup.sh
 
 # Lambda deployment packages
 **/*.py.zip

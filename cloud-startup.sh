@@ -62,6 +62,66 @@ fi
 UVICORN_WORKERS=${UVICORN_WORKERS:-5}
 echo "Uvicorn workers: $UVICORN_WORKERS"
 
+# Get EC2 instance ID for free tier user tracking
+# This is required for the FreeUserActivityMiddleware to track users across instances
+echo "Retrieving EC2 instance ID from ECS container metadata..."
+INSTANCE_ID=""
+
+# Temporarily disable exit-on-error to allow graceful handling if metadata is unavailable
+set +e
+
+# Get the container instance ARN from ECS metadata
+if [ -n "$ECS_CONTAINER_METADATA_URI_V4" ]; then
+    TASK_METADATA=$(curl -s "${ECS_CONTAINER_METADATA_URI_V4}/task" 2>/dev/null)
+    TASK_ARN=$(echo "$TASK_METADATA" | python3 -c "import sys, json; print(json.load(sys.stdin)['TaskARN'])" 2>/dev/null)
+
+    if [ -n "$TASK_ARN" ]; then
+        echo "Found ECS task: $TASK_ARN"
+        # Extract cluster name from task ARN (format: arn:aws:ecs:region:account:task/cluster-name/task-id)
+        CLUSTER_NAME=$(echo "$TASK_ARN" | cut -d'/' -f2)
+        echo "Cluster: $CLUSTER_NAME"
+
+        # Get container instance ARN
+        CONTAINER_INSTANCE_ARN=$(aws ecs describe-tasks \
+            --cluster "$CLUSTER_NAME" \
+            --tasks "$TASK_ARN" \
+            --query 'tasks[0].containerInstanceArn' \
+            --output text 2>/dev/null)
+
+        if [ -n "$CONTAINER_INSTANCE_ARN" ] && [ "$CONTAINER_INSTANCE_ARN" != "None" ]; then
+            echo "Container instance ARN: $CONTAINER_INSTANCE_ARN"
+            # Get EC2 instance ID from container instance
+            INSTANCE_ID=$(aws ecs describe-container-instances \
+                --cluster "$CLUSTER_NAME" \
+                --container-instances "$CONTAINER_INSTANCE_ARN" \
+                --query 'containerInstances[0].ec2InstanceId' \
+                --output text 2>/dev/null)
+
+            if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+                echo "Got instance ID from ECS container metadata: $INSTANCE_ID"
+            fi
+        else
+            echo "Could not retrieve container instance ARN"
+        fi
+    else
+        echo "Could not retrieve task ARN from ECS metadata"
+    fi
+else
+    echo "ECS_CONTAINER_METADATA_URI_V4 not available"
+fi
+
+# Re-enable exit-on-error
+set -e
+
+# Export for the application to use
+if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+    export INSTANCE_ID
+    echo "INSTANCE_ID set to: $INSTANCE_ID"
+else
+    echo "WARNING: Could not retrieve EC2 instance ID. Free tier user tracking will not work."
+    echo "This is expected in local development, but should not happen in production."
+fi
+
 # Start the application in background
 echo "Starting application..."
 poetry run python main.py --host="$BACKEND_HOST" --port="$BACKEND_PORT" --workers="$UVICORN_WORKERS" &

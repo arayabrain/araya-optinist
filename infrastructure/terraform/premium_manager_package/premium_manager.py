@@ -40,7 +40,7 @@ import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import boto3
 import pymysql
@@ -53,6 +53,13 @@ from aws_constants import (
     RoutingHeaders,
 )
 from botocore.exceptions import ClientError
+
+if TYPE_CHECKING:
+    from mypy_boto3_cloudwatch import CloudWatchClient
+    from mypy_boto3_ec2 import EC2Client
+    from mypy_boto3_ecs import ECSClient
+    from mypy_boto3_elbv2 import ElasticLoadBalancingv2Client
+    from mypy_boto3_lambda import LambdaClient
 
 # Constants
 # Default fallback value for premium user count in development/testing scenarios
@@ -84,7 +91,7 @@ def generate_routing_id(uid: str, secret_key: str) -> str:
     return signature[:16]  # 16 hex chars = 64 bits
 
 
-def get_required_env_var(var_name: str, default_value: str = None) -> str:
+def get_required_env_var(var_name: str, default_value: str | None = None) -> str:
     """
     Safely get required environment variable with helpful error messages.
 
@@ -327,7 +334,7 @@ def _store_user_assignment_transaction(
 
 
 def store_user_assignment(
-    user_id: Optional[int],
+    user_id: int | str,
     instance_id: str,
     target_group_arn: str,
     rule_arn: str,
@@ -429,7 +436,7 @@ def get_assigned_users_for_instance(instance_id: str):
 
 def get_all_premium_instances_with_states():
     """Get all premium instances with their AWS states"""
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
     try:
         # Get instances with premium tags (use multiple filters for robust discovery)
         response = ec2.describe_instances(
@@ -874,7 +881,7 @@ def get_available_standby_instances():
             standby_instance_ids = [
                 inst["instance_id"] for inst in db_standby_instances
             ]
-            ec2 = boto3.client("ec2")
+            ec2: "EC2Client" = boto3.client("ec2")
 
             try:
                 response = ec2.describe_instances(InstanceIds=standby_instance_ids)
@@ -972,7 +979,7 @@ def register_orphaned_stopped_instances():
 
 def create_running_instance():
     """Create a new instance and leave it running for immediate assignment"""
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
 
     try:
         # Get launch template ID from environment
@@ -1114,7 +1121,7 @@ def create_and_stop_standby_instance():
     Uses database-level locking to prevent concurrent Lambda executions
     from creating duplicate standbys.
     """
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
     lock_acquired = False
     lock_name = "create_standby_lock"
     lock_timeout = 60  # seconds
@@ -1302,7 +1309,7 @@ def create_and_stop_standby_instance():
 
 def start_standby_instance(instance_id: str):
     """Start a stopped standby instance and prepare for user assignment"""
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
 
     try:
         print(f"Starting standby instance {instance_id}")
@@ -1404,7 +1411,7 @@ def is_premium_scaling_in_progress() -> bool:
     Check if a premium scaling operation is in progress using CloudWatch metrics.
     Returns True if scaling operation started within last 15 minutes.
     """
-    cloudwatch = boto3.client("cloudwatch")
+    cloudwatch: "CloudWatchClient" = boto3.client("cloudwatch")
 
     try:
         response = cloudwatch.get_metric_data(
@@ -1444,7 +1451,7 @@ def set_premium_scaling_lock(in_progress: bool) -> None:
     Args:
         in_progress: True to set lock, False to clear lock
     """
-    cloudwatch = boto3.client("cloudwatch")
+    cloudwatch: "CloudWatchClient" = boto3.client("cloudwatch")
 
     try:
         cloudwatch.put_metric_data(
@@ -1476,7 +1483,7 @@ def publish_premium_metrics(
     - RunningInstances: Count of running EC2 instances
     - IdleInstances: Count of instances with no assigned users
     """
-    cloudwatch = boto3.client("cloudwatch")
+    cloudwatch: "CloudWatchClient" = boto3.client("cloudwatch")
 
     try:
         cloudwatch.put_metric_data(
@@ -1815,7 +1822,7 @@ def get_next_available_priority(listener_arn: str, start_priority: int = 100) ->
     Raises:
         Exception: If no priorities available (all 1-50000 used)
     """
-    elbv2 = boto3.client("elbv2")
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
 
     try:
         # Get all existing rules for this listener
@@ -1825,10 +1832,10 @@ def get_next_available_priority(listener_arn: str, start_priority: int = 100) ->
         # Extract used priorities (excluding default rule which has priority "default")
         used_priorities = set()
         for rule in rules:
-            priority = rule.get("Priority")
-            if priority and priority != "default":
+            rule_priority = rule.get("Priority")
+            if rule_priority and rule_priority != "default":
                 try:
-                    used_priorities.add(int(priority))
+                    used_priorities.add(int(rule_priority))
                 except (ValueError, TypeError):
                     # Skip if priority is not a valid integer
                     continue
@@ -1860,8 +1867,8 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
     """Enhanced assignment with standby pool support -
     prefer stopped instances for fast startup"""
 
-    ec2 = boto3.client("ec2")
-    elbv2 = boto3.client("elbv2")
+    ec2: "EC2Client" = boto3.client("ec2")
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
 
     try:
         vpc_id = get_required_env_var("VPC_ID")
@@ -2105,7 +2112,6 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                 )
 
                 # Start this AWS instance directly
-                ec2 = boto3.client("ec2")
                 try:
                     print(f"Starting AWS stopped instance {fallback_instance_id}")
                     ec2.start_instances(InstanceIds=[fallback_instance_id])
@@ -2318,7 +2324,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                     {"Key": "Type", "Value": "premium-user"},
                     {"Key": "Service", "Value": "optinist-premium"},
                     {"Key": "Shared", "Value": str(is_shared)},
-                    {"Key": "Source", "Value": assignment_source},
+                    {"Key": "Source", "Value": assignment_source or "unknown"},
                 ],
             )
 
@@ -2401,7 +2407,12 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
 
         # 10. Store assignment in RDS with state tracking
         store_user_assignment(
-            user_id, instance_id, target_group_arn, rule_arn, instance_state, is_shared
+            user_id,
+            instance_id,
+            target_group_arn,
+            rule_arn,
+            instance_state or "launching",
+            is_shared,
         )
 
         # If this was a shared assignment, trigger scaling now that the user is stored
@@ -2465,7 +2476,7 @@ def invoke_migration_async():
     Lambda will retry for 180 seconds until instances are ready, then migrate users.
     """
     try:
-        lambda_client = boto3.client("lambda")
+        lambda_client: "LambdaClient" = boto3.client("lambda")
         function_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
 
         if not function_name:
@@ -2502,7 +2513,7 @@ def scale_premium_instances_if_needed():
     Scale up premium instances by starting stopped instances or creating new ones.
     Now accounts for pending standby creations to prevent over-provisioning.
     """
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
 
     try:
         # Get dynamic capacity limits based on premium users
@@ -2672,9 +2683,11 @@ def scale_premium_instances_if_needed():
         return False
 
 
-def get_ecs_container_instance_id(ec2_instance_id: str, cluster_name: str) -> str:
+def get_ecs_container_instance_id(
+    ec2_instance_id: str, cluster_name: str
+) -> str | None:
     """Map EC2 instance ID to ECS container instance ID"""
-    ecs = boto3.client("ecs")
+    ecs: "ECSClient" = boto3.client("ecs")
 
     try:
         print(f"Looking up ECS container instance for EC2 instance {ec2_instance_id}")
@@ -2710,7 +2723,7 @@ def get_ecs_container_instance_id(ec2_instance_id: str, cluster_name: str) -> st
 
 def check_instance_readiness(instance_id: str) -> bool:
     """Check if an instance has a running ECS task and is ready for user assignment"""
-    ecs = boto3.client("ecs")
+    ecs: "ECSClient" = boto3.client("ecs")
 
     try:
         cluster_name = get_required_env_var("CLUSTER_NAME")
@@ -2861,8 +2874,8 @@ def update_premium_service_desired_count():
         cluster_name = get_required_env_var("CLUSTER_NAME")
         service_name = get_required_env_var("PREMIUM_SERVICE_NAME")
 
-        ecs = boto3.client("ecs")
-        ec2 = boto3.client("ec2")
+        ecs: "ECSClient" = boto3.client("ecs")
+        ec2: "EC2Client" = boto3.client("ec2")
 
         # Get current service status
         service_response = ecs.describe_services(
@@ -2940,7 +2953,7 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
         )
         return False
 
-    elbv2 = boto3.client("elbv2")
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
 
     try:
         with get_db_connection() as connection:
@@ -2974,7 +2987,7 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                 # Special handling for autoscaling-pool migration
                 if old_instance_id == "autoscaling-pool":
                     # Create new dedicated target group for this user
-                    vpc_id = os.environ.get("VPC_ID")
+                    vpc_id = get_required_env_var("VPC_ID")
                     target_group_response = elbv2.create_target_group(
                         Name=f"premium-{user_id}-tg",
                         Protocol="HTTP",
@@ -3055,8 +3068,8 @@ def release_premium_user(user_id: int) -> Dict[str, Any]:
     """Release premium user from assigned instance
     (always succeeds to prevent logout blocking)"""
 
-    _ = boto3.client("ec2")
-    elbv2 = boto3.client("elbv2")
+    _: "EC2Client" = boto3.client("ec2")
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
 
     instance_id = None
     success = True
@@ -3172,7 +3185,7 @@ def release_premium_user(user_id: int) -> Dict[str, Any]:
 
 def scale_down_if_possible():
     """Scale down premium instances by stopping idle instances"""
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
 
     try:
         # Get dynamic capacity settings
@@ -3320,7 +3333,7 @@ def convert_idle_instances_to_standby_immediate() -> int:
 
 def convert_running_instance_to_standby(instance_id: str):
     """Convert a running instance with no users to a standby instance"""
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
 
     try:
         # Stop the instance
@@ -3378,7 +3391,7 @@ def cleanup_excess_standby_instances(excess_count: int):
 
 def terminate_standby_instance(instance_id: str):
     """Terminate a standby instance and clean up database entry"""
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
 
     try:
         print(f"Terminating excess standby instance {instance_id}")

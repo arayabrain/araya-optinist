@@ -42,6 +42,11 @@ class BatchJobStatus:
     FAILED = "FAILED"
 
 
+class SubscriptionType:
+    FREE = "free"
+    PREMIUM = "premium"
+
+
 class PremiumInstanceConfig:
     """
     Configuration constants for premium EC2 instances.
