@@ -472,6 +472,8 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
           "ecs:ListClusters",
           "ecs:DescribeClusters",
           "ecs:ListContainerInstances",
+          "ecs:DescribeServices",
+          "ecs:UpdateService",
           "ecr:GetAuthorizationToken",
           "ecr:DescribeRepositories",
           "ecr:BatchCheckLayerAvailability",
@@ -482,6 +484,9 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
           "cloudwatch:ListMetrics",
           "cloudwatch:GetMetricStatistics",
           "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:SetDesiredCapacity",
+          "autoscaling:SuspendProcesses",
+          "autoscaling:ResumeProcesses",
           "lambda:InvokeFunction"
         ]
         Resource = "*"
@@ -876,6 +881,25 @@ resource "aws_secretsmanager_secret_version" "routing_hmac_key" {
   secret_id = aws_secretsmanager_secret.routing_hmac_key.id
   secret_string = jsonencode({
     key = random_password.routing_hmac_key.result
+  })
+}
+
+# Internal API secret for Lambda-to-backend communication
+# Used to authenticate internal sync endpoints called by Lambda managers
+resource "random_password" "internal_api_secret" {
+  length  = 64
+  special = false  # Avoid special chars for easier URL/header handling
+}
+
+resource "aws_secretsmanager_secret" "internal_api_secret" {
+  name        = "subscr-internal-api-secret"
+  description = "Secret for internal API authentication between Lambda and backend"
+}
+
+resource "aws_secretsmanager_secret_version" "internal_api_secret" {
+  secret_id = aws_secretsmanager_secret.internal_api_secret.id
+  secret_string = jsonencode({
+    key = random_password.internal_api_secret.result
   })
 }
 

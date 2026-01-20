@@ -5,10 +5,6 @@ from studio.app.common.core.auth import auth
 from studio.app.common.core.auth.auth_dependencies import get_admin_user
 from studio.app.common.core.cloud.cloud_utils import calculate_limit_warning
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.storage.remote_storage_controller import (
-    RemoteStorageController,
-    RemoteStorageSimpleReader,
-)
 from studio.app.common.db.database import get_db
 from studio.app.common.schemas.auth import AccessToken, RefreshToken, Token, UserAuth
 
@@ -22,21 +18,9 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
     try:
         token, user = await auth.authenticate_user(db, user_data)
 
-        # Operate remote storage data.
-        if RemoteStorageController.is_available():
-            # Get bucket name with fallback logic
-            from studio.app.common.core.auth.auth_dependencies import (
-                _get_user_remote_bucket_name,
-            )
-
-            remote_bucket_name = _get_user_remote_bucket_name(user)
-
-            # Immediately after successful login,
-            #   download all experiments metadata.
-            async with RemoteStorageSimpleReader(
-                remote_bucket_name
-            ) as remote_storage_controller:
-                await remote_storage_controller.download_all_experiments_metas()
+        # Note: Experiment metadata sync is handled lazily:
+        # - Workspace-level sync when user views experiments list (get_experiments)
+        # - Single experiment sync on-demand (ensure_synced_async)
 
         # Check for limit warnings after successful login
         try:

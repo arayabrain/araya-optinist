@@ -72,6 +72,10 @@ resource "aws_lambda_function" "free_manager" {
       FREE_USER_THRESHOLD         = "5"  # Trigger scaling at 5 active users
       FREE_IDLE_THRESHOLD_MINUTES = "5"  # Consider user idle after 5 minutes (reduced from 10)
       MAX_FREE_INSTANCES          = "10" # Maximum number of free tier instances
+
+      # Internal API configuration for experiment sync after migration
+      ALB_DNS_NAME        = aws_lb.autoscaling.dns_name
+      INTERNAL_API_SECRET = random_password.internal_api_secret.result
     }
   }
 

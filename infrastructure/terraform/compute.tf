@@ -722,6 +722,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
           name  = "SKIP_STORAGE_CHECKS"
           value = "false"
         },
+        {
+          name  = "INTERNAL_API_SECRET"
+          value = random_password.internal_api_secret.result
+        },
       ]
       secrets = [
         {
@@ -948,7 +952,11 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "SKIP_STORAGE_CHECKS"
           value = "false"
-        }
+        },
+        {
+          name  = "INTERNAL_API_SECRET"
+          value = random_password.internal_api_secret.result
+        },
       ]
 
       mountPoints = [

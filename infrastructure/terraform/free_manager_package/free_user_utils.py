@@ -211,12 +211,62 @@ def get_users_per_instance(activity_threshold_minutes: int = 10) -> Dict[str, in
         return {}
 
 
+def trigger_experiment_sync(user_id: int) -> bool:
+    """
+    Trigger experiment metadata sync for user on their new instance.
+
+    Called after a successful migration to ensure the user's experiment
+    metadata is downloaded to the new instance from S3.
+
+    Args:
+        user_id: Database user ID to sync experiments for
+
+    Returns:
+        True if sync was initiated successfully, False otherwise
+    """
+    import requests
+
+    alb_dns = os.environ.get("ALB_DNS_NAME")
+    internal_secret = os.environ.get("INTERNAL_API_SECRET")
+
+    if not alb_dns or not internal_secret:
+        print(
+            "Warning: ALB_DNS_NAME or INTERNAL_API_SECRET not configured, "
+            "skipping experiment sync"
+        )
+        return False
+
+    url = f"https://{alb_dns}/system-internal/sync-experiments/{user_id}"
+    headers = {
+        "X-Internal-Secret": internal_secret,
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = requests.post(url, headers=headers, timeout=10.0, verify=True)
+        if response.status_code == 200:
+            print(f"Experiment sync initiated for user {user_id}")
+            return True
+        else:
+            print(
+                f"Experiment sync request failed for user {user_id}: "
+                f"status {response.status_code}"
+            )
+            return False
+    except Exception as e:
+        # Don't fail migration if sync fails - user can still work
+        print(f"Failed to trigger experiment sync for user {user_id}: {e}")
+        return False
+
+
 def migrate_user_to_instance(user_id: str, new_instance_id: str) -> bool:
     """
     Migrate a user to a new instance.
 
     This updates the database record and the user's next request
     will be routed to the new instance via load balancer.
+    After successful migration, triggers experiment metadata sync
+    on the new instance.
 
     Args:
         user_id: User ID to migrate
@@ -245,6 +295,8 @@ def migrate_user_to_instance(user_id: str, new_instance_id: str) -> bool:
                         f"Migrated user {user_id} from their current instance "
                         f"to {new_instance_id}"
                     )
+                    # Trigger experiment sync on new instance (fire-and-forget)
+                    trigger_experiment_sync(int(user_id))
                     return True
                 else:
                     print(
