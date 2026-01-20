@@ -21,8 +21,8 @@ export const validateSession = async (
   navigate: NavigateFunction,
   isThanksPage?: boolean,
 ) => {
-  // If no session ID, redirect to checkout
-  if (!sessionId) {
+  // If no session ID or empty string, redirect to subscription page
+  if (!sessionId || sessionId.trim() === "") {
     navigate("/subscription", { replace: true })
     return
   }
@@ -41,20 +41,14 @@ export const validateSession = async (
     if (response && response.status) {
       setIsValidSession(response.status)
     } else {
-      // On thanks page, show failed result instead of navigating away
-      if (isThanksPage) {
-        setIsValidSession("webhook_failed")
-      } else {
-        navigate("/subscription", { replace: true })
-      }
-    }
-  } catch (error) {
-    // On thanks page, show failed result instead of navigating away
-    if (isThanksPage) {
-      setIsValidSession("webhook_failed")
-    } else {
+      // Invalid session_id - log error and redirect
+      console.error("Invalid session_id:", sessionId)
       navigate("/subscription", { replace: true })
     }
+  } catch (error) {
+    // Invalid session_id - log error and redirect
+    console.error("Invalid session_id:", sessionId, error)
+    navigate("/subscription", { replace: true })
   } finally {
     setIsLoading(false)
   }
