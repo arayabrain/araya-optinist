@@ -100,7 +100,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
 
 def track_premium_instances(
-    ec2_client: "EC2Client", spot_fleet_id: str
+    ec2_client: "EC2Client", spot_fleet_id: str | None
 ) -> Dict[str, Any]:
     """Track premium instance metrics"""
     try:
@@ -134,7 +134,7 @@ def track_premium_instances(
 
 
 def track_free_instances(
-    asg_client: "AutoScalingClient", asg_name: str
+    asg_client: "AutoScalingClient", asg_name: str | None
 ) -> Dict[str, Any]:
     """Track free tier instance metrics"""
     try:

@@ -198,7 +198,7 @@ def get_users_on_shared_instance(instance_id: str) -> List[dict]:
         return []
 
 
-def can_migrate_user(user_id: str) -> bool:
+def can_migrate_user(user_id: int) -> bool:
     """
     Check if a user can be safely migrated right now.
 

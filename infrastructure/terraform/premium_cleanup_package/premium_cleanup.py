@@ -29,7 +29,6 @@ if TYPE_CHECKING:
     from mypy_boto3_ec2 import EC2Client
     from mypy_boto3_ecs import ECSClient
     from mypy_boto3_elbv2 import ElasticLoadBalancingv2Client
-    from mypy_boto3_lambda import LambdaClient
 
 # Add parent directory to path for shared imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
@@ -37,7 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from aws_constants import ECSTaskStatus  # noqa: E402
 
 
-def get_required_env_var(var_name: str, default_value: str = None) -> str:
+def get_required_env_var(var_name: str, default_value: str | None = None) -> str:
     """Safely get required environment variable with helpful error message"""
     value = os.environ.get(var_name, default_value)
     if value is None or value == "":
@@ -129,7 +128,7 @@ def get_assigned_users_for_instance(instance_id: str) -> List[str]:
 
 def check_instance_readiness(instance_id: str) -> bool:
     """Check if an instance has a running ECS task and is ready for user assignment"""
-    ecs = boto3.client("ecs")
+    ecs: "ECSClient" = boto3.client("ecs")
     cluster_name = get_required_env_var("CLUSTER_NAME")
 
     try:
@@ -202,7 +201,7 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
             print(f"Found {len(stale_assignments)} stale assignments to clean")
 
             # Clean up AWS resources for each stale assignment
-            elbv2 = boto3.client("elbv2")
+            elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
             cleaned_count = 0
 
             for assignment in stale_assignments:
@@ -267,7 +266,7 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
     try:
         print("Scanning for orphaned ALB resources...")
 
-        elbv2 = boto3.client("elbv2")
+        elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
         alb_listener_arn = get_required_env_var("ALB_LISTENER_ARN")
 
         # Get all ALB listener rules
@@ -390,12 +389,12 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
 def get_standby_pool_status() -> Dict[str, Any]:
     """Get detailed status of the premium standby pool"""
     try:
-        ec2 = boto3.client("ec2")
+        ec2: "EC2Client" = boto3.client("ec2")
         premium_instance_ids = get_required_env_var("PREMIUM_INSTANCE_IDS").split(",")
 
         instances_response = ec2.describe_instances(InstanceIds=premium_instance_ids)
 
-        status = {
+        status: Dict[str, Any] = {
             "total_instances": len(premium_instance_ids),
             "running": 0,
             "stopped": 0,
@@ -487,7 +486,7 @@ def reconcile_instance_states() -> Dict[str, Any]:
     """
     try:
         # Get all instances from AWS
-        ec2 = boto3.client("ec2")
+        ec2: "EC2Client" = boto3.client("ec2")
         premium_instance_ids = get_required_env_var("PREMIUM_INSTANCE_IDS").split(",")
         instances_response = ec2.describe_instances(InstanceIds=premium_instance_ids)
 
@@ -649,7 +648,7 @@ def cleanup_test_user_assignments(connection, user_emails: List[str]) -> Dict[st
             print(f"Found {len(assignments)} assignments to clean up")
 
             # Clean up AWS resources for each assignment
-            elbv2 = boto3.client("elbv2")
+            elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
             cleaned_count = 0
 
             for assignment in assignments:
@@ -739,7 +738,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         # Otherwise, proceed with normal scheduled cleanup
         # Initialize results
-        results = {
+        results: Dict[str, Any] = {
             "cleanup_stats": {},
             "orphaned_cleanup_stats": {},
             "reconciliation_stats": {},

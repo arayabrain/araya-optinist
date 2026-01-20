@@ -40,7 +40,7 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Literal
 
 import boto3
 
@@ -65,7 +65,7 @@ from free_user_utils import (  # noqa: E402
 )
 
 
-def get_required_env_var(var_name: str, default_value: str = None) -> str:
+def get_required_env_var(var_name: str, default_value: str | None = None) -> str:
     """
     Safely get required environment variable with helpful error messages.
 
@@ -304,8 +304,8 @@ def is_scaling_in_progress() -> bool:
                     "ReturnData": True,
                 }
             ],
-            StartTime=int((datetime.now() - timedelta(minutes=15)).timestamp()),
-            EndTime=int(datetime.now().timestamp()),
+            StartTime=datetime.now() - timedelta(minutes=15),
+            EndTime=datetime.now(),
         )
 
         values = response["MetricDataResults"][0].get("Values", [])
@@ -920,13 +920,18 @@ def get_available_instance_ids(cluster_name: str, service_name: str) -> List[str
         print("\nStep 1: Listing container instances in ECS cluster")
 
         all_container_arns = []
-        for status in ["ACTIVE", "DRAINING", "REGISTERING"]:
+        container_statuses: List[Literal["ACTIVE", "DRAINING", "REGISTERING"]] = [
+            "ACTIVE",
+            "DRAINING",
+            "REGISTERING",
+        ]
+        for container_status in container_statuses:
             response = ecs_client.list_container_instances(
-                cluster=cluster_name, status=status
+                cluster=cluster_name, status=container_status
             )
             arns = response.get("containerInstanceArns", [])
             if arns:
-                print(f"Found {len(arns)} {status} container instances")
+                print(f"Found {len(arns)} {container_status} container instances")
                 all_container_arns.extend(arns)
 
         print(f"Total container instances found: {len(all_container_arns)}")
@@ -1050,7 +1055,7 @@ def publish_active_user_metric(active_user_count: int) -> None:
 if __name__ == "__main__":
     # Simulate CloudWatch Event trigger
     test_event = {"source": "aws.events", "detail-type": "Scheduled Event"}
-    test_context = {}
+    test_context: Dict[str, Any] = {}
 
     result = handler(test_event, test_context)
     print(f"Test result: {json.dumps(result, indent=2)}")
