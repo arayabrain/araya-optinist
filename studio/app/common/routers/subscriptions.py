@@ -12,6 +12,7 @@ from studio.app.common.core.subscription.constants import (
     INVOICE_LIST_LIMIT,
     StripeCheckoutPaymentStatus,
     StripeCheckoutSessionStatus,
+    SubscriptionPlanIds,
     SubscriptionUserStatus,
 )
 from studio.app.common.core.subscription.stripe_service import (
@@ -39,6 +40,7 @@ from studio.app.common.schemas.subscriptions import (
     UpdateSubscriptionResponse,
     UserSubscriptionResponse,
 )
+from studio.app.common.models.user import User as UserModel
 from studio.app.common.schemas.users import User
 
 # Load callback URL at module level (doesn't require secrets for module import)
@@ -478,10 +480,7 @@ async def validate_checkout_session(
             )
 
         # Find user by email
-        from studio.app.common.core.subscription.constants import SubscriptionPlanIds
-        from studio.app.common.models.user import User
-
-        user = db.query(User).filter(User.email == customer_email).first()
+        user = db.query(UserModel).filter(UserModel.email == customer_email).first()
         if not user:
             logger.error(f"No user found with email {customer_email}")
             return CheckoutValidationResponse(

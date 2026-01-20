@@ -45,7 +45,8 @@ const Thanks: React.FC = () => {
     return <PaymentResult type="webhook_failed" />
   }
 
-  return null
+  // Handle unexpected cases
+  return <PaymentResult type="webhook_failed" />
 }
 
 export default Thanks

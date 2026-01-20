@@ -1,6 +1,8 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel
+
+CheckoutValidationStatus = Literal["success", "payment_failed", "webhook_failed"]
 
 
 class CheckoutSessionRequest(BaseModel):
@@ -24,5 +26,5 @@ class CheckoutValidationResponse(BaseModel):
       database (internal error)
     """
 
-    status: str  # "success", "payment_failed", or "webhook_failed"
+    status: CheckoutValidationStatus
     message: Optional[str] = None
