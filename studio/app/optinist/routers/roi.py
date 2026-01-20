@@ -1,9 +1,15 @@
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
+from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteStorageController,
     RemoteStorageLockError,
+    RemoteStorageReader,
+    RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.workspace.workspace_dependencies import is_workspace_owner
 from studio.app.optinist.core.edit_ROI import EditROI, EditRoiUtils
@@ -14,12 +20,55 @@ router = APIRouter(prefix="/outputs", tags=["outputs"])
 logger = AppLogger.get_logger()
 
 
+async def ensure_experiment_synced_for_edit(
+    filepath: str, remote_bucket_name: str
+) -> None:
+    """
+    Ensure experiment files are synced locally before Edit ROI operations.
+    Downloads from S3 if needed (lazy loading).
+    """
+    if not RemoteStorageController.is_available():
+        return
+
+    # Extract workspace_id and unique_id from filepath
+    node_dirpath = os.path.dirname(filepath)
+    path_ids = ExptOutputPathIds(node_dirpath)
+    workspace_id = path_ids.workspace_id
+    unique_id = path_ids.unique_id
+
+    # Check if sync is needed
+    is_unsynced = RemoteSyncStatusFileUtil.check_sync_status_unsynced(
+        workspace_id, unique_id
+    )
+
+    if is_unsynced:
+        logger.info(
+            f"Edit ROI: Lazy loading experiment {workspace_id}/{unique_id} from S3"
+        )
+        async with RemoteStorageReader(
+            remote_bucket_name, workspace_id, unique_id
+        ) as remote_storage_controller:
+            result = await remote_storage_controller.download_experiment(
+                workspace_id, unique_id
+            )
+            if not result:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Failed to sync experiment data for Edit ROI",
+                )
+
+
 @router.post(
     "/image/{filepath:path}/status",
     response_model=RoiStatus,
     dependencies=[Depends(is_workspace_owner)],
 )
-async def status_roi(filepath: str):
+async def status_roi(
+    filepath: str,
+    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+):
+    # Ensure experiment is synced before Edit ROI operations
+    await ensure_experiment_synced_for_edit(filepath, remote_bucket_name)
     return EditROI(file_path=filepath).get_status()
 
 

@@ -15,6 +15,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageLockError,
     RemoteStorageReader,
+    RemoteStorageSimpleReader,
     RemoteSyncStatusFileUtil,
     upload_experiment_wrapper,
 )
@@ -46,18 +47,36 @@ async def fetch_last_experiment(
 ):
     try:
         last_expt_config = ExperimentService.get_last_experiment(workspace_id)
+
+        # If no local experiments found, try syncing from S3 (multi-instance scenario)
+        if not last_expt_config and RemoteStorageController.is_available():
+            logger.info(
+                f"No local experiments in workspace {workspace_id}, syncing from S3"
+            )
+            async with RemoteStorageSimpleReader(
+                remote_bucket_name
+            ) as remote_storage_controller:
+                await remote_storage_controller.download_all_experiments_metas(
+                    [workspace_id]
+                )
+            # Retry finding last experiment after sync
+            last_expt_config = ExperimentService.get_last_experiment(workspace_id)
+
         if last_expt_config:
             unique_id = last_expt_config.unique_id
 
-            # sync unsynced remote storage data.
-            is_remote_synced = False
-            if RemoteStorageController.is_available():
-                is_remote_synced = await force_sync_unsynced_experiment(
-                    remote_bucket_name,
-                    workspace_id,
-                    unique_id,
-                    last_expt_config.success,
-                )
+            # Ensure experiment yaml exists locally before accessing.
+            # Downloads from S3 if not present (handles multi-instance scenarios).
+            await ExptConfigReader.ensure_synced_async(
+                workspace_id, unique_id, remote_bucket_name
+            )
+
+            # Check remote sync status without triggering full download.
+            # Full data sync is deferred to reproduce_experiment when user
+            # explicitly clicks Reproduce.
+            is_remote_synced = RemoteSyncStatusFileUtil.check_sync_status_success(
+                workspace_id, unique_id
+            )
 
             # fetch workflow
             workflow_config = WorkflowConfigReader.read(workspace_id, unique_id)
@@ -94,6 +113,12 @@ async def reproduce_experiment(
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     try:
+        # Ensure experiment yaml exists locally before accessing.
+        # Downloads from S3 if not present (handles multi-instance scenarios).
+        await ExptConfigReader.ensure_synced_async(
+            workspace_id, unique_id, remote_bucket_name
+        )
+
         experiment_config_path = ExptConfigReader.get_config_yaml_path(
             workspace_id, unique_id
         )
@@ -106,20 +131,10 @@ async def reproduce_experiment(
             experiment_config = ExptConfigReader.read(workspace_id, unique_id)
             workflow_config = WorkflowConfigReader.read(workspace_id, unique_id)
 
-            # sync unsynced remote storage data.
-            is_remote_synced = False
-            if RemoteStorageController.is_available():
-                is_remote_synced = await force_sync_unsynced_experiment(
-                    remote_bucket_name,
-                    workspace_id,
-                    unique_id,
-                    experiment_config.success,
-                )
-
             return WorkflowWithResults(
                 **asdict(experiment_config),
                 **asdict(workflow_config),
-                is_remote_synced=is_remote_synced,
+                is_remote_synced=True,
             )
         else:
             raise HTTPException(

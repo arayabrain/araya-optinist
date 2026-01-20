@@ -46,6 +46,7 @@ from studio.app.common.routers import (
     dataview,
     experiment,
     files,
+    internal,
     logs,
     outputs,
     params,
@@ -157,6 +158,7 @@ add_pagination(app)
 # common routers
 app.include_router(algolist.router, dependencies=[Depends(get_current_user)])
 app.include_router(auth.router)
+app.include_router(internal.router)  # Uses internal secret auth, not JWT
 app.include_router(experiment.router, dependencies=[Depends(get_current_user)])
 app.include_router(files.router, dependencies=[Depends(get_current_user)])
 app.include_router(logs.router, dependencies=[Depends(get_current_user)])
