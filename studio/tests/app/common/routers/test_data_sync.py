@@ -69,24 +69,29 @@ class TestInternalAPISecurity:
         """Create test client."""
         return TestClient(app_with_internal_router)
 
-    def test_valid_secret_accepted(self, client):
+    def test_valid_secret_accepted(self, app_with_internal_router):
         """POST with correct X-Internal-Secret header should be processed."""
-        # Mock the database dependency to return a user
-        with patch("studio.app.common.routers.internal.get_db") as mock_get_db, patch(
+        from studio.app.common.db.database import get_db
+
+        app = app_with_internal_router
+
+        # Create mock DB session and user
+        mock_db = MagicMock()
+        mock_user = MagicMock()
+        mock_user.id = 1
+        mock_user.email = "test@example.com"
+        mock_db.query.return_value.filter.return_value.first.return_value = mock_user
+
+        # Override FastAPI dependency properly
+        app.dependency_overrides[get_db] = lambda: mock_db
+
+        # Clear rate limit cache and patch bucket name
+        with patch("studio.app.common.routers.internal._rate_limit_cache", {}), patch(
             "studio.app.common.routers.internal._get_user_remote_bucket_name"
-        ) as mock_bucket, patch(
-            "studio.app.common.routers.internal._rate_limit_cache", {}
-        ):
-            mock_db = MagicMock()
-            mock_user = MagicMock()
-            mock_user.id = 1
-            mock_user.email = "test@example.com"
-            mock_db.query.return_value.filter.return_value.first.return_value = (
-                mock_user
-            )
-            mock_get_db.return_value = mock_db
+        ) as mock_bucket:
             mock_bucket.return_value = "test-bucket"
 
+            client = TestClient(app)
             response = client.post(
                 "/system-internal/sync-experiments/1",
                 headers={"X-Internal-Secret": "test-secret-12345"},
@@ -96,6 +101,9 @@ class TestInternalAPISecurity:
             data = response.json()
             assert data["status"] == "sync_initiated"
             assert data["user_id"] == 1
+
+        # Clean up
+        app.dependency_overrides.clear()
 
     def test_invalid_secret_rejected(self, client):
         """POST with wrong secret should return 403."""
@@ -168,21 +176,26 @@ class TestRateLimiting:
 
     def test_rate_limit_enforced(self, setup_internal_router):
         """Two sync requests for same user within 10s should return 429."""
-        app, internal_module = setup_internal_router
-        client = TestClient(app)
+        from studio.app.common.db.database import get_db
 
-        with patch.object(internal_module, "get_db") as mock_get_db, patch.object(
+        app, internal_module = setup_internal_router
+
+        # Create mock DB session and user
+        mock_db = MagicMock()
+        mock_user = MagicMock()
+        mock_user.id = 1
+        mock_user.email = "test@example.com"
+        mock_db.query.return_value.filter.return_value.first.return_value = mock_user
+
+        # Override FastAPI dependency properly
+        app.dependency_overrides[get_db] = lambda: mock_db
+
+        with patch.object(
             internal_module, "_get_user_remote_bucket_name"
         ) as mock_bucket:
-            mock_db = MagicMock()
-            mock_user = MagicMock()
-            mock_user.id = 1
-            mock_user.email = "test@example.com"
-            mock_db.query.return_value.filter.return_value.first.return_value = (
-                mock_user
-            )
-            mock_get_db.return_value = mock_db
             mock_bucket.return_value = "test-bucket"
+
+            client = TestClient(app)
 
             # First request should succeed
             response1 = client.post(
@@ -198,6 +211,9 @@ class TestRateLimiting:
             )
             assert response2.status_code == 429
             assert "too frequent" in response2.json()["detail"]
+
+        # Clean up
+        app.dependency_overrides.clear()
 
     def test_rate_limit_resets_after_cooldown(self, setup_internal_router):
         """After 10s cooldown, same user should be able to sync again."""
@@ -339,22 +355,29 @@ class TestSyncEndpointLogic:
 
     def test_nonexistent_user_returns_404(self, setup_app):
         """Request for invalid user_id should return 404."""
+        from studio.app.common.db.database import get_db
+
         app, internal_module = setup_app
+
+        # Create mock DB session that returns no user
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter.return_value.first.return_value = None
+
+        # Override FastAPI dependency properly
+        app.dependency_overrides[get_db] = lambda: mock_db
+
         client = TestClient(app)
 
-        with patch.object(internal_module, "get_db") as mock_get_db:
-            mock_db = MagicMock()
-            # Simulate user not found
-            mock_db.query.return_value.filter.return_value.first.return_value = None
-            mock_get_db.return_value = mock_db
+        response = client.post(
+            "/system-internal/sync-experiments/99999",
+            headers={"X-Internal-Secret": "test-secret"},
+        )
 
-            response = client.post(
-                "/system-internal/sync-experiments/99999",
-                headers={"X-Internal-Secret": "test-secret"},
-            )
+        assert response.status_code == 404
+        assert "User not found" in response.json()["detail"]
 
-            assert response.status_code == 404
-            assert "User not found" in response.json()["detail"]
+        # Clean up
+        app.dependency_overrides.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +543,8 @@ class TestMiddlewareBypass:
         """Internal endpoints should work without JWT (but require secret)."""
         from fastapi import FastAPI
 
+        from studio.app.common.db.database import get_db
+
         app = FastAPI()
 
         with patch.dict(os.environ, {"INTERNAL_API_SECRET": "test-secret"}):
@@ -531,19 +556,22 @@ class TestMiddlewareBypass:
             internal_module._rate_limit_cache.clear()
             app.include_router(internal_module.router)
 
-        client = TestClient(app)
+        # Create mock DB session and user
+        mock_db = MagicMock()
+        mock_user = MagicMock()
+        mock_user.id = 1
+        mock_user.email = "test@example.com"
+        mock_db.query.return_value.filter.return_value.first.return_value = mock_user
 
-        with patch.object(internal_module, "get_db") as mock_get_db, patch.object(
+        # Override FastAPI dependency properly
+        app.dependency_overrides[get_db] = lambda: mock_db
+
+        with patch.object(
             internal_module, "_get_user_remote_bucket_name"
-        ):
-            mock_db = MagicMock()
-            mock_user = MagicMock()
-            mock_user.id = 1
-            mock_user.email = "test@example.com"
-            mock_db.query.return_value.filter.return_value.first.return_value = (
-                mock_user
-            )
-            mock_get_db.return_value = mock_db
+        ) as mock_bucket:
+            mock_bucket.return_value = "test-bucket"
+
+            client = TestClient(app)
 
             # No Bearer token, only internal secret
             response = client.post(
@@ -554,6 +582,9 @@ class TestMiddlewareBypass:
 
             # Should succeed with just the internal secret
             assert response.status_code == 200
+
+        # Clean up
+        app.dependency_overrides.clear()
 
 
 # ---------------------------------------------------------------------------
