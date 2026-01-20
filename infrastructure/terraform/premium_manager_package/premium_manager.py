@@ -38,19 +38,21 @@ import hashlib
 import hmac
 import json
 import os
-import sys
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import boto3
 import pymysql
+
+# Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
+from aws_constants import (
+    DatabaseConfig,
+    ECSTaskStatus,
+    PremiumInstanceConfig,
+    RoutingHeaders,
+)
 from botocore.exceptions import ClientError
-
-# Add parent directory to path for shared imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
-
-from aws_constants import ECSTaskStatus  # noqa: E402
 
 # Constants
 # Default fallback value for premium user count in development/testing scenarios
@@ -128,7 +130,7 @@ def get_db_connection(auto_commit=False):
 
             conn = pymysql.connect(
                 host=host,
-                port=3306,
+                port=DatabaseConfig.DEFAULT_PORT,
                 user=get_required_env_var("RDS_USER"),
                 password=get_required_env_var("RDS_PASSWORD"),
                 database=get_required_env_var("RDS_DATABASE"),
@@ -436,7 +438,7 @@ def get_all_premium_instances_with_states():
                     "Name": "instance-state-name",
                     "Values": ["pending", "running", "stopping", "stopped"],
                 },
-                # Use OR logic: either Name contains "premium" OR Tier tag is "premium"
+                # Use OR logic: Name/Tier/Type tags contain premium identifier
             ]
         )
 
@@ -448,9 +450,18 @@ def get_all_premium_instances_with_states():
             instance_id = instance["InstanceId"]
 
             # Check multiple criteria for premium instances
-            name_match = "premium" in tags.get("Name", "").lower()
-            tier_match = tags.get("Tier", "").lower() == "premium"
-            type_match = "premium" in tags.get("Type", "").lower()
+            name_match = (
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                in tags.get("Name", "").lower()
+            )
+            tier_match = (
+                tags.get("Tier", "").lower()
+                == PremiumInstanceConfig.INSTANCE_IDENTIFIER
+            )
+            type_match = (
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                in tags.get("Type", "").lower()
+            )
 
             # Debug logging for tag matching
             print(f"Instance {instance_id} tag analysis:")
@@ -2340,15 +2351,15 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                 {
                     "Field": "http-header",
                     "HttpHeaderConfig": {
-                        "HttpHeaderName": "X-User-Tier",
-                        "Values": ["premium"],
+                        "HttpHeaderName": RoutingHeaders.USER_TIER,
+                        "Values": [PremiumInstanceConfig.INSTANCE_IDENTIFIER],
                     },
                 },
                 {
                     "Field": "http-header",
                     "HttpHeaderConfig": {
-                        "HttpHeaderName": "X-User-ID",
-                        "Values": [str(user_id)],
+                        "HttpHeaderName": RoutingHeaders.ROUTING_ID,
+                        "Values": [routing_id],
                     },
                 },
             ],
@@ -2753,7 +2764,7 @@ def check_instance_readiness(instance_id: str) -> bool:
             print(f"Status: {last_status} (desired: {desired_status})")
 
             if (
-                "premium" in task_def_arn.lower()
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER in task_def_arn.lower()
                 and last_status == ECSTaskStatus.RUNNING
             ):
                 premium_tasks_running += 1
@@ -3532,6 +3543,9 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                     # Check if this is a shared instance:
                     # 1. Multiple users on the instance, OR
                     # 2. Any user has is_shared=1 flag (incorrectly marked as shared)
+                    # Note: is_shared is stored as INT(0/1) in MySQL, so we compare
+                    # to integer 1, not boolean True. The raw dict from cursor
+                    # returns 0 or 1, not Python bool.
                     has_shared_flag = any(
                         user.get("is_shared", 0) == 1 for user in assigned_users
                     )
@@ -3601,6 +3615,7 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
             else:
                 # Multiple users - migrate all with is_shared=1,
                 # or keep first and migrate rest
+                # Note: is_shared is INT(0/1) in MySQL - compare to int, not bool
                 users_with_shared_flag = [
                     u for u in users if u.get("is_shared", 0) == 1
                 ]

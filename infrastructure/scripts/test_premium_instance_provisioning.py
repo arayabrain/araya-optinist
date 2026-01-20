@@ -57,7 +57,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # Add parent directory for shared infrastructure imports
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from aws_constants import ECSTaskStatus  # noqa: E402
+from aws_constants import DatabaseConfig, ECSTaskStatus  # noqa: E402
 
 try:
     from get_jwt_tokens import generate_jwt_tokens
@@ -185,7 +185,7 @@ def cleanup_test_user_assignments(
 
             connection = pymysql.connect(
                 host=rds_host,
-                port=3306,
+                port=DatabaseConfig.DEFAULT_PORT,
                 user=rds_user,
                 password=rds_password,
                 database=rds_database,

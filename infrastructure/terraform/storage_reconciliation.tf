@@ -46,6 +46,7 @@ resource "aws_lambda_function" "storage_reconciliation" {
   handler       = "storage_reconciliation.handler"
   runtime       = "python3.9"
   timeout       = 900 # 15 minutes - enough time for large batches
+  layers        = [aws_lambda_layer_version.aws_constants.arn]
 
   source_code_hash = data.archive_file.storage_reconciliation_zip.output_base64sha256
 
