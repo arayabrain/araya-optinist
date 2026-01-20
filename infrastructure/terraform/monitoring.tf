@@ -404,7 +404,32 @@ resource "aws_cloudwatch_dashboard" "main" {
           period  = 300
         }
       },
-      # Row 4: System Health Overview
+      # Row 4: Storage Reconciliation & System Health
+      {
+        type   = "metric"
+        x      = 0
+        y      = 18
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Invocations", "stat" : "Sum" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Errors", "stat" : "Sum", "color" : "#d62728" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Duration (ms)", "stat" : "Average", "yAxis" : "right" }],
+            ["AWS/Lambda", "Throttles", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Throttles", "stat" : "Sum", "color" : "#ff7f0e" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-1"
+          title   = "Storage Reconciliation Lambda"
+          period  = 3600
+          yAxis = {
+            right = {
+              label = "Duration (ms)"
+            }
+          }
+        }
+      },
       {
         type   = "metric"
         x      = 12

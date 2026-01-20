@@ -13,6 +13,9 @@ from typing import Dict, List
 
 import pymysql
 
+# Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
+from aws_constants import DatabaseConfig
+
 
 def get_db_connection(auto_commit=False):
     """
@@ -40,7 +43,7 @@ def get_db_connection(auto_commit=False):
 
             conn = pymysql.connect(
                 host=host,
-                port=3306,
+                port=DatabaseConfig.DEFAULT_PORT,
                 user=os.environ.get("RDS_USER"),
                 password=os.environ.get("RDS_PASSWORD"),
                 database=os.environ.get("RDS_DATABASE"),

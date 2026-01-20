@@ -9,7 +9,7 @@ This document describes the features being added to `develop-main` from the `fea
 - **Smart Reconciliation** - Only scan when drift exceeds thresholds or time limits
 - **Memory-Efficient Scanning** - Generator-based streaming prevents paginator metadata accumulation
 - **Batch Processing** - Background job processes users in batches to prevent OOM
-- **Concurrency Control** - PostgreSQL advisory locks prevent duplicate scans
+- **Concurrency Control** - MySQL distributed locks prevent duplicate scans
 
 ---
 
@@ -544,7 +544,7 @@ BackgroundScheduler.add_job(
 
 ---
 
-### 6. PostgreSQL Advisory Locks
+### 6. MySQL Distributed Locks
 
 **File:** `studio/app/common/core/cloud/cloud_utils.py`
 
@@ -574,39 +574,45 @@ Both processes scan same S3 objects concurrently
 Waste: 2× S3 API calls, 2× memory, 2× CPU
 ```
 
-#### After: Advisory Lock Protection
+#### After: Distributed Lock Protection
 
 ```python
 async def _perform_full_scan_and_reset_delta(user_id: int):
     """
-    Perform full S3 scan with advisory lock protection.
+    Perform full S3 scan with distributed lock protection.
 
-    Uses PostgreSQL advisory locks to prevent concurrent scans.
+    Uses MySQL GET_LOCK to prevent concurrent scans of the same user.
     If another process is already scanning this user, skip immediately.
     """
     lock_acquired = False
+    lock_name = None
 
     try:
         from sqlalchemy import text
 
-        # Lock key: namespace * 1M + user_id
-        # Range: 12345000001 - 12345999999 (supports 1M users)
-        lock_key = StorageReconciliation.ADVISORY_LOCK_NAMESPACE * 1000000 + user_id
+        # Create lock name based on user_id
+        # Namespace prevents conflicts with other locks in the system
+        lock_name = (
+            f"storage_scan_{StorageReconciliation.ADVISORY_LOCK_NAMESPACE}_{user_id}"
+        )
+        lock_timeout = 0  # Non-blocking (returns immediately)
 
         with session_scope() as db:
             # Try to acquire lock (non-blocking)
+            # Returns 1 if acquired, 0 if already locked, NULL on error
             lock_result = db.execute(
-                text("SELECT pg_try_advisory_lock(:lock_key)"),
-                {"lock_key": lock_key}
+                text("SELECT GET_LOCK(:lock_name, :timeout) as lock_result"),
+                {"lock_name": lock_name, "timeout": lock_timeout},
             )
-            lock_acquired = lock_result.scalar()  # True if acquired, False if locked
+            result = lock_result.scalar()
+            lock_acquired = result == 1
 
         if not lock_acquired:
             logger.info(f"Skipping scan for user {user_id}: "
                        f"another process is already scanning")
             return  # Exit early - no duplicate work
 
-        logger.debug(f"Acquired advisory lock for user {user_id}")
+        logger.debug(f"Acquired distributed lock for user {user_id}")
 
         # Perform expensive S3 scan
         actual_storage = await _calculate_live_storage_usage(user_id)
@@ -630,36 +636,36 @@ async def _perform_full_scan_and_reset_delta(user_id: int):
 
     finally:
         # Always release lock if acquired
-        if lock_acquired:
+        if lock_acquired and lock_name:
             try:
                 with session_scope() as db:
                     db.execute(
-                        text("SELECT pg_advisory_unlock(:lock_key)"),
-                        {"lock_key": lock_key}
+                        text("SELECT RELEASE_LOCK(:lock_name)"),
+                        {"lock_name": lock_name}
                     )
-                logger.debug(f"Released advisory lock for user {user_id}")
+                logger.debug(f"Released distributed lock for user {user_id}")
             except Exception as e:
-                logger.warning(f"Failed to release advisory lock: {e}")
+                logger.warning(f"Failed to release distributed lock: {e}")
 ```
 
-**Lock Key Scheme:**
+**Lock Name Scheme:**
 ```python
 ADVISORY_LOCK_NAMESPACE = 12345  # Defined in constants.py
 
 # Examples:
-user_id = 1      → lock_key = 12345000001
-user_id = 42     → lock_key = 12345000042
-user_id = 999999 → lock_key = 12345999999
+user_id = 1      → lock_name = "storage_scan_12345_1"
+user_id = 42     → lock_name = "storage_scan_12345_42"
+user_id = 999999 → lock_name = "storage_scan_12345_999999"
 
-# Namespace (12345) reserves range 12345000000-12345999999
-# Other system locks can use different namespaces (e.g., 12346, 12347, ...)
+# Namespace (12345) provides a unique prefix to prevent conflicts
+# Other system locks can use different namespaces (e.g., backup_12346_*, cleanup_12347_*)
 ```
 
 **Benefits:**
-- ✅ Non-blocking lock (`pg_try_advisory_lock` returns immediately)
-- ✅ Automatic cleanup (lock released even on crash)
+- ✅ Non-blocking lock (`GET_LOCK` with timeout=0 returns immediately)
+- ✅ Automatic cleanup (lock released when connection closes)
 - ✅ Per-user locking (user 1 and user 2 can scan concurrently)
-- ✅ Session-level lock (released when connection closes)
+- ✅ Connection-level lock (released when connection terminates)
 
 **Concurrency Example:**
 
@@ -668,10 +674,10 @@ Scenario: Workflow complete + Background job both try to scan user 123
 
 Timeline:
 10:00:00.000 - Workflow triggers scan for user 123
-10:00:00.001 - Acquires advisory lock 12345000123
+10:00:00.001 - Acquires distributed lock "storage_scan_12345_123"
 10:00:00.002 - Starts S3 scan (10,000 API calls, ~30 seconds)
 10:00:10.000 - Background job triggers scan for user 123
-10:00:10.001 - Tries to acquire lock 12345000123 → FAILS (already locked)
+10:00:10.001 - Tries to acquire lock "storage_scan_12345_123" → FAILS (already locked)
 10:00:10.002 - Skips scan (logs "another process is already scanning")
 10:00:30.000 - Workflow completes scan, updates DB, releases lock
 
@@ -699,7 +705,7 @@ class StorageReconciliation:
     BATCH_SIZE = 10  # Process 10 users at a time to prevent OOM
     RATE_LIMIT_DELAY_SECONDS = 0.5  # 0.5s delay between users
 
-    # PostgreSQL advisory lock namespace
+    # Advisory lock namespace
     ADVISORY_LOCK_NAMESPACE = 12345
 
 
@@ -1005,7 +1011,7 @@ Type=oneshot
 User=optinist
 WorkingDirectory=/opt/optinist-for-cloud
 Environment="S3_DEFAULT_BUCKET_NAME=your-bucket"
-Environment="DATABASE_URL=postgresql://..."
+Environment="DATABASE_URL=mysql://..."
 ExecStart=/opt/venv/bin/python studio/scripts/run_storage_reconciliation.py
 StandardOutput=journal
 StandardError=journal
@@ -1040,7 +1046,7 @@ CLI scripts require the same environment as the FastAPI app:
 ```bash
 # Required
 export S3_DEFAULT_BUCKET_NAME=my-bucket
-export DATABASE_URL=postgresql://user:pass@host:5432/db
+export DATABASE_URL=mysql://user:pass@host:3306/db
 # AWS credentials via IAM role or:
 export AWS_ACCESS_KEY_ID=...
 export AWS_SECRET_ACCESS_KEY=...
@@ -1105,6 +1111,117 @@ python studio/scripts/run_storage_reconciliation.py
 Exit codes:
 - `0` = Success
 - `1` = Failure
+
+---
+
+### Lambda-Based Execution
+
+**Lambda Function**: `subscr-storage-reconciliation`
+
+The Lambda is fully implemented and deployed via Terraform:
+
+**Files:**
+- `infrastructure/terraform/storage_reconciliation.tf` - Lambda infrastructure
+- `infrastructure/terraform/storage_reconciliation_package/storage_reconciliation.py` - Lambda handler
+- `infrastructure/terraform/storage_reconciliation_package/README.md` - Documentation
+
+**Key Features:**
+- ✅ **Batch processing** - 10 users at a time to prevent OOM
+- ✅ **True streaming** - Generator-based S3 scanning (constant memory)
+- ✅ **Distributed locks** - MySQL GET_LOCK prevents concurrent scans
+- ✅ **Rate limiting** - 0.5s delay between users
+- ✅ **Drift detection** - Logs warnings when drift exceeds 5% or 100MB
+- ✅ **Standalone** - No dependencies on Studio codebase
+
+**Infrastructure:**
+```hcl
+# Terraform configuration (storage_reconciliation.tf)
+resource "aws_lambda_function" "storage_reconciliation" {
+  function_name = "subscr-storage-reconciliation"
+  runtime       = "python3.9"
+  timeout       = 900  # 15 minutes
+  memory_size   = 128  # MB
+
+  environment {
+    variables = {
+      RDS_HOST               = aws_db_proxy.main.endpoint
+      S3_DEFAULT_BUCKET_NAME = aws_s3_bucket.app_storage.id
+    }
+  }
+}
+
+# Hourly schedule
+resource "aws_cloudwatch_event_rule" "storage_reconciliation_schedule" {
+  schedule_expression = "rate(1 hour)"
+  state               = "ENABLED"
+}
+```
+
+**Deployment:**
+```bash
+# Deploy Lambda
+cd infrastructure/terraform
+terraform apply
+
+# Verify deployment
+aws lambda list-functions --query 'Functions[?FunctionName==`subscr-storage-reconciliation`]'
+
+# Test manually
+aws lambda invoke \
+  --function-name subscr-storage-reconciliation \
+  --payload '{"source": "manual-test"}' \
+  response.json && cat response.json
+```
+
+**Monitoring:**
+
+CloudWatch Dashboard (`subscr-optinist-monitoring`) includes:
+- Storage Reconciliation Duration (Row 6, left)
+- Invocation count and error rate
+- Comparison with other background jobs
+
+**CloudWatch Alarms:**
+- `subscr-storage-reconciliation-errors` - Alert on any errors
+- `subscr-storage-reconciliation-duration-high` - Alert if execution > 10 minutes
+
+**View Logs:**
+```bash
+aws logs tail /aws/lambda/subscr-storage-reconciliation --follow
+```
+
+**Query Drift Warnings:**
+```bash
+aws logs filter-log-events \
+  --log-group-name /aws/lambda/subscr-storage-reconciliation \
+  --filter-pattern "Significant drift" \
+  --start-time $(date -u -d '1 day ago' +%s)000
+```
+
+#### Lambda vs Cron Comparison
+
+| Aspect | Lambda (Implemented) | Cron (Documented) |
+|--------|---------------------|-------------------|
+| Deployment | Terraform apply | Manual cron setup |
+| Monitoring | CloudWatch built-in | Custom logging |
+| Scaling | Automatic | N/A |
+| Isolation | Complete | Shared with web server |
+| Multi-worker safe | Yes | Yes |
+| Cost | ~$4/month | Free (uses existing EC2) |
+| Setup time | 5 minutes | 30+ minutes |
+| Dependencies | Standalone | Full Studio codebase |
+
+#### When to Use Each Approach
+
+**Use Lambda** (current implementation):
+- ✅ AWS deployments with Terraform
+- ✅ Want built-in monitoring and alarms
+- ✅ Prefer serverless architecture
+- ✅ Need quick deployment
+
+**Use Cron** (documented alternative):
+- If running on-premise or non-AWS
+- If you need to reuse Studio codebase directly
+- If Lambda timeout (15 min) is insufficient
 
 ---
 

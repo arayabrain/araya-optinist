@@ -34,15 +34,24 @@ Required Environment Variables:
 - PREMIUM_IDLE_TIMEOUT_HOURS: Must match premium_cleanup.py value
 """
 
+import hashlib
+import hmac
 import json
 import os
-import sys
 import time
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import boto3
 import pymysql
+
+# Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
+from aws_constants import (
+    DatabaseConfig,
+    ECSTaskStatus,
+    PremiumInstanceConfig,
+    RoutingHeaders,
+)
 from botocore.exceptions import ClientError
 
 if TYPE_CHECKING:
@@ -52,15 +61,34 @@ if TYPE_CHECKING:
     from mypy_boto3_elbv2 import ElasticLoadBalancingv2Client
     from mypy_boto3_lambda import LambdaClient
 
-# Add parent directory to path for shared imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
-
-from aws_constants import ECSTaskStatus  # noqa: E402
-
 # Constants
 # Default fallback value for premium user count in development/testing scenarios
 # Used when database queries fail or no premium users exist
 DEFAULT_DEVELOPMENT_CAPACITY = 3
+
+
+def generate_routing_id(uid: str, secret_key: str) -> str:
+    """Generate non-reversible routing ID from UID using HMAC-SHA256
+
+    Creates a cryptographically secure, non-reversible identifier from the user's UID.
+    This routing ID is used in ALB routing rules instead of exposing the raw UID.
+
+    Security properties:
+    - Cannot be reverse-engineered to extract the UID
+    - Deterministic (same UID always produces same routing_id)
+    - Requires the secret key to generate (client cannot forge)
+
+    Args:
+        uid: Firebase user ID
+        secret_key: Secret key for HMAC signature
+
+    Returns:
+        16-character hex string (64 bits of entropy)
+    """
+    signature = hmac.new(
+        secret_key.encode("utf-8"), uid.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return signature[:16]  # 16 hex chars = 64 bits
 
 
 def get_required_env_var(var_name: str, default_value: str | None = None) -> str:
@@ -109,7 +137,7 @@ def get_db_connection(auto_commit=False):
 
             conn = pymysql.connect(
                 host=host,
-                port=3306,
+                port=DatabaseConfig.DEFAULT_PORT,
                 user=get_required_env_var("RDS_USER"),
                 password=get_required_env_var("RDS_PASSWORD"),
                 database=get_required_env_var("RDS_DATABASE"),
@@ -224,7 +252,7 @@ def increment_assignment_attempts(user_id: int) -> int:
 @with_transaction
 def _store_user_assignment_transaction(
     connection,
-    user_id: str,
+    user_id: Optional[int],
     instance_id: str,
     target_group_arn: str,
     rule_arn: str,
@@ -232,9 +260,21 @@ def _store_user_assignment_transaction(
     is_shared: bool = False,
     is_standby: bool = False,
 ):
-    """Internal function: Store user assignment with transaction safety"""
+    """Internal function: Store user assignment with transaction safety
+
+    Args:
+        user_id: User ID (int) or None for standby instances
+        instance_id: EC2 instance ID
+        target_group_arn: ALB target group ARN
+        rule_arn: ALB listener rule ARN
+        instance_state: Current state of instance
+        is_shared: Whether instance is shared
+        is_standby: Whether this is a standby pool assignment (user_id should be None)
+    """
     with connection.cursor() as cursor:
         # Check if user already has assignment with lock to prevent race conditions
+        # For standby instances (user_id=None), WHERE user_id = NULL returns no results
+        # This allows multiple standby instances with user_id=NULL
         cursor.execute(
             """SELECT user_id, assignment_attempts FROM premium_user_assignments
                WHERE user_id = %s FOR UPDATE""",
@@ -405,7 +445,7 @@ def get_all_premium_instances_with_states():
                     "Name": "instance-state-name",
                     "Values": ["pending", "running", "stopping", "stopped"],
                 },
-                # Use OR logic: either Name contains "premium" OR Tier tag is "premium"
+                # Use OR logic: Name/Tier/Type tags contain premium identifier
             ]
         )
 
@@ -417,9 +457,18 @@ def get_all_premium_instances_with_states():
             instance_id = instance["InstanceId"]
 
             # Check multiple criteria for premium instances
-            name_match = "premium" in tags.get("Name", "").lower()
-            tier_match = tags.get("Tier", "").lower() == "premium"
-            type_match = "premium" in tags.get("Type", "").lower()
+            name_match = (
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                in tags.get("Name", "").lower()
+            )
+            tier_match = (
+                tags.get("Tier", "").lower()
+                == PremiumInstanceConfig.INSTANCE_IDENTIFIER
+            )
+            type_match = (
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                in tags.get("Type", "").lower()
+            )
 
             # Debug logging for tag matching
             print(f"Instance {instance_id} tag analysis:")
@@ -900,8 +949,9 @@ def register_orphaned_stopped_instances():
             instance_id = instance["instance_id"]
             try:
                 # Store as standby assignment with is_standby flag
+                # Use NULL user_id for standby instances (no real user assigned)
                 store_user_assignment(
-                    user_id=f"standby-{instance_id}",
+                    user_id=None,
                     instance_id=instance_id,
                     target_group_arn="standby",
                     rule_arn="standby",
@@ -1003,7 +1053,7 @@ def create_running_instance():
 
 @with_transaction
 def try_reserve_instance_transaction(
-    connection, instance_id: str, user_id: str
+    connection, instance_id: str, user_id: int
 ) -> bool:
     """
     Try to reserve an instance for a user using database-level locking.
@@ -1023,7 +1073,7 @@ def try_reserve_instance_transaction(
             print(f"Instance {instance_id} already reserved/assigned")
             return False
 
-        # Create a temporary reservation
+        # Create a temporary reservation using actual user_id
         cursor.execute(
             """INSERT INTO premium_user_assignments
                (user_id, instance_id, target_group_arn, alb_rule_arn,
@@ -1032,7 +1082,7 @@ def try_reserve_instance_transaction(
                VALUES (%s, %s, 'reserving', 'reserving', 'active',
                        'reserving', 0, 1, NOW())
             """,
-            (f"reserving-{user_id}", instance_id),
+            (user_id, instance_id),
         )
         print(f"Reserved instance {instance_id} for user {user_id}")
         return True
@@ -1057,7 +1107,7 @@ def release_instance_reservation(instance_id: str, user_id: int):
                        WHERE instance_id = %s
                        AND user_id = %s
                        AND target_group_arn = 'reserving'""",
-                    (instance_id, f"reserving-{user_id}"),
+                    (instance_id, user_id),
                 )
                 connection.commit()
                 print(f"Released reservation for instance {instance_id}")
@@ -1211,8 +1261,9 @@ def create_and_stop_standby_instance():
         )
 
         # Store in assignments table as standby with is_standby flag
+        # Use NULL for standby instances (no real user assigned)
         store_user_assignment(
-            user_id=f"standby-{instance_id}",
+            user_id=None,
             instance_id=instance_id,
             target_group_arn="standby",
             rule_arn="standby",
@@ -1304,7 +1355,8 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
                 print(f"Executing query for user_id={user_id}")
                 cursor.execute(
                     """SELECT instance_id, target_group_arn, alb_rule_arn, status,
-                    assigned_at FROM premium_user_assignments WHERE user_id = %s""",
+                    assigned_at, is_shared FROM premium_user_assignments
+                    WHERE user_id = %s""",
                     (user_id,),
                 )
                 assignment = cursor.fetchone()
@@ -1322,7 +1374,8 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
                 print(
                     f"Found assignment - "
                     f"instance_id={assignment['instance_id']}, "
-                    f"status={assignment['status']}"
+                    f"status={assignment['status']}, "
+                    f"is_shared={assignment['is_shared']}"
                 )
                 return {
                     "statusCode": 200,
@@ -1336,6 +1389,7 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
                             "assigned_at": assignment["assigned_at"].isoformat()
                             if assignment["assigned_at"]
                             else None,
+                            "is_shared": bool(assignment["is_shared"]),
                         }
                     ),
                 }
@@ -1834,6 +1888,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         # 0. Register any orphaned stopped instances as standby first
+        # Uses NULL user_id for standby instances (no real user)
         register_orphaned_stopped_instances()
 
         # 1. Get comprehensive instance state information
@@ -2284,6 +2339,14 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
             )
 
         # 9. Create ALB listener rule for user routing
+        # Generate non-reversible routing ID from user_id
+        routing_secret_key = get_required_env_var("ROUTING_SECRET_KEY")
+        routing_id = generate_routing_id(str(user_id), routing_secret_key)
+        print(
+            f"Generated routing_id for user: {routing_id[:8]}... "
+            f"(truncated for security)"
+        )
+
         # Get next available priority dynamically to avoid conflicts
         priority = get_next_available_priority(alb_listener_arn, start_priority=100)
 
@@ -2294,15 +2357,15 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                 {
                     "Field": "http-header",
                     "HttpHeaderConfig": {
-                        "HttpHeaderName": "X-User-Tier",
-                        "Values": ["premium"],
+                        "HttpHeaderName": RoutingHeaders.USER_TIER,
+                        "Values": [PremiumInstanceConfig.INSTANCE_IDENTIFIER],
                     },
                 },
                 {
                     "Field": "http-header",
                     "HttpHeaderConfig": {
-                        "HttpHeaderName": "X-User-ID",
-                        "Values": [str(user_id)],
+                        "HttpHeaderName": RoutingHeaders.ROUTING_ID,
+                        "Values": [routing_id],
                     },
                 },
             ],
@@ -2338,7 +2401,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                        WHERE instance_id = %s
                        AND user_id = %s
                        AND target_group_arn = 'reserving'""",
-                    (instance_id, f"reserving-{user_id}"),
+                    (instance_id, user_id),
                 )
                 connection.commit()
 
@@ -2714,7 +2777,7 @@ def check_instance_readiness(instance_id: str) -> bool:
             print(f"Status: {last_status} (desired: {desired_status})")
 
             if (
-                "premium" in task_def_arn.lower()
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER in task_def_arn.lower()
                 and last_status == ECSTaskStatus.RUNNING
             ):
                 premium_tasks_running += 1
@@ -3284,8 +3347,9 @@ def convert_running_instance_to_standby(instance_id: str):
         )
 
         # Add to standby pool in database with is_standby flag
+        # Use NULL for standby instances (no real user assigned)
         store_user_assignment(
-            user_id=f"standby-{instance_id}",
+            user_id=None,
             instance_id=instance_id,
             target_group_arn="standby",
             rule_arn="standby",
@@ -3488,8 +3552,23 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                 ):
                     available_instances.append(instance_id)
                     print(f"Instance {instance_id} is available for migration")
-                elif len(assigned_users) > 1:  # Shared instance
-                    shared_instances.append((instance_id, assigned_users))
+                elif assigned_users:
+                    # Check if this is a shared instance:
+                    # 1. Multiple users on the instance, OR
+                    # 2. Any user has is_shared=1 flag (incorrectly marked as shared)
+                    # Note: is_shared is stored as INT(0/1) in MySQL, so we compare
+                    # to integer 1, not boolean True. The raw dict from cursor
+                    # returns 0 or 1, not Python bool.
+                    has_shared_flag = any(
+                        user.get("is_shared", 0) == 1 for user in assigned_users
+                    )
+                    if len(assigned_users) > 1 or has_shared_flag:
+                        shared_instances.append((instance_id, assigned_users))
+                        print(
+                            f"Instance {instance_id} marked for migration: "
+                            f"{len(assigned_users)} users, "
+                            f"has_shared_flag={has_shared_flag}"
+                        )
 
         # Only migrate if we have available instances
         if not available_instances or not shared_instances:
@@ -3532,17 +3611,39 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                 break
 
             # For autoscaling pool, migrate ALL users (it's a temporary assignment)
-            # For premium instances, migrate all but one user
-            # (keep first user, migrate others)
+            # For premium instances with multiple users, keep first user (without
+            # is_shared flag), migrate others
+            # For single user with is_shared=1 flag, migrate them too
+            # (incorrect assignment)
             if instance_id == "autoscaling-pool":
                 users_to_migrate = users  # Migrate all users from autoscaling pool
                 print(f"Migrating ALL {len(users)} users from autoscaling pool")
-            else:
-                users_to_migrate = users[1:]  # Keep first user, migrate others
+            elif len(users) == 1:
+                # Single user incorrectly marked as shared - migrate them
+                users_to_migrate = users
                 print(
-                    f"Migrating {len(users_to_migrate)} users from "
-                    f"shared premium instance"
+                    f"Migrating single user {users[0].get('user_id')} "
+                    f"incorrectly marked as shared"
                 )
+            else:
+                # Multiple users - migrate all with is_shared=1,
+                # or keep first and migrate rest
+                # Note: is_shared is INT(0/1) in MySQL - compare to int, not bool
+                users_with_shared_flag = [
+                    u for u in users if u.get("is_shared", 0) == 1
+                ]
+                if users_with_shared_flag:
+                    users_to_migrate = users_with_shared_flag
+                    print(
+                        f"Migrating {len(users_to_migrate)} users with is_shared flag "
+                        f"from {instance_id}"
+                    )
+                else:
+                    users_to_migrate = users[1:]  # Keep first user, migrate others
+                    print(
+                        f"Migrating {len(users_to_migrate)} users from "
+                        f"shared premium instance"
+                    )
 
             for user_dict in users_to_migrate:
                 # Extract user_id from the dictionary returned by
