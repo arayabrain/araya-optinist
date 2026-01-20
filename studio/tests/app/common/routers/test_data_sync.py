@@ -22,6 +22,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+
+# ---------------------------------------------------------------------------
+# Mock aws_constants for Lambda tests (aws_constants is only available in Lambda)
+# ---------------------------------------------------------------------------
+class MockDatabaseConfig:
+    DEFAULT_PORT = 3306
+
+
+class MockAwsConstants:
+    DatabaseConfig = MockDatabaseConfig
+
+
+# Install mock before any Lambda package imports
+sys.modules["aws_constants"] = MockAwsConstants
+
 # ---------------------------------------------------------------------------
 # Test Case 1: Internal API Security
 # ---------------------------------------------------------------------------
