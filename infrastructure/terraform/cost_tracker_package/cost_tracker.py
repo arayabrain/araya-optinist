@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from mypy_boto3_cloudwatch import CloudWatchClient
     from mypy_boto3_ec2 import EC2Client
 
-
 # Set up logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
