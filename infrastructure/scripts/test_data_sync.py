@@ -155,11 +155,92 @@ def get_user_workspaces(user_id: int) -> list:
         conn.close()
 
 
+def get_experiments_from_s3(user_id: int, workspace_id: int) -> list:
+    """
+    List experiments from S3 for a user's workspace.
+
+    Used when local files don't exist (e.g., after migration to new instance).
+
+    Args:
+        user_id: User ID
+        workspace_id: Workspace ID
+
+    Returns:
+        List of experiment dicts with unique_id and name
+    """
+    try:
+        import boto3
+
+        # Get user's S3 bucket name from database (stored in attributes JSON)
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT attributes FROM users WHERE id = %s",
+                    (user_id,),
+                )
+                result = cursor.fetchone()
+                if not result or not result.get("attributes"):
+                    return []
+                attributes = result["attributes"]
+                if isinstance(attributes, str):
+                    attributes = json.loads(attributes)
+                bucket_name = attributes.get("remote_bucket_name")
+                if not bucket_name:
+                    return []
+        finally:
+            conn.close()
+
+        # List experiment directories in S3
+        s3 = boto3.client("s3")
+        prefix = f"app/studio_data/output/{workspace_id}/"
+
+        response = s3.list_objects_v2(
+            Bucket=bucket_name,
+            Prefix=prefix,
+            Delimiter="/",
+        )
+
+        experiments = []
+        for common_prefix in response.get("CommonPrefixes", []):
+            # Extract unique_id from prefix like "app/studio_data/output/74/e8c519c2/"
+            exp_path = common_prefix["Prefix"].rstrip("/")
+            unique_id = exp_path.split("/")[-1]
+
+            # Skip tutorial directories
+            if unique_id.startswith("tutorial"):
+                continue
+
+            # Try to get experiment name from experiment.yaml in S3
+            exp_name = "(in S3)"
+            try:
+                yaml_key = f"{prefix}{unique_id}/experiment.yaml"
+                yaml_obj = s3.get_object(Bucket=bucket_name, Key=yaml_key)
+                yaml_content = yaml_obj["Body"].read().decode("utf-8")
+                data = yaml.safe_load(yaml_content)
+                exp_name = data.get("name", "(unknown)")
+            except Exception:
+                pass
+
+            experiments.append(
+                {
+                    "unique_id": unique_id,
+                    "name": exp_name,
+                    "source": "s3",
+                }
+            )
+
+        return experiments
+    except Exception as e:
+        print(f"Warning: Could not list experiments from S3: {e}")
+        return []
+
+
 def list_experiments_for_user(user_id: int) -> dict:
     """
     List all experiments for a user across all workspaces.
 
-    Returns workspace_id, unique_id, and experiment name from local files.
+    First checks local files, then falls back to S3 if no local experiments found.
 
     Args:
         user_id: User ID to list experiments for
@@ -172,8 +253,9 @@ def list_experiments_for_user(user_id: int) -> dict:
     if not workspaces:
         return {"error": f"No workspaces found for user {user_id}"}
 
-    output_dir = os.environ.get("OUTPUT_DIR", "/tmp/studio/output")
+    output_dir = os.environ.get("OUTPUT_DIR", "/app/studio_data/output")
     results = []
+    total_local_experiments = 0
 
     for ws in workspaces:
         workspace_id = ws["id"]
@@ -185,6 +267,10 @@ def list_experiments_for_user(user_id: int) -> dict:
             for item in os.listdir(workspace_path):
                 item_path = os.path.join(workspace_path, item)
                 if os.path.isdir(item_path):
+                    # Skip tutorial directories
+                    if item.startswith("tutorial"):
+                        continue
+
                     # Try to read experiment name from experiment.yaml
                     exp_name = None
                     exp_yaml = os.path.join(item_path, "experiment.yaml")
@@ -202,8 +288,10 @@ def list_experiments_for_user(user_id: int) -> dict:
                         {
                             "unique_id": item,
                             "name": exp_name,
+                            "source": "local",
                         }
                     )
+                    total_local_experiments += 1
 
         results.append(
             {
@@ -212,6 +300,14 @@ def list_experiments_for_user(user_id: int) -> dict:
                 "experiments": experiments,
             }
         )
+
+    # If no local experiments found, try S3 (for lazy sync testing after migration)
+    if total_local_experiments == 0:
+        print("No local experiments found, checking S3...")
+        for ws_result in results:
+            s3_experiments = get_experiments_from_s3(user_id, ws_result["workspace_id"])
+            if s3_experiments:
+                ws_result["experiments"] = s3_experiments
 
     return {
         "status": "success",
@@ -222,7 +318,7 @@ def list_experiments_for_user(user_id: int) -> dict:
 
 def get_workspace_experiments(workspace_id: str) -> list:
     """Get all experiment unique_ids in a workspace directory."""
-    output_dir = os.environ.get("OUTPUT_DIR", "/tmp/studio/output")
+    output_dir = os.environ.get("OUTPUT_DIR", "/app/studio_data/output")
     workspace_path = os.path.join(output_dir, workspace_id)
 
     if not os.path.isdir(workspace_path):
@@ -251,7 +347,7 @@ def clear_local_experiment(workspace_id: str, unique_id: str) -> dict:
     Returns:
         Dict with status and list of deleted files
     """
-    output_dir = os.environ.get("OUTPUT_DIR", "/tmp/studio/output")
+    output_dir = os.environ.get("OUTPUT_DIR", "/app/studio_data/output")
     experiment_path = os.path.join(output_dir, workspace_id, unique_id)
 
     if not os.path.isdir(experiment_path):
@@ -280,6 +376,57 @@ def clear_local_experiment(workspace_id: str, unique_id: str) -> dict:
     }
 
 
+def clear_all_workspace_experiment_metadata(workspace_id: str) -> dict:
+    """Clear ALL experiment metadata files in a workspace.
+
+    Used for testing fetch_last_experiment, which needs to sync all experiments
+    from S3 to determine which is the "last" one.
+
+    Args:
+        workspace_id: Workspace ID to clear experiments from
+
+    Returns:
+        Dict with status and counts of deleted files
+    """
+    output_dir = os.environ.get("OUTPUT_DIR", "/app/studio_data/output")
+    workspace_path = os.path.join(output_dir, workspace_id)
+
+    if not os.path.isdir(workspace_path):
+        return {
+            "status": "no_workspace",
+            "workspace_id": workspace_id,
+            "message": f"Workspace directory not found: {workspace_path}",
+        }
+
+    metadata_files = ["experiment.yaml", "workflow.yaml", "snakemake_config.yaml"]
+    experiments_cleared = 0
+    files_deleted = 0
+
+    # Iterate through all experiment directories in the workspace
+    for item in os.listdir(workspace_path):
+        experiment_path = os.path.join(workspace_path, item)
+        if not os.path.isdir(experiment_path):
+            continue
+
+        experiment_files_deleted = 0
+        for filename in metadata_files:
+            filepath = os.path.join(experiment_path, filename)
+            if os.path.isfile(filepath):
+                os.remove(filepath)
+                experiment_files_deleted += 1
+                files_deleted += 1
+
+        if experiment_files_deleted > 0:
+            experiments_cleared += 1
+
+    return {
+        "status": "cleared",
+        "workspace_id": workspace_id,
+        "experiments_cleared": experiments_cleared,
+        "files_deleted": files_deleted,
+    }
+
+
 def clear_local_visualization_files(workspace_id: str, unique_id: str) -> dict:
     """Clear local visualization files (JSON, TIFF) for tiered sync testing.
 
@@ -294,7 +441,7 @@ def clear_local_visualization_files(workspace_id: str, unique_id: str) -> dict:
         Dict with status and counts of deleted files
     """
 
-    output_dir = os.environ.get("OUTPUT_DIR", "/tmp/studio/output")
+    output_dir = os.environ.get("OUTPUT_DIR", "/app/studio_data/output")
     experiment_path = os.path.join(output_dir, workspace_id, unique_id)
 
     if not os.path.isdir(experiment_path):
@@ -342,7 +489,7 @@ def clear_local_edit_roi_files(workspace_id: str, unique_id: str) -> dict:
     Returns:
         Dict with status and counts of deleted files
     """
-    output_dir = os.environ.get("OUTPUT_DIR", "/tmp/studio/output")
+    output_dir = os.environ.get("OUTPUT_DIR", "/app/studio_data/output")
     experiment_path = os.path.join(output_dir, workspace_id, unique_id)
 
     if not os.path.isdir(experiment_path):
@@ -437,17 +584,16 @@ def trigger_proactive_sync(user_id: int) -> dict:
     Calls the /system-internal/sync-experiments endpoint to trigger
     immediate bulk sync of all experiment metadata for the user.
 
-    Requires INTERNAL_API_SECRET and ALB_DNS_NAME environment variables.
+    Requires INTERNAL_API_SECRET environment variable.
+    Uses get_api_base_url() for the API endpoint.
     """
-    alb_dns = os.environ.get("ALB_DNS_NAME")
     internal_secret = os.environ.get("INTERNAL_API_SECRET")
 
-    if not alb_dns:
-        return {"error": "ALB_DNS_NAME environment variable is required"}
     if not internal_secret:
         return {"error": "INTERNAL_API_SECRET environment variable is required"}
 
-    url = f"https://{alb_dns}/system-internal/sync-experiments/{user_id}"
+    base_url = get_api_base_url()
+    url = f"{base_url}/system-internal/sync-experiments/{user_id}"
     headers = {
         "X-Internal-Secret": internal_secret,
         "Content-Type": "application/json",
@@ -501,19 +647,41 @@ def trigger_proactive_sync(user_id: int) -> dict:
 # ASG and ECS Auto-Scaling Functions
 # =============================================================================
 
-# Required environment variables for ASG/ECS operations:
-#   AWS_REGION    - AWS region (e.g., ap-northeast-1)
-#   ASG_NAME      - Auto Scaling Group name
-#   ECS_CLUSTER   - ECS cluster name
-#   ECS_SERVICE   - ECS service name
+# Environment variables for ASG/ECS operations (auto-discovered if not set):
+#   AWS_REGION    - AWS region (default: ap-northeast-1)
+#   ASG_NAME      - Auto Scaling Group name (auto-discovered)
+#   ECS_CLUSTER   - ECS cluster name (auto-discovered)
+#   ECS_SERVICE   - ECS service name (auto-discovered)
+
+# Cache for discovered values
+_discovered_values = {}
 
 
 def get_aws_region() -> str:
-    """Get AWS region from environment (required)."""
+    """Get AWS region from environment or default."""
     region = os.environ.get("AWS_REGION")
-    if not region:
-        raise ValueError("AWS_REGION environment variable is required")
-    return region
+    if region:
+        return region
+
+    # Try to get from ECS metadata
+    ecs_uri = os.environ.get("ECS_CONTAINER_METADATA_URI_V4")
+    if ecs_uri:
+        try:
+            import requests
+
+            resp = requests.get(f"{ecs_uri}/task", timeout=2)
+            if resp.status_code == 200:
+                # Extract region from task ARN
+                task_arn = resp.json().get("TaskARN", "")
+                # ARN format: arn:aws:ecs:REGION:ACCOUNT:task/...
+                parts = task_arn.split(":")
+                if len(parts) >= 4:
+                    return parts[3]
+        except Exception:
+            pass
+
+    # Default to Tokyo region
+    return "ap-northeast-1"
 
 
 def get_asg_client():
@@ -530,28 +698,154 @@ def get_ecs_client():
     return boto3.client("ecs", region_name=get_aws_region())
 
 
-def get_ecs_cluster() -> str:
-    """Get ECS cluster name from environment (required)."""
-    cluster = os.environ.get("ECS_CLUSTER")
+def discover_asg_name() -> str:
+    """Auto-discover ASG name by listing ASGs with 'optinist' in the name."""
+    if "asg_name" in _discovered_values:
+        return _discovered_values["asg_name"]
+
+    try:
+        asg_client = get_asg_client()
+        response = asg_client.describe_auto_scaling_groups()
+
+        for asg in response.get("AutoScalingGroups", []):
+            name = asg["AutoScalingGroupName"]
+            if "optinist" in name.lower():
+                _discovered_values["asg_name"] = name
+                print(f"Auto-discovered ASG: {name}")
+                return name
+    except Exception as e:
+        print(f"Warning: Could not auto-discover ASG: {e}")
+
+    return None
+
+
+def discover_ecs_cluster_and_service() -> tuple:
+    """Auto-discover ECS cluster and service names."""
+    if "ecs_cluster" in _discovered_values:
+        return _discovered_values["ecs_cluster"], _discovered_values["ecs_service"]
+
+    cluster = None
+    service = None
+
+    # Try to get from ECS metadata (works when running inside container)
+    ecs_uri = os.environ.get("ECS_CONTAINER_METADATA_URI_V4")
+    if ecs_uri:
+        try:
+            import requests
+
+            resp = requests.get(f"{ecs_uri}/task", timeout=2)
+            if resp.status_code == 200:
+                data = resp.json()
+                cluster_arn = data.get("Cluster", "")
+                # Cluster can be ARN or just name
+                if "/" in cluster_arn:
+                    cluster = cluster_arn.split("/")[-1]
+                elif ":" in cluster_arn:
+                    cluster = cluster_arn.split(":")[-1]
+                else:
+                    cluster = cluster_arn
+
+                # Get service from task group if available
+                task_group = data.get("Group", "")
+                if task_group.startswith("service:"):
+                    service = task_group.split(":", 1)[1]
+
+                # If no service from group, infer from cluster name pattern
+                # e.g., subscr-optinist-cloud-cluster -> subscr-optinist-cloud-service
+                if not service and cluster:
+                    if cluster.endswith("-cluster"):
+                        service = cluster.replace("-cluster", "-service")
+                    else:
+                        service = f"{cluster}-service"
+
+                if cluster and service:
+                    _discovered_values["ecs_cluster"] = cluster
+                    _discovered_values["ecs_service"] = service
+                    print(f"Auto-discovered ECS: cluster={cluster}, service={service}")
+                    return cluster, service
+
+        except Exception as e:
+            print(f"Warning: Could not get ECS metadata: {e}")
+
+    # Fallback: try listing via API (may fail due to IAM)
     if not cluster:
-        raise ValueError("ECS_CLUSTER environment variable is required")
-    return cluster
+        try:
+            ecs_client = get_ecs_client()
+            clusters_resp = ecs_client.list_clusters()
+            for cluster_arn in clusters_resp.get("clusterArns", []):
+                cluster_name = cluster_arn.split("/")[-1]
+                if "optinist" in cluster_name.lower():
+                    cluster = cluster_name
+                    break
+        except Exception as e:
+            print(f"Warning: Could not list ECS clusters: {e}")
+
+    if cluster and not service:
+        try:
+            ecs_client = get_ecs_client()
+            services_resp = ecs_client.list_services(cluster=cluster)
+            for service_arn in services_resp.get("serviceArns", []):
+                service_name = service_arn.split("/")[-1]
+                if "optinist" in service_name.lower():
+                    service = service_name
+                    break
+        except Exception:
+            # Infer service name from cluster name
+            if cluster.endswith("-cluster"):
+                service = cluster.replace("-cluster", "-service")
+
+    if cluster and service:
+        _discovered_values["ecs_cluster"] = cluster
+        _discovered_values["ecs_service"] = service
+        print(f"Auto-discovered ECS: cluster={cluster}, service={service}")
+        return cluster, service
+
+    return None, None
+
+
+def get_ecs_cluster() -> str:
+    """Get ECS cluster name from environment or auto-discover."""
+    cluster = os.environ.get("ECS_CLUSTER")
+    if cluster:
+        return cluster
+
+    cluster, _ = discover_ecs_cluster_and_service()
+    if cluster:
+        return cluster
+
+    raise ValueError(
+        "ECS_CLUSTER not found - set environment variable or ensure discovery works"
+    )
 
 
 def get_ecs_service() -> str:
-    """Get ECS service name from environment (required)."""
+    """Get ECS service name from environment or auto-discover."""
     service = os.environ.get("ECS_SERVICE")
-    if not service:
-        raise ValueError("ECS_SERVICE environment variable is required")
-    return service
+    if service:
+        return service
+
+    _, service = discover_ecs_cluster_and_service()
+    if service:
+        return service
+
+    raise ValueError(
+        "ECS_SERVICE not found - set environment variable or ensure discovery works"
+    )
 
 
 def get_asg_name() -> str:
-    """Get ASG name from environment (required)."""
+    """Get ASG name from environment or auto-discover."""
     asg_name = os.environ.get("ASG_NAME")
-    if not asg_name:
-        raise ValueError("ASG_NAME environment variable is required")
-    return asg_name
+    if asg_name:
+        return asg_name
+
+    asg_name = discover_asg_name()
+    if asg_name:
+        return asg_name
+
+    raise ValueError(
+        "ASG_NAME not found - set environment variable or ensure discovery works"
+    )
 
 
 def get_asg_status() -> dict:
@@ -864,9 +1158,9 @@ def ensure_multiple_instances(current_instance: str) -> dict:
 
     # Need to scale up
     print(f"Only {healthy_count} instance(s) and {running_tasks} task(s) available.")
-    print("Scaling up ASG and ECS service to 2...")
+    print("Scaling up to 2 instances...")
 
-    # Suspend auto-scaling to prevent interference during scale-up
+    # Suspend auto-scaling alarms to prevent interference during scale-up
     suspend_result = suspend_asg_scaling()
     if "error" in suspend_result:
         print(f"Warning: Could not suspend scaling: {suspend_result['error']}")
@@ -874,7 +1168,7 @@ def ensure_multiple_instances(current_instance: str) -> dict:
 
     total_wait_time = 0
 
-    # Step 1: Scale ASG if needed
+    # Step 1: Scale ASG - the free_manager Lambda will sync ECS automatically
     if healthy_count < 2:
         scale_result = scale_asg(2)
         if "error" in scale_result:
@@ -887,18 +1181,22 @@ def ensure_multiple_instances(current_instance: str) -> dict:
                 return wait_result
             total_wait_time += wait_result.get("elapsed_seconds", 0)
 
-    # Step 2: Scale ECS service if needed
-    if running_tasks < 2:
-        ecs_scale_result = scale_ecs_service(2)
-        if "error" in ecs_scale_result:
-            return ecs_scale_result
+    # Step 2: Wait for ECS tasks (Lambda syncs ECS to ASG via lifecycle hook)
+    # The free_manager Lambda is triggered by ASG lifecycle events and syncs ECS
+    ecs_status = get_ecs_service_status()
+    if ecs_status.get("running_count", 0) < 2:
+        print("Waiting for ECS tasks to start (Lambda syncs ECS to ASG)...")
+        task_wait_result = wait_for_running_tasks(target_count=2)
+        if "error" in task_wait_result:
+            # If Lambda didn't sync, try manual ECS scale as fallback
+            print("Attempting manual ECS scale as fallback...")
+            ecs_scale_result = scale_ecs_service(2)
+            if "error" not in ecs_scale_result:
+                task_wait_result = wait_for_running_tasks(target_count=2)
 
-        if ecs_scale_result.get("status") != "no_change":
-            print("Waiting for ECS tasks to start running...")
-            task_wait_result = wait_for_running_tasks(target_count=2)
-            if "error" in task_wait_result:
-                return task_wait_result
-            total_wait_time += task_wait_result.get("elapsed_seconds", 0)
+        if "error" in task_wait_result:
+            return task_wait_result
+        total_wait_time += task_wait_result.get("elapsed_seconds", 0)
 
     # Get updated list of healthy instances
     asg_status = get_asg_status()
@@ -1040,9 +1338,10 @@ def migrate_user_auto(
 
 # Import token generation utilities (optional - for auto-generate feature)
 try:
-    from get_jwt_tokens import generate_jwt_tokens
+    from get_jwt_tokens import generate_jwt_tokens, initialize_firebase_admin
 except ImportError:
     generate_jwt_tokens = None
+    initialize_firebase_admin = None
 
 
 def get_auth_headers(token: str) -> dict:
@@ -1054,11 +1353,25 @@ def get_auth_headers(token: str) -> dict:
 
 
 def get_api_base_url() -> str:
-    """Get base URL for API requests."""
+    """Get base URL for API requests.
+
+    Checks (in order):
+    1. ALB_DNS_NAME env var (explicit ALB DNS)
+    2. FRONTEND_SERVER_HOST env var (frontend hostname)
+    3. Falls back to localhost:8000 (for in-container testing)
+    """
     alb_dns = os.environ.get("ALB_DNS_NAME")
-    if not alb_dns:
-        raise ValueError("ALB_DNS_NAME environment variable is required")
-    return f"https://{alb_dns}"
+    if alb_dns:
+        return f"https://{alb_dns}"
+
+    frontend_host = os.environ.get("FRONTEND_SERVER_HOST")
+    if frontend_host:
+        return f"https://{frontend_host}"
+
+    # Inside container, we can use localhost
+    backend_host = os.environ.get("BACKEND_HOST", "localhost")
+    backend_port = os.environ.get("BACKEND_PORT", "8000")
+    return f"http://{backend_host}:{backend_port}"
 
 
 def make_api_request(
@@ -1137,6 +1450,164 @@ def load_token_from_file(user_email: str = None) -> str:
         return None
 
 
+def find_firebase_credentials() -> str:
+    """
+    Find Firebase service account credentials in various locations.
+
+    Checks (in order):
+    1. FIREBASE_SERVICE_ACCOUNT_KEY env var (JSON string)
+    2. FIREBASE_PRIVATE_JSON env var (JSON string)
+    3. Container config paths
+    4. Script directory paths
+
+    Returns:
+        Path to credentials file, or None if using env var or not found
+    """
+    # Check environment variables first
+    if os.environ.get("FIREBASE_SERVICE_ACCOUNT_KEY"):
+        print("Found Firebase credentials in FIREBASE_SERVICE_ACCOUNT_KEY env var")
+        return None  # Will use env var directly
+
+    if os.environ.get("FIREBASE_PRIVATE_JSON"):
+        # Copy to the expected env var name
+        os.environ["FIREBASE_SERVICE_ACCOUNT_KEY"] = os.environ["FIREBASE_PRIVATE_JSON"]
+        print("Found Firebase credentials in FIREBASE_PRIVATE_JSON env var")
+        return None
+
+    # Check container-specific paths
+    container_paths = [
+        "/app/studio/config/auth/firebase_private.json",
+        "/app/studio_data/config/auth/firebase_private.json",
+        "/app/config/auth/firebase_private.json",
+        "/app/config/firebase-service-account.json",
+    ]
+
+    # Check script directory paths
+    script_dir = Path(__file__).parent
+    local_paths = [
+        script_dir / "firebase-service-account.json",
+        script_dir / "terraform" / "firebase-service-account.json",
+        script_dir.parent / "studio" / "config" / "auth" / "firebase_private.json",
+    ]
+
+    all_paths = container_paths + [str(p) for p in local_paths]
+
+    for path in all_paths:
+        if os.path.exists(path):
+            print(f"Found Firebase credentials at: {path}")
+            return path
+
+    return None
+
+
+def get_test_users_from_env() -> list:
+    """
+    Get test users from TEST_USERS_CONFIG environment variable.
+
+    Returns:
+        List of test user dicts with email, firebase_uid, name, etc.
+    """
+    test_users_json = os.environ.get("TEST_USERS_CONFIG")
+    if not test_users_json:
+        return []
+
+    try:
+        users = json.loads(test_users_json)
+        if isinstance(users, list):
+            return users
+    except json.JSONDecodeError:
+        pass
+
+    return []
+
+
+def generate_token_for_user(email: str) -> str:
+    """
+    Generate a Firebase ID token for a specific user.
+
+    Uses Firebase Admin SDK to create a custom token, then exchanges it
+    for an ID token via the Firebase REST API.
+
+    Args:
+        email: User email to generate token for
+
+    Returns:
+        JWT token string, or None if generation failed
+    """
+    # Find Firebase credentials
+    cred_path = find_firebase_credentials()
+
+    # Try to initialize Firebase Admin SDK
+    if initialize_firebase_admin is None:
+        print("Firebase Admin SDK not available (firebase-admin not installed)")
+        return None
+
+    if not initialize_firebase_admin(cred_path):
+        print("Failed to initialize Firebase Admin SDK")
+        return None
+
+    # Get test users from environment or config
+    test_users = get_test_users_from_env()
+    if not test_users:
+        print("TEST_USERS_CONFIG env var not found, trying Terraform...")
+        # Fall back to generate_jwt_tokens which handles Terraform
+        return None
+
+    # Find the user
+    user_data = None
+    for user in test_users:
+        if user.get("email") == email:
+            user_data = user
+            break
+
+    if not user_data:
+        print(f"User {email} not found in TEST_USERS_CONFIG")
+        return None
+
+    firebase_uid = user_data.get("firebase_uid")
+    if not firebase_uid:
+        print(f"No firebase_uid for user {email}")
+        return None
+
+    # Import Firebase auth
+    try:
+        from firebase_admin import auth as firebase_auth
+    except ImportError:
+        print("firebase_admin not installed")
+        return None
+
+    # Create custom token and exchange for ID token
+    try:
+        from studio.app.common.core.auth import pyrebase_app
+
+        custom_token = firebase_auth.create_custom_token(firebase_uid)
+        print(f"Created custom token for {email}")
+
+        user = pyrebase_app.auth().sign_in_with_custom_token(custom_token.decode())
+        id_token = user["idToken"]
+        print("Exchanged for ID token (expires in 1 hour)")
+
+        # Save token to file for reuse
+        tokens_file = Path(__file__).parent / "tokens.json"
+        try:
+            existing_tokens = {}
+            if tokens_file.exists():
+                with open(tokens_file) as f:
+                    existing_tokens = json.load(f)
+            existing_tokens[email] = id_token
+            with open(tokens_file, "w") as f:
+                json.dump(existing_tokens, f, indent=2)
+            print(f"Token saved to {tokens_file}")
+        except Exception as e:
+            print(f"Warning: Could not save token: {e}")
+
+        return id_token
+
+    except Exception as e:
+        print(f"Error generating token: {e}")
+        return None
+
+
 def get_or_generate_token(user_email: str = None, auto_generate: bool = False) -> str:
     """
     Get JWT token from file or generate new one.
@@ -1153,22 +1624,45 @@ def get_or_generate_token(user_email: str = None, auto_generate: bool = False) -
     if token:
         return token
 
-    # Auto-generate if requested and available
-    if auto_generate:
-        if generate_jwt_tokens is None:
-            print("Token generation not available (firebase-admin not installed)")
-            return None
+    # Auto-generate if requested
+    if auto_generate and user_email:
+        # Try direct token generation using TEST_USERS_CONFIG
+        # (faster, works in container)
+        token = generate_token_for_user(user_email)
+        if token:
+            return token
 
-        print("Generating new tokens...")
-        tokens = generate_jwt_tokens(
-            environment="cloud",
-            terraform_dir=str(Path(__file__).parent / "terraform"),
-            user_type="free",
-            multi_free=True,
-        )
+        # Fall back to generate_jwt_tokens (uses Terraform)
+        if generate_jwt_tokens is not None:
+            # Find Firebase credentials
+            cred_path = find_firebase_credentials()
 
-        if tokens:
-            return load_token_from_file(user_email)
+            # Determine terraform directory
+            terraform_dir = None
+            possible_tf_dirs = [
+                Path(__file__).parent / "terraform",
+                Path("/app/scripts/terraform"),
+                Path(__file__).parent.parent / "terraform",
+            ]
+            for tf_dir in possible_tf_dirs:
+                if tf_dir.exists():
+                    terraform_dir = str(tf_dir)
+                    break
+
+            if not terraform_dir:
+                terraform_dir = str(Path(__file__).parent / "terraform")
+
+            print("Trying generate_jwt_tokens fallback...")
+            tokens = generate_jwt_tokens(
+                environment="cloud",
+                terraform_dir=terraform_dir,
+                service_account_path=cred_path,
+                user_type="free",
+                multi_free=True,
+            )
+
+            if tokens:
+                return load_token_from_file(user_email)
 
     return None
 
@@ -1404,7 +1898,7 @@ def find_user_and_experiment(email: str) -> dict:
 
     user = users[0]
     user_id = user["id"]
-    print(f"      Found: {user['name']} (ID: {user_id})")
+    print(f"Found: {user['name']} (ID: {user_id})")
 
     exp_result = list_experiments_for_user(user_id)
     if exp_result.get("status") != "success":
@@ -1445,7 +1939,7 @@ def run_test_lazy_sync(email: str) -> dict:
     workspace_id = setup["workspace_id"]
     unique_id = setup["unique_id"]
     exp_name = setup["exp_name"]
-    print(f"      Found: {exp_name} ({workspace_id}/{unique_id})")
+    print(f"Found: {exp_name} ({workspace_id}/{unique_id})")
 
     # Step 3: Get token
     print("\n[3/4] Loading token...")
@@ -1458,7 +1952,7 @@ def run_test_lazy_sync(email: str) -> dict:
             "step": 3,
             "error": "No token. Run: python get_jwt_tokens.py --multi-free",
         }
-    print("      Token loaded")
+    print("Token loaded")
 
     # Step 4: Test each endpoint
     print("\n[4/4] Testing endpoints...")
@@ -1466,18 +1960,20 @@ def run_test_lazy_sync(email: str) -> dict:
     results = {}
 
     # Test 1: fetch_last_experiment
+    # This test clears ALL experiment metadata in the workspace because
+    # fetch_last needs to compare all experiments to find the "last" one
     print("\n      [a] GET /workflow/fetch (fetch_last_experiment)")
-    clear_local_experiment(ws_id, unique_id)
+    clear_all_workspace_experiment_metadata(ws_id)
     result = test_fetch_last_experiment(ws_id, token)
     results["fetch_last"] = result.get("status") == "success"
-    print(f"          {'PASS' if results['fetch_last'] else 'FAIL'}")
+    print(f"{'PASS' if results['fetch_last'] else 'FAIL'}")
 
     # Test 2: run_result
     print("\n      [b] POST /run/result (run_result)")
     clear_local_experiment(ws_id, unique_id)
     result = test_run_result(ws_id, unique_id, token)
     results["run_result"] = result.get("status") == "success"
-    print(f"          {'PASS' if results['run_result'] else 'FAIL'}")
+    print(f"{'PASS' if results['run_result'] else 'FAIL'}")
 
     # Test 3: rename (non-destructive)
     print("\n      [c] PATCH /experiments/.../rename (rename_experiment)")
@@ -1485,14 +1981,14 @@ def run_test_lazy_sync(email: str) -> dict:
     # Rename to same name (effectively a no-op but triggers sync)
     result = test_experiment_rename(ws_id, unique_id, exp_name, token)
     results["rename"] = result.get("status") == "success"
-    print(f"          {'PASS' if results['rename'] else 'FAIL'}")
+    print(f"{'PASS' if results['rename'] else 'FAIL'}")
 
     # Test 4: visualization sync (tiered sync - JSON/TIFF first, PKL/NWB background)
     print("\n      [d] POST /outputs/sync (visualization_sync)")
     clear_local_visualization_files(ws_id, unique_id)
     result = test_visualization_sync(ws_id, unique_id, token)
     results["visualization_sync"] = result.get("status") == "success"
-    print(f"          {'PASS' if results['visualization_sync'] else 'FAIL'}")
+    print(f"{'PASS' if results['visualization_sync'] else 'FAIL'}")
 
     # Summary
     passed = sum(1 for v in results.values() if v)
@@ -1537,7 +2033,7 @@ def run_test_proactive_sync(email: str) -> dict:
     workspace_id = setup["workspace_id"]
     unique_id = setup["unique_id"]
     exp_name = setup["exp_name"]
-    print(f"      Found: {exp_name} ({workspace_id}/{unique_id})")
+    print(f"Found: {exp_name} ({workspace_id}/{unique_id})")
 
     # Step 3: Clear local files
     print("\n[3/5] Clearing local experiment files...")
@@ -1547,9 +2043,9 @@ def run_test_proactive_sync(email: str) -> dict:
 
     deleted = clear_result.get("deleted_files", [])
     if not deleted:
-        print("      Warning: No files to clear (already missing?)")
+        print("Warning: No files to clear (already missing?)")
     else:
-        print(f"      Cleared: {', '.join(deleted)}")
+        print(f"Cleared: {', '.join(deleted)}")
 
     # Step 4: Trigger proactive sync
     print("\n[4/5] Triggering proactive sync...")
@@ -1557,31 +2053,50 @@ def run_test_proactive_sync(email: str) -> dict:
     if "error" in sync_result:
         return {"status": "error", "step": 4, "error": sync_result["error"]}
 
-    print(f"      Sync initiated: {sync_result.get('status')}")
+    print(f"Sync initiated: {sync_result.get('status')}")
 
-    # Step 5: Verify files exist (wait a moment for background task)
+    # Step 5: Verify files exist (poll with timeout for background task)
     print("\n[5/5] Verifying sync (waiting for background task)...")
-    time.sleep(2)  # Brief wait for background sync
 
-    output_dir = os.environ.get("OUTPUT_DIR", "/tmp/studio/output")
+    output_dir = os.environ.get("OUTPUT_DIR", "/app/studio_data/output")
     exp_yaml = os.path.join(output_dir, str(workspace_id), unique_id, "experiment.yaml")
+    workflow_yaml = os.path.join(
+        output_dir, str(workspace_id), unique_id, "workflow.yaml"
+    )
 
-    if os.path.isfile(exp_yaml):
-        print("      Files synced successfully")
-        return {
-            "status": "success",
-            "user_id": user_id,
-            "workspace_id": workspace_id,
-            "unique_id": unique_id,
-            "message": "Proactive sync test PASSED",
-        }
-    else:
-        print("      Files not yet synced (check logs for sync progress)")
-        return {
-            "status": "pending",
-            "user_id": user_id,
-            "message": "Sync initiated but files not yet present. Check logs.",
-        }
+    # Poll for up to 15 seconds (background sync typically takes 3-5 seconds)
+    max_wait = 15
+    poll_interval = 1
+    elapsed = 0
+
+    while elapsed < max_wait:
+        if os.path.isfile(exp_yaml) and os.path.isfile(workflow_yaml):
+            print(f"Files synced successfully (after {elapsed}s)")
+            return {
+                "status": "success",
+                "user_id": user_id,
+                "workspace_id": workspace_id,
+                "unique_id": unique_id,
+                "message": "Proactive sync test PASSED",
+            }
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+        if elapsed % 5 == 0:
+            print(f"Still waiting... ({elapsed}s)")
+
+    # Timeout - check what we have
+    exp_exists = os.path.isfile(exp_yaml)
+    wf_exists = os.path.isfile(workflow_yaml)
+    print(
+        f"Timeout after {max_wait}s - experiment.yaml: "
+        f"{exp_exists}, workflow.yaml: {wf_exists}"
+    )
+    return {
+        "status": "timeout",
+        "user_id": user_id,
+        "message": f"Sync timeout after {max_wait}s. experiment.yaml: "
+        f"{exp_exists}, workflow.yaml: {wf_exists}",
+    }
 
 
 def main():
@@ -1747,8 +2262,8 @@ def main():
                             experiments = ws.get("experiments", [])
                             if experiments:
                                 for exp in experiments:
-                                    print(f"  - {exp['name']}")
-                                    print(f"    unique_id: {exp['unique_id']}")
+                                    print(f" - {exp['name']}")
+                                    print(f"unique_id: {exp['unique_id']}")
                             else:
                                 print("  (no experiments)")
                     else:
@@ -1839,7 +2354,7 @@ def main():
                 print("\nDetails:")
                 for detail in result["details"]:
                     print(f"  {detail['workspace_id']}/{detail['unique_id']}:")
-                    print(f"    Deleted: {', '.join(detail['deleted_files'])}")
+                    print(f"Deleted: {', '.join(detail['deleted_files'])}")
 
 
 if __name__ == "__main__":
