@@ -13,6 +13,7 @@ from studio.app.common.core.cloud.cloud_utils import (
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteStorageController,
     RemoteStorageLockError,
 )
 from studio.app.common.core.workflow.workflow import (
@@ -75,9 +76,16 @@ async def run(
                 )
 
         unique_id = WorkflowRunner.create_workflow_unique_id()
-        WorkflowRunner(
+        runner = WorkflowRunner(
             remote_bucket_name, workspace_id, unique_id, runItem, current_user.id
-        ).run_workflow(background_tasks)
+        )
+
+        # Download any remote-only input files before workflow runs
+        # This ensures migrated users' input data is available locally
+        if RemoteStorageController.is_available():
+            await runner.ensure_input_data_local()
+
+        runner.run_workflow(background_tasks)
 
         # Refresh storage cache in background to keep it up-to-date
         background_tasks.add_task(
@@ -123,9 +131,15 @@ async def run_id(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        WorkflowRunner(
+        runner = WorkflowRunner(
             remote_bucket_name, workspace_id, uid, runItem, current_user.id
-        ).run_workflow(background_tasks)
+        )
+
+        # Download any remote-only input files before workflow runs
+        if RemoteStorageController.is_available():
+            await runner.ensure_input_data_local()
+
+        runner.run_workflow(background_tasks)
 
         logger.info("run snakemake")
         logger.info("forcerun list: %s", runItem.forceRunList)

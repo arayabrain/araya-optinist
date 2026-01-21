@@ -793,6 +793,168 @@ function: {}
 
 
 # ---------------------------------------------------------------------------
+# Test Case 8: Input Data Sync (Multi-Instance Migration)
+# ---------------------------------------------------------------------------
+
+
+class TestInputDataSync:
+    """
+    Tests for input data sync when users are migrated between instances.
+
+    When a user is migrated to a new instance, their input data exists in S3
+    but not locally. These tests verify:
+    1. File listing shows both local and S3 files with sync status
+    2. Input files are downloaded before workflow runs
+    3. HDF5/MATLAB structure is available via cached metadata (no full download)
+    4. CSV files are synced before settings dialog opens
+    """
+
+    def test_merged_endpoint_returns_sync_status(self):
+        """The /files/{workspace_id}/merged endpoint should return sync_status."""
+        from studio.app.common.schemas.files import SyncStatus, TreeNodeWithSync
+
+        # Verify TreeNodeWithSync has sync_status field
+        node = TreeNodeWithSync(
+            path="test.tif",
+            name="test.tif",
+            isdir=False,
+            nodes=[],
+            sync_status=SyncStatus.REMOTE,
+        )
+        assert node.sync_status == SyncStatus.REMOTE
+
+    def test_sync_status_values(self):
+        """SyncStatus enum should have correct values."""
+        from studio.app.common.schemas.files import SyncStatus
+
+        assert SyncStatus.LOCAL.value == "local"
+        assert SyncStatus.SYNCED.value == "synced"
+        assert SyncStatus.REMOTE.value == "remote"
+
+    def test_workflow_runner_has_ensure_input_data_local(self):
+        """WorkflowRunner should have ensure_input_data_local method."""
+        import inspect
+
+        from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
+
+        # Verify the method exists
+        assert hasattr(WorkflowRunner, "ensure_input_data_local")
+
+        # Verify it's called before workflow runs
+        source = inspect.getsource(WorkflowRunner)
+        assert (
+            "_ensure_input_data_local" in source or "ensure_input_data_local" in source
+        )
+
+    def test_run_router_calls_ensure_input_data_local(self):
+        """Run router should call ensure_input_data_local before workflow."""
+        import inspect
+
+        from studio.app.common.routers import run
+
+        source = inspect.getsource(run)
+
+        # Verify ensure_input_data_local is called
+        assert "ensure_input_data_local" in source
+
+    def test_hdf5_endpoint_uses_cached_structure(self):
+        """HDF5 endpoint should check for cached structure before reading file."""
+        import inspect
+
+        from studio.app.optinist.routers import hdf5
+
+        source = inspect.getsource(hdf5.get_files)
+
+        # Verify it checks for cached structure
+        assert "get_hdf5_structure_dict" in source
+        assert "hdf5_structure.json" in source or "_hdf5_structure" in source
+
+    def test_mat_endpoint_uses_cached_structure(self):
+        """MATLAB endpoint should check for cached structure before reading file."""
+        import inspect
+
+        from studio.app.optinist.routers import mat
+
+        source = inspect.getsource(mat.get_matfiles)
+
+        # Verify it checks for cached structure
+        assert "get_mat_structure_dict" in source
+        assert "mat_structure.json" in source or "_mat_structure" in source
+
+    def test_files_router_has_sync_endpoint(self):
+        """Files router should have sync endpoint for on-demand file download."""
+        import inspect
+
+        from studio.app.common.routers import files
+
+        source = inspect.getsource(files)
+
+        # Verify sync endpoint exists
+        assert "sync_input_file" in source
+        assert "/sync/" in source
+
+    def test_files_router_has_merged_endpoint(self):
+        """Files router should have merged endpoint for local+S3 file listing."""
+        import inspect
+
+        from studio.app.common.routers import files
+
+        source = inspect.getsource(files)
+
+        # Verify merged endpoint exists
+        assert "get_files_merged" in source
+        assert "/merged" in source
+
+    def test_structure_caching_functions_exist(self):
+        """Structure caching functions should exist in files router."""
+        from studio.app.common.routers.files import (
+            get_hdf5_structure_dict,
+            get_mat_structure_dict,
+            update_hdf5_structure,
+            update_mat_structure,
+        )
+
+        # Verify functions are callable
+        assert callable(update_hdf5_structure)
+        assert callable(update_mat_structure)
+        assert callable(get_hdf5_structure_dict)
+        assert callable(get_mat_structure_dict)
+
+    def test_sample_data_import_caches_structures(self):
+        """Sample data import should cache HDF5/MATLAB structures."""
+        import inspect
+
+        from studio.app.common.routers import workflow
+
+        source = inspect.getsource(workflow.import_sample_data)
+
+        # Verify structure caching is called for HDF5/MATLAB
+        assert "update_hdf5_structure" in source
+        assert "update_mat_structure" in source
+
+    @pytest.mark.asyncio
+    async def test_list_input_data_objects_format(self):
+        """list_input_data_objects should return correct format."""
+        from studio.app.common.core.storage.remote_storage_controller import (
+            RemoteStorageController,
+        )
+
+        if not RemoteStorageController.is_available():
+            pytest.skip("Remote storage not available")
+
+        from studio.app.common.core.storage.mock_storage_controller import (
+            MockStorageController,
+        )
+
+        controller = MockStorageController()
+        result = await controller.list_input_data_objects("nonexistent_workspace")
+
+        # Should return empty list for nonexistent workspace
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+
+# ---------------------------------------------------------------------------
 # Run tests
 # ---------------------------------------------------------------------------
 

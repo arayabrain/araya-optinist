@@ -1,3 +1,4 @@
+import os
 import time
 import uuid
 from dataclasses import asdict
@@ -24,10 +25,12 @@ from studio.app.common.core.snakemake.snakemake_rule import SmkRule
 from studio.app.common.core.snakemake.snakemake_writer import SmkConfigWriter
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
+    RemoteStorageSimpleReader,
     RemoteSyncAction,
     RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
 )
+from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.workflow.workflow import (
     Node,
     NodeData,
@@ -42,6 +45,7 @@ from studio.app.common.core.workflow.workflow import (
 from studio.app.common.core.workflow.workflow_params import get_typecheck_params
 from studio.app.common.core.workflow.workflow_writer import WorkflowConfigWriter
 from studio.app.const import DATE_FORMAT
+from studio.app.dir_path import DIRPATH
 
 
 class WorkflowRunner:
@@ -116,6 +120,68 @@ class WorkflowRunner:
     def create_workflow_unique_id() -> str:
         new_unique_id = str(uuid.uuid4())[:8]
         return new_unique_id
+
+    def _extract_input_files(self) -> List[str]:
+        """Extract input file paths from workflow nodes."""
+        input_files = []
+        data_node_types = {
+            NodeType.IMAGE,
+            NodeType.CSV,
+            NodeType.FLUO,
+            NodeType.BEHAVIOR,
+            NodeType.HDF5,
+            NodeType.MATLAB,
+            NodeType.MICROSCOPE,
+        }
+        for node in self.nodeDict.values():
+            if (
+                node.type in data_node_types
+                or NodeTypeUtil.check_nodetype(node.type) == NodeType.DATA
+            ):
+                if node.data and node.data.path:
+                    # path can be a string or list of strings
+                    paths = (
+                        node.data.path
+                        if isinstance(node.data.path, list)
+                        else [node.data.path]
+                    )
+                    input_files.extend(paths)
+        return input_files
+
+    async def _ensure_input_data_local(self) -> None:
+        """Download any remote-only input files before workflow runs."""
+        if not RemoteStorageController.is_available():
+            return
+
+        input_files = self._extract_input_files()
+        if not input_files:
+            return
+
+        async with RemoteStorageSimpleReader(
+            self.remote_bucket_name
+        ) as remote_storage_controller:
+            for filename in input_files:
+                local_path = join_filepath(
+                    [DIRPATH.INPUT_DIR, self.workspace_id, filename]
+                )
+                if not os.path.exists(local_path):
+                    self.logger.info(f"Downloading input file from S3: {filename}")
+                    try:
+                        await remote_storage_controller.download_input_data(
+                            self.workspace_id, filename
+                        )
+                    except Exception as e:
+                        self.logger.error(
+                            f"Failed to download input file {filename}: {e}"
+                        )
+                        raise
+
+    async def ensure_input_data_local(self) -> None:
+        """Download any remote-only input files before workflow runs.
+
+        Public method to be called from async context (e.g., router endpoints).
+        """
+        await self._ensure_input_data_local()
 
     def run_workflow(self, background_tasks: BackgroundTasks):
         # Operate remote storage data.

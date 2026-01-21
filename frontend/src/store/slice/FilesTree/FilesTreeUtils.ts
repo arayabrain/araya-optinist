@@ -1,23 +1,37 @@
-import { TreeNodeTypeDTO } from "api/files/Files"
-import { TreeNodeType } from "store/slice/FilesTree/FilesTreeType"
+import { TreeNodeTypeDTO, TreeNodeWithSyncDTO } from "api/files/Files"
+import { SyncStatus, TreeNodeType } from "store/slice/FilesTree/FilesTreeType"
 
-export function convertToTreeNodeType(dto: TreeNodeTypeDTO[]): TreeNodeType[] {
-  return dto.map((node) =>
-    node.isdir
+// Helper to convert snake_case sync_status to camelCase syncStatus
+function convertSyncStatus(dto: TreeNodeWithSyncDTO): SyncStatus | undefined {
+  return (dto as TreeNodeWithSyncDTO).sync_status as SyncStatus | undefined
+}
+
+export function convertToTreeNodeType(
+  dto: TreeNodeTypeDTO[] | TreeNodeWithSyncDTO[],
+): TreeNodeType[] {
+  return dto.map((node) => {
+    const syncStatus = convertSyncStatus(node as TreeNodeWithSyncDTO)
+    const size = (node as TreeNodeWithSyncDTO).size
+
+    return node.isdir
       ? {
           path: node.path,
           name: node.name,
           isDir: true,
-          nodes: convertToTreeNodeType(node.nodes),
+          nodes: convertToTreeNodeType(node.nodes as TreeNodeWithSyncDTO[]),
           shape: node.shape,
+          syncStatus,
+          size,
         }
       : {
           path: node.path,
           name: node.name,
           isDir: false,
           shape: node.shape,
-        },
-  )
+          syncStatus,
+          size,
+        }
+  })
 }
 
 export function isDirNodeByPath(path: string, tree: TreeNodeType[]): boolean {

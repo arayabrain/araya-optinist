@@ -31,6 +31,7 @@ import { CSS } from "@dnd-kit/utilities"
 import AutorenewIcon from "@mui/icons-material/Autorenew"
 import ClearIcon from "@mui/icons-material/Clear"
 import CloseIcon from "@mui/icons-material/Close"
+import CloudOutlinedIcon from "@mui/icons-material/CloudOutlined"
 import DeleteIcon from "@mui/icons-material/Delete"
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator"
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline"
@@ -66,7 +67,7 @@ import {
   selectFilesIsLoading,
   selectFilesTreeNodes,
 } from "store/slice/FilesTree/FilesTreeSelectors"
-import { TreeNodeType } from "store/slice/FilesTree/FilesTreeType"
+import { SyncStatus, TreeNodeType } from "store/slice/FilesTree/FilesTreeType"
 import { getNodeByPath } from "store/slice/FilesTree/FilesTreeUtils"
 import { updateShape } from "store/slice/FileUploader/FileUploaderActions"
 import { selectPipelineLatestUid } from "store/slice/Pipeline/PipelineSelectors"
@@ -749,6 +750,7 @@ const FileTreeNode = memo(function FileTreeNode({
     filePath: node.path,
     icon: node.isDir ? <FolderIcon htmlColor="skyblue" /> : undefined,
     checkboxProps: node.isDir ? getDirCheckboxProps() : getFileCheckboxProps(),
+    syncStatus: node.syncStatus,
   }
 
   return (
@@ -781,6 +783,7 @@ interface FileTreeItemLabelProps {
   multiSelect: boolean
   columnWidth?: number
   filePath: string
+  syncStatus?: SyncStatus
 }
 
 export const FileTreeItemLabel = memo(function FileTreeItemLabel({
@@ -793,6 +796,7 @@ export const FileTreeItemLabel = memo(function FileTreeItemLabel({
   multiSelect,
   columnWidth = COLUMN_DEFAULT_WIDTH,
   filePath,
+  syncStatus,
 }: FileTreeItemLabelProps) {
   const dispatch = useDispatch<AppDispatch>()
   const workspaceId = useSelector(selectCurrentWorkspaceId)
@@ -852,6 +856,15 @@ export const FileTreeItemLabel = memo(function FileTreeItemLabel({
             <Box sx={{ ...commonStyles.ellipsis, whiteSpace: "pre", flex: 1 }}>
               {label}
             </Box>
+            {syncStatus === "remote" && (
+              <Tooltip title="File in cloud - will download when workflow runs">
+                <CloudOutlinedIcon
+                  fontSize="small"
+                  color="action"
+                  sx={{ ml: 0.5 }}
+                />
+              </Tooltip>
+            )}
           </Box>
         </Tooltip>
         {fileType === FILE_TREE_TYPE_SET.IMAGE ? (

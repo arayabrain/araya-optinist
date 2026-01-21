@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 from subprocess import CalledProcessError
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List
 
 import aioboto3
 import boto3
@@ -238,6 +238,32 @@ class S3StorageController(BaseRemoteStorageController):
         )
 
         return True
+
+    async def list_input_data_objects(self, workspace_id: str) -> List[Dict]:
+        """List all input data objects in S3 for a workspace."""
+        prefix = f"app/studio_data/{self.S3_INPUT_DIR}/{workspace_id}/"
+
+        async with self.__get_s3_client() as s3_client:
+            s3_list = await s3_client.list_objects_v2(
+                Bucket=self.bucket_name, Prefix=prefix
+            )
+
+            if not s3_list or s3_list.get("KeyCount", 0) == 0:
+                return []
+
+            objects = []
+            for obj in s3_list.get("Contents", []):
+                key = obj["Key"]
+                filename = key.replace(prefix, "")
+                if filename and not filename.endswith("/"):
+                    objects.append(
+                        {
+                            "filename": filename,
+                            "size": obj["Size"],
+                            "last_modified": obj["LastModified"].isoformat(),
+                        }
+                    )
+            return objects
 
     async def delete_input_data(self, workspace_id: str, filename: str) -> bool:
         # make paths
