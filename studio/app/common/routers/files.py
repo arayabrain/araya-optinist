@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import tempfile
 from glob import glob
 from pathlib import PurePath
 from typing import Dict, List
@@ -49,7 +50,13 @@ from studio.app.common.schemas.files import (
     TreeNodeWithSync,
 )
 from studio.app.common.schemas.users import User
-from studio.app.const import ACCEPT_FILE_EXT, FILETYPE
+from studio.app.const import (
+    ACCEPT_FILE_EXT,
+    FILETYPE,
+    METADATA_HDF5_STRUCTURE_FILE,
+    METADATA_IMAGE_SHAPE_FILE,
+    METADATA_MAT_STRUCTURE_FILE,
+)
 from studio.app.dir_path import DIRPATH
 
 router = APIRouter(prefix="/files", tags=["files"])
@@ -134,7 +141,7 @@ def get_image_shape_dict(workspace_id):
     dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
     try:
         tiff_format_dict = JsonReader.read(
-            join_filepath([dirpath, ".image_shape.json"])
+            join_filepath([dirpath, METADATA_IMAGE_SHAPE_FILE])
         )
         return tiff_format_dict
     except FileNotFoundError:
@@ -151,28 +158,26 @@ def update_image_shape(workspace_id, relative_file_path):
     except:  # noqa
         shape = []
 
-    tiff_format_file = join_filepath([dirpath, ".image_shape.json"])
-    try:
-        tiff_format_dict = JsonReader.read(tiff_format_file)
-    except FileNotFoundError:
-        tiff_format_dict = {}
-    tiff_format_dict[relative_file_path] = {"shape": shape}
-
-    with open(tiff_format_file, "w") as f:
-        json.dump(tiff_format_dict, f, indent=4)
+    # Save to .image_shape.json with atomic write
+    tiff_format_file = join_filepath([dirpath, METADATA_IMAGE_SHAPE_FILE])
+    _atomic_json_update(tiff_format_file, relative_file_path, {"shape": shape})
 
     return shape
 
 
-def _hdf5_node_to_dict(node) -> dict:
-    """Convert HDF5Node to a JSON-serializable dict."""
+def _structure_node_to_dict(node) -> dict:
+    """Convert HDF5Node or MatNode to a JSON-serializable dict.
+
+    Both node types share the same structure (isDir, name, path, nodes, shape,
+    nbytes, dataType), so this function handles both.
+    """
     result = {
         "isDir": node.isDir,
         "name": node.name,
         "path": node.path,
     }
     if node.nodes:
-        result["nodes"] = [_hdf5_node_to_dict(n) for n in node.nodes]
+        result["nodes"] = [_structure_node_to_dict(n) for n in node.nodes]
     else:
         result["nodes"] = []
     if node.shape is not None:
@@ -184,24 +189,30 @@ def _hdf5_node_to_dict(node) -> dict:
     return result
 
 
-def _mat_node_to_dict(node) -> dict:
-    """Convert MatNode to a JSON-serializable dict."""
-    result = {
-        "isDir": node.isDir,
-        "name": node.name,
-        "path": node.path,
-    }
-    if node.nodes:
-        result["nodes"] = [_mat_node_to_dict(n) for n in node.nodes]
-    else:
-        result["nodes"] = []
-    if node.shape is not None:
-        result["shape"] = list(node.shape) if hasattr(node.shape, "__iter__") else []
-    if node.nbytes is not None:
-        result["nbytes"] = node.nbytes
-    if node.dataType is not None:
-        result["dataType"] = node.dataType
-    return result
+def _atomic_json_update(filepath: str, key: str, value) -> None:
+    """Atomically update a JSON file with a new key-value pair.
+
+    Uses a temporary file and os.replace() to ensure atomic writes,
+    preventing race conditions when multiple processes update the same file.
+    """
+    # Read existing data
+    try:
+        existing_data = JsonReader.read(filepath)
+    except FileNotFoundError:
+        existing_data = {}
+
+    existing_data[key] = value
+
+    # Write to a temporary file in the same directory, then atomically replace
+    dir_path = os.path.dirname(filepath)
+    with tempfile.NamedTemporaryFile(
+        mode="w", dir=dir_path, suffix=".tmp", delete=False
+    ) as tmp_file:
+        json.dump(existing_data, tmp_file, indent=2)
+        tmp_path = tmp_file.name
+
+    # Atomic replace (POSIX guarantees atomicity for same-filesystem rename)
+    os.replace(tmp_path, filepath)
 
 
 def update_hdf5_structure(workspace_id: str, relative_file_path: str) -> List[dict]:
@@ -219,24 +230,16 @@ def update_hdf5_structure(workspace_id: str, relative_file_path: str) -> List[di
 
     try:
         structure = HDF5Getter.get(filepath)
-        structure_dict = [_hdf5_node_to_dict(node) for node in structure]
+        structure_dict = [_structure_node_to_dict(node) for node in structure]
     except Exception as e:
         logger.warning(
             f"Failed to extract HDF5 structure for {relative_file_path}: {e}"
         )
         structure_dict = []
 
-    # Save to .hdf5_structure.json
-    structure_file = join_filepath([dirpath, ".hdf5_structure.json"])
-    try:
-        existing_structures = JsonReader.read(structure_file)
-    except FileNotFoundError:
-        existing_structures = {}
-
-    existing_structures[relative_file_path] = structure_dict
-
-    with open(structure_file, "w") as f:
-        json.dump(existing_structures, f, indent=2)
+    # Save to .hdf5_structure.json with atomic write
+    structure_file = join_filepath([dirpath, METADATA_HDF5_STRUCTURE_FILE])
+    _atomic_json_update(structure_file, relative_file_path, structure_dict)
 
     return structure_dict
 
@@ -255,24 +258,16 @@ def update_mat_structure(workspace_id: str, relative_file_path: str) -> List[dic
 
     try:
         structure = MatGetter.get(relative_file_path, workspace_id)
-        structure_dict = [_mat_node_to_dict(node) for node in structure]
+        structure_dict = [_structure_node_to_dict(node) for node in structure]
     except Exception as e:
         logger.warning(
             f"Failed to extract MATLAB structure for {relative_file_path}: {e}"
         )
         structure_dict = []
 
-    # Save to .mat_structure.json
-    structure_file = join_filepath([dirpath, ".mat_structure.json"])
-    try:
-        existing_structures = JsonReader.read(structure_file)
-    except FileNotFoundError:
-        existing_structures = {}
-
-    existing_structures[relative_file_path] = structure_dict
-
-    with open(structure_file, "w") as f:
-        json.dump(existing_structures, f, indent=2)
+    # Save to .mat_structure.json with atomic write
+    structure_file = join_filepath([dirpath, METADATA_MAT_STRUCTURE_FILE])
+    _atomic_json_update(structure_file, relative_file_path, structure_dict)
 
     return structure_dict
 
@@ -281,7 +276,7 @@ def get_hdf5_structure_dict(workspace_id: str) -> dict:
     """Get cached HDF5 structure dictionary."""
     dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
     try:
-        return JsonReader.read(join_filepath([dirpath, ".hdf5_structure.json"]))
+        return JsonReader.read(join_filepath([dirpath, METADATA_HDF5_STRUCTURE_FILE]))
     except FileNotFoundError:
         return {}
 
@@ -290,7 +285,7 @@ def get_mat_structure_dict(workspace_id: str) -> dict:
     """Get cached MATLAB structure dictionary."""
     dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
     try:
-        return JsonReader.read(join_filepath([dirpath, ".mat_structure.json"]))
+        return JsonReader.read(join_filepath([dirpath, METADATA_MAT_STRUCTURE_FILE]))
     except FileNotFoundError:
         return {}
 
@@ -462,7 +457,7 @@ async def get_files_merged(
                 remote_bucket_name
             ) as remote_storage_controller:
                 await remote_storage_controller.download_input_data(
-                    workspace_id, ".image_shape.json"
+                    workspace_id, METADATA_IMAGE_SHAPE_FILE
                 )
         except Exception as e:
             logger.debug(f"Could not download .image_shape.json: {e}")
@@ -629,15 +624,15 @@ async def create_file(
                 # Upload metadata files so they're available for remote-only files
                 if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
                     await remote_storage_controller.upload_input_data(
-                        workspace_id, ".image_shape.json"
+                        workspace_id, METADATA_IMAGE_SHAPE_FILE
                     )
                 elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
                     await remote_storage_controller.upload_input_data(
-                        workspace_id, ".hdf5_structure.json"
+                        workspace_id, METADATA_HDF5_STRUCTURE_FILE
                     )
                 elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
                     await remote_storage_controller.upload_input_data(
-                        workspace_id, ".mat_structure.json"
+                        workspace_id, METADATA_MAT_STRUCTURE_FILE
                     )
 
         # Refresh storage cache in background to keep it up-to-date

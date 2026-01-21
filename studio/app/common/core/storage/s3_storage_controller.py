@@ -240,30 +240,49 @@ class S3StorageController(BaseRemoteStorageController):
         return True
 
     async def list_input_data_objects(self, workspace_id: str) -> List[Dict]:
-        """List all input data objects in S3 for a workspace."""
+        """List all input data objects in S3 for a workspace.
+
+        Uses pagination to handle workspaces with >1000 files.
+        """
         prefix = f"app/studio_data/{self.S3_INPUT_DIR}/{workspace_id}/"
+        objects = []
 
         async with self.__get_s3_client() as s3_client:
-            s3_list = await s3_client.list_objects_v2(
-                Bucket=self.bucket_name, Prefix=prefix
-            )
+            continuation_token = None
 
-            if not s3_list or s3_list.get("KeyCount", 0) == 0:
-                return []
+            while True:
+                # Build request parameters
+                list_params = {
+                    "Bucket": self.bucket_name,
+                    "Prefix": prefix,
+                }
+                if continuation_token:
+                    list_params["ContinuationToken"] = continuation_token
 
-            objects = []
-            for obj in s3_list.get("Contents", []):
-                key = obj["Key"]
-                filename = key.replace(prefix, "")
-                if filename and not filename.endswith("/"):
-                    objects.append(
-                        {
-                            "filename": filename,
-                            "size": obj["Size"],
-                            "last_modified": obj["LastModified"].isoformat(),
-                        }
-                    )
-            return objects
+                s3_list = await s3_client.list_objects_v2(**list_params)
+
+                if not s3_list or s3_list.get("KeyCount", 0) == 0:
+                    break
+
+                for obj in s3_list.get("Contents", []):
+                    key = obj["Key"]
+                    filename = key.replace(prefix, "")
+                    if filename and not filename.endswith("/"):
+                        objects.append(
+                            {
+                                "filename": filename,
+                                "size": obj["Size"],
+                                "last_modified": obj["LastModified"].isoformat(),
+                            }
+                        )
+
+                # Check if there are more pages
+                if s3_list.get("IsTruncated"):
+                    continuation_token = s3_list.get("NextContinuationToken")
+                else:
+                    break
+
+        return objects
 
     async def delete_input_data(self, workspace_id: str, filename: str) -> bool:
         # make paths

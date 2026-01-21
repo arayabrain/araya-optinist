@@ -12,6 +12,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.routers.files import get_mat_structure_dict
+from studio.app.const import METADATA_MAT_STRUCTURE_FILE
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.schemas.mat import MatNode
 
@@ -103,7 +104,7 @@ async def get_matfiles(
                 remote_bucket_name
             ) as remote_storage_controller:
                 await remote_storage_controller.download_input_data(
-                    workspace_id, ".mat_structure.json"
+                    workspace_id, METADATA_MAT_STRUCTURE_FILE
                 )
         except Exception:
             pass  # Ignore errors - will fall back to file extraction

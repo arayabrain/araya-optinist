@@ -42,3 +42,8 @@ LARGE_FILE_PATTERNS = tuple(ACCEPT_FILE_EXT.ALL_EXT.value + [".pkl"])
 # Visualization mode: JSON for timeseries data, TIFF for images,
 # YAML for snakemake config
 VISUALIZATION_SYNC_PATTERNS = (".json", ".tif", ".tiff", ".yaml")
+
+# Metadata cache filenames for input data
+METADATA_IMAGE_SHAPE_FILE = ".image_shape.json"
+METADATA_HDF5_STRUCTURE_FILE = ".hdf5_structure.json"
+METADATA_MAT_STRUCTURE_FILE = ".mat_structure.json"

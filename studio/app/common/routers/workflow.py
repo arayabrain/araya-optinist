@@ -34,7 +34,12 @@ from studio.app.common.routers.files import (
     update_mat_structure,
 )
 from studio.app.common.schemas.workflow import WorkflowWithResults
-from studio.app.const import ACCEPT_FILE_EXT
+from studio.app.const import (
+    ACCEPT_FILE_EXT,
+    METADATA_HDF5_STRUCTURE_FILE,
+    METADATA_IMAGE_SHAPE_FILE,
+    METADATA_MAT_STRUCTURE_FILE,
+)
 from studio.app.dir_path import DIRPATH
 
 router = APIRouter(prefix="/workflow", tags=["workflow"])
@@ -259,7 +264,9 @@ async def import_sample_data(
         if tiff_files:
             for tiff_file in tiff_files:
                 update_image_shape(workspace_id, tiff_file.name)
-            await s3_controller.upload_input_data(workspace_id, ".image_shape.json")
+            await s3_controller.upload_input_data(
+                workspace_id, METADATA_IMAGE_SHAPE_FILE
+            )
 
         # HDF5 files: .hdf5_structure.json
         hdf5_files = [
@@ -270,7 +277,9 @@ async def import_sample_data(
         if hdf5_files:
             for hdf5_file in hdf5_files:
                 update_hdf5_structure(workspace_id, hdf5_file.name)
-            await s3_controller.upload_input_data(workspace_id, ".hdf5_structure.json")
+            await s3_controller.upload_input_data(
+                workspace_id, METADATA_HDF5_STRUCTURE_FILE
+            )
 
         # MATLAB files: .mat_structure.json
         mat_files = [
@@ -281,7 +290,9 @@ async def import_sample_data(
         if mat_files:
             for mat_file in mat_files:
                 update_mat_structure(workspace_id, mat_file.name)
-            await s3_controller.upload_input_data(workspace_id, ".mat_structure.json")
+            await s3_controller.upload_input_data(
+                workspace_id, METADATA_MAT_STRUCTURE_FILE
+            )
 
         # ------------------------------------------------------------
         # Upload the output sample data to remote storage process.
