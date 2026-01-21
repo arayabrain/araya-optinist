@@ -66,6 +66,11 @@ class SubscriptionPlans(SQLModel, table=True):
         default="free",
         description="Plan tier identifier (e.g., 'free', 'premium', 'enterprise')",
     )
+    is_hidden: bool = Field(
+        sa_column=Column(Boolean, nullable=False, server_default="0"),
+        default=False,
+        description="Whether this plan should be hidden from the UI",
+    )
     created_at: Optional[datetime] = Field(
         sa_column_kwargs={"server_default": current_timestamp()},
     )
@@ -78,11 +83,6 @@ class SubscriptionPlans(SQLModel, table=True):
     def is_premium(self) -> bool:
         """Check if this plan is a paid/premium plan based on price"""
         return self.price > 0
-
-    @property
-    def is_premium_tier(self) -> bool:
-        """Check if this plan is a premium tier (non-free)"""
-        return self.tier.lower() != "free"
 
 
 class UserSubscription(SQLModel, table=True):

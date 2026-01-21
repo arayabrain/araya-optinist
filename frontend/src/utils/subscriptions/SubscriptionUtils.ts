@@ -103,6 +103,10 @@ export const safeConvertPlan = (
         planData.is_featured !== undefined
           ? Boolean(planData.is_featured)
           : undefined,
+      is_hidden:
+        planData.is_hidden !== undefined
+          ? Boolean(planData.is_hidden)
+          : undefined,
       stripe_product_id: planData.stripe_product_id
         ? String(planData.stripe_product_id)
         : undefined,
@@ -257,11 +261,14 @@ export const isDowngrade = (
  */
 export const sortPlans = (plans: SubscriptionPlan[]): SubscriptionPlan[] => {
   return [...plans].sort((a, b) => {
-    // First sort by display_order if available
+    // Both have display_order - sort by it
     if (a.display_order !== undefined && b.display_order !== undefined) {
       return a.display_order - b.display_order
     }
-    // Fallback to price sorting (free first, then by ascending price)
+    // Only one has display_order - prioritize it
+    if (a.display_order !== undefined) return -1
+    if (b.display_order !== undefined) return 1
+    // Neither has display_order - fallback to price
     if (a.price === 0 && b.price > 0) return -1
     if (a.price > 0 && b.price === 0) return 1
     return a.price - b.price

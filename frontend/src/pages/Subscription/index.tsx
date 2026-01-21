@@ -207,8 +207,10 @@ const SubscriptionPlans = () => {
     }
   }
 
-  // Filter only active plans and sort by display order
-  const activePlans = sortPlans(plans.filter((plan) => plan.status === true))
+  // Filter only active and visible plans, then sort by display order
+  const activePlans = sortPlans(
+    plans.filter((plan) => plan.status === true && !plan.is_hidden),
+  )
 
   // Get price display for a plan
   const getPriceDisplay = (plan: SubscriptionPlan) => {

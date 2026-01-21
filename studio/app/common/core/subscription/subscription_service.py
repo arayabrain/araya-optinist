@@ -77,6 +77,7 @@ class SubscriptionService:
         return (
             db.query(SubscriptionPlans)
             .filter(SubscriptionPlans.status == SubscriptionStatusType.ACTIVE)
+            .filter(SubscriptionPlans.is_hidden == False)
             .all()
         )
 
@@ -106,19 +107,19 @@ class SubscriptionService:
 
         return query.first()
 
-    @staticmethod
-    def get_free_plan_id(db: Session) -> Optional[int]:
+    @classmethod
+    def get_free_plan_id(cls, db: Session) -> Optional[int]:
         """
         Get the ID of the free plan dynamically.
 
         Returns:
             Plan ID of the free plan (price = 0), or None if not found
         """
-        free_plan = __class__.get_free_plan(db)
+        free_plan = cls.get_free_plan(db)
         return free_plan.id if free_plan else None
 
-    @staticmethod
-    def get_default_plan_id(db: Session) -> int:
+    @classmethod
+    def get_default_plan_id(cls, db: Session) -> int:
         """
         Get the default plan ID (free plan) for new users.
 
@@ -128,7 +129,7 @@ class SubscriptionService:
         Raises:
             HTTPException if no free plan is found
         """
-        plan_id = __class__.get_free_plan_id(db)
+        plan_id = cls.get_free_plan_id(db)
         if plan_id is None:
             logger.error("No free plan found in database")
             raise HTTPException(

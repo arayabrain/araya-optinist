@@ -87,6 +87,10 @@ async def get_user_with_context(db: Session, user_id: int) -> User:
     Similar to list_user but for a single user by ID.
     """
     try:
+        # Pre-fetch all subscription plans to avoid N+1 queries
+        all_plans = db.query(SubscriptionPlans).all()
+        plans_by_id = {plan.id: plan for plan in all_plans}
+
         # Use the same transformer logic as list_user for consistency
         def user_transformer(items):
             users = []
@@ -123,42 +127,36 @@ async def get_user_with_context(db: Session, user_id: int) -> User:
 
                     days_remaining = (subscription_expiration - now).days
 
-                    # Query plan from database (data-driven approach using price)
-                    from studio.app.common.models.subscription import SubscriptionPlans
-
-                    plan = (
-                        db.query(SubscriptionPlans)
-                        .filter(SubscriptionPlans.id == subscription_plan_id)
-                        .first()
-                    )
+                    # Get plan from pre-fetched cache (avoids N+1 query)
+                    plan = plans_by_id.get(subscription_plan_id)
 
                     # Determine status based on plan price
                     # (data-driven: price=0 is free, price>0 is premium)
                     if plan and not plan.is_premium:
-                        user.__dict__[
-                            "subscription_status"
-                        ] = SubscriptionStatus.FREE.value
+                        user.__dict__["subscription_status"] = (
+                            SubscriptionStatus.FREE.value
+                        )
                         user.__dict__["subscription_days_remaining"] = None
                     elif plan and plan.is_premium:
                         # Paid plan logic (any plan with price > 0)
                         if days_remaining > 0:
-                            user.__dict__[
-                                "subscription_status"
-                            ] = SubscriptionStatus.PREMIUM.value
-                            user.__dict__[
-                                "subscription_days_remaining"
-                            ] = days_remaining
+                            user.__dict__["subscription_status"] = (
+                                SubscriptionStatus.PREMIUM.value
+                            )
+                            user.__dict__["subscription_days_remaining"] = (
+                                days_remaining
+                            )
                         elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
-                            user.__dict__[
-                                "subscription_status"
-                            ] = SubscriptionStatus.LIMIT_GRACE.value
+                            user.__dict__["subscription_status"] = (
+                                SubscriptionStatus.LIMIT_GRACE.value
+                            )
                             user.__dict__["subscription_days_remaining"] = (
                                 SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
                             )  # Days left in grace period
                         else:
-                            user.__dict__[
-                                "subscription_status"
-                            ] = SubscriptionStatus.EXPIRED.value
+                            user.__dict__["subscription_status"] = (
+                                SubscriptionStatus.EXPIRED.value
+                            )
                             user.__dict__["subscription_days_remaining"] = None
                     else:
                         # Unknown tier or plan not found - fallback to plan name
@@ -254,6 +252,10 @@ async def list_user(
     options: UserSearchOptions,
     sortOptions: SortOptions,
 ):
+    # Pre-fetch all subscription plans to avoid N+1 queries
+    all_plans = db.query(SubscriptionPlans).all()
+    plans_by_id = {plan.id: plan for plan in all_plans}
+
     def user_transformer(items):
         users = []
         for item in items:
@@ -289,14 +291,8 @@ async def list_user(
 
                 days_remaining = (subscription_expiration - now).days
 
-                # Query plan from database (data-driven approach using price)
-                from studio.app.common.models.subscription import SubscriptionPlans
-
-                plan = (
-                    db.query(SubscriptionPlans)
-                    .filter(SubscriptionPlans.id == subscription_plan_id)
-                    .first()
-                )
+                # Get plan from pre-fetched cache (avoids N+1 query)
+                plan = plans_by_id.get(subscription_plan_id)
 
                 # Determine status based on plan price (data-driven: price=0 is free,
                 # price>0 is premium)
@@ -306,21 +302,21 @@ async def list_user(
                 elif plan and plan.is_premium:
                     # Paid plan logic (any plan with price > 0)
                     if days_remaining > 0:
-                        user.__dict__[
-                            "subscription_status"
-                        ] = SubscriptionStatus.PREMIUM.value
+                        user.__dict__["subscription_status"] = (
+                            SubscriptionStatus.PREMIUM.value
+                        )
                         user.__dict__["subscription_days_remaining"] = days_remaining
                     elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
-                        user.__dict__[
-                            "subscription_status"
-                        ] = SubscriptionStatus.LIMIT_GRACE.value
+                        user.__dict__["subscription_status"] = (
+                            SubscriptionStatus.LIMIT_GRACE.value
+                        )
                         user.__dict__["subscription_days_remaining"] = (
                             SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
                         )  # Days left in grace period
                     else:
-                        user.__dict__[
-                            "subscription_status"
-                        ] = SubscriptionStatus.EXPIRED.value
+                        user.__dict__["subscription_status"] = (
+                            SubscriptionStatus.EXPIRED.value
+                        )
                         user.__dict__["subscription_days_remaining"] = None
                 else:
                     # Unknown tier or plan not found - fallback to plan name

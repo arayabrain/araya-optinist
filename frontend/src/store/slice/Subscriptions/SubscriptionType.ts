@@ -17,6 +17,7 @@ export interface SubscriptionPlan {
   tier?: string
   display_order?: number
   is_featured?: boolean
+  is_hidden?: boolean
   stripe_product_id?: string
   stripe_price_id?: string
 }
