@@ -39,7 +39,7 @@ Required Environment Variables:
 import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Literal
 
 import boto3
@@ -304,8 +304,8 @@ def is_scaling_in_progress() -> bool:
                     "ReturnData": True,
                 }
             ],
-            StartTime=datetime.now() - timedelta(minutes=15),
-            EndTime=datetime.now(),
+            StartTime=datetime.now(timezone.utc) - timedelta(minutes=15),
+            EndTime=datetime.now(timezone.utc),
         )
 
         values = response["MetricDataResults"][0].get("Values", [])

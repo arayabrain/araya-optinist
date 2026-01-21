@@ -23,6 +23,10 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageWriter,
     RemoteSyncStatusFileUtil,
 )
+from studio.app.common.core.utils.datetime_utils import (
+    datetime_from_timestamp,
+    get_local_datetime_formatted,
+)
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.utils.pickle_handler import PickleReader
 from studio.app.common.core.workflow.workflow import (
@@ -336,7 +340,7 @@ class NodeResult(BaseNodeResult):
         #   separate modification is required to record running info for each node.
         update_config_function.started_at = None
 
-        now = datetime.now().strftime(DATE_FORMAT)
+        now = get_local_datetime_formatted(DATE_FORMAT)
         update_config_function.finished_at = now
         update_config_function.message = message.message
 
@@ -494,7 +498,7 @@ class WorkflowMonitor:
                     expt_config.started_at, DATE_FORMAT
                 )
             except ValueError:
-                expt_started_time = datetime.fromtimestamp(0)
+                expt_started_time = datetime_from_timestamp(0)
 
             # Set dummy value to proceed to the next step.
             pid_data = WorkflowPIDFileData(

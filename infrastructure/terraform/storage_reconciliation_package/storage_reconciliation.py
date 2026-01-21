@@ -283,11 +283,7 @@ def reconcile_user_storage(
         drift_percent = (drift_bytes / db_storage * 100) if db_storage > 0 else 0
 
         # Update database with actual S3 value and reset delta
-        # Use explicit UTC timestamp to match Studio app's
-        # SubscriptionService.get_current_datetime()
-        # TODO: Centralize datetime.now(timezone.utc) usage across the project
-        # to prevent inconsistent timezone handling. Consider creating a
-        # shared utility function (e.g., get_utc_now()) that all code uses.
+        # Use explicit UTC timestamp to match Studio app's get_current_datetime()
         now_utc = datetime.now(timezone.utc)
 
         with get_db_connection() as conn:

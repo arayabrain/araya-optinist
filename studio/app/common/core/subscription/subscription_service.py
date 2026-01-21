@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 import stripe
@@ -15,6 +15,7 @@ from studio.app.common.core.subscription.constants import (
     SyncStatus,
 )
 from studio.app.common.core.utils.config_handler import get_env_var
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.models.subscription import (
     SubscriptionCancellation,
     SubscriptionPlans,
@@ -298,13 +299,12 @@ class SubscriptionService:
     @staticmethod
     def get_current_datetime() -> datetime:
         """
-        Get the current UTC date and time
+        Get the current UTC date and time.
+
+        Note: This method delegates to the centralized datetime utility.
+        New code should import directly from datetime_utils instead.
         """
-        try:
-            return datetime.now(timezone.utc)
-        except Exception as e:
-            logger.error(f"Error getting current datetime: {str(e)}")
-            return None
+        return get_current_datetime()
 
     @staticmethod
     def get_user_subscription_by_user_id(

@@ -59,7 +59,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 import boto3
@@ -250,7 +250,7 @@ class PremiumInstanceMonitor:
 
         while self.monitoring:
             try:
-                timestamp = datetime.now()
+                timestamp = datetime.now(timezone.utc)
                 instance_metrics = self.get_instance_metrics()
                 ecs_metrics = self.get_ecs_metrics()
 
@@ -670,7 +670,7 @@ class PremiumLoadTester:
                         "workflow_index": workflow_index,
                         "unique_id": unique_id,
                         "workspace_id": workspace_id,
-                        "submitted_at": datetime.now(),
+                        "submitted_at": datetime.now(timezone.utc),
                     }
                 )
                 return unique_id
@@ -1166,7 +1166,7 @@ class PremiumLoadTester:
             print("\n" + report)
 
             # Save detailed results
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             output_file = f"premium_load_test_{timestamp}.json"
 
             detailed_results = {

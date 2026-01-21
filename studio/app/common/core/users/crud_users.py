@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import timezone
 
 from fastapi import HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
@@ -27,6 +27,7 @@ from studio.app.common.core.subscription.subscription_service import (
     SubscriptionService,
     SubscriptionUserStatus,
 )
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.core.workspace.workspace_services import WorkspaceService
 from studio.app.common.models import Role as RoleModel
 from studio.app.common.models import User as UserModel
@@ -117,7 +118,7 @@ async def get_user_with_context(db: Session, user_id: int) -> User:
                 )
 
                 # Calculate subscription status and days remaining
-                now = datetime.now(timezone.utc)
+                now = get_current_datetime()
                 if subscription_expiration and subscription_plan_id:
                     # Make sure expiration is timezone-aware
                     if subscription_expiration.tzinfo is None:
@@ -270,7 +271,7 @@ async def list_user(
             )
 
             # Calculate subscription status and days remaining
-            now = datetime.now(timezone.utc)
+            now = get_current_datetime()
             if subscription_expiration and subscription_plan_id:
                 # Make sure expiration is timezone-aware
                 if subscription_expiration.tzinfo is None:

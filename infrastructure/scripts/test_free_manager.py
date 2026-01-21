@@ -56,7 +56,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 import boto3
@@ -849,7 +849,7 @@ class FreeManagerTester:
         print("=" * 80)
         print(f"Terraform Dir: {self.terraform_dir}")
         print(f"AWS Region: {self.aws_region}")
-        print(f"Timestamp: {datetime.now()}")
+        print(f"Timestamp: {datetime.now(timezone.utc)}")
 
         results = {
             "cleanup": False,

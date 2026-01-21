@@ -5,12 +5,12 @@ import os
 import platform
 import traceback
 from contextvars import ContextVar
-from datetime import datetime
 from typing import Optional
 
 import yaml
 
 from studio.app.common.core.mode import MODE
+from studio.app.common.core.utils.datetime_utils import get_current_datetime_formatted
 from studio.app.dir_path import DIRPATH
 
 LOGGING_CLIENT_ID_KEY = "client_id"
@@ -300,7 +300,7 @@ class AppLogger:
             return uid
 
         if auto_refresh:
-            datetime_str = datetime.now().strftime(
+            datetime_str = get_current_datetime_formatted(
                 "%Y-%m-%d-%w"
             )  # Refresh by period (weekly)
             hash_source = f"{uid}-{datetime_str}"

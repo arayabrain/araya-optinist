@@ -12,13 +12,14 @@ USAGE:
 - Can also be manually triggered for immediate recovery
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import List, Tuple
 
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import session_scope
 from studio.app.common.models import FreeUserAssignment
 
@@ -52,7 +53,7 @@ def recover_stale_workflow_counts(
     try:
         from sqlalchemy import update
 
-        stale_cutoff = datetime.now(timezone.utc) - timedelta(
+        stale_cutoff = get_current_datetime() - timedelta(
             minutes=stale_threshold_minutes
         )
         recovered_users = []

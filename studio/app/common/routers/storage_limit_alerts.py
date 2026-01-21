@@ -16,6 +16,7 @@ from studio.app.common.core.cloud.s3_storage_monitor import (
     monitor_storage_and_generate_alerts,
 )
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import get_db
 from studio.app.common.schemas.users import User
 
@@ -67,15 +68,13 @@ async def get_my_storage_alert(
             alert_level = monitor.calculate_storage_alert_level(storage_usage_percent)
 
             if alert_level:
-                from datetime import datetime, timezone
-
                 alert = {
                     "user_id": current_user.uid,
                     "alert_level": alert_level,
                     "storage_usage_bytes": current_usage,
                     "storage_quota_bytes": storage_quota,
                     "storage_usage_percent": round(storage_usage_percent, 2),
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": get_current_datetime().isoformat(),
                 }
 
         if alert:

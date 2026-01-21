@@ -1,9 +1,13 @@
-import datetime
 import os
 import re
+from datetime import timedelta
 from glob import glob
 from typing import Optional
 
+from studio.app.common.core.utils.datetime_utils import (
+    datetime_from_timestamp,
+    get_current_datetime,
+)
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.dir_path import CORE_PARAM_PATH, DIRPATH
 
@@ -40,9 +44,7 @@ def find_recent_updated_files(
     """
     Search for files that have been updated since the specified time.
     """
-    time_threshold = datetime.datetime.now() - datetime.timedelta(
-        minutes=threshold_minutes
-    )
+    time_threshold = get_current_datetime() - timedelta(minutes=threshold_minutes)
     recent_files = []
 
     # search under directories
@@ -61,7 +63,7 @@ def find_recent_updated_files(
 
             # get mtime
             file_mtime = os.path.getmtime(file_path)
-            file_mtime_dt = datetime.datetime.fromtimestamp(file_mtime)
+            file_mtime_dt = datetime_from_timestamp(file_mtime)
 
             # compare mtime
             if file_mtime_dt > time_threshold:

@@ -1,9 +1,7 @@
 import json
 import os
 import shutil
-from datetime import datetime
 
-from dateutil.tz import tzlocal
 from pynwb import NWBHDF5IO, NWBFile
 from pynwb.ophys import (
     CorrectedImageStack,
@@ -18,6 +16,7 @@ from pynwb.ophys import (
 )
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.utils.datetime_utils import get_local_datetime
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
 
@@ -29,7 +28,7 @@ class NWBCreater:
             session_description=config["session_description"],
             identifier=config["identifier"],
             experiment_description=config["experiment_description"],
-            session_start_time=datetime.now(tzlocal()),
+            session_start_time=get_local_datetime(),
         )
 
         # Create Device (microscope information)

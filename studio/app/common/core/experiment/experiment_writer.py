@@ -4,7 +4,6 @@ import pickle
 import re
 import shutil
 from dataclasses import asdict
-from datetime import datetime
 from typing import Dict
 
 import numpy as np
@@ -27,6 +26,7 @@ from studio.app.common.core.utils.config_handler import (
     ConfigWriter,
     differential_deep_merge,
 )
+from studio.app.common.core.utils.datetime_utils import get_local_datetime_formatted
 from studio.app.common.core.utils.filelock_handler import FileLockUtils
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.workflow.workflow import (
@@ -111,7 +111,7 @@ class ExptConfigWriter:
             self.builder.set_workspace_id(self.workspace_id)
             .set_unique_id(self.unique_id)
             .set_name(self.name)
-            .set_started_at(datetime.now().strftime(DATE_FORMAT))
+            .set_started_at(get_local_datetime_formatted(DATE_FORMAT))
             .set_success(WorkflowRunStatus.RUNNING.value)
             .set_nwbfile(self.nwbfile)
             .set_snakemake(self.snakemake)
@@ -121,7 +121,7 @@ class ExptConfigWriter:
     def add_run_info(self) -> ExptConfig:
         return (
             self.builder.set_started_at(
-                datetime.now().strftime(DATE_FORMAT)
+                get_local_datetime_formatted(DATE_FORMAT)
             )  # Update time
             .set_success(WorkflowRunStatus.RUNNING.value)
             .build()
@@ -142,7 +142,7 @@ class ExptConfigWriter:
                 success=NodeRunStatus.RUNNING.value,
             )
             if node.data.type == "input":
-                timestamp = datetime.now().strftime(DATE_FORMAT)
+                timestamp = get_local_datetime_formatted(DATE_FORMAT)
                 func_dict[node.id].started_at = timestamp
                 func_dict[node.id].finished_at = timestamp
                 func_dict[node.id].success = NodeRunStatus.SUCCESS.value

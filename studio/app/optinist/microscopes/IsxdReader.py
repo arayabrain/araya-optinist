@@ -48,7 +48,9 @@ class IsxdReader(MicroscopeDataReaderBase):
         # Get acquisition start time
         # Note: Individual support for `isx v1.0.3`
         if not hasattr(timing, "start"):
-            from datetime import datetime, timezone
+            from studio.app.common.core.utils.datetime_utils import (
+                datetime_from_timestamp,
+            )
 
             # Get acquisition start time from metadata
             timing_info_start = (
@@ -60,9 +62,7 @@ class IsxdReader(MicroscopeDataReaderBase):
             timing_info_start_den = int(timing_info_start.get("den"))
             timing_start_unixtime = int(timing_info_start_num / timing_info_start_den)
 
-            timing_start_datetime = datetime.fromtimestamp(
-                timing_start_unixtime, timezone.utc
-            )
+            timing_start_datetime = datetime_from_timestamp(timing_start_unixtime)
             start_datatime = timing_start_datetime.strftime("%Y-%m-%d %H:%M:%S")
 
             del (

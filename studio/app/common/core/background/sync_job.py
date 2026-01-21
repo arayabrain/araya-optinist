@@ -6,8 +6,9 @@ Runs every 5 minutes, downloads experiments with local_sync_status='pending'.
 
 import asyncio
 import os
-from datetime import datetime
 from typing import TYPE_CHECKING, List, Tuple
+
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 
 if TYPE_CHECKING:
     from mypy_boto3_cloudwatch import CloudWatchClient
@@ -325,7 +326,7 @@ class PublishedExperimentSyncJob:
                         "MetricName": "PersistentSyncFailure",
                         "Value": 1,
                         "Unit": "Count",
-                        "Timestamp": datetime.now(),
+                        "Timestamp": get_current_datetime(),
                         "Dimensions": [
                             {"Name": "ExperimentId", "Value": str(exp_id)},
                             {"Name": "WorkspaceId", "Value": workspace_id},
@@ -356,13 +357,13 @@ class PublishedExperimentSyncJob:
                         "MetricName": "ExperimentsSynced",
                         "Value": synced_count,
                         "Unit": "Count",
-                        "Timestamp": datetime.now(),
+                        "Timestamp": get_current_datetime(),
                     },
                     {
                         "MetricName": "SyncErrors",
                         "Value": error_count,
                         "Unit": "Count",
-                        "Timestamp": datetime.now(),
+                        "Timestamp": get_current_datetime(),
                     },
                     {
                         "MetricName": "SyncErrorRate",
@@ -372,7 +373,7 @@ class PublishedExperimentSyncJob:
                             else 0
                         ),
                         "Unit": "Percent",
-                        "Timestamp": datetime.now(),
+                        "Timestamp": get_current_datetime(),
                     },
                 ],
             )

@@ -15,7 +15,7 @@ RECOMMENDATION: These should be integration tests with a real test database.
 For now, we test the basic error cases that don't depend on dynamic fields.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from unittest.mock import Mock
 
 import pytest
@@ -28,6 +28,7 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionStatus,
 )
 from studio.app.common.core.users.crud_users import get_user_with_context
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 
 # ============================================================================
 # Fixtures
@@ -128,7 +129,7 @@ async def test_get_user_with_context_free_user(mock_db, mock_user_model):
 @pytest.mark.skip(reason="Requires integration test with real DB")
 async def test_get_user_with_context_premium_active(mock_db, mock_user_model):
     """Test user context with active premium subscription (30 days remaining)"""
-    future_date = datetime.now(timezone.utc) + timedelta(days=30)
+    future_date = get_current_datetime() + timedelta(days=30)
 
     query_result = create_query_result(
         mock_user_model,
@@ -153,7 +154,7 @@ async def test_get_user_with_context_premium_active(mock_db, mock_user_model):
 @pytest.mark.skip(reason="Requires integration test with real DB")
 async def test_get_user_with_context_premium_expires_today(mock_db, mock_user_model):
     """Test user context with subscription expiring today"""
-    today = datetime.now(timezone.utc)
+    today = get_current_datetime()
 
     query_result = create_query_result(
         mock_user_model,
@@ -180,7 +181,7 @@ async def test_get_user_with_context_premium_expires_today(mock_db, mock_user_mo
 @pytest.mark.skip(reason="Requires integration test with real DB")
 async def test_get_user_with_context_premium_in_grace_period(mock_db, mock_user_model):
     """Test user context with subscription in grace period (5 days past expiration)"""
-    past_date = datetime.now(timezone.utc) - timedelta(days=5)
+    past_date = get_current_datetime() - timedelta(days=5)
 
     query_result = create_query_result(
         mock_user_model,
@@ -210,7 +211,7 @@ async def test_get_user_with_context_premium_grace_period_last_day(
 ):
     """Test user context on last day of grace period"""
     # Grace period is 7 days, so -7 days from expiration is last day
-    past_date = datetime.now(timezone.utc) - timedelta(
+    past_date = get_current_datetime() - timedelta(
         days=SubscriptionPeriods.GRACE_PERIOD_DAYS
     )
 
@@ -239,7 +240,7 @@ async def test_get_user_with_context_premium_grace_period_last_day(
 async def test_get_user_with_context_premium_expired(mock_db, mock_user_model):
     """Test user context with expired subscription (past grace period)"""
     # More than 7 days past expiration
-    past_date = datetime.now(timezone.utc) - timedelta(
+    past_date = get_current_datetime() - timedelta(
         days=SubscriptionPeriods.GRACE_PERIOD_DAYS + 5
     )
 
@@ -264,7 +265,7 @@ async def test_get_user_with_context_premium_expired(mock_db, mock_user_model):
 @pytest.mark.skip(reason="Requires integration test with real DB")
 async def test_get_user_with_context_free_plan_id(mock_db, mock_user_model):
     """Test user with FREE plan_id (not premium)"""
-    future_date = datetime.now(timezone.utc) + timedelta(days=30)
+    future_date = get_current_datetime() + timedelta(days=30)
 
     query_result = create_query_result(
         mock_user_model,
@@ -401,8 +402,8 @@ async def test_get_user_with_context_timezone_naive_expiration(
     mock_db, mock_user_model
 ):
     """Test handling of timezone-naive expiration datetime"""
-    # Create timezone-naive datetime
-    future_date_naive = datetime.now() + timedelta(days=30)
+    # Create timezone-naive datetime (simulates MySQL DateTime column)
+    future_date_naive = get_current_datetime().replace(tzinfo=None) + timedelta(days=30)
 
     query_result = create_query_result(
         mock_user_model,

@@ -17,7 +17,7 @@ This ensures:
 
 import os
 import shutil
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import List, Tuple
 
 from sqlalchemy import func
@@ -25,6 +25,7 @@ from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.constants import SyncStatusConstants
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.db.database import session_scope
 from studio.app.common.models import FreeUserAssignment, User, Workspace
@@ -114,7 +115,7 @@ class DataCleanupJob:
         """
         with session_scope() as db:
             # Calculate cutoff time (1 hour ago)
-            cutoff_time = datetime.now(timezone.utc) - timedelta(
+            cutoff_time = get_current_datetime() - timedelta(
                 minutes=SyncStatusConstants.LOGOUT_GRACE_PERIOD_MINUTES
             )
 
@@ -491,13 +492,13 @@ class DataCleanupJob:
                         "MetricName": "DataCleanupCount",
                         "Value": cleaned_count,
                         "Unit": "Count",
-                        "Timestamp": datetime.now(),
+                        "Timestamp": get_current_datetime(),
                     },
                     {
                         "MetricName": "CleanupErrors",
                         "Value": error_count,
                         "Unit": "Count",
-                        "Timestamp": datetime.now(),
+                        "Timestamp": get_current_datetime(),
                     },
                 ],
             )

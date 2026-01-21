@@ -1,12 +1,16 @@
-import datetime
 import json
 import os
 import shutil
 from abc import ABCMeta, abstractmethod
+from datetime import timedelta
 from enum import Enum
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
+from studio.app.common.core.utils.datetime_utils import (
+    datetime_from_timestamp,
+    get_current_datetime,
+)
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.dir_path import DIRPATH
 
@@ -144,7 +148,7 @@ class RemoteSyncStatusFileUtil:
                 "remote_storage_type": RemoteStorageType.get_activated_type().value,
                 "action": remote_sync_action.value,
                 "status": status.value,
-                "timestamp": datetime.datetime.now(),
+                "timestamp": get_current_datetime(),
             }
             json.dump(sync_status_data, f, default=str, indent=2)
 
@@ -264,10 +268,8 @@ class RemoteSyncLockFileUtil:
         if os.path.isfile(remote_sync_lock_file_path):
             # Get lock file's modified time
             threshold_min = cls.LOCK_FILE_EXPIRE_MINUTES
-            threshold_time = datetime.datetime.now() - datetime.timedelta(
-                minutes=threshold_min
-            )
-            file_modified_time = datetime.datetime.fromtimestamp(
+            threshold_time = get_current_datetime() - timedelta(minutes=threshold_min)
+            file_modified_time = datetime_from_timestamp(
                 os.path.getmtime(remote_sync_lock_file_path)
             )
 
@@ -300,7 +302,7 @@ class RemoteSyncLockFileUtil:
             file_data = {
                 "workspace_id": workspace_id,
                 "unique_id": unique_id,
-                "timestamp": datetime.datetime.now(),
+                "timestamp": get_current_datetime(),
             }
             json.dump(file_data, f, default=str, indent=2)
 

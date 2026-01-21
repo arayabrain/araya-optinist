@@ -81,7 +81,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -384,7 +384,7 @@ class AutoscalingUsageTest:
 
     def get_ecs_metrics(self) -> Tuple[float, float]:
         """Get current ECS CPU and Memory utilization."""
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         start_time = end_time - timedelta(minutes=5)
 
         # Get CPU utilization
@@ -688,7 +688,7 @@ class AutoscalingUsageTest:
                         "workflow_index": workflow_index,
                         "unique_id": unique_id,
                         "workspace_id": workspace_id,
-                        "submitted_at": datetime.now(),
+                        "submitted_at": datetime.now(timezone.utc),
                     }
                 )
                 return unique_id

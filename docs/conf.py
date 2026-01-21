@@ -5,7 +5,8 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
 import os
-from datetime import datetime
+
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 
 # -- Path setup --------------------------------------------------------------
 
@@ -17,7 +18,7 @@ from datetime import datetime
 
 # -- Project information -----------------------------------------------------
 project = "OptiNiSt"
-copyright = f"{datetime.today().year}, OIST"
+copyright = f"{get_current_datetime().year}, OIST"
 author = ""
 release = "2.4.0"
 

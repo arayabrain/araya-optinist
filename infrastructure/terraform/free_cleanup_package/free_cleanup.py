@@ -15,7 +15,7 @@ This Lambda has VPC access and can connect to RDS from inside VPC.
 import decimal
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 import pymysql
@@ -249,7 +249,7 @@ def simulate_user_activity(
         Dict with success status
     """
     try:
-        activity_time = datetime.now() - timedelta(minutes=minutes_ago)
+        activity_time = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
 
         with connection.cursor() as cursor:
             query = """

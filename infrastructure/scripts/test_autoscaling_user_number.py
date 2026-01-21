@@ -95,7 +95,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event, Thread
 from typing import Dict, List, Tuple
@@ -370,7 +370,7 @@ class AutoscalingUserNumberTest:
                     WHERE last_activity >= %s
                     ORDER BY instance_id, user_id
                 """
-                cutoff = datetime.now() - timedelta(
+                cutoff = datetime.now(timezone.utc) - timedelta(
                     minutes=self.config.activity_threshold_minutes
                 )
                 cursor.execute(query, (cutoff,))
@@ -509,8 +509,10 @@ class AutoscalingUserNumberTest:
                             "ReturnData": True,
                         }
                     ],
-                    StartTime=int((datetime.now() - timedelta(minutes=2)).timestamp()),
-                    EndTime=int(datetime.now().timestamp()),
+                    StartTime=int(
+                        (datetime.now(timezone.utc) - timedelta(minutes=2)).timestamp()
+                    ),
+                    EndTime=int(datetime.now(timezone.utc).timestamp()),
                 )
 
                 values = response["MetricDataResults"][0].get("Values", [])
@@ -679,7 +681,7 @@ class AutoscalingUserNumberTest:
         """Get recent Lambda execution logs."""
         log_group = f"/aws/lambda/{self.config.lambda_function_name}"
         start_time = int(
-            (datetime.now() - timedelta(minutes=minutes)).timestamp() * 1000
+            (datetime.now(timezone.utc) - timedelta(minutes=minutes)).timestamp() * 1000
         )
 
         try:

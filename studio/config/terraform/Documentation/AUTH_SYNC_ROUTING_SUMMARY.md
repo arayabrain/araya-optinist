@@ -71,7 +71,7 @@ graph TB
         D --> E[Generate JWT Token]
         E --> F[Return access_token]
         F --> G[Store in localStorage]
-        
+
         I[API Request] --> J{Has Token?}
         J -->|Yes| K[Add Authorization Header]
         J -->|No| L[Redirect to Login]
@@ -443,7 +443,8 @@ def __get_current_user_record(db: Session, uid: str):
 
     # Calculate subscription status, grace period, days remaining
     # (70+ lines of status calculation logic)
-    now = datetime.now(timezone.utc)
+    from studio.app.common.core.utils.datetime_utils import get_current_datetime
+    now = get_current_datetime()
     if subscription_expiration and subscription_plan_id:
         days_remaining = (subscription_expiration - now).days
 

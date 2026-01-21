@@ -1,7 +1,6 @@
 import time
 import uuid
 from dataclasses import asdict
-from datetime import datetime
 from typing import Dict, List, Optional
 
 from fastapi import BackgroundTasks
@@ -28,6 +27,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
 )
+from studio.app.common.core.utils.datetime_utils import get_local_datetime_formatted
 from studio.app.common.core.workflow.workflow import (
     Node,
     NodeData,
@@ -193,7 +193,7 @@ class WorkflowRunner:
 
         # Construct update data (ExptConfig.*)
         update_expt_config = ExptConfigReader.create_empty_experiment_config()
-        now = datetime.now().strftime(DATE_FORMAT)
+        now = get_local_datetime_formatted(DATE_FORMAT)
         update_expt_config.success = status.value
         update_expt_config.finished_at = now
         update_expt_config.data_usage = 0

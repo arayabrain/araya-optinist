@@ -1,4 +1,3 @@
-from datetime import datetime, timezone
 from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -20,6 +19,7 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionType,
 )
 from studio.app.common.core.users import crud_users
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import get_db
 from studio.app.common.models import FreeUserAssignment
 from studio.app.common.schemas.users import SelfUserUpdate, User, UserPasswordUpdate
@@ -193,7 +193,7 @@ async def logout_free_user(
 
         if assignment:
             # Update logged_out_at timestamp
-            assignment.logged_out_at = datetime.now(timezone.utc)
+            assignment.logged_out_at = get_current_datetime()
             db.add(assignment)
             db.commit()
 

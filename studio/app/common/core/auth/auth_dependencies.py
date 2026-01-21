@@ -25,6 +25,7 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionPlanIds,
     SubscriptionStatus,
 )
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import get_db
 from studio.app.common.models import User as UserModel
 from studio.app.common.models import UserRole as UserRoleModel
@@ -84,7 +85,7 @@ def _enrich_user_with_subscription_status(
         subscription_plan_id: ID of subscription plan
         subscription_plan_name: Name of subscription plan (fallback)
     """
-    now = datetime.now(timezone.utc)
+    now = get_current_datetime()
 
     if subscription_expiration and subscription_plan_id:
         # Make sure expiration is timezone-aware
