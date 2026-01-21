@@ -290,6 +290,48 @@ def get_mat_structure_dict(workspace_id: str) -> dict:
         return {}
 
 
+async def _update_and_upload_metadata(
+    workspace_id: str, filename: str, remote_bucket_name: str
+):
+    """Update metadata cache and upload to S3 if needed.
+
+    Called as a background task after syncing input files. This helps
+    backfill metadata (image shape, HDF5/MATLAB structure) for files
+    that were uploaded before structure caching was implemented.
+    """
+    try:
+        # Determine file type and update appropriate metadata
+        if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
+            update_image_shape(workspace_id, filename)
+            metadata_file = METADATA_IMAGE_SHAPE_FILE
+        elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
+            update_hdf5_structure(workspace_id, filename)
+            metadata_file = METADATA_HDF5_STRUCTURE_FILE
+        elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
+            update_mat_structure(workspace_id, filename)
+            metadata_file = METADATA_MAT_STRUCTURE_FILE
+        else:
+            # No metadata to update for this file type
+            return
+
+        # Upload updated metadata to S3
+        async with RemoteStorageSimpleWriter(
+            remote_bucket_name
+        ) as remote_storage_controller:
+            await remote_storage_controller.upload_input_data(
+                workspace_id, metadata_file
+            )
+        logger.debug(
+            f"Updated and uploaded metadata {metadata_file} "
+            f"for {workspace_id}/{filename}"
+        )
+    except Exception as e:
+        # Don't fail the sync if metadata update fails - just log warning
+        logger.warning(
+            f"Failed to update/upload metadata for {workspace_id}/{filename}: {e}"
+        )
+
+
 def _get_file_extensions_for_type(file_type: str) -> List[str]:
     """Get file extensions for a given file type."""
     if file_type == FILETYPE.IMAGE:
@@ -510,12 +552,17 @@ async def get_files_merged(
 async def sync_input_file(
     workspace_id: str,
     filename: str,
+    background_tasks: BackgroundTasks,
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     """Download a specific input file from S3 to local storage.
 
     Used by config dialogs (CSV Settings, HDF5/MATLAB Structure) that need
     to read file contents for a remote-only file.
+
+    Also generates and uploads metadata (image shape, HDF5/MATLAB structure)
+    if not already present in S3, helping to backfill metadata for files
+    uploaded before structure caching was implemented.
     """
     if not RemoteStorageController.is_available():
         raise HTTPException(status_code=503, detail="Remote storage not available")
@@ -534,6 +581,12 @@ async def sync_input_file(
     except Exception as e:
         logger.error(f"Failed to sync input file {filename}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to sync file: {str(e)}")
+
+    # Generate and upload metadata in background for files that need it
+    # This helps backfill metadata for files uploaded before caching was added
+    background_tasks.add_task(
+        _update_and_upload_metadata, workspace_id, filename, remote_bucket_name
+    )
 
     return {"file_path": filename}
 

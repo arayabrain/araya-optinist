@@ -26,6 +26,7 @@ from studio.app.common.core.snakemake.snakemake_writer import SmkConfigWriter
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageSimpleReader,
+    RemoteStorageSimpleWriter,
     RemoteSyncAction,
     RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
@@ -44,7 +45,13 @@ from studio.app.common.core.workflow.workflow import (
 )
 from studio.app.common.core.workflow.workflow_params import get_typecheck_params
 from studio.app.common.core.workflow.workflow_writer import WorkflowConfigWriter
-from studio.app.const import DATE_FORMAT
+from studio.app.const import (
+    ACCEPT_FILE_EXT,
+    DATE_FORMAT,
+    METADATA_HDF5_STRUCTURE_FILE,
+    METADATA_IMAGE_SHAPE_FILE,
+    METADATA_MAT_STRUCTURE_FILE,
+)
 from studio.app.dir_path import DIRPATH
 
 
@@ -149,13 +156,21 @@ class WorkflowRunner:
         return input_files
 
     async def _ensure_input_data_local(self) -> None:
-        """Download any remote-only input files before workflow runs."""
+        """Download any remote-only input files before workflow runs.
+
+        Also updates and uploads metadata (image shape, HDF5/MATLAB structure)
+        for downloaded files, helping to backfill metadata for files uploaded
+        before structure caching was implemented.
+        """
         if not RemoteStorageController.is_available():
             return
 
         input_files = self._extract_input_files()
         if not input_files:
             return
+
+        # Track which metadata files need uploading
+        metadata_to_upload = set()
 
         async with RemoteStorageSimpleReader(
             self.remote_bucket_name
@@ -170,11 +185,70 @@ class WorkflowRunner:
                         await remote_storage_controller.download_input_data(
                             self.workspace_id, filename
                         )
+                        # Track metadata to update after download
+                        metadata_file = self._get_metadata_file_for(filename)
+                        if metadata_file:
+                            metadata_to_upload.add((filename, metadata_file))
                     except Exception as e:
                         self.logger.error(
                             f"Failed to download input file {filename}: {e}"
                         )
                         raise
+
+        # Update and upload metadata for downloaded files (in background)
+        if metadata_to_upload:
+            await self._update_and_upload_metadata(metadata_to_upload)
+
+    def _get_metadata_file_for(self, filename: str) -> Optional[str]:
+        """Get the metadata file name for a given input file type."""
+        if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
+            return METADATA_IMAGE_SHAPE_FILE
+        elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
+            return METADATA_HDF5_STRUCTURE_FILE
+        elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
+            return METADATA_MAT_STRUCTURE_FILE
+        return None
+
+    async def _update_and_upload_metadata(self, metadata_to_upload: set) -> None:
+        """Update metadata caches and upload to S3.
+
+        This helps backfill metadata for files uploaded before caching was added.
+        """
+        from studio.app.common.routers.files import (
+            update_hdf5_structure,
+            update_image_shape,
+            update_mat_structure,
+        )
+
+        # Group by metadata file type
+        metadata_files_updated = set()
+
+        for filename, metadata_file in metadata_to_upload:
+            try:
+                if metadata_file == METADATA_IMAGE_SHAPE_FILE:
+                    update_image_shape(self.workspace_id, filename)
+                elif metadata_file == METADATA_HDF5_STRUCTURE_FILE:
+                    update_hdf5_structure(self.workspace_id, filename)
+                elif metadata_file == METADATA_MAT_STRUCTURE_FILE:
+                    update_mat_structure(self.workspace_id, filename)
+                metadata_files_updated.add(metadata_file)
+                self.logger.debug(f"Updated metadata for {filename}")
+            except Exception as e:
+                self.logger.warning(f"Failed to update metadata for {filename}: {e}")
+
+        # Upload updated metadata files to S3
+        if metadata_files_updated:
+            try:
+                async with RemoteStorageSimpleWriter(
+                    self.remote_bucket_name
+                ) as remote_storage_controller:
+                    for metadata_file in metadata_files_updated:
+                        await remote_storage_controller.upload_input_data(
+                            self.workspace_id, metadata_file
+                        )
+                        self.logger.debug(f"Uploaded {metadata_file} to S3")
+            except Exception as e:
+                self.logger.warning(f"Failed to upload metadata to S3: {e}")
 
     async def ensure_input_data_local(self) -> None:
         """Download any remote-only input files before workflow runs.

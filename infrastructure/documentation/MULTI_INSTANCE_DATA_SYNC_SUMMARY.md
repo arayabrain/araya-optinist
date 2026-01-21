@@ -828,6 +828,62 @@ The system never attempts to read file contents without first ensuring the file 
 
 ---
 
+## Metadata Backfill for Legacy Files
+
+Files uploaded before structure caching was implemented won't have metadata files (`.hdf5_structure.json`, `.mat_structure.json`, `.image_shape.json`) in S3. To handle this gracefully, the system automatically generates and uploads metadata when these files are accessed:
+
+### When Metadata is Backfilled
+
+| Trigger | Files | Location |
+|---------|-------|----------|
+| Workflow run | All input files used in workflow | `workflow_runner._ensure_input_data_local()` |
+| CSV settings dialog | CSV file being configured | `sync_input_file()` endpoint |
+| On-demand sync | Any file synced via API | `sync_input_file()` endpoint |
+
+### How it Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 1. File is downloaded from S3 (on-demand sync or workflow)  │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 2. Check file type (TIFF/HDF5/MATLAB)                       │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 3. Generate metadata:                                       │
+│    • TIFF → update_image_shape() → .image_shape.json        │
+│    • HDF5 → update_hdf5_structure() → .hdf5_structure.json  │
+│    • MATLAB → update_mat_structure() → .mat_structure.json  │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 4. Upload metadata file to S3 (background task)             │
+│    → Future access from any instance uses cached metadata   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Implementation
+
+**`studio/app/common/routers/files.py`** - `_update_and_upload_metadata()`:
+- Called as background task after `sync_input_file()` endpoint
+- Generates structure/shape metadata and uploads to S3
+
+**`studio/app/common/core/workflow/workflow_runner.py`** - `_ensure_input_data_local()`:
+- When downloading input files before workflow run
+- Tracks which files need metadata update
+- Calls `_update_and_upload_metadata()` after downloads complete
+
+### Benefits
+
+1. **Gradual migration**: Legacy files get metadata as they're used
+2. **No manual intervention**: Happens automatically during normal usage
+3. **Non-blocking**: Metadata upload runs in background
+4. **Fault-tolerant**: Failures logged but don't block the operation
+
+---
+
 ## Input Data Sync Implementation Details
 
 ### Backend Changes

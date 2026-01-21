@@ -832,12 +832,11 @@ def test_input_file_sync(workspace_id: str, filename: str, token: str) -> dict:
 def test_hdf5_structure(workspace_id: str, filename: str, token: str) -> dict:
     """Test HDF5 structure endpoint with cached structure.
 
-    Calls GET /hdf5/{filename} which should return cached structure
-    without downloading the full file.
+    Calls GET /hdf5/{filename}?workspace_id={workspace_id} which should return
+    cached structure without downloading the full file.
     """
-    url = f"{get_api_base_url()}/hdf5/{filename}"
+    url = f"{get_api_base_url()}/hdf5/{filename}?workspace_id={workspace_id}"
     headers = get_auth_headers(token)
-    headers["workspace_id"] = str(workspace_id)
     endpoint = "GET /hdf5/{filename}"
 
     try:
@@ -884,12 +883,11 @@ def test_hdf5_structure(workspace_id: str, filename: str, token: str) -> dict:
 def test_mat_structure(workspace_id: str, filename: str, token: str) -> dict:
     """Test MATLAB structure endpoint with cached structure.
 
-    Calls GET /mat/{filename} which should return cached structure
-    without downloading the full file.
+    Calls GET /mat/{filename}?workspace_id={workspace_id} which should return
+    cached structure without downloading the full file.
     """
-    url = f"{get_api_base_url()}/mat/{filename}"
+    url = f"{get_api_base_url()}/mat/{filename}?workspace_id={workspace_id}"
     headers = get_auth_headers(token)
-    headers["workspace_id"] = str(workspace_id)
     endpoint = "GET /mat/{filename}"
 
     try:
@@ -2614,34 +2612,44 @@ def run_test_input_data_sync(email: str) -> dict:
 
     if hdf5_files:
         print("\n      [c] HDF5 structure caching")
-        # Clear metadata to test S3 download
-        clear_local_input_metadata(ws_id)
         test_file = hdf5_files[0]["filename"]
-        result = test_hdf5_structure(ws_id, test_file, token)
-        results["hdf5_structure"] = result.get("status") == "success"
-        if result.get("status") == "success":
-            print(f"PASS - Got structure for {test_file}")
+        # First sync the file so structure can be extracted
+        sync_result = test_input_file_sync(ws_id, test_file, token)
+        if sync_result.get("status") != "success":
+            print(f"FAIL - Could not sync {test_file} for structure test")
+            results["hdf5_structure"] = False
         else:
-            print(
-                f"FAIL - {result.get('error', result.get('message', 'Unknown error'))}"
-            )
+            result = test_hdf5_structure(ws_id, test_file, token)
+            results["hdf5_structure"] = result.get("status") == "success"
+            if result.get("status") == "success":
+                print(f"PASS - Got structure for {test_file}")
+            else:
+                print(
+                    f"FAIL - "
+                    f"{result.get('error', result.get('message', 'Unknown error'))}"
+                )
     else:
         print("\n      [c] HDF5 structure caching - SKIPPED (no HDF5 files)")
         results["hdf5_structure"] = True  # Not applicable
 
     if mat_files:
         print("\n      [d] MATLAB structure caching")
-        # Clear metadata to test S3 download
-        clear_local_input_metadata(ws_id)
         test_file = mat_files[0]["filename"]
-        result = test_mat_structure(ws_id, test_file, token)
-        results["mat_structure"] = result.get("status") == "success"
-        if result.get("status") == "success":
-            print(f"PASS - Got structure for {test_file}")
+        # First sync the file so structure can be extracted
+        sync_result = test_input_file_sync(ws_id, test_file, token)
+        if sync_result.get("status") != "success":
+            print(f"FAIL - Could not sync {test_file} for structure test")
+            results["mat_structure"] = False
         else:
-            print(
-                f"FAIL - {result.get('error', result.get('message', 'Unknown error'))}"
-            )
+            result = test_mat_structure(ws_id, test_file, token)
+            results["mat_structure"] = result.get("status") == "success"
+            if result.get("status") == "success":
+                print(f"PASS - Got structure for {test_file}")
+            else:
+                print(
+                    f"FAIL - "
+                    f"{result.get('error', result.get('message', 'Unknown error'))}"
+                )
     else:
         print("\n      [d] MATLAB structure caching - SKIPPED (no MATLAB files)")
         results["mat_structure"] = True  # Not applicable
