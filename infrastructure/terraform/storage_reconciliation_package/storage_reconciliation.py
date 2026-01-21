@@ -20,12 +20,12 @@ from typing import Any, Dict
 import boto3
 import pymysql
 
+# Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
+from aws_constants import DatabaseConfig
+
 # ============================================================================
 # Constants
 # ============================================================================
-
-# Database connection
-DB_PORT_DEFAULT = 3306
 
 # Storage reconciliation configuration
 BATCH_SIZE = 10  # Process 10 users at a time to prevent OOM
@@ -64,7 +64,9 @@ def get_db_connection(auto_commit=False):
         rds_host = get_required_env_var("RDS_HOST")
         conn = pymysql.connect(
             host=rds_host.split(":")[0],
-            port=int(rds_host.split(":")[1]) if ":" in rds_host else DB_PORT_DEFAULT,
+            port=int(rds_host.split(":")[1])
+            if ":" in rds_host
+            else DatabaseConfig.DEFAULT_PORT,
             user=get_required_env_var("RDS_USER"),
             password=get_required_env_var("RDS_PASSWORD"),
             database=get_required_env_var("RDS_DATABASE"),
@@ -283,6 +285,9 @@ def reconcile_user_storage(
         # Update database with actual S3 value and reset delta
         # Use explicit UTC timestamp to match Studio app's
         # SubscriptionService.get_current_datetime()
+        # TODO: Centralize datetime.now(timezone.utc) usage across the project
+        # to prevent inconsistent timezone handling. Consider creating a
+        # shared utility function (e.g., get_utc_now()) that all code uses.
         now_utc = datetime.now(timezone.utc)
 
         with get_db_connection() as conn:

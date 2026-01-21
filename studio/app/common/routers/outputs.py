@@ -12,8 +12,10 @@ from studio.app.common.core.snakemake.smk_utils import SmkUtils
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageReader,
+    RemoteStorageSimpleReader,
     RemoteSyncStatusFileUtil,
 )
+from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.utils.file_reader import JsonReader, Reader
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
@@ -105,21 +107,27 @@ async def sync_visualization_files(
 
     logger.info(f"Syncing visualization files for {workspace_id}/{unique_id} from S3")
 
-    async with RemoteStorageReader(
-        remote_bucket_name, workspace_id, unique_id
+    # Use SimpleReader to avoid updating sync status - partial syncs should NOT
+    # mark as synced, so background full sync can still run
+    async with RemoteStorageSimpleReader(
+        remote_bucket_name
     ) as remote_storage_controller:
         result = await remote_storage_controller.download_experiment(
             workspace_id, unique_id, sync_mode="visualization"
         )
 
         # Also download input files needed for viewing images
-        input_filenames = SmkUtils.get_datatypes_inputs(
-            workspace_id, unique_id, apply_basename=True
-        )
-        for input_filename in input_filenames:
-            await remote_storage_controller.download_input_data(
-                workspace_id, input_filename
+        try:
+            input_filenames = SmkUtils.get_datatypes_inputs(
+                workspace_id, unique_id, apply_basename=True
             )
+            for input_filename in input_filenames:
+                await remote_storage_controller.download_input_data(
+                    workspace_id, input_filename
+                )
+        except (AssertionError, KeyError):
+            # snakemake.yaml may be empty or missing required keys
+            pass
 
     # Trigger background task to download remaining files (PKL/NWB)
     # This prepares Edit ROI while user is viewing results
@@ -141,8 +149,16 @@ async def _ensure_visualization_synced(dirpath: str, remote_bucket_name: str) ->
     if not dirpath.startswith(DIRPATH.OUTPUT_DIR):
         return
 
+    # Trim path to workspace_id/unique_id level
+    # (ExptOutputPathIds expects 2-3 components)
+    relative_path = os.path.relpath(dirpath, DIRPATH.OUTPUT_DIR)
+    path_parts = relative_path.split(os.sep)
+    if len(path_parts) < 2:
+        return
+    trimmed_path = os.path.join(DIRPATH.OUTPUT_DIR, *path_parts[:2])
+
     # Extract IDs from path
-    path_ids = ExptOutputPathIds(dirpath)
+    path_ids = ExptOutputPathIds(trimmed_path)
     workspace_id = path_ids.workspace_id
     unique_id = path_ids.unique_id
 
@@ -159,20 +175,26 @@ async def _ensure_visualization_synced(dirpath: str, remote_bucket_name: str) ->
 
     logger.info(f"On-demand sync for visualization: {workspace_id}/{unique_id}")
 
-    async with RemoteStorageReader(
-        remote_bucket_name, workspace_id, unique_id
+    # Use SimpleReader to avoid updating sync status - partial syncs should NOT
+    # mark as synced, so that Edit ROI can still trigger a full sync later
+    async with RemoteStorageSimpleReader(
+        remote_bucket_name
     ) as remote_storage_controller:
         await remote_storage_controller.download_experiment(
             workspace_id, unique_id, sync_mode="visualization"
         )
-        # Also download input files
-        input_filenames = SmkUtils.get_datatypes_inputs(
-            workspace_id, unique_id, apply_basename=True
-        )
-        for input_filename in input_filenames:
-            await remote_storage_controller.download_input_data(
-                workspace_id, input_filename
+        # Also download input files (if snakemake config is available)
+        try:
+            input_filenames = SmkUtils.get_datatypes_inputs(
+                workspace_id, unique_id, apply_basename=True
             )
+            for input_filename in input_filenames:
+                await remote_storage_controller.download_input_data(
+                    workspace_id, input_filename
+                )
+        except (AssertionError, KeyError):
+            # snakemake.yaml may be empty or missing required keys
+            pass
 
 
 def get_initial_timeseries_data(dirpath) -> JsonTimeSeriesData:
@@ -335,6 +357,12 @@ async def get_image(
         if not filepath.startswith(join_filepath([DIRPATH.OUTPUT_DIR, workspace_id])):
             filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filepath])
 
+            # On-demand sync for input files
+            if not os.path.exists(filepath) and RemoteStorageController.is_available():
+                logger.info(f"On-demand sync for input file: {workspace_id}/{filename}")
+                s3_controller = S3StorageController(remote_bucket_name)
+                await s3_controller.download_input_data(workspace_id, filename + ext)
+
         save_dirpath = join_filepath(
             [
                 os.path.dirname(filepath),
@@ -353,8 +381,19 @@ async def get_image(
 
 
 @router.get("/csv/{filepath:path}", response_model=OutputData)
-async def get_csv(filepath: str, workspace_id: str):
+async def get_csv(
+    filepath: str,
+    workspace_id: str,
+    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+):
+    original_filename = os.path.basename(filepath)
     filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filepath])
+
+    # On-demand sync for input files
+    if not os.path.exists(filepath) and RemoteStorageController.is_available():
+        logger.info(f"On-demand sync for input: {workspace_id}/{original_filename}")
+        s3_controller = S3StorageController(remote_bucket_name)
+        await s3_controller.download_input_data(workspace_id, original_filename)
 
     filename, _ = os.path.splitext(os.path.basename(filepath))
     save_dirpath = join_filepath([os.path.dirname(filepath), filename])

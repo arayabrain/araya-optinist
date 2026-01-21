@@ -20,6 +20,7 @@ project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
 
 
+from infrastructure.aws_constants import DatabaseConfig  # noqa: E402
 from studio.app.common.core.logger import AppLogger  # noqa: E402
 
 logger = AppLogger.get_logger()
@@ -45,7 +46,7 @@ def get_db_connection():
         try:
             conn = pymysql.connect(
                 host=os.environ.get("RDS_HOST", "localhost").split(":")[0],
-                port=3306,
+                port=DatabaseConfig.DEFAULT_PORT,
                 user=os.environ.get("RDS_USER", "root"),
                 password=os.environ.get("RDS_PASSWORD", ""),
                 database=os.environ.get("RDS_DATABASE", "optinist"),

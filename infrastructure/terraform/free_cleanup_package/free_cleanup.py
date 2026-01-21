@@ -20,6 +20,9 @@ from typing import Any, Dict, List
 
 import pymysql
 
+# Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
+from aws_constants import DatabaseConfig
+
 
 class DecimalEncoder(json.JSONEncoder):
     """Custom JSON encoder to handle Decimal types from database"""
@@ -63,7 +66,9 @@ def get_db_connection(auto_commit=False):
             rds_host = get_required_env_var("RDS_HOST")
             conn = pymysql.connect(
                 host=rds_host.split(":")[0],
-                port=int(rds_host.split(":")[1]) if ":" in rds_host else 3306,
+                port=int(rds_host.split(":")[1])
+                if ":" in rds_host
+                else DatabaseConfig.DEFAULT_PORT,
                 user=get_required_env_var("RDS_USER"),
                 password=get_required_env_var("RDS_PASSWORD"),
                 database=get_required_env_var("RDS_DATABASE"),

@@ -10,6 +10,7 @@ resource "aws_lambda_function" "premium_manager" {
   handler       = "premium_manager.handler"
   runtime       = "python3.9"
   timeout       = 600
+  layers        = [aws_lambda_layer_version.aws_constants.arn]
 
   source_code_hash = data.archive_file.premium_manager_zip.output_base64sha256
 
@@ -193,6 +194,7 @@ resource "aws_lambda_function" "premium_cleanup" {
   handler       = "premium_cleanup.handler"
   runtime       = "python3.9"
   timeout       = 300
+  layers        = [aws_lambda_layer_version.aws_constants.arn]
 
   source_code_hash = data.archive_file.premium_cleanup_zip.output_base64sha256
 

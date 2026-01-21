@@ -15,6 +15,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageLockError,
     RemoteStorageReader,
+    RemoteStorageSimpleReader,
     RemoteSyncStatusFileUtil,
     upload_experiment_wrapper,
 )
@@ -46,6 +47,21 @@ async def fetch_last_experiment(
 ):
     try:
         last_expt_config = ExperimentService.get_last_experiment(workspace_id)
+
+        # If no local experiments found, try syncing from S3 (multi-instance scenario)
+        if not last_expt_config and RemoteStorageController.is_available():
+            logger.info(
+                f"No local experiments in workspace {workspace_id}, syncing from S3"
+            )
+            async with RemoteStorageSimpleReader(
+                remote_bucket_name
+            ) as remote_storage_controller:
+                await remote_storage_controller.download_all_experiments_metas(
+                    [workspace_id]
+                )
+            # Retry finding last experiment after sync
+            last_expt_config = ExperimentService.get_last_experiment(workspace_id)
+
         if last_expt_config:
             unique_id = last_expt_config.unique_id
 

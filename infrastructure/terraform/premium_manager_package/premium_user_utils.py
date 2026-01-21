@@ -12,6 +12,9 @@ from typing import List
 
 import pymysql
 
+# Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
+from aws_constants import DatabaseConfig
+
 
 def get_db_connection(auto_commit=False):
     """
@@ -39,7 +42,7 @@ def get_db_connection(auto_commit=False):
 
             conn = pymysql.connect(
                 host=host,
-                port=3306,
+                port=DatabaseConfig.DEFAULT_PORT,
                 user=os.environ.get("RDS_USER"),
                 password=os.environ.get("RDS_PASSWORD"),
                 database=os.environ.get("RDS_DATABASE"),
@@ -198,7 +201,7 @@ def get_users_on_shared_instance(instance_id: str) -> List[dict]:
         return []
 
 
-def can_migrate_user(user_id: str) -> bool:
+def can_migrate_user(user_id: int) -> bool:
     """
     Check if a user can be safely migrated right now.
 

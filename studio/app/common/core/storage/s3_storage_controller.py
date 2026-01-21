@@ -2,12 +2,17 @@ import asyncio
 import os
 import re
 from subprocess import CalledProcessError
+from typing import TYPE_CHECKING
 
 import aioboto3
 import boto3
 from sqlmodel import select
 
 from studio.app.common import models as common_model
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
+
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.file_filter import FileSyncFilter
 from studio.app.common.core.storage.remote_storage_controller import (
@@ -777,7 +782,7 @@ class S3StorageController(BaseRemoteStorageController):
                 # Use synchronous boto3 to avoid aioboto3 asyncio compatibility issues
                 # Run in thread pool to maintain async interface
                 def upload_file(local_path, s3_path):
-                    s3_client = boto3.client("s3")
+                    s3_client: "S3Client" = boto3.client("s3")
                     return s3_client.upload_file(local_path, self.bucket_name, s3_path)
 
                 await loop.run_in_executor(
