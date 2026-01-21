@@ -3,3 +3,29 @@
 # Ignore old Terraform-generated app_setup.sh
 # The static version is now in infrastructure/scripts/app_setup.sh
 app_setup.sh
+
+# Ignore Terraform state files and directories
+terraform.*
+.terraform*
+*.pem
+
+# Lambda deployment packages
+**/*.py.zip
+**/*_package/pymysql/
+**/*_package/sqlalchemy*
+**/*_package/typing_extensions*
+**/*_package/pymysql-1.1.2.dist-info/
+**/*_package/boto3*
+**/*_package/botocore*
+**/*_package/urllib3*
+**/*_package/s3transfer*
+**/*_package/dateutil*
+**/*_package/python_dateutil*
+**/*_package/jmespath*
+**/*_package/six*
+**/*_package/bin
+**/*_package/aws_constants.py
+
+# AWS constants layer build artifacts
+**/aws_constants_layer/
+**/aws_constants_layer.zip
