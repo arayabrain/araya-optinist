@@ -3,17 +3,14 @@
 Free Tier Autoscaling Test - CPU/Memory Based Scaling
 
 WHERE TO RUN:
-** RUN FROM EC2 INSTANCE IN VPC ** (not local machine)
-- Requires direct database access to private RDS instance
-- OR run locally with SSH tunnel/VPN to RDS
-- Alternative: Refactor to use Lambda proxies (like test_free_manager.py)
+Can be run from anywhere with AWS credentials (local machine, EC2, etc.)
+Uses Lambda proxy (free_cleanup) for database access - no direct RDS connection needed.
 
 REQUIREMENTS:
 - AWS credentials configured (boto3 access)
-- IAM permissions: ecs:*, asg:*, cloudwatch:*, rds:*
+- IAM permissions: ecs:*, asg:*, cloudwatch:*, lambda:*
 - Terraform outputs available in terraform
-- Python 3.8+ with boto3, pymysql, requests
-- ** NETWORK ACCESS to private RDS database **
+- Python 3.11+ with boto3, requests
 - Test users: optinist_test_user_free_7, optinist_test_user_free_8
 
 WHAT IT TESTS:
@@ -86,15 +83,9 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import boto3
-import pymysql
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
-# Add parent directory for shared infrastructure imports
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-
-from aws_constants import DatabaseConfig  # noqa: E402
 
 # Import token generation utilities
 try:
@@ -123,12 +114,7 @@ class TestConfig:
     asg_name: str = "subscr-optinist-asg"
     cpu_alarm_name: str = "subscr-optinist-cpu-high"
     memory_alarm_name: str = "subscr-optinist-memory-high"
-
-    # Database Configuration
-    db_host: str = None
-    db_user: str = "root"
-    db_password: str = None
-    db_name: str = "optinist"
+    free_cleanup_lambda_name: str = "subscr-free-cleanup"
 
     # API Configuration
     api_base_url: str = None
@@ -167,6 +153,7 @@ class AutoscalingUsageTest:
         self.cloudwatch_client = boto3.client(
             "cloudwatch", region_name=config.aws_region
         )
+        self.lambda_client = boto3.client("lambda", region_name=config.aws_region)
 
         # HTTP session
         self.session = self._create_http_session()
@@ -189,11 +176,12 @@ class AutoscalingUsageTest:
 
     def _load_configuration(self):
         """Load configuration from environment and Terraform."""
+        # Terraform directory is ../terraform relative to scripts/
+        terraform_dir = Path(__file__).parent.parent / "terraform"
+
         # Get configuration from Terraform
         try:
-            result = os.popen(
-                f"cd {Path(__file__).parent}/terraform && " "terraform output -json"
-            ).read()
+            result = os.popen(f"cd {terraform_dir} && terraform output -json").read()
             outputs = json.loads(result)
 
             # API URL from Terraform
@@ -202,13 +190,6 @@ class AutoscalingUsageTest:
             else:
                 logging.warning("domain_url not found in Terraform outputs")
                 self.config.api_base_url = "https://araya-optinist.com"
-
-            # Database configuration
-            if "rds_endpoint" in outputs:
-                self.config.db_host = outputs["rds_endpoint"]["value"].split(":")[0]
-
-            if "mysql_password" in outputs:
-                self.config.db_password = outputs["mysql_password"]["value"]
 
         except Exception as e:
             logging.warning(f"Could not load Terraform outputs: {e}")
@@ -288,7 +269,7 @@ class AutoscalingUsageTest:
             logging.error("Install with: pip install firebase-admin")
             return False
 
-        terraform_dir = Path(__file__).parent / "terraform"
+        terraform_dir = Path(__file__).parent.parent / "terraform"
         test_users = [self.config.load_generator_user, self.config.new_user]
 
         # Generate tokens for all free users
@@ -328,42 +309,50 @@ class AutoscalingUsageTest:
             logging.error("tokens.json file not created")
             return False
 
-    def get_db_connection(self):
-        """Get database connection."""
-        if not self.config.db_host or not self.config.db_password:
-            raise ValueError("Database credentials not configured")
+    def _invoke_cleanup_lambda(self, action: str, **kwargs) -> Dict:
+        """
+        Invoke the free cleanup Lambda to perform database operations.
+        This bypasses VPC restrictions by using Lambda as a proxy.
+        """
+        event = {"action": action, **kwargs}
 
-        return pymysql.connect(
-            host=self.config.db_host,
-            port=DatabaseConfig.DEFAULT_PORT,
-            user=self.config.db_user,
-            password=self.config.db_password,
-            database=self.config.db_name,
-            charset="utf8mb4",
-            cursorclass=pymysql.cursors.DictCursor,
-        )
-
-    def get_user_instance_assignment(self, user_email: str) -> Optional[str]:
-        """Get the instance ID assigned to a user."""
         try:
-            conn = self.get_db_connection()
-            with conn.cursor() as cursor:
-                query = """
-                    SELECT instance_id
-                    FROM free_user_assignments
-                    WHERE user_id = %s
-                """
-                cursor.execute(query, (user_email,))
-                result = cursor.fetchone()
-            conn.close()
+            response = self.lambda_client.invoke(
+                FunctionName=self.config.free_cleanup_lambda_name,
+                InvocationType="RequestResponse",
+                Payload=json.dumps(event),
+            )
 
-            if result:
-                return result["instance_id"]
-            return None
+            payload = json.loads(response["Payload"].read().decode("utf-8"))
+
+            if response.get("FunctionError"):
+                logging.error(f"Lambda error: {payload}")
+                return {"success": False, "error": payload}
+
+            # Parse the body if it's a string
+            if isinstance(payload.get("body"), str):
+                body = json.loads(payload["body"])
+            else:
+                body = payload.get("body", payload)
+
+            return body.get("result", body)
 
         except Exception as e:
-            logging.error(f"Database query failed: {e}")
+            logging.error(f"Failed to invoke cleanup Lambda: {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_user_instance_assignment(self, user_email: str) -> Optional[str]:
+        """Get the instance ID assigned to a user via Lambda proxy."""
+        result = self._invoke_cleanup_lambda(
+            "get_user_assignment",
+            user_email=user_email,
+        )
+
+        if not result.get("success", False):
+            logging.warning(f"Could not get user assignment: {result}")
             return None
+
+        return result.get("instance_id")
 
     def get_asg_capacity(self) -> Tuple[int, int]:
         """Get ASG desired and current capacity."""
