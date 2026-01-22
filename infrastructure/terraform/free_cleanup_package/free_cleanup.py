@@ -199,7 +199,7 @@ def cleanup_test_user_sessions(connection, user_emails: List[str]) -> Dict[str, 
 def get_free_test_user_ids(num_users: int = 6) -> Dict[str, Any]:
     """
     Get user IDs for free tier test users by email pattern.
-    Returns actual database IDs for users matching 
+    Returns actual database IDs for users matching
     'optinist_test_user_free_%@araya.org'.
 
     Args:
