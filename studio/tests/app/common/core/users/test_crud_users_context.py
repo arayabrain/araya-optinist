@@ -39,6 +39,10 @@ def mock_db():
     """Mock database session"""
     db = Mock()
     db.execute = Mock()
+    # Mock db.query(SubscriptionPlans).all() for pre-fetching plans
+    mock_query = Mock()
+    mock_query.all.return_value = []  # Return empty list of plans by default
+    db.query.return_value = mock_query
     return db
 
 

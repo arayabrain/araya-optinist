@@ -21,9 +21,7 @@ class SubscriptionPlanResponse(BaseModel):
     )
     display_order: int = Field(..., description="Display order for UI sorting")
     is_featured: bool = Field(..., description="Whether plan is featured in UI")
-    is_hidden: bool = Field(
-        default=False, description="Whether plan is hidden from UI"
-    )
+    is_hidden: bool = Field(default=False, description="Whether plan is hidden from UI")
     stripe_price_id: Optional[str] = Field(
         None, description="Associated Stripe Price ID"
     )
