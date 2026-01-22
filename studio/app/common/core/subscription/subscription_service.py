@@ -77,7 +77,7 @@ class SubscriptionService:
         return (
             db.query(SubscriptionPlans)
             .filter(SubscriptionPlans.status == SubscriptionStatusType.ACTIVE)
-            .filter(SubscriptionPlans.is_hidden == False)
+            .filter(SubscriptionPlans.is_hidden.is_(False))
             .all()
         )
 
