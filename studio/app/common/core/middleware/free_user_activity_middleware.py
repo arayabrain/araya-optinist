@@ -18,16 +18,24 @@ See: https://github.com/encode/starlette/issues/1012
 import asyncio
 import os
 import threading
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Optional, Tuple
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jwt
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
-from studio.app.common.core.subscription.constants import SubscriptionStatus
+from studio.app.common.core.subscription.constants import SubscriptionPlanIds
 from studio.app.common.db.database import session_scope
 from studio.app.common.models import FreeUserAssignment
+
+# Constants
+BEARER_PREFIX = "Bearer "
+BEARER_PREFIX_LENGTH = len(BEARER_PREFIX)
+SKIP_AUTH_PATHS = ["/health", "/api/auth/login", "/api/auth/refresh"]
+TIER_FREE = "free"
+TIER_PREMIUM = "premium"
 
 # In-memory cache to reduce database load (tracks last update time per user)
 _last_activity_cache = {}
@@ -68,8 +76,27 @@ class FreeUserActivityMiddleware:
         # Get request path
         path = scope.get("path", "")
 
-        # Skip health check and auth endpoints to avoid overhead
-        if path in ["/health", "/api/auth/login", "/api/auth/refresh"]:
+        # Skip health check, auth endpoints, and system-internal API endpoints
+        # System-internal endpoints use their own auth (shared secret, not JWT)
+        if path in SKIP_AUTH_PATHS or path.startswith("/system-internal/"):
+            await self.app(scope, receive, send)
+            return
+
+        # Extract Firebase JWT from Authorization header
+        headers = dict(scope.get("headers", []))
+        auth_header = headers.get(b"authorization", b"").decode()
+
+        if not auth_header.startswith(BEARER_PREFIX):
+            # No auth header, skip tracking
+            await self.app(scope, receive, send)
+            return
+
+        firebase_token = auth_header[BEARER_PREFIX_LENGTH:]  # Remove "Bearer "
+
+        # Extract UID from JWT
+        uid, error = extract_uid_from_firebase_jwt(firebase_token)
+        if error or not uid:
+            # Invalid token, skip tracking
             await self.app(scope, receive, send)
             return
 
@@ -89,31 +116,16 @@ class FreeUserActivityMiddleware:
                 has_tracked = True
 
                 try:
-                    # Access request state from scope
-                    # FastAPI/Starlette stores request state in scope["state"]
-                    state = scope.get("state", {})
-                    if isinstance(state, dict):
-                        authed_user = state.get("user")
-                    else:
-                        # state might be a State object
-                        authed_user = getattr(state, "user", None)
+                    # Get user ID and tier from database
+                    user_id, tier = _get_user_id_and_tier(uid)
 
-                    if authed_user:
-                        user_id = authed_user.id
-                        subscription_status = getattr(
-                            authed_user,
-                            "subscription_status",
-                            SubscriptionStatus.FREE.value,
-                        )
-
-                        # Only track free tier users
-                        if subscription_status == SubscriptionStatus.FREE.value:
-                            # Check cache to avoid excessive DB writes
-                            if _should_update_activity(user_id):
-                                # Schedule background update (doesn't block response)
-                                asyncio.create_task(
-                                    _update_free_user_activity_async(user_id)
-                                )
+                    if user_id and tier == TIER_FREE:
+                        # Check cache to avoid excessive DB writes
+                        if _should_update_activity(user_id):
+                            # Schedule background update (doesn't block response)
+                            asyncio.create_task(
+                                _update_free_user_activity_async(user_id)
+                            )
 
                 except Exception as e:
                     # Log error but don't fail the request
@@ -125,6 +137,51 @@ class FreeUserActivityMiddleware:
 
         # Process the request with our wrapped send function
         await self.app(scope, receive, send_wrapper)
+
+
+def _get_user_id_and_tier(uid: str) -> Tuple[Optional[int], Optional[str]]:
+    """
+    Get user ID and subscription tier from UID.
+
+    Args:
+        uid: Firebase user ID
+
+    Returns:
+        Tuple of (user_id, tier) where tier is TIER_FREE or TIER_PREMIUM
+        Returns (None, None) if user not found or error occurs
+    """
+    try:
+        from studio.app.common.core.subscription.subscription_service import (
+            SubscriptionService,
+        )
+        from studio.app.common.db.database import get_db
+        from studio.app.common.models.user import User
+
+        db = next(get_db())
+        try:
+            user = db.query(User).filter(User.uid == uid).first()
+            if not user:
+                return None, None
+
+            # Check if user has active subscription
+            subscription_data = SubscriptionService.get_user_subscription(db, user.id)
+            if subscription_data:
+                subscription, plan = subscription_data
+                tier = (
+                    TIER_PREMIUM
+                    if plan.id == SubscriptionPlanIds.PREMIUM
+                    else TIER_FREE
+                )
+            else:
+                tier = TIER_FREE
+
+            return user.id, tier
+        finally:
+            db.close()
+    except Exception as e:
+        logger = AppLogger.get_logger()
+        logger.warning(f"Failed to get user tier for {uid}: {e}")
+        return None, None
 
 
 def _should_update_activity(user_id: str) -> bool:
@@ -199,22 +256,30 @@ def _update_free_user_activity_sync(user_id: str) -> bool:
         if not instance_id or instance_id == "local":
             return False
 
-        # Update database using SQLAlchemy merge() for atomic upsert
+        # Update database - query first, then update or insert
         with session_scope() as session:
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
 
-            assignment = FreeUserAssignment(
-                user_id=user_id,
-                instance_id=instance_id,
-                assigned_at=now,
-                last_activity=now,
+            # Check if assignment already exists
+            existing = (
+                session.query(FreeUserAssignment)
+                .filter(FreeUserAssignment.user_id == user_id)
+                .first()
             )
 
-            merged = session.merge(assignment)
-
-            # For existing records, ensure we update the timestamps
-            merged.last_activity = now
-            merged.instance_id = instance_id
+            if existing:
+                # Update existing record
+                existing.last_activity = now
+                existing.instance_id = instance_id
+            else:
+                # Insert new record
+                assignment = FreeUserAssignment(
+                    user_id=user_id,
+                    instance_id=instance_id,
+                    assigned_at=now,
+                    last_activity=now,
+                )
+                session.add(assignment)
 
             session.commit()
             return True

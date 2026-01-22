@@ -9,9 +9,12 @@ import asyncio
 import json
 import os
 import time
-from typing import Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 
 import boto3
+
+if TYPE_CHECKING:
+    from mypy_boto3_lambda import LambdaClient
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.constants import SubscriptionType
@@ -28,7 +31,7 @@ class PremiumAssignmentService:
     """Service for handling premium user assignments to dedicated instances."""
 
     def __init__(self):
-        self.lambda_client = None
+        self.lambda_client: "LambdaClient | None" = None
         self.premium_manager_function_name = os.environ.get(
             "PREMIUM_MANAGER_FUNCTION_NAME", "subscr-premium-manager"
         )

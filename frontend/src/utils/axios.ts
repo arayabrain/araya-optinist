@@ -212,7 +212,7 @@ const handlePremiumRoutingError = async (
 
   // Remove premium routing headers for free tier fallback
   delete retryConfig.headers["X-User-Tier"]
-  delete retryConfig.headers["X-User-ID"]
+  delete retryConfig.headers["X-Routing-ID"]
 
   // Mark as retry to prevent infinite loops
   retryConfig._retryWithoutPremium = true

@@ -22,7 +22,11 @@ def get_pickle_file(workspace_id, unique_id, node_id, algo_name):
 
 def create_directory(dirpath, delete_dir=False):
     if delete_dir and os.path.exists(dirpath):
-        shutil.rmtree(dirpath)
+        try:
+            shutil.rmtree(dirpath)
+        except FileNotFoundError:
+            # Handle race condition where directory/files are deleted
+            # by another process or due to filesystem delays
+            pass
 
-    if not os.path.exists(dirpath):
-        os.makedirs(dirpath)
+    os.makedirs(dirpath, exist_ok=True)

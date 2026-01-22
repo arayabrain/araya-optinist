@@ -109,6 +109,12 @@ async def rename_experiment(
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     try:
+        # Ensure experiment yaml exists locally before accessing.
+        # Downloads from S3 if not present (handles multi-instance scenarios).
+        await ExptConfigReader.ensure_synced_async(
+            workspace_id, unique_id, remote_bucket_name
+        )
+
         config = await ExptDataWriter(
             remote_bucket_name,
             workspace_id,
@@ -142,6 +148,12 @@ async def delete_experiment(
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     try:
+        # Ensure experiment yaml exists locally before accessing.
+        # Downloads from S3 if not present (handles multi-instance scenarios).
+        await ExptConfigReader.ensure_synced_async(
+            workspace_id, unique_id, remote_bucket_name
+        )
+
         result = await ExperimentService.delete_experiment(
             db, remote_bucket_name, workspace_id, unique_id, auto_commit=True
         )
@@ -183,6 +195,12 @@ async def delete_experiment_list(
         deleted_statuses = {}
 
         for unique_id in deleteItem.uidList:
+            # Ensure experiment yaml exists locally before accessing.
+            # Downloads from S3 if not present (handles multi-instance scenarios).
+            await ExptConfigReader.ensure_synced_async(
+                workspace_id, unique_id, remote_bucket_name
+            )
+
             result = await ExperimentService.delete_experiment(
                 db, remote_bucket_name, workspace_id, unique_id, auto_commit=True
             )
@@ -229,6 +247,13 @@ async def copy_experiment_list(
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     try:
+        # Ensure experiment yaml exists locally before accessing.
+        # Downloads from S3 if not present (handles multi-instance scenarios).
+        for unique_id in copyItem.uidList:
+            await ExptConfigReader.ensure_synced_async(
+                workspace_id, unique_id, remote_bucket_name
+            )
+
         await ExperimentService.copy_experiment(
             db, remote_bucket_name, workspace_id, copyItem=copyItem
         )

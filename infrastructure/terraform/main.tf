@@ -87,6 +87,12 @@ variable "stripe_webhook_secret" {
   sensitive   = true
 }
 
+variable "routing_secret_key" {
+  description = "Secret key for generating non-reversible routing IDs (HMAC-SHA256)"
+  type        = string
+  sensitive   = true
+}
+
 variable "firebase_config_json" {
   description = "Firebase web configuration JSON"
   type        = string

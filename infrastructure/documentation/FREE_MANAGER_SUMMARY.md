@@ -803,10 +803,10 @@ def is_distribution_balanced() -> bool:
     is_balanced = (max_count - min_count) <= 1
 
     if is_balanced:
-        print(f"✓ Distribution balanced: {users_per_instance}")
+        print(f"Distribution balanced: {users_per_instance}")
     else:
-        print(f"⚠ Distribution unbalanced: {users_per_instance}")
-        print(f"  Max: {max_count}, Min: {min_count}, Diff: {max_count - min_count}")
+        print(f"Distribution unbalanced: {users_per_instance}")
+        print(f"Max: {max_count}, Min: {min_count}, Diff: {max_count - min_count}")
 
     return is_balanced
 ```
@@ -877,7 +877,7 @@ Migrating user user_5 from i-abc123 to i-ghi789
 
 Rebalancing complete: 14 users migrated
 Final distribution: {'i-abc123': 4, 'i-def456': 5, 'i-ghi789': 5, 'i-jkl012': 4}
-✓ Distribution balanced (max-min = 1)
+Distribution balanced (max-min = 1)
 
 Clearing scaling lock
 Published metric: ActiveLogins=18
@@ -1004,11 +1004,11 @@ Free Service: subscr-optinist-cloud-service
 
 TEST 1: Cleanup existing test data
 Invoking cleanup Lambda...
-✓ Cleaned up 5 test user sessions
+Cleaned up 5 test user sessions
 
 TEST 2: Setup test users (simulate 7 active users)
 Creating user activity for 7 test users...
-✓ Successfully created activity for 7 users
+Successfully created activity for 7 users
 
 TEST 3: Invoke Free Manager Lambda
 Invoking Free Manager Lambda...
@@ -1019,30 +1019,30 @@ Response: {
   "users_migrated": 3,
   "balanced": true
 }
-✓ Lambda executed successfully
+Lambda executed successfully
 
 TEST 4: Verify ECS scaling
 Current ECS desired count: 2
-✓ ECS scaled to 2 instances (from 1)
+ECS scaled to 2 instances (from 1)
 
 TEST 5: Verify user distribution
 Instance i-abc123: 4 users
 Instance i-def456: 3 users
 Distribution balanced: True (max-min = 1)
-✓ Users distributed evenly
+Users distributed evenly
 
 TEST 6: Verify workflow protection
 Creating workflow for test user...
 Attempting to migrate user with active workflow...
-✓ User with active workflow was NOT migrated
+User with active workflow was NOT migrated
 
 TEST 7: Verify CloudWatch metrics
 Metric: ActiveLogins = 7 (timestamp: 2025-11-18 10:00:00)
-✓ CloudWatch metrics published correctly
+CloudWatch metrics published correctly
 
 TEST 8: Verify JSON serialization
 Database returned Decimal types
-✓ Successfully serialized to JSON
+Successfully serialized to JSON
 
 ============================================================
 ALL TESTS PASSED (8/8)

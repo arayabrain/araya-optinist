@@ -18,15 +18,13 @@ resource "null_resource" "install_free_manager_dependencies" {
     command = <<-EOT
       mkdir -p ${path.module}/free_manager_package
       /usr/bin/python3 -m pip install pymysql boto3 -t ${path.module}/free_manager_package/ --no-cache-dir
-      cp ${path.module}/../aws_constants.py ${path.module}/free_manager_package/aws_constants.py
     EOT
   }
 
   triggers = {
     code_changes = md5(join("", [
       filesha256("${path.module}/free_manager_package/free_manager.py"),
-      filesha256("${path.module}/free_manager_package/free_user_utils.py"),
-      filesha256("${path.module}/../aws_constants.py")
+      filesha256("${path.module}/free_manager_package/free_user_utils.py")
     ]))
   }
 }
@@ -51,6 +49,7 @@ resource "aws_lambda_function" "free_manager" {
   handler       = "free_manager.handler"
   runtime       = "python3.9"
   timeout       = 900 # 15 minutes # Max timeout
+  layers        = [aws_lambda_layer_version.aws_constants.arn]
 
   source_code_hash = data.archive_file.free_manager_zip.output_base64sha256
 
@@ -73,6 +72,10 @@ resource "aws_lambda_function" "free_manager" {
       FREE_USER_THRESHOLD         = "5"  # Trigger scaling at 5 active users
       FREE_IDLE_THRESHOLD_MINUTES = "5"  # Consider user idle after 5 minutes (reduced from 10)
       MAX_FREE_INSTANCES          = "10" # Maximum number of free tier instances
+
+      # Internal API configuration for experiment sync after migration
+      ALB_DNS_NAME        = aws_lb.autoscaling.dns_name
+      INTERNAL_API_SECRET = random_password.internal_api_secret.result
     }
   }
 
@@ -341,6 +344,7 @@ resource "aws_lambda_function" "free_cleanup" {
   handler       = "free_cleanup.handler"
   runtime       = "python3.9"
   timeout       = 300 # 5 minutes
+  layers        = [aws_lambda_layer_version.aws_constants.arn]
 
   source_code_hash = data.archive_file.free_cleanup_zip.output_base64sha256
 

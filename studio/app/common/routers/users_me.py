@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -54,12 +54,10 @@ async def get_routing_info(current_user: User = Depends(get_current_user)):
         "routing_headers": {},
     }
 
-    # Add routing headers if user is premium
-    if is_premium:
-        routing_info["routing_headers"] = {
-            "X-User-Tier": SubscriptionType.PREMIUM.value,
-            "X-User-ID": current_user.uid,
-        }
+    # Note: Routing headers are no longer returned here.
+    # The secure_routing_middleware automatically adds X-Routing-ID (HMAC hash)
+    # to response headers for premium users. The frontend captures this from
+    # the response header, not from this endpoint's response body.
 
     logger.info(
         f"Routing info for user {current_user.id}: "
@@ -195,7 +193,7 @@ async def logout_free_user(
 
         if assignment:
             # Update logged_out_at timestamp
-            assignment.logged_out_at = datetime.now()
+            assignment.logged_out_at = datetime.now(timezone.utc)
             db.add(assignment)
             db.commit()
 

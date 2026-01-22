@@ -253,6 +253,10 @@ export const PremiumAssignmentProvider: React.FC<{
           message: "Premium instance already assigned",
           instance_id: statusResponse.assignment.instance_id,
           assigned: true,
+          is_shared: statusResponse.assignment.is_shared,
+          assignment_source: statusResponse.assignment.is_shared
+            ? "shared"
+            : "dedicated",
         }
         setState((prev) => ({
           ...prev,

@@ -208,7 +208,7 @@ async def update_user_subscription(
 
 @router.get("/mgmts/server-time")
 async def get_server_time():
-    utc_time = datetime.utcnow()
+    utc_time = datetime.now(timezone.utc)
     return {"server_time": utc_time.isoformat()}
 
 
@@ -311,7 +311,9 @@ async def reactivate_user_subscription(
             metadata={
                 **stripe_subscription.metadata,
                 "cancellation_requested": "false",
-                "reactivation_requested_at": str(int(datetime.utcnow().timestamp())),
+                "reactivation_requested_at": str(
+                    int(datetime.now(timezone.utc).timestamp())
+                ),
             },
         )
 

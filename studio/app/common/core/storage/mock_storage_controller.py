@@ -223,7 +223,44 @@ class MockStorageController(BaseRemoteStorageController):
 
         return True
 
-    async def download_experiment(self, workspace_id: str, unique_id: str) -> bool:
+    async def download_experiment_meta(self, workspace_id: str, unique_id: str) -> bool:
+        """
+        Download metadata files (yaml) for a single experiment from mock storage.
+        """
+        metadata_filenames = [
+            DIRPATH.EXPERIMENT_YML,
+            DIRPATH.SNAKEMAKE_CONFIG_YML,
+            DIRPATH.WORKFLOW_YML,
+        ]
+
+        experiment_remote_dir = (
+            f"{__class__.MOCK_OUTPUT_DIR}/{workspace_id}/{unique_id}"
+        )
+        experiment_local_dir = f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}"
+
+        logger.debug(
+            f"download experiment metadata from remote storage (mock). "
+            f"[{workspace_id}/{unique_id}]"
+        )
+
+        for metadata_filename in metadata_filenames:
+            remote_path = f"{experiment_remote_dir}/{metadata_filename}"
+            local_path = f"{experiment_local_dir}/{metadata_filename}"
+
+            if os.path.isfile(local_path):
+                logger.debug(f"skip copy (exists): {metadata_filename}")
+                continue
+
+            if os.path.isfile(remote_path):
+                os.makedirs(experiment_local_dir, exist_ok=True)
+                shutil.copy(remote_path, experiment_local_dir)
+                logger.debug(f"copied: {metadata_filename}")
+
+        return True
+
+    async def download_experiment(
+        self, workspace_id: str, unique_id: str, sync_mode: str = "all"
+    ) -> bool:
         # make paths
         experiment_local_path = self._make_experiment_local_path(
             workspace_id, unique_id

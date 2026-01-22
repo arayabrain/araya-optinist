@@ -1,7 +1,7 @@
 """
 Cloud utilities for user context and subscription management.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from sqlmodel import select
@@ -489,6 +489,11 @@ def _is_storage_data_fresh(storage_info: Dict, max_cache_age_minutes: int) -> bo
         # Convert to datetime if it's not already
         if isinstance(last_updated, str):
             last_updated = datetime.fromisoformat(last_updated.replace("Z", "+00:00"))
+        # Handle datetime objects from database (timezone-naive from MySQL DateTime)
+        elif isinstance(last_updated, datetime):
+            if last_updated.tzinfo is None:
+                # Assume UTC for timezone-naive datetimes from database
+                last_updated = last_updated.replace(tzinfo=timezone.utc)
 
         age_minutes = (
             SubscriptionService.get_current_datetime() - last_updated
@@ -697,6 +702,9 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                             f"User {user_id} subscription has None expiration date"
                         )
                         return None
+                    # Ensure subscription_end is timezone-aware for comparison
+                    if subscription_end.tzinfo is None:
+                        subscription_end = subscription_end.replace(tzinfo=timezone.utc)
                 else:
                     logger.error(
                         f"User {user_id} subscription object missing "
@@ -1074,6 +1082,10 @@ async def _should_trigger_full_scan(user_id: int) -> bool:
                     return True
 
                 # Check if it's been > 60 min since last scan (hourly reconciliation)
+                # Ensure last_scan is timezone-aware (assume UTC if naive)
+                if last_scan.tzinfo is None:
+                    last_scan = last_scan.replace(tzinfo=timezone.utc)
+
                 time_since_scan = (
                     SubscriptionService.get_current_datetime() - last_scan
                 ).total_seconds() / 60
@@ -1094,33 +1106,38 @@ async def _should_trigger_full_scan(user_id: int) -> bool:
 
 async def _perform_full_scan_and_reset_delta(user_id: int) -> None:
     """
-    Perform full S3 scan and reset delta counter with advisory lock protection.
+    Perform full S3 scan and reset delta counter with distributed lock protection.
 
-    Uses PostgreSQL advisory locks to prevent concurrent scans of the same user.
+    Uses MySQL GET_LOCK to prevent concurrent scans of the same user.
     If another process is already scanning this user, this function returns early.
 
     Args:
         user_id: User ID to scan
     """
     lock_acquired = False
+    lock_name = None
 
     try:
         from sqlalchemy import text, update
 
         from studio.app.common.core.subscription.constants import StorageReconciliation
 
-        # Try to acquire advisory lock for this user (non-blocking)
-        # Lock ID is based on user_id to ensure uniqueness
-        # Namespace prevents conflicts with other advisory locks in the system
-        lock_key = StorageReconciliation.ADVISORY_LOCK_NAMESPACE * 1000000 + user_id
+        # Create lock name based on user_id
+        # Namespace prevents conflicts with other locks in the system
+        lock_name = (
+            f"storage_scan_{StorageReconciliation.ADVISORY_LOCK_NAMESPACE}_{user_id}"
+        )
+        lock_timeout = 0  # Non-blocking (returns immediately)
 
         with session_scope() as db:
-            # Try to acquire lock (returns true if acquired, false if already locked)
+            # Try to acquire lock
+            # (returns 1 if acquired, 0 if already locked, NULL on error)
             lock_result = db.execute(
-                text("SELECT pg_try_advisory_lock(:lock_key)"),
-                {"lock_key": lock_key},
+                text("SELECT GET_LOCK(:lock_name, :timeout) as lock_result"),
+                {"lock_name": lock_name, "timeout": lock_timeout},
             )
-            lock_acquired = lock_result.scalar()
+            result = lock_result.scalar()
+            lock_acquired = result == 1
 
         if not lock_acquired:
             logger.info(
@@ -1128,7 +1145,7 @@ async def _perform_full_scan_and_reset_delta(user_id: int) -> None:
             )
             return
 
-        logger.debug(f"Acquired advisory lock for user {user_id} scan")
+        logger.debug(f"Acquired distributed lock for user {user_id} scan")
 
         # Do expensive S3 scan
         actual_storage = await _calculate_live_storage_usage(user_id)
@@ -1156,17 +1173,17 @@ async def _perform_full_scan_and_reset_delta(user_id: int) -> None:
         logger.error(f"Failed to perform full scan for user {user_id}: {e}")
     finally:
         # Always release the lock if we acquired it
-        if lock_acquired:
+        if lock_acquired and lock_name:
             try:
                 with session_scope() as db:
                     db.execute(
-                        text("SELECT pg_advisory_unlock(:lock_key)"),
-                        {"lock_key": lock_key},
+                        text("SELECT RELEASE_LOCK(:lock_name)"),
+                        {"lock_name": lock_name},
                     )
-                logger.debug(f"Released advisory lock for user {user_id}")
+                logger.debug(f"Released distributed lock for user {user_id}")
             except Exception as unlock_error:
                 logger.warning(
-                    f"Failed to release advisory lock for user {user_id}: "
+                    f"Failed to release distributed lock for user {user_id}: "
                     f"{unlock_error}"
                 )
 
