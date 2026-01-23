@@ -3,17 +3,14 @@
 Free Tier Autoscaling Test - User Count Based Scaling
 
 WHERE TO RUN:
-** RUN FROM EC2 INSTANCE IN VPC ** (not local machine)
-- Requires direct database access to private RDS instance
-- OR run locally with SSH tunnel/VPN to RDS
-- Alternative: Refactor to use Lambda proxies (like test_free_manager.py)
+Can be run from anywhere with AWS credentials (local machine, EC2, etc.)
+Uses Lambda proxy (free_cleanup) for database access - no direct RDS connection needed.
 
 REQUIREMENTS:
 - AWS credentials configured (boto3 access)
-- IAM permissions: ecs:*, asg:*, cloudwatch:*, lambda:*, rds:*
+- IAM permissions: ecs:*, asg:*, cloudwatch:*, lambda:*
 - Terraform outputs available in terraform
-- Python 3.8+ with boto3, pymysql, requests
-- ** NETWORK ACCESS to private RDS database **
+- Python 3.11+ with boto3, requests
 - Test users: optinist_test_user_free_1 through free_6
 
 WHAT IT TESTS:
@@ -101,15 +98,12 @@ from threading import Event, Thread
 from typing import Dict, List, Tuple
 
 import boto3
-import pymysql
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # Add parent directory for shared infrastructure imports
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-
-from aws_constants import DatabaseConfig  # noqa: E402
 
 # Import token generation utilities
 try:
@@ -137,12 +131,7 @@ class TestConfig:
     service_name: str = "subscr-optinist-cloud-service"
     asg_name: str = "subscr-optinist-asg"
     lambda_function_name: str = "subscr-free-manager"
-
-    # Database Configuration (from Terraform outputs)
-    db_host: str = None  # Will be fetched from Terraform
-    db_user: str = "root"
-    db_password: str = None  # Will be fetched from Terraform
-    db_name: str = "optinist"
+    free_cleanup_lambda_name: str = "subscr-free-cleanup"
 
     # API Configuration
     api_base_url: str = None  # Will be set from env or args
@@ -220,11 +209,12 @@ class AutoscalingUserNumberTest:
 
     def _load_configuration(self):
         """Load configuration from environment and Terraform outputs."""
-        # Get configuration from Terraform
+        # Terraform directory is ../terraform relative to scripts/
+        terraform_dir = Path(__file__).parent.parent / "terraform"
+
+        # Get configuration from Terraform outputs
         try:
-            result = os.popen(
-                f"cd {Path(__file__).parent}/terraform && " "terraform output -json"
-            ).read()
+            result = os.popen(f"cd {terraform_dir} && terraform output -json").read()
             outputs = json.loads(result)
 
             # API URL from Terraform
@@ -234,16 +224,8 @@ class AutoscalingUserNumberTest:
                 logging.warning("domain_url not found in Terraform outputs")
                 self.config.api_base_url = "https://araya-optinist.com"
 
-            # Database configuration
-            if "rds_endpoint" in outputs:
-                self.config.db_host = outputs["rds_endpoint"]["value"].split(":")[0]
-
-            if "mysql_password" in outputs:
-                self.config.db_password = outputs["mysql_password"]["value"]
-
         except Exception as e:
             logging.warning(f"Could not load Terraform outputs: {e}")
-            logging.warning("Database queries will be skipped if credentials missing")
             self.config.api_base_url = "https://araya-optinist.com"
 
     def load_tokens(self) -> bool:
@@ -370,7 +352,7 @@ class AutoscalingUserNumberTest:
                     WHERE last_activity >= %s
                     ORDER BY instance_id, user_id
                 """
-                cutoff = datetime.now(timezone.utc) - timedelta(
+                cutoff = datetime.now() - timedelta(
                     minutes=self.config.activity_threshold_minutes
                 )
                 cursor.execute(query, (cutoff,))
@@ -379,21 +361,37 @@ class AutoscalingUserNumberTest:
             return results
 
         except Exception as e:
-            logging.error(f"Database query failed: {e}")
+            logging.error(f"Failed to invoke cleanup Lambda: {e}")
+            return {"success": False, "error": str(e)}
+
+    def query_free_user_assignments(self) -> List[Dict]:
+        """Query free_user_assignments table via Lambda proxy."""
+        result = self._invoke_cleanup_lambda("get_user_distribution")
+
+        if not result.get("success", False):
+            logging.error(f"Failed to get user distribution: {result}")
             return []
 
+        return result.get("users", [])
+
     def get_user_distribution(self) -> Dict[str, List[str]]:
-        """Get current user distribution across instances."""
-        assignments = self.query_free_user_assignments()
+        """Get current user distribution across instances via Lambda proxy."""
+        result = self._invoke_cleanup_lambda("get_user_distribution")
 
+        if not result.get("success", False):
+            logging.error(f"Failed to get user distribution: {result}")
+            return {}
+
+        # Convert the users list to a distribution dict
         distribution = {}
-        for row in assignments:
-            instance_id = row["instance_id"]
-            user_id = row["user_id"]
+        for user in result.get("users", []):
+            instance_id = user.get("instance_id")
+            user_id = user.get("user_id")
 
-            if instance_id not in distribution:
-                distribution[instance_id] = []
-            distribution[instance_id].append(user_id)
+            if instance_id and user_id:
+                if instance_id not in distribution:
+                    distribution[instance_id] = []
+                distribution[instance_id].append(user_id)
 
         return distribution
 
@@ -639,7 +637,12 @@ class AutoscalingUserNumberTest:
                 logging.warning(f"  Failed to terminate {instance_id}: {e}")
 
     def scale_down_asg_to_one(self):
-        """Scale down ASG to 1 instance to prepare for scale-up test."""
+        """Scale down ASG to 1 instance to prepare for scale-up test.
+
+        IMPORTANT: Uses ASG's native scaling mechanism instead of force-terminating
+        instances directly. Force-terminating bypasses ASG lifecycle and causes
+        ASG to launch replacements, resulting in all instances being terminated.
+        """
         logging.info("\n" + "=" * 70)
         logging.info("SCALING DOWN TO 1 INSTANCE")
         logging.info("=" * 70)
@@ -651,24 +654,30 @@ class AutoscalingUserNumberTest:
             logging.info("Already at 1 instance or fewer, no scale-down needed")
             return True
 
-        # Get all instance IDs
-        all_instance_ids = self.get_asg_instance_ids()
-        logging.info(f"Found {len(all_instance_ids)} instance(s) in ASG")
-
-        # Keep the first instance, terminate the rest
-        if len(all_instance_ids) > 1:
-            instances_to_terminate = all_instance_ids[1:]
-            logging.info(
-                f"Keeping instance {all_instance_ids[0]}, "
-                f"terminating {len(instances_to_terminate)} others"
-            )
-            self.force_terminate_instances(instances_to_terminate)
-
-        # Set desired capacity to 1
+        # Set desired capacity to 1 FIRST - let ASG handle the termination
+        # This respects lifecycle hooks and doesn't cause replacement launches
+        logging.info("Setting ASG desired capacity to 1 (ASG will handle termination)")
         self.set_asg_capacity(1)
 
-        # Wait for scale-down to complete in ECS
-        success = self.wait_for_ecs_instances(1, timeout_minutes=5)
+        # Wait for ASG to scale down naturally
+        logging.info("Waiting for ASG to scale down...")
+        start_time = time.time()
+        max_wait = 300  # 5 minutes
+
+        while (time.time() - start_time) < max_wait:
+            desired, current = self.get_asg_capacity()
+            if current <= 1:
+                logging.info(f"ASG scaled down to {current} instance(s)")
+                break
+
+            elapsed = int(time.time() - start_time)
+            logging.info(
+                f"[{elapsed}s] Waiting... Current: {current}, Desired: {desired}"
+            )
+            time.sleep(15)
+
+        # Wait for ECS to stabilize
+        success = self.wait_for_ecs_instances(1, timeout_minutes=10)
 
         if success:
             logging.info("Successfully scaled down to 1 instance")
@@ -821,31 +830,22 @@ class AutoscalingUserNumberTest:
             return False
 
     def cleanup_free_user_assignments(self) -> bool:
-        """Clean up free_user_assignments table before test."""
+        """Clean up free_user_assignments table before test via Lambda proxy."""
         logging.info("\n" + "=" * 70)
         logging.info("CLEANING UP FREE USER ASSIGNMENTS")
         logging.info("=" * 70)
 
-        try:
-            conn = self.get_db_connection()
-            with conn.cursor() as cursor:
-                # Delete all test user assignments
-                email_placeholders = ", ".join(["%s"] * len(self.config.test_users))
-                query = f"""
-                    DELETE fua FROM free_user_assignments fua
-                    INNER JOIN users u ON fua.user_id = u.id
-                    WHERE u.email IN ({email_placeholders})
-                """
-                cursor.execute(query, self.config.test_users)
-                deleted_count = cursor.rowcount
-                conn.commit()
-            conn.close()
+        result = self._invoke_cleanup_lambda(
+            "cleanup_test_users",
+            user_emails=self.config.test_users,
+        )
 
+        if result.get("success", False):
+            deleted_count = result.get("sessions_deleted", 0)
             logging.info(f"Deleted {deleted_count} stale assignment(s)")
             return True
-
-        except Exception as e:
-            logging.warning(f"Database cleanup failed (non-fatal): {e}")
+        else:
+            logging.warning(f"Cleanup failed (non-fatal): {result}")
             return False
 
     def run_test(self) -> bool:

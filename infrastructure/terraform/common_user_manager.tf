@@ -45,7 +45,7 @@ resource "aws_lambda_function" "common_user_manager" {
   function_name = "subscr-common-user-manager"
   role          = aws_iam_role.common_user_manager_lambda.arn
   handler       = "common_user_manager.handler"
-  runtime       = "python3.9"
+  runtime       = "python3.11"
   timeout       = 900 # 15 minutes
   layers        = [aws_lambda_layer_version.aws_constants.arn]
 

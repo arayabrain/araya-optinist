@@ -66,9 +66,9 @@ except ImportError as e:
     generate_jwt_tokens = None
 
 try:
-    from test_user_config import load_test_users_for_db
+    from testuser_config import load_test_users_for_db
 except ImportError as e:
-    print(f"Warning: Could not import test_user_config: {e}")
+    print(f"Warning: Could not import testuser_config: {e}")
     load_test_users_for_db = None
 
 
@@ -716,10 +716,13 @@ def main():
         description="End-to-end test for premium instance provisioning, "
         "sharing, and migration."
     )
+    # Default terraform dir is relative to this script's location
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    default_terraform_dir = os.path.join(script_dir, "..", "terraform")
     parser.add_argument(
         "--terraform-dir",
-        default="terraform",
-        help="Path to Terraform directory (default: terraform)",
+        default=default_terraform_dir,
+        help=f"Path to Terraform directory (default: {default_terraform_dir})",
     )
     parser.add_argument(
         "--aws-region",

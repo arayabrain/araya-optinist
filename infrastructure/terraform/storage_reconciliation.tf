@@ -44,7 +44,7 @@ resource "aws_lambda_function" "storage_reconciliation" {
   function_name = "subscr-storage-reconciliation"
   role          = aws_iam_role.storage_reconciliation_lambda.arn
   handler       = "storage_reconciliation.handler"
-  runtime       = "python3.9"
+  runtime       = "python3.11"
   timeout       = 900 # 15 minutes - enough time for large batches
   layers        = [aws_lambda_layer_version.aws_constants.arn]
 
