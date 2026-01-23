@@ -92,7 +92,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Event, Thread
 from typing import Dict, List, Tuple
@@ -325,40 +325,33 @@ class AutoscalingUserNumberTest:
             logging.error("tokens.json file not created")
             return False
 
-    def get_db_connection(self):
-        """Get database connection."""
-        if not self.config.db_host or not self.config.db_password:
-            raise ValueError("Database credentials not configured")
+    def _invoke_cleanup_lambda(self, action: str, **kwargs) -> Dict:
+        """
+        Invoke the free cleanup Lambda to perform database operations.
+        This bypasses VPC restrictions by using Lambda as a proxy.
+        """
+        event = {"action": action, **kwargs}
 
-        return pymysql.connect(
-            host=self.config.db_host,
-            port=DatabaseConfig.DEFAULT_PORT,
-            user=self.config.db_user,
-            password=self.config.db_password,
-            database=self.config.db_name,
-            charset="utf8mb4",
-            cursorclass=pymysql.cursors.DictCursor,
-        )
-
-    def query_free_user_assignments(self) -> List[Dict]:
-        """Query free_user_assignments table."""
         try:
-            conn = self.get_db_connection()
-            with conn.cursor() as cursor:
-                query = """
-                    SELECT user_id, instance_id, active_workflow_count,
-                           last_activity, migration_count
-                    FROM free_user_assignments
-                    WHERE last_activity >= %s
-                    ORDER BY instance_id, user_id
-                """
-                cutoff = datetime.now() - timedelta(
-                    minutes=self.config.activity_threshold_minutes
-                )
-                cursor.execute(query, (cutoff,))
-                results = cursor.fetchall()
-            conn.close()
-            return results
+            response = self.lambda_client.invoke(
+                FunctionName=self.config.free_cleanup_lambda_name,
+                InvocationType="RequestResponse",
+                Payload=json.dumps(event),
+            )
+
+            payload = json.loads(response["Payload"].read().decode("utf-8"))
+
+            if response.get("FunctionError"):
+                logging.error(f"Lambda error: {payload}")
+                return {"success": False, "error": payload}
+
+            # Parse the body if it's a string
+            if isinstance(payload.get("body"), str):
+                body = json.loads(payload["body"])
+            else:
+                body = payload.get("body", payload)
+
+            return body.get("result", body)
 
         except Exception as e:
             logging.error(f"Failed to invoke cleanup Lambda: {e}")
@@ -507,10 +500,8 @@ class AutoscalingUserNumberTest:
                             "ReturnData": True,
                         }
                     ],
-                    StartTime=int(
-                        (datetime.now(timezone.utc) - timedelta(minutes=2)).timestamp()
-                    ),
-                    EndTime=int(datetime.now(timezone.utc).timestamp()),
+                    StartTime=int((datetime.now() - timedelta(minutes=2)).timestamp()),
+                    EndTime=int(datetime.now().timestamp()),
                 )
 
                 values = response["MetricDataResults"][0].get("Values", [])
@@ -690,7 +681,7 @@ class AutoscalingUserNumberTest:
         """Get recent Lambda execution logs."""
         log_group = f"/aws/lambda/{self.config.lambda_function_name}"
         start_time = int(
-            (datetime.now(timezone.utc) - timedelta(minutes=minutes)).timestamp() * 1000
+            (datetime.now() - timedelta(minutes=minutes)).timestamp() * 1000
         )
 
         try:
