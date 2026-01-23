@@ -39,7 +39,7 @@ FUNCTIONS:
 - print_configuration_help() - Prints setup instructions
 
 HOW TO USE:
-  from test_user_config import load_test_users_for_jwt
+  from testuser_config import load_test_users_for_jwt
   users = load_test_users_for_jwt()
   premium_user = users['premium']
   free_user = users['free']

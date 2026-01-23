@@ -47,7 +47,7 @@ resource "aws_lambda_function" "free_manager" {
   function_name = "subscr-free-manager"
   role          = aws_iam_role.free_manager_lambda.arn
   handler       = "free_manager.handler"
-  runtime       = "python3.9"
+  runtime       = "python3.11"
   timeout       = 900 # 15 minutes # Max timeout
   layers        = [aws_lambda_layer_version.aws_constants.arn]
 
@@ -342,7 +342,7 @@ resource "aws_lambda_function" "free_cleanup" {
   function_name = "subscr-free-cleanup"
   role          = aws_iam_role.free_manager_lambda.arn
   handler       = "free_cleanup.handler"
-  runtime       = "python3.9"
+  runtime       = "python3.11"
   timeout       = 300 # 5 minutes
   layers        = [aws_lambda_layer_version.aws_constants.arn]
 

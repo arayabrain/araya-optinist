@@ -568,7 +568,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
   cpu                      = 2048
-  memory                   = 6144
+  memory                   = 7168
   task_role_arn            = aws_iam_role.ecs_task.arn
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
 
@@ -577,12 +577,17 @@ resource "aws_ecs_task_definition" "autoscaling" {
       name              = "subscr-optinist-cloud-container"
       image             = "${var.ecr_repository_url}:latest"
       cpu               = 1536
-      memory            = 5120
-      memoryReservation = 3072
+      memory            = 6656
+      memoryReservation = 4096
       essential         = true
       workingDirectory  = "/app"
       entryPoint        = ["/bin/sh", "-c"]
       command           = ["./cloud-startup.sh"]
+
+      linuxParameters = {
+        maxSwap    = 32768  # Max swap in MiB (matches 32GB host swap on EBS)
+        swappiness = 20     # Only swap under memory pressure (host also set to 20)
+      }
 
       portMappings = [
         {
@@ -799,7 +804,7 @@ resource "aws_ecs_task_definition" "premium" {
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
   cpu                      = 2048
-  memory                   = 6144
+  memory                   = 7168
   task_role_arn            = aws_iam_role.ecs_task.arn
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
 
@@ -808,12 +813,18 @@ resource "aws_ecs_task_definition" "premium" {
       name              = "subscr-premium-optinist-cloud-container"
       image             = "${var.ecr_repository_url}:latest"
       cpu               = 1536
-      memory            = 5120
-      memoryReservation = 3072
+      memory            = 6656
+      memoryReservation = 4096
       essential         = true
       workingDirectory  = "/app"
       entryPoint        = ["/bin/sh", "-c"]
       command           = ["./cloud-startup.sh"]
+
+      # linuxParameters = {
+      #   maxSwap    = 32768  # Max swap in MiB (matches 32GB host swap on EBS)
+      #   swappiness = 20     # Only swap under memory pressure (host also set to 20)
+      # }
+      # NOTE: Uncomment after Stage 2 (swap enabled on instances)
 
       portMappings = [
         {

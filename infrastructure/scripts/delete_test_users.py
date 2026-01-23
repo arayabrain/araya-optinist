@@ -61,7 +61,7 @@ def get_database_url():
 
 def get_test_users():
     """Get test user data from unified configuration loader."""
-    from test_user_config import load_test_users_for_db, print_configuration_help
+    from testuser_config import load_test_users_for_db, print_configuration_help
 
     test_users = load_test_users_for_db()
 
