@@ -54,8 +54,6 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
-from aws_constants import ECSTaskStatus
-
 # Add project root and Lambda package directories to path
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
@@ -70,6 +68,15 @@ if os.path.exists(lambda_package_dir):
 cleanup_package_dir = os.path.join(project_root, "terraform", "premium_cleanup_package")
 if os.path.exists(cleanup_package_dir):
     sys.path.insert(0, cleanup_package_dir)
+
+# Add aws_constants Lambda layer path
+aws_constants_layer_path = os.path.join(
+    project_root, "terraform", "aws_constants_layer", "python"
+)
+if os.path.exists(aws_constants_layer_path):
+    sys.path.insert(0, aws_constants_layer_path)
+
+from aws_constants import ECSTaskStatus  # noqa: E402
 
 
 class MockRow:
@@ -389,19 +396,18 @@ class TestLambdaIntegration:
             "pymysql.connect"
         ) as mock_pymysql:
             # Setup database mocks for heartbeat with user lookup data
-            # The heartbeat needs to find the user and their assignment
+            # The heartbeat flow:
+            # 1. get_user_id_from_uid(): SELECT id FROM users WHERE uid = %s
+            # 2. update_user_activity():
+            # UPDATE premium_user_assignments SET last_activity
             mock_connection = self.setup_db_mock(
                 fetchone_values=[
-                    MockRow(  # 1. User lookup - return the user
-                        {
-                            "uid": self.test_user_id,
-                            "name": "Test User",
-                            "email": "test@example.com",
-                        }
+                    MockRow(  # 1. User lookup - Lambda expects {"id": <numeric_id>}
+                        {"id": 12345}  # Numeric user ID from users table
                     ),
-                    MockRow(  # 2. Check for existing assignment
+                    MockRow(  # 2. Assignment check (if needed)
                         {
-                            "user_id": self.test_user_id,
+                            "user_id": 12345,
                             "instance_id": self.test_instance_id,
                             "instance_state": "running",
                         }
@@ -427,14 +433,14 @@ class TestLambdaIntegration:
                 print(f"Response: {json.dumps(response_body, indent=2)}")
 
                 # Verify heartbeat was processed
-                # Accept both 200 (success) and 404 (user not found) as valid
-                # since the mock might not perfectly match the Lambda's expectations
-                assert status_code in [
-                    200,
-                    404,
-                ], f"Heartbeat returned unexpected status: {status_code}"
+                assert (
+                    status_code == 200
+                ), f"Heartbeat should return 200, got {status_code}"
                 assert "user_id" in response_body, "Response should include user_id"
-                assert response_body["user_id"] == self.test_user_id
+                # user_id should be 12345 (the numeric ID we mocked)
+                assert (
+                    response_body["user_id"] == 12345
+                ), f"Expected user_id 12345, got {response_body['user_id']}"
 
                 return True
 
