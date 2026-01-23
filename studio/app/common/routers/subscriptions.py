@@ -27,6 +27,7 @@ from studio.app.common.models.user import User as UserModel
 from studio.app.common.schemas.checkouts import (
     CheckoutSessionRequest,
     CheckoutValidationResponse,
+    CheckoutValidationStatus,
 )
 from studio.app.common.schemas.subscriptions import (
     CancelSubscriptionResponse,
@@ -461,7 +462,7 @@ async def validate_checkout_session(
                 f"Checkout session {request.session_id} is not complete/paid"
             )
             return CheckoutValidationResponse(
-                status="payment_failed",
+                status=CheckoutValidationStatus.PAYMENT_FAILED,
                 message=(
                     "Payment was not completed. Please check your payment "
                     "information and try again."
@@ -475,7 +476,7 @@ async def validate_checkout_session(
         if not customer_email:
             logger.error(f"No customer email found in session {request.session_id}")
             return CheckoutValidationResponse(
-                status="webhook_failed",
+                status=CheckoutValidationStatus.WEBHOOK_FAILED,
                 message="An internal error occurred. Please contact support.",
             )
 
@@ -484,7 +485,7 @@ async def validate_checkout_session(
         if not user:
             logger.error(f"No user found with email {customer_email}")
             return CheckoutValidationResponse(
-                status="webhook_failed",
+                status=CheckoutValidationStatus.WEBHOOK_FAILED,
                 message="An internal error occurred. Please contact support.",
             )
 
@@ -498,7 +499,7 @@ async def validate_checkout_session(
                 f"Webhook may have failed."
             )
             return CheckoutValidationResponse(
-                status="webhook_failed",
+                status=CheckoutValidationStatus.WEBHOOK_FAILED,
                 message=(
                     "Payment was successful, but subscription activation "
                     "is pending. Please contact support if this persists."
@@ -514,7 +515,7 @@ async def validate_checkout_session(
                 f"Webhook may have failed."
             )
             return CheckoutValidationResponse(
-                status="webhook_failed",
+                status=CheckoutValidationStatus.WEBHOOK_FAILED,
                 message=(
                     "Payment was successful, but subscription activation "
                     "is pending. Please contact support if this persists."
@@ -526,7 +527,7 @@ async def validate_checkout_session(
             f"with premium subscription (plan_id={plan_data.id}) for user {user.id}"
         )
         return CheckoutValidationResponse(
-            status="success",
+            status=CheckoutValidationStatus.SUCCESS,
             message="Payment successful! Your premium subscription is now active.",
         )
 

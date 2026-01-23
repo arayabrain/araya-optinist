@@ -9,10 +9,14 @@ export type SubscriptionPlanDTO = {
   created_at: string
 }
 
+export const CheckoutValidationStatus = {
+  SUCCESS: "success",
+  PAYMENT_FAILED: "payment_failed",
+  WEBHOOK_FAILED: "webhook_failed",
+} as const
+
 export type CheckoutValidationStatus =
-  | "success"
-  | "payment_failed"
-  | "webhook_failed"
+  (typeof CheckoutValidationStatus)[keyof typeof CheckoutValidationStatus]
 
 export type CheckoutValidationResponse = {
   status: CheckoutValidationStatus

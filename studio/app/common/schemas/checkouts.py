@@ -1,8 +1,13 @@
-from typing import Any, Dict, Literal, Optional
+from enum import StrEnum
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel
 
-CheckoutValidationStatus = Literal["success", "payment_failed", "webhook_failed"]
+
+class CheckoutValidationStatus(StrEnum):
+    SUCCESS = "success"
+    PAYMENT_FAILED = "payment_failed"
+    WEBHOOK_FAILED = "webhook_failed"
 
 
 class CheckoutSessionRequest(BaseModel):

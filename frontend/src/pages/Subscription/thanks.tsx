@@ -33,20 +33,16 @@ const Thanks: React.FC = () => {
     return <Loading loading={true} />
   }
 
-  if (validationStatus === "success") {
-    return <PaymentResult type="success" />
+  switch (validationStatus) {
+    case CheckoutValidationStatus.SUCCESS:
+      return <PaymentResult type="success" />
+    case CheckoutValidationStatus.PAYMENT_FAILED:
+      return <PaymentResult type="payment_failed" />
+    case CheckoutValidationStatus.WEBHOOK_FAILED:
+    default:
+      // Handle unexpected cases
+      return <PaymentResult type="webhook_failed" />
   }
-
-  if (validationStatus === "payment_failed") {
-    return <PaymentResult type="payment_failed" />
-  }
-
-  if (validationStatus === "webhook_failed") {
-    return <PaymentResult type="webhook_failed" />
-  }
-
-  // Handle unexpected cases
-  return <PaymentResult type="webhook_failed" />
 }
 
 export default Thanks
