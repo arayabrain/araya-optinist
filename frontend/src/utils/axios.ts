@@ -6,6 +6,7 @@ import axiosLibrary, {
 
 import { refreshTokenApi } from "api/auth/Auth"
 import { BASE_URL } from "const/API"
+import { RoutingHeaders } from "const/Subscription"
 import { getExToken, getToken, logout, saveToken } from "utils/auth/AuthUtils"
 import {
   isDataviewPublicOutputsRequest,
@@ -211,8 +212,8 @@ const handlePremiumRoutingError = async (
   const retryConfig = { ...originalRequest }
 
   // Remove premium routing headers for free tier fallback
-  delete retryConfig.headers["X-User-Tier"]
-  delete retryConfig.headers["X-Routing-ID"]
+  delete retryConfig.headers[RoutingHeaders.USER_TIER]
+  delete retryConfig.headers[RoutingHeaders.ROUTING_ID]
 
   // Mark as retry to prevent infinite loops
   retryConfig._retryWithoutPremium = true
@@ -230,7 +231,16 @@ const handlePremiumRoutingError = async (
 }
 
 axios.interceptors.response.use(
-  async (res) => res,
+  async (res) => {
+    // Extract routing headers from backend response
+    // Note: axios normalizes response header names to lowercase
+    const routingIdHeader = RoutingHeaders.ROUTING_ID.toLowerCase()
+    const routingId = res.headers[routingIdHeader]
+    if (routingId) {
+      routingService.updateRoutingToken(routingId)
+    }
+    return res
+  },
   async (error) => {
     if (error?.response?.status === 401) {
       return handleUnauthorizedError(error)

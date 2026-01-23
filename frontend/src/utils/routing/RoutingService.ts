@@ -38,7 +38,7 @@ export interface PremiumAssignmentResult {
   scaling_in_progress?: boolean
 }
 
-class RoutingService {
+export class RoutingService {
   private routingInfo: RoutingInfo | null = null
   private routingToken: string | null = null
   private lastFetch: number = 0
@@ -52,16 +52,23 @@ class RoutingService {
 
   /**
    * Get routing headers for the current user request
-   * Returns the backend-issued non-reversible routing ID
+   * Returns the backend-issued non-reversible routing ID and user tier
    */
   getRoutingHeaders(): Record<string, string> {
     if (!this.routingToken) {
       return {}
     }
 
-    return {
+    const headers: Record<string, string> = {
       [RoutingHeaders.ROUTING_ID]: this.routingToken,
     }
+
+    // Include user tier header for ALB routing rules
+    if (this.routingInfo?.user_tier) {
+      headers[RoutingHeaders.USER_TIER] = this.routingInfo.user_tier
+    }
+
+    return headers
   }
 
   /**
