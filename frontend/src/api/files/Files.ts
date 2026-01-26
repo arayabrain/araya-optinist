@@ -1,7 +1,7 @@
 import { AxiosProgressEvent } from "axios"
 
 import { FILE_TREE_TYPE_SET } from "config/fileTypes.config"
-import { BASE_URL } from "const/API"
+import { API_TIMEOUT, BASE_URL } from "const/API"
 import axios from "utils/axios"
 
 // Re-export for convenience - FILE_TREE_TYPE depends on FILE_TREE_TYPE_SET
@@ -57,7 +57,11 @@ export async function uploadFileApi(
   const response = await axios.post(
     `${BASE_URL}/files/${workspaceId}/upload/${fileName}`,
     formData,
-    config,
+    {
+      ...config,
+      // Use extended timeout for file uploads to support large files
+      timeout: API_TIMEOUT.UPLOAD_DOWNLOAD,
+    },
   )
   return response.data
 }
@@ -89,7 +93,10 @@ export const uploadViaUrlApi = async (
   const res = await axios.post(
     `${BASE_URL}/files/${workspaceId}/download`,
     { url },
-    // config,
+    {
+      // Use extended timeout for URL-based file downloads to support large remote files
+      timeout: API_TIMEOUT.UPLOAD_DOWNLOAD,
+    },
   )
   return res.data
 }
