@@ -456,6 +456,7 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
         Effect = "Allow"
         Action = [
           "logs:GetLogEvents",
+          "logs:FilterLogEvents",
           "logs:DescribeLogGroups",
           "logs:DescribeLogStreams",
           "iam:PassRole",
@@ -483,6 +484,7 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
           "ecr:GetRepositoryPolicy",
           "cloudwatch:ListMetrics",
           "cloudwatch:GetMetricStatistics",
+          "cloudwatch:DescribeAlarms",
           "autoscaling:DescribeAutoScalingGroups",
           "autoscaling:SetDesiredCapacity",
           "autoscaling:SuspendProcesses",
@@ -888,7 +890,7 @@ resource "aws_secretsmanager_secret_version" "routing_hmac_key" {
 # Used to authenticate internal sync endpoints called by Lambda managers
 resource "random_password" "internal_api_secret" {
   length  = 64
-  special = false  # Avoid special chars for easier URL/header handling
+  special = false # Avoid special chars for easier URL/header handling
 }
 
 resource "aws_secretsmanager_secret" "internal_api_secret" {
