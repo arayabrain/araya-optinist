@@ -17,22 +17,25 @@ yum install -y amazon-ssm-agent mysql amazon-efs-utils nc mysql-client git docke
 # Setup swap as memory safety net (defense-in-depth for OOM prevention)
 # This provides a buffer before OOM killer activates, giving workflows
 # a chance to complete during temporary memory spikes
-echo "$(date): Setting up swap space"
-SWAP_SIZE_MB=32768  # 32 GB swap
+SWAP_SIZE_MB=${swap_size_mb}  # Configurable per instance type (0 to skip)
 SWAP_FILE=/swapfile
-if [ ! -f "$SWAP_FILE" ]; then
-    dd if=/dev/zero of=$SWAP_FILE bs=1M count=$SWAP_SIZE_MB status=progress
-    chmod 600 $SWAP_FILE
-    mkswap $SWAP_FILE
-    swapon $SWAP_FILE
-    echo "$SWAP_FILE swap swap defaults 0 0" >> /etc/fstab
-    # Set low swappiness (10) - only use swap under real memory pressure
-    # This prevents unnecessary swapping during normal operation
-    echo "vm.swappiness=20" >> /etc/sysctl.conf
-    sysctl vm.swappiness=20
-    echo "$(date): Swap setup complete ($${SWAP_SIZE_MB}MB, swappiness=20)"
+if [ "$SWAP_SIZE_MB" -gt 0 ]; then
+    echo "$(date): Setting up swap space ($${SWAP_SIZE_MB}MB)"
+    if [ ! -f "$SWAP_FILE" ]; then
+        dd if=/dev/zero of=$SWAP_FILE bs=1M count=$SWAP_SIZE_MB status=progress
+        chmod 600 $SWAP_FILE
+        mkswap $SWAP_FILE
+        swapon $SWAP_FILE
+        echo "$SWAP_FILE swap swap defaults 0 0" >> /etc/fstab
+        # Set low swappiness - only use swap under real memory pressure
+        echo "vm.swappiness=20" >> /etc/sysctl.conf
+        sysctl vm.swappiness=20
+        echo "$(date): Swap setup complete ($${SWAP_SIZE_MB}MB, swappiness=20)"
+    else
+        echo "$(date): Swap file already exists"
+    fi
 else
-    echo "$(date): Swap file already exists"
+    echo "$(date): Skipping swap setup (swap_size_mb=0)"
 fi
 
 # Start SSM agent
