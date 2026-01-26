@@ -247,11 +247,6 @@ async def get_current_user(
 
 
 def __get_current_user_record(db: Session, uid: str) -> sqlalchemy.engine.row.Row:
-    # Optimized query: Uses UserStorageUsage.storage_usage_bytes instead of
-    # calculating SUM(Workspace.input_data_usage) + SUM(ExperimentRecord.data_usage)
-    # via subqueries. storage_usage_bytes is already tracked incrementally via
-    # delta updates (increment_user_storage/decrement_user_storage), eliminating
-    # the need for expensive GROUP BY aggregations on every request.
     user_data = (
         db.query(
             UserModel,

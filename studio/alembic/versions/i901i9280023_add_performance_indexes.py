@@ -5,14 +5,8 @@ Add database indexes for frequently queried columns to improve query performance
 These indexes address:
 - Subscription lookups by user_id and expiration (used on every authenticated request)
 - Subscription purchase lookups for cancellation checks
-- Subscription cancellation lookups by purchase_id
 - Workspace queries filtering by user_id and deleted status
-- User queries filtering by organization_id
-
-Expected impact:
-- 10-100x faster lookups on indexed columns
-- Significant reduction in full table scans
-- Improved response times for subscription checks and user context loading
+- User queries filtering by organization_id and active status
 
 Revision ID: i901i9280023
 Revises: h901h9270022
@@ -72,21 +66,6 @@ def upgrade() -> None:
     )
 
     # =========================================================================
-    # Subscription Cancellations Table Indexes
-    # =========================================================================
-    # Used to check if a subscription purchase has been cancelled
-
-    # Index for cancellation lookups by purchase_id
-    # Used by: is_subscription_cancelled() final check
-    # Query pattern: WHERE purchases_id = ?
-    op.create_index(
-        "idx_subscription_cancellations_purchases_id",
-        "subscription_cancellations",
-        ["purchases_id"],
-        unique=False,
-    )
-
-    # =========================================================================
     # Workspaces Table Indexes
     # =========================================================================
     # Used for capacity calculations in user context loading
@@ -104,18 +83,6 @@ def upgrade() -> None:
     # =========================================================================
     # Users Table Indexes
     # =========================================================================
-    # Used for user listing and filtering
-
-    # Index for user queries by organization_id
-    # Used by: list_user() admin panel
-    # Query pattern: WHERE organization_id = ? AND active = TRUE
-    op.create_index(
-        "idx_users_organization_id",
-        "users",
-        ["organization_id"],
-        unique=False,
-    )
-
     # Composite index for active users in organization
     # Query pattern: WHERE organization_id = ? AND active = TRUE
     op.create_index(
@@ -125,39 +92,15 @@ def upgrade() -> None:
         unique=False,
     )
 
-    # =========================================================================
-    # User Storage Usage Table Indexes
-    # =========================================================================
-    # Note: user_id likely already has unique constraint, but adding explicit
-    # index if not present for clarity
-
-    # Index for storage usage lookups by user_id
-    # Used by: __get_current_user_record() to get storage stats
-    op.create_index(
-        "idx_user_storage_usage_user_id",
-        "user_storage_usage",
-        ["user_id"],
-        unique=False,
-    )
-
 
 def downgrade() -> None:
     """Remove performance indexes."""
 
-    # User Storage Usage indexes
-    op.drop_index("idx_user_storage_usage_user_id", "user_storage_usage")
-
     # Users indexes
     op.drop_index("idx_users_organization_active", "users")
-    op.drop_index("idx_users_organization_id", "users")
 
     # Workspaces indexes
     op.drop_index("idx_workspaces_user_deleted", "workspaces")
-
-    # Subscription Cancellations indexes
-    op.drop_index(
-        "idx_subscription_cancellations_purchases_id", "subscription_cancellations"
-    )
 
     # Subscription User Purchases indexes
     op.drop_index(
