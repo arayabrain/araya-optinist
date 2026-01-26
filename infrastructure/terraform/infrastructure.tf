@@ -480,6 +480,11 @@ resource "aws_db_parameter_group" "main" {
     value = "0"
   }
 
+  parameter {
+    name  = "time_zone"
+    value = "UTC"
+  }
+
   tags = {
     Name = "subscr-optinist-no-ssl"
   }
@@ -492,7 +497,7 @@ resource "aws_db_instance" "main" {
   engine                          = "mysql"
   engine_version                  = "8.0"
   instance_class                  = "db.t4g.small"
-  parameter_group_name            = "default.mysql8.0"
+  parameter_group_name            = aws_db_parameter_group.main.name
   db_name                         = var.mysql_database
   username                        = var.mysql_user
   password                        = var.mysql_password

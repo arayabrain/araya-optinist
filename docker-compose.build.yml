@@ -8,6 +8,6 @@ services:
       - ./frontend/:/app/frontend/:cached
     command: ash -c 'yarn install && yarn build'
     environment:
-      TZ: Asia/Tokyo
+      TZ: UTC
       GENERATE_SOURCEMAP: false
       NODE_OPTIONS: --max-old-space-size=2048
