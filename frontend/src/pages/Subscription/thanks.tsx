@@ -35,13 +35,13 @@ const Thanks: React.FC = () => {
 
   switch (validationStatus) {
     case CheckoutValidationStatus.SUCCESS:
-      return <PaymentResult type="success" />
+      return <PaymentResult type={CheckoutValidationStatus.SUCCESS} />
     case CheckoutValidationStatus.PAYMENT_FAILED:
-      return <PaymentResult type="payment_failed" />
+      return <PaymentResult type={CheckoutValidationStatus.PAYMENT_FAILED} />
     case CheckoutValidationStatus.WEBHOOK_FAILED:
     default:
       // Handle unexpected cases
-      return <PaymentResult type="webhook_failed" />
+      return <PaymentResult type={CheckoutValidationStatus.WEBHOOK_FAILED} />
   }
 }
 

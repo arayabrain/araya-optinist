@@ -35,7 +35,7 @@ const Failed: React.FC = () => {
 
   // On the failed page, show payment_failed regardless of validation status
   if (validationStatus) {
-    return <PaymentResult type="payment_failed" />
+    return <PaymentResult type={CheckoutValidationStatus.PAYMENT_FAILED} />
   }
 
   return null

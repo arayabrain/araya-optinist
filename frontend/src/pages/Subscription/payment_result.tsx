@@ -6,11 +6,15 @@ import CloseIcon from "@mui/icons-material/Close"
 import GitHubIcon from "@mui/icons-material/GitHub"
 import { Box, Button, Typography, Card, CardContent } from "@mui/material"
 
+import { CheckoutValidationStatus } from "api/subscriptions/SubscriptionsApiDTO"
+
 interface PaymentResultProps {
-  type?: "success" | "payment_failed" | "webhook_failed"
+  type?: CheckoutValidationStatus
 }
 
-const PaymentResult: React.FC<PaymentResultProps> = ({ type = "success" }) => {
+const PaymentResult: React.FC<PaymentResultProps> = ({
+  type = CheckoutValidationStatus.SUCCESS,
+}) => {
   const navigate = useNavigate()
 
   interface Config {
@@ -25,11 +29,8 @@ const PaymentResult: React.FC<PaymentResultProps> = ({ type = "success" }) => {
     buttonAction: () => void
   }
 
-  const config: Record<
-    "success" | "payment_failed" | "webhook_failed",
-    Config
-  > = {
-    success: {
+  const config: Record<CheckoutValidationStatus, Config> = {
+    [CheckoutValidationStatus.SUCCESS]: {
       icon: <CheckIcon sx={{ fontSize: "3rem", color: "white" }} />,
       circleColor: "#10b981",
       title: "Thank you!",
@@ -40,7 +41,7 @@ const PaymentResult: React.FC<PaymentResultProps> = ({ type = "success" }) => {
       buttonHoverColor: "#2563eb",
       buttonAction: () => navigate("/dashboard"),
     },
-    payment_failed: {
+    [CheckoutValidationStatus.PAYMENT_FAILED]: {
       icon: <CloseIcon sx={{ fontSize: "3rem", color: "white" }} />,
       circleColor: "#ef4444",
       title: "Payment Failed",
@@ -52,7 +53,7 @@ const PaymentResult: React.FC<PaymentResultProps> = ({ type = "success" }) => {
       buttonHoverColor: "#dc2626",
       buttonAction: () => navigate("/subscription"),
     },
-    webhook_failed: {
+    [CheckoutValidationStatus.WEBHOOK_FAILED]: {
       icon: <CloseIcon sx={{ fontSize: "3rem", color: "white" }} />,
       circleColor: "#f59e0b",
       title: "Activation Pending",
