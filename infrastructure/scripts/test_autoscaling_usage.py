@@ -78,7 +78,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -86,6 +86,13 @@ import boto3
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+# Add project root to path for studio imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from studio.app.common.core.utils.datetime_utils import (  # noqa: E402
+    get_current_datetime,
+)
 
 # Import token generation utilities
 try:
@@ -373,7 +380,7 @@ class AutoscalingUsageTest:
 
     def get_ecs_metrics(self) -> Tuple[float, float]:
         """Get current ECS CPU and Memory utilization."""
-        end_time = datetime.now(timezone.utc)
+        end_time = get_current_datetime()
         start_time = end_time - timedelta(minutes=5)
 
         # Get CPU utilization
@@ -677,7 +684,7 @@ class AutoscalingUsageTest:
                         "workflow_index": workflow_index,
                         "unique_id": unique_id,
                         "workspace_id": workspace_id,
-                        "submitted_at": datetime.now(timezone.utc),
+                        "submitted_at": get_current_datetime(),
                     }
                 )
                 return unique_id

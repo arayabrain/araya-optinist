@@ -56,16 +56,22 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Dict, List, Optional
 
 import boto3
 from botocore.exceptions import ClientError
 
-# Add parent directory for shared infrastructure imports
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+# Add project root and parent directory for imports
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_script_dir, "..", ".."))  # project root
+sys.path.insert(0, os.path.join(_script_dir, ".."))
 
 from aws_constants import ECSTaskStatus  # noqa: E402
+
+from studio.app.common.core.utils.datetime_utils import (  # noqa: E402
+    get_current_datetime,
+)
 
 
 class FreeManagerTester:
@@ -742,10 +748,7 @@ class FreeManagerTester:
 
         try:
             # Query for active user count metric
-            # Must use UTC timezone for CloudWatch queries
-            from datetime import timezone
-
-            end_time = datetime.now(timezone.utc)
+            end_time = get_current_datetime()
             start_time = end_time - timedelta(minutes=10)
 
             response = self.cloudwatch_client.get_metric_statistics(
@@ -874,7 +877,7 @@ class FreeManagerTester:
         print("=" * 80)
         print(f"Terraform Dir: {self.terraform_dir}")
         print(f"AWS Region: {self.aws_region}")
-        print(f"Timestamp: {datetime.now(timezone.utc)}")
+        print(f"Timestamp: {get_current_datetime()}")
 
         results = {
             "cleanup": False,
