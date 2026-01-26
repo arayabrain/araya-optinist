@@ -1,12 +1,18 @@
 """
-Free User Activity Tracking Middleware
+User Activity Tracking Middleware
 
-This middleware tracks activity for free tier users to enable intelligent load balancing
-and autoscaling. It updates the last_activity timestamp in the database for every HTTP
-request from a free tier user, which allows the Free Manager Lambda to:
-1. Identify idle users (no activity for 10+ minutes)
-2. Safely migrate idle users to newly launched instances
-3. Count active users to trigger autoscaling
+This middleware tracks activity for both free and premium tier users to enable:
+
+For Free Users:
+1. Intelligent load balancing and autoscaling
+2. Identify idle users (no activity for 10+ minutes)
+3. Safely migrate idle users to newly launched instances
+4. Count active users to trigger autoscaling
+
+For Premium Users:
+1. Prevent stale assignment cleanup for active users
+2. Enable proper scale-down of premium instance pool
+3. Track actual usage for billing/analytics
 
 IMPORTANT: Database updates run in background tasks to avoid blocking requests.
 
@@ -18,9 +24,11 @@ See: https://github.com/encode/starlette/issues/1012
 import asyncio
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
+from sqlalchemy import text
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jwt
@@ -38,7 +46,9 @@ TIER_FREE = "free"
 TIER_PREMIUM = "premium"
 
 # In-memory cache to reduce database load (tracks last update time per user)
-_last_activity_cache = {}
+# Separate caches for free and premium to avoid key collisions
+_free_activity_cache = {}
+_premium_activity_cache = {}
 _cache_lock = threading.Lock()
 _CACHE_TTL_SECONDS = 60  # Only update DB once per minute per user
 
@@ -46,16 +56,17 @@ _CACHE_TTL_SECONDS = 60  # Only update DB once per minute per user
 _instance_id_cache = None
 _instance_id_lock = threading.Lock()
 
+logger = AppLogger.get_logger()
 
-class FreeUserActivityMiddleware:
+
+class UserActivityMiddleware:
     """
-    ASGI Middleware to track free tier user activity for load balancing purposes.
+    ASGI Middleware to track user activity for both free and premium tiers.
 
     This middleware:
     - Extracts user ID from authentication tokens
-    - Checks if user is on free tier (subscription_status = "Free")
-    - Updates last_activity timestamp in free_user_assignments table
-    - Records current instance ID for tracking
+    - Determines user tier (free or premium)
+    - Updates last_activity timestamp in appropriate table
     - Runs asynchronously without blocking request processing
     """
 
@@ -77,7 +88,6 @@ class FreeUserActivityMiddleware:
         path = scope.get("path", "")
 
         # Skip health check, auth endpoints, and system-internal API endpoints
-        # System-internal endpoints use their own auth (shared secret, not JWT)
         if path in SKIP_AUTH_PATHS or path.startswith("/system-internal/"):
             await self.app(scope, receive, send)
             return
@@ -111,7 +121,6 @@ class FreeUserActivityMiddleware:
             nonlocal has_tracked
 
             # When response starts, schedule activity tracking
-            # This happens before response completes, so it's non-blocking
             if message["type"] == "http.response.start" and not has_tracked:
                 has_tracked = True
 
@@ -119,24 +128,35 @@ class FreeUserActivityMiddleware:
                     # Get user ID and tier from database
                     user_id, tier = _get_user_id_and_tier(uid)
 
-                    if user_id and tier == TIER_FREE:
-                        # Check cache to avoid excessive DB writes
-                        if _should_update_activity(user_id):
-                            # Schedule background update (doesn't block response)
-                            asyncio.create_task(
-                                _update_free_user_activity_async(user_id)
-                            )
+                    if user_id:
+                        if tier == TIER_FREE:
+                            # Check cache to avoid excessive DB writes
+                            if _should_update_activity(user_id, TIER_FREE):
+                                # Schedule background update (doesn't block response)
+                                asyncio.create_task(
+                                    _update_free_user_activity_async(user_id)
+                                )
+                        elif tier == TIER_PREMIUM:
+                            # Check cache to avoid excessive DB writes
+                            if _should_update_activity(user_id, TIER_PREMIUM):
+                                # Schedule background update (doesn't block response)
+                                asyncio.create_task(
+                                    _update_premium_user_activity_async(user_id)
+                                )
 
                 except Exception as e:
                     # Log error but don't fail the request
-                    logger = AppLogger.get_logger()
-                    logger.warning(f"Failed to track free user activity: {e}")
+                    logger.warning(f"Failed to track user activity: {e}")
 
             # Always send the original message
             await send(message)
 
         # Process the request with our wrapped send function
         await self.app(scope, receive, send_wrapper)
+
+
+# Keep FreeUserActivityMiddleware as alias for backwards compatibility
+FreeUserActivityMiddleware = UserActivityMiddleware
 
 
 def _get_user_id_and_tier(uid: str) -> Tuple[Optional[int], Optional[str]]:
@@ -179,23 +199,21 @@ def _get_user_id_and_tier(uid: str) -> Tuple[Optional[int], Optional[str]]:
         finally:
             db.close()
     except Exception as e:
-        logger = AppLogger.get_logger()
         logger.warning(f"Failed to get user tier for {uid}: {e}")
         return None, None
 
 
-def _should_update_activity(user_id: str) -> bool:
+def _should_update_activity(user_id: int, tier: str) -> bool:
     """
     Check if we should update activity for this user (throttling).
     Only update DB once per minute per user to reduce load.
 
-    IMPORTANT: This only CHECKS the cache. The actual cache update happens
-    in _update_cache_after_commit() AFTER successful database commit.
+    Uses separate caches for free and premium users.
     """
-    import time
+    cache = _free_activity_cache if tier == TIER_FREE else _premium_activity_cache
 
     with _cache_lock:
-        last_update = _last_activity_cache.get(user_id, 0)
+        last_update = cache.get(user_id, 0)
         now = time.time()
 
         if now - last_update >= _CACHE_TTL_SECONDS:
@@ -203,27 +221,29 @@ def _should_update_activity(user_id: str) -> bool:
         return False
 
 
-def _update_cache_after_commit(user_id: str):
+def _update_cache_after_commit(user_id: int, tier: str):
     """
     Update cache timestamp after successful database commit.
     This ensures cache consistency with database state.
     """
-    import time
+    cache = _free_activity_cache if tier == TIER_FREE else _premium_activity_cache
 
     with _cache_lock:
-        _last_activity_cache[user_id] = time.time()
+        cache[user_id] = time.time()
 
 
-async def _update_free_user_activity_async(user_id: str):
+# ============================================================================
+# FREE USER ACTIVITY TRACKING
+# ============================================================================
+
+
+async def _update_free_user_activity_async(user_id: int):
     """
     Update last_activity timestamp for free tier user (async wrapper).
     Runs in background to avoid blocking request.
-
-    Cache is updated optimistically before database commit to minimize latency.
-    If database update fails, the cache will be refreshed on next request.
     """
     # Update cache immediately (optimistic) to reduce perceived latency
-    _update_cache_after_commit(user_id)
+    _update_cache_after_commit(user_id, TIER_FREE)
 
     # Run blocking database call in thread pool (fire-and-forget)
     loop = asyncio.get_event_loop()
@@ -231,11 +251,12 @@ async def _update_free_user_activity_async(user_id: str):
         await loop.run_in_executor(None, _update_free_user_activity_sync, user_id)
     except Exception as e:
         # Log error but don't propagate (fire-and-forget pattern)
-        logger = AppLogger.get_logger()
-        logger.warning(f"Background activity update failed for user {user_id}: {e}")
+        logger.warning(
+            f"Background activity update failed for free user {user_id}: {e}"
+        )
 
 
-def _update_free_user_activity_sync(user_id: str) -> bool:
+def _update_free_user_activity_sync(user_id: int) -> bool:
     """
     Update last_activity timestamp for free tier user (sync implementation).
 
@@ -285,9 +306,83 @@ def _update_free_user_activity_sync(user_id: str) -> bool:
             return True
 
     except Exception as e:
-        logger = AppLogger.get_logger()
         logger.error(f"Error updating free user activity for user {user_id}: {e}")
         return False
+
+
+# ============================================================================
+# PREMIUM USER ACTIVITY TRACKING
+# ============================================================================
+
+
+async def _update_premium_user_activity_async(user_id: int):
+    """
+    Update last_activity timestamp for premium tier user (async wrapper).
+    Runs in background to avoid blocking request.
+    """
+    # Update cache immediately (optimistic) to reduce perceived latency
+    _update_cache_after_commit(user_id, TIER_PREMIUM)
+
+    # Run blocking database call in thread pool (fire-and-forget)
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, _update_premium_user_activity_sync, user_id)
+    except Exception as e:
+        # Log error but don't propagate (fire-and-forget pattern)
+        logger.warning(
+            f"Background activity update failed for premium user {user_id}: {e}"
+        )
+
+
+def _update_premium_user_activity_sync(user_id: int) -> bool:
+    """
+    Update last_activity timestamp for premium tier user (sync implementation).
+
+    This method updates the last_activity column in the premium_user_assignments
+    table, which is used by the Premium Cleanup Lambda to determine if an
+    assignment is stale.
+
+    Returns:
+        True if update successful, False otherwise
+    """
+    try:
+        with session_scope() as session:
+            now = datetime.now(timezone.utc)
+
+            # Update last_activity for this user's premium assignment
+            # Uses raw SQL for efficiency (no need to load full ORM object)
+            result = session.execute(
+                text(
+                    """
+                UPDATE premium_user_assignments
+                SET last_activity = :now
+                WHERE user_id = :user_id
+                AND status = 'active'
+                AND is_standby = 0
+                """
+                ),
+                {"now": now, "user_id": user_id},
+            )
+
+            session.commit()
+
+            if result.rowcount > 0:
+                logger.debug(
+                    f"Updated premium activity for user {user_id} at {now.isoformat()}"
+                )
+                return True
+            else:
+                # No assignment found (user may not have active premium assignment)
+                return False
+
+    except Exception as e:
+        logger.error(f"Error updating premium user activity for user {user_id}: {e}")
+        return False
+
+
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
 
 
 def _get_instance_id() -> Optional[str]:
@@ -358,7 +453,6 @@ def _get_instance_id() -> Optional[str]:
             pass
 
         # Local development or metadata service unavailable
-        logger = AppLogger.get_logger()
         logger.warning(
             "Could not retrieve EC2 instance ID from metadata service. "
             "Using 'local' as instance ID. This is OK for local development "

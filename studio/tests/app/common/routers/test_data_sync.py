@@ -513,20 +513,15 @@ class TestLazySync:
 class TestMiddlewareBypass:
     """Tests for middleware skipping /system-internal/ paths."""
 
-    def test_free_user_middleware_skips_internal_paths(self):
-        """FreeUserActivityMiddleware should skip /system-internal/* routes."""
-        # Verify the logic in middleware checks for /system-internal/ prefix
-        test_paths = [
-            "/system-internal/sync-experiments/1",
-            "/system-internal/health",
-            "/system-internal/anything",
-        ]
+    def test_user_activity_middleware_skips_internal_paths(self):
+        """UserActivityMiddleware should skip /system-internal/* routes."""
+        # Verify the middleware has the skip logic
+        import inspect
 
-        for path in test_paths:
-            # The middleware checks: path.startswith("/system-internal/")
-            assert path.startswith(
-                "/system-internal/"
-            ), f"Path {path} should start with /system-internal/"
+        import studio.app.common.core.middleware.user_activity_middleware as uam
+
+        source = inspect.getsource(uam.UserActivityMiddleware)
+        assert 'startswith("/system-internal/")' in source
 
     def test_secure_routing_middleware_skips_internal_paths(self):
         """SecureRoutingMiddleware should skip /system-internal/* routes."""
