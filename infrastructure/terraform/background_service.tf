@@ -49,7 +49,7 @@ resource "aws_launch_template" "background" {
     ecr_repository_url    = var.ecr_repository_url
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
-    swap_size_mb          = 0 # No swap needed - background jobs are lightweight I/O operations
+    swap_size_mb          = 1536 # 2x task memory (768MB) for stable background job operation
   }))
 
   tag_specifications {
