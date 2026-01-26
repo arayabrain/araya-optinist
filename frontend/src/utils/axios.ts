@@ -1,7 +1,7 @@
 import axiosLibrary from "axios"
 
 import { refreshTokenApi } from "api/auth/Auth"
-import { BASE_URL } from "const/API"
+import { API_TIMEOUT, BASE_URL } from "const/API"
 import { getExToken, getToken, logout, saveToken } from "utils/auth/AuthUtils"
 import {
   isDataviewPublicOutputsRequest,
@@ -10,7 +10,7 @@ import {
 
 const axios = axiosLibrary.create({
   baseURL: BASE_URL,
-  timeout: 600000,
+  timeout: API_TIMEOUT.DEFAULT,
 })
 
 axios.interceptors.request.use(
