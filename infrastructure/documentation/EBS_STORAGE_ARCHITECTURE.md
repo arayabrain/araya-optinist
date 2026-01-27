@@ -2,6 +2,14 @@
 
 ## Executive Summary
 
+- **EBS provides fast local storage** for Snakemake workflow execution with S3 as durable backup
+- **Background sync job** downloads published experiments to all instances every 5 minutes
+- **Data cleanup job** removes local data for logged-out users (1-hour grace period)
+- **Workflow protection** ensures cleanup only happens when `active_workflow_count = 0`
+- **S3 verification** guarantees backup exists before any local deletion
+
+---
+
 ## Key Architectural Constraints
 
 These are the fundamental constraints that the EBS implementation satisfies:

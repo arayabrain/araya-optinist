@@ -1647,6 +1647,10 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
             # (remove DB entries for terminated instances)
             cleanup_failed_standby_instances()
 
+            # 8. Cleanup ghost ECS container instance registrations
+            # (deregister container instances where EC2 is stopped/terminated)
+            cleanup_ghost_ecs_registrations()
+
             return {
                 "statusCode": 200,
                 "body": json.dumps(
@@ -2775,6 +2779,62 @@ def get_ecs_container_instance_id(
         return None
 
 
+def deregister_container_instance_from_ecs(ec2_instance_id: str) -> bool:
+    """
+    Deregister a container instance from ECS before stopping the EC2 instance.
+
+    This prevents "ghost" registrations where stopped EC2 instances remain
+    registered in ECS with disconnected agents, confusing the ECS scheduler.
+
+    Args:
+        ec2_instance_id: The EC2 instance ID to deregister
+
+    Returns:
+        True if deregistration succeeded, False otherwise
+    """
+    ecs: "ECSClient" = boto3.client("ecs")
+
+    try:
+        cluster_name = get_required_env_var("CLUSTER_NAME")
+    except ValueError as e:
+        print(f"Cannot deregister container instance - missing CLUSTER_NAME: {str(e)}")
+        return False
+
+    try:
+        # Find the container instance ARN for this EC2 instance
+        container_instance_arn = get_ecs_container_instance_id(
+            ec2_instance_id, cluster_name
+        )
+
+        if not container_instance_arn:
+            print(
+                f"No container instance found for EC2 {ec2_instance_id} - "
+                f"may already be deregistered"
+            )
+            return True  # Not an error if already gone
+
+        # Deregister the container instance from ECS
+        print(
+            f"Deregistering container instance {container_instance_arn} "
+            f"for EC2 {ec2_instance_id}"
+        )
+        ecs.deregister_container_instance(
+            cluster=cluster_name,
+            containerInstance=container_instance_arn,
+            force=True,  # Force deregistration even if tasks are running
+        )
+
+        print(f"Successfully deregistered container instance for EC2 {ec2_instance_id}")
+        return True
+
+    except Exception as e:
+        print(
+            f"Error deregistering container instance for EC2 {ec2_instance_id}: "
+            f"{str(e)}"
+        )
+        return False
+
+
 def check_instance_readiness(instance_id: str) -> bool:
     """Check if an instance has a running ECS task and is ready for user assignment"""
     ecs: "ECSClient" = boto3.client("ecs")
@@ -3360,6 +3420,12 @@ def scale_down_if_possible():
                     f"instances: {idle_instance_ids} "
                     f"(min running needed: {min_running_needed})"
                 )
+
+                # Deregister container instances from ECS BEFORE stopping EC2 instances
+                # This prevents "ghost" registrations that confuse the ECS scheduler
+                for instance_id in idle_instance_ids:
+                    deregister_container_instance_from_ecs(instance_id)
+
                 ec2.stop_instances(InstanceIds=idle_instance_ids)
 
                 # Update ECS service desired count to match remaining running instances
@@ -3449,6 +3515,10 @@ def convert_running_instance_to_standby(instance_id: str):
     ec2: "EC2Client" = boto3.client("ec2")
 
     try:
+        # Deregister container instance from ECS BEFORE stopping EC2 instance
+        # This prevents "ghost" registrations that confuse the ECS scheduler
+        deregister_container_instance_from_ecs(instance_id)
+
         # Stop the instance
         print(f"Stopping instance {instance_id} to convert to standby")
         ec2.stop_instances(InstanceIds=[instance_id])
@@ -3565,6 +3635,122 @@ def cleanup_failed_standby_instances():
 
     except Exception as e:
         print(f"Error cleaning up failed standby instances: {str(e)}")
+
+
+def cleanup_ghost_ecs_registrations():
+    """
+    Clean up ghost ECS container instance registrations.
+
+    When EC2 instances are stopped or terminated outside of our normal flow
+    (e.g., instance crashes, manual stops via AWS console), the ECS container
+    instance registration may remain as a "ghost" entry with a disconnected agent.
+    This confuses the ECS scheduler which tries to place tasks on these instances.
+
+    This function finds and deregisters any container instances where:
+    - The ECS agent is not connected, OR
+    - The underlying EC2 instance is stopped/terminated
+
+    Called periodically by handle_scheduled_monitoring (every 15 minutes).
+    """
+    ecs: "ECSClient" = boto3.client("ecs")
+    ec2: "EC2Client" = boto3.client("ec2")
+
+    try:
+        cluster_name = get_required_env_var("CLUSTER_NAME")
+    except ValueError as e:
+        print(
+            f"Cannot cleanup ghost ECS registrations - missing CLUSTER_NAME: {str(e)}"
+        )
+        return
+
+    try:
+        # List all container instances in the premium cluster
+        response = ecs.list_container_instances(cluster=cluster_name)
+        container_instance_arns = response.get("containerInstanceArns", [])
+
+        if not container_instance_arns:
+            print("No container instances found in cluster - nothing to cleanup")
+            return
+
+        # Describe container instances to check agent status and EC2 mapping
+        describe_response = ecs.describe_container_instances(
+            cluster=cluster_name, containerInstances=container_instance_arns
+        )
+
+        ghost_instances = []
+        for container_instance in describe_response.get("containerInstances", []):
+            container_instance_arn = container_instance.get("containerInstanceArn")
+            ec2_instance_id = container_instance.get("ec2InstanceId")
+            agent_connected = container_instance.get("agentConnected", False)
+            status = container_instance.get("status", "UNKNOWN")
+
+            # Check if this is a ghost registration
+            is_ghost = False
+            reason = ""
+
+            # Case 1: Agent is not connected
+            if not agent_connected:
+                is_ghost = True
+                reason = "ECS agent disconnected"
+
+            # Case 2: Check if EC2 instance is stopped/terminated
+            if ec2_instance_id and not is_ghost:
+                try:
+                    ec2_response = ec2.describe_instances(InstanceIds=[ec2_instance_id])
+                    if ec2_response["Reservations"]:
+                        instance_state = ec2_response["Reservations"][0]["Instances"][
+                            0
+                        ]["State"]["Name"]
+                        if instance_state in ["stopped", "terminated", "shutting-down"]:
+                            is_ghost = True
+                            reason = f"EC2 instance is {instance_state}"
+                except Exception as e:
+                    # Instance might not exist
+                    if "InvalidInstanceID" in str(e):
+                        is_ghost = True
+                        reason = "EC2 instance does not exist"
+
+            if is_ghost:
+                ghost_instances.append(
+                    {
+                        "container_instance_arn": container_instance_arn,
+                        "ec2_instance_id": ec2_instance_id,
+                        "reason": reason,
+                        "status": status,
+                    }
+                )
+
+        if not ghost_instances:
+            print("No ghost ECS registrations found")
+            return
+
+        print(f"Found {len(ghost_instances)} ghost ECS registrations to cleanup")
+
+        # Deregister ghost container instances
+        cleanup_count = 0
+        for ghost in ghost_instances:
+            try:
+                print(
+                    f"Deregistering ghost container instance "
+                    f"{ghost['container_instance_arn']} "
+                    f"(EC2: {ghost['ec2_instance_id']}, reason: {ghost['reason']})"
+                )
+                ecs.deregister_container_instance(
+                    cluster=cluster_name,
+                    containerInstance=ghost["container_instance_arn"],
+                    force=True,
+                )
+                cleanup_count += 1
+            except Exception as e:
+                print(
+                    f"Failed to deregister ghost container instance "
+                    f"{ghost['container_instance_arn']}: {str(e)}"
+                )
+
+        print(f"Cleaned up {cleanup_count} ghost ECS registrations")
+
+    except Exception as e:
+        print(f"Error cleaning up ghost ECS registrations: {str(e)}")
 
 
 def get_premium_system_status() -> Dict[str, Any]:

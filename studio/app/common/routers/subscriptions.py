@@ -12,6 +12,7 @@ from studio.app.common.core.subscription.constants import (
     INVOICE_LIST_LIMIT,
     StripeCheckoutPaymentStatus,
     StripeCheckoutSessionStatus,
+    SubscriptionPlanIds,
     SubscriptionUserStatus,
 )
 from studio.app.common.core.subscription.stripe_service import (
@@ -27,7 +28,12 @@ from studio.app.common.core.utils.datetime_utils import (
 )
 from studio.app.common.db.database import get_db
 from studio.app.common.models.subscription import SubscriptionPlans
-from studio.app.common.schemas.checkouts import CheckoutSessionRequest
+from studio.app.common.models.user import User as UserModel
+from studio.app.common.schemas.checkouts import (
+    CheckoutSessionRequest,
+    CheckoutValidationResponse,
+    CheckoutValidationStatus,
+)
 from studio.app.common.schemas.subscriptions import (
     CancelSubscriptionResponse,
     CreateCheckoutSessionRequest,
@@ -429,12 +435,23 @@ async def create_checkout_session(
     return await CheckoutService.handle_checkout_session(db, request, user)
 
 
-@router.post("/checkout/validate-checkout-session", response_model=bool)
+@router.post(
+    "/checkout/validate-checkout-session", response_model=CheckoutValidationResponse
+)
 async def validate_checkout_session(
     request: CheckoutSessionRequest,
+    db: Session = Depends(get_db),
 ):
     """
-    Validate a Stripe checkout session ID
+    Validate a Stripe checkout session ID and verify database was
+    updated with premium subscription
+
+    Returns detailed status:
+    - "success": Payment succeeded and webhook updated database
+    - "payment_failed": Payment itself failed
+      (card declined, insufficient funds, etc.)
+    - "webhook_failed": Payment succeeded but webhook didn't update
+      database (internal error)
     """
     try:
         # Retrieve the session from Stripe
@@ -442,15 +459,82 @@ async def validate_checkout_session(
         session = stripe.checkout.Session.retrieve(request.session_id)
 
         # Check if the session is complete and paid
-        if (
+        if not (
             session.payment_status == StripeCheckoutPaymentStatus.PAID
             and session.status == StripeCheckoutSessionStatus.COMPLETE
         ):
-            logger.info(f"Checkout session {request.session_id} is valid")
-            return True
-        else:
-            logger.warning(f"Checkout session {request.session_id} is invalid")
-            return False
+            logger.warning(
+                f"Checkout session {request.session_id} is not complete/paid"
+            )
+            return CheckoutValidationResponse(
+                status=CheckoutValidationStatus.PAYMENT_FAILED,
+                message=(
+                    "Payment was not completed. Please check your payment "
+                    "information and try again."
+                ),
+            )
+
+        # Get customer email from session
+        customer_email = (
+            session.customer_details.email if session.customer_details else None
+        )
+        if not customer_email:
+            logger.error(f"No customer email found in session {request.session_id}")
+            return CheckoutValidationResponse(
+                status=CheckoutValidationStatus.WEBHOOK_FAILED,
+                message="An internal error occurred. Please contact support.",
+            )
+
+        # Find user by email
+        user = db.query(UserModel).filter(UserModel.email == customer_email).first()
+        if not user:
+            logger.error(f"No user found with email {customer_email}")
+            return CheckoutValidationResponse(
+                status=CheckoutValidationStatus.WEBHOOK_FAILED,
+                message="An internal error occurred. Please contact support.",
+            )
+
+        # Verify database was updated by webhook - check if user has
+        # active premium subscription
+        subscription = SubscriptionService.get_user_subscription(db, user.id)
+        if not subscription:
+            logger.warning(
+                f"Checkout session {request.session_id} is complete but no "
+                f"subscription found in database for user {user.id}. "
+                f"Webhook may have failed."
+            )
+            return CheckoutValidationResponse(
+                status=CheckoutValidationStatus.WEBHOOK_FAILED,
+                message=(
+                    "Payment was successful, but subscription activation "
+                    "is pending. Please contact support if this persists."
+                ),
+            )
+
+        # Verify it's a premium subscription (not free)
+        sub_data, plan_data = subscription
+        if plan_data.id == SubscriptionPlanIds.FREE:
+            logger.warning(
+                f"Checkout session {request.session_id} is complete but user "
+                f"{user.id} only has free subscription (plan_id={plan_data.id}). "
+                f"Webhook may have failed."
+            )
+            return CheckoutValidationResponse(
+                status=CheckoutValidationStatus.WEBHOOK_FAILED,
+                message=(
+                    "Payment was successful, but subscription activation "
+                    "is pending. Please contact support if this persists."
+                ),
+            )
+
+        logger.info(
+            f"Checkout session {request.session_id} is valid and database is updated "
+            f"with premium subscription (plan_id={plan_data.id}) for user {user.id}"
+        )
+        return CheckoutValidationResponse(
+            status=CheckoutValidationStatus.SUCCESS,
+            message="Payment successful! Your premium subscription is now active.",
+        )
 
     except stripe.error.StripeError as e:
         logger.error(f"Stripe error validating checkout session: {str(e)}")

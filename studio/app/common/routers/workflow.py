@@ -28,7 +28,13 @@ from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
 )
+from studio.app.common.routers.files import (
+    update_hdf5_structure,
+    update_image_shape,
+    update_mat_structure,
+)
 from studio.app.common.schemas.workflow import WorkflowWithResults
+from studio.app.const import ACCEPT_FILE_EXT, MetadataCacheFile
 from studio.app.dir_path import DIRPATH
 
 router = APIRouter(prefix="/workflow", tags=["workflow"])
@@ -241,6 +247,47 @@ async def import_sample_data(
             for filename in sample_data_subdir
         ]
         await asyncio.gather(*tasks)
+
+        # Generate metadata files for various file types and upload to S3
+
+        # TIFF files: .image_shape.json
+        tiff_files = [
+            p
+            for p in sample_data_subdir
+            if p.name.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value))
+        ]
+        if tiff_files:
+            for tiff_file in tiff_files:
+                update_image_shape(workspace_id, tiff_file.name)
+            await s3_controller.upload_input_data(
+                workspace_id, MetadataCacheFile.IMAGE_SHAPE
+            )
+
+        # HDF5 files: .hdf5_structure.json
+        hdf5_files = [
+            p
+            for p in sample_data_subdir
+            if p.name.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value))
+        ]
+        if hdf5_files:
+            for hdf5_file in hdf5_files:
+                update_hdf5_structure(workspace_id, hdf5_file.name)
+            await s3_controller.upload_input_data(
+                workspace_id, MetadataCacheFile.HDF5_STRUCTURE
+            )
+
+        # MATLAB files: .mat_structure.json
+        mat_files = [
+            p
+            for p in sample_data_subdir
+            if p.name.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value))
+        ]
+        if mat_files:
+            for mat_file in mat_files:
+                update_mat_structure(workspace_id, mat_file.name)
+            await s3_controller.upload_input_data(
+                workspace_id, MetadataCacheFile.MAT_STRUCTURE
+            )
 
         # ------------------------------------------------------------
         # Upload the output sample data to remote storage process.

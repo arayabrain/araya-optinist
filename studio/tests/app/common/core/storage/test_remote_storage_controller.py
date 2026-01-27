@@ -249,3 +249,53 @@ async def test_RemoteStorageController_download_experiment():
         assert os.path.isfile(
             test_data_output_experiment_yaml
         ), "download_experiment failed.."
+
+
+@pytest.mark.asyncio
+async def test_RemoteStorageController_list_input_data_objects():
+    """Test list_input_data_objects returns correct format."""
+    if not RemoteStorageController.is_available():
+        print("RemoteStorageController is not available, skip this test.")
+        return
+
+    input_file_name = "mouse2p_short_image.tiff"
+
+    # First upload a file to ensure there's something to list
+    async with RemoteStorageSimpleWriter(
+        remote_bucket_name
+    ) as remote_storage_controller:
+        await remote_storage_controller.upload_input_data(workspace_id, input_file_name)
+
+    # Test list_input_data_objects
+    async with RemoteStorageSimpleReader(
+        remote_bucket_name
+    ) as remote_storage_controller:
+        objects = await remote_storage_controller.list_input_data_objects(workspace_id)
+
+        # Verify the result is a list
+        assert isinstance(objects, list), "list_input_data_objects should return a list"
+
+        # Verify at least one object exists
+        assert (
+            len(objects) > 0
+        ), "list_input_data_objects should return at least one object"
+
+        # Verify the format of the returned objects
+        for obj in objects:
+            assert "filename" in obj, "Each object should have 'filename'"
+            assert "size" in obj, "Each object should have 'size'"
+            assert "last_modified" in obj, "Each object should have 'last_modified'"
+            assert isinstance(obj["filename"], str), "'filename' should be a string"
+            assert isinstance(obj["size"], int), "'size' should be an integer"
+
+        # Verify our uploaded file is in the list
+        filenames = [obj["filename"] for obj in objects]
+        assert (
+            input_file_name in filenames
+        ), f"Uploaded file '{input_file_name}' should be in the list"
+
+    # Cleanup
+    async with RemoteStorageSimpleWriter(
+        remote_bucket_name
+    ) as remote_storage_controller:
+        await remote_storage_controller.delete_input_data(workspace_id, input_file_name)

@@ -41,13 +41,16 @@ export interface PremiumAssignmentResult {
 export class RoutingService {
   private routingInfo: RoutingInfo | null = null
   private routingToken: string | null = null
+  private storedTier: UserTier | null = null
   private lastFetch: number = 0
   private readonly CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
   private readonly STORAGE_KEY = "routing_id"
+  private readonly TIER_STORAGE_KEY = "routing_tier"
 
   constructor() {
-    // Load token from localStorage on initialization
+    // Load token and tier from localStorage on initialization
     this.loadTokenFromStorage()
+    this.loadTierFromStorage()
   }
 
   /**
@@ -63,9 +66,10 @@ export class RoutingService {
       [RoutingHeaders.ROUTING_ID]: this.routingToken,
     }
 
-    // Include user tier header for ALB routing rules
-    if (this.routingInfo?.user_tier) {
-      headers[RoutingHeaders.USER_TIER] = this.routingInfo.user_tier
+    // Use routingInfo.user_tier if available, fall back to stored tier
+    const tier = this.routingInfo?.user_tier ?? this.storedTier
+    if (tier) {
+      headers[RoutingHeaders.USER_TIER] = tier
     }
 
     return headers
@@ -86,13 +90,18 @@ export class RoutingService {
    */
   updateRoutingInfo(user: UserDTO): void {
     const isPremium = this.isPremiumUser(user)
+    const userTier = isPremium ? UserTier.PREMIUM : UserTier.FREE
 
     this.routingInfo = {
       user_id: user.uid || "",
-      user_tier: isPremium ? UserTier.PREMIUM : UserTier.FREE,
+      user_tier: userTier,
       requires_premium_routing: isPremium,
       routing_headers: {}, // No longer client-controlled
     }
+
+    // Persist tier to localStorage
+    this.storedTier = userTier
+    this.saveTierToStorage(userTier)
 
     this.lastFetch = Date.now()
   }
@@ -103,8 +112,10 @@ export class RoutingService {
   clearRoutingInfo(): void {
     this.routingInfo = null
     this.routingToken = null
+    this.storedTier = null
     this.lastFetch = 0
     this.clearTokenFromStorage()
+    this.clearTierFromStorage()
   }
 
   /**
@@ -125,7 +136,7 @@ export class RoutingService {
    * Get current user tier
    */
   getUserTier(): UserTier | null {
-    return this.routingInfo?.user_tier || null
+    return this.routingInfo?.user_tier ?? this.storedTier ?? null
   }
 
   /**
@@ -188,6 +199,49 @@ export class RoutingService {
     } catch (e) {
       console.warn("Failed to clear routing ID from localStorage:", e)
     }
+  }
+
+  /**
+   * Load user tier from localStorage
+   */
+  private loadTierFromStorage(): void {
+    try {
+      const tier = localStorage.getItem(this.TIER_STORAGE_KEY)
+      if (tier && this.isValidUserTier(tier)) {
+        this.storedTier = tier as UserTier
+      }
+    } catch (e) {
+      console.warn("Failed to load user tier from localStorage:", e)
+    }
+  }
+
+  /**
+   * Save user tier to localStorage
+   */
+  private saveTierToStorage(tier: UserTier): void {
+    try {
+      localStorage.setItem(this.TIER_STORAGE_KEY, tier)
+    } catch (e) {
+      console.warn("Failed to save user tier to localStorage:", e)
+    }
+  }
+
+  /**
+   * Clear user tier from localStorage
+   */
+  private clearTierFromStorage(): void {
+    try {
+      localStorage.removeItem(this.TIER_STORAGE_KEY)
+    } catch (e) {
+      console.warn("Failed to clear user tier from localStorage:", e)
+    }
+  }
+
+  /**
+   * Validate that a string is a valid UserTier value
+   */
+  private isValidUserTier(value: string): value is UserTier {
+    return value === UserTier.PREMIUM || value === UserTier.FREE
   }
 }
 

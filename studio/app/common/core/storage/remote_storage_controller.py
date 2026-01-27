@@ -4,6 +4,7 @@ import shutil
 from abc import ABCMeta, abstractmethod
 from datetime import timedelta
 from enum import Enum
+from typing import Dict, List
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
@@ -373,6 +374,13 @@ class BaseRemoteStorageController(metaclass=ABCMeta):
         """
 
     @abstractmethod
+    def list_input_data_objects(self, workspace_id: str) -> List[Dict]:
+        """
+        List all input data objects in remote storage for a workspace.
+        Returns list of dicts with filename, size, last_modified.
+        """
+
+    @abstractmethod
     def download_all_experiments_metas(self, workspace_ids: list = None) -> bool:
         """
         download all experiment metadata from remote storage.
@@ -556,6 +564,9 @@ class RemoteStorageController(BaseRemoteStorageController):
 
     async def delete_input_data(self, workspace_id: str, filename: str) -> bool:
         return await self.__controller.delete_input_data(workspace_id, filename)
+
+    async def list_input_data_objects(self, workspace_id: str) -> List[Dict]:
+        return await self.__controller.list_input_data_objects(workspace_id)
 
     async def download_all_experiments_metas(self, workspace_ids: list = None) -> bool:
         """

@@ -293,10 +293,10 @@ async def delete(self, paths: List[str]) -> None:
 ```
 
 **Benefits:**
-- ✅ Real-time storage tracking during operations
-- ✅ No S3 scans during normal upload/delete
-- ✅ Atomic SQL operations prevent race conditions
-- ✅ Byte-accurate tracking of all changes
+- Real-time storage tracking during operations
+- No S3 scans during normal upload/delete
+- Atomic SQL operations prevent race conditions
+- Byte-accurate tracking of all changes
 
 ---
 
@@ -413,8 +413,8 @@ Page 10000: Memory = 100 KB (single page, previous GC'd)
 |--------|----------------|------------------|
 | Memory per page | Accumulates | Constant |
 | Total memory (10K pages) | ~100 MB | ~100 KB |
-| Paginator state | ✅ Kept in memory | ❌ No paginator |
-| Response history | ✅ Tracked | ❌ Not tracked |
+| Paginator state | Kept in memory | No paginator |
+| Response history | Tracked | Not tracked |
 | Continuation tokens | Automatic | Manual |
 | Garbage collection | After iteration | After each page |
 
@@ -650,6 +650,7 @@ async def _perform_full_scan_and_reset_delta(user_id: int):
 
 **Lock Name Scheme:**
 ```python
+# MySQL GET_LOCK uses string-based lock names (not PostgreSQL numeric advisory locks)
 ADVISORY_LOCK_NAMESPACE = 12345  # Defined in constants.py
 
 # Examples:
@@ -662,10 +663,10 @@ user_id = 999999 → lock_name = "storage_scan_12345_999999"
 ```
 
 **Benefits:**
-- ✅ Non-blocking lock (`GET_LOCK` with timeout=0 returns immediately)
-- ✅ Automatic cleanup (lock released when connection closes)
-- ✅ Per-user locking (user 1 and user 2 can scan concurrently)
-- ✅ Connection-level lock (released when connection terminates)
+- Non-blocking lock (`GET_LOCK` with timeout=0 returns immediately)
+- Automatic cleanup (lock released when connection closes)
+- Per-user locking (user 1 and user 2 can scan concurrently)
+- Connection-level lock (released when connection terminates)
 
 **Concurrency Example:**
 
@@ -890,7 +891,7 @@ BackgroundScheduler.add_job(
 )
 ```
 
-**⚠️ Multi-Worker Problem:**
+**Multi-Worker Problem:**
 
 When FastAPI runs with multiple workers (`--workers > 1`):
 - Each worker initializes its own BackgroundScheduler
@@ -915,11 +916,11 @@ For production deployments with multiple workers, **use cron instead of Backgrou
 
 #### Benefits
 
-✅ **No duplicate execution** - Jobs run once per schedule, not once per worker
-✅ **Independent of web processes** - Jobs continue even if FastAPI crashes
-✅ **Better observability** - Separate logs, easier to monitor
-✅ **Resource isolation** - Heavy jobs don't impact web request performance
-✅ **Easier scaling** - Web workers can scale independently of job execution
+- **No duplicate execution** - Jobs run once per schedule, not once per worker
+- **Independent of web processes** - Jobs continue even if FastAPI crashes
+- **Better observability** - Separate logs, easier to monitor
+- **Resource isolation** - Heavy jobs don't impact web request performance
+- **Easier scaling** - Web workers can scale independently of job execution
 
 #### Implementation
 
@@ -1126,12 +1127,12 @@ The Lambda is fully implemented and deployed via Terraform:
 - `infrastructure/terraform/storage_reconciliation_package/README.md` - Documentation
 
 **Key Features:**
-- ✅ **Batch processing** - 10 users at a time to prevent OOM
-- ✅ **True streaming** - Generator-based S3 scanning (constant memory)
-- ✅ **Distributed locks** - MySQL GET_LOCK prevents concurrent scans
-- ✅ **Rate limiting** - 0.5s delay between users
-- ✅ **Drift detection** - Logs warnings when drift exceeds 5% or 100MB
-- ✅ **Standalone** - No dependencies on Studio codebase
+- **Batch processing** - 10 users at a time to prevent OOM
+- **True streaming** - Generator-based S3 scanning (constant memory)
+- **Distributed locks** - MySQL GET_LOCK prevents concurrent scans
+- **Rate limiting** - 0.5s delay between users
+- **Drift detection** - Logs warnings when drift exceeds 5% or 100MB
+- **Standalone** - No dependencies on Studio codebase
 
 **Infrastructure:**
 ```hcl
@@ -1213,10 +1214,10 @@ aws logs filter-log-events \
 #### When to Use Each Approach
 
 **Use Lambda** (current implementation):
-- ✅ AWS deployments with Terraform
-- ✅ Want built-in monitoring and alarms
-- ✅ Prefer serverless architecture
-- ✅ Need quick deployment
+- AWS deployments with Terraform
+- Want built-in monitoring and alarms
+- Prefer serverless architecture
+- Need quick deployment
 
 **Use Cron** (documented alternative):
 - If running on-premise or non-AWS
@@ -1311,3 +1312,254 @@ async def test_streaming_with_large_dataset():
     memory_increase = mem_after - mem_before
     assert memory_increase < 200 * 1024 * 1024  # Less than 200 MB
 ```
+
+---
+
+## Storage Alerts System
+
+The storage alerts system monitors user storage usage and notifies users when they approach or exceed their storage quota.
+
+### Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                       Storage Alerts Architecture                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                         Backend APIs                               │  │
+│  │                                                                   │  │
+│  │  GET /storage-limit-alerts/me        → User's current alert       │  │
+│  │  GET /storage-limit-alerts/usage     → Detailed usage stats       │  │
+│  │  POST /storage-limit-alerts/refresh  → Force recalculate usage    │  │
+│  │  GET /storage-limit-alerts/limit-warning → Grace period warnings  │  │
+│  │  GET /storage-limit-alerts/all       → Admin: all user alerts     │  │
+│  │                                                                   │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                 │                                       │
+│                                 ▼                                       │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                      S3StorageMonitor                              │  │
+│  │                                                                   │  │
+│  │  - calculate_storage_alert_level()  → Determine alert severity    │  │
+│  │  - get_alert_message()              → Generate user message       │  │
+│  │  - format_bytes()                   → Human-readable sizes        │  │
+│  │                                                                   │  │
+│  │  Thresholds:                                                      │  │
+│  │  - CRITICAL_THRESHOLD = 100%  → Quota exceeded (danger)           │  │
+│  │  - DANGER_THRESHOLD   = 90%   → Approaching limit (warning)       │  │
+│  │                                                                   │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Alert Levels
+
+| Level | Threshold | UI Severity | User Message |
+|-------|-----------|-------------|--------------|
+| `danger` | >= 100% | error (red) | "Storage quota exceeded" |
+| `critical` | >= 90% | warning (orange) | "Approaching storage limit" |
+| (none) | < 90% | (no alert) | Normal usage |
+
+### Backend Implementation
+
+**File:** `studio/app/common/routers/storage_limit_alerts.py`
+
+#### Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/storage-limit-alerts/me` | GET | Get alert for current user |
+| `/storage-limit-alerts/usage` | GET | Get detailed usage statistics |
+| `/storage-limit-alerts/refresh` | POST | Force refresh usage calculation |
+| `/storage-limit-alerts/limit-warning` | GET | Get grace period warning |
+| `/storage-limit-alerts/limit-warning/check` | GET | Quick warning status check |
+| `/storage-limit-alerts/all` | GET | Admin: get all user alerts |
+
+#### Alert Response Schema
+
+```python
+# GET /storage-limit-alerts/me response
+{
+    "has_alert": True,
+    "alert": {
+        "user_id": "firebase_uid_123",
+        "alert_level": "critical",  # or "danger"
+        "storage_usage_bytes": 9500000000,
+        "storage_quota_bytes": 10000000000,
+        "storage_usage_percent": 95.0,
+        "timestamp": "2025-01-15T10:30:00Z",
+        "message": "You are using 95% of your storage quota (9.5 GB of 10 GB)",
+        "user_name": "John Doe",
+        "user_email": "john@example.com"
+    }
+}
+```
+
+#### Usage Response Schema
+
+```python
+# GET /storage-limit-alerts/usage response
+{
+    "storage_usage_bytes": 5000000000,
+    "storage_usage_formatted": "5.0 GB",
+    "storage_quota_bytes": 10000000000,
+    "storage_quota_formatted": "10.0 GB",
+    "storage_usage_percent": 50.0,
+    "alert_level": None,  # or "critical" or "danger"
+    "thresholds": {
+        "critical": 90,
+        "danger": 100
+    }
+}
+```
+
+### Limit Warning System
+
+For users who downgrade from premium or have subscription lapses, the system tracks grace period warnings.
+
+#### Warning Types
+
+| Type | Trigger | Grace Period | Action |
+|------|---------|--------------|--------|
+| `storage` | Storage exceeds free limit | 30 days | Data deletion after grace |
+| `workflow` | Workflow count exceeds limit | 30 days | Restrict new workflows |
+
+#### Limit Warning Response
+
+```python
+# GET /storage-limit-alerts/limit-warning response
+{
+    "has_alert": True,
+    "alert_type": "storage",
+    "days_remaining": 15,
+    "excess_data_bytes": 5000000000,
+    "excess_data_gb": 5.0,
+    "storage_usage_bytes": 10000000000,
+    "storage_usage_gb": 10.0,
+    "storage_quota_bytes": 5000000000,
+    "storage_quota_gb": 5.0,
+    "subscription_end_date": "2025-01-01T00:00:00Z",
+    "grace_end_date": "2025-01-31T00:00:00Z",
+    "deletion_date": "2025-01-31T00:00:00Z",
+    "message": "Your storage (10 GB) exceeds the free plan limit (5 GB). Please reduce usage or upgrade within 15 days."
+}
+```
+
+### Frontend Implementation
+
+#### Components
+
+**StorageAlert Component**
+
+**File:** `frontend/src/components/common/StorageAlert.tsx`
+
+Displays storage alert banner with usage progress bar.
+
+```typescript
+interface StorageAlertProps {
+  showUsageDetails?: boolean  // Show detailed usage breakdown
+  compact?: boolean           // Compact mode for headers
+  onClose?: () => void        // Dismiss callback
+}
+```
+
+Features:
+- Progress bar showing usage percentage
+- Color-coded by severity (red/orange/blue)
+- Refresh button to recalculate
+- Dismissible with X button
+- Detailed view with quota breakdown
+
+**useStorageAlert Hook**
+
+**File:** `frontend/src/hooks/useStorageAlert.ts`
+
+React hook for storage alert state management.
+
+```typescript
+const { alert, hasAlert, loading, checkStorageAlert } = useStorageAlert({
+  autoCheck: true,           // Enable automatic checking
+  checkInterval: 5 * 60000,  // Check every 5 minutes
+  showSnackbar: false,       // Show toast notifications
+})
+```
+
+#### API Functions
+
+**File:** `frontend/src/api/storage/StorageAlerts.ts`
+
+| Function | Purpose |
+|----------|---------|
+| `getMyStorageAlertApi()` | Get current user's alert |
+| `getMyStorageUsageApi()` | Get detailed usage stats |
+| `refreshStorageUsageApi()` | Force refresh calculation |
+| `getMyLimitAlertApi()` | Get limit/grace period warning |
+| `checkLimitAlertStatusApi()` | Quick limit warning check |
+| `getAllStorageAlertsApi()` | Admin: all users (admin only) |
+
+### Alert Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 1. User logs in or navigates to workspace                                │
+└─────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 2. Frontend calls: GET /storage-limit-alerts/me                          │
+│    (via useStorageAlert hook with autoCheck)                             │
+└─────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 3. Backend calculates current usage                                      │
+│    - Uses cached value from incremental tracking                         │
+│    - Compares to user's storage_quota_bytes                              │
+│    - Determines alert level based on thresholds                          │
+└─────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 4. Frontend renders StorageAlert component if has_alert = true           │
+│    - Shows appropriate severity (error/warning)                          │
+│    - Displays usage percentage and quota                                 │
+│    - Offers refresh and dismiss actions                                  │
+└─────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 5. Periodic refresh (every 5 minutes)                                    │
+│    - Hook automatically re-checks                                        │
+│    - Updates alert state if changed                                      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Integration with Run Workflow
+
+The storage alert is also checked before running workflows to prevent users from exceeding their quota.
+
+**File:** `frontend/src/components/Workspace/FlowChart/Buttons/RunButtons.tsx`
+
+```typescript
+// Before running workflow, check storage limit
+const { hasAlert: hasLimitAlert, alert: limitAlert } = useLimitAlert()
+
+if (hasLimitAlert && limitAlert?.alert_type === 'storage') {
+  // Show warning dialog before proceeding
+  // User can choose to continue or cancel
+}
+```
+
+### Files Summary
+
+| File | Purpose |
+|------|---------|
+| `studio/app/common/routers/storage_limit_alerts.py` | API endpoints |
+| `studio/app/common/core/cloud/s3_storage_monitor.py` | Alert calculation logic |
+| `frontend/src/components/common/StorageAlert.tsx` | Alert UI component |
+| `frontend/src/hooks/useStorageAlert.ts` | Alert state hook |
+| `frontend/src/api/storage/StorageAlerts.ts` | API client functions |
+| `frontend/src/components/common/LimitAlert.tsx` | Limit warning component |
+| `frontend/src/hooks/useLimitAlert.ts` | Limit warning hook |

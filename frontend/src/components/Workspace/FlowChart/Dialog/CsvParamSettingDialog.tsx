@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from "react"
+import { memo, useCallback, useEffect, useState } from "react"
 import { useDispatch, useSelector } from "react-redux"
 
 import SettingsIcon from "@mui/icons-material/Settings"
@@ -17,6 +17,11 @@ import {
   IconButton,
 } from "@mui/material"
 
+import {
+  FILE_TREE_TYPE_SET,
+  syncInputFileApi,
+  SyncStatus,
+} from "api/files/Files"
 import { PresentationalCsvPlot } from "components/Workspace/Visualize/Plot/CsvPlot"
 import { getCsvData } from "store/slice/DisplayData/DisplayDataActions"
 import {
@@ -25,6 +30,8 @@ import {
   selectCsvDataIsInitialized,
   selectCsvDataIsPending,
 } from "store/slice/DisplayData/DisplayDataSelectors"
+import { getFilesTree } from "store/slice/FilesTree/FilesTreeAction"
+import { selectFileSyncStatus } from "store/slice/FilesTree/FilesTreeSelectors"
 import { NodeIdProps } from "store/slice/FlowElement/FlowElementType"
 import {
   selectCsvInputNodeParamSetHeader,
@@ -46,6 +53,7 @@ export const CsvParamSettingDialog = memo(function CsvParamSettingDialog({
   disabled = false,
 }: CsvParamSettingDialogProps) {
   const [open, setOpen] = useState(false)
+  const [isSyncing, setIsSyncing] = useState(false)
   // OK時のみStoreに反映させるため一時的な値をuseStateで保持しておく。
   // useStateの初期値はselectorで取得。
   const [setHeader, setSetHeader] = useState(
@@ -58,6 +66,11 @@ export const CsvParamSettingDialog = memo(function CsvParamSettingDialog({
     useSelector(selectCsvInputNodeParamTranspose(nodeId)),
   )
   const dispatch = useDispatch<AppDispatch>()
+  const workspaceId = useSelector(selectCurrentWorkspaceId)
+  const syncStatus = useSelector(
+    selectFileSyncStatus(FILE_TREE_TYPE_SET.CSV, filePath),
+  )
+
   const onClickCancel = () => {
     setOpen(false)
   }
@@ -71,16 +84,49 @@ export const CsvParamSettingDialog = memo(function CsvParamSettingDialog({
     )
   }
 
+  const handleOpenDialog = useCallback(async () => {
+    if (!workspaceId) return
+
+    // If file is remote-only, sync it first
+    if (syncStatus === SyncStatus.REMOTE) {
+      setIsSyncing(true)
+      try {
+        await syncInputFileApi(workspaceId, filePath)
+        // Refresh file tree to update sync status
+        dispatch(
+          getFilesTree({ workspaceId, fileType: FILE_TREE_TYPE_SET.CSV }),
+        )
+      } catch (error) {
+        console.error("Failed to sync file:", error)
+        setIsSyncing(false)
+        return
+      }
+      setIsSyncing(false)
+    }
+    setOpen(true)
+  }, [workspaceId, syncStatus, filePath, dispatch])
+
   return (
     <>
-      <IconButton
-        onClick={() => setOpen(true)}
-        color={"primary"}
-        disabled={disabled}
-        size="small"
+      <Box
+        sx={{
+          display: "inline-flex",
+          flexDirection: "column",
+          alignItems: "center",
+        }}
       >
-        <SettingsIcon />
-      </IconButton>
+        <IconButton
+          onClick={handleOpenDialog}
+          color={"primary"}
+          disabled={disabled || isSyncing}
+          size="small"
+        >
+          <SettingsIcon />
+        </IconButton>
+        {isSyncing && (
+          <LinearProgress sx={{ width: "100%", height: 2, mt: -0.5 }} />
+        )}
+      </Box>
       <Dialog open={open} onClose={onClickCancel}>
         <DialogTitle>Csv Setting</DialogTitle>
         <DialogContent dividers>

@@ -1,6 +1,8 @@
 import os
 import shutil
+from datetime import datetime
 from glob import glob
+from typing import Dict, List
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
@@ -150,6 +152,29 @@ class MockStorageController(BaseRemoteStorageController):
         os.remove(input_data_remote_path)
 
         return True
+
+    async def list_input_data_objects(self, workspace_id: str) -> List[Dict]:
+        """List all input data objects in mock storage for a workspace."""
+        workspace_input_path = self._make_workspace_input_path(workspace_id)
+
+        if not os.path.isdir(workspace_input_path):
+            return []
+
+        objects = []
+        for filename in os.listdir(workspace_input_path):
+            file_path = os.path.join(workspace_input_path, filename)
+            if os.path.isfile(file_path):
+                stat = os.stat(file_path)
+                objects.append(
+                    {
+                        "filename": filename,
+                        "size": stat.st_size,
+                        "last_modified": datetime.fromtimestamp(
+                            stat.st_mtime
+                        ).isoformat(),
+                    }
+                )
+        return objects
 
     async def download_all_experiments_metas(self, workspace_ids: list = None) -> bool:
         # ----------------------------------------

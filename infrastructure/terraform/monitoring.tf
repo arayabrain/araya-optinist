@@ -428,12 +428,13 @@ resource "aws_cloudwatch_dashboard" "main" {
             ["CWAgent", "cpu_usage_iowait", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "I/O Wait %", "yAxis" : "left" }],
             ["CWAgent", "system_load1", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Load Average (1 min)", "yAxis" : "right" }],
             ["CWAgent", "system_load5", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Load Average (5 min)", "yAxis" : "right" }],
-            ["CWAgent", "system_load15", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Load Average (15 min)", "yAxis" : "right" }]
+            ["CWAgent", "system_load15", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Load Average (15 min)", "yAxis" : "right" }],
+            ["ECS/ContainerInsights", "RunningTaskCount", "ServiceName", aws_ecs_service.background.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Background Tasks", "stat" : "Average", "yAxis" : "right" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
-          title   = "EC2 Performance: CPU, I/O Wait & Load Average"
+          title   = "EC2 Performance & Background Service"
           period  = 300
           yAxis = {
             left = {
@@ -442,7 +443,7 @@ resource "aws_cloudwatch_dashboard" "main" {
               max   = 100
             }
             right = {
-              label = "Load Average"
+              label = "Load / Tasks"
               min   = 0
             }
           }
@@ -459,32 +460,6 @@ resource "aws_cloudwatch_dashboard" "main" {
                 yAxis = "left"
               }
             ]
-          }
-        }
-      },
-      # Row 4: Storage Reconciliation & System Health
-      {
-        type   = "metric"
-        x      = 0
-        y      = 18
-        width  = 12
-        height = 6
-        properties = {
-          metrics = [
-            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Invocations", "stat" : "Sum" }],
-            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Errors", "stat" : "Sum", "color" : "#d62728" }],
-            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Duration (ms)", "stat" : "Average", "yAxis" : "right" }],
-            ["AWS/Lambda", "Throttles", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Throttles", "stat" : "Sum", "color" : "#ff7f0e" }]
-          ]
-          view    = "timeSeries"
-          stacked = false
-          region  = "ap-northeast-1"
-          title   = "Storage Reconciliation Lambda"
-          period  = 3600
-          yAxis = {
-            right = {
-              label = "Duration (ms)"
-            }
           }
         }
       },
@@ -594,7 +569,7 @@ resource "aws_cloudwatch_dashboard" "main" {
           }
         }
       },
-      # Row 6: Background Jobs & Storage Reconciliation
+      # Row 6: Background Jobs & User Manager
       {
         type   = "metric"
         x      = 0
@@ -603,35 +578,25 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Storage Reconciliation Duration (ms)", "yAxis" : "left" }],
-            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Storage Reconciliation Runs", "yAxis" : "right", "stat" : "Sum" }],
-            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.storage_reconciliation.function_name, { "label" : "Storage Reconciliation Errors", "yAxis" : "right", "stat" : "Sum" }],
+            ["ECS/ContainerInsights", "CpuUtilized", "ServiceName", aws_ecs_service.background.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Background Service CPU", "yAxis" : "left" }],
+            ["ECS/ContainerInsights", "MemoryUtilized", "ServiceName", aws_ecs_service.background.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Background Service Memory (MB)", "yAxis" : "right" }],
             ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.common_user_manager.function_name, { "label" : "User Manager Duration (ms)", "yAxis" : "left" }],
             ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.common_user_manager.function_name, { "label" : "User Manager Errors", "yAxis" : "right", "stat" : "Sum" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
-          title   = "Background Jobs: Lambda Performance"
+          title   = "Background Jobs Performance"
           period  = 3600
           yAxis = {
             left = {
-              label = "Duration (ms)"
+              label = "Utilization"
               min   = 0
             }
             right = {
-              label = "Count"
+              label = "Count / Memory"
               min   = 0
             }
-          }
-          annotations = {
-            horizontal = [
-              {
-                label = "Storage Reconciliation Timeout (15 min)"
-                value = 900000
-                yAxis = "left"
-              }
-            ]
           }
         }
       },
@@ -649,7 +614,9 @@ resource "aws_cloudwatch_dashboard" "main" {
             ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_cleanup.function_name, { "label" : "Premium Cleanup Duration (ms)" }],
             ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_cleanup.function_name, { "label" : "Premium Cleanup Errors", "yAxis" : "right" }],
             ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.free_cleanup.function_name, { "label" : "Free Cleanup Duration (ms)" }],
-            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.free_cleanup.function_name, { "label" : "Free Cleanup Errors", "yAxis" : "right" }]
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.free_cleanup.function_name, { "label" : "Free Cleanup Errors", "yAxis" : "right" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.cost_tracker.function_name, { "label" : "Cost Tracker Duration (ms)" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.cost_tracker.function_name, { "label" : "Cost Tracker Errors", "yAxis" : "right" }]
           ]
           view    = "timeSeries"
           stacked = false
@@ -666,6 +633,44 @@ resource "aws_cloudwatch_dashboard" "main" {
               min   = 0
             }
           }
+        }
+      },
+      # Row 7: Alarm Status - All Alarms at a Glance
+      {
+        type   = "alarm"
+        x      = 0
+        y      = 36
+        width  = 24
+        height = 4
+        properties = {
+          title = "Alarm Status Overview"
+          alarms = [
+            # Background Service Alarms
+            aws_cloudwatch_metric_alarm.background_task_stopped.arn,
+            aws_cloudwatch_metric_alarm.background_cpu_high.arn,
+            aws_cloudwatch_metric_alarm.background_memory_high.arn,
+            # Premium Tier Alarms
+            aws_cloudwatch_metric_alarm.premium_cost_high.arn,
+            aws_cloudwatch_metric_alarm.premium_cpu_high.arn,
+            aws_cloudwatch_metric_alarm.premium_memory_high.arn,
+            # Autoscaling Alarms
+            aws_cloudwatch_metric_alarm.cpu_high.arn,
+            aws_cloudwatch_metric_alarm.memory_high.arn,
+            aws_cloudwatch_metric_alarm.cpu_low.arn,
+            aws_cloudwatch_metric_alarm.memory_low.arn,
+            aws_cloudwatch_metric_alarm.load_average_high.arn,
+            aws_cloudwatch_metric_alarm.high_iowait.arn,
+            # RDS Alarms
+            aws_cloudwatch_metric_alarm.rds_cpu_high.arn,
+            aws_cloudwatch_metric_alarm.rds_connections_high.arn,
+            aws_cloudwatch_metric_alarm.rds_storage_low.arn,
+            # EFS Alarms
+            aws_cloudwatch_metric_alarm.efs_burst_credit_balance.arn,
+            aws_cloudwatch_metric_alarm.efs_throughput_high.arn,
+            # ALB Alarms
+            aws_cloudwatch_metric_alarm.alb_5xx_errors.arn,
+            aws_cloudwatch_metric_alarm.alb_response_time_high.arn
+          ]
         }
       }
     ]
