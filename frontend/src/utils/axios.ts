@@ -5,7 +5,7 @@ import axiosLibrary, {
 } from "axios"
 
 import { refreshTokenApi } from "api/auth/Auth"
-import { BASE_URL } from "const/API"
+import { API_TIMEOUT, BASE_URL } from "const/API"
 import { RoutingHeaders } from "const/Subscription"
 import { getExToken, getToken, logout, saveToken } from "utils/auth/AuthUtils"
 import {
@@ -22,7 +22,7 @@ interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
 
 const axios = axiosLibrary.create({
   baseURL: BASE_URL,
-  timeout: 600000,
+  timeout: API_TIMEOUT.DEFAULT,
   headers: {
     Accept: "application/json",
     "Content-Type": "application/json",
