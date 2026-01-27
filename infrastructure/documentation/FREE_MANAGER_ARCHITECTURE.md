@@ -279,9 +279,9 @@ class FreeUserActivityMiddleware:
 
 ### 2. Free Manager Lambda
 
-**File:** `studio/config/terraform/free_manager_package/free_manager.py`
+**File:** `infrastructure/terraform/free_manager_package/free_manager.py`
 
-**Handler:** `handler(event, context)` (lines 86-118)
+**Function:** `handler()` - Main Lambda handler supporting dual triggers
 
 ```python
 def handler(event, context):
@@ -302,7 +302,7 @@ def handler(event, context):
         return handle_scheduled_monitoring(event, context)
 ```
 
-**Scheduled Monitoring:** `handle_scheduled_monitoring(event, context)` (lines 121-176)
+**Function:** `handle_scheduled_monitoring()` - Periodic monitoring and scaling
 
 ```python
 def handle_scheduled_monitoring(event, context):
@@ -340,7 +340,7 @@ def handle_scheduled_monitoring(event, context):
     return {"statusCode": 200, "body": json.dumps(result)}
 ```
 
-**Scale and Rebalance:** `scale_and_rebalance(active_user_count, max_instances)` (lines 333-597)
+**Function:** `scale_and_rebalance()` - Scale ECS service and rebalance users
 
 ```python
 def scale_and_rebalance(active_user_count: int, max_instances: int):
@@ -411,7 +411,7 @@ def scale_and_rebalance(active_user_count: int, max_instances: int):
         set_scaling_lock(False)
 ```
 
-**ASG Scaling:** `scale_service(cluster_name, service_name, desired_count)` (lines 599-645)
+**Function:** `scale_service()` - Scale ASG and ECS service
 
 ```python
 def scale_service(cluster_name: str, service_name: str, desired_count: int):
@@ -444,9 +444,9 @@ def scale_service(cluster_name: str, service_name: str, desired_count: int):
 
 ### 3. Multi-Instance Rebalancing
 
-**File:** `studio/config/terraform/free_manager_package/free_manager.py`
+**File:** `infrastructure/terraform/free_manager_package/free_manager.py`
 
-**Function:** `rebalance_idle_users_multi(available_instances)` (lines 648-776)
+**Function:** `rebalance_idle_users_multi()` - Distribute users across all instances
 
 ```python
 def rebalance_idle_users_multi(available_instances: List[str]) -> List[str]:
@@ -533,9 +533,9 @@ def rebalance_idle_users_multi(available_instances: List[str]) -> List[str]:
 
 ### 4. Workflow Protection
 
-**File:** `studio/config/terraform/free_manager_package/free_user_utils.py`
+**File:** `infrastructure/terraform/free_manager_package/free_user_utils.py`
 
-**Function:** `migrate_user_to_instance(user_id, new_instance_id)` (lines 211-258)
+**Function:** `migrate_user_to_instance()` - Atomic migration with workflow protection
 
 ```python
 def migrate_user_to_instance(user_id: str, new_instance_id: str) -> bool:
@@ -572,7 +572,7 @@ def migrate_user_to_instance(user_id: str, new_instance_id: str) -> bool:
                 return False
 ```
 
-**Idle User Detection:** `get_idle_users_for_instance(instance_id)` (lines 108-140)
+**Function:** `get_idle_users_for_instance()` - Get idle users safe to migrate
 
 ```python
 def get_idle_users_for_instance(instance_id: str) -> List[str]:
@@ -649,7 +649,7 @@ def set_scaling_lock(in_progress: bool):
 **Solution:** Retry logic with timeout:
 
 ```python
-# Embedded in scale_and_rebalance() function (lines 399-476)
+# Embedded in scale_and_rebalance() function
 # Note: Code sets max_wait_time = 1020s (17 min) but Lambda timeout is 900s (15 min)
 # Effective timeout is 15 minutes (Lambda timeout)
 max_wait_time = 1020  # 17 minutes in code
@@ -1112,28 +1112,28 @@ aws ecs describe-services \
 
 ### Free Manager Lambda
 
-| Function | Line | Purpose |
-|----------|------|---------|
-| `handler()` | 86 | Main Lambda handler (dual triggers) |
-| `handle_scheduled_monitoring()` | 121 | 5-minute monitoring loop |
-| `handle_asg_event()` | 179 | ASG lifecycle event handler |
-| `scale_and_rebalance()` | 333 | Main scaling and rebalancing logic |
-| `scale_service()` | 599 | Scale ASG and ECS service |
-| `rebalance_idle_users_multi()` | 648 | Multi-instance rebalancing algorithm |
-| `is_scaling_in_progress()` | 273 | Check CloudWatch metric lock |
-| `set_scaling_lock()` | 310 | Set/clear CloudWatch metric lock |
-| `publish_active_user_metric()` | 1011 | Publish ActiveLogins metric |
+| Function | Purpose |
+|----------|---------|
+| `handler()` | Main Lambda handler (dual triggers) |
+| `handle_scheduled_monitoring()` | 5-minute monitoring loop |
+| `handle_asg_event()` | ASG lifecycle event handler |
+| `scale_and_rebalance()` | Main scaling and rebalancing logic |
+| `scale_service()` | Scale ASG and ECS service |
+| `rebalance_idle_users_multi()` | Multi-instance rebalancing algorithm |
+| `is_scaling_in_progress()` | Check CloudWatch metric lock |
+| `set_scaling_lock()` | Set/clear CloudWatch metric lock |
+| `publish_active_user_metric()` | Publish ActiveLogins metric |
 
 ### Free User Utils
 
-| Function | Line | Purpose |
-|----------|------|---------|
-| `count_active_free_users()` | 143 | Count users with recent activity |
-| `get_users_per_instance()` | 178 | Get user distribution map |
-| `get_idle_users_for_instance()` | 108 | Get idle users on specific instance |
-| `migrate_user_to_instance()` | 211 | Atomic user migration with workflow protection |
-| `is_user_idle()` | 67 | Check if user is safe to migrate |
-| `is_distribution_balanced()` | 258 | Verify even distribution (max-min ≤ 1) |
+| Function | Purpose |
+|----------|---------|
+| `count_active_free_users()` | Count users with recent activity |
+| `get_users_per_instance()` | Get user distribution map |
+| `get_idle_users_for_instance()` | Get idle users on specific instance |
+| `migrate_user_to_instance()` | Atomic user migration with workflow protection |
+| `is_user_idle()` | Check if user is safe to migrate |
+| `is_distribution_balanced()` | Verify even distribution (max-min <= 1) |
 
 ---
 

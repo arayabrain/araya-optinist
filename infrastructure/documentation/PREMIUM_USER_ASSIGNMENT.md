@@ -206,9 +206,9 @@ graph TB
 
 ### 1. User Assignment Handler
 
-**File:** `studio/config/terraform/premium_manager_package/premium_manager.py`
+**File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 
-**Function:** `assign_premium_user(user_id, event)` (lines 1748-2100)
+**Function:** `assign_premium_user()` - Main assignment handler with 5-tier priority
 
 **Priority Evaluation Logic:**
 
@@ -266,7 +266,7 @@ if not instance_to_use:
 
 ### 2. Standby Pool Management
 
-**Function:** `create_and_stop_standby_instance()` (lines 1024-1200)
+**Function:** `create_and_stop_standby_instance()` - Create instance, stop immediately for pool
 
 **Key Features:**
 
@@ -320,7 +320,7 @@ if not instance_to_use:
    register_standby_instance(instance_id)
    ```
 
-**Function:** `start_standby_instance(instance_id)` (lines 1215-1290)
+**Function:** `start_standby_instance()` - Start standby, remove from pool
 
 ```python
 def start_standby_instance(instance_id: str):
@@ -351,7 +351,7 @@ def start_standby_instance(instance_id: str):
 
 ### 3. Orphaned Instance Registration
 
-**Function:** `register_orphaned_stopped_instances()` (called at assignment start)
+**Function:** `register_orphaned_stopped_instances()` - Auto-register AWS stopped instances
 
 **Purpose:** Auto-register stopped instances that exist in AWS but not in standby database
 
@@ -383,7 +383,7 @@ def register_orphaned_stopped_instances():
 
 ### 4. Background Migration System
 
-**Function:** `process_shared_instance_optimization()` (lines 3343-3500)
+**Function:** `process_shared_instance_optimization()` - Migrate users to dedicated instances
 
 **Trigger:** Called after user assignment completes when `needs_scaling=True`
 
@@ -972,48 +972,48 @@ aws ec2 describe-instances --filters \
 
 ### Assignment & Provisioning
 
-| Function | Line | Purpose |
-|----------|------|---------|
-| `assign_premium_user()` | 1748 | Main assignment handler with 5-tier priority |
-| `try_reserve_instance()` | 997 | Atomic instance reservation (prevents races) |
-| `check_instance_readiness_with_retry()` | 2666 | Verify instance + ECS task ready |
-| `get_assigned_users_for_instance()` | 346 | Query users assigned to instance |
+| Function | Purpose |
+|----------|---------|
+| `assign_premium_user()` | Main assignment handler with 5-tier priority |
+| `try_reserve_instance()` | Atomic instance reservation (prevents races) |
+| `check_instance_readiness_with_retry()` | Verify instance + ECS task ready |
+| `get_assigned_users_for_instance()` | Query users assigned to instance |
 
 ### Standby Pool Management
 
-| Function | Line | Purpose |
-|----------|------|---------|
-| `create_and_stop_standby_instance()` | 1024 | Create instance, stop immediately for pool |
-| `start_standby_instance()` | 1215 | Start standby, remove from pool |
-| `get_available_standby_instances()` | 770 | Query standby pool from database |
-| `register_orphaned_stopped_instances()` | 823 | Auto-register stopped instances as standby |
-| `get_standby_count()` | 600 | Count current standby pool size |
+| Function | Purpose |
+|----------|---------|
+| `create_and_stop_standby_instance()` | Create instance, stop immediately for pool |
+| `start_standby_instance()` | Start standby, remove from pool |
+| `get_available_standby_instances()` | Query standby pool from database |
+| `register_orphaned_stopped_instances()` | Auto-register stopped instances as standby |
+| `get_standby_count()` | Count current standby pool size |
 
 ### Migration & Scaling
 
-| Function | Line | Purpose |
-|----------|------|---------|
-| `process_shared_instance_optimization()` | 3343 | Migrate users from autoscaling pool or shared instances |
-| `migrate_user_to_dedicated_instance()` | 2802 | Migrate single user to target instance |
-| `scale_premium_instances_if_needed()` | 2380 | Trigger scaling if under-capacity |
-| `update_premium_service_desired_count()` | 2723 | Sync ECS desired count to running instances |
+| Function | Purpose |
+|----------|---------|
+| `process_shared_instance_optimization()` | Migrate users from autoscaling pool or shared instances |
+| `migrate_user_to_dedicated_instance()` | Migrate single user to target instance |
+| `scale_premium_instances_if_needed()` | Trigger scaling if under-capacity |
+| `update_premium_service_desired_count()` | Sync ECS desired count to running instances |
 
 ### Locking & Concurrency
 
-| Function | Line | Purpose |
-|----------|------|---------|
-| `try_reserve_instance_transaction()` | 961 | Database transaction lock for reservation |
-| `register_pending_standby_creation()` | 666 | Register intent to create standby (prevents dupes) |
-| `count_pending_standby_creations()` | 616 | Count in-progress standby creations |
-| `is_premium_scaling_in_progress()` | 1311 | Check CloudWatch metric lock |
+| Function | Purpose |
+|----------|---------|
+| `try_reserve_instance_transaction()` | Database transaction lock for reservation |
+| `register_pending_standby_creation()` | Register intent to create standby (prevents dupes) |
+| `count_pending_standby_creations()` | Count in-progress standby creations |
+| `is_premium_scaling_in_progress()` | Check CloudWatch metric lock |
 
 ### Monitoring & Cleanup
 
-| Function | Line | Purpose |
-|----------|------|---------|
-| `publish_premium_metrics()` | 1376 | Publish CloudWatch metrics |
-| `cleanup_failed_standby_instances()` | 3256 | Remove DB entries for terminated instances |
-| `handle_scheduled_monitoring()` | 1429 | 15-minute monitoring loop |
+| Function | Purpose |
+|----------|---------|
+| `publish_premium_metrics()` | Publish CloudWatch metrics |
+| `cleanup_failed_standby_instances()` | Remove DB entries for terminated instances |
+| `handle_scheduled_monitoring()` | 15-minute monitoring loop |
 
 ---
 

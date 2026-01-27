@@ -1,53 +1,37 @@
-# Workflow Tracking and Dataview Publishing Enhancements
+# Dataview Publishing Architecture
 
 ## Executive Summary
-- **Workflow Tracking** = Monitor active workflows for free tier users to prevent unsafe migrations
-- **Dataview Sync Status** = Track publishing state and local availability of published experiments
-- **Optimistic Locking** = Prevent concurrent modification conflicts during publish operations
-- **S3 Download on Demand** = Automatically fetch published experiments from S3 when accessed
+
+- **Three-state sync model** tracks publishing state: pending, synced, error
+- **Optimistic locking** prevents concurrent modification conflicts during publish
+- **S3 as source of truth** stores all published experiments durably
+- **Lazy download** automatically fetches experiments from S3 when accessed on different instances
+
+---
 
 ## Key Architectural Principles
 
-1. **Safe Free Tier Migration**
-   - Track active workflow count per free tier user
-   - Free Manager NEVER migrates users with active workflows (count > 0)
-   - Prevents workflow interruption and data corruption
-
-2. **Three-State Sync Model**
+1. **Three-State Sync Model**
    - **pending**: Published but not yet synced to local storage
    - **synced**: Available locally (either uploaded or downloaded)
    - **error**: Sync failed (upload/download problem)
 
-3. **Optimistic Locking for Data Integrity**
+2. **Optimistic Locking for Data Integrity**
    - Version field on ExperimentRecord prevents concurrent modifications
    - Atomic increment on version during updates
    - Retry logic handles version conflicts gracefully
 
-4. **Lazy Loading from S3**
+3. **Lazy Loading from S3**
    - Published experiments stored in S3 as source of truth
    - Local instances download on-demand when accessed
    - Transparent to user with proper status codes (202, 503)
+
+---
 
 ## Architecture Overview
 
 ```mermaid
 graph TB
-    subgraph "Workflow Tracking Flow"
-        A[Workflow Start] --> B[increment_workflow_count]
-        B --> C[Update free_user_assignments]
-        C --> D{active_workflow_count++}
-
-        E[Workflow Complete] --> F[decrement_workflow_count]
-        F --> G[Update free_user_assignments]
-        G --> H{active_workflow_count--}
-
-        D --> I[Free Manager Check]
-        H --> I
-        I --> J{count > 0?}
-        J -->|Yes| K[Keep User on Instance]
-        J -->|No| L[Safe to Migrate]
-    end
-
     subgraph "Dataview Publishing Flow"
         M[User Publishes] --> N[Update with Optimistic Lock]
         N --> O{Version Match?}
@@ -68,10 +52,6 @@ graph TB
         W -->|synced| Z[Return Experiment Data]
     end
 
-    style B fill:#90EE90
-    style F fill:#87CEEB
-    style K fill:#FFB6C1
-    style L fill:#DDA0DD
     style Q fill:#FFA07A
     style X fill:#FFD700
     style Y fill:#FF6347
@@ -80,114 +60,29 @@ graph TB
 
 ### Key Constraints Satisfied
 
-1. **No Workflow Interruption** - Free Manager only migrates idle users
-2. **Data Consistency** - Optimistic locking prevents publish conflicts
-3. **S3 as Source of Truth** - Published experiments always available via S3
-4. **User Experience** - Clear status codes and retry guidance for pending experiments
+1. **Data Consistency** - Optimistic locking prevents publish conflicts
+2. **S3 as Source of Truth** - Published experiments always available via S3
+3. **User Experience** - Clear status codes and retry guidance for pending experiments
 
 ### Responsibility Matrix
 
-| Responsibility                        | Workflow Tracking   | Dataview Publishing | Free Manager       |
-|---------------------------------------|---------------------|---------------------|--------------------|
-| Track active workflows                | ✅ Exclusive        | ❌ Never            | ❌ Never           |
-| Update workflow count                 | ✅ Atomic increment | ❌ Never            | ❌ Never           |
-| Check migration safety                | ❌ Never            | ❌ Never            | ✅ Reads count     |
-| Publish experiments                   | ❌ Never            | ✅ With lock        | ❌ Never           |
-| Track sync status                     | ❌ Never            | ✅ Exclusive        | ❌ Never           |
-| Upload to S3                          | ❌ Never            | ✅ After publish    | ❌ Never           |
-| Download from S3                      | ❌ Never            | ✅ On access        | ❌ Never           |
-| Handle version conflicts              | ❌ Never            | ✅ With retry       | ❌ Never           |
+| Responsibility                | Dataview Publishing |
+|-------------------------------|---------------------|
+| Publish experiments           | With optimistic lock|
+| Track sync status             | Exclusive           |
+| Upload to S3                  | After publish       |
+| Download from S3              | On access           |
+| Handle version conflicts      | With retry          |
 
 ---
 
 ## Implementation Details
 
-### 1. Workflow Tracking Module
-
-**File:** `studio/app/common/core/workflow/workflow_tracking.py` (NEW)
-
-**Core Functions:**
-
-```python
-def increment_workflow_count(user_id: Optional[int]) -> None:
-    """
-    Atomically increment active_workflow_count for free tier user.
-
-    Called when workflow starts.
-    Uses SQLAlchemy update() for atomic operation (prevents race conditions).
-
-    Updates:
-    - active_workflow_count += 1
-    - last_workflow_start = NOW()
-    """
-```
-
-```python
-def decrement_workflow_count(user_id: Optional[int]) -> None:
-    """
-    Atomically decrement active_workflow_count for free tier user.
-
-    Called when workflow completes (success or failure).
-    Uses func.greatest(0, count - 1) to ensure count never goes negative.
-
-    Updates:
-    - active_workflow_count = max(0, count - 1)
-    - last_workflow_end = NOW()
-    """
-```
-
-**Integration Points:**
-
-- **workflow_runner.py** (lines 74-79): Increments count in `__init__`
-- **studio/app/common/core/snakemake/snakemake_executor.py** (lines 80-91): Decrements count after workflow execution
-
-**Race Condition Prevention:**
-
-```python
-# Atomic increment using SQLAlchemy's update()
-stmt = (
-    update(FreeUserAssignment)
-    .where(FreeUserAssignment.user_id == user_id)
-    .values(
-        active_workflow_count=FreeUserAssignment.active_workflow_count + 1,
-        last_workflow_start=func.now(),
-    )
-)
-```
-
----
-
-### 2. Free User Assignment Model
-
-**File:** `studio/app/common/models/free_user.py` (NEW)
-
-**Schema:**
-
-| Field                    | Type      | Description                                      |
-|--------------------------|-----------|--------------------------------------------------|
-| user_id                  | VARCHAR   | Primary key, user identifier                     |
-| instance_id              | VARCHAR   | ECS instance ID                                  |
-| assigned_at              | TIMESTAMP | When user was assigned to instance               |
-| last_activity            | TIMESTAMP | Last user activity (updated by heartbeat)        |
-| active_workflow_count    | INTEGER   | Number of active workflows (default: 0)          |
-| last_workflow_start      | TIMESTAMP | Timestamp of last workflow start                 |
-| last_workflow_end        | TIMESTAMP | Timestamp of last workflow completion            |
-| migration_count          | INTEGER   | Number of migrations (for analytics)             |
-| last_migration           | TIMESTAMP | Timestamp of last migration                      |
-| logged_out_at            | TIMESTAMP | Explicit logout timestamp                        |
-
-**Key Features:**
-- `active_workflow_count` prevents unsafe migration (if > 0, user has running workflows)
-- Timestamps enable analytics and debugging
-- Migration tracking for capacity planning
-
----
-
-### 3. Dataview Publishing with Sync Status
+### 1. Dataview Publishing with Sync Status
 
 **File:** `studio/app/common/routers/dataview.py`
 
-**Publish Endpoint** (lines 275-377):
+**Endpoint:** `POST /publish/{id}/{flag}` - Publish/unpublish with optimistic locking
 
 ```python
 @router.post("/publish/{id}/{flag}")
@@ -229,7 +124,7 @@ if result.rowcount == 0:
     # Retry or raise 409 Conflict
 ```
 
-**Public Access Endpoint** (lines 194-272):
+**Endpoint:** `GET /{workspace_id}/{unique_id}/reproduce` - Public access with lazy S3 download
 
 ```python
 @public_router.get("/{workspace_id}/{unique_id}/reproduce")
@@ -250,8 +145,8 @@ async def public_reproduce_experiment(
 **Status Code Flow:**
 
 1. **Check Local Existence:**
-   - If experiment exists locally → Check sync_status
-   - If not exists → Download from S3
+   - If experiment exists locally -> Check sync_status
+   - If not exists -> Download from S3
 
 2. **sync_status = "pending":**
    - Return HTTP 202 with Retry-After header
@@ -268,7 +163,7 @@ async def public_reproduce_experiment(
 
 ---
 
-### 4. Experiment Record Model Updates
+### 2. Experiment Record Model Updates
 
 **File:** `studio/app/common/models/experiment.py`
 
@@ -306,11 +201,11 @@ class LocalSyncStatus(str, Enum):
 
 ---
 
-### 5. Frontend Integration
+### 3. Frontend Integration
 
 **File:** `frontend/src/components/Dataview/WorkflowDetailsView.tsx`
 
-**State Management** (lines 66-71):
+**State Management:**
 
 ```typescript
 const [syncStatus, setSyncStatus] = useState<{
@@ -321,7 +216,7 @@ const [syncStatus, setSyncStatus] = useState<{
 const [retryCount, setRetryCount] = useState(0)
 ```
 
-**Auto-Retry Logic** (lines 108-122):
+**Auto-Retry Logic:**
 
 ```typescript
 if (status === 202) {
@@ -360,50 +255,6 @@ if (status === 202) {
 ---
 
 ## Flow Diagrams
-
-### Workflow Tracking Flow
-
-```
-┌──────────────────────────────────────────────────────────┐
-│ 1. User Starts Workflow                                 │
-│    → WorkflowRunner.__init__() called                   │
-│    → increment_workflow_count(user_id)                  │
-└──────────────────────────────────────────────────────────┘
-                         ↓
-┌──────────────────────────────────────────────────────────┐
-│ 2. Atomic DB Update (SQLAlchemy)                        │
-│    → UPDATE free_user_assignments                       │
-│       SET active_workflow_count = active_workflow_count + 1,│
-│           last_workflow_start = NOW()                   │
-│       WHERE user_id = ?                                 │
-└──────────────────────────────────────────────────────────┘
-                         ↓
-┌──────────────────────────────────────────────────────────┐
-│ 3. Workflow Runs (Snakemake Execution)                  │
-│    → User is "protected" from migration                 │
-│    → Free Manager sees active_workflow_count > 0        │
-└──────────────────────────────────────────────────────────┘
-                         ↓
-┌──────────────────────────────────────────────────────────┐
-│ 4. Workflow Completes (Success or Failure)              │
-│    → snakemake_execute() completion handler             │
-│    → decrement_workflow_count(user_id)                  │
-└──────────────────────────────────────────────────────────┘
-                         ↓
-┌──────────────────────────────────────────────────────────┐
-│ 5. Atomic DB Update (with Safety)                       │
-│    → UPDATE free_user_assignments                       │
-│       SET active_workflow_count = GREATEST(0, count - 1),│
-│           last_workflow_end = NOW()                     │
-│       WHERE user_id = ?                                 │
-└──────────────────────────────────────────────────────────┘
-                         ↓
-┌──────────────────────────────────────────────────────────┐
-│ 6. Free Manager Can Migrate User (if idle)             │
-│    → active_workflow_count = 0                          │
-│    → No active workflows, safe to migrate               │
-└──────────────────────────────────────────────────────────┘
-```
 
 ### Dataview Publishing Flow
 
@@ -490,51 +341,7 @@ if (status === 202) {
 
 ## Edge Case Handling
 
-### 1. Concurrent Workflow Operations (Race Condition)
-
-**Problem:** Two workflows start/end simultaneously for same user.
-
-**Solution:** Atomic SQL operations with database-level locking:
-```python
-# Database executes this atomically
-UPDATE free_user_assignments
-SET active_workflow_count = active_workflow_count + 1
-WHERE user_id = ?
-```
-
-**Guarantee:** No race condition possible - database handles concurrency
-
-### 2. Workflow Crashes Without Cleanup
-
-**Problem:** Workflow crashes before calling decrement_workflow_count().
-
-**Solution:** Common User Manager reconciliation (IMPLEMENTED):
-- Runs every 10 minutes via scheduled Lambda
-- Checks for stale active_workflow_count (>30 minutes old)
-- Resets active_workflow_count = 0 for both free and premium users
-- See: `infrastructure/terraform/common_user_manager_package/common_user_manager.py`
-
-**Implementation:**
-```python
-def recover_stale_workflow_counts() -> Dict[str, int]:
-    """Reset stale workflow counts (>30 min old) for both free and premium users."""
-    # Recover free user workflow counts
-    free_sql = """
-        UPDATE free_user_assignments
-        SET active_workflow_count = 0
-        WHERE active_workflow_count > 0
-        AND last_workflow_start < DATE_SUB(NOW(), INTERVAL 30 MINUTE)
-    """
-    # Recover premium user workflow counts
-    premium_sql = """
-        UPDATE premium_user_assignments
-        SET active_workflow_count = 0
-        WHERE active_workflow_count > 0
-        AND last_workflow_start < DATE_SUB(NOW(), INTERVAL 30 MINUTE)
-    """
-```
-
-### 3. Concurrent Publish Operations
+### 1. Concurrent Publish Operations
 
 **Problem:** Two users try to publish same experiment simultaneously.
 
@@ -550,7 +357,7 @@ UPDATE ... WHERE id = ? AND version = 6  # User B succeeds
 
 **Guarantee:** At most 3 retries, then 409 Conflict returned
 
-### 4. S3 Upload Fails After Publishing
+### 2. S3 Upload Fails After Publishing
 
 **Problem:** Experiment published (publish_status=1) but S3 upload fails.
 
@@ -561,7 +368,7 @@ UPDATE ... WHERE id = ? AND version = 6  # User B succeeds
 
 **User Experience:** "Publishing in progress" message, auto-retry
 
-### 5. S3 Download Fails on Access
+### 3. S3 Download Fails on Access
 
 **Problem:** User tries to access published experiment, S3 download fails.
 
@@ -579,7 +386,7 @@ if not await s3_controller.download_experiment(workspace_id, unique_id):
 
 **User Experience:** Error message with manual retry button
 
-### 6. Never-Ending Auto-Retry in Frontend
+### 4. Never-Ending Auto-Retry in Frontend
 
 **Problem:** Frontend retries forever if experiment never syncs.
 
@@ -598,31 +405,6 @@ if (retryCount < 10) {
 ---
 
 ## Database Schema Changes
-
-### Migration Required
-
-**Table:** `free_user_assignments` (NEW)
-
-```sql
-CREATE TABLE free_user_assignments (
-    user_id VARCHAR(255) PRIMARY KEY,
-    instance_id VARCHAR(20) NOT NULL,
-    assigned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_activity TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    active_workflow_count INTEGER NOT NULL DEFAULT 0
-        COMMENT 'Number of active workflows running for this user',
-    last_workflow_start TIMESTAMP NULL
-        COMMENT 'Timestamp of last workflow start',
-    last_workflow_end TIMESTAMP NULL
-        COMMENT 'Timestamp of last workflow completion',
-    migration_count INTEGER NOT NULL DEFAULT 0
-        COMMENT 'Number of times user has been migrated between instances',
-    last_migration TIMESTAMP NULL
-        COMMENT 'Timestamp of last migration event',
-    logged_out_at TIMESTAMP NULL
-        COMMENT 'Timestamp when user explicitly logged out'
-);
-```
 
 **Table:** `experiment_record` (ALTER)
 
@@ -663,68 +445,25 @@ AWS_REGION                  # AWS region (e.g., us-east-1)
 
 ## Key Functions Reference
 
-### Workflow Tracking
+### Backend
 
-**In workflow_tracking.py:**
-- `increment_workflow_count(user_id)` - Called on workflow start
-- `decrement_workflow_count(user_id)` - Called on workflow completion
-- `get_active_workflow_count(user_id)` - Query current count
-
-### Dataview Publishing
-
-**In dataview.py:**
-- `publish_dataview_records(id, flag)` - Publish with optimistic lock (lines 276-377)
-- `public_reproduce_experiment(workspace_id, unique_id)` - Public access with S3 download (lines 196-271)
-
-**In dataview_services.py:**
-- `bulk_publish_dataview_records(user_id, ids, flag)` - Bulk publish with sync status
+| Function | Purpose |
+|----------|---------|
+| `publish_dataview_records()` | Publish with optimistic lock |
+| `public_reproduce_experiment()` | Public access with S3 download |
+| `bulk_publish_dataview_records()` | Bulk publish with sync status |
 
 ### Frontend
 
-**In WorkflowDetailsView.tsx:**
-- Auto-retry logic (lines 108-122)
-- Pending/error state handling (lines 104-133)
-
----
-
-## Testing Considerations
-
-### Unit Tests
-
-**New Test Files:**
-- `studio/tests/app/common/core/workflow/test_workflow_tracking.py` (163 lines, 11 tests) - Tests increment/decrement/race conditions
-- `studio/tests/app/common/routers/test_dataview_publish.py` (285 lines, 9 tests) - Tests optimistic locking scenarios
-
-**Key Test Cases:**
-1. Concurrent workflow start/end (race condition)
-2. Optimistic lock version conflict
-3. S3 download failure handling
-4. Sync status transitions (pending → synced → error)
-
-### Integration Tests
-
-**Scenarios:**
-1. Publish experiment → Upload to S3 → Access from different instance
-2. Concurrent publish from two users → One succeeds, one retries
-3. Workflow tracking during Free Manager migration decision
+| Component | Purpose |
+|-----------|---------|
+| `WorkflowDetailsView.tsx` | Handle 202/503 status codes with auto-retry |
 
 ---
 
 ## Monitoring and Logging
 
-### Workflow Tracking Logs
-
-**Location:** `/aws/lambda/backend-app` (CloudWatch)
-
-**Key Log Messages:**
-```
-WORKFLOW START: {workflow_name} (ID: {unique_id}, User: {user_id})
-Incremented workflow count for user {user_id} (free tier workflow started)
-WORKFLOW COMPLETED: {workflow_name} completed in {duration}s
-Decremented workflow count for user {user_id} (free tier workflow completed)
-```
-
-### Dataview Publishing Logs
+### CloudWatch Logs
 
 **Key Log Messages:**
 ```
@@ -739,28 +478,20 @@ Experiment {workspace_id}/{unique_id} is pending sync, returning 202
 
 | Metric                          | Description                              | Alert Threshold     |
 |---------------------------------|------------------------------------------|---------------------|
-| active_workflow_count_total     | Sum across all free tier users           | > 100 (capacity)    |
 | publish_version_conflict_rate   | % of publish attempts with version clash | > 10%               |
 | s3_download_failure_rate        | % of S3 downloads that fail              | > 5%                |
 | pending_sync_duration_avg       | Avg time experiments stay in "pending"   | > 5 minutes         |
 
 ---
 
-## Summary of Changes
+## Files Reference
 
-### Files Modified
-- `studio/app/common/core/workflow/workflow_runner.py` - Add workflow tracking calls (lines 74-79)
-- `studio/app/common/core/snakemake/snakemake_executor.py` - Decrement workflow count (lines 80-91)
-- `studio/app/common/routers/dataview.py` - Optimistic locking + S3 download (lines 194-377)
+### Modified
+- `studio/app/common/routers/dataview.py` - Optimistic locking + S3 download
 - `studio/app/common/core/dataview/dataview_services.py` - Bulk publish with sync status
-- `studio/app/common/models/experiment.py` - Add local_sync_status + version fields (lines 46-63)
+- `studio/app/common/models/experiment.py` - Add local_sync_status + version fields
 - `frontend/src/components/Dataview/WorkflowDetailsView.tsx` - Handle 202/503 status codes
 
-### Files Added
-- `studio/app/common/core/workflow/workflow_tracking.py` (NEW) - Workflow count management
-- `studio/app/common/models/free_user.py` (NEW) - Free user assignment model
+### Added
 - `studio/app/common/schemas/dataview.py` - LocalSyncStatus enum
-- `studio/tests/app/common/core/workflow/test_workflow_tracking.py` (NEW) - 11 unit tests
-- `studio/tests/app/common/routers/test_dataview_publish.py` (NEW) - 9 publish tests
 - `studio/alembic/versions/a5b9c8d7e6f5_add_sync_logout_and_versioning.py` - Database migration
-- `studio/alembic/versions/f801f8250020_create_free_user_tracking_system.py` - Database migration
