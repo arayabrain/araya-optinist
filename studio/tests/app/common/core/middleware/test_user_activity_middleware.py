@@ -227,6 +227,14 @@ class TestCacheThrottling:
 class TestUserTierDetection:
     """Test user tier detection"""
 
+    def setup_method(self):
+        """Clear tier cache before each test to ensure isolation"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            invalidate_user_tier_cache,
+        )
+
+        invalidate_user_tier_cache(TEST_UID)
+
     def test_get_user_id_and_tier_free_user(self):
         """Test detecting free tier user"""
         from studio.app.common.core.middleware.user_activity_middleware import (
