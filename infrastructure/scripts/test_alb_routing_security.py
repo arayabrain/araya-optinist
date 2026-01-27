@@ -55,6 +55,10 @@ from typing import Optional, Tuple
 
 import requests
 
+# Add infrastructure directory to path for aws_constants import
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from aws_constants import SubscriptionType  # noqa: E402
+
 # ANSI colors
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -69,7 +73,7 @@ except ImportError:
     generate_jwt_tokens = None
 
 
-def get_test_tokens(user_tier: str = "premium") -> Tuple[str, str, str]:
+def get_test_tokens(user_tier: str = SubscriptionType.PREMIUM) -> Tuple[str, str, str]:
     """Generate Firebase tokens for testing"""
     if not generate_jwt_tokens:
         raise RuntimeError("Cannot import get_jwt_tokens module")
@@ -113,14 +117,14 @@ def get_test_tokens(user_tier: str = "premium") -> Tuple[str, str, str]:
     for u in test_users:
         email = u.get("email", "").lower()
         if (
-            user_tier == "premium"
-            and "premium" in email
+            user_tier == SubscriptionType.PREMIUM
+            and SubscriptionType.PREMIUM in email
             and "over" not in email
             and "expire" not in email
         ):
             user = u
             break
-        elif user_tier == "free" and "free" in email:
+        elif user_tier == SubscriptionType.FREE and SubscriptionType.FREE in email:
             user = u
             break
 
@@ -205,7 +209,7 @@ class JWTRoutingTests:
                 return False
 
             # Premium users should have routing ID
-            if self.test_user_tier == "premium":
+            if self.test_user_tier == SubscriptionType.PREMIUM:
                 if not routing_id:
                     self.print_fail("Missing x-routing-id header for premium user")
                     return False
@@ -418,7 +422,7 @@ def main():
     )
     parser.add_argument(
         "--user-tier",
-        default=os.environ.get("TEST_USER_TIER", "premium"),
+        default=os.environ.get("TEST_USER_TIER", SubscriptionType.PREMIUM),
         help="User tier",
     )
     parser.add_argument(
