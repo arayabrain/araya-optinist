@@ -9,10 +9,10 @@ This document describes the security enhancement for ALB (Application Load Balan
 - **After:** Backend-issued non-reversible routing IDs derived from HMAC-SHA256
 
 **Key Benefits:**
-- ✅ Prevents UID exposure to clients (privacy compliance)
-- ✅ Prevents header spoofing (cannot forge HMAC without SECRET_KEY)
-- ✅ Prevents unauthorized premium instance access
-- ✅ Immediate tier change responsiveness (webhook-triggered cache invalidation)
+- Prevents UID exposure to clients (privacy compliance)
+- Prevents header spoofing (cannot forge HMAC without SECRET_KEY)
+- Prevents unauthorized premium instance access
+- Immediate tier change responsiveness (webhook-triggered cache invalidation)
 
 ---
 
@@ -148,7 +148,7 @@ routing_id = HMAC-SHA256(uid, SECRET_KEY).hex()[:16]
 4. Logs security event
 5. ALB won't match anyway (wrong routing_id for their JWT)
 
-**Result:** ❌ Attack fails
+**Result:** Attack fails
 
 ---
 
@@ -162,7 +162,7 @@ routing_id = HMAC-SHA256(uid, SECRET_KEY).hex()[:16]
 3. ALB routes to wrong instance (no data access due to JWT mismatch)
 4. Security event logged
 
-**Result:** ❌ Attack fails
+**Result:** Attack fails
 
 ---
 
@@ -177,7 +177,7 @@ routing_id = HMAC-SHA256(uid, SECRET_KEY).hex()[:16]
 4. Client cache updated (routing_id removed)
 5. Immediate routing change (no delay)
 
-**Result:** ❌ Attack fails
+**Result:** Attack fails
 
 ---
 
@@ -297,7 +297,7 @@ def handle_subscription_deleted(subscription_data: Dict, db: Session):
 
 ## Security Guarantees
 
-### 1. UID Privacy ✅
+### 1. UID Privacy
 
 **Guarantee:** Client never sees UID
 
@@ -308,7 +308,7 @@ def handle_subscription_deleted(subscription_data: Dict, db: Session):
 
 ---
 
-### 2. Header Spoofing Prevention ✅
+### 2. Header Spoofing Prevention
 
 **Guarantee:** Client cannot forge routing_id
 
@@ -319,7 +319,7 @@ def handle_subscription_deleted(subscription_data: Dict, db: Session):
 
 ---
 
-### 3. Immediate Tier Changes ✅
+### 3. Immediate Tier Changes
 
 **Guarantee:** Subscription changes reflect immediately
 
@@ -330,7 +330,7 @@ def handle_subscription_deleted(subscription_data: Dict, db: Session):
 
 ---
 
-### 4. JWT as Source of Truth ✅
+### 4. JWT as Source of Truth
 
 **Guarantee:** Authentication always validated
 
@@ -351,9 +351,9 @@ def handle_subscription_deleted(subscription_data: Dict, db: Session):
 - No caching needed (fast enough for every request)
 
 **Database Queries:**
-- Without cache: 1 query per request ❌ Too high
-- With cache: 1 query per user every 5 minutes ✅ Acceptable
-- With invalidation: Queries only on cache miss or tier change ✅ Optimal
+- Without cache: 1 query per request - Too high
+- With cache: 1 query per user every 5 minutes - Acceptable
+- With invalidation: Queries only on cache miss or tier change - Optimal
 
 **Memory Footprint:**
 ```
@@ -417,14 +417,14 @@ Total: ~50 bytes per user
 
 ## Success Criteria
 
-- ✅ **No UID exposure** - Client never sees Firebase UID in any header or response
-- ✅ **No header spoofing** - Routing ID cannot be forged without SECRET_KEY
-- ✅ **Immediate cache invalidation** - Subscription changes reflect in <1 second
-- ✅ **Backend validation** - Routing ID mismatch detected and logged
-- ✅ **Performance** - HMAC generation <1ms, cache hit rate >90%
-- ✅ **ALB routing** - Premium users correctly routed to dedicated instances
-- ✅ **Clean architecture** - No Lambda@Edge, no complex infrastructure
-- ✅ **JWT-centric** - Reuses existing Firebase JWT validation
+- **No UID exposure** - Client never sees Firebase UID in any header or response
+- **No header spoofing** - Routing ID cannot be forged without SECRET_KEY
+- **Immediate cache invalidation** - Subscription changes reflect in <1 second
+- **Backend validation** - Routing ID mismatch detected and logged
+- **Performance** - HMAC generation <1ms, cache hit rate >90%
+- **ALB routing** - Premium users correctly routed to dedicated instances
+- **Clean architecture** - No Lambda@Edge, no complex infrastructure
+- **JWT-centric** - Reuses existing Firebase JWT validation
 
 ---
 

@@ -1115,6 +1115,54 @@ def release_instance_reservation(instance_id: str, user_id: int):
         print(f"Error releasing reservation: {str(e)}")
 
 
+@with_transaction
+def try_reserve_instance_for_migration_transaction(
+    connection, instance_id: str, user_id: int
+) -> bool:
+    """
+    Reserve instance for migration using database-level locking.
+    Returns True if successful, False if instance already has users.
+    """
+    with connection.cursor() as cursor:
+        # Lock ALL rows for this instance
+        cursor.execute(
+            """SELECT user_id, is_standby FROM premium_user_assignments
+               WHERE instance_id = %s FOR UPDATE""",
+            (instance_id,),
+        )
+        existing = cursor.fetchall()
+
+        # Check for real user assignments (not standby)
+        real_users = [
+            a
+            for a in existing
+            if a.get("is_standby", 0) == 0 and a.get("user_id") is not None
+        ]
+
+        if real_users:
+            print(f"Instance {instance_id} already has {len(real_users)} user(s)")
+            return False
+
+        # Clean up standby entries
+        cursor.execute(
+            "DELETE FROM premium_user_assignments "
+            "WHERE instance_id = %s AND is_standby = 1",
+            (instance_id,),
+        )
+
+        print(f"Reserved instance {instance_id} for migration of user {user_id}")
+        return True
+
+
+def try_reserve_instance_for_migration(instance_id: str, user_id: int) -> bool:
+    """Wrapper with error handling"""
+    try:
+        return try_reserve_instance_for_migration_transaction(instance_id, user_id)
+    except Exception as e:
+        print(f"Failed to reserve instance {instance_id} for migration: {str(e)}")
+        return False
+
+
 def create_and_stop_standby_instance():
     """
     Create instance and immediately stop it for standby use.
@@ -1725,6 +1773,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     }
                 ),
             }
+
+        # Handle fix_shared_flags action (one-time data cleanup)
+        if event.get("action") == "fix_shared_flags":
+            print("Running is_shared flag cleanup...")
+            result = fix_incorrect_is_shared_flags()
+            return {"statusCode": 200, "body": json.dumps(result)}
 
         # Handle scheduled monitoring events
         if (
@@ -3003,6 +3057,13 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
         )
         return False
 
+    # Reserve target instance first using database-level locking
+    if not try_reserve_instance_for_migration(new_instance_id, user_id):
+        print(
+            f"Cannot migrate user {user_id}: instance {new_instance_id} not available"
+        )
+        return False
+
     elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
 
     try:
@@ -3076,7 +3137,7 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                     cursor.execute(
                         """UPDATE premium_user_assignments
                            SET instance_id = %s, target_group_arn = %s,
-                               last_state_check = NOW()
+                               is_shared = 0, last_state_check = NOW()
                            WHERE user_id = %s""",
                         (new_instance_id, new_target_group_arn, user_id),
                     )
@@ -3095,8 +3156,8 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
 
                     # Update RDS assignment
                     cursor.execute(
-                        """UPDATE premium_user_assignments SET instance_id = %s,
-                        last_state_check = NOW()
+                        """UPDATE premium_user_assignments
+                           SET instance_id = %s, is_shared = 0, last_state_check = NOW()
                            WHERE user_id = %s""",
                         (new_instance_id, user_id),
                     )
@@ -3708,16 +3769,24 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                 if not available_instances:
                     break
 
-                new_instance_id = available_instances.pop(0)
-                if migrate_user_to_dedicated_instance(user_id, new_instance_id):
-                    migrations_performed += 1
-                    print(
-                        f"Optimized: Migrated user {user_id} to "
-                        f"dedicated instance {new_instance_id}"
-                    )
-                else:
-                    # Return instance to available list if migration failed
-                    available_instances.append(new_instance_id)
+                # Try instances until one succeeds (handles race conditions
+                # where concurrent Lambdas may have claimed instances)
+                migration_successful = False
+                while available_instances and not migration_successful:
+                    new_instance_id = available_instances.pop(0)
+
+                    if migrate_user_to_dedicated_instance(user_id, new_instance_id):
+                        migrations_performed += 1
+                        migration_successful = True
+                        print(
+                            f"Optimized: Migrated user {user_id} to "
+                            f"dedicated instance {new_instance_id}"
+                        )
+                    else:
+                        print(f"Instance {new_instance_id} unavailable, trying next...")
+
+                if not migration_successful:
+                    print(f"Could not migrate user {user_id}: no available instances")
 
         print(
             f"Shared instance optimization complete: "
@@ -3734,6 +3803,46 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
     except Exception as e:
         print(f" Error during shared instance optimization: {str(e)}")
         return {"error": str(e), "migrations_performed": 0}
+
+
+@with_transaction
+def fix_incorrect_is_shared_flags(connection) -> Dict[str, Any]:
+    """
+    Fix users incorrectly marked as is_shared=1 who are alone on their instance.
+
+    This handles users who were migrated to dedicated instances but still have
+    is_shared=1, which causes them to be flagged for migration in an infinite loop.
+    """
+    with connection.cursor() as cursor:
+        # Find users with is_shared=1 who are the only active user on their instance
+        cursor.execute(
+            """
+            SELECT pa.user_id, pa.instance_id
+            FROM premium_user_assignments pa
+            WHERE pa.is_shared = 1 AND pa.status = 'active' AND pa.is_standby = 0
+              AND pa.instance_id != 'autoscaling-pool'
+              AND (SELECT COUNT(*) FROM premium_user_assignments pa2
+                   WHERE pa2.instance_id = pa.instance_id
+                   AND pa2.status = 'active' AND pa2.is_standby = 0) = 1
+        """
+        )
+        users_to_fix = cursor.fetchall()
+
+        fixed_users = []
+        for user in users_to_fix:
+            cursor.execute(
+                "UPDATE premium_user_assignments SET is_shared = 0 WHERE user_id = %s",
+                (user["user_id"],),
+            )
+            fixed_users.append(
+                {"user_id": user["user_id"], "instance_id": user["instance_id"]}
+            )
+            print(
+                f"Fixed is_shared flag for user {user['user_id']} "
+                f"on instance {user['instance_id']}"
+            )
+
+        return {"fixed_count": len(users_to_fix), "fixed_users": fixed_users}
 
 
 @with_transaction

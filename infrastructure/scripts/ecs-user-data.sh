@@ -14,6 +14,27 @@ echo ECS_INSTANCE_ATTRIBUTES='{"tier":"${tier}"}' >> /etc/ecs/ecs.config
 yum update -y
 yum install -y amazon-ssm-agent mysql amazon-efs-utils nc mysql-client git docker amazon-cloudwatch-agent awscli
 
+# Setup swap as memory safety net (defense-in-depth for OOM prevention)
+# This provides a buffer before OOM killer activates, giving workflows
+# a chance to complete during temporary memory spikes
+echo "$(date): Setting up swap space"
+SWAP_SIZE_MB=32768  # 32 GB swap
+SWAP_FILE=/swapfile
+if [ ! -f "$SWAP_FILE" ]; then
+    dd if=/dev/zero of=$SWAP_FILE bs=1M count=$SWAP_SIZE_MB status=progress
+    chmod 600 $SWAP_FILE
+    mkswap $SWAP_FILE
+    swapon $SWAP_FILE
+    echo "$SWAP_FILE swap swap defaults 0 0" >> /etc/fstab
+    # Set low swappiness (10) - only use swap under real memory pressure
+    # This prevents unnecessary swapping during normal operation
+    echo "vm.swappiness=20" >> /etc/sysctl.conf
+    sysctl vm.swappiness=20
+    echo "$(date): Swap setup complete ($${SWAP_SIZE_MB}MB, swappiness=20)"
+else
+    echo "$(date): Swap file already exists"
+fi
+
 # Start SSM agent
 if ! systemctl is-active --quiet amazon-ssm-agent; then
     systemctl enable amazon-ssm-agent

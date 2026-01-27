@@ -74,13 +74,13 @@ graph TB
 
 | Responsibility                | Premium Manager         | Premium Cleanup       |
 |-------------------------------|-------------------------|-----------------------|
-| Stop/start instances          | ✅ Exclusive ownership  | ❌ Never               |
-| Update ECS service count      | ✅ Exclusive ownership  | ❌ Never               |
-| Delete stale DB assignments   | ❌ Never                | ✅ Exclusive ownership |
-| Delete orphaned ALB resources | ❌ Never                | ✅ Exclusive ownership |
-| Reconcile instance states     | ❌ Never                | ✅ Exclusive ownership |
-| User assignment/release (API) | ✅ Real-time operations | ❌ Never               |
-| Scheduled monitoring          | ✅ Every 15 minutes     | ✅ Every 60 minutes    |
+| Stop/start instances          | Yes - Exclusive  | No               |
+| Update ECS service count      | Yes - Exclusive  | No               |
+| Delete stale DB assignments   | No                | Yes - Exclusive |
+| Delete orphaned ALB resources | No                | Yes - Exclusive |
+| Reconcile instance states     | No                | Yes - Exclusive |
+| User assignment/release (API) | Yes - Real-time | No               |
+| Scheduled monitoring          | Yes - Every 15 min     | Yes - Every 60 min    |
 
 ---
 
@@ -88,9 +88,9 @@ graph TB
 
 ### 1. Premium Manager Enhancements
 
-**File:** `studio/config/terraform/premium_manager_package/premium_manager.py`
+**File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 
-**Scheduled Monitoring Handler** (lines 1429-1525):
+**Function:** `handle_scheduled_monitoring()` - Main 15-min monitoring loop
 
 ```python
 def handle_scheduled_monitoring(event, context):
@@ -112,7 +112,7 @@ def handle_scheduled_monitoring(event, context):
 - Only stops instances with ZERO assigned users
 - Uses CloudWatch metrics-based locking to prevent concurrent operations
 
-**Updated Docstring** (lines 1-34):
+**Module Docstring:**
 ```python
 """
 Premium Manager Lambda Function - Compute & Capacity Management
@@ -143,9 +143,9 @@ resource "aws_cloudwatch_event_rule" "premium_manager_schedule" {
 
 ### 2. Premium Cleanup Simplification
 
-**File:** `studio/config/terraform/premium_cleanup_package/premium_cleanup.py`
+**File:** `infrastructure/terraform/premium_cleanup_package/premium_cleanup.py`
 
-**Handler** (lines 949-1034):
+**Function:** `handler()` - Main cleanup handler
 
 ```python
 def handler(event, context):
@@ -177,7 +177,7 @@ def handler(event, context):
     }
 ```
 
-**Docstring** (lines 1-17):
+**Module Docstring:**
 ```python
 """
 Premium Cleanup Lambda - Data & Resource Hygiene
@@ -423,3 +423,239 @@ PREMIUM_INSTANCE_IDS        # Comma-separated EC2 instance IDs
 - `cleanup_orphaned_alb_resources()` - Delete ALB rules with no DB entry
 - `reconcile_instance_states()` - Sync DB with AWS reality
 - `ensure_standby_pool_capacity()` - Monitor standby health (read-only)
+
+---
+
+## Premium Frontend Architecture
+
+The frontend components handle premium user experience including instance assignment, inactivity monitoring, and user notifications.
+
+### Component Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           App.tsx                                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │         PremiumAssignmentProvider (Context)                      │    │
+│  │   - Single source of truth for premium state                    │    │
+│  │   - Auto-assignment on login                                    │    │
+│  │   - Inactivity monitoring (1hr warning, 2hr release)            │    │
+│  │   - Heartbeat management                                        │    │
+│  │   - Browser close/refresh handling                              │    │
+│  ├─────────────────────────────────────────────────────────────────┤    │
+│  │                                                                 │    │
+│  │  ┌───────────────────────┐  ┌─────────────────────────────┐     │    │
+│  │  │ PremiumAssignment     │  │ PremiumNotificationManager  │     │    │
+│  │  │ Manager               │  │                             │     │    │
+│  │  │                       │  │ - Success notifications     │     │    │
+│  │  │ - Cleanup on unmount  │  │ - Temp assignment warnings  │     │    │
+│  │  │ - Debug logging       │  │ - Scaling progress alerts   │     │    │
+│  │  └───────────────────────┘  │ - Error notifications       │     │    │
+│  │                             └─────────────────────────────┘     │    │
+│  │                                                                 │    │
+│  │  ┌─────────────────────────────────────────────────────────┐    │    │
+│  │  │                InactivityWarning                         │    │    │
+│  │  │   - Shows after 1 hour of inactivity                    │    │    │
+│  │  │   - Countdown timer to auto-release                      │    │    │
+│  │  │   - "Stay Active" button sends heartbeat                │    │    │
+│  │  └─────────────────────────────────────────────────────────┘    │    │
+│  │                                                                 │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### PremiumAssignmentContext
+
+**File:** `frontend/src/contexts/PremiumAssignmentContext.tsx`
+
+The context provider serves as the single source of truth for premium assignment state, eliminating duplicate API calls from multiple hook instances.
+
+#### State Management
+
+```typescript
+interface PremiumAssignmentState {
+  isAssigning: boolean           // Assignment in progress
+  isReleasing: boolean           // Release in progress
+  assignmentResult: PremiumAssignmentResult | null
+  statusResult: PremiumStatusResult | null
+  routingInfo: RoutingInfo | null
+  error: string | null
+  isPremiumUser: boolean         // Derived from subscription
+  showInactivityWarning: boolean // 1hr inactivity trigger
+  lastActivityTime: number       // Timestamp for tracking
+}
+```
+
+#### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Auto-assignment** | Automatically assigns premium instance on login |
+| **Inactivity monitoring** | Checks every 30 seconds for user activity |
+| **Warning at 1 hour** | Shows InactivityWarning component |
+| **Auto-release at 2 hours** | Releases instance after extended inactivity |
+| **Heartbeat** | Updates activity timestamp on user interaction |
+| **Browser close handling** | Attempts release on beforeunload event |
+| **Polling for premium** | If on temp shared, polls for dedicated instance |
+
+#### Auto-Assignment Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 1. Premium user logs in                                                  │
+│    isPremiumUser = true (from subscription state)                        │
+└─────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 2. autoAssignOnLogin() triggered                                         │
+│    - Check hasAttemptedAutoAssignment flag (prevent duplicates)          │
+│    - Set flag immediately                                                │
+└─────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 3. Check existing assignment                                             │
+│    GET /users/me/premium/status                                          │
+│    If already assigned → update state and return                         │
+└─────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 4. Request new assignment                                                │
+│    POST /users/me/premium/assign                                         │
+│    → Premium Lambda assigns to dedicated or shared instance              │
+└─────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 5. Update state with result                                              │
+│    - assignmentResult stored                                             │
+│    - PremiumNotificationManager shows appropriate notification           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Inactivity Monitoring
+
+```typescript
+// In PremiumAssignmentContext
+useEffect(() => {
+  if (!isPremiumUser || !state.assignmentResult) return
+
+  const checkInactivity = () => {
+    const timeSinceLastActivity = Date.now() - state.lastActivityTime
+
+    if (timeSinceLastActivity >= 2 * 60 * 60 * 1000) {
+      // 2 hours - auto-release
+      autoReleaseOnLogout()
+    } else if (timeSinceLastActivity >= 60 * 60 * 1000) {
+      // 1 hour - show warning
+      setState(prev => ({ ...prev, showInactivityWarning: true }))
+    }
+  }
+
+  // Check every 30 seconds
+  const interval = setInterval(checkInactivity, 30 * 1000)
+  return () => clearInterval(interval)
+}, [isPremiumUser, state.assignmentResult, state.lastActivityTime])
+```
+
+### PremiumNotificationManager
+
+**File:** `frontend/src/components/Premium/PremiumNotificationManager.tsx`
+
+Handles user notifications for premium assignment events using notistack.
+
+#### Notification Types
+
+| Event | Variant | Message |
+|-------|---------|---------|
+| Premium assigned | success | "Premium instance assigned successfully!" |
+| Temporary assignment | info | "Temporarily assigned to shared resources..." |
+| Scaling in progress | info | "Premium capacity is scaling up..." |
+| Assignment error | warning | "Premium assignment issue: {error}" |
+
+#### Notification Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│ assignmentResult changes                                                 │
+└─────────────────────────────────────────────────────────────────────────┘
+                              │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+    ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+    │ is_shared   │  │ assigned    │  │ scaling_in  │
+    │ = true      │  │ = true      │  │ _progress   │
+    │ (temp)      │  │ (dedicated) │  │ = true      │
+    └──────┬──────┘  └──────┬──────┘  └──────┬──────┘
+           │                │                │
+           ▼                ▼                ▼
+    ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+    │ Show "temp  │  │ Show        │  │ Show        │
+    │ assignment" │  │ "success"   │  │ "scaling"   │
+    │ info toast  │  │ toast       │  │ info toast  │
+    └─────────────┘  └─────────────┘  └─────────────┘
+```
+
+### InactivityWarning
+
+**File:** `frontend/src/components/Premium/InactivityWarning.tsx`
+
+Displays a warning snackbar when premium users have been inactive for 1 hour.
+
+#### Component Behavior
+
+- **Appears:** After 1 hour of inactivity
+- **Position:** Top center (prominent)
+- **Countdown:** Shows remaining time until auto-release
+- **"Stay Active" button:** Sends heartbeat and dismisses warning
+- **Auto-closes:** When user interacts or clicks button
+
+```typescript
+const InactivityWarning: React.FC = () => {
+  const { showInactivityWarning, dismissInactivityWarning, recordActivity } =
+    usePremiumAssignment()
+  const [countdown, setCountdown] = useState(60) // minutes
+
+  const handleStayActive = () => {
+    recordActivity() // Sends heartbeat
+    dismissInactivityWarning()
+  }
+
+  return (
+    <Snackbar open={showInactivityWarning}>
+      <Alert severity="warning" variant="filled">
+        <strong>Premium Instance Inactivity Warning</strong>
+        Your premium instance will be released in {countdown}m...
+        <Button onClick={handleStayActive}>Stay Active</Button>
+      </Alert>
+    </Snackbar>
+  )
+}
+```
+
+### Premium API Functions
+
+**File:** `frontend/src/api/premium/PremiumAssignmentApi.ts`
+
+| Function | Endpoint | Purpose |
+|----------|----------|---------|
+| `getRoutingInfo()` | GET /users/me/routing-info | Get ALB routing headers |
+| `assignPremiumInstance()` | POST /users/me/premium/assign | Request instance assignment |
+| `releasePremiumInstance()` | DELETE /users/me/premium/assign | Release current assignment |
+| `getPremiumStatus()` | GET /users/me/premium/status | Get current assignment status |
+| `sendPremiumHeartbeat()` | POST /users/me/premium/heartbeat | Update activity timestamp |
+
+### Frontend Files Summary
+
+| File | Purpose |
+|------|---------|
+| `frontend/src/contexts/PremiumAssignmentContext.tsx` | State management and logic |
+| `frontend/src/components/Premium/PremiumAssignmentManager.tsx` | Cleanup and logging |
+| `frontend/src/components/Premium/PremiumNotificationManager.tsx` | User notifications |
+| `frontend/src/components/Premium/InactivityWarning.tsx` | Inactivity warning UI |
+| `frontend/src/api/premium/PremiumAssignmentApi.ts` | API client functions |

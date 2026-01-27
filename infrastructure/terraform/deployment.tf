@@ -28,7 +28,7 @@ resource "null_resource" "build_and_deploy" {
       echo "Waiting for ECR image to be available..."
       sleep 60
 
-      echo "✅ Build and push completed successfully"
+      echo "Build and push completed successfully"
 
     EOT
   }
@@ -184,8 +184,8 @@ resource "null_resource" "deploy_to_ecs" {
             fi
 
       echo "=== DEPLOYMENT COMPLETE ==="
-      echo "✅ Application is ready at: http://${aws_lb.autoscaling.dns_name}"
-      echo "✅ Health check: http://${aws_lb.autoscaling.dns_name}/health"
+      echo "Application is ready at: http://${aws_lb.autoscaling.dns_name}"
+      echo "Health check: http://${aws_lb.autoscaling.dns_name}/health"
     EOT
   }
 }

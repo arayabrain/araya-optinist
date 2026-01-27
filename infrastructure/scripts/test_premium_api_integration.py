@@ -41,6 +41,12 @@ HOW TO RUN:
 
 EXPECTED RESULT:
   All 5 tests should pass
+
+PERFORMANCE IMPACT:
+  Light - All tests use AsyncMock, no real API calls or infrastructure
+  - No impact on other users
+  - Safe to run anytime
+
 """
 
 import json

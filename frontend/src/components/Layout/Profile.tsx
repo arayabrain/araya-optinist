@@ -14,12 +14,15 @@ import {
 } from "@mui/material"
 import IconButton from "@mui/material/IconButton"
 
+import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 import { logout } from "store/slice/User/UserSlice"
 
 const Profile: FC = () => {
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null)
   const navigate = useNavigate()
   const dispatch = useDispatch()
+  const { autoReleaseOnLogout, isPremiumUser } = usePremiumAssignment()
+
   const handleMenu = (event: MouseEvent<HTMLElement>) => {
     setAnchorEl(event.currentTarget)
   }
@@ -28,8 +31,20 @@ const Profile: FC = () => {
     setAnchorEl(null)
   }
 
-  const onClickLogout = () => {
+  const onClickLogout = async () => {
     setAnchorEl(null)
+
+    // Release premium instance before logout if user is premium
+    if (isPremiumUser) {
+      try {
+        await autoReleaseOnLogout()
+      } catch (error) {
+        // eslint-disable-next-line no-console
+        console.warn("Failed to release premium instance on logout:", error)
+        // Continue with logout even if release fails
+      }
+    }
+
     dispatch(logout())
     navigate("/login")
   }
