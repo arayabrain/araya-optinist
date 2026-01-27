@@ -10,6 +10,13 @@ export { FILE_TREE_TYPE_SET }
 export type FILE_TREE_TYPE =
   (typeof FILE_TREE_TYPE_SET)[keyof typeof FILE_TREE_TYPE_SET]
 
+// Sync status for file synchronization state (matches backend SyncStatus enum)
+export enum SyncStatus {
+  LOCAL = "local", // Only on local disk (not uploaded)
+  SYNCED = "synced", // Exists both locally and in S3
+  REMOTE = "remote", // Only in S3 (needs download before run)
+}
+
 export type TreeNodeTypeDTO = DirNodeDTO | FileNodeDTO
 
 export interface NodeBaseDTO {
@@ -28,6 +35,23 @@ export interface FileNodeDTO extends NodeBaseDTO {
   isdir: false
 }
 
+// Extended types with sync status for merged endpoint
+export type TreeNodeWithSyncDTO = DirNodeWithSyncDTO | FileNodeWithSyncDTO
+
+export interface NodeWithSyncBaseDTO extends NodeBaseDTO {
+  sync_status: SyncStatus
+  size?: number
+}
+
+export interface DirNodeWithSyncDTO extends NodeWithSyncBaseDTO {
+  isdir: true
+  nodes: TreeNodeWithSyncDTO[]
+}
+
+export interface FileNodeWithSyncDTO extends NodeWithSyncBaseDTO {
+  isdir: false
+}
+
 export type GetStatusViaUrl = {
   total: number
   current: number
@@ -43,6 +67,28 @@ export async function getFilesTreeApi(
       file_type: fileType,
     },
   })
+  return response.data
+}
+
+export async function getFilesTreeMergedApi(
+  workspaceId: number,
+  fileType: FILE_TREE_TYPE,
+): Promise<TreeNodeWithSyncDTO[]> {
+  const response = await axios.get(`${BASE_URL}/files/${workspaceId}/merged`, {
+    params: {
+      file_type: fileType,
+    },
+  })
+  return response.data
+}
+
+export async function syncInputFileApi(
+  workspaceId: number,
+  fileName: string,
+): Promise<{ file_path: string }> {
+  const response = await axios.post(
+    `${BASE_URL}/files/${workspaceId}/sync/${encodeURIComponent(fileName)}`,
+  )
   return response.data
 }
 

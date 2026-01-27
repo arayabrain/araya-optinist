@@ -189,6 +189,49 @@ describe("RoutingService", () => {
 
       expect(newService.getRoutingToken()).toBe("stored-token")
     })
+
+    test("should persist user tier to localStorage", () => {
+      const premiumUser = createPremiumUser()
+      routingService.updateRoutingInfo(premiumUser)
+
+      expect(localStorageMock.getItem("routing_tier")).toBe("premium")
+    })
+
+    test("should load tier from localStorage on initialization", () => {
+      localStorageMock.setItem("routing_tier", "premium")
+
+      const newService = new RoutingService()
+
+      expect(newService.getUserTier()).toBe("premium")
+    })
+
+    test("should include stored tier in headers after page refresh", () => {
+      localStorageMock.setItem("routing_id", "stored-token")
+      localStorageMock.setItem("routing_tier", "premium")
+
+      const newService = new RoutingService()
+      const headers = newService.getRoutingHeaders()
+
+      expect(headers["X-Routing-ID"]).toBe("stored-token")
+      expect(headers["X-User-Tier"]).toBe("premium")
+    })
+
+    test("should ignore invalid tier values from localStorage", () => {
+      localStorageMock.setItem("routing_tier", "invalid-tier")
+
+      const newService = new RoutingService()
+
+      expect(newService.getUserTier()).toBeNull()
+    })
+
+    test("should remove tier from localStorage on clear", () => {
+      routingService.updateRoutingInfo(createPremiumUser())
+      expect(localStorageMock.getItem("routing_tier")).toBe("premium")
+
+      routingService.clearRoutingInfo()
+
+      expect(localStorageMock.getItem("routing_tier")).toBeNull()
+    })
   })
 
   describe("isRoutingInfoStale", () => {

@@ -153,6 +153,7 @@ resource "aws_launch_template" "ecs" {
     ecr_repository_url    = var.ecr_repository_url
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
+    swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
   }))
   tag_specifications {
     resource_type = "instance"
@@ -345,6 +346,7 @@ resource "aws_launch_template" "premium" {
     ecr_repository_url    = var.ecr_repository_url
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
+    swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
   }))
 
   tag_specifications {
@@ -585,8 +587,8 @@ resource "aws_ecs_task_definition" "autoscaling" {
       command           = ["./cloud-startup.sh"]
 
       linuxParameters = {
-        maxSwap    = 32768  # Max swap in MiB (matches 32GB host swap on EBS)
-        swappiness = 20     # Only swap under memory pressure (host also set to 20)
+        maxSwap    = 32768 # Max swap in MiB (matches 32GB host swap on EBS)
+        swappiness = 20    # Only swap under memory pressure (host also set to 20)
       }
 
       portMappings = [
@@ -730,6 +732,11 @@ resource "aws_ecs_task_definition" "autoscaling" {
         {
           name  = "INTERNAL_API_SECRET"
           value = random_password.internal_api_secret.result
+        },
+        # Disable scheduler - background jobs run in dedicated background service
+        {
+          name  = "DISABLE_BACKGROUND_SCHEDULER"
+          value = "1"
         },
       ]
       secrets = [
@@ -967,6 +974,11 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "INTERNAL_API_SECRET"
           value = random_password.internal_api_secret.result
+        },
+        # Disable scheduler - background jobs run in dedicated background service
+        {
+          name  = "DISABLE_BACKGROUND_SCHEDULER"
+          value = "1"
         },
       ]
 

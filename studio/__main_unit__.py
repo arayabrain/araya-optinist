@@ -17,9 +17,9 @@ from studio.app.common.core.auth.auth_dependencies import (
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware import (
     ClientIdLoggingMiddleware,
-    FreeUserActivityMiddleware,
     SecureRoutingMiddleware,
     SPARoutingMiddleware,
+    UserActivityMiddleware,
 )
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
@@ -217,8 +217,10 @@ app.add_middleware(SPARoutingMiddleware)
 # Add LoggingMiddleware to capture client_id for logging
 app.add_middleware(ClientIdLoggingMiddleware)
 
-# Add FreeUserActivityMiddleware to track free tier user activity
-app.add_middleware(FreeUserActivityMiddleware)
+# Add UserActivityMiddleware to track activity for both free and premium users
+# - Free users: enables intelligent load balancing and migration
+# - Premium users: prevents stale assignment cleanup for active users
+app.add_middleware(UserActivityMiddleware)
 
 # Add SecureRoutingMiddleware to add routing headers based on JWT validation
 app.add_middleware(SecureRoutingMiddleware)

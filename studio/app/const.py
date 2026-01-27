@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 
+from studio.app.common.core.compat import StrEnum
 from studio.app.common.core.utils.config_handler import get_env_var
 
 
@@ -42,3 +43,10 @@ LARGE_FILE_PATTERNS = tuple(ACCEPT_FILE_EXT.ALL_EXT.value + [".pkl"])
 # Visualization mode: JSON for timeseries data, TIFF for images,
 # YAML for snakemake config
 VISUALIZATION_SYNC_PATTERNS = (".json", ".tif", ".tiff", ".yaml")
+
+
+# Metadata cache filenames for input data
+class MetadataCacheFile(StrEnum):
+    IMAGE_SHAPE = ".image_shape.json"
+    HDF5_STRUCTURE = ".hdf5_structure.json"
+    MAT_STRUCTURE = ".mat_structure.json"

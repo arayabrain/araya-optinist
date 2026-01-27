@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test experiment data sync between instances.
+Test experiment and input data sync between instances.
 
 Run from inside ECS container (use container_access.sh to get shell).
 
@@ -11,14 +11,26 @@ Quick Start - Automated Tests:
     # Test proactive sync (clears files, triggers sync API, verifies)
     python test_data_sync.py test-proactive <email>
 
+    # Test input data sync (merged listing, on-demand sync, structure caching)
+    python test_data_sync.py test-input-data <email>
+
 Other Commands:
-    status [user_id]    Show system status; with user_id shows experiments
-    migrate <user_id>   Migrate user to different instance
+    status [user_id]              Show system status; with user_id shows experiments
+    migrate <user_id>             Migrate user to different instance
+    clear-local <user_id> [id]    Clear local experiment files
+    clear-input <workspace_id>    Clear local input files
+    list-input <user_id> <ws_id>  List input files (local and S3)
 
 Manual Testing (if automated tests fail):
     1. python test_data_sync.py status <user_id>  # Get workspace/experiment IDs
     2. python test_data_sync.py clear-local <user_id> <unique_id>
     3. Reproduce experiment in UI, check logs for sync messages
+
+Input Data Sync Manual Testing:
+    1. python test_data_sync.py list-input <user_id> <workspace_id>  # See local vs S3
+    2. python test_data_sync.py clear-input <workspace_id>  # Clear local input files
+    3. Open file dialog in UI → should see files with cloud icons
+    4. Select file and run workflow → files download before execution
 
 """
 
@@ -522,6 +534,401 @@ def clear_local_edit_roi_files(workspace_id: str, unique_id: str) -> dict:
         "nwb_files_deleted": nwb_deleted,
         "experiment_path": experiment_path,
     }
+
+
+# =============================================================================
+# Input Data Sync Functions
+# =============================================================================
+
+
+def get_user_bucket_name(user_id: int) -> str:
+    """Get user's S3 bucket name from database attributes."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT attributes FROM users WHERE id = %s",
+                (user_id,),
+            )
+            result = cursor.fetchone()
+            if not result or not result.get("attributes"):
+                return None
+            attributes = result["attributes"]
+            if isinstance(attributes, str):
+                attributes = json.loads(attributes)
+            return attributes.get("remote_bucket_name")
+    finally:
+        conn.close()
+
+
+def clear_local_input_files(workspace_id: str) -> dict:
+    """Clear local input files for a workspace (simulates migration).
+
+    Deletes all files in the input directory for the workspace,
+    simulating a fresh instance that needs to sync input data from S3.
+
+    Args:
+        workspace_id: Workspace ID to clear input files for
+
+    Returns:
+        Dict with status and counts of deleted files
+    """
+    input_dir = os.environ.get("INPUT_DIR", "/app/studio_data/input")
+    workspace_path = os.path.join(input_dir, str(workspace_id))
+
+    if not os.path.isdir(workspace_path):
+        return {
+            "status": "no_workspace",
+            "workspace_id": workspace_id,
+            "message": f"Input directory not found: {workspace_path}",
+        }
+
+    files_deleted = 0
+    metadata_preserved = []
+
+    for item in os.listdir(workspace_path):
+        filepath = os.path.join(workspace_path, item)
+        if os.path.isfile(filepath):
+            # Preserve metadata files (they are small and needed for listing)
+            if item.startswith(".") and item.endswith(".json"):
+                metadata_preserved.append(item)
+                continue
+            os.remove(filepath)
+            files_deleted += 1
+
+    return {
+        "status": "cleared",
+        "workspace_id": workspace_id,
+        "files_deleted": files_deleted,
+        "metadata_preserved": metadata_preserved,
+        "input_path": workspace_path,
+    }
+
+
+def clear_local_input_metadata(workspace_id: str) -> dict:
+    """Clear local input metadata files (structure caches).
+
+    Deletes .image_shape.json, .hdf5_structure.json, .mat_structure.json
+    to test metadata sync from S3.
+
+    Args:
+        workspace_id: Workspace ID to clear metadata for
+
+    Returns:
+        Dict with status and list of deleted files
+    """
+    input_dir = os.environ.get("INPUT_DIR", "/app/studio_data/input")
+    workspace_path = os.path.join(input_dir, str(workspace_id))
+
+    if not os.path.isdir(workspace_path):
+        return {
+            "status": "no_workspace",
+            "workspace_id": workspace_id,
+            "message": f"Input directory not found: {workspace_path}",
+        }
+
+    metadata_files = [
+        ".image_shape.json",
+        ".hdf5_structure.json",
+        ".mat_structure.json",
+    ]
+    deleted = []
+
+    for filename in metadata_files:
+        filepath = os.path.join(workspace_path, filename)
+        if os.path.isfile(filepath):
+            os.remove(filepath)
+            deleted.append(filename)
+
+    return {
+        "status": "cleared",
+        "workspace_id": workspace_id,
+        "deleted_files": deleted,
+    }
+
+
+def list_input_files_from_s3(user_id: int, workspace_id: int) -> list:
+    """List input files from S3 for a workspace.
+
+    Args:
+        user_id: User ID (to get bucket name)
+        workspace_id: Workspace ID
+
+    Returns:
+        List of file dicts with filename, size, last_modified
+    """
+    try:
+        import boto3
+
+        bucket_name = get_user_bucket_name(user_id)
+        if not bucket_name:
+            print(f"No bucket name found for user {user_id}")
+            return []
+
+        s3 = boto3.client("s3")
+        prefix = f"app/studio_data/input/{workspace_id}/"
+
+        response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+
+        files = []
+        for obj in response.get("Contents", []):
+            key = obj["Key"]
+            filename = key.replace(prefix, "")
+            if filename and not filename.endswith("/"):
+                files.append(
+                    {
+                        "filename": filename,
+                        "size": obj["Size"],
+                        "last_modified": obj["LastModified"].isoformat(),
+                    }
+                )
+        return files
+    except Exception as e:
+        print(f"Warning: Could not list input files from S3: {e}")
+        return []
+
+
+def list_local_input_files(workspace_id: str) -> list:
+    """List local input files for a workspace.
+
+    Args:
+        workspace_id: Workspace ID
+
+    Returns:
+        List of file dicts with filename
+    """
+    input_dir = os.environ.get("INPUT_DIR", "/app/studio_data/input")
+    workspace_path = os.path.join(input_dir, str(workspace_id))
+
+    if not os.path.isdir(workspace_path):
+        return []
+
+    files = []
+    for item in os.listdir(workspace_path):
+        filepath = os.path.join(workspace_path, item)
+        if os.path.isfile(filepath):
+            files.append({"filename": item, "local": True})
+    return files
+
+
+def test_merged_file_listing(workspace_id: str, token: str) -> dict:
+    """Test the merged file listing endpoint.
+
+    Calls GET /files/{workspace_id}/merged which returns local + S3 files
+    with sync status.
+    """
+    url = f"{get_api_base_url()}/files/{workspace_id}/merged"
+    headers = get_auth_headers(token)
+    endpoint = "GET /files/{workspace_id}/merged"
+
+    try:
+        print(f"Testing merged file listing for workspace {workspace_id}...")
+        response, ssl_warning = make_api_request("get", url, headers)
+
+        result = {"endpoint": endpoint, "workspace_id": workspace_id}
+        if ssl_warning:
+            result["warning"] = "SSL verification disabled"
+
+        if response.status_code == 200:
+            data = response.json()
+            # Count files by sync status
+            synced_count = 0
+            remote_count = 0
+            local_count = 0
+            for node in data:
+                status = node.get("sync_status", "synced")
+                if status == "synced":
+                    synced_count += 1
+                elif status == "remote":
+                    remote_count += 1
+                elif status == "local":
+                    local_count += 1
+            result.update(
+                {
+                    "status": "success",
+                    "total_files": len(data),
+                    "synced_count": synced_count,
+                    "remote_count": remote_count,
+                    "local_count": local_count,
+                }
+            )
+        elif response.status_code == 404:
+            result.update(
+                {
+                    "status": "no_files",
+                    "message": "No files found in workspace",
+                }
+            )
+        else:
+            result.update(
+                {
+                    "status": "error",
+                    "status_code": response.status_code,
+                    "response": response.text[:500],
+                }
+            )
+        return result
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def test_input_file_sync(workspace_id: str, filename: str, token: str) -> dict:
+    """Test on-demand input file sync endpoint.
+
+    Calls POST /files/{workspace_id}/sync/{filename} to download a file from S3.
+    """
+    url = f"{get_api_base_url()}/files/{workspace_id}/sync/{filename}"
+    headers = get_auth_headers(token)
+    endpoint = "POST /files/{workspace_id}/sync/{filename}"
+
+    try:
+        print(f"Testing input file sync for {workspace_id}/{filename}...")
+        response, ssl_warning = make_api_request("post", url, headers)
+
+        result = {
+            "endpoint": endpoint,
+            "workspace_id": workspace_id,
+            "filename": filename,
+        }
+        if ssl_warning:
+            result["warning"] = "SSL verification disabled"
+
+        if response.status_code == 200:
+            data = response.json()
+            result.update(
+                {
+                    "status": "success",
+                    "file_path": data.get("file_path", filename),
+                    "message": "File downloaded from S3",
+                }
+            )
+        elif response.status_code == 404:
+            result.update(
+                {
+                    "status": "not_found",
+                    "message": "File not found in S3",
+                }
+            )
+        elif response.status_code == 503:
+            result.update(
+                {
+                    "status": "unavailable",
+                    "message": "Remote storage not available",
+                }
+            )
+        else:
+            result.update(
+                {
+                    "status": "error",
+                    "status_code": response.status_code,
+                    "response": response.text[:500],
+                }
+            )
+        return result
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def test_hdf5_structure(workspace_id: str, filename: str, token: str) -> dict:
+    """Test HDF5 structure endpoint with cached structure.
+
+    Calls GET /hdf5/{filename}?workspace_id={workspace_id} which should return
+    cached structure without downloading the full file.
+    """
+    url = f"{get_api_base_url()}/hdf5/{filename}?workspace_id={workspace_id}"
+    headers = get_auth_headers(token)
+    endpoint = "GET /hdf5/{filename}"
+
+    try:
+        print(f"Testing HDF5 structure for {filename}...")
+        response, ssl_warning = make_api_request("get", url, headers)
+
+        result = {
+            "endpoint": endpoint,
+            "workspace_id": workspace_id,
+            "filename": filename,
+        }
+        if ssl_warning:
+            result["warning"] = "SSL verification disabled"
+
+        if response.status_code == 200:
+            data = response.json()
+            result.update(
+                {
+                    "status": "success",
+                    "structure_nodes": len(data),
+                    "message": "Structure retrieved (from cache or file)",
+                }
+            )
+        elif response.status_code == 404:
+            result.update(
+                {
+                    "status": "not_found",
+                    "message": "HDF5 file or cached structure not found",
+                }
+            )
+        else:
+            result.update(
+                {
+                    "status": "error",
+                    "status_code": response.status_code,
+                    "response": response.text[:500],
+                }
+            )
+        return result
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def test_mat_structure(workspace_id: str, filename: str, token: str) -> dict:
+    """Test MATLAB structure endpoint with cached structure.
+
+    Calls GET /mat/{filename}?workspace_id={workspace_id} which should return
+    cached structure without downloading the full file.
+    """
+    url = f"{get_api_base_url()}/mat/{filename}?workspace_id={workspace_id}"
+    headers = get_auth_headers(token)
+    endpoint = "GET /mat/{filename}"
+
+    try:
+        print(f"Testing MATLAB structure for {filename}...")
+        response, ssl_warning = make_api_request("get", url, headers)
+
+        result = {
+            "endpoint": endpoint,
+            "workspace_id": workspace_id,
+            "filename": filename,
+        }
+        if ssl_warning:
+            result["warning"] = "SSL verification disabled"
+
+        if response.status_code == 200:
+            data = response.json()
+            result.update(
+                {
+                    "status": "success",
+                    "structure_nodes": len(data),
+                    "message": "Structure retrieved (from cache or file)",
+                }
+            )
+        elif response.status_code == 404:
+            result.update(
+                {
+                    "status": "not_found",
+                    "message": "MATLAB file or cached structure not found",
+                }
+            )
+        else:
+            result.update(
+                {
+                    "status": "error",
+                    "status_code": response.status_code,
+                    "response": response.text[:500],
+                }
+            )
+        return result
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 
 def clear_local_experiments_for_user(user_id: int, unique_id: str = None) -> dict:
@@ -2099,6 +2506,177 @@ def run_test_proactive_sync(email: str) -> dict:
     }
 
 
+def run_test_input_data_sync(email: str) -> dict:
+    """
+    Automated end-to-end test for input data sync.
+
+    Tests:
+    1. Merged file listing (shows S3 files after clearing local)
+    2. On-demand file sync (downloads specific file)
+    3. Structure caching (HDF5/MATLAB if available)
+    """
+    print(f"\n{'='*60}")
+    print(f"INPUT DATA SYNC TEST: {email}")
+    print(f"{'='*60}")
+
+    # Step 1: Find user
+    print("\n[1/5] Finding user...")
+    users = find_user_by_email(email)
+    if not users:
+        return {"status": "error", "step": 1, "error": f"User not found: {email}"}
+
+    user = users[0]
+    user_id = user["id"]
+    print(f"Found: {user['name']} (ID: {user_id})")
+
+    # Step 2: Get workspaces and check for input files
+    print("\n[2/5] Finding input files...")
+    workspaces = get_user_workspaces(user_id)
+    if not workspaces:
+        return {"status": "error", "step": 2, "error": "No workspaces found"}
+
+    workspace_id = workspaces[0]["id"]
+    ws_id = str(workspace_id)
+
+    # Check for input files in S3
+    s3_files = list_input_files_from_s3(user_id, workspace_id)
+    local_files = list_local_input_files(ws_id)
+
+    # Filter out metadata files
+    s3_data_files = [f for f in s3_files if not f["filename"].startswith(".")]
+    local_data_files = [f for f in local_files if not f["filename"].startswith(".")]
+
+    if not s3_data_files and not local_data_files:
+        return {
+            "status": "error",
+            "step": 2,
+            "error": "No input files found. Upload some files first.",
+        }
+
+    print(
+        f"Found {len(s3_data_files)} files in S3, {len(local_data_files)} local files"
+    )
+
+    # Step 3: Get token
+    print("\n[3/5] Loading token...")
+    token = load_token_from_file(email)
+    if not token:
+        token = get_or_generate_token(email, auto_generate=True)
+    if not token:
+        return {
+            "status": "error",
+            "step": 3,
+            "error": "No token. Run: python get_jwt_tokens.py --multi-free",
+        }
+    print("Token loaded")
+
+    # Step 4: Test endpoints
+    print("\n[4/5] Testing endpoints...")
+    results = {}
+
+    # Test 4a: Clear local files and test merged listing
+    print("\n      [a] Clear local files and test merged listing")
+    clear_result = clear_local_input_files(ws_id)
+    print(f"Cleared {clear_result.get('files_deleted', 0)} local files")
+
+    result = test_merged_file_listing(ws_id, token)
+    results["merged_listing"] = result.get("status") == "success"
+    if result.get("status") == "success":
+        print(
+            f"PASS - Found {result.get('total_files', 0)} files "
+            f"({result.get('remote_count', 0)} remote, "
+            f"{result.get('synced_count', 0)} synced)"
+        )
+    else:
+        print(f"FAIL - {result.get('error', result.get('message', 'Unknown error'))}")
+
+    # Test 4b: On-demand file sync (pick first file from S3)
+    if s3_data_files:
+        print("\n      [b] On-demand file sync")
+        test_file = s3_data_files[0]["filename"]
+        result = test_input_file_sync(ws_id, test_file, token)
+        results["file_sync"] = result.get("status") == "success"
+        if result.get("status") == "success":
+            print(f"PASS - Synced {test_file}")
+        else:
+            print(
+                f"FAIL - {result.get('error', result.get('message', 'Unknown error'))}"
+            )
+    else:
+        print("\n      [b] On-demand file sync - SKIPPED (no S3 files)")
+        results["file_sync"] = True  # Not applicable
+
+    # Test 4c: Structure caching (if HDF5/MATLAB files exist)
+    hdf5_files = [f for f in s3_files if f["filename"].endswith((".h5", ".hdf5"))]
+    mat_files = [f for f in s3_files if f["filename"].endswith(".mat")]
+
+    if hdf5_files:
+        print("\n      [c] HDF5 structure caching")
+        test_file = hdf5_files[0]["filename"]
+        # First sync the file so structure can be extracted
+        sync_result = test_input_file_sync(ws_id, test_file, token)
+        if sync_result.get("status") != "success":
+            print(f"FAIL - Could not sync {test_file} for structure test")
+            results["hdf5_structure"] = False
+        else:
+            result = test_hdf5_structure(ws_id, test_file, token)
+            results["hdf5_structure"] = result.get("status") == "success"
+            if result.get("status") == "success":
+                print(f"PASS - Got structure for {test_file}")
+            else:
+                print(
+                    f"FAIL - "
+                    f"{result.get('error', result.get('message', 'Unknown error'))}"
+                )
+    else:
+        print("\n      [c] HDF5 structure caching - SKIPPED (no HDF5 files)")
+        results["hdf5_structure"] = True  # Not applicable
+
+    if mat_files:
+        print("\n      [d] MATLAB structure caching")
+        test_file = mat_files[0]["filename"]
+        # First sync the file so structure can be extracted
+        sync_result = test_input_file_sync(ws_id, test_file, token)
+        if sync_result.get("status") != "success":
+            print(f"FAIL - Could not sync {test_file} for structure test")
+            results["mat_structure"] = False
+        else:
+            result = test_mat_structure(ws_id, test_file, token)
+            results["mat_structure"] = result.get("status") == "success"
+            if result.get("status") == "success":
+                print(f"PASS - Got structure for {test_file}")
+            else:
+                print(
+                    f"FAIL - "
+                    f"{result.get('error', result.get('message', 'Unknown error'))}"
+                )
+    else:
+        print("\n      [d] MATLAB structure caching - SKIPPED (no MATLAB files)")
+        results["mat_structure"] = True  # Not applicable
+
+    # Step 5: Summary
+    print("\n[5/5] Summary")
+    passed = sum(1 for v in results.values() if v)
+    total = len(results)
+
+    if passed == total:
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "workspace_id": workspace_id,
+            "results": results,
+            "message": f"Input data sync test PASSED ({passed}/{total} tests)",
+        }
+    else:
+        return {
+            "status": "partial",
+            "user_id": user_id,
+            "workspace_id": workspace_id,
+            "results": results,
+            "message": f"Input data sync test PARTIAL ({passed}/{total} tests)",
+        }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Test experiment data sync (run from inside ECS container)"
@@ -2116,6 +2694,11 @@ def main():
         "test-proactive", help="Test proactive sync end-to-end"
     )
     proactive_parser.add_argument("email", help="User email to test")
+
+    input_data_parser = subparsers.add_parser(
+        "test-input-data", help="Test input data sync end-to-end"
+    )
+    input_data_parser.add_argument("email", help="User email to test")
 
     # Find user command
     find_parser = subparsers.add_parser("find-user", help="Find user by email")
@@ -2169,6 +2752,24 @@ def main():
         help="Experiment unique_id (optional - clears all if not provided)",
     )
 
+    # Clear local input files command
+    clear_input_parser = subparsers.add_parser(
+        "clear-input", help="Clear local input files (simulates fresh instance)"
+    )
+    clear_input_parser.add_argument("workspace_id", help="Workspace ID")
+    clear_input_parser.add_argument(
+        "--metadata",
+        action="store_true",
+        help="Also clear metadata files (.image_shape.json, etc.)",
+    )
+
+    # List input files command
+    list_input_parser = subparsers.add_parser(
+        "list-input", help="List input files (local and S3)"
+    )
+    list_input_parser.add_argument("user_id", type=int, help="User ID")
+    list_input_parser.add_argument("workspace_id", help="Workspace ID")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -2209,6 +2810,20 @@ def main():
             print(f"RESULT: {result['message']}")
         elif result["status"] == "pending":
             print(f"RESULT: {result['message']}")
+        else:
+            print(f"RESULT: FAILED at step {result.get('step', '?')}")
+            print(f"Error: {result.get('error', 'Unknown')}")
+        print(f"{'='*60}\n")
+
+    elif args.command == "test-input-data":
+        result = run_test_input_data_sync(args.email)
+        print(f"\n{'='*60}")
+        if result["status"] == "success":
+            print(f"RESULT: {result['message']}")
+        elif result["status"] == "partial":
+            print(f"RESULT: {result['message']}")
+            for test_name, passed in result.get("results", {}).items():
+                print(f"  {test_name}: {'PASS' if passed else 'FAIL'}")
         else:
             print(f"RESULT: FAILED at step {result.get('step', '?')}")
             print(f"Error: {result.get('error', 'Unknown')}")
@@ -2355,6 +2970,68 @@ def main():
                 for detail in result["details"]:
                     print(f"  {detail['workspace_id']}/{detail['unique_id']}:")
                     print(f"Deleted: {', '.join(detail['deleted_files'])}")
+
+    elif args.command == "clear-input":
+        print(f"\n=== Clearing local input files for workspace {args.workspace_id} ===")
+        result = clear_local_input_files(args.workspace_id)
+        if result.get("status") == "no_workspace":
+            print(f"Warning: {result.get('message')}")
+        else:
+            print(f"Status: {result['status']}")
+            print(f"Files deleted: {result['files_deleted']}")
+            if result.get("metadata_preserved"):
+                print(f"Metadata preserved: {', '.join(result['metadata_preserved'])}")
+
+        if args.metadata:
+            print("\nClearing metadata files...")
+            meta_result = clear_local_input_metadata(args.workspace_id)
+            if meta_result.get("deleted_files"):
+                print(f"Metadata deleted: {', '.join(meta_result['deleted_files'])}")
+            else:
+                print("No metadata files to delete")
+
+    elif args.command == "list-input":
+        print(f"\n=== Input files for workspace {args.workspace_id} ===")
+
+        # List local files
+        local_files = list_local_input_files(args.workspace_id)
+        print(f"\nLocal files ({len(local_files)}):")
+        if local_files:
+            for f in local_files:
+                print(f"  {f['filename']}")
+        else:
+            print("  (none)")
+
+        # List S3 files
+        s3_files = list_input_files_from_s3(args.user_id, int(args.workspace_id))
+        print(f"\nS3 files ({len(s3_files)}):")
+        if s3_files:
+            for f in s3_files:
+                size_kb = f["size"] / 1024
+                print(f"  {f['filename']} ({size_kb:.1f} KB)")
+        else:
+            print("  (none)")
+
+        # Show comparison
+        local_names = {f["filename"] for f in local_files}
+        s3_names = {f["filename"] for f in s3_files}
+
+        remote_only = s3_names - local_names
+        local_only = local_names - s3_names
+
+        if remote_only:
+            print(f"\nRemote-only (need sync): {len(remote_only)}")
+            for name in list(remote_only)[:5]:
+                print(f"  {name}")
+            if len(remote_only) > 5:
+                print(f"  ... and {len(remote_only) - 5} more")
+
+        if local_only:
+            print(f"\nLocal-only (not uploaded): {len(local_only)}")
+            for name in list(local_only)[:5]:
+                print(f"  {name}")
+            if len(local_only) > 5:
+                print(f"  ... and {len(local_only) - 5} more")
 
 
 if __name__ == "__main__":

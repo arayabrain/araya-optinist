@@ -1,3 +1,5 @@
+import { SyncStatus } from "api/files/Files"
+
 export const FILES_TREE_SLICE_NAME = "filesTree"
 
 export type TreeNodeType = DirNode | FileNode
@@ -7,6 +9,8 @@ export interface NodeBase {
   name: string
   isDir: boolean
   shape: []
+  syncStatus?: SyncStatus
+  size?: number
 }
 
 export interface DirNode extends NodeBase {
