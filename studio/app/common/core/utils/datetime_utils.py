@@ -16,148 +16,92 @@ logic changes here, the following Lambda packages should also be updated:
   - storage_reconciliation_package/storage_reconciliation.py
 """
 
+import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from dateutil.tz import tzlocal
+logger = logging.getLogger(__name__)
+
+# =============================================================================
+# Timezone Constants
+# =============================================================================
+
+TIMEZONE_UTC = "UTC"
+"""Default fallback timezone string. Used when no timezone is specified or invalid."""
+
+TIMEZONE_KEY = "timezone"
+"""Config/param key for user timezone. Used in nwbParam, ExptConfig, etc."""
+
+# Timezone objects for datetime.now() calls - centralized here for easy maintenance
+TZ_UTC = timezone.utc
+"""UTC timezone object for datetime.now() calls in system operations."""
 
 
 def get_current_datetime() -> datetime:
-    """
-    Get the current UTC datetime.
-
-    Returns:
-        datetime: Current datetime with UTC timezone
-
-    Example:
-        >>> from studio.app.common.core.utils.datetime_utils import get_current_datetime
-        >>> now = get_current_datetime()
-        >>> now.tzinfo
-        datetime.timezone.utc
-    """
-    return datetime.now(timezone.utc)
+    """Get the current UTC datetime."""
+    return datetime.now(TZ_UTC)
 
 
 def get_current_timestamp() -> float:
-    """
-    Get the current UTC timestamp as a float (seconds since epoch).
-
-    Returns:
-        float: Current UTC timestamp
-
-    Example:
-        >>> from studio.app.common.core.utils.datetime_utils import (
-        ...     get_current_timestamp
-        ... )
-        >>> ts = get_current_timestamp()
-    """
-    return datetime.now(timezone.utc).timestamp()
+    """Get the current UTC timestamp as a float (seconds since epoch)."""
+    return get_current_datetime().timestamp()
 
 
 def get_current_datetime_formatted(format_string: str = "%Y/%m/%d %H:%M:%S") -> str:
-    """
-    Get the current UTC datetime as a formatted string.
-
-    Args:
-        format_string: strftime format string (default: "%Y/%m/%d %H:%M:%S")
-
-    Returns:
-        str: Formatted datetime string
-
-    Example:
-        >>> from studio.app.common.core.utils.datetime_utils import (
-        ...     get_current_datetime_formatted
-        ... )
-        >>> formatted = get_current_datetime_formatted()
-        >>> formatted  # e.g., "2024/01/15 10:30:45"
-    """
-    return datetime.now(timezone.utc).strftime(format_string)
-
-
-def get_local_datetime_formatted(format_string: str = "%Y/%m/%d %H:%M:%S") -> str:
-    """
-    Get the current local datetime as a formatted string.
-
-    Use this for experiment timestamps that users correlate with their lab work,
-    notes, and other local-time-based records. For system operations, prefer
-    get_current_datetime_formatted() which returns UTC.
-
-    Args:
-        format_string: strftime format string (default: "%Y/%m/%d %H:%M:%S")
-
-    Returns:
-        str: Formatted datetime string in local timezone
-
-    Example:
-        >>> from studio.app.common.core.utils.datetime_utils import (
-        ...     get_local_datetime_formatted
-        ... )
-        >>> formatted = get_local_datetime_formatted()
-        >>> formatted  # e.g., "2024/01/15 10:30:45" (in local time)
-    """
-    return datetime.now(tzlocal()).strftime(format_string)
+    """Get the current UTC datetime as a formatted string."""
+    return get_current_datetime().strftime(format_string)
 
 
 def datetime_from_timestamp(timestamp: float) -> datetime:
+    """Convert a Unix timestamp to a UTC-aware datetime."""
+    return datetime.fromtimestamp(timestamp, tz=TZ_UTC)
+
+
+def get_datetime_for_timezone(timezone_str: str = None) -> datetime:
     """
-    Convert a Unix timestamp to a UTC-aware datetime.
+    Get the current datetime in the user's timezone.
+
+    Used for scientific data (NWB files, experiment logs) where the user's local
+    timezone matters for correlating with lab work.
 
     Args:
-        timestamp: Unix timestamp (seconds since epoch)
-
-    Returns:
-        datetime: UTC-aware datetime
-
-    Example:
-        >>> from studio.app.common.core.utils.datetime_utils import (
-        ...     datetime_from_timestamp
-        ... )
-        >>> dt = datetime_from_timestamp(1705312245.0)
-        >>> dt.tzinfo
-        datetime.timezone.utc
+        timezone_str: IANA timezone string from browser
+            (via Intl.DateTimeFormat().resolvedOptions().timeZone).
+            Falls back to UTC if None or invalid.
     """
-    return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    if not timezone_str:
+        return get_current_datetime()
+
+    try:
+        tz = ZoneInfo(timezone_str)
+        return datetime.now(tz)
+    except (ZoneInfoNotFoundError, KeyError) as e:
+        logger.warning(
+            f"Invalid timezone '{timezone_str}', falling back to {TIMEZONE_UTC}: {e}"
+        )
+        return get_current_datetime()
 
 
-def get_local_datetime() -> datetime:
+def get_datetime_for_timezone_formatted(
+    timezone_str: str = None, format_string: str = "%Y/%m/%d %H:%M:%S"
+) -> str:
     """
-    Get the current local datetime with timezone info.
+    Get the current datetime in the user's timezone as a formatted string.
 
-    Use this for scientific data where the actual local time of the experiment
-    matters (e.g., NWB session_start_time). For system operations, prefer
-    get_current_datetime() which returns UTC.
+    Used for experiment started_at/finished_at timestamps.
 
-    Returns:
-        datetime: Current datetime with local timezone
-
-    Example:
-        >>> from studio.app.common.core.utils.datetime_utils import get_local_datetime
-        >>> now = get_local_datetime()
-        >>> now.tzinfo is not None
-        True
+    Args:
+        timezone_str: IANA timezone string from browser. Falls back to UTC if None.
+        format_string: strftime format string (default: "%Y/%m/%d %H:%M:%S")
     """
-    return datetime.now(tzlocal())
+    dt = get_datetime_for_timezone(timezone_str)
+    return dt.strftime(format_string)
 
 
 def format_date_for_display(dt: datetime, format_string: str = "%Y-%m-%d") -> str:
     """
-    Format a datetime for user-facing display, appending UTC indicator.
+    Format a datetime for display, appending "(UTC)" indicator.
 
-    Use this when displaying dates to users (e.g., subscription dates) to make
-    it clear the date is in UTC.
-
-    Args:
-        dt: datetime to format (should be UTC-aware)
-        format_string: strftime format string (default: "%Y-%m-%d")
-
-    Returns:
-        str: Formatted date string with UTC indicator
-
-    Example:
-        >>> from studio.app.common.core.utils.datetime_utils import (
-        ...     format_date_for_display, datetime_from_timestamp
-        ... )
-        >>> dt = datetime_from_timestamp(1705312245.0)
-        >>> format_date_for_display(dt)
-        '2024-01-15 (UTC)'
+    Used for subscription dates and other user-facing UTC timestamps.
     """
-    return f"{dt.strftime(format_string)} (UTC)"
+    return f"{dt.strftime(format_string)} ({TIMEZONE_UTC})"

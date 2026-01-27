@@ -16,7 +16,10 @@ from pynwb.ophys import (
 )
 
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.utils.datetime_utils import get_local_datetime
+from studio.app.common.core.utils.datetime_utils import (
+    TIMEZONE_KEY,
+    get_datetime_for_timezone,
+)
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
 
@@ -24,11 +27,16 @@ from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
 class NWBCreater:
     @classmethod
     def acquisition(cls, config: dict):
+        # Get timezone from config if present (passed from user's browser)
+        # Falls back to UTC if not provided
+        timezone_str = config.get(TIMEZONE_KEY)
+        session_start_time = get_datetime_for_timezone(timezone_str)
+
         new_nwbfile = NWBFile(
             session_description=config["session_description"],
             identifier=config["identifier"],
             experiment_description=config["experiment_description"],
-            session_start_time=get_local_datetime(),
+            session_start_time=session_start_time,
         )
 
         # Create Device (microscope information)

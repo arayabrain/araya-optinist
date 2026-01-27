@@ -24,8 +24,9 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.utils.datetime_utils import (
+    TIMEZONE_KEY,
     datetime_from_timestamp,
-    get_local_datetime_formatted,
+    get_datetime_for_timezone_formatted,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.utils.pickle_handler import PickleReader
@@ -340,7 +341,9 @@ class NodeResult(BaseNodeResult):
         #   separate modification is required to record running info for each node.
         update_config_function.started_at = None
 
-        now = get_local_datetime_formatted(DATE_FORMAT)
+        # Use timezone from experiment config (user's browser timezone)
+        timezone = getattr(original_expt_config, TIMEZONE_KEY, None)
+        now = get_datetime_for_timezone_formatted(timezone, DATE_FORMAT)
         update_config_function.finished_at = now
         update_config_function.message = message.message
 

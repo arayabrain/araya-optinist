@@ -26,7 +26,9 @@ from studio.app.common.core.utils.config_handler import (
     ConfigWriter,
     differential_deep_merge,
 )
-from studio.app.common.core.utils.datetime_utils import get_local_datetime_formatted
+from studio.app.common.core.utils.datetime_utils import (
+    get_datetime_for_timezone_formatted,
+)
 from studio.app.common.core.utils.filelock_handler import FileLockUtils
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.workflow.workflow import (
@@ -49,12 +51,14 @@ class ExptConfigWriter:
         name: str = None,
         nwbfile: Dict = {},
         snakemake: Dict = {},
+        timezone: str = None,
     ) -> None:
         self.workspace_id = workspace_id
         self.unique_id = unique_id
         self.name = name
         self.nwbfile = nwbfile
         self.snakemake = snakemake
+        self.timezone = timezone  # User's browser timezone (IANA format)
         self.builder = ExptConfigBuilder()
 
     def write(self) -> None:
@@ -111,17 +115,20 @@ class ExptConfigWriter:
             self.builder.set_workspace_id(self.workspace_id)
             .set_unique_id(self.unique_id)
             .set_name(self.name)
-            .set_started_at(get_local_datetime_formatted(DATE_FORMAT))
+            .set_started_at(
+                get_datetime_for_timezone_formatted(self.timezone, DATE_FORMAT)
+            )
             .set_success(WorkflowRunStatus.RUNNING.value)
             .set_nwbfile(self.nwbfile)
             .set_snakemake(self.snakemake)
+            .set_timezone(self.timezone)
             .build()
         )
 
     def add_run_info(self) -> ExptConfig:
         return (
             self.builder.set_started_at(
-                get_local_datetime_formatted(DATE_FORMAT)
+                get_datetime_for_timezone_formatted(self.timezone, DATE_FORMAT)
             )  # Update time
             .set_success(WorkflowRunStatus.RUNNING.value)
             .build()
@@ -142,7 +149,9 @@ class ExptConfigWriter:
                 success=NodeRunStatus.RUNNING.value,
             )
             if node.data.type == "input":
-                timestamp = get_local_datetime_formatted(DATE_FORMAT)
+                timestamp = get_datetime_for_timezone_formatted(
+                    self.timezone, DATE_FORMAT
+                )
                 func_dict[node.id].started_at = timestamp
                 func_dict[node.id].finished_at = timestamp
                 func_dict[node.id].success = NodeRunStatus.SUCCESS.value
