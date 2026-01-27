@@ -334,18 +334,19 @@ async def _update_and_upload_metadata(
 
 def _get_file_extensions_for_type(file_type: str) -> List[str]:
     """Get file extensions for a given file type."""
-    if file_type == FILETYPE.IMAGE:
-        return ACCEPT_FILE_EXT.TIFF_EXT.value
-    elif file_type == FILETYPE.CSV:
-        return ACCEPT_FILE_EXT.CSV_EXT.value
-    elif file_type == FILETYPE.HDF5:
-        return ACCEPT_FILE_EXT.HDF5_EXT.value
-    elif file_type == FILETYPE.MICROSCOPE:
-        return ACCEPT_FILE_EXT.MICROSCOPE_EXT.value
-    elif file_type == FILETYPE.MATLAB:
-        return ACCEPT_FILE_EXT.MATLAB_EXT.value
-    else:
-        return []
+    match file_type:
+        case FILETYPE.IMAGE:
+            return ACCEPT_FILE_EXT.TIFF_EXT.value
+        case FILETYPE.CSV:
+            return ACCEPT_FILE_EXT.CSV_EXT.value
+        case FILETYPE.HDF5:
+            return ACCEPT_FILE_EXT.HDF5_EXT.value
+        case FILETYPE.MICROSCOPE:
+            return ACCEPT_FILE_EXT.MICROSCOPE_EXT.value
+        case FILETYPE.MATLAB:
+            return ACCEPT_FILE_EXT.MATLAB_EXT.value
+        case _:
+            return []
 
 
 def _extract_all_paths(nodes: List[TreeNode], prefix: str = "") -> set:
@@ -712,6 +713,39 @@ async def create_file(
 DOWNLOAD_STATUS: Dict[str, DownloadStatus] = {}
 
 
+def _remove_from_metadata_cache(workspace_id: str, filename: str) -> None:
+    """Remove a file entry from metadata cache files."""
+    dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
+
+    # Determine which metadata file to update based on file extension
+    if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
+        metadata_file = METADATA_IMAGE_SHAPE_FILE
+    elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
+        metadata_file = METADATA_HDF5_STRUCTURE_FILE
+    elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
+        metadata_file = METADATA_MAT_STRUCTURE_FILE
+    else:
+        return  # No metadata to clean up for this file type
+
+    metadata_path = join_filepath([dirpath, metadata_file])
+    if not os.path.exists(metadata_path):
+        return
+
+    try:
+        existing_data = JsonReader.read(metadata_path)
+        if filename in existing_data:
+            del existing_data[filename]
+            # Write back atomically
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=dirpath, suffix=".tmp", delete=False
+            ) as tmp_file:
+                json.dump(existing_data, tmp_file, indent=2)
+                tmp_path = tmp_file.name
+            os.replace(tmp_path, metadata_path)
+    except Exception as e:
+        logger.warning(f"Failed to remove {filename} from metadata cache: {e}")
+
+
 @router.delete(
     "/{workspace_id}/delete/{filename:path}",
     response_model=bool,
@@ -725,11 +759,28 @@ async def delete_file(
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
-    if not os.path.exists(filepath):
+    local_exists = os.path.exists(filepath)
+    remote_exists = False
+
+    # Check if file exists on S3
+    if RemoteStorageController.is_available():
+        try:
+            async with RemoteStorageSimpleReader(
+                remote_bucket_name
+            ) as remote_storage_controller:
+                s3_objects = await remote_storage_controller.list_input_data_objects(
+                    workspace_id
+                )
+                remote_exists = any(obj["filename"] == filename for obj in s3_objects)
+        except Exception as e:
+            logger.warning(f"Could not check S3 for file existence: {e}")
+
+    if not local_exists and not remote_exists:
         raise HTTPException(status_code=404, detail="File not found.")
+
     try:
         # Remove from remote storage if available
-        if RemoteStorageController.is_available():
+        if RemoteStorageController.is_available() and remote_exists:
             async with RemoteStorageSimpleWriter(
                 remote_bucket_name
             ) as remote_storage_controller:
@@ -737,8 +788,12 @@ async def delete_file(
                     workspace_id, filename
                 )
 
-        # Remove local file
-        os.remove(filepath)
+        # Remove local file if it exists
+        if local_exists:
+            os.remove(filepath)
+
+        # Clean up metadata cache entries
+        _remove_from_metadata_cache(workspace_id, filename)
 
         if WorkspaceDataCapacityService.is_available():
             background_tasks.add_task(

@@ -225,12 +225,13 @@ class WorkflowRunner:
 
         for filename, metadata_file in metadata_to_upload:
             try:
-                if metadata_file == METADATA_IMAGE_SHAPE_FILE:
-                    update_image_shape(self.workspace_id, filename)
-                elif metadata_file == METADATA_HDF5_STRUCTURE_FILE:
-                    update_hdf5_structure(self.workspace_id, filename)
-                elif metadata_file == METADATA_MAT_STRUCTURE_FILE:
-                    update_mat_structure(self.workspace_id, filename)
+                match metadata_file:
+                    case _ if metadata_file == METADATA_IMAGE_SHAPE_FILE:
+                        update_image_shape(self.workspace_id, filename)
+                    case _ if metadata_file == METADATA_HDF5_STRUCTURE_FILE:
+                        update_hdf5_structure(self.workspace_id, filename)
+                    case _ if metadata_file == METADATA_MAT_STRUCTURE_FILE:
+                        update_mat_structure(self.workspace_id, filename)
                 metadata_files_updated.add(metadata_file)
                 self.logger.debug(f"Updated metadata for {filename}")
             except Exception as e:

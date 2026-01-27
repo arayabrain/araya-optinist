@@ -1,6 +1,11 @@
 export const FILES_TREE_SLICE_NAME = "filesTree"
 
-export type SyncStatus = "local" | "synced" | "remote"
+// Sync status enum for file synchronization state
+export enum SyncStatus {
+  LOCAL = "local",
+  SYNCED = "synced",
+  REMOTE = "remote",
+}
 
 export type TreeNodeType = DirNode | FileNode
 

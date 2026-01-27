@@ -46,9 +46,9 @@ def test_get_files_merged(client):
 
 def test_sync_status_enum():
     """Test SyncStatus enum values."""
-    assert SyncStatus.LOCAL.value == "local"
-    assert SyncStatus.SYNCED.value == "synced"
-    assert SyncStatus.REMOTE.value == "remote"
+    assert SyncStatus.LOCAL == "local"
+    assert SyncStatus.SYNCED == "synced"
+    assert SyncStatus.REMOTE == "remote"
 
 
 def test_hdf5_structure_caching():

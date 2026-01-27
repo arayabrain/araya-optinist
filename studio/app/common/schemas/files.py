@@ -1,12 +1,13 @@
 from dataclasses import dataclass
-from enum import Enum
 from typing import List, Optional
 
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 from pydantic.networks import AnyHttpUrl
 
+from studio.app.common.core.compat import StrEnum
 
-class SyncStatus(str, Enum):
+
+class SyncStatus(StrEnum):
     LOCAL = "local"  # Only on local disk (not uploaded)
     SYNCED = "synced"  # Exists both locally and in S3
     REMOTE = "remote"  # Only in S3 (needs download before run)
