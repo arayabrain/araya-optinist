@@ -34,12 +34,7 @@ from studio.app.common.routers.files import (
     update_mat_structure,
 )
 from studio.app.common.schemas.workflow import WorkflowWithResults
-from studio.app.const import (
-    ACCEPT_FILE_EXT,
-    METADATA_HDF5_STRUCTURE_FILE,
-    METADATA_IMAGE_SHAPE_FILE,
-    METADATA_MAT_STRUCTURE_FILE,
-)
+from studio.app.const import ACCEPT_FILE_EXT, MetadataCacheFile
 from studio.app.dir_path import DIRPATH
 
 router = APIRouter(prefix="/workflow", tags=["workflow"])
@@ -265,7 +260,7 @@ async def import_sample_data(
             for tiff_file in tiff_files:
                 update_image_shape(workspace_id, tiff_file.name)
             await s3_controller.upload_input_data(
-                workspace_id, METADATA_IMAGE_SHAPE_FILE
+                workspace_id, MetadataCacheFile.IMAGE_SHAPE
             )
 
         # HDF5 files: .hdf5_structure.json
@@ -278,7 +273,7 @@ async def import_sample_data(
             for hdf5_file in hdf5_files:
                 update_hdf5_structure(workspace_id, hdf5_file.name)
             await s3_controller.upload_input_data(
-                workspace_id, METADATA_HDF5_STRUCTURE_FILE
+                workspace_id, MetadataCacheFile.HDF5_STRUCTURE
             )
 
         # MATLAB files: .mat_structure.json
@@ -291,7 +286,7 @@ async def import_sample_data(
             for mat_file in mat_files:
                 update_mat_structure(workspace_id, mat_file.name)
             await s3_controller.upload_input_data(
-                workspace_id, METADATA_MAT_STRUCTURE_FILE
+                workspace_id, MetadataCacheFile.MAT_STRUCTURE
             )
 
         # ------------------------------------------------------------

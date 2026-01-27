@@ -45,13 +45,7 @@ from studio.app.common.core.workflow.workflow import (
 )
 from studio.app.common.core.workflow.workflow_params import get_typecheck_params
 from studio.app.common.core.workflow.workflow_writer import WorkflowConfigWriter
-from studio.app.const import (
-    ACCEPT_FILE_EXT,
-    DATE_FORMAT,
-    METADATA_HDF5_STRUCTURE_FILE,
-    METADATA_IMAGE_SHAPE_FILE,
-    METADATA_MAT_STRUCTURE_FILE,
-)
+from studio.app.const import ACCEPT_FILE_EXT, DATE_FORMAT, MetadataCacheFile
 from studio.app.dir_path import DIRPATH
 
 
@@ -199,14 +193,14 @@ class WorkflowRunner:
         if metadata_to_upload:
             await self._update_and_upload_metadata(metadata_to_upload)
 
-    def _get_metadata_file_for(self, filename: str) -> Optional[str]:
+    def _get_metadata_file_for(self, filename: str) -> Optional[MetadataCacheFile]:
         """Get the metadata file name for a given input file type."""
         if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-            return METADATA_IMAGE_SHAPE_FILE
+            return MetadataCacheFile.IMAGE_SHAPE
         elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
-            return METADATA_HDF5_STRUCTURE_FILE
+            return MetadataCacheFile.HDF5_STRUCTURE
         elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
-            return METADATA_MAT_STRUCTURE_FILE
+            return MetadataCacheFile.MAT_STRUCTURE
         return None
 
     async def _update_and_upload_metadata(self, metadata_to_upload: set) -> None:
@@ -226,11 +220,11 @@ class WorkflowRunner:
         for filename, metadata_file in metadata_to_upload:
             try:
                 match metadata_file:
-                    case _ if metadata_file == METADATA_IMAGE_SHAPE_FILE:
+                    case MetadataCacheFile.IMAGE_SHAPE:
                         update_image_shape(self.workspace_id, filename)
-                    case _ if metadata_file == METADATA_HDF5_STRUCTURE_FILE:
+                    case MetadataCacheFile.HDF5_STRUCTURE:
                         update_hdf5_structure(self.workspace_id, filename)
-                    case _ if metadata_file == METADATA_MAT_STRUCTURE_FILE:
+                    case MetadataCacheFile.MAT_STRUCTURE:
                         update_mat_structure(self.workspace_id, filename)
                 metadata_files_updated.add(metadata_file)
                 self.logger.debug(f"Updated metadata for {filename}")

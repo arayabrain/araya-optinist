@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 
+from studio.app.common.core.compat import StrEnum
 from studio.app.common.core.utils.config_handler import get_env_var
 
 
@@ -43,7 +44,15 @@ LARGE_FILE_PATTERNS = tuple(ACCEPT_FILE_EXT.ALL_EXT.value + [".pkl"])
 # YAML for snakemake config
 VISUALIZATION_SYNC_PATTERNS = (".json", ".tif", ".tiff", ".yaml")
 
+
 # Metadata cache filenames for input data
-METADATA_IMAGE_SHAPE_FILE = ".image_shape.json"
-METADATA_HDF5_STRUCTURE_FILE = ".hdf5_structure.json"
-METADATA_MAT_STRUCTURE_FILE = ".mat_structure.json"
+class MetadataCacheFile(StrEnum):
+    IMAGE_SHAPE = ".image_shape.json"
+    HDF5_STRUCTURE = ".hdf5_structure.json"
+    MAT_STRUCTURE = ".mat_structure.json"
+
+
+# Backwards compatibility aliases (deprecated, use MetadataCacheFile instead)
+METADATA_IMAGE_SHAPE_FILE = MetadataCacheFile.IMAGE_SHAPE
+METADATA_HDF5_STRUCTURE_FILE = MetadataCacheFile.HDF5_STRUCTURE
+METADATA_MAT_STRUCTURE_FILE = MetadataCacheFile.MAT_STRUCTURE

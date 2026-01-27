@@ -50,13 +50,7 @@ from studio.app.common.schemas.files import (
     TreeNodeWithSync,
 )
 from studio.app.common.schemas.users import User
-from studio.app.const import (
-    ACCEPT_FILE_EXT,
-    FILETYPE,
-    METADATA_HDF5_STRUCTURE_FILE,
-    METADATA_IMAGE_SHAPE_FILE,
-    METADATA_MAT_STRUCTURE_FILE,
-)
+from studio.app.const import ACCEPT_FILE_EXT, FILETYPE, MetadataCacheFile
 from studio.app.dir_path import DIRPATH
 
 router = APIRouter(prefix="/files", tags=["files"])
@@ -141,7 +135,7 @@ def get_image_shape_dict(workspace_id):
     dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
     try:
         tiff_format_dict = JsonReader.read(
-            join_filepath([dirpath, METADATA_IMAGE_SHAPE_FILE])
+            join_filepath([dirpath, MetadataCacheFile.IMAGE_SHAPE])
         )
         return tiff_format_dict
     except FileNotFoundError:
@@ -159,7 +153,7 @@ def update_image_shape(workspace_id, relative_file_path):
         shape = []
 
     # Save to .image_shape.json with atomic write
-    tiff_format_file = join_filepath([dirpath, METADATA_IMAGE_SHAPE_FILE])
+    tiff_format_file = join_filepath([dirpath, MetadataCacheFile.IMAGE_SHAPE])
     _atomic_json_update(tiff_format_file, relative_file_path, {"shape": shape})
 
     return shape
@@ -238,7 +232,7 @@ def update_hdf5_structure(workspace_id: str, relative_file_path: str) -> List[di
         structure_dict = []
 
     # Save to .hdf5_structure.json with atomic write
-    structure_file = join_filepath([dirpath, METADATA_HDF5_STRUCTURE_FILE])
+    structure_file = join_filepath([dirpath, MetadataCacheFile.HDF5_STRUCTURE])
     _atomic_json_update(structure_file, relative_file_path, structure_dict)
 
     return structure_dict
@@ -266,7 +260,7 @@ def update_mat_structure(workspace_id: str, relative_file_path: str) -> List[dic
         structure_dict = []
 
     # Save to .mat_structure.json with atomic write
-    structure_file = join_filepath([dirpath, METADATA_MAT_STRUCTURE_FILE])
+    structure_file = join_filepath([dirpath, MetadataCacheFile.MAT_STRUCTURE])
     _atomic_json_update(structure_file, relative_file_path, structure_dict)
 
     return structure_dict
@@ -276,7 +270,9 @@ def get_hdf5_structure_dict(workspace_id: str) -> dict:
     """Get cached HDF5 structure dictionary."""
     dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
     try:
-        return JsonReader.read(join_filepath([dirpath, METADATA_HDF5_STRUCTURE_FILE]))
+        return JsonReader.read(
+            join_filepath([dirpath, MetadataCacheFile.HDF5_STRUCTURE])
+        )
     except FileNotFoundError:
         return {}
 
@@ -285,7 +281,9 @@ def get_mat_structure_dict(workspace_id: str) -> dict:
     """Get cached MATLAB structure dictionary."""
     dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
     try:
-        return JsonReader.read(join_filepath([dirpath, METADATA_MAT_STRUCTURE_FILE]))
+        return JsonReader.read(
+            join_filepath([dirpath, MetadataCacheFile.MAT_STRUCTURE])
+        )
     except FileNotFoundError:
         return {}
 
@@ -303,13 +301,13 @@ async def _update_and_upload_metadata(
         # Determine file type and update appropriate metadata
         if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
             update_image_shape(workspace_id, filename)
-            metadata_file = METADATA_IMAGE_SHAPE_FILE
+            metadata_file = MetadataCacheFile.IMAGE_SHAPE
         elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
             update_hdf5_structure(workspace_id, filename)
-            metadata_file = METADATA_HDF5_STRUCTURE_FILE
+            metadata_file = MetadataCacheFile.HDF5_STRUCTURE
         elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
             update_mat_structure(workspace_id, filename)
-            metadata_file = METADATA_MAT_STRUCTURE_FILE
+            metadata_file = MetadataCacheFile.MAT_STRUCTURE
         else:
             # No metadata to update for this file type
             return
@@ -500,7 +498,7 @@ async def get_files_merged(
                 remote_bucket_name
             ) as remote_storage_controller:
                 await remote_storage_controller.download_input_data(
-                    workspace_id, METADATA_IMAGE_SHAPE_FILE
+                    workspace_id, MetadataCacheFile.IMAGE_SHAPE
                 )
         except Exception as e:
             logger.debug(f"Could not download .image_shape.json: {e}")
@@ -678,15 +676,15 @@ async def create_file(
                 # Upload metadata files so they're available for remote-only files
                 if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
                     await remote_storage_controller.upload_input_data(
-                        workspace_id, METADATA_IMAGE_SHAPE_FILE
+                        workspace_id, MetadataCacheFile.IMAGE_SHAPE
                     )
                 elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
                     await remote_storage_controller.upload_input_data(
-                        workspace_id, METADATA_HDF5_STRUCTURE_FILE
+                        workspace_id, MetadataCacheFile.HDF5_STRUCTURE
                     )
                 elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
                     await remote_storage_controller.upload_input_data(
-                        workspace_id, METADATA_MAT_STRUCTURE_FILE
+                        workspace_id, MetadataCacheFile.MAT_STRUCTURE
                     )
 
         # Refresh storage cache in background to keep it up-to-date
@@ -719,11 +717,11 @@ def _remove_from_metadata_cache(workspace_id: str, filename: str) -> None:
 
     # Determine which metadata file to update based on file extension
     if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-        metadata_file = METADATA_IMAGE_SHAPE_FILE
+        metadata_file = MetadataCacheFile.IMAGE_SHAPE
     elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
-        metadata_file = METADATA_HDF5_STRUCTURE_FILE
+        metadata_file = MetadataCacheFile.HDF5_STRUCTURE
     elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
-        metadata_file = METADATA_MAT_STRUCTURE_FILE
+        metadata_file = MetadataCacheFile.MAT_STRUCTURE
     else:
         return  # No metadata to clean up for this file type
 

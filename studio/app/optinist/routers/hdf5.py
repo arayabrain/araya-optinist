@@ -11,7 +11,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.routers.files import get_hdf5_structure_dict
-from studio.app.const import METADATA_HDF5_STRUCTURE_FILE
+from studio.app.const import MetadataCacheFile
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.schemas.hdf5 import HDF5Node
 
@@ -116,7 +116,7 @@ async def get_files(
                 remote_bucket_name
             ) as remote_storage_controller:
                 await remote_storage_controller.download_input_data(
-                    workspace_id, METADATA_HDF5_STRUCTURE_FILE
+                    workspace_id, MetadataCacheFile.HDF5_STRUCTURE
                 )
         except Exception:
             pass  # Ignore errors - will fall back to file extraction
