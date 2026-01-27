@@ -40,7 +40,7 @@ All jobs are defined in `studio/app/common/core/background/`.
 
 ### Background Service (`background_service.tf`)
 
-- **Task Definition**: 512 CPU, 1024 MB memory, single worker
+- **Task Definition**: 512 CPU, 768 MB memory, single worker
 - **ECS Service**: `desired_count=1` (only one instance needed)
 - **Environment**: `DISABLE_BACKGROUND_SCHEDULER=0` (scheduler enabled)
 - **No ALB**: Background service doesn't serve HTTP traffic

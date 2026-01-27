@@ -71,7 +71,7 @@ graph TB
         D --> E[Generate JWT Token]
         E --> F[Return access_token]
         F --> G[Store in localStorage]
-        
+
         I[API Request] --> J{Has Token?}
         J -->|Yes| K[Add Authorization Header]
         J -->|No| L[Redirect to Login]
@@ -232,10 +232,10 @@ axios.interceptors.response.use(
 ```
 
 **Benefits:**
-- ✅ Single token refresh for concurrent 401s (efficient)
-- ✅ Queues requests during refresh (no duplicate refresh attempts)
-- ✅ Coordinates with logout to prevent race conditions
-- ✅ Processes all queued requests after successful refresh
+- Single token refresh for concurrent 401s (efficient)
+- Queues requests during refresh (no duplicate refresh attempts)
+- Coordinates with logout to prevent race conditions
+- Processes all queued requests after successful refresh
 
 ---
 
@@ -289,10 +289,10 @@ const getSetLoggingOut = async () => {
 ```
 
 **Benefits:**
-- ✅ Coordinates with axios interceptor via setLoggingOut flag
-- ✅ Clears session storage and warnings
-- ✅ Prevents token refresh during logout
-- ✅ Handles circular dependency with dynamic import
+- Coordinates with axios interceptor via setLoggingOut flag
+- Clears session storage and warnings
+- Prevents token refresh during logout
+- Handles circular dependency with dynamic import
 
 ---
 
@@ -379,10 +379,10 @@ const checkAuth = async () => {
 ```
 
 **Benefits:**
-- ✅ Detects logout during async operations
-- ✅ Multiple token checks prevent race conditions
-- ✅ Graceful handling of token removal mid-flow
-- ✅ Prevents navigation with stale token
+- Detects logout during async operations
+- Multiple token checks prevent race conditions
+- Graceful handling of token removal mid-flow
+- Prevents navigation with stale token
 
 ---
 
@@ -462,24 +462,24 @@ def __get_current_user_record(db: Session, uid: str):
 ```
 
 **Benefits:**
-- ✅ Complete user context in single query (auth + subscription + storage)
-- ✅ Subscription status available for middleware decisions
-- ✅ Storage quota available for upload validation
-- ✅ Grace period calculation handles expired subscriptions
+- Complete user context in single query (auth + subscription + storage)
+- Subscription status available for middleware decisions
+- Storage quota available for upload validation
+- Grace period calculation handles expired subscriptions
 
 **Return Value Additions:**
 
-| Field                         | Before | After     |
-|-------------------------------|--------|-----------|
-| `user`                        | ✅     | ✅         |
-| `role_id`                     | ✅     | ✅         |
-| `data_usage`                  | ✅     | ✅         |
-| `subscription_plan_name`      | ❌     | ✅ Added  |
-| `storage_usage_bytes`         | ❌     | ✅ Added  |
-| `storage_quota_bytes`         | ❌     | ✅ Added  |
-| `storage_usage_percent`       | ❌     | ✅ Added  |
-| `subscription_status`         | ❌     | ✅ Added  |
-| `subscription_days_remaining` | ❌     | ✅ Added  |
+| Field                         | Before | After       |
+|-------------------------------|--------|-------------|
+| `user`                        | Yes    | Yes         |
+| `role_id`                     | Yes    | Yes         |
+| `data_usage`                  | Yes    | Yes         |
+| `subscription_plan_name`      | No     | Yes - Added |
+| `storage_usage_bytes`         | No     | Yes - Added |
+| `storage_quota_bytes`         | No     | Yes - Added |
+| `storage_usage_percent`       | No     | Yes - Added |
+| `subscription_status`         | No     | Yes - Added |
+| `subscription_days_remaining` | No     | Yes - Added |
 
 ---
 
@@ -528,10 +528,10 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
 ```
 
 **Benefits:**
-- ✅ Proactive limit warnings at login
-- ✅ Bucket name fallback logic handles edge cases
-- ✅ Frontend can display warnings immediately
-- ✅ Better logging of user limit status
+- Proactive limit warnings at login
+- Bucket name fallback logic handles edge cases
+- Frontend can display warnings immediately
+- Better logging of user limit status
 
 ---
 
@@ -710,7 +710,7 @@ CREATE INDEX idx_logged_out_at ON free_user_assignments(logged_out_at);
 └─────────────────────────────────────────────────────────────┘
 ```
 
-#### After: Enhanced Login with Subscription
+#### After: Enhanced Login with Subscription (Lazy Metadata Sync)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -730,23 +730,23 @@ CREATE INDEX idx_logged_out_at ON free_user_assignments(logged_out_at);
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ 4. Download Experiments Metadata from S3                    │
-│    → remote_storage_controller.download_all_experiments()   │
-└─────────────────────────────────────────────────────────────┘
-                         ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 5. Calculate Limit Warnings                                 │
+│ 4. Calculate Limit Warnings                                 │
 │    → calculate_limit_warning(user.id)                       │
 │    → Check storage quota, subscription expiration           │
 │    → Include warnings in response                           │
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ 6. Return JWT Token + User Context                          │
+│ 5. Return JWT Token + User Context                          │
 │    → Frontend stores in localStorage                        │
 │    → User context includes subscription + storage           │
+│    → Experiment metadata sync handled lazily (not at login) │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+**Note:** Experiment metadata download is now handled **lazily**:
+- Workspace-level sync when user views experiments list (get_experiments)
+- Single experiment sync on-demand (ensure_synced_async)
 
 **Additions:**
 - 3 additional table joins (subscription, plans, storage)
@@ -813,9 +813,9 @@ CREATE INDEX idx_logged_out_at ON free_user_assignments(logged_out_at);
 ```
 
 **Benefits:**
-- ✅ Single refresh API call for concurrent 401s (efficient)
-- ✅ Queues requests during refresh
-- ✅ Coordinates all requests after successful refresh
+- Single refresh API call for concurrent 401s (efficient)
+- Queues requests during refresh
+- Coordinates all requests after successful refresh
 
 ---
 
@@ -888,10 +888,10 @@ CREATE INDEX idx_logged_out_at ON free_user_assignments(logged_out_at);
 ```
 
 **Benefits:**
-- ✅ Coordinates with axios interceptor
-- ✅ Prevents token refresh during logout
-- ✅ Cleans up session storage
-- ✅ Clear request queue during logout
+- Coordinates with axios interceptor
+- Prevents token refresh during logout
+- Cleans up session storage
+- Clear request queue during logout
 
 ---
 

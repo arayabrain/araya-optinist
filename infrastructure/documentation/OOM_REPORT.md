@@ -463,7 +463,7 @@ Poll 32 (+210s):     3.311 GiB (50.94%)  - idle, all workflows done
 | Peak Container Memory | 99.95% | **82.29%** | 17.66% lower |
 | Peak Host Free RAM | 130 MB | **196 MB** | 50% more headroom |
 | Swap Buffer | 0 (none) | **~3.3 GB used** | Safety net active |
-| Near OOM? | ⚠️ YES (0.05% margin) | ✅ NO (~18% margin) | Much safer |
+| Near OOM? | YES (0.05% margin) | NO (~18% margin) | Much safer |
 
 ### Timeline of Memory Usage with Swap
 

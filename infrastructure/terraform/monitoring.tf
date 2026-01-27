@@ -643,7 +643,7 @@ resource "aws_cloudwatch_dashboard" "main" {
         width  = 24
         height = 4
         properties = {
-          title  = "Alarm Status Overview"
+          title = "Alarm Status Overview"
           alarms = [
             # Background Service Alarms
             aws_cloudwatch_metric_alarm.background_task_stopped.arn,

@@ -137,11 +137,11 @@ cd infrastructure/scripts
 ```
 
 **Script automatically:**
-1. ✅ Gets infrastructure configuration (tries Terraform outputs first, then prompts if unavailable)
-2. ✅ Builds frontend with correct environment variables
-3. ✅ Builds and tags Docker image
-4. ✅ Pushes to ECR
-5. ✅ ECS automatically deploys the new image
+1. - Gets infrastructure configuration (tries Terraform outputs first, then prompts if unavailable)
+2. - Builds frontend with correct environment variables
+3. - Builds and tags Docker image
+4. - Pushes to ECR
+5. - ECS automatically deploys the new image
 
 **If Terraform outputs aren't available, you'll be prompted for:**
 - Frontend Host: `araya-optinist.com` (or ALB DNS)
