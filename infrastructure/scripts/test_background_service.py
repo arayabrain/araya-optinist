@@ -41,7 +41,7 @@ PERFORMANCE IMPACT:
 
 import argparse
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import boto3
 from botocore.exceptions import ClientError
@@ -212,8 +212,10 @@ class BackgroundServiceTester:
         """
         try:
             # Query recent logs (last 2 hours to catch periodic job runs)
-            end_time = int(datetime.now().timestamp() * 1000)
-            start_time = int((datetime.now() - timedelta(hours=2)).timestamp() * 1000)
+            end_time = int(datetime.now(timezone.utc).timestamp() * 1000)
+            start_time = int(
+                (datetime.now(timezone.utc) - timedelta(hours=2)).timestamp() * 1000
+            )
 
             response = self.logs.filter_log_events(
                 logGroupName=log_group,
