@@ -50,9 +50,3 @@ class MetadataCacheFile(StrEnum):
     IMAGE_SHAPE = ".image_shape.json"
     HDF5_STRUCTURE = ".hdf5_structure.json"
     MAT_STRUCTURE = ".mat_structure.json"
-
-
-# Backwards compatibility aliases (deprecated, use MetadataCacheFile instead)
-METADATA_IMAGE_SHAPE_FILE = MetadataCacheFile.IMAGE_SHAPE
-METADATA_HDF5_STRUCTURE_FILE = MetadataCacheFile.HDF5_STRUCTURE
-METADATA_MAT_STRUCTURE_FILE = MetadataCacheFile.MAT_STRUCTURE
