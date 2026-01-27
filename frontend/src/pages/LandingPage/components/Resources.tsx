@@ -15,7 +15,7 @@ const resources: ResourceLink[] = [
     title: "GitHub Repository",
     description:
       "Explore the source code, report issues, and contribute to the project.",
-    link: "https://github.com/your-org/optinist",
+    link: "https://github.com/arayabrain/optinist-for-cloud",
     linkText: "View on GitHub",
     color: "primary",
   },
@@ -24,7 +24,7 @@ const resources: ResourceLink[] = [
     title: "Documentation",
     description:
       "Comprehensive guides, tutorials, and API references to get you started.",
-    link: "https://docs.optinist.org",
+    link: "https://optinist.readthedocs.io/en/latest/index.html",
     linkText: "Read the Docs",
     color: "teal",
   },

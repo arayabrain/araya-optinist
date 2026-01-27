@@ -1,7 +1,9 @@
 import React, { useState } from "react"
+import { useNavigate } from "react-router-dom"
 
 export const Header: React.FC = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const navigate = useNavigate()
 
   return (
     <header className="landing-header">
@@ -25,7 +27,12 @@ export const Header: React.FC = () => {
           <a className="landing-nav-link" href="#">
             Documentation
           </a>
-          <button className="landing-btn-primary">Get Started</button>
+          <button
+            className="landing-btn-primary"
+            onClick={() => navigate("/login")}
+          >
+            Get Started
+          </button>
         </nav>
         <button
           className="landing-mobile-menu-btn"
@@ -50,7 +57,10 @@ export const Header: React.FC = () => {
           <a className="landing-mobile-nav-link" href="#">
             Documentation
           </a>
-          <button className="landing-btn-primary landing-btn-full">
+          <button
+            className="landing-btn-primary landing-btn-full"
+            onClick={() => navigate("/login")}
+          >
             Get Started
           </button>
         </div>
