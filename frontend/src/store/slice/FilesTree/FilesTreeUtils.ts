@@ -1,5 +1,9 @@
-import { TreeNodeTypeDTO, TreeNodeWithSyncDTO } from "api/files/Files"
-import { SyncStatus, TreeNodeType } from "store/slice/FilesTree/FilesTreeType"
+import {
+  SyncStatus,
+  TreeNodeTypeDTO,
+  TreeNodeWithSyncDTO,
+} from "api/files/Files"
+import { TreeNodeType } from "store/slice/FilesTree/FilesTreeType"
 
 // Helper to convert snake_case sync_status to camelCase syncStatus
 function convertSyncStatus(dto: TreeNodeWithSyncDTO): SyncStatus | undefined {

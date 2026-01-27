@@ -58,7 +58,7 @@ import Typography from "@mui/material/Typography"
 import { TreeItem } from "@mui/x-tree-view/TreeItem"
 import { TreeView } from "@mui/x-tree-view/TreeView"
 
-import { FILE_TREE_TYPE, FILE_TREE_TYPE_SET } from "api/files/Files"
+import { FILE_TREE_TYPE, FILE_TREE_TYPE_SET , SyncStatus } from "api/files/Files"
 import { ConfirmDialog } from "components/common/ConfirmDialog"
 import { DialogContext } from "components/Workspace/FlowChart/Dialog/DialogContext"
 import { deleteFile, getFilesTree } from "store/slice/FilesTree/FilesTreeAction"
@@ -67,7 +67,7 @@ import {
   selectFilesIsLoading,
   selectFilesTreeNodes,
 } from "store/slice/FilesTree/FilesTreeSelectors"
-import { SyncStatus, TreeNodeType } from "store/slice/FilesTree/FilesTreeType"
+import { TreeNodeType } from "store/slice/FilesTree/FilesTreeType"
 import { getNodeByPath } from "store/slice/FilesTree/FilesTreeUtils"
 import { updateShape } from "store/slice/FileUploader/FileUploaderActions"
 import { selectPipelineLatestUid } from "store/slice/Pipeline/PipelineSelectors"

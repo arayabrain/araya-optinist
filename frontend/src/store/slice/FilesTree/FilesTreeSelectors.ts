@@ -1,5 +1,5 @@
-import { FILE_TREE_TYPE } from "api/files/Files"
-import { SyncStatus, TreeNodeType } from "store/slice/FilesTree/FilesTreeType"
+import { FILE_TREE_TYPE, SyncStatus } from "api/files/Files"
+import { TreeNodeType } from "store/slice/FilesTree/FilesTreeType"
 import { RootState } from "store/store"
 
 export const selectFilesTree =
