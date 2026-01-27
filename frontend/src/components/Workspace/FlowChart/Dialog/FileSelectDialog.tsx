@@ -856,7 +856,7 @@ export const FileTreeItemLabel = memo(function FileTreeItemLabel({
             <Box sx={{ ...commonStyles.ellipsis, whiteSpace: "pre", flex: 1 }}>
               {label}
             </Box>
-            {syncStatus === "remote" && (
+            {syncStatus === SyncStatus.REMOTE && (
               <Tooltip title="File in cloud - will download when workflow runs">
                 <CloudOutlinedIcon
                   fontSize="small"

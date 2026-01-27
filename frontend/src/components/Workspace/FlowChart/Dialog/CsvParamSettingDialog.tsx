@@ -28,6 +28,7 @@ import {
 } from "store/slice/DisplayData/DisplayDataSelectors"
 import { getFilesTree } from "store/slice/FilesTree/FilesTreeAction"
 import { selectFileSyncStatus } from "store/slice/FilesTree/FilesTreeSelectors"
+import { SyncStatus } from "store/slice/FilesTree/FilesTreeType"
 import { NodeIdProps } from "store/slice/FlowElement/FlowElementType"
 import {
   selectCsvInputNodeParamSetHeader,
@@ -84,7 +85,7 @@ export const CsvParamSettingDialog = memo(function CsvParamSettingDialog({
     if (!workspaceId) return
 
     // If file is remote-only, sync it first
-    if (syncStatus === "remote") {
+    if (syncStatus === SyncStatus.REMOTE) {
       setIsSyncing(true)
       try {
         await syncInputFileApi(workspaceId, filePath)

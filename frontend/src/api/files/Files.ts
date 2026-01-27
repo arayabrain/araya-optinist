@@ -2,6 +2,7 @@ import { AxiosProgressEvent } from "axios"
 
 import { FILE_TREE_TYPE_SET } from "config/fileTypes.config"
 import { API_TIMEOUT, BASE_URL } from "const/API"
+import { SyncStatus } from "store/slice/FilesTree/FilesTreeType"
 import axios from "utils/axios"
 
 // Re-export for convenience - FILE_TREE_TYPE depends on FILE_TREE_TYPE_SET
@@ -9,8 +10,6 @@ export { FILE_TREE_TYPE_SET }
 
 export type FILE_TREE_TYPE =
   (typeof FILE_TREE_TYPE_SET)[keyof typeof FILE_TREE_TYPE_SET]
-
-export type SyncStatus = "local" | "synced" | "remote"
 
 export type TreeNodeTypeDTO = DirNodeDTO | FileNodeDTO
 
