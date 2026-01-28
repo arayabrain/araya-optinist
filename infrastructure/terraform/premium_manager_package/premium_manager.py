@@ -3277,7 +3277,8 @@ def trigger_experiment_sync(user_id: int) -> bool:
     Returns:
         True if sync was initiated successfully, False otherwise
     """
-    import requests
+    import ssl
+    import urllib.request
 
     alb_dns = os.environ.get("ALB_DNS_NAME")
     internal_secret = os.environ.get("INTERNAL_API_SECRET")
@@ -3296,16 +3297,18 @@ def trigger_experiment_sync(user_id: int) -> bool:
     }
 
     try:
-        response = requests.post(url, headers=headers, timeout=10.0, verify=True)
-        if response.status_code == 200:
-            print(f"Experiment sync initiated for user {user_id}")
-            return True
-        else:
-            print(
-                f"Experiment sync request failed for user {user_id}: "
-                f"status {response.status_code}"
-            )
-            return False
+        req = urllib.request.Request(url, method="POST", headers=headers, data=b"")
+        context = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=10.0, context=context) as response:
+            if response.status == 200:
+                print(f"Experiment sync initiated for user {user_id}")
+                return True
+            else:
+                print(
+                    f"Experiment sync request failed for user {user_id}: "
+                    f"status {response.status}"
+                )
+                return False
     except Exception as e:
         # Don't fail migration if sync fails - user can still work
         print(f"Failed to trigger experiment sync for user {user_id}: {e}")
