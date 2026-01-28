@@ -34,6 +34,7 @@ class ExptConfig:
     nwb: NWBParams
     snakemake: SmkParam
     data_usage: Optional[int]
+    timezone: Optional[str] = None  # User's browser timezone (IANA format)
 
     @staticmethod
     def required_fields():

@@ -1,4 +1,3 @@
-from datetime import datetime
 from typing import Optional
 
 import stripe
@@ -13,6 +12,10 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionCurrencyType,
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
+from studio.app.common.core.utils.datetime_utils import (
+    datetime_from_timestamp,
+    format_date_for_display,
+)
 from studio.app.common.schemas.subscriptions import (
     CancelSubscriptionResponse,
     CreateSetupIntentResponse,
@@ -481,9 +484,8 @@ class StripeService:
             ]
 
             logger.info(f"Current period end timestamp: {current_period_end}")
-            logger.info(
-                f"Current period end date: {datetime.fromtimestamp(current_period_end)}"
-            )
+            period_end_dt = datetime_from_timestamp(current_period_end)
+            logger.info(f"Current period end date: {period_end_dt}")
 
             # Schedule change at period end using proper Stripe schedules
             current_period_end = stripe_subscription["items"]["data"][0][
@@ -519,10 +521,10 @@ class StripeService:
                 },
             )
 
-            change_date = datetime.fromtimestamp(current_period_end)
+            change_date = datetime_from_timestamp(current_period_end)
             message = (
                 f"Subscription will change to {new_plan.name} on "
-                f"{change_date.strftime('%Y-%m-%d')}"
+                f"{format_date_for_display(change_date)}"
             )
             effective_date = int(current_period_end)
 
@@ -642,10 +644,10 @@ class StripeService:
 
         # Database will be updated via customer.subscription.updated webhook
 
-        access_until_date = datetime.fromtimestamp(current_period_end)
+        access_until_date = datetime_from_timestamp(current_period_end)
         message = (
             f"Subscription will be cancelled on "
-            f"{access_until_date.strftime('%Y-%m-%d')}. "
+            f"{format_date_for_display(access_until_date)}. "
             f"You will retain access until then."
         )
 

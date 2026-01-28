@@ -2,7 +2,6 @@ import os
 import time
 import uuid
 from dataclasses import asdict
-from datetime import datetime
 from typing import Dict, List, Optional
 
 from fastapi import BackgroundTasks
@@ -30,6 +29,10 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteSyncAction,
     RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
+)
+from studio.app.common.core.utils.datetime_utils import (
+    TIMEZONE_KEY,
+    get_datetime_for_timezone_formatted,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.workflow.workflow import (
@@ -90,12 +93,28 @@ class WorkflowRunner:
             self.edgeDict,
         ).write()
 
+        # Extract timezone from nwbParam before validation (not in default params).
+        # Passed from browser in ParamChild format: {type: "child", value: "..."}
+        timezone = None
+        raw_nwb_param = self.runItem.nwbParam
+        if raw_nwb_param and isinstance(raw_nwb_param, dict):
+            timezone_param = raw_nwb_param.pop(TIMEZONE_KEY, None)
+            if timezone_param and isinstance(timezone_param, dict):
+                timezone = timezone_param.get("value")
+
+        nwb_params = get_typecheck_params(raw_nwb_param, "nwb")
+
+        # Re-add timezone to nwb_params for passing to snakemake config
+        if timezone and nwb_params:
+            nwb_params[TIMEZONE_KEY] = timezone
+
         ExptConfigWriter(
             self.workspace_id,
             self.unique_id,
             self.runItem.name,
-            nwbfile=get_typecheck_params(self.runItem.nwbParam, "nwb"),
+            nwbfile=nwb_params,
             snakemake=get_typecheck_params(self.runItem.snakemakeParam, "snakemake"),
+            timezone=timezone,
         ).write()
 
         Runner.clear_pid_file(self.workspace_id, self.unique_id)
@@ -328,7 +347,9 @@ class WorkflowRunner:
 
         # Construct update data (ExptConfig.*)
         update_expt_config = ExptConfigReader.create_empty_experiment_config()
-        now = datetime.now().strftime(DATE_FORMAT)
+        # Use timezone from experiment config (user's browser timezone)
+        timezone = getattr(expt_config, TIMEZONE_KEY, None)
+        now = get_datetime_for_timezone_formatted(timezone, DATE_FORMAT)
         update_expt_config.success = status.value
         update_expt_config.finished_at = now
         update_expt_config.data_usage = 0

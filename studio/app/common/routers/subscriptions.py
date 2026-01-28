@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import timezone
 from typing import List, Optional
 
 import stripe
@@ -21,6 +21,11 @@ from studio.app.common.core.subscription.stripe_service import (
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.webhook_service import WebhookService
+from studio.app.common.core.utils.datetime_utils import (
+    datetime_from_timestamp,
+    get_current_datetime,
+    get_current_timestamp,
+)
 from studio.app.common.db.database import get_db
 from studio.app.common.models.subscription import SubscriptionPlans
 from studio.app.common.models.user import User as UserModel
@@ -214,7 +219,7 @@ async def update_user_subscription(
 
 @router.get("/mgmts/server-time")
 async def get_server_time():
-    utc_time = datetime.now(timezone.utc)
+    utc_time = get_current_datetime()
     return {"server_time": utc_time.isoformat()}
 
 
@@ -317,9 +322,7 @@ async def reactivate_user_subscription(
             metadata={
                 **stripe_subscription.metadata,
                 "cancellation_requested": "false",
-                "reactivation_requested_at": str(
-                    int(datetime.now(timezone.utc).timestamp())
-                ),
+                "reactivation_requested_at": str(int(get_current_timestamp())),
             },
         )
 
@@ -623,7 +626,7 @@ async def get_user_invoices(
             # Convert Stripe invoice to our response format
             invoice_response = InvoiceResponse(
                 id=invoice.id,
-                date=datetime.fromtimestamp(invoice.created).isoformat(),
+                date=datetime_from_timestamp(invoice.created).isoformat(),
                 total=f"${(invoice.total / 100):.2f}",  # Convert cents to dollars
                 status=invoice.status.title(),  # Capitalize status
                 invoice_url=invoice.hosted_invoice_url or invoice.invoice_pdf or "",
@@ -632,12 +635,12 @@ async def get_user_invoices(
                 currency=invoice.currency.upper(),
                 description=invoice.description or "Subscription payment",
                 period_start=(
-                    datetime.fromtimestamp(invoice.period_start).isoformat()
+                    datetime_from_timestamp(invoice.period_start).isoformat()
                     if invoice.period_start
                     else None
                 ),
                 period_end=(
-                    datetime.fromtimestamp(invoice.period_end).isoformat()
+                    datetime_from_timestamp(invoice.period_end).isoformat()
                     if invoice.period_end
                     else None
                 ),

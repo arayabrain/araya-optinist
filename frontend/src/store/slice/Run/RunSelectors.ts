@@ -107,6 +107,28 @@ const selectEdgeDictForRun = (state: RootState) => {
   return edgeDict
 }
 
+/**
+ * Timezone constants for frontend/backend synchronization.
+ * Backend equivalent: studio/app/common/core/utils/datetime_utils.py
+ * Keep these values in sync when updating either file.
+ */
+const TIMEZONE_UTC = "UTC" // Matches TIMEZONE_UTC in datetime_utils.py
+const TIMEZONE_KEY = "timezone" // Matches TIMEZONE_KEY in datetime_utils.py
+
+/**
+ * Get the user's browser timezone (IANA format).
+ * This is used for user-facing timestamps (NWB files, experiment logs)
+ * so researchers can correlate experiment times with their local records.
+ */
+const getBrowserTimezone = (): string => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone
+  } catch {
+    // Fallback to UTC if browser doesn't support Intl API
+    return TIMEZONE_UTC
+  }
+}
+
 export const selectRunPostData = createSelector(
   selectNwbParams,
   selectSnakemakeParams,
@@ -120,8 +142,19 @@ export const selectRunPostData = createSelector(
     nodeDictForRun,
     forceRunList,
   ) => {
+    // Include browser timezone in nwbParam for user-facing timestamps
+    // Wrapped in ParamChild structure to match ParamMap type
+    const nwbParamWithTimezone = {
+      ...nwbParams,
+      [TIMEZONE_KEY]: {
+        type: "child" as const,
+        value: getBrowserTimezone(),
+        path: TIMEZONE_KEY,
+      },
+    }
+
     const runPostData: Omit<RunPostData, "name"> = {
-      nwbParam: nwbParams,
+      nwbParam: nwbParamWithTimezone,
       snakemakeParam: snakemakeParams,
       edgeDict: edgeDictForRun,
       nodeDict: nodeDictForRun,

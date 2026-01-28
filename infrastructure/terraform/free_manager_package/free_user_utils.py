@@ -8,7 +8,7 @@ This module provides utility functions for the Free Manager Lambda to:
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 
 import pymysql
@@ -159,7 +159,7 @@ def count_active_free_users(activity_threshold_minutes: int = 10) -> int:
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                activity_cutoff = datetime.now() - timedelta(
+                activity_cutoff = datetime.now(timezone.utc) - timedelta(
                     minutes=activity_threshold_minutes
                 )
 
@@ -191,7 +191,7 @@ def get_users_per_instance(activity_threshold_minutes: int = 10) -> Dict[str, in
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                activity_cutoff = datetime.now() - timedelta(
+                activity_cutoff = datetime.now(timezone.utc) - timedelta(
                     minutes=activity_threshold_minutes
                 )
 

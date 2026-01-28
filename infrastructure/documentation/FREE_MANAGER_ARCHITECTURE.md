@@ -271,7 +271,7 @@ class FreeUserActivityMiddleware:
             update_free_user_activity(
                 user_id=user.id,
                 instance_id=instance_id,
-                last_activity=datetime.now()
+                last_activity=datetime.now(timezone.utc)
             )
 
         return await self.app(request)
@@ -623,8 +623,8 @@ def is_scaling_in_progress() -> bool:
                 "Stat": "Maximum"
             }
         }],
-        StartTime=datetime.now() - timedelta(minutes=15),
-        EndTime=datetime.now()
+        StartTime=datetime.now(timezone.utc) - timedelta(minutes=15),
+        EndTime=datetime.now(timezone.utc)
     )
 
     values = response["MetricDataResults"][0].get("Values", [])

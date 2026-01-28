@@ -17,7 +17,11 @@ import {
   IconButton,
 } from "@mui/material"
 
-import { FILE_TREE_TYPE_SET, syncInputFileApi , SyncStatus } from "api/files/Files"
+import {
+  FILE_TREE_TYPE_SET,
+  syncInputFileApi,
+  SyncStatus,
+} from "api/files/Files"
 import { PresentationalCsvPlot } from "components/Workspace/Visualize/Plot/CsvPlot"
 import { getCsvData } from "store/slice/DisplayData/DisplayDataActions"
 import {

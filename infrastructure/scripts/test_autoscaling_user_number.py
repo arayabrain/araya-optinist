@@ -92,7 +92,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from threading import Event, Thread
 from typing import Dict, List, Tuple
@@ -102,8 +102,13 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# Add parent directory for shared infrastructure imports
+# Add project root and parent directory for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+from studio.app.common.core.utils.datetime_utils import (  # noqa: E402
+    get_current_datetime,
+)
 
 # Import token generation utilities
 try:
@@ -500,8 +505,10 @@ class AutoscalingUserNumberTest:
                             "ReturnData": True,
                         }
                     ],
-                    StartTime=int((datetime.now() - timedelta(minutes=2)).timestamp()),
-                    EndTime=int(datetime.now().timestamp()),
+                    StartTime=int(
+                        (get_current_datetime() - timedelta(minutes=2)).timestamp()
+                    ),
+                    EndTime=int(get_current_datetime().timestamp()),
                 )
 
                 values = response["MetricDataResults"][0].get("Values", [])
@@ -681,7 +688,7 @@ class AutoscalingUserNumberTest:
         """Get recent Lambda execution logs."""
         log_group = f"/aws/lambda/{self.config.lambda_function_name}"
         start_time = int(
-            (datetime.now() - timedelta(minutes=minutes)).timestamp() * 1000
+            (get_current_datetime() - timedelta(minutes=minutes)).timestamp() * 1000
         )
 
         try:

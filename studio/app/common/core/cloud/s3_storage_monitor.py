@@ -5,7 +5,6 @@ Monitors S3 storage usage and generates alerts when thresholds are exceeded.
 
 import asyncio
 import os
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 import boto3
@@ -28,6 +27,7 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionType,
 )
 from studio.app.common.core.users import crud_users
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import session_scope
 
 logger = AppLogger.get_logger()
@@ -404,7 +404,7 @@ class S3StorageMonitor:
                     "storage_usage_bytes": current_s3_usage,
                     "storage_quota_bytes": storage_quota,
                     "storage_usage_percent": round(storage_usage_percent, 2),
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": get_current_datetime().isoformat(),
                 }
 
         except Exception as e:

@@ -14,10 +14,8 @@ Prerequisites:
 import asyncio
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
-
-from studio.app.common.core.subscription.constants import StorageSize
 
 # Add the project root directory to the Python path
 project_root = Path(__file__).parent.parent.parent
@@ -29,7 +27,9 @@ try:
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
+    from studio.app.common.core.subscription.constants import StorageSize
     from studio.app.common.core.users.crud_users import set_role
+    from studio.app.common.core.utils.datetime_utils import get_current_datetime
     from studio.app.common.models.subscription import UserStorageUsage, UserSubscription
     from studio.app.common.models.user import Organization
 except ImportError as e:
@@ -108,16 +108,16 @@ async def create_test_user_in_db(db, user_data, organization_id):
                 or "grace_over" in user_data["email"]
             ):
                 # Grace period users: expired 15 days ago (within 30-day grace period)
-                expiration_date = datetime.now(timezone.utc) - timedelta(days=15)
+                expiration_date = get_current_datetime() - timedelta(days=15)
             elif "expire" in user_data["email"]:
                 # Overdue user: expired 50 days ago (past grace, in warning period)
-                expiration_date = datetime.now(timezone.utc) - timedelta(days=50)
+                expiration_date = get_current_datetime() - timedelta(days=50)
             else:
                 # Other premium users get active subscriptions for priority testing
-                expiration_date = datetime.now(timezone.utc) + timedelta(days=365)
+                expiration_date = get_current_datetime() + timedelta(days=365)
         else:
             # For other paid plans, set future expiration
-            expiration_date = datetime.now(timezone.utc) + timedelta(days=365)
+            expiration_date = get_current_datetime() + timedelta(days=365)
 
         subscription = UserSubscription(
             plan_id=user_data["subscription_plan_id"],

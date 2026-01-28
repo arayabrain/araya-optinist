@@ -8,7 +8,7 @@ Tests cover:
 - _get_fallback_storage_quota() - Subscription plan determination
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from unittest.mock import Mock, patch
 
 import pytest
@@ -25,6 +25,7 @@ from studio.app.common.core.subscription.constants import (
     StorageSize,
     SubscriptionPeriods,
 )
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 
 # ============================================================================
 # Fixtures
@@ -65,7 +66,7 @@ def mock_storage_info_fresh():
         "storage_usage_bytes": 1_000_000_000,  # 1 GB
         "storage_quota_bytes": 5_000_000_000,  # 5 GB
         "storage_usage_percent": 20.0,
-        "last_updated": datetime.now(timezone.utc) - timedelta(minutes=10),
+        "last_updated": get_current_datetime() - timedelta(minutes=10),
     }
 
 
@@ -77,7 +78,7 @@ def mock_storage_info_stale():
         "storage_usage_bytes": 1_000_000_000,
         "storage_quota_bytes": 5_000_000_000,
         "storage_usage_percent": 20.0,
-        "last_updated": datetime.now(timezone.utc) - timedelta(minutes=30),
+        "last_updated": get_current_datetime() - timedelta(minutes=30),
     }
 
 
@@ -165,7 +166,7 @@ def test_get_fallback_storage_quota_database_error():
 
 def test_is_storage_data_fresh_within_cache_window():
     """Test that fresh data (within cache window) returns True"""
-    storage_info = {"last_updated": datetime.now(timezone.utc) - timedelta(minutes=10)}
+    storage_info = {"last_updated": get_current_datetime() - timedelta(minutes=10)}
 
     result = _is_storage_data_fresh(
         storage_info, SubscriptionPeriods.MAX_CACHE_AGE_MINUTES
@@ -176,7 +177,7 @@ def test_is_storage_data_fresh_within_cache_window():
 
 def test_is_storage_data_fresh_outside_cache_window():
     """Test that stale data (outside cache window) returns False"""
-    storage_info = {"last_updated": datetime.now(timezone.utc) - timedelta(minutes=30)}
+    storage_info = {"last_updated": get_current_datetime() - timedelta(minutes=30)}
 
     result = _is_storage_data_fresh(
         storage_info, SubscriptionPeriods.MAX_CACHE_AGE_MINUTES
@@ -199,7 +200,7 @@ def test_is_storage_data_fresh_missing_last_updated():
 def test_is_storage_data_fresh_string_format():
     """Test that ISO string format timestamps work correctly"""
     # Create timestamp as ISO string
-    timestamp = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    timestamp = (get_current_datetime() - timedelta(minutes=5)).isoformat()
     storage_info = {"last_updated": timestamp}
 
     result = _is_storage_data_fresh(
@@ -213,7 +214,7 @@ def test_is_storage_data_fresh_string_format_with_z():
     """Test that ISO string with 'Z' suffix (UTC) works correctly"""
     # Create timestamp with Z suffix (common in JSON APIs)
     timestamp = (
-        (datetime.now(timezone.utc) - timedelta(minutes=5))
+        (get_current_datetime() - timedelta(minutes=5))
         .isoformat()
         .replace("+00:00", "Z")
     )
@@ -240,7 +241,7 @@ def test_is_storage_data_fresh_invalid_string_format():
 def test_is_storage_data_fresh_exactly_at_boundary():
     """Test boundary condition: exactly at max_cache_age_minutes"""
     storage_info = {
-        "last_updated": datetime.now(timezone.utc)
+        "last_updated": get_current_datetime()
         - timedelta(minutes=SubscriptionPeriods.MAX_CACHE_AGE_MINUTES)
     }
 
@@ -260,8 +261,8 @@ def test_is_storage_data_fresh_timezone_naive_datetime():
     "can't subtract offset-naive and offset-aware datetimes"
     """
     # Simulate what SQLAlchemy returns from MySQL DateTime column (timezone-naive)
-    # Use utcnow() to match server time (MySQL stores in UTC for DateTime columns)
-    naive_datetime = datetime.utcnow() - timedelta(minutes=10)
+    # Create naive datetime by stripping timezone info (MySQL DateTime is naive)
+    naive_datetime = get_current_datetime().replace(tzinfo=None) - timedelta(minutes=10)
     assert naive_datetime.tzinfo is None  # Verify it's timezone-naive
 
     storage_info = {"last_updated": naive_datetime}
@@ -276,8 +277,8 @@ def test_is_storage_data_fresh_timezone_naive_datetime():
 
 def test_is_storage_data_fresh_timezone_naive_datetime_stale():
     """Test that stale timezone-naive datetime is correctly identified as stale"""
-    # Timezone-naive datetime older than cache window (use utcnow for consistency)
-    naive_datetime = datetime.utcnow() - timedelta(minutes=30)
+    # Timezone-naive datetime older than cache window
+    naive_datetime = get_current_datetime().replace(tzinfo=None) - timedelta(minutes=30)
     assert naive_datetime.tzinfo is None
 
     storage_info = {"last_updated": naive_datetime}
@@ -485,7 +486,7 @@ async def test_calculate_limit_warning_premium_active_storage_exceeded():
 
                 # Mock active premium subscription (expires in future)
                 mock_subscription = Mock()
-                mock_subscription.expiration = datetime.now(timezone.utc) + timedelta(
+                mock_subscription.expiration = get_current_datetime() + timedelta(
                     days=30
                 )
                 mock_db.execute.return_value.all.return_value = [[mock_subscription]]
@@ -531,7 +532,7 @@ async def test_calculate_limit_warning_premium_warning_storage_ok():
 
                 # Mock expired subscription in WARNING period
                 # Expired 10 days ago, so in warning period (0-30 days after grace)
-                expiration_date = datetime.now(timezone.utc) - timedelta(
+                expiration_date = get_current_datetime() - timedelta(
                     days=grace_period + 10
                 )
                 deletion_date = expiration_date + timedelta(
@@ -549,7 +550,7 @@ async def test_calculate_limit_warning_premium_warning_storage_ok():
                 assert result["warning_type"] == "grace"
                 # days_remaining is (deletion_date - now).days
                 # Expected: warning_period - 10 days remaining until deletion
-                expected_days = (deletion_date - datetime.now(timezone.utc)).days
+                expected_days = (deletion_date - get_current_datetime()).days
                 assert (
                     result["days_remaining"] >= expected_days - 1
                 )  # Allow 1 day variance for test timing
@@ -586,7 +587,7 @@ async def test_calculate_limit_warning_premium_warning_storage_exceeded():
                 mock_fresh.return_value = True
 
                 # Mock expired subscription in WARNING period
-                expiration_date = datetime.now(timezone.utc) - timedelta(
+                expiration_date = get_current_datetime() - timedelta(
                     days=grace_period + 5
                 )
                 deletion_date = expiration_date + timedelta(
@@ -603,7 +604,7 @@ async def test_calculate_limit_warning_premium_warning_storage_exceeded():
                 assert result["has_warning"] is True
                 assert result["warning_type"] == "grace"
                 # days_remaining is (deletion_date - now).days
-                expected_days = (deletion_date - datetime.now(timezone.utc)).days
+                expected_days = (deletion_date - get_current_datetime()).days
                 assert (
                     result["days_remaining"] >= expected_days - 1
                 )  # Allow 1 day variance
@@ -643,7 +644,7 @@ async def test_calculate_limit_warning_premium_overdue():
                 mock_fresh.return_value = True
 
                 # Mock expired subscription past deletion date
-                expiration_date = datetime.now(timezone.utc) - timedelta(
+                expiration_date = get_current_datetime() - timedelta(
                     days=grace_period + warning_period + 5
                 )
                 mock_subscription = Mock()
@@ -684,7 +685,7 @@ async def test_calculate_limit_warning_premium_active_no_storage_issue():
 
                 # Mock active premium subscription
                 mock_subscription = Mock()
-                mock_subscription.expiration = datetime.now(timezone.utc) + timedelta(
+                mock_subscription.expiration = get_current_datetime() + timedelta(
                     days=30
                 )
                 mock_db.execute.return_value.all.return_value = [[mock_subscription]]
@@ -720,7 +721,7 @@ async def test_calculate_limit_warning_premium_in_grace_period():
 
                 # Mock subscription expired 3 days ago (in grace period)
                 mock_subscription = Mock()
-                mock_subscription.expiration = datetime.now(timezone.utc) - timedelta(
+                mock_subscription.expiration = get_current_datetime() - timedelta(
                     days=3
                 )
                 mock_db.execute.return_value.all.return_value = [[mock_subscription]]

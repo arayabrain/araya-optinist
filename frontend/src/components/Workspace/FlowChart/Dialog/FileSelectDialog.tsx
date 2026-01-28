@@ -58,7 +58,7 @@ import Typography from "@mui/material/Typography"
 import { TreeItem } from "@mui/x-tree-view/TreeItem"
 import { TreeView } from "@mui/x-tree-view/TreeView"
 
-import { FILE_TREE_TYPE, FILE_TREE_TYPE_SET , SyncStatus } from "api/files/Files"
+import { FILE_TREE_TYPE, FILE_TREE_TYPE_SET, SyncStatus } from "api/files/Files"
 import { ConfirmDialog } from "components/common/ConfirmDialog"
 import { DialogContext } from "components/Workspace/FlowChart/Dialog/DialogContext"
 import { deleteFile, getFilesTree } from "store/slice/FilesTree/FilesTreeAction"

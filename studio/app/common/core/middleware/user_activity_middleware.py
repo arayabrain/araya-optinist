@@ -35,6 +35,7 @@ from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jw
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.subscription.constants import SubscriptionPlanIds
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import session_scope
 from studio.app.common.models import FreeUserAssignment
 
@@ -318,7 +319,7 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
 
         # Update database - query first, then update or insert
         with session_scope() as session:
-            now = datetime.now(timezone.utc)
+            now = get_current_datetime()
 
             # Check if assignment already exists
             existing = (

@@ -1,11 +1,12 @@
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any, Dict, Optional, Tuple, Union
 
 from jose import ExpiredSignatureError, JWTError, jwt
 from pydantic import ValidationError
 
 from studio.app.common.core.auth.auth_config import AUTH_CONFIG
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 
 
 def _create_token(
@@ -17,7 +18,7 @@ def _create_token(
     token_data = {"sub": subject, "token_type": token_type}
 
     token_data.update(
-        {"exp": datetime.now(timezone.utc) + expires_delta} if expires_delta else {}
+        {"exp": get_current_datetime() + expires_delta} if expires_delta else {}
     )
     token_data.update(user_claims if user_claims else {})
 

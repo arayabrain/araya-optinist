@@ -11,6 +11,7 @@ from studio.app.common.core.experiment.experiment import (
 )
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.utils.config_handler import ConfigReader
+from studio.app.common.core.utils.datetime_utils import TIMEZONE_KEY
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.workflow.workflow import (
     NodeRunStatus,
@@ -115,6 +116,7 @@ class ExptConfigReader:
             nwb=None,
             snakemake=None,
             data_usage=None,
+            timezone=None,
         )
 
     @classmethod
@@ -132,6 +134,7 @@ class ExptConfigReader:
             nwb=config.get("nwb"),
             snakemake=config.get("snakemake"),
             data_usage=config.get("data_usage"),
+            timezone=config.get(TIMEZONE_KEY),
         )
 
     @classmethod
