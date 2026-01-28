@@ -1,4 +1,4 @@
-import React from "react"
+import { Box, styled, Typography } from "@mui/material"
 
 interface FooterLink {
   label: string
@@ -40,51 +40,169 @@ const footerSections: FooterSection[] = [
   },
 ]
 
-export const Footer: React.FC = () => {
+export const Footer = () => {
   return (
-    <footer className="landing-footer">
-      <div className="landing-container">
-        <div className="landing-footer-grid">
-          <div className="landing-footer-brand">
-            <div className="landing-logo">
-              <div className="landing-logo-icon">
+    <FooterWrapper>
+      <Container>
+        <FooterGrid>
+          <FooterBrand>
+            <Logo>
+              <LogoIcon>
                 <span className="material-symbols-outlined">biotech</span>
-              </div>
-              <h2 className="landing-logo-text">OptiNiSt</h2>
-            </div>
-            <p className="landing-footer-description">
+              </LogoIcon>
+              <LogoText>OptiNiSt</LogoText>
+            </Logo>
+            <FooterDescription>
               The no-code platform for scientific data analysis. Build pipelines
               visually, ensure reproducibility, and collaborate seamlessly.
-            </p>
-            <div className="landing-footer-social">
-              <a href="#" className="landing-social-link">
+            </FooterDescription>
+            <FooterSocial>
+              <SocialLink href="#">
                 <span className="material-symbols-outlined">public</span>
-              </a>
-              <a href="#" className="landing-social-link">
+              </SocialLink>
+              <SocialLink href="#">
                 <span className="material-symbols-outlined">mail</span>
-              </a>
-            </div>
-          </div>
+              </SocialLink>
+            </FooterSocial>
+          </FooterBrand>
           {footerSections.map((section, index) => (
-            <div key={index} className="landing-footer-section">
-              <h4 className="landing-footer-section-title">{section.title}</h4>
-              <ul className="landing-footer-links">
+            <FooterSectionWrapper key={index}>
+              <FooterSectionTitle>{section.title}</FooterSectionTitle>
+              <FooterLinks>
                 {section.links.map((link, linkIndex) => (
                   <li key={linkIndex}>
-                    <a href={link.href} className="landing-footer-link">
-                      {link.label}
-                    </a>
+                    <FooterLink href={link.href}>{link.label}</FooterLink>
                   </li>
                 ))}
-              </ul>
-            </div>
+              </FooterLinks>
+            </FooterSectionWrapper>
           ))}
-        </div>
-        <div className="landing-footer-bottom">
+        </FooterGrid>
+        <FooterBottom>
           <p>&copy; 2024 OptiNiSt. Built for Science.</p>
           <span>Version 2.4.0</span>
-        </div>
-      </div>
-    </footer>
+        </FooterBottom>
+      </Container>
+    </FooterWrapper>
   )
 }
+
+const FooterWrapper = styled("footer")({
+  backgroundColor: "white",
+  borderTop: "1px solid #e5e7eb",
+  padding: "4rem 0",
+})
+
+const Container = styled(Box)({
+  maxWidth: 1200,
+  margin: "0 auto",
+  padding: "0 1.5rem",
+})
+
+const FooterGrid = styled(Box)({
+  display: "grid",
+  gridTemplateColumns: "repeat(2, 1fr)",
+  gap: "3rem",
+  "@media (min-width: 768px)": {
+    gridTemplateColumns: "repeat(4, 1fr)",
+  },
+  "@media (min-width: 1024px)": {
+    gridTemplateColumns: "2fr 1fr 1fr 1fr",
+  },
+})
+
+const FooterBrand = styled(Box)({
+  gridColumn: "span 2",
+  "@media (min-width: 1024px)": {
+    gridColumn: "span 1",
+  },
+})
+
+const Logo = styled(Box)({
+  display: "flex",
+  alignItems: "center",
+  gap: "0.5rem",
+})
+
+const LogoIcon = styled(Box)({
+  width: 32,
+  height: 32,
+  borderRadius: 6,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  color: "#2563eb",
+})
+
+const LogoText = styled(Typography)({
+  fontSize: "1.25rem",
+  fontWeight: 700,
+  letterSpacing: "-0.025em",
+})
+
+const FooterDescription = styled(Typography)({
+  fontSize: "0.875rem",
+  color: "#6b7280",
+  margin: "1.5rem 0",
+  maxWidth: 300,
+  lineHeight: 1.6,
+})
+
+const FooterSocial = styled(Box)({
+  display: "flex",
+  gap: "1rem",
+})
+
+const SocialLink = styled("a")({
+  color: "#6b7280",
+  transition: "color 0.2s",
+  "&:hover": {
+    color: "#2563eb",
+  },
+})
+
+const FooterSectionWrapper = styled(Box)({})
+
+const FooterSectionTitle = styled(Typography)({
+  fontWeight: 700,
+  margin: "0 0 1.5rem",
+})
+
+const FooterLinks = styled("ul")({
+  listStyle: "none",
+  padding: 0,
+  margin: 0,
+  display: "flex",
+  flexDirection: "column",
+  gap: "1rem",
+})
+
+const FooterLink = styled("a")({
+  fontSize: "0.875rem",
+  color: "#6b7280",
+  textDecoration: "none",
+  transition: "color 0.2s",
+  "&:hover": {
+    color: "#2563eb",
+  },
+})
+
+const FooterBottom = styled(Box)({
+  maxWidth: 1200,
+  margin: "4rem auto 0",
+  paddingTop: "2rem",
+  borderTop: "1px solid #e5e7eb",
+  display: "flex",
+  flexDirection: "column",
+  gap: "1rem",
+  alignItems: "center",
+  justifyContent: "space-between",
+  fontSize: "0.75rem",
+  color: "#6b7280",
+  "@media (min-width: 640px)": {
+    flexDirection: "row",
+  },
+  "& p": {
+    margin: 0,
+  },
+})

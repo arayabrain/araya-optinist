@@ -1,4 +1,4 @@
-import React from "react"
+import { Box, styled } from "@mui/material"
 
 import {
   Header,
@@ -15,14 +15,11 @@ import {
   Footer,
 } from "pages/LandingPage/components"
 
-// eslint-disable-next-line no-relative-import-paths/no-relative-import-paths
-import "./LandingPage.css"
-
-export const LandingPage: React.FC = () => {
+export const LandingPage = () => {
   return (
-    <div className="landing-page">
+    <LandingPageWrapper>
       <Header />
-      <main className="landing-main">
+      <Main>
         <Hero />
         <ValueProps />
         <Features />
@@ -33,10 +30,27 @@ export const LandingPage: React.FC = () => {
         <PublicRepository />
         <Resources />
         <CTA />
-      </main>
+      </Main>
       <Footer />
-    </div>
+    </LandingPageWrapper>
   )
 }
+
+const LandingPageWrapper = styled(Box)({
+  color: "#111827",
+  backgroundColor: "#f9fafb",
+  minHeight: "100vh",
+  "& *": {
+    boxSizing: "border-box",
+  },
+  "& .material-symbols-outlined": {
+    fontFamily: "Material Symbols Outlined",
+  },
+})
+
+const Main = styled("main")({
+  display: "flex",
+  flexDirection: "column",
+})
 
 export default LandingPage

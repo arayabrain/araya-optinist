@@ -1,70 +1,162 @@
-import React, { useState } from "react"
+import { useState } from "react"
 import { useNavigate } from "react-router-dom"
 
-export const Header: React.FC = () => {
+import { Box, styled, Typography } from "@mui/material"
+
+export const Header = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const navigate = useNavigate()
 
   return (
-    <header className="landing-header">
-      <div className="landing-header-container">
-        <div className="landing-logo">
-          <div className="landing-logo-icon">
-            <span className="material-symbols-outlined">biotech</span>
-          </div>
-          <h2 className="landing-logo-text">OptiNiSt</h2>
-        </div>
-        <nav className="landing-nav">
-          <a className="landing-nav-link" href="#features">
-            Features
-          </a>
-          <a className="landing-nav-link" href="#formats">
-            Data Formats
-          </a>
-          <a className="landing-nav-link" href="#audience">
-            Who It&apos;s For
-          </a>
-          <a className="landing-nav-link" href="#">
-            Documentation
-          </a>
-          <button
-            className="landing-btn-primary"
-            onClick={() => navigate("/login")}
-          >
+    <HeaderWrapper>
+      <HeaderContainer>
+        <Logo>
+          <LogoIcon>
+            <img
+              src="/static/optinist_logo.png"
+              alt="OptiNiSt"
+              style={{ height: 32, width: "auto" }}
+            />
+          </LogoIcon>
+          <LogoText>OptiNiSt</LogoText>
+        </Logo>
+        <Nav>
+          <NavLink href="#features">Features</NavLink>
+          <NavLink href="#formats">Data Formats</NavLink>
+          <NavLink href="#audience">Who It&apos;s For</NavLink>
+          <NavLink href="#">Documentation</NavLink>
+          <PrimaryButton onClick={() => navigate("/login")}>
             Get Started
-          </button>
-        </nav>
-        <button
-          className="landing-mobile-menu-btn"
-          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-        >
+          </PrimaryButton>
+        </Nav>
+        <MobileMenuButton onClick={() => setMobileMenuOpen(!mobileMenuOpen)}>
           <span className="material-symbols-outlined">
             {mobileMenuOpen ? "close" : "menu"}
           </span>
-        </button>
-      </div>
+        </MobileMenuButton>
+      </HeaderContainer>
       {mobileMenuOpen && (
-        <div className="landing-mobile-nav">
-          <a className="landing-mobile-nav-link" href="#features">
-            Features
-          </a>
-          <a className="landing-mobile-nav-link" href="#formats">
-            Data Formats
-          </a>
-          <a className="landing-mobile-nav-link" href="#audience">
-            Who It&apos;s For
-          </a>
-          <a className="landing-mobile-nav-link" href="#">
-            Documentation
-          </a>
-          <button
-            className="landing-btn-primary landing-btn-full"
+        <MobileNav>
+          <MobileNavLink href="#features">Features</MobileNavLink>
+          <MobileNavLink href="#formats">Data Formats</MobileNavLink>
+          <MobileNavLink href="#audience">Who It&apos;s For</MobileNavLink>
+          <MobileNavLink href="#">Documentation</MobileNavLink>
+          <PrimaryButton
             onClick={() => navigate("/login")}
+            style={{ width: "100%" }}
           >
             Get Started
-          </button>
-        </div>
+          </PrimaryButton>
+        </MobileNav>
       )}
-    </header>
+    </HeaderWrapper>
   )
 }
+
+const HeaderWrapper = styled("header")({
+  position: "sticky",
+  top: 0,
+  zIndex: 50,
+  width: "100%",
+  borderBottom: "1px solid #e5e7eb",
+  backgroundColor: "#E1DEDB",
+  backdropFilter: "blur(12px)",
+})
+
+const HeaderContainer = styled(Box)({
+  maxWidth: 1200,
+  margin: "0 auto",
+  padding: "0 1.5rem",
+  height: 64,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+})
+
+const Logo = styled(Box)({
+  display: "flex",
+  alignItems: "center",
+  gap: "0.5rem",
+})
+
+const LogoIcon = styled(Box)({
+  width: 32,
+  height: 32,
+  borderRadius: 6,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  color: "white",
+})
+
+const LogoText = styled(Typography)({
+  fontSize: "1.25rem",
+  fontWeight: 700,
+  letterSpacing: "-0.025em",
+})
+
+const Nav = styled("nav")({
+  display: "none",
+  alignItems: "center",
+  gap: "2rem",
+  "@media (min-width: 768px)": {
+    display: "flex",
+  },
+})
+
+const NavLink = styled("a")({
+  fontSize: "0.875rem",
+  fontWeight: 500,
+  color: "#111827",
+  textDecoration: "none",
+  transition: "color 0.2s",
+  "&:hover": {
+    color: "#2563eb",
+  },
+})
+
+const MobileMenuButton = styled("button")({
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  background: "none",
+  border: "none",
+  cursor: "pointer",
+  color: "#6b7280",
+  "@media (min-width: 768px)": {
+    display: "none",
+  },
+})
+
+const MobileNav = styled(Box)({
+  display: "flex",
+  flexDirection: "column",
+  gap: "1rem",
+  padding: "1rem 1.5rem 1.5rem",
+  borderTop: "1px solid #e5e7eb",
+  background: "white",
+})
+
+const MobileNavLink = styled("a")({
+  fontSize: "1rem",
+  fontWeight: 500,
+  color: "#111827",
+  textDecoration: "none",
+  padding: "0.5rem 0",
+})
+
+const PrimaryButton = styled("button")({
+  backgroundColor: "#2563eb",
+  color: "white",
+  fontSize: "0.875rem",
+  fontWeight: 700,
+  height: 40,
+  padding: "0 1.5rem",
+  borderRadius: 8,
+  border: "none",
+  cursor: "pointer",
+  transition: "background-color 0.2s",
+  "&:hover": {
+    backgroundColor: "#1d4ed8",
+  },
+})
