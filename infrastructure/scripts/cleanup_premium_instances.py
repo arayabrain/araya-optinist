@@ -312,12 +312,12 @@ def main():
 
     # Print results
     logger.info("Cleanup Results:")
-    logger.info(f"  Total premium instances: {results['total_premium_instances']}")
-    logger.info(f"  Active premium instances: {results['active_premium_instances']}")
-    logger.info(f"  Orphaned instances: {results['orphaned_instances']}")
-    logger.info(f"  Terminated instances: {results['terminated_instances']}")
-    logger.info(f"  Cleaned target groups: {results['cleaned_target_groups']}")
-    logger.info(f"  Cleaned DB entries: {results['cleaned_db_entries']}")
+    logger.info(f"Total premium instances: {results['total_premium_instances']}")
+    logger.info(f"Active premium instances: {results['active_premium_instances']}")
+    logger.info(f"Orphaned instances: {results['orphaned_instances']}")
+    logger.info(f"Terminated instances: {results['terminated_instances']}")
+    logger.info(f"Cleaned target groups: {results['cleaned_target_groups']}")
+    logger.info(f"Cleaned DB entries: {results['cleaned_db_entries']}")
 
     if dry_run and results["orphaned_instances"] > 0:
         logger.info("\nTo actually perform cleanup, run with --execute flag")

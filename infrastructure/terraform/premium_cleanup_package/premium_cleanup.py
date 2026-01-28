@@ -28,9 +28,15 @@ import pymysql
 from aws_constants import (
     DatabaseConfig,
     ECSTaskStatus,
+    PremiumAssignment,
     PremiumInstanceConfig,
     RoutingHeaders,
 )
+
+# Constants
+# Default hours before stale premium assignments are cleaned up
+# Can be overridden by PREMIUM_IDLE_TIMEOUT_HOURS environment variable
+DEFAULT_STALE_ASSIGNMENT_TIMEOUT_HOURS = 2
 
 if TYPE_CHECKING:
     from mypy_boto3_ec2 import EC2Client
@@ -120,8 +126,8 @@ def get_assigned_users_for_instance(instance_id: str) -> List[str]:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """SELECT user_id FROM premium_user_assignments
-                       WHERE instance_id = %s AND status = 'active'""",
-                    (instance_id,),
+                       WHERE instance_id = %s AND status = %s""",
+                    (instance_id, PremiumAssignment.ACTIVE),
                 )
                 users = cursor.fetchall()
                 return [user["user_id"] for user in users]
@@ -174,7 +180,10 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
     """
     try:
         stale_threshold_hours = int(
-            get_required_env_var("PREMIUM_IDLE_TIMEOUT_HOURS", "2")
+            get_required_env_var(
+                "PREMIUM_IDLE_TIMEOUT_HOURS",
+                str(DEFAULT_STALE_ASSIGNMENT_TIMEOUT_HOURS),
+            )
         )
 
         print(f"Starting cleanup of assignments idle for >{stale_threshold_hours}h")
@@ -186,12 +195,12 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
                 SELECT user_id, instance_id, target_group_arn,
                 alb_rule_arn, last_activity
                 FROM premium_user_assignments
-                WHERE status = 'active'
+                WHERE status = %s
                 AND is_standby = 0
                 AND last_activity < DATE_SUB(NOW(), INTERVAL %s HOUR)
                 FOR UPDATE
             """,
-                (stale_threshold_hours,),
+                (PremiumAssignment.ACTIVE, stale_threshold_hours),
             )
 
             stale_assignments = cursor.fetchall()
@@ -217,15 +226,21 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
                 try:
                     print(f"Cleaning stale assignment for user {user_id}")
 
-                    # Delete ALB rule and target group
-                    if alb_rule_arn and alb_rule_arn != "STANDBY":
+                    # Delete ALB rule and target group (skip marker values)
+                    if (
+                        alb_rule_arn
+                        and alb_rule_arn.lower() != PremiumAssignment.STANDBY
+                    ):
                         try:
                             elbv2.delete_rule(RuleArn=alb_rule_arn)
                             print(f"Deleted ALB rule: {alb_rule_arn}")
                         except Exception as e:
                             print(f"Warning: Failed to delete ALB rule: {e}")
 
-                    if target_group_arn and target_group_arn != "STANDBY":
+                    if (
+                        target_group_arn
+                        and target_group_arn.lower() != PremiumAssignment.STANDBY
+                    ):
                         try:
                             elbv2.delete_target_group(TargetGroupArn=target_group_arn)
                             print(f"Deleted target group: {target_group_arn}")
@@ -311,12 +326,16 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
                 cursor.execute(
                     """SELECT alb_rule_arn, target_group_arn, user_id
                        FROM premium_user_assignments
-                       WHERE status = 'active' AND is_standby = 0"""
+                       WHERE status = %s AND is_standby = 0""",
+                    (PremiumAssignment.ACTIVE,),
                 )
                 db_assignments = cursor.fetchall()
 
         db_rule_arns = {
-            a["alb_rule_arn"] for a in db_assignments if a["alb_rule_arn"] != "STANDBY"
+            a["alb_rule_arn"]
+            for a in db_assignments
+            if a["alb_rule_arn"]
+            and a["alb_rule_arn"].lower() != PremiumAssignment.STANDBY
         }
         print(f"Found {len(db_rule_arns)} active assignments in database")
 
@@ -389,6 +408,136 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
         return {
             "orphaned_rules_deleted": 0,
             "orphaned_target_groups_deleted": 0,
+            "error": str(e),
+        }
+
+
+def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
+    """
+    Clean up duplicate ALB rules that have the same routing_id.
+
+    This handles cases where multiple rules were created for the same user
+    due to race conditions or failed cleanup. Only keeps the rule that matches
+    the database entry; deletes all others.
+    """
+    try:
+        print("Scanning for duplicate ALB rules by routing_id...")
+
+        elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+        alb_listener_arn = get_required_env_var("ALB_LISTENER_ARN")
+
+        # Get all ALB listener rules
+        rules_response = elbv2.describe_rules(ListenerArn=alb_listener_arn)
+        alb_rules = rules_response.get("Rules", [])
+
+        # Group rules by routing_id
+        rules_by_routing_id: Dict[str, list] = {}
+        for rule in alb_rules:
+            if rule.get("Priority") == "default":
+                continue
+
+            # Extract routing_id from conditions
+            conditions = rule.get("Conditions", [])
+            routing_id = None
+            for cond in conditions:
+                if (
+                    cond.get("Field") == "http-header"
+                    and cond.get("HttpHeaderConfig", {}).get("HttpHeaderName")
+                    == RoutingHeaders.ROUTING_ID
+                ):
+                    values = cond.get("HttpHeaderConfig", {}).get("Values", [])
+                    if values:
+                        routing_id = values[0]
+                        break
+
+            if routing_id:
+                if routing_id not in rules_by_routing_id:
+                    rules_by_routing_id[routing_id] = []
+                rules_by_routing_id[routing_id].append(rule)
+
+        # Get all active assignments from database to know which rules to keep
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """SELECT alb_rule_arn FROM premium_user_assignments
+                       WHERE status IN (%s, %s, %s)
+                       AND is_standby = 0
+                       AND alb_rule_arn NOT IN (%s, %s)""",
+                    (
+                        PremiumAssignment.ACTIVE,
+                        PremiumAssignment.MIGRATING,
+                        PremiumAssignment.TERMINATING,
+                        PremiumAssignment.STANDBY,
+                        "STANDBY",  # Handle legacy uppercase values
+                    ),
+                )
+                db_assignments = cursor.fetchall()
+
+        db_rule_arns = {a["alb_rule_arn"] for a in db_assignments}
+
+        # Find and delete duplicates
+        duplicates_deleted = 0
+        target_groups_deleted = 0
+
+        for routing_id, rules in rules_by_routing_id.items():
+            if len(rules) <= 1:
+                continue  # No duplicates
+
+            print(f"Found {len(rules)} rules for routing_id {routing_id[:8]}...")
+
+            # Keep the rule that's in the database, delete others
+            for rule in rules:
+                rule_arn = rule["RuleArn"]
+                if rule_arn in db_rule_arns:
+                    print(f"Keeping rule {rule_arn} (in database)")
+                    continue
+
+                # Delete this duplicate rule
+                try:
+                    print(f"Deleting duplicate rule {rule_arn}")
+                    elbv2.delete_rule(RuleArn=rule_arn)
+                    duplicates_deleted += 1
+
+                    # Try to delete associated target group
+                    # Note: AWS returns ResourceInUse error if TG is still
+                    # referenced by another rule. This is expected behavior
+                    # and the exception is logged but not fatal.
+                    for action in rule.get("Actions", []):
+                        if action.get("Type") == "forward":
+                            tg_arn = action.get("TargetGroupArn")
+                            if tg_arn:
+                                try:
+                                    elbv2.delete_target_group(TargetGroupArn=tg_arn)
+                                    target_groups_deleted += 1
+                                    print(f"Deleted target group {tg_arn}")
+                                except Exception as tg_error:
+                                    # Target group might be in use by another rule
+                                    print(
+                                        f"Could not delete target group : "
+                                        f"{tg_arn}: {tg_error}"
+                                    )
+
+                except Exception as e:
+                    print(f"Failed to delete rule {rule_arn}: {e}")
+
+        print(
+            f"Duplicate cleanup complete: {duplicates_deleted} rules, "
+            f"{target_groups_deleted} target groups deleted"
+        )
+
+        return {
+            "duplicates_deleted": duplicates_deleted,
+            "target_groups_deleted": target_groups_deleted,
+            "routing_ids_with_duplicates": sum(
+                1 for rules in rules_by_routing_id.values() if len(rules) > 1
+            ),
+        }
+
+    except Exception as e:
+        print(f"Error during duplicate rule cleanup: {str(e)}")
+        return {
+            "duplicates_deleted": 0,
+            "target_groups_deleted": 0,
             "error": str(e),
         }
 
@@ -582,62 +731,106 @@ def reconcile_instance_states() -> Dict[str, Any]:
                 "state": instance["state"],
             }
 
-        # Get all assignments from database
-        cleanup_count = 0
-        update_count = 0
-
-        with get_db_connection() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """SELECT user_id, instance_id, instance_state, status
-                       FROM premium_user_assignments WHERE status = 'active'"""
-                )
-                db_assignments = cursor.fetchall()
-
-                for assignment in db_assignments:
-                    user_id = assignment["user_id"]
-                    instance_id = assignment["instance_id"]
-                    db_state = assignment["instance_state"]
-                    aws_instance = aws_instance_map.get(instance_id)
-
-                    if not aws_instance:
-                        # Instance no longer exists in AWS - cleanup
-                        print(
-                            f"Cleaning up assignment for terminated instance "
-                            f"{instance_id} (user {user_id})"
-                        )
-                        cursor.execute(
-                            "DELETE FROM premium_user_assignments WHERE user_id = %s",
-                            (user_id,),
-                        )
-                        cleanup_count += 1
-                        connection.commit()
-                    elif aws_instance["state"] != db_state:
-                        # Update database state to match AWS
-                        aws_state = aws_instance["state"]
-                        print(
-                            f"Updating instance state for user "
-                            f"{user_id}: {db_state} → {aws_state}"
-                        )
-                        cursor.execute(
-                            """UPDATE premium_user_assignments
-                               SET instance_state = %s, last_state_check = NOW()
-                               WHERE user_id = %s""",
-                            (aws_state, user_id),
-                        )
-                        update_count += 1
-                        connection.commit()
-
-        return {
-            "cleanup_count": cleanup_count,
-            "update_count": update_count,
-            "total_aws_instances": len(aws_instance_map),
-            "total_db_assignments": len(db_assignments),
-        }
+        # Delegate to transaction-safe internal function
+        return _reconcile_instance_states_transaction(aws_instance_map)
 
     except Exception as e:
         print(f"Error reconciling instance states: {str(e)}")
         return {"error": str(e)}
+
+
+@with_transaction
+def _reconcile_instance_states_transaction(
+    connection, aws_instance_map: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Internal function: Reconcile instance states with transaction safety.
+    All changes are committed together or rolled back on error.
+    """
+    cleanup_count = 0
+    update_count = 0
+
+    # Client for ALB cleanup when instances are gone
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT user_id, instance_id, instance_state, status,
+                      target_group_arn, alb_rule_arn
+               FROM premium_user_assignments WHERE status = %s""",
+            (PremiumAssignment.ACTIVE,),
+        )
+        db_assignments = cursor.fetchall()
+
+        for assignment in db_assignments:
+            user_id = assignment["user_id"]
+            instance_id = assignment["instance_id"]
+            db_state = assignment["instance_state"]
+            aws_instance = aws_instance_map.get(instance_id)
+
+            if not aws_instance:
+                # Instance no longer exists in AWS - cleanup
+                print(
+                    f"Cleaning up assignment for terminated instance "
+                    f"{instance_id} (user {user_id})"
+                )
+
+                # Clean up ALB resources before DB deletion
+                target_group_arn = assignment.get("target_group_arn")
+                alb_rule_arn = assignment.get("alb_rule_arn")
+
+                # Delete ALB rule (skip standby markers)
+                if alb_rule_arn and alb_rule_arn.lower() != PremiumAssignment.STANDBY:
+                    try:
+                        elbv2.delete_rule(RuleArn=alb_rule_arn)
+                        print(f"Deleted ALB rule for user {user_id}: {alb_rule_arn}")
+                    except Exception as e:
+                        print(f"Warning: Failed to delete ALB rule {alb_rule_arn}: {e}")
+
+                # Delete target group (skip standby markers)
+                if (
+                    target_group_arn
+                    and target_group_arn.lower() != PremiumAssignment.STANDBY
+                ):
+                    try:
+                        elbv2.delete_target_group(TargetGroupArn=target_group_arn)
+                        print(
+                            f"Deleted target group for user "
+                            f"{user_id}: {target_group_arn}"
+                        )
+                    except Exception as e:
+                        print(
+                            f"Warning: Failed to delete target group "
+                            f"{target_group_arn}: {e}"
+                        )
+
+                cursor.execute(
+                    "DELETE FROM premium_user_assignments WHERE user_id = %s",
+                    (user_id,),
+                )
+                cleanup_count += 1
+            elif aws_instance["state"] != db_state:
+                # Update database state to match AWS
+                aws_state = aws_instance["state"]
+                print(
+                    f"Updating instance state for user "
+                    f"{user_id}: {db_state} → {aws_state}"
+                )
+                cursor.execute(
+                    """UPDATE premium_user_assignments
+                       SET instance_state = %s, last_state_check = NOW()
+                       WHERE user_id = %s""",
+                    (aws_state, user_id),
+                )
+                update_count += 1
+
+    # Transaction decorator handles commit on success, rollback on error
+    return {
+        "cleanup_count": cleanup_count,
+        "update_count": update_count,
+        "total_aws_instances": len(aws_instance_map),
+        "total_db_assignments": len(db_assignments),
+    }
 
 
 @with_transaction
@@ -741,15 +934,21 @@ def cleanup_test_user_assignments(connection, user_emails: List[str]) -> Dict[st
                 alb_rule_arn = assignment["alb_rule_arn"]
 
                 try:
-                    # Delete ALB rule and target group (skip STANDBY markers)
-                    if alb_rule_arn and alb_rule_arn != "STANDBY":
+                    # Delete ALB rule and target group (skip standby markers)
+                    if (
+                        alb_rule_arn
+                        and alb_rule_arn.lower() != PremiumAssignment.STANDBY
+                    ):
                         try:
                             elbv2.delete_rule(RuleArn=alb_rule_arn)
                             print(f"Deleted ALB rule for user {user_id}")
                         except Exception as e:
                             print(f"Warning: Failed to delete ALB rule: {e}")
 
-                    if target_group_arn and target_group_arn != "STANDBY":
+                    if (
+                        target_group_arn
+                        and target_group_arn.lower() != PremiumAssignment.STANDBY
+                    ):
                         try:
                             elbv2.delete_target_group(TargetGroupArn=target_group_arn)
                             print(f"Deleted target group for user {user_id}")
@@ -825,6 +1024,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         results: Dict[str, Any] = {
             "cleanup_stats": {},
             "orphaned_cleanup_stats": {},
+            "duplicate_cleanup_stats": {},
             "reconciliation_stats": {},
             "capacity_check": {},
             "timestamp": time.time(),
@@ -838,18 +1038,23 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         print("Step 2: Cleaning up orphaned ALB resources...")
         results["orphaned_cleanup_stats"] = cleanup_orphaned_alb_resources()
 
-        # 3. Reconcile instance states (update DB to match AWS reality)
-        print("Step 3: Reconciling instance states...")
+        # 3. Cleanup duplicate ALB rules (multiple rules with same routing_id)
+        print("Step 3: Cleaning up duplicate ALB rules...")
+        results["duplicate_cleanup_stats"] = cleanup_duplicate_alb_rules()
+
+        # 4. Reconcile instance states (update DB to match AWS reality)
+        print("Step 4: Reconciling instance states...")
         results["reconciliation_stats"] = reconcile_instance_states()
 
-        # 4. Monitor standby pool capacity (read-only check)
-        print("Step 4: Checking standby pool capacity...")
+        # 5. Monitor standby pool capacity (read-only check)
+        print("Step 5: Checking standby pool capacity...")
         results["capacity_check"] = ensure_standby_pool_capacity()
 
         # Summary
         total_operations = (
             results["cleanup_stats"].get("cleaned_assignments", 0)
             + results["orphaned_cleanup_stats"].get("orphaned_rules_deleted", 0)
+            + results["duplicate_cleanup_stats"].get("duplicates_deleted", 0)
             + results["reconciliation_stats"].get("cleanup_count", 0)
             + results["reconciliation_stats"].get("update_count", 0)
         )

@@ -49,6 +49,7 @@ import pymysql
 from aws_constants import (
     DatabaseConfig,
     ECSTaskStatus,
+    PremiumAssignment,
     PremiumInstanceConfig,
     RoutingHeaders,
 )
@@ -65,6 +66,10 @@ if TYPE_CHECKING:
 # Default fallback value for premium user count in development/testing scenarios
 # Used when database queries fail or no premium users exist
 DEFAULT_DEVELOPMENT_CAPACITY = 3
+
+# Default hours before idle premium instances are converted to standby pool
+# Can be overridden by PREMIUM_IDLE_TIMEOUT_HOURS environment variable
+DEFAULT_IDLE_TIMEOUT_HOURS = 3
 
 
 def generate_routing_id(uid: str, secret_key: str) -> str:
@@ -272,36 +277,52 @@ def _store_user_assignment_transaction(
         is_standby: Whether this is a standby pool assignment (user_id should be None)
     """
     with connection.cursor() as cursor:
-        # Check if user already has assignment with lock to prevent race conditions
-        # For standby instances (user_id=None), WHERE user_id = NULL returns no results
-        # This allows multiple standby instances with user_id=NULL
-        cursor.execute(
-            """SELECT user_id, assignment_attempts FROM premium_user_assignments
-               WHERE user_id = %s FOR UPDATE""",
-            (user_id,),
-        )
-        existing = cursor.fetchone()
-
-        if existing:
-            # User already has assignment - increment attempts counter
-            current_attempts = existing[1] if existing[1] is not None else 1
-            new_attempts = current_attempts + 1
-
+        # For standby instances (user_id=None), check by instance_id instead
+        # because WHERE user_id = NULL doesn't match any rows in SQL
+        if is_standby or user_id is None:
             cursor.execute(
-                """UPDATE premium_user_assignments
-                   SET assignment_attempts = %s, last_state_check = NOW()
-                   WHERE user_id = %s""",
-                (new_attempts, user_id),
+                """SELECT instance_id FROM premium_user_assignments
+                   WHERE instance_id = %s FOR UPDATE""",
+                (instance_id,),
             )
+            existing_instance = cursor.fetchone()
+            if existing_instance:
+                print(
+                    f"Instance {instance_id} already has an assignment entry, "
+                    f"skipping duplicate standby creation"
+                )
+                raise Exception(
+                    f"Instance {instance_id} already exists in assignments table"
+                )
+        else:
+            # For regular user assignments, check by user_id
+            cursor.execute(
+                """SELECT user_id, assignment_attempts FROM premium_user_assignments
+                   WHERE user_id = %s FOR UPDATE""",
+                (user_id,),
+            )
+            existing = cursor.fetchone()
 
-            print(
-                f"User {user_id} already has assignment, "
-                f"incremented attempts to {new_attempts}"
-            )
-            raise Exception(
-                f"User {user_id} already has a premium "
-                f"assignment (attempt #{new_attempts})"
-            )
+            if existing:
+                # User already has assignment - increment attempts counter
+                current_attempts = existing[1] if existing[1] is not None else 1
+                new_attempts = current_attempts + 1
+
+                cursor.execute(
+                    """UPDATE premium_user_assignments
+                       SET assignment_attempts = %s, last_state_check = NOW()
+                       WHERE user_id = %s""",
+                    (new_attempts, user_id),
+                )
+
+                print(
+                    f"User {user_id} already has assignment, "
+                    f"incremented attempts to {new_attempts}"
+                )
+                raise Exception(
+                    f"User {user_id} already has a premium "
+                    f"assignment (attempt #{new_attempts})"
+                )
 
         # Insert new assignment with enhanced tracking including is_standby
         # Use CASE to set standby_created_at to NOW() only if is_standby is true
@@ -386,6 +407,34 @@ def _remove_user_assignment_transaction(connection, user_id: int):
 def remove_user_assignment(user_id: int):
     """Remove user assignment from RDS with proper transaction isolation"""
     return _remove_user_assignment_transaction(user_id)
+
+
+@with_transaction
+def _get_existing_user_assignment_transaction(
+    connection, user_id: int
+) -> Optional[Dict[str, Any]]:
+    """Check if user already has an active premium assignment.
+
+    Returns the assignment details if found, None otherwise.
+    This is used for early-exit optimization to avoid creating resources
+    for users who are already assigned.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT user_id, instance_id, target_group_arn, alb_rule_arn,
+                      status, instance_state, is_shared
+               FROM premium_user_assignments
+               WHERE user_id = %s AND status = %s
+               AND is_standby = 0""",
+            (user_id, PremiumAssignment.ACTIVE),
+        )
+        result = cursor.fetchone()
+        return result
+
+
+def get_existing_user_assignment(user_id: int) -> Optional[Dict[str, Any]]:
+    """Check if user already has an active premium assignment."""
+    return _get_existing_user_assignment_transaction(user_id)
 
 
 @with_transaction
@@ -953,8 +1002,8 @@ def register_orphaned_stopped_instances():
                 store_user_assignment(
                     user_id=None,
                     instance_id=instance_id,
-                    target_group_arn="standby",
-                    rule_arn="standby",
+                    target_group_arn=PremiumAssignment.STANDBY,
+                    rule_arn=PremiumAssignment.STANDBY,
                     instance_state="launching",  # Use valid enum value
                     is_shared=False,
                     is_standby=True,
@@ -1079,10 +1128,16 @@ def try_reserve_instance_transaction(
                (user_id, instance_id, target_group_arn, alb_rule_arn,
                 status, instance_state, is_shared, assignment_attempts,
                 last_state_check)
-               VALUES (%s, %s, 'reserving', 'reserving', 'active',
-                       'reserving', 0, 1, NOW())
+               VALUES (%s, %s, %s, %s, %s, %s, 0, 1, NOW())
             """,
-            (user_id, instance_id),
+            (
+                user_id,
+                instance_id,
+                PremiumAssignment.RESERVING,
+                PremiumAssignment.RESERVING,
+                PremiumAssignment.ACTIVE,
+                PremiumAssignment.RESERVING,
+            ),
         )
         print(f"Reserved instance {instance_id} for user {user_id}")
         return True
@@ -1106,8 +1161,8 @@ def release_instance_reservation(instance_id: str, user_id: int):
                     """DELETE FROM premium_user_assignments
                        WHERE instance_id = %s
                        AND user_id = %s
-                       AND target_group_arn = 'reserving'""",
-                    (instance_id, user_id),
+                       AND target_group_arn = %s""",
+                    (instance_id, user_id, PremiumAssignment.RESERVING),
                 )
                 connection.commit()
                 print(f"Released reservation for instance {instance_id}")
@@ -1176,13 +1231,9 @@ def create_and_stop_standby_instance():
     creation_id = None
 
     try:
-        # Register pending creation BEFORE acquiring lock to signal intent
-        creation_id = register_pending_standby_creation()
-        if not creation_id:
-            print("Failed to register pending standby creation")
-            return None
-
         # DISTRIBUTED LOCK: Use MySQL GET_LOCK to prevent race conditions
+        # Must acquire lock BEFORE registering pending creation to prevent
+        # multiple Lambdas from registering and then each creating an instance
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 # Try to acquire lock (returns 1 if successful,
@@ -1198,12 +1249,17 @@ def create_and_stop_standby_instance():
                         "Another Lambda is already creating a standby instance, "
                         "skipping"
                     )
-                    # Clean up our pending registration
-                    if creation_id:
-                        unregister_pending_standby_creation(creation_id)
                     return None
 
                 print("Acquired distributed lock for standby creation")
+
+                # Register pending creation AFTER acquiring lock
+                # This ensures only one Lambda registers at a time
+                creation_id = register_pending_standby_creation()
+                if not creation_id:
+                    print("Failed to register pending standby creation")
+                    cursor.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+                    return None
 
                 # STANDBY COUNT CHECK: Re-check after acquiring lock
                 standby_count = get_standby_count()
@@ -1313,8 +1369,8 @@ def create_and_stop_standby_instance():
         store_user_assignment(
             user_id=None,
             instance_id=instance_id,
-            target_group_arn="standby",
-            rule_arn="standby",
+            target_group_arn=PremiumAssignment.STANDBY,
+            rule_arn=PremiumAssignment.STANDBY,
             instance_state="stopped",
             is_shared=False,
             is_standby=True,
@@ -1866,6 +1922,90 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
 
 
+def cleanup_duplicate_rules_for_routing_id(listener_arn: str, routing_id: str) -> int:
+    """
+    Find and delete any existing ALB rules with the same routing_id.
+
+    This prevents duplicate rules from accumulating when a user is reassigned.
+    The routing_id is deterministic (HMAC of user_id), so all rules for the
+    same user will have the same routing_id.
+
+    Args:
+        listener_arn: ALB listener ARN to check
+        routing_id: The routing ID to search for
+
+    Returns:
+        Number of rules deleted
+    """
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+
+    try:
+        # Get all existing rules for this listener
+        response = elbv2.describe_rules(ListenerArn=listener_arn)
+        rules = response.get("Rules", [])
+
+        rules_deleted = 0
+        for rule in rules:
+            if rule.get("Priority") == "default":
+                continue
+
+            # Check if this rule has the matching routing_id
+            conditions = rule.get("Conditions", [])
+            for condition in conditions:
+                http_header_config = condition.get("HttpHeaderConfig", {})
+                if (
+                    http_header_config.get("HttpHeaderName")
+                    == RoutingHeaders.ROUTING_ID
+                ):
+                    values = http_header_config.get("Values", [])
+                    if routing_id in values:
+                        # Found a rule with this routing_id - delete it
+                        rule_arn = rule["RuleArn"]
+                        try:
+                            print(
+                                f"Deleting existing rule for routing_id "
+                                f"{routing_id[:8]}...: {rule_arn}"
+                            )
+                            elbv2.delete_rule(RuleArn=rule_arn)
+                            rules_deleted += 1
+
+                            # Also try to delete the associated target group
+                            for action in rule.get("Actions", []):
+                                if action.get("Type") == "forward":
+                                    tg_arn = action.get("TargetGroupArn")
+                                    if tg_arn:
+                                        try:
+                                            elbv2.delete_target_group(
+                                                TargetGroupArn=tg_arn
+                                            )
+                                            print(
+                                                f"Deleted associated "
+                                                f"target group: {tg_arn}"
+                                            )
+                                        except Exception as tg_error:
+                                            # Target group might be
+                                            # in use or already deleted
+                                            print(
+                                                f"Could not delete target group "
+                                                f"{tg_arn}: {tg_error}"
+                                            )
+                        except Exception as delete_error:
+                            print(f"Failed to delete rule {rule_arn}: {delete_error}")
+                        break  # Move to next rule
+
+        if rules_deleted > 0:
+            print(
+                f"Cleaned up {rules_deleted} duplicate rule(s) "
+                f"for routing_id {routing_id[:8]}..."
+            )
+
+        return rules_deleted
+
+    except Exception as e:
+        print(f"Error cleaning up duplicate rules: {str(e)}")
+        return 0
+
+
 def get_next_available_priority(listener_arn: str, start_priority: int = 100) -> int:
     """
     Find next available ALB rule priority by querying existing rules.
@@ -1940,9 +2080,48 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
             ),
         }
 
+    # EARLY CHECK: Return existing assignment if user is already assigned
+    # This prevents unnecessary resource creation and potential duplicates
+    try:
+        existing_assignment = get_existing_user_assignment(user_id)
+        if existing_assignment:
+            print(
+                f"User {user_id} already has active assignment to "
+                f"instance {existing_assignment['instance_id']}"
+            )
+            return {
+                "statusCode": 200,
+                "body": json.dumps(
+                    {
+                        "message": f"User {user_id} already assigned to "
+                        f"instance {existing_assignment['instance_id']}",
+                        "instance_id": existing_assignment["instance_id"],
+                        "target_group_arn": existing_assignment["target_group_arn"],
+                        "rule_arn": existing_assignment["alb_rule_arn"],
+                        "is_shared": bool(existing_assignment.get("is_shared", False)),
+                        "assignment_source": "existing",
+                    }
+                ),
+            }
+    except Exception as check_error:
+        # CRITICAL: If we can't verify assignment status, fail fast to prevent
+        # cleanup_duplicate_rules_for_routing_id() from deleting valid rules
+        print(f"Error: Failed to check existing assignment: {check_error}")
+        return {
+            "statusCode": 503,
+            "body": json.dumps(
+                {
+                    "error": "Service temporarily unavailable",
+                    "message": "Unable to verify assignment status. Please retry.",
+                    "assigned": False,
+                }
+            ),
+        }
+
     # Initialize variables for exception handling scope
     target_group_arn = None
     rule_arn = None
+    assignment_stored = False  # Track if DB write happened for cleanup
 
     try:
         # 0. Register any orphaned stopped instances as standby first
@@ -2405,6 +2584,10 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
             f"(truncated for security)"
         )
 
+        # Clean up any existing duplicate rules for this routing_id
+        # This prevents rule accumulation from failed/retried assignments
+        cleanup_duplicate_rules_for_routing_id(alb_listener_arn, routing_id)
+
         # Get next available priority dynamically to avoid conflicts
         priority = get_next_available_priority(alb_listener_arn, start_priority=100)
 
@@ -2450,7 +2633,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                         f"for instance {instance_id}"
                     )
 
-        # Clean up reservation and store actual assignment
+        # Clean up reservation placeholder
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 # Remove the reservation placeholder
@@ -2458,12 +2641,23 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                     """DELETE FROM premium_user_assignments
                        WHERE instance_id = %s
                        AND user_id = %s
-                       AND target_group_arn = 'reserving'""",
-                    (instance_id, user_id),
+                       AND target_group_arn = %s""",
+                    (instance_id, user_id, PremiumAssignment.RESERVING),
                 )
                 connection.commit()
 
+        # If this was a shared assignment, trigger scaling BEFORE storing in DB
+        # This way, if scaling fails, we haven't written the DB entry yet
+        # and the user can retry immediately without being blocked by stale entry
+        if needs_scaling:
+            print("Triggering scaling for shared assignment...")
+            scale_premium_instances_if_needed()
+
         # 10. Store assignment in RDS with state tracking
+        # This is intentionally the LAST major operation so that:
+        # - If anything above fails, no DB entry exists to block retries
+        # - Orphaned AWS resources are cleaned up by hourly cleanup job
+        # - User can retry immediately without waiting for stale entry cleanup
         store_user_assignment(
             user_id,
             instance_id,
@@ -2472,11 +2666,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
             instance_state or "launching",
             is_shared,
         )
-
-        # If this was a shared assignment, trigger scaling now that the user is stored
-        if needs_scaling:
-            print("Triggering scaling for shared assignment...")
-            scale_premium_instances_if_needed()
+        assignment_stored = True
 
         # Initialize activity tracking for the new assignment
         try:
@@ -2507,8 +2697,16 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
 
         # Cleanup on failure
         try:
-            # Clean up target group if created
-            if target_group_arn and target_group_arn != "reserving":
+            # Clean up ALB rule if created (MUST be done before target group)
+            if rule_arn:
+                elbv2.delete_rule(RuleArn=rule_arn)
+                print(f"Cleaned up ALB rule after error: {rule_arn}")
+        except Exception as rule_cleanup_error:
+            print(f"Failed to cleanup ALB rule: {str(rule_cleanup_error)}")
+
+        try:
+            # Clean up target group if created (skip placeholder markers)
+            if target_group_arn and target_group_arn != PremiumAssignment.RESERVING:
                 elbv2.delete_target_group(TargetGroupArn=target_group_arn)
                 print(f"Cleaned up target group after error: {target_group_arn}")
         except Exception as cleanup_error:
@@ -2523,6 +2721,23 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                     print(f"Released reservation for instance {instance_id}")
         except Exception as reservation_error:
             print(f"Failed to release reservation: {str(reservation_error)}")
+
+        # Safety net: Clean up DB entry if it was written
+        # This shouldn't normally happen since DB write is now last,
+        # but provides defense-in-depth if code is refactored later
+        try:
+            if assignment_stored:
+                print(f"Cleaning up DB assignment for user {user_id} after error")
+                with get_db_connection() as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "DELETE FROM premium_user_assignments WHERE user_id = %s",
+                            (user_id,),
+                        )
+                        connection.commit()
+                print(f"Cleaned up DB assignment for user {user_id}")
+        except Exception as db_cleanup_error:
+            print(f"Failed to cleanup DB assignment: {str(db_cleanup_error)}")
 
         raise e
 
@@ -3278,7 +3493,7 @@ def release_premium_user(user_id: int) -> Dict[str, Any]:
         autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
         if (
             target_group_arn
-            and target_group_arn != "standby"
+            and target_group_arn != PremiumAssignment.STANDBY
             and target_group_arn != autoscaling_tg_arn
         ):
             try:
@@ -3534,8 +3749,8 @@ def convert_running_instance_to_standby(instance_id: str):
         store_user_assignment(
             user_id=None,
             instance_id=instance_id,
-            target_group_arn="standby",
-            rule_arn="standby",
+            target_group_arn=PremiumAssignment.STANDBY,
+            rule_arn=PremiumAssignment.STANDBY,
             instance_state="stopped",
             is_shared=False,
             is_standby=True,  # Set standby flag in initial INSERT

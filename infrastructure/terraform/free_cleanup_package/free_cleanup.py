@@ -176,8 +176,8 @@ def cleanup_test_user_sessions(connection, user_emails: List[str]) -> Dict[str, 
             # Delete free_user_assignments for these users
             user_id_placeholders = ", ".join(["%s"] * len(user_ids))
             cursor.execute(
-                f"""DELETE FROM free_user_assignments
-                    WHERE user_id IN ({user_id_placeholders})""",
+                "DELETE FROM free_user_assignments "
+                "WHERE user_id IN (" + user_id_placeholders + ")",
                 user_ids,
             )
             deleted_count = cursor.rowcount
@@ -290,8 +290,8 @@ def cleanup_all_test_users(connection) -> Dict[str, Any]:
             placeholders = ", ".join(["%s"] * len(user_ids))
 
             cursor.execute(
-                f"""DELETE FROM free_user_assignments
-                    WHERE user_id IN ({placeholders})""",
+                "DELETE FROM free_user_assignments "
+                "WHERE user_id IN (" + placeholders + ")",
                 user_ids,
             )
             deleted_count = cursor.rowcount
