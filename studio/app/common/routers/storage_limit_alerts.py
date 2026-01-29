@@ -69,7 +69,7 @@ async def get_my_storage_alert(
 
             if alert_level:
                 alert = {
-                    "user_id": current_user.uid,
+                    "user_id": current_user.id,
                     "alert_level": alert_level,
                     "storage_usage_bytes": current_usage,
                     "storage_quota_bytes": storage_quota,

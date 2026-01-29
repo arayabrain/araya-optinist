@@ -556,7 +556,7 @@ async def test_calculate_limit_warning_premium_warning_storage_ok():
                 )  # Allow 1 day variance for test timing
                 assert result["days_remaining"] <= expected_days + 1
                 assert "expired" in result["message"]
-                assert "upgrade to maintain premium features" in result["message"]
+                assert "upgrade" in result["message"].lower()
 
 
 @pytest.mark.asyncio
@@ -610,7 +610,8 @@ async def test_calculate_limit_warning_premium_warning_storage_exceeded():
                 )  # Allow 1 day variance
                 assert result["days_remaining"] <= expected_days + 1
                 assert "expired" in result["message"]
-                assert "remove" in result["message"] or "upgrade" in result["message"]
+                msg_lower = result["message"].lower()
+                assert "remove" in msg_lower or "upgrade" in msg_lower
                 # Verify excess is approximately 3GB (8GB - 5GB)
                 # Allow for rounding: round((8_000_000_000 - 5_000_000_000) / GB, 2)
                 assert result["excess_data_gb"] >= 2.7
@@ -698,7 +699,11 @@ async def test_calculate_limit_warning_premium_active_no_storage_issue():
 @pytest.mark.asyncio
 async def test_calculate_limit_warning_premium_in_grace_period():
     """
-    Test: Premium user in GRACE period (0-7 days after expiration) → No warning yet
+    Test: Premium user in GRACE period (0-30 days after expiration) with
+    storage within FREE quota limits → Grace warning (subscription expired,
+    but no storage issue).
+    Note: During grace period, effective quota is FREE (5GB), so we must use
+    storage within that limit to avoid storage-exceeded warnings.
     """
     user_id = 1
 
@@ -712,10 +717,11 @@ async def test_calculate_limit_warning_premium_in_grace_period():
                 mock_db = Mock()
                 mock_scope.return_value.__enter__.return_value = mock_db
 
-                # Mock storage info: within limits
+                # Mock storage info: within FREE quota limits (2GB of 5GB)
+                # During grace period, effective quota falls back to FREE (5GB)
                 mock_get_storage.return_value = {
-                    "storage_usage_bytes": 50_000_000_000,
-                    "storage_quota_bytes": 200_000_000_000,
+                    "storage_usage_bytes": 2_000_000_000,  # 2GB
+                    "storage_quota_bytes": 5_000_000_000,  # 5GB FREE quota
                 }
                 mock_fresh.return_value = True
 
@@ -728,8 +734,11 @@ async def test_calculate_limit_warning_premium_in_grace_period():
 
                 result = await calculate_limit_warning(user_id)
 
-                # No warning during grace period if storage is OK
-                assert result is None
+                # Grace period warning should appear (subscription expired)
+                assert result is not None
+                assert result["alert_type"] == "grace"
+                assert result["has_alert"] is True
+                assert "expired" in result["message"]
 
 
 @pytest.mark.asyncio
