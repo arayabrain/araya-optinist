@@ -171,8 +171,8 @@ def calculate_limit_warning(user_id: int) -> dict:
     """
     Check if user has exceeded free plan limits after subscription ends.
 
-    Returns warning info including:
-    - warning_type: "storage" or "workflow"
+    Returns alert info including:
+    - alert_type: "storage" or "grace" or "overdue"
     - days_remaining: Days until data deletion
     - excess_data_bytes: Amount over limit
     - deletion_date: When data will be purged
@@ -183,7 +183,8 @@ def calculate_limit_warning(user_id: int) -> dict:
     if storage_usage > FREE_TIER_STORAGE_LIMIT:
         grace_end = subscription_end + timedelta(days=30)
         return {
-            "warning_type": "storage",
+            "has_alert": True,
+            "alert_type": "storage",
             "days_remaining": (grace_end - now).days,
             "excess_data_bytes": storage_usage - FREE_TIER_STORAGE_LIMIT,
             "deletion_date": grace_end.isoformat(),
