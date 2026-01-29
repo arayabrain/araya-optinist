@@ -6,6 +6,7 @@ Maintains data hygiene and resource reconciliation for premium tier. Runs hourly
 ## Primary Responsibilities
 - **Stale Assignment Cleanup**: Remove inactive user assignments (>2 hours idle)
 - **Orphaned Resource Cleanup**: Delete ALB rules/target groups with no database entry
+- **Duplicate Rule Cleanup**: Remove redundant ALB rules with same routing_id
 - **State Reconciliation**: Sync database instance states with AWS reality
 - **Standby Pool Monitoring**: Health checks on standby instances (read-only)
 
@@ -48,13 +49,18 @@ Maintains data hygiene and resource reconciliation for premium tier. Runs hourly
     │     - Delete rules without DB entry            │
     │     - Delete orphaned target groups            │
     │                                                 │
-    │  3. STATE RECONCILIATION                       │
+    │  3. DUPLICATE RULE CLEANUP                     │
+    │     - Group rules by routing_id                │
+    │     - Keep rule matching database entry        │
+    │     - Delete all duplicates                    │
+    │                                                 │
+    │  4. STATE RECONCILIATION                       │
     │     - Get AWS instance states                  │
     │     - Compare with database                    │
     │     - Update DB to match AWS                   │
     │     - Remove terminated instances              │
     │                                                 │
-    │  4. STANDBY POOL CHECK                         │
+    │  5. STANDBY POOL CHECK                         │
     │     - Count standby instances                  │
     │     - Check health status                      │
     │     - Report issues (read-only)                │

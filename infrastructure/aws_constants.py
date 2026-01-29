@@ -74,6 +74,33 @@ class RoutingHeaders:
     USER_TIER = "X-User-Tier"
 
 
+class PremiumAssignment:
+    """
+    Premium user assignment constants.
+
+    These values are used in the premium_user_assignments table
+    to track assignment states and special markers.
+
+    Status values:
+        ACTIVE, MIGRATING, TERMINATING - lifecycle states
+
+    Marker values:
+        STANDBY, RESERVING - placeholder values for special entries
+    """
+
+    # Status: Active assignment - user is assigned and can access the instance
+    ACTIVE = "active"
+    # Status: Assignment is being migrated to a new instance
+    MIGRATING = "migrating"
+    # Status: Assignment is being terminated
+    TERMINATING = "terminating"
+
+    # Marker: Standby pool entries (no real ALB rule/target group yet)
+    STANDBY = "standby"
+    # Marker: Instances being reserved for a user
+    RESERVING = "reserving"
+
+
 class DatabaseConfig:
     """
     Database connection configuration constants.
