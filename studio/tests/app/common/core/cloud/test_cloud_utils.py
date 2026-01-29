@@ -451,8 +451,8 @@ async def test_calculate_limit_warning_free_user_storage_exceeded():
                 result = await calculate_limit_warning(user_id)
 
                 assert result is not None
-                assert result["has_warning"] is True
-                assert result["warning_type"] == "storage"
+                assert result["has_alert"] is True
+                assert result["alert_type"] == "storage"
                 assert (
                     result["days_remaining"] == SubscriptionPeriods.STORAGE_WARNING_DAYS
                 )
@@ -494,8 +494,8 @@ async def test_calculate_limit_warning_premium_active_storage_exceeded():
                 result = await calculate_limit_warning(user_id)
 
                 assert result is not None
-                assert result["has_warning"] is True
-                assert result["warning_type"] == "storage"
+                assert result["has_alert"] is True
+                assert result["alert_type"] == "storage"
                 assert (
                     result["days_remaining"] == SubscriptionPeriods.STORAGE_WARNING_DAYS
                 )
@@ -546,8 +546,8 @@ async def test_calculate_limit_warning_premium_warning_storage_ok():
                 result = await calculate_limit_warning(user_id)
 
                 assert result is not None
-                assert result["has_warning"] is True
-                assert result["warning_type"] == "grace"
+                assert result["has_alert"] is True
+                assert result["alert_type"] == "grace"
                 # days_remaining is (deletion_date - now).days
                 # Expected: warning_period - 10 days remaining until deletion
                 expected_days = (deletion_date - get_current_datetime()).days
@@ -601,8 +601,8 @@ async def test_calculate_limit_warning_premium_warning_storage_exceeded():
                 result = await calculate_limit_warning(user_id)
 
                 assert result is not None
-                assert result["has_warning"] is True
-                assert result["warning_type"] == "grace"
+                assert result["has_alert"] is True
+                assert result["alert_type"] == "grace"
                 # days_remaining is (deletion_date - now).days
                 expected_days = (deletion_date - get_current_datetime()).days
                 assert (
@@ -654,8 +654,8 @@ async def test_calculate_limit_warning_premium_overdue():
                 result = await calculate_limit_warning(user_id)
 
                 assert result is not None
-                assert result["has_warning"] is True
-                assert result["warning_type"] == "overdue"
+                assert result["has_alert"] is True
+                assert result["alert_type"] == "overdue"
                 assert result["days_remaining"] == 0
 
 

@@ -49,8 +49,8 @@ export const logout = async () => {
   removeToken()
   removeExToken()
 
-  // Clear dismissed warnings so they can appear again for the next user
-  localStorage.removeItem("dismissedWarnings")
+  // Clear dismissed alerts so they can appear again for the next user
+  localStorage.removeItem("dismissedAlerts")
   // Clear session storage to prevent stale state on browser back
   sessionStorage.removeItem("storage-refreshed-on-login")
 

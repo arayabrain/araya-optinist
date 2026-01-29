@@ -725,6 +725,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                     subscription_status = SubscriptionLifecycleStatus.ACTIVE
                 elif now <= grace_end:
                     subscription_status = SubscriptionLifecycleStatus.GRACE
+                    days_remaining = (grace_end - now).days
                 elif now <= deletion_date:
                     subscription_status = SubscriptionLifecycleStatus.WARNING
                     days_remaining = (deletion_date - now).days
@@ -742,8 +743,21 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                 )  # Never had premium
 
             # Step 2: Determine storage status
-            storage_exceeded = current_usage_bytes > storage_quota_bytes
-            excess_bytes = max(0, current_usage_bytes - storage_quota_bytes)
+            # For users in grace/warning/overdue period, compare against free tier limit
+            # since that's what they'll have after their subscription fully expires
+            if subscription_status in [
+                SubscriptionLifecycleStatus.GRACE,
+                SubscriptionLifecycleStatus.WARNING,
+                SubscriptionLifecycleStatus.OVERDUE,
+            ]:
+                effective_quota_bytes = FREE_PLAN_LIMIT_BYTES
+                effective_quota_gb = StorageQuota.FREE
+            else:
+                effective_quota_bytes = storage_quota_bytes
+                effective_quota_gb = storage_quota_gb
+
+            storage_exceeded = current_usage_bytes > effective_quota_bytes
+            excess_bytes = max(0, current_usage_bytes - effective_quota_bytes)
             excess_gb = excess_bytes / StorageSize.GB
             current_usage_gb = current_usage_bytes / StorageSize.GB
 
@@ -752,7 +766,8 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
             logger.info(f"Subscription status: {subscription_status}")
             logger.info(f"Storage exceeded: {storage_exceeded}")
             logger.info(
-                f"Current usage: {current_usage_gb:.2f}GB / {storage_quota_gb:.1f}GB"
+                f"Current usage: {current_usage_gb:.2f}GB / {effective_quota_gb:.1f}GB "
+                f"(effective quota for {subscription_status})"
             )
 
             # Case 1: Free user, no storage limit exceeded → No warning
@@ -771,8 +786,8 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                 and storage_exceeded
             ):
                 return {
-                    "has_warning": True,
-                    "warning_type": "storage",
+                    "has_alert": True,
+                    "alert_type": "storage",
                     "days_remaining": SubscriptionPeriods.STORAGE_WARNING_DAYS,
                     "excess_data_bytes": excess_bytes,
                     "excess_data_gb": round(excess_gb, 2),
@@ -798,8 +813,8 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                 and storage_exceeded
             ):
                 return {
-                    "has_warning": True,
-                    "warning_type": "storage",
+                    "has_alert": True,
+                    "alert_type": "storage",
                     "days_remaining": SubscriptionPeriods.STORAGE_WARNING_DAYS,
                     "excess_data_bytes": excess_bytes,
                     "excess_data_gb": round(excess_gb, 2),
@@ -814,8 +829,9 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                     ),
                 }
 
-            # Cases 4 & 5: Premium user with subscription issues (warning/overdue)
+            # Cases 4 & 5: Premium user with subscription issues (grace/warning/overdue)
             if subscription_status in [
+                SubscriptionLifecycleStatus.GRACE,
                 SubscriptionLifecycleStatus.WARNING,
                 SubscriptionLifecycleStatus.OVERDUE,
             ]:
@@ -823,41 +839,85 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                     f"User {user_id}: Creating limit warning "
                     f"(status: {subscription_status})"
                 )
-                warning_type = (
-                    "grace"
-                    if subscription_status == SubscriptionLifecycleStatus.WARNING
-                    else "overdue"
-                )
+                # Frontend expects: "storage", "grace", or "overdue"
+                # Both GRACE and WARNING periods map to "grace" type
+                if subscription_status in [
+                    SubscriptionLifecycleStatus.GRACE,
+                    SubscriptionLifecycleStatus.WARNING,
+                ]:
+                    warning_type = "grace"
+                else:
+                    warning_type = "overdue"
 
                 if storage_exceeded:
                     # Case 4: Both storage and subscription issues
-                    message = (
-                        f"Your premium subscription expired on "
-                        f"{subscription_end.strftime('%B %d, %Y')}. "
-                        f"You have {days_remaining or 0} days to upgrade or remove "
-                        f"{round(excess_gb, 1)} GB of data to stay "
-                        f"within the free plan limit."
-                    )
+                    if subscription_status == SubscriptionLifecycleStatus.GRACE:
+                        message = (
+                            f"Your premium subscription expired on "
+                            f"{subscription_end.strftime('%B %d, %Y')}. "
+                            f"Your storage ({round(current_usage_gb, 1)} GB) exceeds "
+                            f"the free plan limit ({effective_quota_gb:.0f} GB). "
+                            f"You have {days_remaining or 0} days to upgrade or remove "
+                            f"{round(excess_gb, 1)} GB of data."
+                        )
+                    elif subscription_status == SubscriptionLifecycleStatus.WARNING:
+                        message = (
+                            f"Your premium subscription expired on "
+                            f"{subscription_end.strftime('%B %d, %Y')}. "
+                            f"Your storage ({round(current_usage_gb, 1)} GB) exceeds "
+                            f"the free plan limit ({effective_quota_gb:.0f} GB). "
+                            f"Remove {round(excess_gb, 1)} GB of data within "
+                            f"{days_remaining or 0} days or your data will be deleted."
+                        )
+                    else:  # OVERDUE
+                        message = (
+                            f"Your premium subscription expired on "
+                            f"{subscription_end.strftime('%B %d, %Y')}. "
+                            f"Your storage ({round(current_usage_gb, 1)} GB) exceeds "
+                            f"the free plan limit ({effective_quota_gb:.0f} GB). "
+                            f"Your data is scheduled for deletion. "
+                            f"Please upgrade or remove {round(excess_gb, 1)} GB."
+                        )
                 else:
                     # Case 5: Subscription issue only (user within storage limits)
-                    message = (
-                        f"Your premium subscription expired on "
-                        f"{subscription_end.strftime('%B %d, %Y')}. "
-                        f"Please upgrade to maintain premium features."
-                    )
+                    if subscription_status == SubscriptionLifecycleStatus.GRACE:
+                        message = (
+                            f"Your premium subscription expired on "
+                            f"{subscription_end.strftime('%B %d, %Y')}. "
+                            f"You have {days_remaining or 0} days of premium features "
+                            f"remaining. Please upgrade to maintain access."
+                        )
+                    elif subscription_status == SubscriptionLifecycleStatus.WARNING:
+                        message = (
+                            f"Your premium subscription expired on "
+                            f"{subscription_end.strftime('%B %d, %Y')}. "
+                            f"Your data will be deleted in {days_remaining or 0} days. "
+                            f"Please upgrade to prevent data loss."
+                        )
+                    else:  # OVERDUE
+                        message = (
+                            f"Your premium subscription expired on "
+                            f"{subscription_end.strftime('%B %d, %Y')}. "
+                            f"Your data is scheduled for deletion. "
+                            f"Please upgrade immediately to prevent data loss."
+                        )
 
                 return {
-                    "has_warning": True,
-                    "warning_type": warning_type,
+                    "has_alert": True,
+                    "alert_type": warning_type,
                     "days_remaining": days_remaining or 0,
                     "excess_data_bytes": excess_bytes,
                     "excess_data_gb": round(excess_gb, 2),
                     "storage_usage_bytes": current_usage_bytes,
                     "storage_usage_gb": round(current_usage_gb, 2),
-                    "storage_quota_bytes": storage_quota_bytes,
-                    "storage_quota_gb": storage_quota_gb,
+                    "storage_quota_bytes": effective_quota_bytes,
+                    "storage_quota_gb": effective_quota_gb,
                     "subscription_end_date": subscription_end.isoformat()
                     if subscription_end
+                    else None,
+                    "grace_end_date": grace_end.isoformat() if grace_end else None,
+                    "deletion_date": deletion_date.isoformat()
+                    if deletion_date
                     else None,
                     "message": message,
                 }

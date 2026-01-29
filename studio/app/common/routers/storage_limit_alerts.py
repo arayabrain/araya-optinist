@@ -287,7 +287,7 @@ async def get_my_limit_warning(
         if warning:
             logger.info(
                 f"Limit warning for user {current_user.id}: "
-                f"{warning['warning_type']}-{warning['days_remaining']} days remaining"
+                f"{warning['alert_type']}-{warning['days_remaining']} days remaining"
             )
         else:
             logger.warning(f"No limit warning for user {current_user.id}")
@@ -317,8 +317,8 @@ async def check_limit_warning_status(
         warning = await calculate_limit_warning(current_user.id)
 
         return {
-            "has_warning": warning is not None,
-            "warning_type": warning.get("warning_type") if warning else None,
+            "has_alert": warning is not None,
+            "alert_type": warning.get("alert_type") if warning else None,
             "days_remaining": warning.get("days_remaining") if warning else None,
             "user_id": current_user.uid,
         }
