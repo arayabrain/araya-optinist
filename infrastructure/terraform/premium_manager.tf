@@ -432,8 +432,11 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
       },
       # CloudWatch metrics (requires wildcard)
       {
-        Effect   = "Allow"
-        Action   = "cloudwatch:PutMetricData"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData",
+          "cloudwatch:GetMetricData"
+        ]
         Resource = "*"
       },
       # ASG Describe (read-only)

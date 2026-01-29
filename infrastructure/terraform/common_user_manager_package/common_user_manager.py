@@ -12,6 +12,7 @@ premium_manager and free_manager lambdas.
 
 import json
 import os
+import traceback
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict
@@ -20,7 +21,7 @@ import boto3
 import pymysql
 
 # Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
-from aws_constants import DatabaseConfig, SubscriptionType
+from aws_constants import DatabaseConfig, PremiumAssignment, SubscriptionType
 
 if TYPE_CHECKING:
     from mypy_boto3_elbv2 import ElasticLoadBalancingv2Client
@@ -308,8 +309,8 @@ def check_free_user_inactivity() -> Dict[str, int]:
                 user_ids = [u["user_id"] for u in inactive_users]
                 placeholders = ",".join(["%s"] * len(user_ids))
                 cursor.execute(
-                    f"DELETE FROM free_user_assignments "
-                    f"WHERE user_id IN ({placeholders})",
+                    "DELETE FROM free_user_assignments "
+                    "WHERE user_id IN (" + placeholders + ")",
                     user_ids,
                 )
                 conn.commit()
@@ -321,6 +322,7 @@ def check_free_user_inactivity() -> Dict[str, int]:
 
     except Exception as e:
         print(f"Failed to check free user inactivity: {e}")
+        traceback.print_exc()
         return {"logged_out": 0, "error": str(e)}
 
 
@@ -359,11 +361,22 @@ def check_premium_user_inactivity() -> Dict[str, int]:
                 for user in inactive_users:
                     user_id = user["user_id"]
                     try:
-                        # Clean up ALB resources first (before DB deletion)
-                        if user["alb_rule_arn"] and user["alb_rule_arn"] not in [
-                            "STANDBY",
-                            "standby",
-                            "reserving",
+                        # Delete from database FIRST
+                        # This ensures user appears "not assigned" immediately
+                        # If ALB cleanup fails later, orphaned resources are cleaned
+                        # by hourly cleanup job
+                        cursor.execute(
+                            "DELETE FROM premium_user_assignments WHERE user_id = %s",
+                            (user_id,),
+                        )
+
+                        # Clean up ALB resources (after DB deletion)
+                        # Skip marker values (standby/reserving placeholders)
+                        if user["alb_rule_arn"] and user[
+                            "alb_rule_arn"
+                        ].lower() not in [
+                            PremiumAssignment.STANDBY,
+                            PremiumAssignment.RESERVING,
                         ]:
                             try:
                                 elbv2.delete_rule(RuleArn=user["alb_rule_arn"])
@@ -375,8 +388,11 @@ def check_premium_user_inactivity() -> Dict[str, int]:
                         )
                         if (
                             user["target_group_arn"]
-                            and user["target_group_arn"]
-                            not in ["STANDBY", "standby", "reserving"]
+                            and user["target_group_arn"].lower()
+                            not in [
+                                PremiumAssignment.STANDBY,
+                                PremiumAssignment.RESERVING,
+                            ]
                             and user["target_group_arn"] != autoscaling_tg
                         ):
                             try:
@@ -388,11 +404,6 @@ def check_premium_user_inactivity() -> Dict[str, int]:
                                     f"Target group already deleted for user {user_id}"
                                 )
 
-                        # Delete assignment from database
-                        cursor.execute(
-                            "DELETE FROM premium_user_assignments WHERE user_id = %s",
-                            (user_id,),
-                        )
                         logged_out += 1
 
                     except Exception as e:
@@ -415,6 +426,7 @@ def check_premium_user_inactivity() -> Dict[str, int]:
 
     except Exception as e:
         print(f"Failed to check premium user inactivity: {e}")
+        traceback.print_exc()
         return {"logged_out": 0, "error": str(e)}
 
 
@@ -475,8 +487,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     except Exception as e:
         print(f"Error in common user manager: {str(e)}")
-        import traceback
-
         traceback.print_exc()
         return {
             "statusCode": 500,

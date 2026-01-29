@@ -156,8 +156,9 @@ def handler(event, context):
     Operations:
     1. cleanup_stale_assignments() - Remove >2hr inactive assignments
     2. cleanup_orphaned_alb_resources() - Delete ALB rules with no DB entry
-    3. reconcile_instance_states() - Update DB to match AWS reality
-    4. ensure_standby_pool_capacity() - Monitor standby health (read-only)
+    3. cleanup_duplicate_alb_rules() - Remove redundant rules with same routing_id
+    4. reconcile_instance_states() - Update DB to match AWS reality
+    5. ensure_standby_pool_capacity() - Monitor standby health (read-only)
 
     Does NOT stop/start instances - that's premium_manager's job.
     """
@@ -165,6 +166,7 @@ def handler(event, context):
 
     results["cleanup_stats"] = cleanup_stale_assignments()
     results["orphaned_cleanup_stats"] = cleanup_orphaned_alb_resources()
+    results["duplicate_cleanup_stats"] = cleanup_duplicate_alb_rules()
     results["reconciliation_stats"] = reconcile_instance_states()
     results["capacity_check"] = ensure_standby_pool_capacity()
 
@@ -185,6 +187,7 @@ Premium Cleanup Lambda - Data & Resource Hygiene
 Responsibilities:
 - Remove stale assignments from database (>2 hours inactive)
 - Clean up orphaned ALB resources (rules/target groups with no DB entry)
+- Remove duplicate ALB rules (multiple rules with same routing_id)
 - Reconcile instance states (ensure DB matches AWS reality)
 - Monitor standby pool health (read-only)
 
@@ -254,14 +257,21 @@ Coordinates with premium_manager which handles all compute/capacity decisions.
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
-│ 3. reconcile_instance_states()                          │
+│ 3. cleanup_duplicate_alb_rules()                        │
+│    → Group ALB rules by routing_id                      │
+│    → Keep rule matching database entry                  │
+│    → Delete all duplicate rules                         │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 4. reconcile_instance_states()                          │
 │    → Query AWS for actual instance states               │
 │    → Update DB to match reality                         │
 │    → Fix discrepancies (e.g., terminated instances)     │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
-│ 4. ensure_standby_pool_capacity() [Read-Only]          │
+│ 5. ensure_standby_pool_capacity() [Read-Only]          │
 │    → Check if standby pool has minimum capacity         │
 │    → Log warnings if capacity is low                    │
 │    → Does NOT create or terminate instances             │
@@ -421,6 +431,7 @@ PREMIUM_INSTANCE_IDS        # Comma-separated EC2 instance IDs
 **In Premium Cleanup:**
 - `cleanup_stale_assignments()` - Remove >2hr inactive assignments
 - `cleanup_orphaned_alb_resources()` - Delete ALB rules with no DB entry
+- `cleanup_duplicate_alb_rules()` - Remove redundant rules with same routing_id
 - `reconcile_instance_states()` - Sync DB with AWS reality
 - `ensure_standby_pool_capacity()` - Monitor standby health (read-only)
 
