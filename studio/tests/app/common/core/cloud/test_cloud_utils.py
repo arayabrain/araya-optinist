@@ -612,9 +612,10 @@ async def test_calculate_limit_warning_premium_warning_storage_exceeded():
                 assert "expired" in result["message"]
                 msg_lower = result["message"].lower()
                 assert "remove" in msg_lower or "upgrade" in msg_lower
-                # Verify excess is approximately 3GB (8GB - 5GB)
-                # Allow for rounding: round((8_000_000_000 - 5_000_000_000) / GB, 2)
-                assert result["excess_data_gb"] >= 2.7
+                # Verify excess is calculated correctly
+                # Note: Uses binary GB (1 GB = 1024^3 bytes), so:
+                # 8,000,000,000 bytes = 7.45 GB, quota = 5.0 GB, excess = 2.45 GB
+                assert result["excess_data_gb"] >= 2.4
                 assert result["excess_data_gb"] <= 3.0
 
 

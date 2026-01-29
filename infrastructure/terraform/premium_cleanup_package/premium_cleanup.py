@@ -589,12 +589,13 @@ def reconcile_instance_states() -> Dict[str, Any]:
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    """SELECT user_id, instance_id, instance_state, status
+                    """SELECT id, user_id, instance_id, instance_state, status
                        FROM premium_user_assignments WHERE status = 'active'"""
                 )
                 db_assignments = cursor.fetchall()
 
                 for assignment in db_assignments:
+                    assignment_id = assignment["id"]
                     user_id = assignment["user_id"]
                     instance_id = assignment["instance_id"]
                     db_state = assignment["instance_state"]
@@ -602,28 +603,33 @@ def reconcile_instance_states() -> Dict[str, Any]:
 
                     if not aws_instance:
                         # Instance no longer exists in AWS - cleanup
+                        # Use assignment id for deletion
+                        # (handles NULL user_id for standby)
                         print(
-                            f"Cleaning up assignment for terminated instance "
-                            f"{instance_id} (user {user_id})"
+                            f"Cleaning up assignment id={assignment_id} for "
+                            f"terminated instance {instance_id} (user {user_id})"
                         )
                         cursor.execute(
-                            "DELETE FROM premium_user_assignments WHERE user_id = %s",
-                            (user_id,),
+                            "DELETE FROM premium_user_assignments WHERE id = %s",
+                            (assignment_id,),
                         )
                         cleanup_count += 1
                         connection.commit()
                     elif aws_instance["state"] != db_state:
                         # Update database state to match AWS
+                        # Use assignment id for update
+                        # (handles NULL user_id for standby)
                         aws_state = aws_instance["state"]
                         print(
-                            f"Updating instance state for user "
-                            f"{user_id}: {db_state} → {aws_state}"
+                            f"Updating instance state for "
+                            f"assignment id={assignment_id} "
+                            f"(user {user_id}): {db_state} → {aws_state}"
                         )
                         cursor.execute(
                             """UPDATE premium_user_assignments
                                SET instance_state = %s, last_state_check = NOW()
-                               WHERE user_id = %s""",
-                            (aws_state, user_id),
+                               WHERE id = %s""",
+                            (aws_state, assignment_id),
                         )
                         update_count += 1
                         connection.commit()
