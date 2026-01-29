@@ -755,7 +755,7 @@ def _reconcile_instance_states_transaction(
 
     with connection.cursor() as cursor:
         cursor.execute(
-            """SELECT user_id, instance_id, instance_state, status,
+            """SELECT id, user_id, instance_id, instance_state, status,
                       target_group_arn, alb_rule_arn
                FROM premium_user_assignments WHERE status = %s""",
             (PremiumAssignment.ACTIVE,),
@@ -763,6 +763,7 @@ def _reconcile_instance_states_transaction(
         db_assignments = cursor.fetchall()
 
         for assignment in db_assignments:
+            assignment_id = assignment["id"]
             user_id = assignment["user_id"]
             instance_id = assignment["instance_id"]
             db_state = assignment["instance_state"]
@@ -770,9 +771,10 @@ def _reconcile_instance_states_transaction(
 
             if not aws_instance:
                 # Instance no longer exists in AWS - cleanup
+                # Use assignment id for deletion (handles NULL user_id for standby)
                 print(
-                    f"Cleaning up assignment for terminated instance "
-                    f"{instance_id} (user {user_id})"
+                    f"Cleaning up assignment id={assignment_id} for "
+                    f"terminated instance {instance_id} (user {user_id})"
                 )
 
                 # Clean up ALB resources before DB deletion
@@ -805,22 +807,23 @@ def _reconcile_instance_states_transaction(
                         )
 
                 cursor.execute(
-                    "DELETE FROM premium_user_assignments WHERE user_id = %s",
-                    (user_id,),
+                    "DELETE FROM premium_user_assignments WHERE id = %s",
+                    (assignment_id,),
                 )
                 cleanup_count += 1
             elif aws_instance["state"] != db_state:
                 # Update database state to match AWS
+                # Use assignment id for update (handles NULL user_id for standby)
                 aws_state = aws_instance["state"]
                 print(
-                    f"Updating instance state for user "
-                    f"{user_id}: {db_state} → {aws_state}"
+                    f"Updating instance state for assignment id={assignment_id} "
+                    f"(user {user_id}): {db_state} → {aws_state}"
                 )
                 cursor.execute(
                     """UPDATE premium_user_assignments
                        SET instance_state = %s, last_state_check = NOW()
-                       WHERE user_id = %s""",
-                    (aws_state, user_id),
+                       WHERE id = %s""",
+                    (aws_state, assignment_id),
                 )
                 update_count += 1
 
