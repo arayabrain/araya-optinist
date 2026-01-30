@@ -272,7 +272,7 @@ export const logout = async () => {
   removeExToken()
 
   // Clear all session data
-  localStorage.removeItem("dismissedWarnings")
+  localStorage.removeItem("dismissedAlerts")
   sessionStorage.removeItem("storage-refreshed-on-login")
 
   // Reset flag immediately after token removal
@@ -522,7 +522,7 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
     try:
         limit_warning = await calculate_limit_warning(user.id)
         if limit_warning:
-            logger.warning(f"User has {limit_warning['warning_type']} warning")
+            logger.warning(f"User has {limit_warning['alert_type']} warning")
             # Warning included in login response for frontend display
     except Exception as e:
         logger.warning(f"Failed to check limit warning: {e}")
@@ -866,7 +866,7 @@ CREATE INDEX idx_logged_out_at ON free_user_assignments(logged_out_at);
 │    → removeRefreshToken()                                   │
 │    → removeToken()                                          │
 │    → removeExToken()                                        │
-│    → localStorage.removeItem("dismissedWarnings")           │
+│    → localStorage.removeItem("dismissedAlerts")           │
 │    → sessionStorage.removeItem("storage-refreshed-on-login")│
 └─────────────────────────────────────────────────────────────┘
                          ↓

@@ -40,16 +40,17 @@ export const validateSession = async (
     const response = result.payload as CheckoutValidationResponse
     if (response && response.status) {
       setIsValidSession(response.status)
+      setIsLoading(false)
     } else {
-      // Invalid session_id - log error and redirect
+      // Invalid session_id - redirect without changing loading state
+      // Keep showing loading spinner until redirect completes
       console.error("Invalid session_id:", sessionId)
       navigate("/subscription", { replace: true })
     }
   } catch (error) {
-    // Invalid session_id - log error and redirect
+    // Invalid session_id - redirect without changing loading state
+    // Keep showing loading spinner until redirect completes
     console.error("Invalid session_id:", sessionId, error)
     navigate("/subscription", { replace: true })
-  } finally {
-    setIsLoading(false)
   }
 }

@@ -318,7 +318,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
               color="primary"
               onClick={() => {
                 handleDismiss()
-                navigate("/console/workspaces")
+                navigate("/workspaces")
               }}
             >
               Manage Files
@@ -329,7 +329,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
               variant="contained"
               onClick={() => {
                 handleDismiss()
-                navigate("/console/subscription")
+                navigate("/subscription")
               }}
               startIcon={<UpgradeIcon />}
             >

@@ -1070,6 +1070,106 @@ class TestLambdaIntegration:
                 traceback.print_exc()
                 return False
 
+    def test_autoscaling_pool_triggers_migration_retry(self):
+        """
+        Test that when a user already assigned to autoscaling-pool requests
+        assignment, the system triggers invoke_migration_async() to retry
+        migration to a dedicated instance.
+
+        This prevents users from being stuck on autoscaling-pool if their
+        initial migration timed out or failed.
+        """
+        print("\n Testing Autoscaling-Pool Assignment Triggers Migration Retry")
+        print("=" * 50)
+
+        test_user_id = 12345  # Numeric user ID
+
+        # Existing assignment with autoscaling-pool (user stuck after failed migration)
+        existing_autoscaling_assignment = {
+            "user_id": test_user_id,
+            "instance_id": "autoscaling-pool",  # PremiumAssignment.AUTOSCALING_POOL
+            "target_group_arn": "arn:aws:tg/autoscaling",
+            "alb_rule_arn": "arn:aws:rule/autoscaling",
+            "status": "active",
+            "instance_state": "running",
+            "is_shared": 1,
+        }
+
+        with patch.dict("os.environ", self.mock_env_vars):
+            # Import module first, then patch its attributes directly
+            import premium_manager
+
+            with patch.object(
+                premium_manager, "get_existing_user_assignment"
+            ) as mock_get_existing, patch.object(
+                premium_manager, "invoke_migration_async"
+            ) as mock_invoke_migration, patch(
+                "boto3.client"
+            ) as mock_boto3:
+                # Return existing autoscaling-pool assignment
+                mock_get_existing.return_value = existing_autoscaling_assignment
+
+                # Mock AWS services (should not be called for new rule creation)
+                mock_elbv2 = MagicMock()
+
+                def boto3_client_side_effect(service):
+                    if service == "elbv2":
+                        return mock_elbv2
+                    return MagicMock()
+
+                mock_boto3.side_effect = boto3_client_side_effect
+
+                try:
+                    # Call assign_premium_user - should detect autoscaling-pool
+                    # and trigger migration
+                    result = premium_manager.assign_premium_user(
+                        test_user_id, {"tier": "premium"}
+                    )
+
+                    status_code = result["statusCode"]
+                    response_body = json.loads(result["body"])
+
+                    print(f"Status Code: {status_code}")
+                    print(f"Response: {json.dumps(response_body, indent=2)}")
+
+                    # Should return 200 with existing assignment
+                    assert (
+                        status_code == 200
+                    ), "Should return 200 for existing assignment"
+                    assert (
+                        response_body.get("instance_id") == "autoscaling-pool"
+                    ), "Should return autoscaling-pool instance_id"
+                    assert (
+                        response_body.get("assignment_source") == "existing"
+                    ), "Should indicate existing assignment"
+
+                    # CRITICAL: invoke_migration_async SHOULD be called
+                    assert mock_invoke_migration.called, (
+                        "invoke_migration_async should be called when user is on "
+                        "autoscaling-pool to retry migration"
+                    )
+
+                    # Verify get_existing_user_assignment was called
+                    mock_get_existing.assert_called_once_with(test_user_id)
+
+                    # CRITICAL: create_rule should NOT be called (using existing)
+                    assert (
+                        not mock_elbv2.create_rule.called
+                    ), "create_rule should NOT be called for existing assignment"
+
+                    print(
+                        "Autoscaling-pool assignment correctly triggered migration "
+                        "retry"
+                    )
+                    return True
+
+                except Exception as e:
+                    print(f"Test failed: {e}")
+                    import traceback
+
+                    traceback.print_exc()
+                    return False
+
 
 def run_lambda_integration_tests():
     """Run all Lambda integration tests"""
@@ -1124,6 +1224,10 @@ def run_lambda_integration_tests():
         (
             "TC-4: Scheduled Duplicate ALB Rules Cleanup",
             test_suite.test_cleanup_duplicate_alb_rules_scheduled,
+        ),
+        (
+            "TC-5: Autoscaling-Pool Assignment Triggers Migration Retry",
+            test_suite.test_autoscaling_pool_triggers_migration_retry,
         ),
     ]
 
