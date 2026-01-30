@@ -49,6 +49,7 @@ import pymysql
 from aws_constants import (
     DatabaseConfig,
     ECSTaskStatus,
+    InstanceState,
     PremiumAssignment,
     PremiumInstanceConfig,
     RoutingHeaders,
@@ -261,7 +262,7 @@ def _store_user_assignment_transaction(
     instance_id: str,
     target_group_arn: str,
     rule_arn: str,
-    instance_state: str = "launching",
+    instance_state: str = InstanceState.LAUNCHING,
     is_shared: bool = False,
     is_standby: bool = False,
 ):
@@ -276,6 +277,9 @@ def _store_user_assignment_transaction(
         is_shared: Whether instance is shared
         is_standby: Whether this is a standby pool assignment (user_id should be None)
     """
+    # Initialize variable for workflow count preservation (only used for non-standby)
+    active_workflows_from_free = 0
+
     with connection.cursor() as cursor:
         # For standby instances (user_id=None), check by instance_id instead
         # because WHERE user_id = NULL doesn't match any rows in SQL
@@ -324,17 +328,57 @@ def _store_user_assignment_transaction(
                     f"assignment (attempt #{new_attempts})"
                 )
 
+            # Clean up any existing free_user_assignments record for this user
+            # This prevents workflow tracking from updating the wrong table
+            # when a user upgrades from free to premium tier
+            # First, check if there are active workflows to preserve the count
+            cursor.execute(
+                """SELECT active_workflow_count FROM free_user_assignments
+                   WHERE user_id = %s""",
+                (user_id,),
+            )
+            free_record = cursor.fetchone()
+            active_workflows_from_free = 0
+            if free_record:
+                active_workflows_from_free = (
+                    free_record.get("active_workflow_count", 0) or 0
+                )
+                if active_workflows_from_free > 0:
+                    print(
+                        f"User {user_id} has {active_workflows_from_free} active "
+                        f"workflows - will preserve count in premium assignment"
+                    )
+
+            cursor.execute(
+                """DELETE FROM free_user_assignments WHERE user_id = %s""",
+                (user_id,),
+            )
+            deleted_free = cursor.rowcount
+            if deleted_free > 0:
+                print(
+                    f"Cleaned up free_user_assignments record for user {user_id} "
+                    f"(user upgraded to premium)"
+                )
+
+        # Track active workflows to preserve from free tier
+        # (0 if standby or no free record)
+        preserved_workflow_count = (
+            active_workflows_from_free if not is_standby and user_id else 0
+        )
+
         # Insert new assignment with enhanced tracking including is_standby
         # Use CASE to set standby_created_at to NOW() only if is_standby is true
         # Convert Python booleans to integers (1/0) for MySQL compatibility
+        # Preserve active_workflow_count from free tier if user had active workflows
         cursor.execute(
             """
             INSERT INTO premium_user_assignments
             (user_id, instance_id, target_group_arn, alb_rule_arn, status,
              instance_state, is_shared, is_standby,
-             assignment_attempts, last_state_check, standby_created_at)
+             assignment_attempts, last_state_check, standby_created_at,
+             active_workflow_count)
             VALUES (%s, %s, %s, %s, 'active', %s, %s, %s, 1, NOW(),
-                    CASE WHEN %s = 1 THEN NOW() ELSE NULL END)
+                    CASE WHEN %s = 1 THEN NOW() ELSE NULL END, %s)
         """,
             (
                 user_id,
@@ -345,6 +389,7 @@ def _store_user_assignment_transaction(
                 1 if is_shared else 0,  # Explicit int conversion for MySQL
                 1 if is_standby else 0,  # Explicit int conversion for MySQL
                 1 if is_standby else 0,  # For the CASE WHEN
+                preserved_workflow_count,  # Preserve workflow count from free tier
             ),
         )
 
@@ -359,7 +404,7 @@ def store_user_assignment(
     instance_id: str,
     target_group_arn: str,
     rule_arn: str,
-    instance_state: str = "launching",
+    instance_state: str = InstanceState.LAUNCHING,
     is_shared: bool = False,
     is_standby: bool = False,
 ):
@@ -492,7 +537,12 @@ def get_all_premium_instances_with_states():
             Filters=[
                 {
                     "Name": "instance-state-name",
-                    "Values": ["pending", "running", "stopping", "stopped"],
+                    "Values": [
+                        InstanceState.PENDING,
+                        InstanceState.RUNNING,
+                        InstanceState.STOPPING,
+                        InstanceState.STOPPED,
+                    ],
                 },
                 # Use OR logic: Name/Tier/Type tags contain premium identifier
             ]
@@ -829,8 +879,8 @@ def register_pending_standby_creation():
                     (
                         f"creating-standby-{creation_id}",
                         f"pending-{creation_id}",
-                        "pending",
-                        "pending",
+                        InstanceState.PENDING,
+                        InstanceState.PENDING,
                     ),
                 )
                 connection.commit()
@@ -881,8 +931,8 @@ def register_pending_running_creation():
                     (
                         f"creating-running-{creation_id}",
                         f"pending-{creation_id}",
-                        "pending",
-                        "pending",
+                        InstanceState.PENDING,
+                        InstanceState.PENDING,
                     ),
                 )
                 connection.commit()
@@ -942,7 +992,7 @@ def get_available_standby_instances():
                 # Only return instances that are actually stopped in AWS
                 for inst in db_standby_instances:
                     instance_id = inst["instance_id"]
-                    if aws_states.get(instance_id) == "stopped":
+                    if aws_states.get(instance_id) == InstanceState.STOPPED:
                         available_standby.append(inst)
 
                 print(
@@ -968,7 +1018,7 @@ def register_orphaned_stopped_instances():
         # Get all premium instances from AWS
         all_aws_instances = get_all_premium_instances_with_states()
         stopped_aws_instances = [
-            i for i in all_aws_instances if i["state"] == "stopped"
+            i for i in all_aws_instances if i["state"] == InstanceState.STOPPED
         ]
 
         # Get existing standby instances from database
@@ -1004,7 +1054,7 @@ def register_orphaned_stopped_instances():
                     instance_id=instance_id,
                     target_group_arn=PremiumAssignment.STANDBY,
                     rule_arn=PremiumAssignment.STANDBY,
-                    instance_state="launching",  # Use valid enum value
+                    instance_state=InstanceState.LAUNCHING,
                     is_shared=False,
                     is_standby=True,
                 )
@@ -1371,7 +1421,7 @@ def create_and_stop_standby_instance():
             instance_id=instance_id,
             target_group_arn=PremiumAssignment.STANDBY,
             rule_arn=PremiumAssignment.STANDBY,
-            instance_state="stopped",
+            instance_state=InstanceState.STOPPED,
             is_shared=False,
             is_standby=True,
         )
@@ -1668,7 +1718,9 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
             active_users = count_active_premium_users()
             total_premium_users = count_total_premium_users()
             all_instances = get_all_premium_instances_with_states()
-            running_instances = [i for i in all_instances if i["state"] == "running"]
+            running_instances = [
+                i for i in all_instances if i["state"] == InstanceState.RUNNING
+            ]
 
             # Count instances with no assigned users
             idle_instances = 0
@@ -1797,7 +1849,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 )
 
                 # Check if there are still users on autoscaling pool needing migration
-                autoscaling_users = get_assigned_users_for_instance("autoscaling-pool")
+                autoscaling_users = get_assigned_users_for_instance(
+                    PremiumAssignment.AUTOSCALING_POOL
+                )
                 remaining_users = len(autoscaling_users)
 
                 if migrations_performed > 0:
@@ -2085,17 +2139,28 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
     try:
         existing_assignment = get_existing_user_assignment(user_id)
         if existing_assignment:
+            existing_instance_id = existing_assignment["instance_id"]
             print(
                 f"User {user_id} already has active assignment to "
-                f"instance {existing_assignment['instance_id']}"
+                f"instance {existing_instance_id}"
             )
+
+            # If user is on autoscaling-pool, trigger migration to dedicated instance
+            # This handles cases where the initial migration timed out or failed
+            if existing_instance_id == PremiumAssignment.AUTOSCALING_POOL:
+                print(
+                    f"User {user_id} is on autoscaling-pool, "
+                    f"triggering migration check..."
+                )
+                invoke_migration_async()
+
             return {
                 "statusCode": 200,
                 "body": json.dumps(
                     {
                         "message": f"User {user_id} already assigned to "
-                        f"instance {existing_assignment['instance_id']}",
-                        "instance_id": existing_assignment["instance_id"],
+                        f"instance {existing_instance_id}",
+                        "instance_id": existing_instance_id,
                         "target_group_arn": existing_assignment["target_group_arn"],
                         "rule_arn": existing_assignment["alb_rule_arn"],
                         "is_shared": bool(existing_assignment.get("is_shared", False)),
@@ -2130,8 +2195,12 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
 
         # 1. Get comprehensive instance state information
         all_instances = get_all_premium_instances_with_states()
-        running_instances = [i for i in all_instances if i["state"] == "running"]
-        launching_instances = [i for i in all_instances if i["state"] in ["pending"]]
+        running_instances = [
+            i for i in all_instances if i["state"] == InstanceState.RUNNING
+        ]
+        launching_instances = [
+            i for i in all_instances if i["state"] == InstanceState.PENDING
+        ]
         active_users = count_active_premium_users()
 
         # Get standby pool status (now includes newly registered instances)
@@ -2151,7 +2220,9 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
         for instance in all_instances:
             print(f"- {instance['instance_id']}: {instance['state']}")
 
-        stopped_instances = [i for i in all_instances if i["state"] == "stopped"]
+        stopped_instances = [
+            i for i in all_instances if i["state"] == InstanceState.STOPPED
+        ]
         print(
             f" Stopped instances found in AWS: "
             f"{[i['instance_id'] for i in stopped_instances]}"
@@ -2243,7 +2314,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
         if available_dedicated:
             instance_to_use = available_dedicated
             is_shared = False
-            instance_state = "running"
+            instance_state = InstanceState.RUNNING
             assignment_source = "dedicated"
             print(
                 f"PRIORITY 1 SUCCESS: Using dedicated running instance "
@@ -2258,7 +2329,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
             # Share with least loaded instance for immediate assignment
             instance_to_use = least_loaded_instance
             is_shared = True
-            instance_state = "running"
+            instance_state = InstanceState.RUNNING
             assignment_source = "shared"
             print(
                 f"PRIORITY 2: Sharing instance {instance_to_use['instance_id']} "
@@ -2284,9 +2355,9 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
             )
 
             # Use special marker for autoscaling pool assignment
-            instance_to_use = {"instance_id": "autoscaling-pool"}
+            instance_to_use = {"instance_id": PremiumAssignment.AUTOSCALING_POOL}
             is_shared = True  # This is a temporary shared assignment
-            instance_state = "running"
+            instance_state = InstanceState.RUNNING
             assignment_source = "autoscaling_temp"
             needs_scaling = True  # Always trigger scaling for premium instance
 
@@ -2311,7 +2382,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                 # Proceed with assignment to the started instance
                 instance_to_use = {"instance_id": standby_instance_id}
                 is_shared = False
-                instance_state = "running"
+                instance_state = InstanceState.RUNNING
                 assignment_source = "standby"
 
                 print(
@@ -2329,7 +2400,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
             # Find stopped instances directly from AWS that
             # are not in our standby database
             stopped_aws_instances = [
-                i for i in all_instances if i["state"] == "stopped"
+                i for i in all_instances if i["state"] == InstanceState.STOPPED
             ]
 
             # Filter out instances that are already in standby pool
@@ -2363,7 +2434,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                     # Proceed with assignment
                     instance_to_use = {"instance_id": fallback_instance_id}
                     is_shared = False
-                    instance_state = "running"
+                    instance_state = InstanceState.RUNNING
                     assignment_source = "aws_fallback"
 
                     print(
@@ -2412,7 +2483,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                 else:
                     # Generate detailed error message for debugging
                     stopped_instances = [
-                        i for i in all_instances if i["state"] == "stopped"
+                        i for i in all_instances if i["state"] == InstanceState.STOPPED
                     ]
                     error_details = {
                         "error": "No available premium instances "
@@ -2535,7 +2606,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
         instance_id = instance_to_use["instance_id"]
 
         # Special handling for autoscaling pool assignment
-        if instance_id == "autoscaling-pool":
+        if instance_id == PremiumAssignment.AUTOSCALING_POOL:
             print("Using existing autoscaling target group for temporary assignment")
             # Use the autoscaling target group instead of creating a new one
             target_group_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
@@ -2652,6 +2723,11 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
         if needs_scaling:
             print("Triggering scaling for shared assignment...")
             scale_premium_instances_if_needed()
+            # Always trigger migration for autoscaling-pool assignments
+            # Even if scaling wasn't needed, there may be available instances
+            # that the user can be migrated to
+            print("Triggering async migration for autoscaling-pool user...")
+            invoke_migration_async()
 
         # 10. Store assignment in RDS with state tracking
         # This is intentionally the LAST major operation so that:
@@ -2663,7 +2739,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
             instance_id,
             target_group_arn,
             rule_arn,
-            instance_state or "launching",
+            instance_state or InstanceState.LAUNCHING,
             is_shared,
         )
         assignment_stored = True
@@ -2796,9 +2872,13 @@ def scale_premium_instances_if_needed():
         all_instances = get_all_premium_instances_with_states()
         active_users = count_active_premium_users()
 
-        running_instances = [i for i in all_instances if i["state"] == "running"]
+        running_instances = [
+            i for i in all_instances if i["state"] == InstanceState.RUNNING
+        ]
         launching_instances = [
-            i for i in all_instances if i["state"] in ["pending", "launching"]
+            i
+            for i in all_instances
+            if i["state"] in [InstanceState.PENDING, InstanceState.LAUNCHING]
         ]
 
         running_count = len(running_instances)
@@ -2866,7 +2946,9 @@ def scale_premium_instances_if_needed():
 
         if needed_capacity > 0 and total_instances < max_capacity:
             # Try to start stopped instances first
-            stopped_instances = [i for i in all_instances if i["state"] == "stopped"]
+            stopped_instances = [
+                i for i in all_instances if i["state"] == InstanceState.STOPPED
+            ]
 
             if stopped_instances:
                 # Start stopped instances
@@ -3221,7 +3303,7 @@ def update_premium_service_desired_count():
         # Count running premium instances
         response = ec2.describe_instances(
             Filters=[
-                {"Name": "instance-state-name", "Values": ["running"]},
+                {"Name": "instance-state-name", "Values": [InstanceState.RUNNING]},
                 {"Name": "tag:Tier", "Values": ["premium", "Premium"]},
             ]
         )
@@ -3374,7 +3456,7 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                 old_rule_arn = assignment["alb_rule_arn"]
 
                 # Special handling for autoscaling-pool migration
-                if old_instance_id == "autoscaling-pool":
+                if old_instance_id == PremiumAssignment.AUTOSCALING_POOL:
                     # Create new dedicated target group for this user
                     vpc_id = get_required_env_var("VPC_ID")
                     target_group_response = elbv2.create_target_group(
@@ -3586,7 +3668,9 @@ def scale_down_if_possible():
 
         # Get all premium instances with their states
         all_instances = get_all_premium_instances_with_states()
-        running_instances = [i for i in all_instances if i["state"] == "running"]
+        running_instances = [
+            i for i in all_instances if i["state"] == InstanceState.RUNNING
+        ]
 
         total_instances = len(all_instances)
         occupied_instances = 0
@@ -3677,11 +3761,11 @@ def get_standby_pool_count():
 
                 # Convert to dictionary with default values
                 status_counts = {
-                    "stopped": 0,
-                    "running": 0,
-                    "pending": 0,
-                    "stopping": 0,
-                    "starting": 0,
+                    InstanceState.STOPPED: 0,
+                    InstanceState.RUNNING: 0,
+                    InstanceState.PENDING: 0,
+                    InstanceState.STOPPING: 0,
+                    InstanceState.STARTING: 0,
                 }
                 for result in results:
                     status_counts[result["instance_state"]] = result["count"]
@@ -3689,7 +3773,13 @@ def get_standby_pool_count():
                 return status_counts
     except Exception as e:
         print(f"Error getting standby pool count: {str(e)}")
-        return {"stopped": 0, "running": 0, "pending": 0, "stopping": 0, "starting": 0}
+        return {
+            InstanceState.STOPPED: 0,
+            InstanceState.RUNNING: 0,
+            InstanceState.PENDING: 0,
+            InstanceState.STOPPING: 0,
+            InstanceState.STARTING: 0,
+        }
 
 
 def convert_idle_instances_to_standby_immediate() -> int:
@@ -3703,7 +3793,9 @@ def convert_idle_instances_to_standby_immediate() -> int:
     try:
         # Get all running premium instances
         all_instances = get_all_premium_instances_with_states()
-        running_instances = [i for i in all_instances if i["state"] == "running"]
+        running_instances = [
+            i for i in all_instances if i["state"] == InstanceState.RUNNING
+        ]
 
         for instance in running_instances:
             instance_id = instance["instance_id"]
@@ -3754,7 +3846,7 @@ def convert_running_instance_to_standby(instance_id: str):
             instance_id=instance_id,
             target_group_arn=PremiumAssignment.STANDBY,
             rule_arn=PremiumAssignment.STANDBY,
-            instance_state="stopped",
+            instance_state=InstanceState.STOPPED,
             is_shared=False,
             is_standby=True,  # Set standby flag in initial INSERT
         )
@@ -3919,7 +4011,11 @@ def cleanup_ghost_ecs_registrations():
                         instance_state = ec2_response["Reservations"][0]["Instances"][
                             0
                         ]["State"]["Name"]
-                        if instance_state in ["stopped", "terminated", "shutting-down"]:
+                        if instance_state in [
+                            InstanceState.STOPPED,
+                            InstanceState.TERMINATED,
+                            InstanceState.SHUTTING_DOWN,
+                        ]:
                             is_ghost = True
                             reason = f"EC2 instance is {instance_state}"
                 except Exception as e:
@@ -3976,9 +4072,15 @@ def get_premium_system_status() -> Dict[str, Any]:
     try:
         # Get instance states
         all_instances = get_all_premium_instances_with_states()
-        running_count = len([i for i in all_instances if i["state"] == "running"])
+        running_count = len(
+            [i for i in all_instances if i["state"] == InstanceState.RUNNING]
+        )
         launching_count = len(
-            [i for i in all_instances if i["state"] in ["pending", "launching"]]
+            [
+                i
+                for i in all_instances
+                if i["state"] in [InstanceState.PENDING, InstanceState.LAUNCHING]
+            ]
         )
 
         # Get user counts
@@ -4045,13 +4147,17 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
         shared_instances = []
 
         # Check for users temporarily assigned to autoscaling pool
-        autoscaling_users = get_assigned_users_for_instance("autoscaling-pool")
+        autoscaling_users = get_assigned_users_for_instance(
+            PremiumAssignment.AUTOSCALING_POOL
+        )
         if autoscaling_users:
             print(
                 f"Found {len(autoscaling_users)} users on autoscaling pool "
                 f"needing migration"
             )
-            shared_instances.append(("autoscaling-pool", autoscaling_users))
+            shared_instances.append(
+                (PremiumAssignment.AUTOSCALING_POOL, autoscaling_users)
+            )
 
         for instance in all_instances:
             instance_id = instance["instance_id"]
@@ -4059,17 +4165,30 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
 
             print(f"Checking instance {instance_id} (state: {instance_state})")
 
-            if instance_state == "running":
+            if instance_state == InstanceState.RUNNING:
                 assigned_users = get_assigned_users_for_instance(instance_id)
+
+                # Filter out standby assignments - they have no real user
+                # Standby instances have is_standby=1 and user_id=NULL
+                real_users = [
+                    u
+                    for u in assigned_users
+                    if u.get("user_id") is not None and not u.get("is_standby")
+                ]
+
+                print(
+                    f"Instance {instance_id}: {len(assigned_users)} total assignments, "
+                    f"{len(real_users)} real users"
+                )
 
                 # Use short timeout for migration checks - don't block waiting
                 # If instance not ready quickly, skip it and use ready ones
-                if not assigned_users and check_instance_readiness_with_retry(
+                if not real_users and check_instance_readiness_with_retry(
                     instance_id, max_wait_seconds=30, retry_interval=10
                 ):
                     available_instances.append(instance_id)
                     print(f"Instance {instance_id} is available for migration")
-                elif assigned_users:
+                elif real_users:
                     # Check if this is a shared instance:
                     # 1. Multiple users on the instance, OR
                     # 2. Any user has is_shared=1 flag (incorrectly marked as shared)
@@ -4077,13 +4196,13 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                     # to integer 1, not boolean True. The raw dict from cursor
                     # returns 0 or 1, not Python bool.
                     has_shared_flag = any(
-                        user.get("is_shared", 0) == 1 for user in assigned_users
+                        user.get("is_shared", 0) == 1 for user in real_users
                     )
-                    if len(assigned_users) > 1 or has_shared_flag:
-                        shared_instances.append((instance_id, assigned_users))
+                    if len(real_users) > 1 or has_shared_flag:
+                        shared_instances.append((instance_id, real_users))
                         print(
                             f"Instance {instance_id} marked for migration: "
-                            f"{len(assigned_users)} users, "
+                            f"{len(real_users)} users, "
                             f"has_shared_flag={has_shared_flag}"
                         )
 
@@ -4099,7 +4218,7 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
         # Check if we have enough instances for all users needing migration
         total_users_needing_migration = 0
         for instance_id, users in shared_instances:
-            if instance_id == "autoscaling-pool":
+            if instance_id == PremiumAssignment.AUTOSCALING_POOL:
                 total_users_needing_migration += len(users)  # All autoscaling users
             else:
                 total_users_needing_migration += len(users) - 1  # Shared, keep one
@@ -4132,7 +4251,7 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
             # is_shared flag), migrate others
             # For single user with is_shared=1 flag, migrate them too
             # (incorrect assignment)
-            if instance_id == "autoscaling-pool":
+            if instance_id == PremiumAssignment.AUTOSCALING_POOL:
                 users_to_migrate = users  # Migrate all users from autoscaling pool
                 print(f"Migrating ALL {len(users)} users from autoscaling pool")
             elif len(users) == 1:
@@ -4220,11 +4339,11 @@ def fix_incorrect_is_shared_flags(connection) -> Dict[str, Any]:
     with connection.cursor() as cursor:
         # Find users with is_shared=1 who are the only active user on their instance
         cursor.execute(
-            """
+            f"""
             SELECT pa.user_id, pa.instance_id
             FROM premium_user_assignments pa
             WHERE pa.is_shared = 1 AND pa.status = 'active' AND pa.is_standby = 0
-              AND pa.instance_id != 'autoscaling-pool'
+              AND pa.instance_id != '{PremiumAssignment.AUTOSCALING_POOL}'
               AND (SELECT COUNT(*) FROM premium_user_assignments pa2
                    WHERE pa2.instance_id = pa.instance_id
                    AND pa2.status = 'active' AND pa2.is_standby = 0) = 1
