@@ -386,11 +386,17 @@ async def get_outputs_remote_bucket_name(
     workspace_id = None
 
     if data_file_path.startswith(DIRPATH.OUTPUT_DIR):
-        try:
-            ids = ExptOutputPathIds(data_file_path)
-            workspace_id = ids.workspace_id
-        except (ValueError, IndexError):
-            pass
+        # Trim to workspace_id/unique_id level
+        # (ExptOutputPathIds expects 2-3 components)
+        relative_path = data_file_path[len(DIRPATH.OUTPUT_DIR) :].lstrip("/")
+        path_parts = relative_path.split("/")
+        if len(path_parts) >= 2:
+            trimmed_path = "/".join([DIRPATH.OUTPUT_DIR, path_parts[0], path_parts[1]])
+            try:
+                ids = ExptOutputPathIds(trimmed_path)
+                workspace_id = ids.workspace_id
+            except (ValueError, IndexError, AssertionError):
+                pass
 
     # Also check query params for workspace_id
     if not workspace_id:

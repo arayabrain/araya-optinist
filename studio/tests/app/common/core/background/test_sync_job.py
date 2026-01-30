@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from studio.app.common.core.background.sync_job import PublishedExperimentSyncJob
+from studio.app.dir_path import DIRPATH
 
 
 def make_path_exists_mock(local_path_exists=False, required_files_exist=True):
@@ -32,7 +33,7 @@ def make_path_exists_mock(local_path_exists=False, required_files_exist=True):
             return required_files_exist
 
         # After download, check if required files exist
-        if "experiment.yaml" in path or "workflow.yaml" in path:
+        if DIRPATH.EXPERIMENT_YML in path or DIRPATH.WORKFLOW_YML in path:
             return required_files_exist
 
         return False
@@ -79,7 +80,7 @@ class TestSyncExperiment:
             if download_attempts[0] == 0:
                 return False
             # After successful download, files exist
-            if "experiment.yaml" in path or "workflow.yaml" in path:
+            if DIRPATH.EXPERIMENT_YML in path or DIRPATH.WORKFLOW_YML in path:
                 return download_attempts[0] >= 3  # Only after 3rd attempt (success)
             return False
 

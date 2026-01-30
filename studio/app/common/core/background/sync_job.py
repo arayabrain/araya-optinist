@@ -202,7 +202,7 @@ class PublishedExperimentSyncJob:
 
             if os.path.exists(local_path):
                 # Already exists, check if complete
-                required_files = ["experiment.yaml", "workflow.yaml"]
+                required_files = [DIRPATH.EXPERIMENT_YML, DIRPATH.WORKFLOW_YML]
 
                 all_exist = all(
                     os.path.exists(os.path.join(local_path, f)) for f in required_files
@@ -228,7 +228,7 @@ class PublishedExperimentSyncJob:
 
                     if success:
                         # Validate that required files were actually downloaded
-                        required_files = ["experiment.yaml", "workflow.yaml"]
+                        required_files = [DIRPATH.EXPERIMENT_YML, DIRPATH.WORKFLOW_YML]
                         all_exist = all(
                             os.path.exists(os.path.join(local_path, f))
                             for f in required_files
