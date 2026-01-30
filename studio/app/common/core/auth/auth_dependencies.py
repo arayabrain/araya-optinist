@@ -362,55 +362,86 @@ async def get_outputs_remote_bucket_name(
 ) -> str:
     """
     Get remote bucket name for outputs requests.
-    For public dataview outputs, looks up the workspace owner's bucket.
-    For authenticated requests, uses the current user's bucket.
+    Always looks up the workspace owner's bucket based on workspace_id,
+    since data is stored in the owner's bucket even for shared workspaces.
+    Falls back to current user's bucket if workspace owner can't be determined.
+
+    Security: For authenticated users, verifies they have access to the workspace
+    (owner or shared user) before returning the owner's bucket.
     """
+    import re
+
+    from sqlmodel import or_
+
     from studio.app.common.core.experiment.experiment import ExptOutputPathIds
-    from studio.app.common.models.workspace import Workspace
+    from studio.app.common.models.workspace import Workspace, WorkspacesShareUser
     from studio.app.dir_path import DIRPATH
 
-    # If authenticated user, use their bucket
+    request_url_path = req.url.path
+
+    # Try to extract workspace_id from output path
+    # Pattern: /outputs/image//app/studio_data/output/{workspace_id}/{unique_id}/...
+    data_file_path = re.sub(r"^/outputs/[^/]+/", "", request_url_path)
+
+    workspace_id = None
+
+    if data_file_path.startswith(DIRPATH.OUTPUT_DIR):
+        try:
+            ids = ExptOutputPathIds(data_file_path)
+            workspace_id = ids.workspace_id
+        except (ValueError, IndexError):
+            pass
+
+    # Also check query params for workspace_id
+    if not workspace_id:
+        query_params = dict(req.query_params)
+        workspace_id = query_params.get("workspace_id")
+
+    if workspace_id:
+        # For authenticated users, verify they have access to this workspace
+        # (must be owner or shared user)
+        if current_user is not None:
+            workspace = (
+                db.query(Workspace)
+                .join(
+                    WorkspacesShareUser,
+                    WorkspacesShareUser.workspace_id == Workspace.id,
+                    isouter=True,
+                )
+                .filter(
+                    Workspace.id == int(workspace_id),
+                    Workspace.deleted.is_(False),
+                    or_(
+                        Workspace.user_id == current_user.id,
+                        WorkspacesShareUser.user_id == current_user.id,
+                    ),
+                )
+                .first()
+            )
+        else:
+            # For public requests (current_user is None), just look up the workspace
+            # Public access is already validated by
+            # get_current_user_for_dataview_outputs
+            workspace = (
+                db.query(Workspace)
+                .filter(
+                    Workspace.id == int(workspace_id),
+                    Workspace.deleted.is_(False),
+                )
+                .first()
+            )
+
+        if workspace and workspace.user:
+            owner_bucket = getattr(workspace.user, "remote_bucket_name", None)
+            if owner_bucket:
+                logger.debug(
+                    f"Outputs: using owner bucket {owner_bucket} "
+                    f"for workspace {workspace_id}"
+                )
+                return owner_bucket
+
+    # Fall back to current user's bucket or default
     if current_user is not None:
         return _get_user_remote_bucket_name(current_user)
 
-    # For public requests, try to get the workspace owner's bucket
-    if DataviewService.is_dataview_public_outputs_request(req):
-        request_url_path = req.url.path
-
-        # Try to extract workspace_id from output path
-        # Pattern: /outputs/image//app/studio_data/output/{workspace_id}/{unique_id}/...
-        import re
-
-        data_file_path = re.sub(r"^/outputs/[^/]+/", "", request_url_path)
-
-        workspace_id = None
-
-        if data_file_path.startswith(DIRPATH.OUTPUT_DIR):
-            try:
-                ids = ExptOutputPathIds(data_file_path)
-                workspace_id = ids.workspace_id
-            except (ValueError, IndexError):
-                pass
-
-        # Also check query params for workspace_id
-        if not workspace_id:
-            query_params = dict(req.query_params)
-            workspace_id = query_params.get("workspace_id")
-
-        if workspace_id:
-            # Look up workspace owner's bucket
-            workspace = (
-                db.query(Workspace).filter(Workspace.id == int(workspace_id)).first()
-            )
-
-            if workspace and workspace.user:
-                owner_bucket = getattr(workspace.user, "remote_bucket_name", None)
-                if owner_bucket:
-                    logger.debug(
-                        f"Public outputs: using owner bucket {owner_bucket} "
-                        f"for workspace {workspace_id}"
-                    )
-                    return owner_bucket
-
-    # Fall back to default bucket
     return _get_user_remote_bucket_name(None)

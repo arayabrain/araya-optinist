@@ -404,3 +404,97 @@ def test_contract_dataview_dates_are_strings():
     assert isinstance(record["analyzed_at"], str)
     assert isinstance(record["created_at"], str)
     assert isinstance(record["updated_at"], str)
+
+
+# ============================================================================
+# Contract Tests: Public Data Access Protocol
+# ============================================================================
+# These tests document the frontend-backend contract for accessing public data.
+# Frontend must send the DATAVIEW_PUBLIC_REQUEST header to access published data
+# without authentication.
+
+
+def test_contract_public_request_header_name():
+    """
+    Contract test: Public data access requires specific header name.
+
+    Frontend must send this exact header to access public outputs:
+      DATAVIEW_PUBLIC_REQUEST: true
+
+    This header name is case-insensitive in HTTP but should be sent as shown.
+    """
+    from studio.app.common.core.dataview.dataview_services import DataviewService
+
+    # Document the exact header name frontend must use
+    expected_header = "DATAVIEW_PUBLIC_REQUEST"
+    assert DataviewService.DATAVIEW_PUBLIC_REQUEST_KEY == expected_header
+
+
+def test_contract_public_request_header_detection():
+    """
+    Contract test: Backend correctly detects public request header.
+
+    When frontend sends DATAVIEW_PUBLIC_REQUEST header on /outputs/* URLs,
+    backend should recognize it as a public data request.
+    """
+    from unittest.mock import MagicMock
+
+    from studio.app.common.core.dataview.dataview_services import DataviewService
+
+    # Mock request with public header
+    mock_request = MagicMock()
+    mock_request.headers = {"dataview_public_request": "true"}  # lowercase in headers
+    mock_request.url.path = "/outputs/image/some/path"
+
+    result = DataviewService.is_dataview_public_outputs_request(mock_request)
+
+    assert result, "Backend should detect public request header"
+
+
+def test_contract_public_request_requires_outputs_path():
+    """
+    Contract test: Public request header only valid for /outputs/* paths.
+
+    The DATAVIEW_PUBLIC_REQUEST header is only recognized on outputs endpoints.
+    Other endpoints require normal authentication.
+    """
+    from unittest.mock import MagicMock
+
+    from studio.app.common.core.dataview.dataview_services import DataviewService
+
+    # Mock request with public header but non-outputs path
+    mock_request = MagicMock()
+    mock_request.headers = {"dataview_public_request": "true"}
+    mock_request.url.path = "/api/workspace/1"  # Not an outputs path
+
+    result = DataviewService.is_dataview_public_outputs_request(mock_request)
+
+    assert not result, "Public header should only work on /outputs/* paths"
+
+
+def test_contract_publish_status_values():
+    """
+    Contract test: publish_status uses documented integer values.
+
+    Frontend and backend must agree on these values:
+      - 0 = unpublished (private)
+      - 1 = published (public)
+    """
+    from studio.app.common.schemas.dataview import PublishStatus
+
+    assert PublishStatus.off.value == 0, "Unpublished status should be 0"
+    assert PublishStatus.on.value == 1, "Published status should be 1"
+
+
+def test_contract_publish_flags_values():
+    """
+    Contract test: PublishFlags for publish/unpublish actions.
+
+    Frontend sends these string values when changing publish status:
+      - "on"  = publish (make public)
+      - "off" = unpublish (make private)
+    """
+    from studio.app.common.schemas.dataview import PublishFlags
+
+    assert PublishFlags.on.value == "on"
+    assert PublishFlags.off.value == "off"

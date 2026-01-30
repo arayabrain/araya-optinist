@@ -131,19 +131,105 @@ class TestGetOutputsRemoteBucketName:
     """Test get_outputs_remote_bucket_name dependency"""
 
     @pytest.mark.asyncio
-    async def test_returns_user_bucket_for_authenticated_user(self):
-        """Authenticated user should get their own bucket"""
+    async def test_returns_user_bucket_when_no_workspace_id(self):
+        """Authenticated user should get their own bucket
+        when workspace can't be determined"""
         mock_req = MagicMock()
+        mock_req.url.path = "/outputs/image/some/path/without/workspace"
+        mock_req.query_params = {}
         mock_db = MagicMock()
         mock_user = MagicMock()
         mock_user.remote_bucket_name = "user-bucket-123"
 
-        result = await get_outputs_remote_bucket_name(
-            req=mock_req,
-            current_user=mock_user,
-            db=mock_db,
-        )
+        with patch("studio.app.dir_path.DIRPATH") as mock_dirpath:
+            mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
+            result = await get_outputs_remote_bucket_name(
+                req=mock_req,
+                current_user=mock_user,
+                db=mock_db,
+            )
 
+        assert result == "user-bucket-123"
+
+    @pytest.mark.asyncio
+    async def test_returns_workspace_owner_bucket_for_authenticated_user(self):
+        """Authenticated user with workspace access should
+        get workspace owner's bucket"""
+        mock_req = MagicMock()
+        mock_req.url.path = (
+            "/outputs/image//app/studio_data/output/123/abc123/file.json"
+        )
+        mock_req.query_params = {}
+        mock_db = MagicMock()
+        mock_user = MagicMock()
+        mock_user.id = 1
+        mock_user.remote_bucket_name = "user-bucket-123"
+
+        mock_workspace = MagicMock()
+        mock_workspace.user = MagicMock()
+        mock_workspace.user.remote_bucket_name = "owner-bucket-456"
+
+        with patch("studio.app.dir_path.DIRPATH") as mock_dirpath:
+            mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
+            with patch(
+                "studio.app.common.core.experiment.experiment.ExptOutputPathIds"
+            ) as mock_path_ids_class:
+                mock_path_ids = MagicMock()
+                mock_path_ids.workspace_id = "123"
+                mock_path_ids.unique_id = "abc123"
+                mock_path_ids_class.return_value = mock_path_ids
+
+                # Mock the join query chain for authenticated users
+                mock_query = mock_db.query.return_value
+                mock_query.join.return_value.filter.return_value.first.return_value = (
+                    mock_workspace
+                )
+
+                result = await get_outputs_remote_bucket_name(
+                    req=mock_req,
+                    current_user=mock_user,
+                    db=mock_db,
+                )
+
+        # Should use workspace owner's bucket, not the current user's bucket
+        assert result == "owner-bucket-456"
+
+    @pytest.mark.asyncio
+    async def test_returns_user_bucket_when_no_workspace_access(self):
+        """Authenticated user without workspace access should get their own bucket"""
+        mock_req = MagicMock()
+        mock_req.url.path = (
+            "/outputs/image//app/studio_data/output/999/abc123/file.json"
+        )
+        mock_req.query_params = {}
+        mock_db = MagicMock()
+        mock_user = MagicMock()
+        mock_user.id = 1
+        mock_user.remote_bucket_name = "user-bucket-123"
+
+        with patch("studio.app.dir_path.DIRPATH") as mock_dirpath:
+            mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
+            with patch(
+                "studio.app.common.core.experiment.experiment.ExptOutputPathIds"
+            ) as mock_path_ids_class:
+                mock_path_ids = MagicMock()
+                mock_path_ids.workspace_id = "999"
+                mock_path_ids.unique_id = "abc123"
+                mock_path_ids_class.return_value = mock_path_ids
+
+                # Mock the join query chain - user has no access, returns None
+                mock_query = mock_db.query.return_value
+                mock_query.join.return_value.filter.return_value.first.return_value = (
+                    None
+                )
+
+                result = await get_outputs_remote_bucket_name(
+                    req=mock_req,
+                    current_user=mock_user,
+                    db=mock_db,
+                )
+
+        # Should fall back to user's own bucket since they don't have workspace access
         assert result == "user-bucket-123"
 
     @pytest.mark.asyncio
@@ -160,29 +246,24 @@ class TestGetOutputsRemoteBucketName:
         mock_workspace.user = MagicMock()
         mock_workspace.user.remote_bucket_name = "owner-bucket-456"
 
-        with patch(
-            "studio.app.common.core.auth.auth_dependencies.DataviewService."
-            "is_dataview_public_outputs_request",
-            return_value=True,
-        ):
-            with patch("studio.app.dir_path.DIRPATH") as mock_dirpath:
-                mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
-                with patch(
-                    "studio.app.common.core.experiment.experiment.ExptOutputPathIds"
-                ) as mock_path_ids_class:
-                    mock_path_ids = MagicMock()
-                    mock_path_ids.workspace_id = "123"
-                    mock_path_ids.unique_id = "abc123"
-                    mock_path_ids_class.return_value = mock_path_ids
+        with patch("studio.app.dir_path.DIRPATH") as mock_dirpath:
+            mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
+            with patch(
+                "studio.app.common.core.experiment.experiment.ExptOutputPathIds"
+            ) as mock_path_ids_class:
+                mock_path_ids = MagicMock()
+                mock_path_ids.workspace_id = "123"
+                mock_path_ids.unique_id = "abc123"
+                mock_path_ids_class.return_value = mock_path_ids
 
-                    mock_query = mock_db.query.return_value
-                    mock_query.filter.return_value.first.return_value = mock_workspace
+                mock_query = mock_db.query.return_value
+                mock_query.filter.return_value.first.return_value = mock_workspace
 
-                    result = await get_outputs_remote_bucket_name(
-                        req=mock_req,
-                        current_user=None,
-                        db=mock_db,
-                    )
+                result = await get_outputs_remote_bucket_name(
+                    req=mock_req,
+                    current_user=None,
+                    db=mock_db,
+                )
 
         assert result == "owner-bucket-456"
 
@@ -200,30 +281,25 @@ class TestGetOutputsRemoteBucketName:
         mock_req.query_params = {}
         mock_db = MagicMock()
 
-        with patch(
-            "studio.app.common.core.auth.auth_dependencies.DataviewService."
-            "is_dataview_public_outputs_request",
-            return_value=True,
-        ):
-            with patch("studio.app.dir_path.DIRPATH") as mock_dirpath:
-                mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
-                with patch(
-                    "studio.app.common.core.experiment.experiment.ExptOutputPathIds",
-                    side_effect=ValueError("Invalid path"),
+        with patch("studio.app.dir_path.DIRPATH") as mock_dirpath:
+            mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
+            with patch(
+                "studio.app.common.core.experiment.experiment.ExptOutputPathIds",
+                side_effect=ValueError("Invalid path"),
+            ):
+                with patch.dict(
+                    os.environ, {"S3_DEFAULT_BUCKET_NAME": "default-bucket"}
                 ):
-                    with patch.dict(
-                        os.environ, {"S3_DEFAULT_BUCKET_NAME": "default-bucket"}
+                    with patch(
+                        "studio.app.common.core.auth.auth_dependencies."
+                        "RemoteStorageType.get_activated_type",
+                        return_value=RemoteStorageType.S3,
                     ):
-                        with patch(
-                            "studio.app.common.core.auth.auth_dependencies."
-                            "RemoteStorageType.get_activated_type",
-                            return_value=RemoteStorageType.S3,
-                        ):
-                            result = await get_outputs_remote_bucket_name(
-                                req=mock_req,
-                                current_user=None,
-                                db=mock_db,
-                            )
+                        result = await get_outputs_remote_bucket_name(
+                            req=mock_req,
+                            current_user=None,
+                            db=mock_db,
+                        )
 
         assert result == "default-bucket"
 
@@ -239,25 +315,20 @@ class TestGetOutputsRemoteBucketName:
         mock_workspace.user = MagicMock()
         mock_workspace.user.remote_bucket_name = "owner-bucket-from-query"
 
-        with patch(
-            "studio.app.common.core.auth.auth_dependencies.DataviewService."
-            "is_dataview_public_outputs_request",
-            return_value=True,
-        ):
-            with patch("studio.app.dir_path.DIRPATH") as mock_dirpath:
-                mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
-                with patch(
-                    "studio.app.common.core.experiment.experiment.ExptOutputPathIds",
-                    side_effect=ValueError("Invalid path"),
-                ):
-                    mock_query = mock_db.query.return_value
-                    mock_query.filter.return_value.first.return_value = mock_workspace
+        with patch("studio.app.dir_path.DIRPATH") as mock_dirpath:
+            mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
+            with patch(
+                "studio.app.common.core.experiment.experiment.ExptOutputPathIds",
+                side_effect=ValueError("Invalid path"),
+            ):
+                mock_query = mock_db.query.return_value
+                mock_query.filter.return_value.first.return_value = mock_workspace
 
-                    result = await get_outputs_remote_bucket_name(
-                        req=mock_req,
-                        current_user=None,
-                        db=mock_db,
-                    )
+                result = await get_outputs_remote_bucket_name(
+                    req=mock_req,
+                    current_user=None,
+                    db=mock_db,
+                )
 
         assert result == "owner-bucket-from-query"
 

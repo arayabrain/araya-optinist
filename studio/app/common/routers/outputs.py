@@ -3,7 +3,7 @@ from glob import glob
 from typing import Optional
 
 import pandas as pd
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from studio.app.common.core.auth.auth_dependencies import get_outputs_remote_bucket_name
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
@@ -363,6 +363,13 @@ async def get_image(
                 s3_controller = S3StorageController(remote_bucket_name)
                 await s3_controller.download_input_data(workspace_id, filename + ext)
 
+            # Return 404 if file still doesn't exist after sync attempt
+            if not os.path.exists(filepath):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Input file not found: {filename}{ext}",
+                )
+
         save_dirpath = join_filepath(
             [
                 os.path.dirname(filepath),
@@ -376,6 +383,12 @@ async def get_image(
             save_tiff2json(filepath, save_dirpath, start_index, end_index)
     else:
         json_filepath = filepath
+        # Check if output file exists after sync attempt
+        if not os.path.exists(json_filepath):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output file not found: {os.path.basename(json_filepath)}",
+            )
 
     return JsonReader.read_as_output(json_filepath)
 
