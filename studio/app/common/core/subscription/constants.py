@@ -306,6 +306,24 @@ class SubscriptionLifecycleStatus(StrEnum):
     FREE = "free"  # Never had premium subscription
 
 
+class AlertType(StrEnum):
+    """
+    Frontend-facing alert types for limit warnings.
+
+    Usage: API response field 'alert_type' in limit warning payloads
+    Note: Frontend expects exactly these values: "storage", "grace", "overdue"
+
+    Mapping from SubscriptionLifecycleStatus:
+    - GRACE, WARNING -> AlertType.GRACE (both are grace period warnings)
+    - OVERDUE -> AlertType.OVERDUE
+    - Storage exceeded -> AlertType.STORAGE
+    """
+
+    STORAGE = "storage"  # Storage quota exceeded
+    GRACE = "grace"  # In grace or warning period (premium features expiring)
+    OVERDUE = "overdue"  # Past all grace periods, data deletion imminent
+
+
 class SyncStatusConstants:
     """
     Configuration constants for background sync and cleanup jobs.

@@ -184,7 +184,7 @@ def calculate_limit_warning(user_id: int) -> dict:
         grace_end = subscription_end + timedelta(days=30)
         return {
             "has_alert": True,
-            "alert_type": "storage",
+            "alert_type": AlertType.STORAGE,
             "days_remaining": (grace_end - now).days,
             "excess_data_bytes": storage_usage - FREE_TIER_STORAGE_LIMIT,
             "deletion_date": grace_end.isoformat(),

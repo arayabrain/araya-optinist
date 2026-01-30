@@ -28,9 +28,9 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
             if limit_warning:
                 logger.warning(
                     f"User {user.id} ({user.email}) has limit warning: "
-                    f"{limit_warning['alert_type']} - "
-                    f"{limit_warning['days_remaining']} days remaining, "
-                    f"{limit_warning['excess_data_gb']} GB over limit"
+                    f"{limit_warning.alert_type} - "
+                    f"{limit_warning.days_remaining} days remaining, "
+                    f"{limit_warning.excess_data_gb} GB over limit"
                 )
             else:
                 logger.warning(f"No limit warning for user {user.id}")

@@ -16,7 +16,7 @@ import pytest
 from fastapi import HTTPException
 
 from studio.app.common.core.cloud.s3_storage_monitor import S3StorageMonitor
-from studio.app.common.core.subscription.constants import StorageQuota
+from studio.app.common.core.subscription.constants import AlertType, StorageQuota
 
 # ============================================================================
 # Fixtures
@@ -516,12 +516,20 @@ async def test_get_limit_warning_has_alert(mock_current_user):
     with patch(
         "studio.app.common.core.cloud.cloud_utils.calculate_limit_warning"
     ) as mock_calc:
-        mock_warning = {
-            "has_alert": True,
-            "alert_type": "storage",
-            "days_remaining": 7,
-            "storage_usage_percent": 95.0,
-        }
+        from studio.app.common.schemas.storage import LimitWarning
+
+        mock_warning = LimitWarning(
+            has_alert=True,
+            alert_type=AlertType.STORAGE.value,
+            days_remaining=7,
+            excess_data_bytes=500_000_000,
+            excess_data_gb=0.5,
+            storage_usage_bytes=4_750_000_000,
+            storage_usage_gb=4.75,
+            storage_quota_bytes=5_000_000_000,
+            storage_quota_gb=5.0,
+            message="Storage exceeded",
+        )
         mock_calc.return_value = mock_warning
 
         from studio.app.common.routers.storage_limit_alerts import get_my_limit_warning
@@ -529,8 +537,8 @@ async def test_get_limit_warning_has_alert(mock_current_user):
         result = await get_my_limit_warning(current_user=mock_current_user)
 
         assert result == mock_warning
-        assert result["has_alert"] is True
-        assert result["alert_type"] == "storage"
+        assert result.has_alert is True
+        assert result.alert_type == AlertType.STORAGE.value
 
 
 @pytest.mark.asyncio
@@ -559,11 +567,20 @@ async def test_check_limit_warning_has_alert(mock_current_user):
     with patch(
         "studio.app.common.core.cloud.cloud_utils.calculate_limit_warning"
     ) as mock_calc:
-        mock_warning = {
-            "has_alert": True,
-            "alert_type": "subscription",
-            "days_remaining": 5,
-        }
+        from studio.app.common.schemas.storage import LimitWarning
+
+        mock_warning = LimitWarning(
+            has_alert=True,
+            alert_type="grace",
+            days_remaining=5,
+            excess_data_bytes=0,
+            excess_data_gb=0.0,
+            storage_usage_bytes=3_000_000_000,
+            storage_usage_gb=3.0,
+            storage_quota_bytes=5_000_000_000,
+            storage_quota_gb=5.0,
+            message="Subscription expiring",
+        )
         mock_calc.return_value = mock_warning
 
         from studio.app.common.routers.storage_limit_alerts import (
@@ -572,10 +589,10 @@ async def test_check_limit_warning_has_alert(mock_current_user):
 
         result = await check_limit_warning_status(current_user=mock_current_user)
 
-        assert result["has_alert"] is True
-        assert result["alert_type"] == "subscription"
-        assert result["days_remaining"] == 5
-        assert result["user_id"] == "test-user-123"
+        assert result.has_alert is True
+        assert result.alert_type == "grace"
+        assert result.days_remaining == 5
+        assert result.user_id == "test-user-123"
 
 
 @pytest.mark.asyncio
@@ -592,10 +609,10 @@ async def test_check_limit_warning_no_warning(mock_current_user):
 
         result = await check_limit_warning_status(current_user=mock_current_user)
 
-        assert result["has_alert"] is False
-        assert result["alert_type"] is None
-        assert result["days_remaining"] is None
-        assert result["user_id"] == "test-user-123"
+        assert result.has_alert is False
+        assert result.alert_type is None
+        assert result.days_remaining is None
+        assert result.user_id == "test-user-123"
 
 
 # ============================================================================
@@ -623,7 +640,7 @@ async def test_check_limit_warning_no_warning(mock_current_user):
 # Required fields that must be present in all LimitAlert responses
 LIMIT_ALERT_REQUIRED_FIELDS = {
     "has_alert": bool,
-    "alert_type": str,  # Must be "storage", "grace", or "overdue"
+    "alert_type": str,  # Must be AlertType value: STORAGE, GRACE, or OVERDUE
     "days_remaining": int,
     "excess_data_bytes": (int, float),
     "excess_data_gb": (int, float),
@@ -642,7 +659,11 @@ LIMIT_ALERT_OPTIONAL_FIELDS = {
 }
 
 # Valid alert types that frontend can handle
-VALID_ALERT_TYPES = {"storage", "grace", "overdue"}
+VALID_ALERT_TYPES = {
+    AlertType.STORAGE.value,
+    AlertType.GRACE.value,
+    AlertType.OVERDUE.value,
+}
 
 
 def validate_limit_alert_contract(result: dict) -> None:
@@ -720,11 +741,13 @@ async def test_contract_storage_alert_response_format():
 
                 # Validate contract
                 assert result is not None, "Expected storage alert for user over quota"
-                validate_limit_alert_contract(result)
+                # Convert Pydantic model to dict for contract validation
+                result_dict = result.dict()
+                validate_limit_alert_contract(result_dict)
 
                 # Additional semantic validation for storage alerts
-                assert result["alert_type"] == "storage"
-                assert result["has_alert"] is True
+                assert result.alert_type == AlertType.STORAGE.value
+                assert result.has_alert is True
 
 
 @pytest.mark.asyncio
@@ -768,14 +791,16 @@ async def test_contract_grace_period_alert_response_format():
 
                 # Validate contract
                 assert result is not None, "Expected grace period alert"
-                validate_limit_alert_contract(result)
+                # Convert Pydantic model to dict for contract validation
+                result_dict = result.dict()
+                validate_limit_alert_contract(result_dict)
 
                 # Additional semantic validation for grace alerts
-                assert result["alert_type"] == "grace"
-                assert result["has_alert"] is True
+                assert result.alert_type == AlertType.GRACE.value
+                assert result.has_alert is True
                 # Grace alerts should include subscription dates
-                assert "subscription_end_date" in result
-                assert "grace_end_date" in result
+                assert result.subscription_end_date is not None
+                assert result.grace_end_date is not None
 
 
 @pytest.mark.asyncio
@@ -823,12 +848,14 @@ async def test_contract_overdue_alert_response_format():
 
                 # Validate contract
                 assert result is not None, "Expected overdue alert"
-                validate_limit_alert_contract(result)
+                # Convert Pydantic model to dict for contract validation
+                result_dict = result.dict()
+                validate_limit_alert_contract(result_dict)
 
                 # Additional semantic validation for overdue alerts
-                assert result["alert_type"] == "overdue"
-                assert result["has_alert"] is True
-                assert result["days_remaining"] == 0
+                assert result.alert_type == AlertType.OVERDUE.value
+                assert result.has_alert is True
+                assert result.days_remaining == 0
 
 
 @pytest.mark.asyncio
