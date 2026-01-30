@@ -227,6 +227,35 @@ class PublishedExperimentSyncJob:
                     )
 
                     if success:
+                        # Validate that required files were actually downloaded
+                        required_files = ["experiment.yaml", "workflow.yaml"]
+                        all_exist = all(
+                            os.path.exists(os.path.join(local_path, f))
+                            for f in required_files
+                        )
+
+                        if not all_exist:
+                            missing = [
+                                f
+                                for f in required_files
+                                if not os.path.exists(os.path.join(local_path, f))
+                            ]
+                            logger.error(
+                                f"Download succeeded but required files missing "
+                                f"from S3: {missing} for {workspace_id}/{unique_id}"
+                            )
+                            # Continue to retry - files might be corrupted in S3
+                            if attempt < max_retries - 1:
+                                wait_time = 2**attempt
+                                logger.warning(
+                                    f"Missing required files, retrying in {wait_time}s"
+                                )
+                                await asyncio.sleep(wait_time)
+                                continue
+                            else:
+                                # All retries exhausted, mark as error
+                                break
+
                         logger.info(f"Successfully synced {workspace_id}/{unique_id}")
                         cls._mark_sync_complete(exp_id)
                         cls._clear_retry_count(exp_id)
