@@ -23,3 +23,8 @@ jobs:
         shell: bash
         run: |
           make test_run
+
+      - name: Run API contract tests
+        shell: bash
+        run: |
+          make contract-test
