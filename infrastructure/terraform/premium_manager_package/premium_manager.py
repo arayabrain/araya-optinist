@@ -277,6 +277,9 @@ def _store_user_assignment_transaction(
         is_shared: Whether instance is shared
         is_standby: Whether this is a standby pool assignment (user_id should be None)
     """
+    # Initialize variable for workflow count preservation (only used for non-standby)
+    active_workflows_from_free = 0
+
     with connection.cursor() as cursor:
         # For standby instances (user_id=None), check by instance_id instead
         # because WHERE user_id = NULL doesn't match any rows in SQL
@@ -325,17 +328,57 @@ def _store_user_assignment_transaction(
                     f"assignment (attempt #{new_attempts})"
                 )
 
+            # Clean up any existing free_user_assignments record for this user
+            # This prevents workflow tracking from updating the wrong table
+            # when a user upgrades from free to premium tier
+            # First, check if there are active workflows to preserve the count
+            cursor.execute(
+                """SELECT active_workflow_count FROM free_user_assignments
+                   WHERE user_id = %s""",
+                (user_id,),
+            )
+            free_record = cursor.fetchone()
+            active_workflows_from_free = 0
+            if free_record:
+                active_workflows_from_free = (
+                    free_record.get("active_workflow_count", 0) or 0
+                )
+                if active_workflows_from_free > 0:
+                    print(
+                        f"User {user_id} has {active_workflows_from_free} active "
+                        f"workflows - will preserve count in premium assignment"
+                    )
+
+            cursor.execute(
+                """DELETE FROM free_user_assignments WHERE user_id = %s""",
+                (user_id,),
+            )
+            deleted_free = cursor.rowcount
+            if deleted_free > 0:
+                print(
+                    f"Cleaned up free_user_assignments record for user {user_id} "
+                    f"(user upgraded to premium)"
+                )
+
+        # Track active workflows to preserve from free tier
+        # (0 if standby or no free record)
+        preserved_workflow_count = (
+            active_workflows_from_free if not is_standby and user_id else 0
+        )
+
         # Insert new assignment with enhanced tracking including is_standby
         # Use CASE to set standby_created_at to NOW() only if is_standby is true
         # Convert Python booleans to integers (1/0) for MySQL compatibility
+        # Preserve active_workflow_count from free tier if user had active workflows
         cursor.execute(
             """
             INSERT INTO premium_user_assignments
             (user_id, instance_id, target_group_arn, alb_rule_arn, status,
              instance_state, is_shared, is_standby,
-             assignment_attempts, last_state_check, standby_created_at)
+             assignment_attempts, last_state_check, standby_created_at,
+             active_workflow_count)
             VALUES (%s, %s, %s, %s, 'active', %s, %s, %s, 1, NOW(),
-                    CASE WHEN %s = 1 THEN NOW() ELSE NULL END)
+                    CASE WHEN %s = 1 THEN NOW() ELSE NULL END, %s)
         """,
             (
                 user_id,
@@ -346,6 +389,7 @@ def _store_user_assignment_transaction(
                 1 if is_shared else 0,  # Explicit int conversion for MySQL
                 1 if is_standby else 0,  # Explicit int conversion for MySQL
                 1 if is_standby else 0,  # For the CASE WHEN
+                preserved_workflow_count,  # Preserve workflow count from free tier
             ),
         )
 
