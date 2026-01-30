@@ -1,6 +1,10 @@
+import { useNavigate } from "react-router-dom"
+
 import { Box, styled, Typography } from "@mui/material"
 
 export const Hero = () => {
+  const navigate = useNavigate()
+
   return (
     <HeroSection>
       <HeroGrid>
@@ -18,7 +22,9 @@ export const Hero = () => {
             </HeroDescription>
           </HeroText>
           <HeroButtons>
-            <PrimaryButtonLg>Start Free Trial</PrimaryButtonLg>
+            <PrimaryButtonLg onClick={() => navigate("/login")}>
+              Get Started
+            </PrimaryButtonLg>
           </HeroButtons>
           <HeroBadges>
             <Badge>
@@ -37,9 +43,13 @@ export const Hero = () => {
               >
                 check_circle
               </span>
-              <span>NWB compatible</span>
+              <span>NWB (Neurodata Without Borders) compatible</span>
             </Badge>
           </HeroBadges>
+          <Attribution>
+            Araya OptiNiSt is developed based on OptiNiSt by OIST (Okinawa
+            Institute of Science and Technology)
+          </Attribution>
         </HeroContent>
         <HeroVisual>
           <HeroGlow />
@@ -190,6 +200,13 @@ const Badge = styled(Box)({
   gap: "0.5rem",
   fontSize: "0.875rem",
   color: "#6b7280",
+})
+
+const Attribution = styled(Typography)({
+  fontSize: "0.8rem",
+  color: "#9ca3af",
+  fontStyle: "italic",
+  marginTop: "0.5rem",
 })
 
 const HeroVisual = styled(Box)({

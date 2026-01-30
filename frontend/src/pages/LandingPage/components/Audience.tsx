@@ -17,7 +17,7 @@ const audiences: AudienceCard[] = [
     features: [
       "Calcium imaging pipelines",
       "ROI extraction & analysis",
-      "NWB format export",
+      "NWB (Neurodata Without Borders) export",
     ],
     color: "primary",
   },
@@ -58,8 +58,7 @@ export const Audience = () => {
     <AudienceSection id="audience">
       <Container>
         <SectionHeaderCenter>
-          <Label>Built For You</Label>
-          <SectionTitle>Who Uses OptiNiSt?</SectionTitle>
+          <SectionTitle>Who Uses Araya OptiNiSt?</SectionTitle>
           <SectionSubtitle>
             Empowering researchers and educators worldwide.
           </SectionSubtitle>

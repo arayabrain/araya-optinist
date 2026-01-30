@@ -1,6 +1,10 @@
+import { useNavigate } from "react-router-dom"
+
 import { Box, styled, Typography } from "@mui/material"
 
 export const CTA = () => {
+  const navigate = useNavigate()
+
   return (
     <CTASection>
       <Container>
@@ -9,12 +13,20 @@ export const CTA = () => {
           <CTAGlow2 />
           <CTATitle>Ready to Transform Your Research?</CTATitle>
           <CTADescription>
-            Join researchers worldwide using OptiNiSt to accelerate their
+            Join researchers worldwide using Araya OptiNiSt to accelerate their
             scientific discoveries.
           </CTADescription>
           <CTAButtons>
-            <CTAPrimaryButton>Start Free Trial</CTAPrimaryButton>
-            <CTASecondaryButton>View Documentation</CTASecondaryButton>
+            <CTAPrimaryButton onClick={() => navigate("/login")}>
+              Get Started
+            </CTAPrimaryButton>
+            <CTASecondaryLink
+              href="https://optinist.readthedocs.io/en/latest/index.html"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              View Documentation
+            </CTASecondaryLink>
           </CTAButtons>
         </CTAWrapper>
       </Container>
@@ -110,7 +122,7 @@ const CTAPrimaryButton = styled("button")({
   },
 })
 
-const CTASecondaryButton = styled("button")({
+const CTASecondaryLink = styled("a")({
   backgroundColor: "rgba(19, 91, 236, 0.5)",
   backdropFilter: "blur(8px)",
   border: "1px solid rgba(255, 255, 255, 0.3)",
@@ -121,6 +133,10 @@ const CTASecondaryButton = styled("button")({
   borderRadius: 12,
   cursor: "pointer",
   transition: "background-color 0.2s",
+  textDecoration: "none",
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
   "&:hover": {
     backgroundColor: "rgba(19, 91, 236, 0.6)",
   },

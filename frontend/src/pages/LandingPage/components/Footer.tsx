@@ -14,28 +14,22 @@ const footerSections: FooterSection[] = [
   {
     title: "Product",
     links: [
-      { label: "Features", href: "#" },
-      { label: "Workflow Builder", href: "#" },
-      { label: "Visualization", href: "#" },
-      { label: "Pricing", href: "#" },
+      { label: "Features", href: "#features" },
+      { label: "Who It's For", href: "#audience" },
+      { label: "Public Repository", href: "#public-repository" },
     ],
   },
   {
     title: "Resources",
     links: [
-      { label: "Documentation", href: "#" },
-      { label: "Tutorials", href: "#" },
-      { label: "API Reference", href: "#" },
-      { label: "Community", href: "#" },
-    ],
-  },
-  {
-    title: "Company",
-    links: [
-      { label: "About Us", href: "#" },
-      { label: "Contact", href: "#" },
-      { label: "Privacy Policy", href: "#" },
-      { label: "Terms of Service", href: "#" },
+      {
+        label: "Documentation",
+        href: "https://optinist.readthedocs.io/en/latest/index.html",
+      },
+      {
+        label: "GitHub",
+        href: "https://github.com/arayabrain/optinist-for-cloud",
+      },
     ],
   },
 ]
@@ -48,20 +42,34 @@ export const Footer = () => {
           <FooterBrand>
             <Logo>
               <LogoIcon>
-                <span className="material-symbols-outlined">biotech</span>
+                <img
+                  src="/static/optinist_logo.png"
+                  alt="OptiNiSt"
+                  style={{ height: 32, width: "auto" }}
+                />
               </LogoIcon>
-              <LogoText>OptiNiSt</LogoText>
+              <LogoText>Araya OptiNiSt</LogoText>
             </Logo>
             <FooterDescription>
-              The no-code platform for scientific data analysis. Build pipelines
-              visually, ensure reproducibility, and collaborate seamlessly.
+              Araya OptiNiSt is the no-code platform for scientific data
+              analysis. Build pipelines visually, ensure reproducibility, and
+              collaborate seamlessly.
             </FooterDescription>
             <FooterSocial>
-              <SocialLink href="#">
-                <span className="material-symbols-outlined">public</span>
-              </SocialLink>
-              <SocialLink href="#">
-                <span className="material-symbols-outlined">mail</span>
+              <SocialLink
+                href="https://github.com/arayabrain/optinist-for-cloud"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="GitHub"
+              >
+                <svg
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                >
+                  <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" />
+                </svg>
               </SocialLink>
             </FooterSocial>
           </FooterBrand>
@@ -79,8 +87,14 @@ export const Footer = () => {
           ))}
         </FooterGrid>
         <FooterBottom>
-          <p>&copy; 2024 OptiNiSt. Built for Science.</p>
-          <span>Version 2.4.0</span>
+          <FooterAttribution>
+            Araya OptiNiSt is developed based on OptiNiSt by OIST (Okinawa
+            Institute of Science and Technology)
+          </FooterAttribution>
+          <FooterCopyright>
+            <p>&copy; 2025 Araya OptiNiSt. Built for Science.</p>
+            <span>Version 2.4.0</span>
+          </FooterCopyright>
         </FooterBottom>
       </Container>
     </FooterWrapper>
@@ -104,10 +118,7 @@ const FooterGrid = styled(Box)({
   gridTemplateColumns: "repeat(2, 1fr)",
   gap: "3rem",
   "@media (min-width: 768px)": {
-    gridTemplateColumns: "repeat(4, 1fr)",
-  },
-  "@media (min-width: 1024px)": {
-    gridTemplateColumns: "2fr 1fr 1fr 1fr",
+    gridTemplateColumns: "2fr 1fr 1fr",
   },
 })
 
@@ -196,13 +207,28 @@ const FooterBottom = styled(Box)({
   flexDirection: "column",
   gap: "1rem",
   alignItems: "center",
-  justifyContent: "space-between",
   fontSize: "0.75rem",
   color: "#6b7280",
-  "@media (min-width: 640px)": {
-    flexDirection: "row",
-  },
   "& p": {
     margin: 0,
+  },
+})
+
+const FooterAttribution = styled(Typography)({
+  fontSize: "0.75rem",
+  color: "#9ca3af",
+  fontStyle: "italic",
+  textAlign: "center",
+})
+
+const FooterCopyright = styled(Box)({
+  display: "flex",
+  flexDirection: "column",
+  gap: "0.5rem",
+  alignItems: "center",
+  "@media (min-width: 640px)": {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    width: "100%",
   },
 })

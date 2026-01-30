@@ -1,3 +1,5 @@
+import { useEffect } from "react"
+
 import { Box, styled } from "@mui/material"
 
 import {
@@ -6,16 +8,23 @@ import {
   ValueProps,
   Features,
   FormatMarquee,
-  HowItWorks,
   Audience,
-  Collaboration,
   PublicRepository,
-  Resources,
   CTA,
   Footer,
 } from "pages/LandingPage/components"
 
 export const LandingPage = () => {
+  useEffect(() => {
+    // Enable smooth scrolling for anchor links
+    document.documentElement.style.scrollBehavior = "smooth"
+
+    return () => {
+      // Reset when leaving the page
+      document.documentElement.style.scrollBehavior = "auto"
+    }
+  }, [])
+
   return (
     <LandingPageWrapper>
       <Header />
@@ -24,11 +33,8 @@ export const LandingPage = () => {
         <ValueProps />
         <Features />
         <FormatMarquee />
-        <HowItWorks />
         <Audience />
-        <Collaboration />
         <PublicRepository />
-        <Resources />
         <CTA />
       </Main>
       <Footer />

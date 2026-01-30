@@ -33,7 +33,7 @@ const valueProps: ValueProp[] = [
     icon: "folder_open",
     title: "Multi-Format Support",
     description:
-      "Native support for NWB, HDF5, MATLAB, CSV, and image formats. Your data, your way.",
+      "Native support for NWB (Neurodata Without Borders), HDF5, MATLAB, CSV, and image formats. Your data, your way.",
     color: "yellow",
   },
 ]
@@ -49,7 +49,7 @@ export const ValueProps = () => {
   return (
     <ValuePropsSection>
       <Container>
-        <SectionTitle>Who It&apos;s For</SectionTitle>
+        <SectionTitle>Why Choose Araya OptiNiSt</SectionTitle>
         <SectionSubtitle>
           Everything you need to go from raw data to publishable insights,
           without writing a single line of code.

@@ -32,7 +32,7 @@ const features: Feature[] = [
     icon: "frame_inspect",
     title: "Cell ROI Analysis Tools",
     description:
-      "Draw, merge, and edit cell ROI directly on images. Perfect for calcium imaging and spatial analysis workflows.",
+      "View, select, and analyze cell ROI overlaid on images. Perfect for calcium imaging and spatial analysis workflows.",
     image: "/images/landing-page/roi_analysis_tools.png",
     imageAlt: "Cell ROI Analysis Tools",
     iconColor: "green",
@@ -41,7 +41,7 @@ const features: Feature[] = [
     icon: "science",
     title: "Experiment Management",
     description:
-      "Track all analysis workflows and results. Compare approaches. Re-run past analyses instantly. Export data to NWB or download workflow configs for Snakemake.",
+      "Track all analysis workflows and results. Compare approaches. Re-run past analyses instantly. Export data to NWB (Neurodata Without Borders) or download workflow configs.",
     image: "/images/landing-page/experiment_management.png",
     imageAlt: "Experiment Management",
     iconColor: "yellow",

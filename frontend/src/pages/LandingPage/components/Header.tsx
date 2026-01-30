@@ -18,13 +18,19 @@ export const Header = () => {
               style={{ height: 32, width: "auto" }}
             />
           </LogoIcon>
-          <LogoText>OptiNiSt</LogoText>
+          <LogoText>Araya OptiNiSt</LogoText>
         </Logo>
         <Nav>
           <NavLink href="#features">Features</NavLink>
-          <NavLink href="#formats">Data Formats</NavLink>
           <NavLink href="#audience">Who It&apos;s For</NavLink>
-          <NavLink href="#">Documentation</NavLink>
+          <NavLink href="#public-repository">Public Repository</NavLink>
+          <NavLink
+            href="https://optinist.readthedocs.io/en/latest/index.html"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Documentation
+          </NavLink>
           <PrimaryButton onClick={() => navigate("/login")}>
             Get Started
           </PrimaryButton>
@@ -38,9 +44,17 @@ export const Header = () => {
       {mobileMenuOpen && (
         <MobileNav>
           <MobileNavLink href="#features">Features</MobileNavLink>
-          <MobileNavLink href="#formats">Data Formats</MobileNavLink>
           <MobileNavLink href="#audience">Who It&apos;s For</MobileNavLink>
-          <MobileNavLink href="#">Documentation</MobileNavLink>
+          <MobileNavLink href="#public-repository">
+            Public Repository
+          </MobileNavLink>
+          <MobileNavLink
+            href="https://optinist.readthedocs.io/en/latest/index.html"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Documentation
+          </MobileNavLink>
           <PrimaryButton
             onClick={() => navigate("/login")}
             style={{ width: "100%" }}
