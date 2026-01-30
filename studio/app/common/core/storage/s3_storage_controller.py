@@ -306,7 +306,11 @@ class S3StorageController(BaseRemoteStorageController):
             keys_to_delete = [{"Key": obj.key} async for obj in objects_to_delete]
 
             if keys_to_delete:
-                await bucket.delete_objects(Delete={"Objects": keys_to_delete})
+                # S3 delete_objects has a limit of 1000 objects per request
+                batch_size = 1000
+                for i in range(0, len(keys_to_delete), batch_size):
+                    batch = keys_to_delete[i : i + batch_size]
+                    await bucket.delete_objects(Delete={"Objects": batch})
 
         return True
 
@@ -902,7 +906,11 @@ class S3StorageController(BaseRemoteStorageController):
                     f"Deleting {len(keys_to_delete)} objects "
                     f"({total_bytes_deleted:,} bytes) from {experiment_remote_path}"
                 )
-                await bucket.delete_objects(Delete={"Objects": keys_to_delete})
+                # S3 delete_objects has a limit of 1000 objects per request
+                batch_size = 1000
+                for i in range(0, len(keys_to_delete), batch_size):
+                    batch = keys_to_delete[i : i + batch_size]
+                    await bucket.delete_objects(Delete={"Objects": batch})
 
         # Update user storage with the total bytes deleted (incremental approach)
         if total_bytes_deleted > 0:
@@ -962,7 +970,11 @@ class S3StorageController(BaseRemoteStorageController):
                 keys_to_delete = [{"Key": obj.key} async for obj in objects_to_delete]
 
                 if keys_to_delete:
-                    await bucket.delete_objects(Delete={"Objects": keys_to_delete})
+                    # S3 delete_objects has a limit of 1000 objects per request
+                    batch_size = 1000
+                    for i in range(0, len(keys_to_delete), batch_size):
+                        batch = keys_to_delete[i : i + batch_size]
+                        await bucket.delete_objects(Delete={"Objects": batch})
                     logger.info(f"[S3] Deleted S3 objects under prefix: {prefix}")
                 else:
                     logger.warning(f"[S3] No objects found for prefix: {prefix}")
