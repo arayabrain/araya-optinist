@@ -195,8 +195,9 @@ class TestGetOutputsRemoteBucketName:
         assert result == "owner-bucket-456"
 
     @pytest.mark.asyncio
-    async def test_returns_user_bucket_when_no_workspace_access(self):
-        """Authenticated user without workspace access should get their own bucket"""
+    async def test_returns_user_bucket_when_no_workspace_access_and_not_published(self):
+        """Authenticated user without workspace access and non-published data
+        should get their own bucket"""
         mock_req = MagicMock()
         mock_req.url.path = (
             "/outputs/image//app/studio_data/output/999/abc123/file.json"
@@ -222,6 +223,8 @@ class TestGetOutputsRemoteBucketName:
                 mock_query.join.return_value.filter.return_value.first.return_value = (
                     None
                 )
+                # Mock the published data check - data is NOT published
+                mock_query.filter.return_value.first.return_value = None
 
                 result = await get_outputs_remote_bucket_name(
                     req=mock_req,
@@ -229,8 +232,63 @@ class TestGetOutputsRemoteBucketName:
                     db=mock_db,
                 )
 
-        # Should fall back to user's own bucket since they don't have workspace access
+        # Should fall back to user's own bucket since data is not published
         assert result == "user-bucket-123"
+
+    @pytest.mark.asyncio
+    async def test_returns_owner_bucket_when_no_workspace_access_but_published(self):
+        """Authenticated user without workspace access but with published data
+        should get workspace owner's bucket"""
+        mock_req = MagicMock()
+        mock_req.url.path = (
+            "/outputs/image//app/studio_data/output/999/abc123/file.json"
+        )
+        mock_req.query_params = {}
+        mock_db = MagicMock()
+        mock_user = MagicMock()
+        mock_user.id = 1
+        mock_user.remote_bucket_name = "user-bucket-123"
+
+        mock_workspace = MagicMock()
+        mock_workspace.user = MagicMock()
+        mock_workspace.user.remote_bucket_name = "owner-bucket-published"
+
+        mock_published_record = MagicMock()
+
+        with patch("studio.app.dir_path.DIRPATH") as mock_dirpath:
+            mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
+            with patch(
+                "studio.app.common.core.experiment.experiment.ExptOutputPathIds"
+            ) as mock_path_ids_class:
+                mock_path_ids = MagicMock()
+                mock_path_ids.workspace_id = "999"
+                mock_path_ids.unique_id = "abc123"
+                mock_path_ids_class.return_value = mock_path_ids
+
+                # Setup query mock to return different results for different calls
+                # First call: workspace with join (user has no access) -> None
+                # Second call: ExperimentRecord (published check) ->
+                # mock_published_record
+                # Third call: workspace without join (after publish check) ->
+                # mock_workspace
+                mock_query = mock_db.query.return_value
+                mock_query.join.return_value.filter.return_value.first.return_value = (
+                    None
+                )
+                # Both ExperimentRecord and Workspace queries use .filter().first()
+                mock_query.filter.return_value.first.side_effect = [
+                    mock_published_record,  # Published record check
+                    mock_workspace,  # Workspace lookup
+                ]
+
+                result = await get_outputs_remote_bucket_name(
+                    req=mock_req,
+                    current_user=mock_user,
+                    db=mock_db,
+                )
+
+        # Should use workspace owner's bucket since data is published
+        assert result == "owner-bucket-published"
 
     @pytest.mark.asyncio
     async def test_returns_workspace_owner_bucket_for_public_request(self):

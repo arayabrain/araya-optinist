@@ -367,23 +367,26 @@ async def get_outputs_remote_bucket_name(
     Falls back to current user's bucket if workspace owner can't be determined.
 
     Security: For authenticated users, verifies they have access to the workspace
-    (owner or shared user) before returning the owner's bucket.
+    (owner, shared user, or published data) before returning the owner's bucket.
     """
     import re
 
     from sqlmodel import or_
 
     from studio.app.common.core.experiment.experiment import ExptOutputPathIds
+    from studio.app.common.models.experiment import ExperimentRecord
     from studio.app.common.models.workspace import Workspace, WorkspacesShareUser
+    from studio.app.common.schemas.dataview import PublishStatus
     from studio.app.dir_path import DIRPATH
 
     request_url_path = req.url.path
 
-    # Try to extract workspace_id from output path
+    # Try to extract workspace_id and unique_id from output path
     # Pattern: /outputs/image//app/studio_data/output/{workspace_id}/{unique_id}/...
     data_file_path = re.sub(r"^/outputs/[^/]+/", "", request_url_path)
 
     workspace_id = None
+    unique_id = None
 
     if data_file_path.startswith(DIRPATH.OUTPUT_DIR):
         # Trim to workspace_id/unique_id level
@@ -395,6 +398,7 @@ async def get_outputs_remote_bucket_name(
             try:
                 ids = ExptOutputPathIds(trimmed_path)
                 workspace_id = ids.workspace_id
+                unique_id = ids.unique_id
             except (ValueError, IndexError, AssertionError):
                 pass
 
@@ -404,8 +408,10 @@ async def get_outputs_remote_bucket_name(
         workspace_id = query_params.get("workspace_id")
 
     if workspace_id:
-        # For authenticated users, verify they have access to this workspace
-        # (must be owner or shared user)
+        workspace = None
+
+        # For authenticated users, first check if they have direct access
+        # (owner or shared user)
         if current_user is not None:
             workspace = (
                 db.query(Workspace)
@@ -424,6 +430,47 @@ async def get_outputs_remote_bucket_name(
                 )
                 .first()
             )
+
+            if workspace:
+                logger.debug(
+                    f"Outputs: user {current_user.id} has direct access to "
+                    f"workspace {workspace_id}"
+                )
+
+            # If user doesn't have direct access, check if the data is published
+            if workspace is None and unique_id:
+                logger.debug(
+                    f"Outputs: user {current_user.id} has no direct access to "
+                    f"workspace {workspace_id}, checking if {unique_id} is published"
+                )
+                published_record = (
+                    db.query(ExperimentRecord)
+                    .filter(
+                        ExperimentRecord.workspace_id == int(workspace_id),
+                        ExperimentRecord.uid == unique_id,
+                        ExperimentRecord.publish_status == PublishStatus.on.value,
+                    )
+                    .first()
+                )
+                if published_record:
+                    # Data is published, allow access to the workspace bucket
+                    logger.info(
+                        f"Outputs: experiment {workspace_id}/{unique_id} is published, "
+                        f"allowing access for user {current_user.id}"
+                    )
+                    workspace = (
+                        db.query(Workspace)
+                        .filter(
+                            Workspace.id == int(workspace_id),
+                            Workspace.deleted.is_(False),
+                        )
+                        .first()
+                    )
+                else:
+                    logger.debug(
+                        f"Outputs: experiment {workspace_id}/{unique_id} "
+                        f"is not published"
+                    )
         else:
             # For public requests (current_user is None), just look up the workspace
             # Public access is already validated by
@@ -448,6 +495,13 @@ async def get_outputs_remote_bucket_name(
 
     # Fall back to current user's bucket or default
     if current_user is not None:
-        return _get_user_remote_bucket_name(current_user)
+        fallback_bucket = _get_user_remote_bucket_name(current_user)
+        logger.debug(
+            f"Outputs: falling back to user {current_user.id}'s bucket "
+            f"{fallback_bucket} for workspace {workspace_id}"
+        )
+        return fallback_bucket
 
-    return _get_user_remote_bucket_name(None)
+    fallback_bucket = _get_user_remote_bucket_name(None)
+    logger.debug(f"Outputs: falling back to default bucket {fallback_bucket}")
+    return fallback_bucket

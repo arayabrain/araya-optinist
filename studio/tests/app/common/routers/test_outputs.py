@@ -1,7 +1,22 @@
+import os
+import shutil
+
 from studio.app.dir_path import DIRPATH
+
+# Test data source is always in the repo at studio/test_data/
+# Use ROOT_DIR to find it regardless of where DATA_DIR is configured
+TEST_DATA_SOURCE_DIR = os.path.join(DIRPATH.ROOT_DIR, "studio", "test_data")
 
 workspace_id = "default"
 unique_id = "0123"
+
+# Copy output test data to the configured output directory
+# This ensures tests work both locally and in Docker/CI
+shutil.copytree(
+    f"{TEST_DATA_SOURCE_DIR}/output_test/{workspace_id}/{unique_id}",
+    f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}",
+    dirs_exist_ok=True,
+)
 
 timeseries_dirpath = (
     f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}/func1/fluorescence.json"
@@ -68,12 +83,22 @@ def test_alltimedata(client):
         assert len(value) == 1000
 
 
+# Test data for image test
+tif_workspace_id = "1"
 tif_filepath = "test.tif"
-workspace_id = "1"
+
+# Copy input test data for image test
+shutil.copytree(
+    f"{TEST_DATA_SOURCE_DIR}/input/{tif_workspace_id}",
+    f"{DIRPATH.INPUT_DIR}/{tif_workspace_id}",
+    dirs_exist_ok=True,
+)
 
 
 def test_image(client):
-    response = client.get(f"/outputs/image/{tif_filepath}?workspace_id={workspace_id}")
+    response = client.get(
+        f"/outputs/image/{tif_filepath}?workspace_id={tif_workspace_id}"
+    )
     data = response.json()
 
     assert response.status_code == 200
