@@ -28,6 +28,7 @@ import pymysql
 from aws_constants import (
     DatabaseConfig,
     ECSTaskStatus,
+    InstanceState,
     PremiumAssignment,
     PremiumInstanceConfig,
     RoutingHeaders,
@@ -237,15 +238,23 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
                         except Exception as e:
                             print(f"Warning: Failed to delete ALB rule: {e}")
 
+                    # Skip deletion of shared autoscaling target group
+                    autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
                     if (
                         target_group_arn
                         and target_group_arn.lower() != PremiumAssignment.STANDBY
+                        and target_group_arn != autoscaling_tg_arn
                     ):
                         try:
                             elbv2.delete_target_group(TargetGroupArn=target_group_arn)
                             print(f"Deleted target group: {target_group_arn}")
                         except Exception as e:
                             print(f"Warning: Failed to delete target group: {e}")
+                    elif target_group_arn == autoscaling_tg_arn:
+                        print(
+                            f"Skipping deletion of shared autoscaling "
+                            f"target group: {target_group_arn}"
+                        )
 
                     # Remove from database
                     cursor.execute(
@@ -377,14 +386,20 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
                 rules_deleted += 1
                 print("Deleted ALB rule")
 
-                # Delete the target group if it exists
-                if target_group_arn:
+                # Delete the target group if it exists (skip shared autoscaling TG)
+                autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
+                if target_group_arn and target_group_arn != autoscaling_tg_arn:
                     try:
                         elbv2.delete_target_group(TargetGroupArn=target_group_arn)
                         target_groups_deleted += 1
                         print(f"Deleted target group: {target_group_arn}")
                     except Exception as tg_error:
                         print(f"Warning: Failed to delete target group: {tg_error}")
+                elif target_group_arn == autoscaling_tg_arn:
+                    print(
+                        f"Skipping deletion of shared autoscaling "
+                        f"target group: {target_group_arn}"
+                    )
 
             except Exception as e:
                 print(f"Error deleting orphaned rule {rule_arn}: {e}")
@@ -551,7 +566,12 @@ def get_all_premium_instances_with_states():
             Filters=[
                 {
                     "Name": "instance-state-name",
-                    "Values": ["pending", "running", "stopping", "stopped"],
+                    "Values": [
+                        InstanceState.PENDING,
+                        InstanceState.RUNNING,
+                        InstanceState.STOPPING,
+                        InstanceState.STOPPED,
+                    ],
                 },
                 # Use OR logic: Name/Tier/Type tags contain premium identifier
             ]
@@ -645,7 +665,7 @@ def get_standby_pool_status() -> Dict[str, Any]:
             instance_id = instance["instance_id"]
             instance_state = instance["state"]
 
-            if instance_state == "running":
+            if instance_state == InstanceState.RUNNING:
                 status["running"] += 1
                 assigned_users = get_assigned_users_for_instance(instance_id)
                 status["assigned_users"] += len(assigned_users)
@@ -657,7 +677,7 @@ def get_standby_pool_status() -> Dict[str, Any]:
                             f"Instance {instance_id} running but not ready"
                         )
 
-            elif instance_state == "stopped":
+            elif instance_state == InstanceState.STOPPED:
                 status["stopped"] += 1
             else:
                 status["failed"] += 1
@@ -769,6 +789,16 @@ def _reconcile_instance_states_transaction(
             db_state = assignment["instance_state"]
             aws_instance = aws_instance_map.get(instance_id)
 
+            # Skip autoscaling-pool assignments - it's a virtual marker,
+            # not a real instance. Users on autoscaling-pool are waiting
+            # for migration to a dedicated instance
+            if instance_id == PremiumAssignment.AUTOSCALING_POOL:
+                print(
+                    f"Skipping autoscaling-pool assignment id={assignment_id} "
+                    f"for user {user_id} (virtual marker, not a real instance)"
+                )
+                continue
+
             if not aws_instance:
                 # Instance no longer exists in AWS - cleanup
                 # Use assignment id for deletion (handles NULL user_id for standby)
@@ -789,10 +819,12 @@ def _reconcile_instance_states_transaction(
                     except Exception as e:
                         print(f"Warning: Failed to delete ALB rule {alb_rule_arn}: {e}")
 
-                # Delete target group (skip standby markers)
+                # Delete target group (skip standby markers and shared autoscaling TG)
+                autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
                 if (
                     target_group_arn
                     and target_group_arn.lower() != PremiumAssignment.STANDBY
+                    and target_group_arn != autoscaling_tg_arn
                 ):
                     try:
                         elbv2.delete_target_group(TargetGroupArn=target_group_arn)
@@ -805,6 +837,11 @@ def _reconcile_instance_states_transaction(
                             f"Warning: Failed to delete target group "
                             f"{target_group_arn}: {e}"
                         )
+                elif target_group_arn == autoscaling_tg_arn:
+                    print(
+                        f"Skipping deletion of shared autoscaling "
+                        f"target group: {target_group_arn}"
+                    )
 
                 cursor.execute(
                     "DELETE FROM premium_user_assignments WHERE id = %s",
