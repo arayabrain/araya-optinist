@@ -58,7 +58,7 @@ export const Audience = () => {
     <AudienceSection id="audience">
       <Container>
         <SectionHeaderCenter>
-          <SectionTitle>Who Uses Araya OptiNiSt?</SectionTitle>
+          <SectionTitle>Who It&apos;s For</SectionTitle>
           <SectionSubtitle>
             Empowering researchers and educators worldwide.
           </SectionSubtitle>
