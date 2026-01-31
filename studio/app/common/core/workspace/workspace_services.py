@@ -13,6 +13,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     StorageDirectoryType,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.models.experiment import ExperimentRecord
 from studio.app.common.models.workspace import Workspace
 from studio.app.dir_path import DIRPATH
 
@@ -30,30 +31,35 @@ class WorkspaceService:
         workspace_id = str(ws.id)
         logger.info(f"Deleting workspace data for workspace '{workspace_id}'")
 
-        workspace_dir = join_filepath([DIRPATH.OUTPUT_DIR, workspace_id])
         deleted_statuses = []
 
-        # Delete experiment folders under workspace
-        if os.path.exists(workspace_dir):
-            for experiment_id in os.listdir(workspace_dir):
-                # Skip hidden files and directories
-                if experiment_id.startswith("."):
-                    continue
+        # Query ExperimentRecords from database (source of truth)
+        # This ensures we delete all experiments even if local files don't exist
+        experiment_records = (
+            db.query(ExperimentRecord)
+            .filter(ExperimentRecord.workspace_id == ws.id)
+            .all()
+        )
 
-                deleted_status = await ExperimentService.delete_experiment(
-                    db,
-                    remote_bucket_name,
-                    workspace_id,
-                    experiment_id,
-                    auto_commit=False,
-                )
+        logger.info(
+            f"Found {len(experiment_records)} experiment records "
+            f"for workspace '{workspace_id}'"
+        )
 
-                deleted_statuses.append(deleted_status)
-        else:
-            logger.warning(f"Workspace directory '{workspace_dir}' does not exist")
+        # Delete each experiment (S3 + local + DB record)
+        for record in experiment_records:
+            deleted_status = await ExperimentService.delete_experiment(
+                db,
+                remote_bucket_name,
+                workspace_id,
+                record.uid,
+                auto_commit=False,
+            )
+            deleted_statuses.append(deleted_status)
 
-        if all(deleted_statuses):
-            # Delete the workspace directory itself
+        # Check if all deletions succeeded (or there were no experiments)
+        if len(deleted_statuses) == 0 or all(deleted_statuses):
+            # Delete the workspace directory itself (cleanup any remaining files)
             await cls.delete_workspace_files(
                 workspace_id=workspace_id, remote_bucket_name=remote_bucket_name
             )
@@ -69,9 +75,11 @@ class WorkspaceService:
             ws.deleted = True
         else:
             # Throw Exception if data was not deleted
+            failed_count = len([s for s in deleted_statuses if not s])
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to delete workspace '{workspace_id}'",
+                detail=f"Failed to delete workspace '{workspace_id}': "
+                f"{failed_count}/{len(deleted_statuses)} experiments failed to delete",
             )
 
     @classmethod
