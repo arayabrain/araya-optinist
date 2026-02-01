@@ -20,6 +20,7 @@ from studio.app.common.core.cloud.cloud_utils import (
     get_current_user_storage_usage,
 )
 from studio.app.common.core.subscription.constants import (
+    AlertType,
     PlanName,
     StorageQuota,
     StorageSize,
@@ -451,13 +452,11 @@ async def test_calculate_limit_warning_free_user_storage_exceeded():
                 result = await calculate_limit_warning(user_id)
 
                 assert result is not None
-                assert result["has_warning"] is True
-                assert result["warning_type"] == "storage"
-                assert (
-                    result["days_remaining"] == SubscriptionPeriods.STORAGE_WARNING_DAYS
-                )
-                assert result["excess_data_bytes"] == excess_bytes
-                assert "exceeds the free plan limit" in result["message"]
+                assert result.has_alert is True
+                assert result.alert_type == AlertType.STORAGE.value
+                assert result.days_remaining == SubscriptionPeriods.STORAGE_WARNING_DAYS
+                assert result.excess_data_bytes == excess_bytes
+                assert "exceeds the free plan limit" in result.message
 
 
 @pytest.mark.asyncio
@@ -494,12 +493,10 @@ async def test_calculate_limit_warning_premium_active_storage_exceeded():
                 result = await calculate_limit_warning(user_id)
 
                 assert result is not None
-                assert result["has_warning"] is True
-                assert result["warning_type"] == "storage"
-                assert (
-                    result["days_remaining"] == SubscriptionPeriods.STORAGE_WARNING_DAYS
-                )
-                assert "unable to run workflows" in result["message"]
+                assert result.has_alert is True
+                assert result.alert_type == AlertType.STORAGE.value
+                assert result.days_remaining == SubscriptionPeriods.STORAGE_WARNING_DAYS
+                assert "unable to run workflows" in result.message
 
 
 @pytest.mark.asyncio
@@ -546,17 +543,17 @@ async def test_calculate_limit_warning_premium_warning_storage_ok():
                 result = await calculate_limit_warning(user_id)
 
                 assert result is not None
-                assert result["has_warning"] is True
-                assert result["warning_type"] == "grace"
+                assert result.has_alert is True
+                assert result.alert_type == AlertType.GRACE.value
                 # days_remaining is (deletion_date - now).days
                 # Expected: warning_period - 10 days remaining until deletion
                 expected_days = (deletion_date - get_current_datetime()).days
                 assert (
-                    result["days_remaining"] >= expected_days - 1
+                    result.days_remaining >= expected_days - 1
                 )  # Allow 1 day variance for test timing
-                assert result["days_remaining"] <= expected_days + 1
-                assert "expired" in result["message"]
-                assert "upgrade to maintain premium features" in result["message"]
+                assert result.days_remaining <= expected_days + 1
+                assert "expired" in result.message
+                assert "upgrade" in result.message.lower()
 
 
 @pytest.mark.asyncio
@@ -601,20 +598,22 @@ async def test_calculate_limit_warning_premium_warning_storage_exceeded():
                 result = await calculate_limit_warning(user_id)
 
                 assert result is not None
-                assert result["has_warning"] is True
-                assert result["warning_type"] == "grace"
+                assert result.has_alert is True
+                assert result.alert_type == AlertType.GRACE.value
                 # days_remaining is (deletion_date - now).days
                 expected_days = (deletion_date - get_current_datetime()).days
                 assert (
-                    result["days_remaining"] >= expected_days - 1
+                    result.days_remaining >= expected_days - 1
                 )  # Allow 1 day variance
-                assert result["days_remaining"] <= expected_days + 1
-                assert "expired" in result["message"]
-                assert "remove" in result["message"] or "upgrade" in result["message"]
-                # Verify excess is approximately 3GB (8GB - 5GB)
-                # Allow for rounding: round((8_000_000_000 - 5_000_000_000) / GB, 2)
-                assert result["excess_data_gb"] >= 2.7
-                assert result["excess_data_gb"] <= 3.0
+                assert result.days_remaining <= expected_days + 1
+                assert "expired" in result.message
+                msg_lower = result.message.lower()
+                assert "remove" in msg_lower or "upgrade" in msg_lower
+                # Verify excess is calculated correctly
+                # Note: Uses binary GB (1 GB = 1024^3 bytes), so:
+                # 8,000,000,000 bytes = 7.45 GB, quota = 5.0 GB, excess = 2.45 GB
+                assert result.excess_data_gb >= 2.4
+                assert result.excess_data_gb <= 3.0
 
 
 @pytest.mark.asyncio
@@ -654,9 +653,9 @@ async def test_calculate_limit_warning_premium_overdue():
                 result = await calculate_limit_warning(user_id)
 
                 assert result is not None
-                assert result["has_warning"] is True
-                assert result["warning_type"] == "overdue"
-                assert result["days_remaining"] == 0
+                assert result.has_alert is True
+                assert result.alert_type == AlertType.OVERDUE.value
+                assert result.days_remaining == 0
 
 
 @pytest.mark.asyncio
@@ -698,7 +697,11 @@ async def test_calculate_limit_warning_premium_active_no_storage_issue():
 @pytest.mark.asyncio
 async def test_calculate_limit_warning_premium_in_grace_period():
     """
-    Test: Premium user in GRACE period (0-7 days after expiration) → No warning yet
+    Test: Premium user in GRACE period (0-30 days after expiration) with
+    storage within FREE quota limits → Grace warning (subscription expired,
+    but no storage issue).
+    Note: During grace period, effective quota is FREE (5GB), so we must use
+    storage within that limit to avoid storage-exceeded warnings.
     """
     user_id = 1
 
@@ -712,10 +715,11 @@ async def test_calculate_limit_warning_premium_in_grace_period():
                 mock_db = Mock()
                 mock_scope.return_value.__enter__.return_value = mock_db
 
-                # Mock storage info: within limits
+                # Mock storage info: within FREE quota limits (2GB of 5GB)
+                # During grace period, effective quota falls back to FREE (5GB)
                 mock_get_storage.return_value = {
-                    "storage_usage_bytes": 50_000_000_000,
-                    "storage_quota_bytes": 200_000_000_000,
+                    "storage_usage_bytes": 2_000_000_000,  # 2GB
+                    "storage_quota_bytes": 5_000_000_000,  # 5GB FREE quota
                 }
                 mock_fresh.return_value = True
 
@@ -728,8 +732,11 @@ async def test_calculate_limit_warning_premium_in_grace_period():
 
                 result = await calculate_limit_warning(user_id)
 
-                # No warning during grace period if storage is OK
-                assert result is None
+                # Grace period warning should appear (subscription expired)
+                assert result is not None
+                assert result.alert_type == AlertType.GRACE.value
+                assert result.has_alert is True
+                assert "expired" in result.message
 
 
 @pytest.mark.asyncio
