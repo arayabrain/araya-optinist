@@ -440,12 +440,27 @@ export const displayDataSlice = createSlice({
       })
       .addCase(getImageData.rejected, (state, action) => {
         const { path } = action.meta.arg
+
+        // Extract meaningful error message from axios error or action.payload
+        const axiosError = action.payload as {
+          response?: { status?: number; data?: { message?: string } }
+          message?: string
+        }
+        let errorMessage = "Image unavailable"
+        if (axiosError?.response?.status === 500) {
+          errorMessage = "Image not synced"
+        } else if (axiosError?.response?.data?.message) {
+          errorMessage = axiosError.response.data.message
+        } else if (axiosError?.message) {
+          errorMessage = axiosError.message
+        }
+
         state.image[path] = {
           type: "image",
           data: [],
           pending: false,
           fulfilled: false,
-          error: action.error.message ?? "rejected",
+          error: errorMessage,
         }
       })
       .addCase(getCsvData.pending, (state, action) => {
@@ -526,12 +541,26 @@ export const displayDataSlice = createSlice({
         state.loadingStack.pop()
         state.loading = state.loadingStack.length > 0
 
+        // Extract meaningful error message from axios error or action.payload
+        const axiosError = action.payload as {
+          response?: { status?: number; data?: { message?: string } }
+          message?: string
+        }
+        let errorMessage = "Data unavailable"
+        if (axiosError?.response?.status === 500) {
+          errorMessage = "Data not synced"
+        } else if (axiosError?.response?.data?.message) {
+          errorMessage = axiosError.response.data.message
+        } else if (axiosError?.message) {
+          errorMessage = axiosError.message
+        }
+
         state.roi[path] = {
           type: "roi",
           data: [],
           pending: false,
           fulfilled: false,
-          error: action.error.message ?? "rejected",
+          error: errorMessage,
           roiUniqueList: [],
         }
       })

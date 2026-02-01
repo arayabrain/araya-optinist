@@ -2,7 +2,14 @@ import { memo, useEffect } from "react"
 import PlotlyChart from "react-plotlyjs-ts"
 import { useSelector, useDispatch } from "react-redux"
 
-import { LinearProgress, Typography, Box } from "@mui/material"
+import RefreshIcon from "@mui/icons-material/Refresh"
+import {
+  LinearProgress,
+  Typography,
+  Box,
+  IconButton,
+  Tooltip,
+} from "@mui/material"
 
 import { getImageData } from "store/slice/DisplayData/DisplayDataActions"
 import {
@@ -62,13 +69,54 @@ export const ImagePlotSimple = memo(function ImagePlotSimple({
     )
   }
 
+  const handleRetry = () => {
+    if (workspaceId && filePath) {
+      dispatch(
+        getImageData({
+          path: filePath,
+          workspaceId,
+          startIndex: 1,
+          endIndex: 1,
+        }),
+      )
+    }
+  }
+
   if (isPending) {
     return <LinearProgress />
   } else if (error != null) {
     return (
-      <Typography color="error" variant="caption">
-        {error}
-      </Typography>
+      <Box
+        sx={{
+          width: 100,
+          height: 80,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 0.5,
+        }}
+      >
+        <Typography
+          color="error"
+          variant="caption"
+          sx={{ fontSize: "0.65rem" }}
+        >
+          {error}
+        </Typography>
+        <Tooltip title="Reload">
+          <IconButton
+            size="small"
+            onClick={(e) => {
+              e.stopPropagation()
+              handleRetry()
+            }}
+            sx={{ padding: 0.25 }}
+          >
+            <RefreshIcon sx={{ fontSize: 16 }} color="primary" />
+          </IconButton>
+        </Tooltip>
+      </Box>
     )
   } else if (imageData && Array.isArray(imageData) && imageData.length > 0) {
     // Ensure imageData is 2D array for heatmap

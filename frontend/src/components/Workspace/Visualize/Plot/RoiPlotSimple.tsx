@@ -5,7 +5,14 @@ import { useSelector, useDispatch } from "react-redux"
 import createColormap from "colormap"
 import { max, uniq } from "lodash"
 
-import { LinearProgress, Typography, Box } from "@mui/material"
+import RefreshIcon from "@mui/icons-material/Refresh"
+import {
+  LinearProgress,
+  Typography,
+  Box,
+  IconButton,
+  Tooltip,
+} from "@mui/material"
 
 import { getRoiData } from "store/slice/DisplayData/DisplayDataActions"
 import {
@@ -83,13 +90,47 @@ export const RoiPlotSimple = memo(function RoiPlotSimple({
     )
   }
 
+  const handleRetry = () => {
+    if (workspaceId && filePath) {
+      dispatch(getRoiData({ path: filePath, workspaceId }))
+    }
+  }
+
   if (isPending) {
     return <LinearProgress />
   } else if (error != null) {
     return (
-      <Typography color="error" variant="caption">
-        {error}
-      </Typography>
+      <Box
+        sx={{
+          width: 100,
+          height: 80,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 0.5,
+        }}
+      >
+        <Typography
+          color="error"
+          variant="caption"
+          sx={{ fontSize: "0.65rem" }}
+        >
+          {error}
+        </Typography>
+        <Tooltip title="Reload">
+          <IconButton
+            size="small"
+            onClick={(e) => {
+              e.stopPropagation()
+              handleRetry()
+            }}
+            sx={{ padding: 0.25 }}
+          >
+            <RefreshIcon sx={{ fontSize: 16 }} color="primary" />
+          </IconButton>
+        </Tooltip>
+      </Box>
     )
   } else if (roiData && roiData.length > 0 && maxIndex > 0) {
     const roi2DArray = roiData[0] // Get the actual 2D ROI array
