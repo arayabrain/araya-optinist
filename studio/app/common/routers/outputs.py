@@ -3,9 +3,9 @@ from glob import glob
 from typing import Optional
 
 import pandas as pd
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
-from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
+from studio.app.common.core.auth.auth_dependencies import get_outputs_remote_bucket_name
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
@@ -87,7 +87,7 @@ async def sync_visualization_files(
     workspace_id: str,
     unique_id: str,
     background_tasks: BackgroundTasks,
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ) -> bool:
     """
     Lazy-load visualization files from S3.
@@ -213,7 +213,7 @@ def get_initial_timeseries_data(dirpath) -> JsonTimeSeriesData:
 async def get_inittimedata(
     dirpath: str,
     isFull: Optional[bool] = None,
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
     # On-demand sync if files don't exist
     await _ensure_visualization_synced(dirpath, remote_bucket_name)
@@ -272,7 +272,7 @@ async def get_timedata(
     dirpath: str,
     index: int,
     isFull: Optional[bool] = None,
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
     # On-demand sync if files don't exist
     await _ensure_visualization_synced(dirpath, remote_bucket_name)
@@ -298,7 +298,7 @@ async def get_timedata(
 @router.get("/alltimedata/{dirpath:path}", response_model=JsonTimeSeriesData)
 async def get_alltimedata(
     dirpath: str,
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
     # On-demand sync if files don't exist
     await _ensure_visualization_synced(dirpath, remote_bucket_name)
@@ -321,7 +321,7 @@ async def get_alltimedata(
 @router.get("/data/{filepath:path}", response_model=OutputData)
 async def get_file(
     filepath: str,
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
     # On-demand sync if files don't exist
     await _ensure_visualization_synced(os.path.dirname(filepath), remote_bucket_name)
@@ -341,7 +341,7 @@ async def get_image(
     start_index: Optional[int] = 0,
     end_index: Optional[int] = 10,
     isFull: Optional[bool] = None,
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
     # On-demand sync if files don't exist
     await _ensure_visualization_synced(os.path.dirname(filepath), remote_bucket_name)
@@ -363,6 +363,13 @@ async def get_image(
                 s3_controller = S3StorageController(remote_bucket_name)
                 await s3_controller.download_input_data(workspace_id, filename + ext)
 
+            # Return 404 if file still doesn't exist after sync attempt
+            if not os.path.exists(filepath):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Input file not found: {filename}{ext}",
+                )
+
         save_dirpath = join_filepath(
             [
                 os.path.dirname(filepath),
@@ -376,6 +383,12 @@ async def get_image(
             save_tiff2json(filepath, save_dirpath, start_index, end_index)
     else:
         json_filepath = filepath
+        # Check if output file exists after sync attempt
+        if not os.path.exists(json_filepath):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output file not found: {os.path.basename(json_filepath)}",
+            )
 
     return JsonReader.read_as_output(json_filepath)
 
@@ -384,7 +397,7 @@ async def get_image(
 async def get_csv(
     filepath: str,
     workspace_id: str,
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
     original_filename = os.path.basename(filepath)
     filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filepath])
