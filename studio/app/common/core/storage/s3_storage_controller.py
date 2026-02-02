@@ -135,9 +135,6 @@ class S3StorageController(BaseRemoteStorageController):
             workspace_id, filename
         )
 
-        if os.path.isfile(input_data_local_path):
-            logger.debug(f"Skip download input data: {input_data_remote_path}")
-
         logger.info(
             "Download input data from remote storage (S3). [%s] [%s -> %s]",
             self.bucket_name,
@@ -169,6 +166,16 @@ class S3StorageController(BaseRemoteStorageController):
             for index, s3_object in enumerate(s3_list_objects["Contents"]):
                 s3_file_path = s3_object["Key"]
                 file_size = s3_object["Size"]
+
+                # Skip if file already exists locally with correct size
+                if os.path.isfile(input_data_local_path):
+                    local_size = os.path.getsize(input_data_local_path)
+                    if local_size == file_size:
+                        logger.debug(
+                            f"Skip download (already exists): {s3_file_path} "
+                            f"({file_size:,} bytes)"
+                        )
+                        continue
 
                 logger.info(
                     f"Download data from S3 [{self.bucket_name}] "
@@ -682,8 +689,10 @@ class S3StorageController(BaseRemoteStorageController):
                 )
                 return False
 
-            # cleaning data from local path
-            if os.path.isdir(experiment_local_path):
+            # cleaning data from local path (only for full sync, not partial syncs)
+            # Partial syncs (visualization, essential_only) should preserve existing
+            # files to avoid redundant downloads
+            if sync_mode == "all" and os.path.isdir(experiment_local_path):
                 await self._clear_local_experiment_data(experiment_local_path)
 
             # do download data from remote storage
@@ -732,6 +741,16 @@ class S3StorageController(BaseRemoteStorageController):
                     )
 
                 local_abs_dir = os.path.dirname(local_abs_path)
+
+                # Skip if file already exists locally with correct size
+                if os.path.isfile(local_abs_path):
+                    local_size = os.path.getsize(local_abs_path)
+                    if local_size == file_size:
+                        logger.debug(
+                            f"Skip download (already exists): {s3_file_path} "
+                            f"({file_size:,} bytes)"
+                        )
+                        continue
 
                 logger.info(
                     f"Download data from S3 [{self.bucket_name}] "
