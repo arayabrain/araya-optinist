@@ -252,6 +252,45 @@ if (status === 202) {
 3. **Success State (200):**
    - Normal workflow details rendering
 
+### Thumbnail Loading States
+
+**File:** `frontend/src/components/Dataview/DataviewRecords.tsx`
+
+Thumbnail rendering handles both new (PNG) and legacy (TIFF) thumbnails:
+
+```tsx
+const renderThumbnailCell = (params: { row: DataviewType }) => {
+  const thumbnailPath = params?.row?.thumbnails?.image_url
+
+  // Check if PNG (fast) or TIFF (needs download)
+  const isLegacyTiff = thumbnailPath?.endsWith('.tif') || thumbnailPath?.endsWith('.tiff')
+
+  if (isLegacyTiff) {
+    return <ImagePlotSimpleWithLoading filePath={thumbnailPath} />
+  }
+
+  // PNG thumbnails are fast and direct
+  return <img src={`/api/outputs/data/${thumbnailPath}`} />
+}
+```
+
+**File:** `frontend/src/components/Dataview/InputsView.tsx`, `OutputsView.tsx`
+
+Loading overlay for full visualization:
+
+```tsx
+const [isSyncing, setIsSyncing] = useState(false)
+
+if (isSyncing) {
+  return (
+    <Dialog open={open}>
+      <CircularProgress />
+      <Typography>Loading visualization data...</Typography>
+    </Dialog>
+  )
+}
+```
+
 ---
 
 ## Flow Diagrams
@@ -495,6 +534,40 @@ Experiment {workspace_id}/{unique_id} is pending sync, returning 202
 ### Added
 - `studio/app/common/schemas/dataview.py` - LocalSyncStatus enum
 - `studio/alembic/versions/a5b9c8d7e6f5_add_sync_logout_and_versioning.py` - Database migration
+
+---
+
+## Thumbnail Path Handling
+
+### Database Storage
+
+The `thumbnails` JSON field in ExperimentRecord stores thumbnail paths:
+
+```json
+{
+  "image_url": "output/workspace-123/exp-abc/thumbnails/input_thumb.png",
+  "roi_url": "output/workspace-123/exp-abc/thumbnails/roi_thumb.png"
+}
+```
+
+### Generation at Experiment Completion
+
+Thumbnails are generated when experiments complete:
+- `input_thumb.png`: First frame of input TIFF normalized to uint8
+- `roi_thumb.png`: Rendered cell_roi.json as colored image
+
+**File:** `studio/app/common/core/dataview/dataview_services.py`
+
+### Lazy Generation Fallback
+
+For legacy experiments without PNG thumbnails:
+
+1. Frontend requests thumbnail
+2. Backend checks if PNG exists
+3. If not, downloads original TIFF from S3
+4. Generates PNG, uploads to S3, returns to frontend
+
+**File:** `studio/app/common/routers/outputs.py` - `get_or_generate_thumbnail()`
 
 ---
 

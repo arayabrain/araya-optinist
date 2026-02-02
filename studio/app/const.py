@@ -44,6 +44,10 @@ LARGE_FILE_PATTERNS = tuple(ACCEPT_FILE_EXT.ALL_EXT.value + [".pkl"])
 # YAML for snakemake config
 VISUALIZATION_SYNC_PATTERNS = (".json", ".tif", ".tiff", ".yaml")
 
+# Thumbnail files for fast DataView loading
+# These are small PNG images generated from input TIFFs and ROI data
+THUMBNAIL_FILE_PATTERNS = ("input_thumb.png", "roi_thumb.png", "_thumb.png")
+
 
 # Metadata cache filenames for input data
 class MetadataCacheFile(StrEnum):

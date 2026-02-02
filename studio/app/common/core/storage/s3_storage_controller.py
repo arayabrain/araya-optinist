@@ -971,6 +971,58 @@ class S3StorageController(BaseRemoteStorageController):
 
         return True
 
+    async def upload_thumbnail(
+        self, workspace_id: str, unique_id: str, thumbnail_path: str
+    ) -> bool:
+        """
+        Upload a generated thumbnail PNG to S3 for persistence.
+
+        This allows thumbnails generated lazily on one instance to be
+        available to other instances without regeneration.
+
+        Args:
+            workspace_id: Workspace identifier
+            unique_id: Experiment unique identifier
+            thumbnail_path: Local path to the thumbnail PNG file
+
+        Returns:
+            True if upload successful, False otherwise
+        """
+        if not os.path.exists(thumbnail_path):
+            logger.warning(f"Thumbnail file not found: {thumbnail_path}")
+            return False
+
+        # Construct S3 path
+        filename = os.path.basename(thumbnail_path)
+        s3_path = join_filepath(
+            [
+                "app",
+                "studio_data",
+                self.S3_OUTPUT_DIR,
+                workspace_id,
+                unique_id,
+                "thumbnails",
+                filename,
+            ]
+        )
+
+        file_size = os.path.getsize(thumbnail_path)
+        logger.info(f"Uploading thumbnail to S3: {s3_path} ({file_size:,} bytes)")
+
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: boto3.client("s3").upload_file(
+                    thumbnail_path, self.bucket_name, s3_path
+                ),
+            )
+            logger.info(f"Successfully uploaded thumbnail: {s3_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to upload thumbnail: {e}")
+            return False
+
     async def delete_workspace(
         self, workspace_id: str, directory_type: StorageDirectoryType
     ) -> bool:

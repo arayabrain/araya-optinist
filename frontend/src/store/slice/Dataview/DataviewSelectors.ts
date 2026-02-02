@@ -26,6 +26,16 @@ export const selectDataviewLoading = createSelector(
   (dataview) => dataview.loading,
 )
 
+export const selectDataviewPrivateError = createSelector(
+  selectDataviewSlice,
+  (dataview) => dataview.error.private,
+)
+
+export const selectDataviewPublicError = createSelector(
+  selectDataviewSlice,
+  (dataview) => dataview.error.public,
+)
+
 export const selectInputVisualizationItems = createSelector(
   [selectInputNode, (state: RootState) => state],
   (inputNodes, state): VisualizationItemData[] => {

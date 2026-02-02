@@ -9,7 +9,10 @@ from sqlmodel import Session, select
 
 from studio.app.common import models
 from studio.app.common.core.auth.auth_dependencies import get_current_user
-from studio.app.common.core.dataview.dataview_services import DataviewService
+from studio.app.common.core.dataview.dataview_services import (
+    DataviewService,
+    PublishValidator,
+)
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
@@ -271,6 +274,25 @@ async def public_reproduce_experiment(
                 },
             )
 
+    # Validate experiment is displayable (not corrupted)
+    display_validation = PublishValidator.validate_for_display(
+        workspace_id=workspace_id,
+        unique_id=unique_id,
+    )
+    if not display_validation.is_displayable:
+        logger.error(
+            f"Experiment {workspace_id}/{unique_id} is not displayable: "
+            f"{display_validation.reason}"
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "data_error",
+                "message": display_validation.reason
+                or "Experiment data is unavailable",
+            },
+        )
+
     # Data is synced and available locally
     return await reproduce_experiment(workspace_id, unique_id)
 
@@ -333,6 +355,20 @@ async def publish_dataview_records(
 
             if not record:
                 raise HTTPException(status_code=404)
+
+            # Validate publish eligibility when publishing
+            if flag == PublishFlags.on:
+                validation = PublishValidator.validate(
+                    workspace_id=str(record.workspace_id),
+                    unique_id=record.uid,
+                    user_has_s3_bucket=bool(current_user.remote_bucket_name),
+                    check_files_on_disk=True,
+                )
+                if not validation.can_publish:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=validation.reason,
+                    )
 
             # Store current version for optimistic locking
             current_version = record.version
@@ -436,6 +472,7 @@ async def publish_dataview_records(
     response_model=bool,
     description="""
 - Publishing Dataview records in bulk
+- Validates each record before publishing; fails if any record cannot be published
 """,
 )
 def multiple_publish_dataview_records(
@@ -444,6 +481,49 @@ def multiple_publish_dataview_records(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Validate all records before publishing
+    if flag == PublishFlags.on:
+        # First check S3 bucket (applies to all)
+        if not current_user.remote_bucket_name:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot publish data: No cloud storage bucket configured "
+                "for your account. Please contact support to enable publishing.",
+            )
+
+        # Validate each record
+        failed_records = []
+        for record_id in ids:
+            record = DataviewService.find_user_owned_dataview_record(
+                db, record_id, current_user.id
+            )
+            if not record:
+                continue  # Skip records not owned by user
+
+            validation = PublishValidator.validate(
+                workspace_id=str(record.workspace_id),
+                unique_id=record.uid,
+                user_has_s3_bucket=True,  # Already checked above
+                check_files_on_disk=True,
+            )
+            if not validation.can_publish:
+                failed_records.append(
+                    {
+                        "id": record_id,
+                        "name": record.name,
+                        "reason": validation.reason,
+                    }
+                )
+
+        if failed_records:
+            # Return error with details about which records failed
+            detail = "Some experiments cannot be published:\n"
+            for rec in failed_records[:5]:  # Limit to first 5
+                detail += f"- {rec['name']}: {rec['reason']}\n"
+            if len(failed_records) > 5:
+                detail += f"... and {len(failed_records) - 5} more"
+            raise HTTPException(status_code=400, detail=detail)
+
     DataviewService.multiple_publish_dataview_records(db, current_user.id, ids, flag)
 
     return True
