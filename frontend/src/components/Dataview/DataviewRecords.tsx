@@ -51,6 +51,7 @@ import PaginationCustom from "components/common/PaginationCustom"
 import SwitchCustom from "components/common/SwitchCustom"
 import InputsView from "components/Dataview/InputsView"
 import OutputsView from "components/Dataview/OutputsView"
+import { ThumbnailImage } from "components/Dataview/ThumbnailImage"
 import { WorkflowDetailsView } from "components/Dataview/WorkflowDetailsView"
 import {
   ImagePlotSimple,
@@ -351,11 +352,7 @@ const defineColumns = (
       const uniqueId = params?.row?.uid
       const thumbnailPath = params?.row?.thumbnails?.image_url
       // Check if it's a PNG thumbnail (new format) or TIFF (legacy)
-      const isPngThumb =
-        thumbnailPath &&
-        (thumbnailPath.includes("_thumb.png") ||
-          thumbnailPath.includes("input_thumb.png"))
-      // Add workspace_id as query parameter to make the path unique per workspace
+      const isPngThumb = thumbnailPath && thumbnailPath.includes("_thumb.png")
       const filePath = thumbnailPath ? thumbnailPath.replace(/^\//, "") : null
 
       return (
@@ -374,29 +371,14 @@ const defineColumns = (
           <Box sx={{ width: 100, height: 80 }}>
             {filePath ? (
               isPngThumb ? (
-                // PNG thumbnail - fast, simple image
-                <Box
+                // PNG thumbnail - uses authenticated API to fetch
+                <ThumbnailImage
+                  workspaceId={workspaceId}
+                  uniqueId={uniqueId}
+                  thumbType="input"
                   onClick={() => handleOpenInputsView(workspaceId, uniqueId)}
-                  sx={{
-                    cursor: "pointer",
-                    width: "100%",
-                    height: "100%",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <img
-                    src={`/api/outputs/data/${thumbnailPath}`}
-                    alt="Input thumbnail"
-                    style={{
-                      maxWidth: "100%",
-                      maxHeight: "100%",
-                      objectFit: "contain",
-                    }}
-                    loading="lazy"
-                  />
-                </Box>
+                  alt="Input thumbnail"
+                />
               ) : (
                 // Legacy TIFF - may need on-demand sync, show with loading indicator
                 <ImagePlotSimpleWithLoading
@@ -437,11 +419,7 @@ const defineColumns = (
       const uniqueId = params?.row?.uid
       const thumbnailPath = params?.row?.thumbnails?.roi_url
       // Check if it's a PNG thumbnail (new format) or JSON (legacy)
-      const isPngThumb =
-        thumbnailPath &&
-        (thumbnailPath.includes("_thumb.png") ||
-          thumbnailPath.includes("roi_thumb.png"))
-      // Add workspace_id as query parameter to make the path unique per workspace
+      const isPngThumb = thumbnailPath && thumbnailPath.includes("_thumb.png")
       const filePath = thumbnailPath ? thumbnailPath.replace(/^\//, "") : null
 
       return (
@@ -460,29 +438,14 @@ const defineColumns = (
           <Box sx={{ width: 100, height: 80 }}>
             {filePath ? (
               isPngThumb ? (
-                // PNG thumbnail - fast, simple image
-                <Box
+                // PNG thumbnail - uses authenticated API to fetch
+                <ThumbnailImage
+                  workspaceId={workspaceId}
+                  uniqueId={uniqueId}
+                  thumbType="roi"
                   onClick={() => handleOpenOutputsView(workspaceId, uniqueId)}
-                  sx={{
-                    cursor: "pointer",
-                    width: "100%",
-                    height: "100%",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <img
-                    src={`/api/outputs/data/${thumbnailPath}`}
-                    alt="ROI thumbnail"
-                    style={{
-                      maxWidth: "100%",
-                      maxHeight: "100%",
-                      objectFit: "contain",
-                    }}
-                    loading="lazy"
-                  />
-                </Box>
+                  alt="ROI thumbnail"
+                />
               ) : (
                 // Legacy JSON - may need on-demand sync, show with loading indicator
                 <RoiPlotSimpleWithLoading

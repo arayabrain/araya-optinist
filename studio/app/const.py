@@ -45,8 +45,19 @@ LARGE_FILE_PATTERNS = tuple(ACCEPT_FILE_EXT.ALL_EXT.value + [".pkl"])
 VISUALIZATION_SYNC_PATTERNS = (".json", ".tif", ".tiff", ".yaml")
 
 # Thumbnail files for fast DataView loading
-# These are small PNG images generated from input TIFFs and ROI data
-THUMBNAIL_FILE_PATTERNS = ("input_thumb.png", "roi_thumb.png", "_thumb.png")
+# Pattern "_thumb.png" matches all thumbnail files
+THUMBNAIL_FILE_PATTERNS = ("_thumb.png",)
+
+
+# Thumbnail type identifiers
+class ThumbnailType(StrEnum):
+    INPUT = "input"  # First frame of input TIFF
+    ROI = "roi"  # Rendered ROI overlay from cell_roi.json
+
+    @property
+    def filename(self) -> str:
+        """Get the thumbnail filename for this type."""
+        return f"{self.value}_thumb.png"
 
 
 # Metadata cache filenames for input data

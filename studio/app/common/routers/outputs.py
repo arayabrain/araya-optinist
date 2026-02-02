@@ -4,6 +4,7 @@ from typing import Optional
 
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import FileResponse
 
 from studio.app.common.core.auth.auth_dependencies import get_outputs_remote_bucket_name
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
@@ -27,7 +28,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
 )
 from studio.app.common.schemas.outputs import JsonTimeSeriesData, OutputData
-from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT, THUMBNAIL_FILE_PATTERNS
+from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT, ThumbnailType
 from studio.app.dir_path import DIRPATH
 
 router = APIRouter(prefix="/outputs", tags=["outputs"])
@@ -35,29 +36,22 @@ router = APIRouter(prefix="/outputs", tags=["outputs"])
 logger = AppLogger.get_logger()
 
 
-def _is_thumbnail_path(file_path: str) -> bool:
-    """Check if file path is a PNG thumbnail (new format) vs TIFF (legacy)."""
-    if not file_path:
-        return False
-    file_lower = file_path.lower()
-    return any(pattern in file_lower for pattern in THUMBNAIL_FILE_PATTERNS)
-
-
-def _get_thumbnail_png_path(workspace_id: str, unique_id: str, thumb_type: str) -> str:
+def _get_thumbnail_png_path(
+    workspace_id: str, unique_id: str, thumb_type: ThumbnailType
+) -> str:
     """
     Get the expected path for a thumbnail PNG.
 
     Args:
         workspace_id: Workspace identifier
         unique_id: Experiment unique identifier
-        thumb_type: Either "input" or "roi"
+        thumb_type: ThumbnailType.INPUT or ThumbnailType.ROI
 
     Returns:
         Absolute path to the thumbnail PNG file
     """
-    filename = f"{thumb_type}_thumb.png"
     return join_filepath(
-        [DIRPATH.OUTPUT_DIR, workspace_id, unique_id, "thumbnails", filename]
+        [DIRPATH.OUTPUT_DIR, workspace_id, unique_id, "thumbnails", thumb_type.filename]
     )
 
 
@@ -66,7 +60,7 @@ async def get_or_generate_thumbnail(
     unique_id: str,
     original_path: str,
     remote_bucket_name: str,
-    thumb_type: str,
+    thumb_type: ThumbnailType,
 ) -> str:
     """
     Get thumbnail path, generating if needed (lazy migration).
@@ -84,7 +78,8 @@ async def get_or_generate_thumbnail(
         unique_id: Experiment unique identifier
         original_path: Path to original TIFF or JSON file
         remote_bucket_name: S3 bucket name for remote storage
-        thumb_type: Either "input" (for TIFF) or "roi" (for cell_roi.json)
+        thumb_type: ThumbnailType.INPUT (for TIFF) or ThumbnailType.ROI
+            (for cell_roi.json)
 
     Returns:
         Path to the thumbnail PNG file (may be newly generated)
@@ -105,7 +100,7 @@ async def get_or_generate_thumbnail(
         abs_original_path = join_filepath([DIRPATH.OUTPUT_DIR, original_path])
 
     # For input files (TIFFs), the path might be just a filename
-    if thumb_type == "input" and not os.path.exists(abs_original_path):
+    if thumb_type == ThumbnailType.INPUT and not os.path.exists(abs_original_path):
         filename = os.path.basename(original_path)
         abs_original_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
 
@@ -113,7 +108,7 @@ async def get_or_generate_thumbnail(
     if not os.path.exists(abs_original_path) and RemoteStorageController.is_available():
         try:
             s3_controller = S3StorageController(remote_bucket_name)
-            if thumb_type == "input":
+            if thumb_type == ThumbnailType.INPUT:
                 # Download input file
                 filename = os.path.basename(original_path)
                 await s3_controller.download_input_data(workspace_id, filename)
@@ -132,7 +127,7 @@ async def get_or_generate_thumbnail(
             thumb_dir = os.path.dirname(thumb_path)
             create_directory(thumb_dir)
 
-            if thumb_type == "input":
+            if thumb_type == ThumbnailType.INPUT:
                 DataviewService._generate_tiff_thumbnail(abs_original_path, thumb_path)
             else:
                 DataviewService._generate_roi_thumbnail(abs_original_path, thumb_path)
@@ -260,6 +255,114 @@ async def sync_visualization_files(
     )
 
     return result
+
+
+@router.get(
+    "/thumbnail/{workspace_id}/{unique_id}/{thumb_type}",
+    description="""
+    Get a thumbnail PNG image for an experiment.
+    Syncs from S3 if not available locally, or generates on-demand if needed.
+
+    Args:
+        workspace_id: Workspace identifier
+        unique_id: Experiment unique identifier
+        thumb_type: Either "input" or "roi"
+
+    Returns:
+        PNG image file
+    """,
+)
+async def get_thumbnail(
+    workspace_id: str,
+    unique_id: str,
+    thumb_type: ThumbnailType,
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
+):
+    """
+    Serve thumbnail PNG images for DataView.
+
+    This endpoint handles:
+    1. Syncing thumbnails from S3 if not available locally
+    2. Generating thumbnails on-demand from source files if needed
+    3. Serving the PNG file with proper content type
+    """
+
+    # Get the expected thumbnail path
+    thumb_path = _get_thumbnail_png_path(workspace_id, unique_id, thumb_type)
+
+    # Try to sync thumbnail from S3 if not available locally
+    if not os.path.exists(thumb_path) and RemoteStorageController.is_available():
+        try:
+            async with RemoteStorageSimpleReader(
+                remote_bucket_name
+            ) as remote_storage_controller:
+                await remote_storage_controller.download_experiment(
+                    workspace_id, unique_id, sync_mode="thumbnails_only"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to sync thumbnail from S3: {e}")
+
+    # If thumbnail still doesn't exist, try to generate it
+    if not os.path.exists(thumb_path):
+        # Get the original file path for generation
+        if thumb_type == ThumbnailType.INPUT:
+            # Need to find the input TIFF file
+            try:
+                input_filenames = SmkUtils.get_datatypes_inputs(
+                    workspace_id, unique_id, apply_basename=True
+                )
+                if input_filenames:
+                    original_path = input_filenames[0]
+                else:
+                    raise HTTPException(
+                        status_code=404, detail="No input files found for thumbnail"
+                    )
+            except (AssertionError, KeyError):
+                raise HTTPException(
+                    status_code=404, detail="Could not determine input file"
+                )
+        else:
+            # ROI thumbnail uses cell_roi.json - need to find actual path from config
+            from studio.app.common.core.dataview.dataview_services import (
+                DataviewService,
+            )
+
+            try:
+                thumbnails = DataviewService.make_dataview_thumnail_paths(
+                    workspace_id, unique_id
+                )
+                if thumbnails.roi_url:
+                    original_path = thumbnails.roi_url
+                else:
+                    raise HTTPException(
+                        status_code=404, detail="No ROI data found for thumbnail"
+                    )
+            except Exception as e:
+                logger.warning(f"Could not determine ROI path: {e}")
+                raise HTTPException(
+                    status_code=404, detail="Could not determine ROI file path"
+                )
+
+        # Generate thumbnail (may download source from S3 if needed)
+        # Note: get_or_generate_thumbnail returns a normalized (relative) path
+        await get_or_generate_thumbnail(
+            workspace_id, unique_id, original_path, remote_bucket_name, thumb_type
+        )
+        # Re-get the absolute path since generation should have created the file
+        thumb_path = _get_thumbnail_png_path(workspace_id, unique_id, thumb_type)
+
+    # Check if thumbnail exists after all attempts
+    if not os.path.exists(thumb_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Thumbnail not available: {thumb_type.filename}",
+        )
+
+    return FileResponse(
+        thumb_path,
+        media_type="image/png",
+        filename=thumb_type.filename,
+    )
 
 
 async def _ensure_visualization_synced(dirpath: str, remote_bucket_name: str) -> None:
@@ -548,10 +651,24 @@ async def get_image(
         if not os.path.exists(json_filepath):
             if remote_bucket_name:
                 logger.warning(f"File not found after sync attempt: {json_filepath}")
-                raise HTTPException(
-                    status_code=503,
-                    detail="Data syncing. Please retry.",
-                )
+                # Distinguish between "syncing in progress" vs "file doesn't exist"
+                # If the experiment directory exists but the file doesn't, the file
+                # likely doesn't exist in S3 either (analysis incomplete)
+                experiment_dir = os.path.dirname(os.path.dirname(json_filepath))
+                if os.path.exists(experiment_dir):
+                    # Experiment dir exists but file missing -
+                    # likely analysis incomplete
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Output file not found. "
+                        "Analysis may not have generated this file.",
+                    )
+                else:
+                    # Experiment dir doesn't exist - sync may still be in progress
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Data syncing. Please retry.",
+                    )
             raise HTTPException(
                 status_code=404,
                 detail="Output file not found",

@@ -732,7 +732,7 @@ class S3StorageController(BaseRemoteStorageController):
                     s3_file_path, sync_mode
                 )
                 if not should_sync:
-                    logger.info(
+                    logger.debug(
                         f"Skipping {s3_file_path}: {reason} ({file_size:,} bytes)"
                     )
                     continue

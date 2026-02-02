@@ -268,3 +268,21 @@ export async function getPieDataApi(
   const response = await axios.get(`${BASE_URL}/outputs/data/${path}`, {})
   return response.data
 }
+
+/**
+ * Fetch a thumbnail image with authentication and return as a blob URL.
+ * This is needed because <img> tags don't send auth headers.
+ */
+export async function getThumbnailBlobUrl(
+  workspaceId: number | string,
+  uniqueId: string,
+  thumbType: "input" | "roi",
+): Promise<string> {
+  const response = await axios.get(
+    `${BASE_URL}/outputs/thumbnail/${workspaceId}/${uniqueId}/${thumbType}`,
+    {
+      responseType: "blob",
+    },
+  )
+  return URL.createObjectURL(response.data)
+}

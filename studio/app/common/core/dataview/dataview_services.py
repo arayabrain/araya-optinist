@@ -34,6 +34,7 @@ from studio.app.common.schemas.dataview import (
     PublishValidationResult,
 )
 from studio.app.common.schemas.workflow import WorkflowConfig
+from studio.app.const import ThumbnailType
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -447,7 +448,7 @@ class DataviewService:
         *Constructed from ExptConfig and WorkflowConfig
         """
 
-        # Make input data (image) thumbnails path (from ExptConfig)
+        # Make input data (image) thumbnails path (from WorkflowConfig)
         image_url = None
         workflow_config = (
             workflow_config_
@@ -459,7 +460,7 @@ class DataviewService:
                 image_url = normalize_output_path(node.data.path[0])
                 break
 
-        # Make output data (roi) thumbnails path (from WorkflowConfig)
+        # Make output data (roi) thumbnails path (from ExptConfig)
         roi_url = None
         experiment_config = (
             experiment_config_
@@ -516,7 +517,9 @@ class DataviewService:
             if abs_image_path and os.path.exists(abs_image_path):
                 try:
                     create_directory(thumb_dir)
-                    input_thumb_path = join_filepath([thumb_dir, "input_thumb.png"])
+                    input_thumb_path = join_filepath(
+                        [thumb_dir, ThumbnailType.INPUT.filename]
+                    )
                     cls._generate_tiff_thumbnail(abs_image_path, input_thumb_path)
                     logger.info(f"Generated input thumbnail: {input_thumb_path}")
                 except Exception as e:
@@ -531,7 +534,9 @@ class DataviewService:
             if os.path.exists(abs_roi_path):
                 try:
                     create_directory(thumb_dir)
-                    roi_thumb_path = join_filepath([thumb_dir, "roi_thumb.png"])
+                    roi_thumb_path = join_filepath(
+                        [thumb_dir, ThumbnailType.ROI.filename]
+                    )
                     cls._generate_roi_thumbnail(abs_roi_path, roi_thumb_path)
                     logger.info(f"Generated ROI thumbnail: {roi_thumb_path}")
                 except Exception as e:
