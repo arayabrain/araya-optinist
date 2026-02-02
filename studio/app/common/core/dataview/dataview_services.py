@@ -290,20 +290,29 @@ class DataviewService:
 
         is_allowed_access = False
 
-        # Try to extract IDs from output path pattern
-        ids = ExptOutputPathIds(data_file_path)
+        # Extract workspace_id and unique_id from path
+        # Paths are relative: "workspace_id/unique_id/function_id/file.json"
+        # (normalized by normalize_output_path() when saved to DB)
+        workspace_id = None
+        unique_id = None
+        path_parts = data_file_path.split("/")
+        if len(path_parts) >= 2:
+            # Trim to workspace_id/unique_id level for ExptOutputPathIds
+            trimmed_path = "/".join(path_parts[:2])
+            ids = ExptOutputPathIds(trimmed_path)
+            workspace_id = ids.workspace_id
+            unique_id = ids.unique_id
 
         # Request case for output data
-        if ids.workspace_id:
+        if workspace_id and unique_id:
             # Check whether the data is in a public record
             record = DataviewService.find_published_dataview_record(
-                db, int(ids.workspace_id), ids.unique_id
+                db, int(workspace_id), unique_id
             )
             is_allowed_access = record is not None
 
         # Request case for input data
         else:
-            ids = None
             query_params = dict(req.query_params)
             workspace_id = query_params.get("workspace_id")
 

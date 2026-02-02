@@ -65,14 +65,23 @@ class ExptOutputPathIds:
     def __post_init__(self):
         """
         Extract each ID from output_path
-        - output_dir format
+        - output_dir format (absolute or relative)
           - {DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}/{function_id}
+          - {workspace_id}/{unique_id}/{function_id}
         """
         if self.output_dir:
-            output_relative_dir = os.path.relpath(
-                self.output_dir.replace("\\", "/"),
-                DIRPATH.OUTPUT_DIR.replace("\\", "/"),
-            ).replace("\\", "/")
+            path = self.output_dir.replace("\\", "/")
+
+            # Handle both absolute and relative paths
+            if path.startswith(DIRPATH.OUTPUT_DIR.replace("\\", "/")):
+                # Absolute path - extract relative portion
+                output_relative_dir = os.path.relpath(
+                    path, DIRPATH.OUTPUT_DIR.replace("\\", "/")
+                ).replace("\\", "/")
+            else:
+                # Already relative
+                output_relative_dir = path
+
             splitted_ids = output_relative_dir.split("/")
         else:
             output_relative_dir = None
@@ -80,8 +89,8 @@ class ExptOutputPathIds:
 
         ids_count = len(splitted_ids)
 
-        if ids_count == 3:
-            self.workspace_id, self.unique_id, self.function_id = splitted_ids
+        if ids_count >= 3:
+            self.workspace_id, self.unique_id, self.function_id = splitted_ids[:3]
         elif ids_count == 2:
             self.workspace_id, self.unique_id = splitted_ids
         else:

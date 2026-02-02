@@ -22,8 +22,11 @@ class TestPublishDataviewRecords:
         mock_db = MagicMock()
         mock_user = MagicMock()
         mock_user.id = 123
+        mock_user.remote_bucket_name = "test-bucket"
         mock_record = MagicMock()
         mock_record.id = 1
+        mock_record.workspace_id = "1"
+        mock_record.uid = "test_uid"
         mock_record.publish_status = 0
         mock_record.local_sync_status = LocalSyncStatus.synced.value
         mock_record.version = 0
@@ -33,6 +36,10 @@ class TestPublishDataviewRecords:
         mock_result.rowcount = 1
         mock_db.execute.return_value = mock_result
 
+        # Mock validation result
+        mock_validation = MagicMock()
+        mock_validation.can_publish = True
+
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
             "find_user_owned_dataview_record",
@@ -40,6 +47,9 @@ class TestPublishDataviewRecords:
         ), patch(
             "studio.app.common.routers.dataview._validate_experiment_exists_in_s3",
             return_value=(True, None),
+        ), patch(
+            "studio.app.common.routers.dataview.PublishValidator.validate",
+            return_value=mock_validation,
         ):
             from studio.app.common.routers.dataview import PublishFlags
 
@@ -87,19 +97,29 @@ class TestPublishDataviewRecords:
 
     @pytest.mark.asyncio
     async def test_publish_no_change_needed(self):
+        """Test publish when already published"""
         mock_db = MagicMock()
         mock_user = MagicMock()
         mock_user.id = 123
+        mock_user.remote_bucket_name = "test-bucket"
         mock_record = MagicMock()
         mock_record.id = 1
+        mock_record.workspace_id = "1"
+        mock_record.uid = "test_uid"
         mock_record.version = 0
-        """Test publish when already published"""
         mock_record.publish_status = 1
+
+        # Mock validation result
+        mock_validation = MagicMock()
+        mock_validation.can_publish = True
 
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
             "find_user_owned_dataview_record",
             return_value=mock_record,
+        ), patch(
+            "studio.app.common.routers.dataview.PublishValidator.validate",
+            return_value=mock_validation,
         ):
             from studio.app.common.routers.dataview import PublishFlags
 
@@ -137,8 +157,11 @@ class TestPublishDataviewRecords:
         mock_db = MagicMock()
         mock_user = MagicMock()
         mock_user.id = 123
+        mock_user.remote_bucket_name = "test-bucket"
         mock_record = MagicMock()
         mock_record.id = 1
+        mock_record.workspace_id = "1"
+        mock_record.uid = "test_uid"
         mock_record.publish_status = 0
         mock_record.local_sync_status = LocalSyncStatus.synced.value
         mock_record.version = 0
@@ -159,6 +182,10 @@ class TestPublishDataviewRecords:
 
         mock_db.execute.side_effect = mock_execute
 
+        # Mock validation result
+        mock_validation = MagicMock()
+        mock_validation.can_publish = True
+
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
             "find_user_owned_dataview_record",
@@ -166,6 +193,9 @@ class TestPublishDataviewRecords:
         ), patch(
             "studio.app.common.routers.dataview._validate_experiment_exists_in_s3",
             return_value=(True, None),
+        ), patch(
+            "studio.app.common.routers.dataview.PublishValidator.validate",
+            return_value=mock_validation,
         ):
             from studio.app.common.routers.dataview import PublishFlags
 
@@ -184,8 +214,11 @@ class TestPublishDataviewRecords:
         mock_db = MagicMock()
         mock_user = MagicMock()
         mock_user.id = 123
+        mock_user.remote_bucket_name = "test-bucket"
         mock_record = MagicMock()
         mock_record.id = 1
+        mock_record.workspace_id = "1"
+        mock_record.uid = "test_uid"
         mock_record.publish_status = 0
         mock_record.local_sync_status = LocalSyncStatus.synced.value
         mock_record.version = 0
@@ -195,6 +228,10 @@ class TestPublishDataviewRecords:
         mock_result.rowcount = 0
         mock_db.execute.return_value = mock_result
 
+        # Mock validation result
+        mock_validation = MagicMock()
+        mock_validation.can_publish = True
+
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
             "find_user_owned_dataview_record",
@@ -202,6 +239,9 @@ class TestPublishDataviewRecords:
         ), patch(
             "studio.app.common.routers.dataview._validate_experiment_exists_in_s3",
             return_value=(True, None),
+        ), patch(
+            "studio.app.common.routers.dataview.PublishValidator.validate",
+            return_value=mock_validation,
         ):
             from studio.app.common.routers.dataview import PublishFlags
 

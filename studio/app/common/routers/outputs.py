@@ -339,25 +339,27 @@ async def get_inittimedata(
     isFull: Optional[bool] = None,
     remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
+    # Normalize and convert to absolute path for filesystem operations
     dirpath = normalize_output_path(dirpath)
+    abs_dirpath = join_filepath([DIRPATH.OUTPUT_DIR, dirpath])
 
     # On-demand sync if files don't exist
-    await _ensure_visualization_synced(dirpath, remote_bucket_name)
+    await _ensure_visualization_synced(abs_dirpath, remote_bucket_name)
 
-    full_json_dirpath = dirpath + ORIGINAL_DATA_EXT
+    full_json_dirpath = abs_dirpath + ORIGINAL_DATA_EXT
     if isFull and os.path.exists(full_json_dirpath):
-        dirpath = full_json_dirpath
+        abs_dirpath = full_json_dirpath
 
     file_numbers = sorted(
         [
             os.path.splitext(os.path.basename(x))[0]
-            for x in glob(join_filepath([dirpath, "*.json"]))
+            for x in glob(join_filepath([abs_dirpath, "*.json"]))
         ]
     )
 
     # Handle empty case
     if not file_numbers:
-        return_data = get_initial_timeseries_data(dirpath)
+        return_data = get_initial_timeseries_data(abs_dirpath)
         return_data.meta = {"title": "0 ROIs found"}  # Set informative message
         return return_data
 
@@ -366,7 +368,7 @@ async def get_inittimedata(
     str_index = str(index)
 
     json_data = JsonReader.read_as_timeseries(
-        join_filepath([dirpath, f"{str(index)}.json"])
+        join_filepath([abs_dirpath, f"{str(index)}.json"])
     )
 
     data = {
@@ -380,7 +382,7 @@ async def get_inittimedata(
             for i in file_numbers
         }
 
-    return_data = get_initial_timeseries_data(dirpath)
+    return_data = get_initial_timeseries_data(abs_dirpath)
     return_data.xrange = json_data.xrange
     if json_data.std is not None:
         return_data.std = std
@@ -400,20 +402,22 @@ async def get_timedata(
     isFull: Optional[bool] = None,
     remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
+    # Normalize and convert to absolute path for filesystem operations
     dirpath = normalize_output_path(dirpath)
+    abs_dirpath = join_filepath([DIRPATH.OUTPUT_DIR, dirpath])
 
     # On-demand sync if files don't exist
-    await _ensure_visualization_synced(dirpath, remote_bucket_name)
+    await _ensure_visualization_synced(abs_dirpath, remote_bucket_name)
 
-    full_json_dirpath = dirpath + ORIGINAL_DATA_EXT
+    full_json_dirpath = abs_dirpath + ORIGINAL_DATA_EXT
     if isFull and os.path.exists(full_json_dirpath):
-        dirpath = full_json_dirpath
+        abs_dirpath = full_json_dirpath
 
     json_data = JsonReader.read_as_timeseries(
-        join_filepath([dirpath, f"{str(index)}.json"])
+        join_filepath([abs_dirpath, f"{str(index)}.json"])
     )
 
-    return_data = get_initial_timeseries_data(dirpath)
+    return_data = get_initial_timeseries_data(abs_dirpath)
 
     str_index = str(index)
     return_data.data[str_index] = json_data.data
@@ -428,14 +432,16 @@ async def get_alltimedata(
     dirpath: str,
     remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
+    # Normalize and convert to absolute path for filesystem operations
     dirpath = normalize_output_path(dirpath)
+    abs_dirpath = join_filepath([DIRPATH.OUTPUT_DIR, dirpath])
 
     # On-demand sync if files don't exist
-    await _ensure_visualization_synced(dirpath, remote_bucket_name)
+    await _ensure_visualization_synced(abs_dirpath, remote_bucket_name)
 
-    return_data = get_initial_timeseries_data(dirpath)
+    return_data = get_initial_timeseries_data(abs_dirpath)
 
-    for i, path in enumerate(glob(join_filepath([dirpath, "*.json"]))):
+    for i, path in enumerate(glob(join_filepath([abs_dirpath, "*.json"]))):
         str_idx = str(os.path.splitext(os.path.basename(path))[0])
         json_data = JsonReader.read_as_timeseries(path)
         if i == 0:
@@ -453,18 +459,24 @@ async def get_file(
     filepath: str,
     remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
+    # Normalize and convert to absolute path for filesystem operations
     filepath = normalize_output_path(filepath)
+    abs_filepath = join_filepath([DIRPATH.OUTPUT_DIR, filepath])
 
     # On-demand sync if files don't exist
-    await _ensure_visualization_synced(os.path.dirname(filepath), remote_bucket_name)
+    await _ensure_visualization_synced(
+        os.path.dirname(abs_filepath), remote_bucket_name
+    )
 
-    return JsonReader.read_as_output(filepath)
+    return JsonReader.read_as_output(abs_filepath)
 
 
 @router.get("/html/{filepath:path}", response_model=OutputData)
 async def get_html(filepath: str):
+    # Normalize and convert to absolute path for filesystem operations
     filepath = normalize_output_path(filepath)
-    return Reader.read_as_output(filepath)
+    abs_filepath = join_filepath([DIRPATH.OUTPUT_DIR, filepath])
+    return Reader.read_as_output(abs_filepath)
 
 
 @router.get("/image/{filepath:path}", response_model=OutputData)
