@@ -18,6 +18,7 @@ class TestPublishDataviewRecords:
 
     @pytest.mark.asyncio
     async def test_publish_success(self):
+        """Test successful publish operation"""
         mock_db = MagicMock()
         mock_user = MagicMock()
         mock_user.id = 123
@@ -26,7 +27,7 @@ class TestPublishDataviewRecords:
         mock_record.publish_status = 0
         mock_record.local_sync_status = LocalSyncStatus.synced.value
         mock_record.version = 0
-        """Test successful publish operation"""
+
         # Setup mock result for execute() with rowcount=1 (success)
         mock_result = MagicMock()
         mock_result.rowcount = 1
@@ -36,6 +37,9 @@ class TestPublishDataviewRecords:
             "studio.app.common.routers.dataview.DataviewService."
             "find_user_owned_dataview_record",
             return_value=mock_record,
+        ), patch(
+            "studio.app.common.routers.dataview._validate_experiment_exists_in_s3",
+            return_value=(True, None),
         ):
             from studio.app.common.routers.dataview import PublishFlags
 
@@ -129,6 +133,7 @@ class TestPublishDataviewRecords:
 
     @pytest.mark.asyncio
     async def test_publish_concurrent_modification_retry(self):
+        """Test retry on concurrent modification"""
         mock_db = MagicMock()
         mock_user = MagicMock()
         mock_user.id = 123
@@ -137,7 +142,7 @@ class TestPublishDataviewRecords:
         mock_record.publish_status = 0
         mock_record.local_sync_status = LocalSyncStatus.synced.value
         mock_record.version = 0
-        """Test retry on concurrent modification"""
+
         call_count = 0
 
         def mock_execute(stmt):
@@ -158,6 +163,9 @@ class TestPublishDataviewRecords:
             "studio.app.common.routers.dataview.DataviewService."
             "find_user_owned_dataview_record",
             return_value=mock_record,
+        ), patch(
+            "studio.app.common.routers.dataview._validate_experiment_exists_in_s3",
+            return_value=(True, None),
         ):
             from studio.app.common.routers.dataview import PublishFlags
 
@@ -172,6 +180,7 @@ class TestPublishDataviewRecords:
 
     @pytest.mark.asyncio
     async def test_publish_concurrent_modification_max_retries(self):
+        """Test failure after max retries on concurrent modification"""
         mock_db = MagicMock()
         mock_user = MagicMock()
         mock_user.id = 123
@@ -180,7 +189,6 @@ class TestPublishDataviewRecords:
         mock_record.publish_status = 0
         mock_record.local_sync_status = LocalSyncStatus.synced.value
         mock_record.version = 0
-        """Test failure after max retries on concurrent modification"""
 
         # Always return rowcount=0 to simulate persistent version conflicts
         mock_result = MagicMock()
@@ -191,6 +199,9 @@ class TestPublishDataviewRecords:
             "studio.app.common.routers.dataview.DataviewService."
             "find_user_owned_dataview_record",
             return_value=mock_record,
+        ), patch(
+            "studio.app.common.routers.dataview._validate_experiment_exists_in_s3",
+            return_value=(True, None),
         ):
             from studio.app.common.routers.dataview import PublishFlags
 
