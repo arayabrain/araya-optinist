@@ -1,5 +1,5 @@
 import os
-from typing import List, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -11,6 +11,9 @@ from studio.app.common import models
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.dataview.dataview_services import DataviewService
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteStorageController,
+)
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.db.database import get_db
 from studio.app.common.routers.workflow import reproduce_experiment
@@ -272,6 +275,40 @@ async def public_reproduce_experiment(
     return await reproduce_experiment(workspace_id, unique_id)
 
 
+async def _validate_experiment_exists_in_s3(
+    workspace_id: str, unique_id: str, bucket_name: str
+) -> Tuple[bool, Optional[str]]:
+    """
+    Check if experiment data exists in S3.
+
+    Args:
+        workspace_id: The workspace ID
+        unique_id: The experiment unique ID
+        bucket_name: The S3 bucket name
+
+    Returns:
+        Tuple of (exists, error_message). If exists is True, error_message is None.
+    """
+    if not RemoteStorageController.is_available():
+        return True, None  # Skip validation if S3 not configured
+
+    s3_controller = S3StorageController(bucket_name)
+    s3_path = f"app/studio_data/output/{workspace_id}/{unique_id}/"
+
+    try:
+        async with s3_controller._S3StorageController__get_s3_client() as client:
+            result = await client.list_objects_v2(
+                Bucket=bucket_name, Prefix=s3_path, MaxKeys=5
+            )
+            if result.get("KeyCount", 0) == 0:
+                return False, f"No data found in S3 for {workspace_id}/{unique_id}"
+    except Exception as e:
+        logger.error(f"S3 validation error for {workspace_id}/{unique_id}: {e}")
+        return False, f"Could not verify S3 data: {str(e)}"
+
+    return True, None
+
+
 @router.post(
     "/publish/{id}/{flag}",
     response_model=bool,
@@ -310,6 +347,23 @@ async def publish_dataview_records(
                     f"has publish_status={new_publish_status}, no change needed"
                 )
                 return True
+
+            # Validate S3 data exists before publishing
+            if flag == PublishFlags.on:
+                bucket_name = current_user.remote_bucket_name or os.environ.get(
+                    "S3_DEFAULT_BUCKET_NAME"
+                )
+                if bucket_name:
+                    exists, error_msg = await _validate_experiment_exists_in_s3(
+                        str(record.workspace_id),
+                        record.uid,
+                        bucket_name,
+                    )
+                    if not exists:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Cannot publish: {error_msg}",
+                        )
 
             # Determine new sync status
             new_sync_status = (

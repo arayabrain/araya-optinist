@@ -20,6 +20,7 @@ from studio.app.common.core.utils.file_reader import JsonReader, Reader
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
+    normalize_output_path,
 )
 from studio.app.common.core.utils.json_writer import JsonWriter, save_tiff2json
 from studio.app.common.core.workspace.workspace_dependencies import (
@@ -343,28 +344,43 @@ async def get_image(
     isFull: Optional[bool] = None,
     remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
+    # Normalize filepath for backward compatibility with existing DB records
+    # that may contain absolute paths like /app/studio_data/output/...
+    filepath = normalize_output_path(filepath)
+
+    # Convert to absolute path for filesystem operations
+    abs_filepath = join_filepath([DIRPATH.OUTPUT_DIR, filepath])
+
     # On-demand sync if files don't exist
-    await _ensure_visualization_synced(os.path.dirname(filepath), remote_bucket_name)
+    await _ensure_visualization_synced(
+        os.path.dirname(abs_filepath), remote_bucket_name
+    )
 
     filename, ext = os.path.splitext(os.path.basename(filepath))
 
     if filename == "cell_roi" and isFull:
-        full_cell_roi_filepath = filepath + ORIGINAL_DATA_EXT
+        full_cell_roi_filepath = abs_filepath + ORIGINAL_DATA_EXT
         if os.path.exists(full_cell_roi_filepath):
-            filepath = full_cell_roi_filepath
+            abs_filepath = full_cell_roi_filepath
 
     if ext in ACCEPT_FILE_EXT.TIFF_EXT.value:
-        if not filepath.startswith(join_filepath([DIRPATH.OUTPUT_DIR, workspace_id])):
-            filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filepath])
+        # Check if this is an input file (just filename)
+        # vs output file (has workspace path)
+        is_input_file = not filepath.startswith(f"{workspace_id}/")
+        if is_input_file:
+            abs_filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filepath])
 
             # On-demand sync for input files
-            if not os.path.exists(filepath) and RemoteStorageController.is_available():
+            if (
+                not os.path.exists(abs_filepath)
+                and RemoteStorageController.is_available()
+            ):
                 logger.info(f"On-demand sync for input file: {workspace_id}/{filename}")
                 s3_controller = S3StorageController(remote_bucket_name)
                 await s3_controller.download_input_data(workspace_id, filename + ext)
 
             # Return 404 if file still doesn't exist after sync attempt
-            if not os.path.exists(filepath):
+            if not os.path.exists(abs_filepath):
                 raise HTTPException(
                     status_code=404,
                     detail=f"Input file not found: {filename}{ext}",
@@ -372,7 +388,7 @@ async def get_image(
 
         save_dirpath = join_filepath(
             [
-                os.path.dirname(filepath),
+                os.path.dirname(abs_filepath),
                 filename,
             ]
         )
@@ -380,14 +396,20 @@ async def get_image(
             [save_dirpath, f"{filename}_{str(start_index)}_{str(end_index)}.json"]
         )
         if not os.path.exists(json_filepath):
-            save_tiff2json(filepath, save_dirpath, start_index, end_index)
+            save_tiff2json(abs_filepath, save_dirpath, start_index, end_index)
     else:
-        json_filepath = filepath
+        json_filepath = abs_filepath
         # Check if output file exists after sync attempt
         if not os.path.exists(json_filepath):
+            if remote_bucket_name:
+                logger.warning(f"File not found after sync attempt: {json_filepath}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Data syncing. Please retry.",
+                )
             raise HTTPException(
                 status_code=404,
-                detail=f"Output file not found: {os.path.basename(json_filepath)}",
+                detail="Output file not found",
             )
 
     return JsonReader.read_as_output(json_filepath)

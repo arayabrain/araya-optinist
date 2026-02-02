@@ -28,7 +28,10 @@ from studio.app.common.core.utils.datetime_utils import (
     datetime_from_timestamp,
     get_datetime_for_timezone_formatted,
 )
-from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.core.utils.filepath_creater import (
+    join_filepath,
+    normalize_output_path,
+)
 from studio.app.common.core.utils.pickle_handler import PickleReader
 from studio.app.common.core.workflow.workflow import (
     Message,
@@ -455,7 +458,11 @@ class NodeResult(BaseNodeResult):
             if isinstance(v, BaseData):
                 v.save_json(self.node_dirpath)
                 if v.output_path:
-                    output_paths[k] = v.output_path
+                    # Normalize path to relative form for storage
+                    # This ensures paths work across environments (local, Docker, etc.)
+                    output_path = v.output_path
+                    output_path.path = normalize_output_path(output_path.path)
+                    output_paths[k] = output_path
 
         return output_paths
 

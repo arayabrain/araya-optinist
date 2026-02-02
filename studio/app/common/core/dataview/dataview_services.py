@@ -12,7 +12,10 @@ from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
 )
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.core.utils.filepath_creater import (
+    join_filepath,
+    normalize_output_path,
+)
 from studio.app.common.core.workflow.workflow import NodeType
 from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.db.database import session_scope
@@ -306,7 +309,7 @@ class DataviewService:
         )
         for _, node in workflow_config.nodeDict.items():
             if node.type == NodeType.IMAGE:
-                image_url = node.data.path[0]
+                image_url = normalize_output_path(node.data.path[0])
                 break
 
         # Make output data (roi) thumbnails path (from WorkflowConfig)
@@ -318,7 +321,7 @@ class DataviewService:
         )
         for _, function in experiment_config.function.items():
             if function.outputPaths and ("cell_roi" in function.outputPaths):
-                roi_url = function.outputPaths["cell_roi"].path
+                roi_url = normalize_output_path(function.outputPaths["cell_roi"].path)
                 break
 
         return DataviewThumbnails(
