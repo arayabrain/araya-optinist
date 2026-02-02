@@ -167,9 +167,16 @@ class S3StorageController(BaseRemoteStorageController):
                 s3_file_path = s3_object["Key"]
                 file_size = s3_object["Size"]
 
+                # Compute local path from S3 path for each file
+                # s3_file_path: app/studio_data/input/{workspace_id}/{relative_path}
+                # local path:   {INPUT_DIR}/{workspace_id}/{relative_path}
+                s3_prefix = f"app/studio_data/{__class__.S3_INPUT_DIR}/"
+                relative_path = s3_file_path.replace(s3_prefix, "")
+                local_file_path = os.path.join(DIRPATH.INPUT_DIR, relative_path)
+
                 # Skip if file already exists locally with correct size
-                if os.path.isfile(input_data_local_path):
-                    local_size = os.path.getsize(input_data_local_path)
+                if os.path.isfile(local_file_path):
+                    local_size = os.path.getsize(local_file_path)
                     if local_size == file_size:
                         logger.debug(
                             f"Skip download (already exists): {s3_file_path} "
@@ -184,13 +191,13 @@ class S3StorageController(BaseRemoteStorageController):
                 )
 
                 # Create local directory before downloading
-                input_data_local_dir = os.path.dirname(input_data_local_path)
-                if not os.path.exists(input_data_local_dir):
-                    os.makedirs(input_data_local_dir, exist_ok=True)
-                    logger.info(f"Created directory: {input_data_local_dir}")
+                local_file_dir = os.path.dirname(local_file_path)
+                if not os.path.exists(local_file_dir):
+                    os.makedirs(local_file_dir, exist_ok=True)
+                    logger.info(f"Created directory: {local_file_dir}")
 
                 await __s3_client.download_file(
-                    self.bucket_name, s3_file_path, input_data_local_path
+                    self.bucket_name, s3_file_path, local_file_path
                 )
 
                 logger.info(
