@@ -7,7 +7,10 @@ import thunk from "redux-thunk"
 import { describe, it, expect, jest, beforeEach } from "@jest/globals"
 import { render, screen, fireEvent } from "@testing-library/react"
 
-import { RoiPlotSimple } from "components/Workspace/Visualize/Plot/RoiPlotSimple"
+import {
+  RoiPlotSimple,
+  RoiPlotSimpleWithLoading,
+} from "components/Workspace/Visualize/Plot/RoiPlotSimple"
 
 const mockStore = configureStore([thunk])
 
@@ -20,7 +23,11 @@ jest.mock("react-plotlyjs-ts", () => ({
 // Mock getRoiData action - return a thunk-like function
 const mockGetRoiData = jest.fn()
 jest.mock("store/slice/DisplayData/DisplayDataActions", () => ({
-  getRoiData: (params: { path: string; workspaceId: number }) => {
+  getRoiData: (params: {
+    path: string
+    workspaceId: number
+    uniqueId?: string
+  }) => {
     mockGetRoiData(params)
     // Return a thunk function
     return () => Promise.resolve()
@@ -104,6 +111,46 @@ describe("RoiPlotSimple Component", () => {
       expect(mockGetRoiData).toHaveBeenCalledWith({
         path: "/test/path",
         workspaceId: 1,
+        uniqueId: undefined,
+      })
+    })
+
+    it("includes uniqueId when provided", () => {
+      const initialState = {
+        displayData: {
+          roi: {
+            "/test/path": {
+              type: "roi",
+              data: [],
+              pending: false,
+              fulfilled: false,
+              error: "Data unavailable",
+              roiUniqueList: [],
+            },
+          },
+          loading: false,
+          loadingStack: [],
+        },
+      }
+      store = mockStore(initialState)
+
+      renderWithProviders(
+        <RoiPlotSimple
+          filePath="/test/path"
+          workspaceId={1}
+          uniqueId="workflow-123"
+        />,
+      )
+
+      // Click retry button
+      const retryButton = screen.getByRole("button")
+      fireEvent.click(retryButton)
+
+      // Should dispatch getRoiData action with uniqueId
+      expect(mockGetRoiData).toHaveBeenCalledWith({
+        path: "/test/path",
+        workspaceId: 1,
+        uniqueId: "workflow-123",
       })
     })
 
@@ -221,6 +268,158 @@ describe("RoiPlotSimple Component", () => {
 
       // Should render plotly chart
       expect(screen.getByTestId("plotly-chart")).toBeDefined()
+    })
+  })
+
+  describe("Initial data fetch", () => {
+    it("fetches data on mount", () => {
+      const initialState = {
+        displayData: {
+          roi: {},
+          loading: false,
+          loadingStack: [],
+        },
+      }
+      store = mockStore(initialState)
+
+      renderWithProviders(
+        <RoiPlotSimple filePath="/test/path" workspaceId={1} />,
+      )
+
+      // Should dispatch getRoiData action on mount
+      expect(mockGetRoiData).toHaveBeenCalledWith({
+        path: "/test/path",
+        workspaceId: 1,
+        uniqueId: undefined,
+      })
+    })
+
+    it("fetches data with uniqueId on mount when provided", () => {
+      const initialState = {
+        displayData: {
+          roi: {},
+          loading: false,
+          loadingStack: [],
+        },
+      }
+      store = mockStore(initialState)
+
+      renderWithProviders(
+        <RoiPlotSimple
+          filePath="/test/path"
+          workspaceId={1}
+          uniqueId="workflow-456"
+        />,
+      )
+
+      // Should dispatch getRoiData action with uniqueId on mount
+      expect(mockGetRoiData).toHaveBeenCalledWith({
+        path: "/test/path",
+        workspaceId: 1,
+        uniqueId: "workflow-456",
+      })
+    })
+  })
+})
+
+describe("RoiPlotSimpleWithLoading Component", () => {
+  let store: ReturnType<typeof mockStore>
+
+  beforeEach(() => {
+    mockGetRoiData.mockClear()
+  })
+
+  const renderWithProviders = (
+    component: React.ReactElement,
+    customStore?: ReturnType<typeof mockStore>,
+  ) => {
+    return render(<Provider store={customStore || store}>{component}</Provider>)
+  }
+
+  describe("Sync indicator", () => {
+    it("shows sync indicator when loading and not initialized", () => {
+      const initialState = {
+        displayData: {
+          roi: {
+            "/test/path": {
+              type: "roi",
+              data: [],
+              pending: true,
+              fulfilled: false,
+              error: null,
+              roiUniqueList: [],
+            },
+          },
+          loading: true,
+          loadingStack: [true],
+        },
+      }
+      store = mockStore(initialState)
+
+      renderWithProviders(
+        <RoiPlotSimpleWithLoading filePath="/test/path" workspaceId={1} />,
+      )
+
+      // Should show sync indicator (CircularProgress)
+      expect(screen.getAllByRole("progressbar").length).toBeGreaterThan(0)
+    })
+
+    it("hides sync indicator when data is loaded", () => {
+      const initialState = {
+        displayData: {
+          roi: {
+            "/test/path": {
+              type: "roi",
+              data: [
+                [
+                  [1, 2, 3],
+                  [4, 5, 6],
+                ],
+              ],
+              pending: false,
+              fulfilled: true,
+              error: null,
+              roiUniqueList: ["1", "2", "3", "4", "5", "6"],
+            },
+          },
+          loading: false,
+          loadingStack: [],
+        },
+      }
+      store = mockStore(initialState)
+
+      renderWithProviders(
+        <RoiPlotSimpleWithLoading filePath="/test/path" workspaceId={1} />,
+      )
+
+      // Should show the plotly chart, not sync indicator overlay
+      expect(screen.getByTestId("plotly-chart")).toBeDefined()
+    })
+
+    it("passes uniqueId to inner RoiPlotSimple component", () => {
+      const initialState = {
+        displayData: {
+          roi: {},
+          loading: false,
+          loadingStack: [],
+        },
+      }
+      store = mockStore(initialState)
+
+      renderWithProviders(
+        <RoiPlotSimpleWithLoading
+          filePath="/test/path"
+          workspaceId={1}
+          uniqueId="test-workflow-id"
+        />,
+      )
+
+      // Should dispatch with uniqueId
+      expect(mockGetRoiData).toHaveBeenCalledWith({
+        path: "/test/path",
+        workspaceId: 1,
+        uniqueId: "test-workflow-id",
+      })
     })
   })
 })

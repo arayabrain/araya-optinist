@@ -31,7 +31,7 @@ describe("DisplayDataSlice", () => {
   }
 
   describe("getRoiData.rejected", () => {
-    it("shows 'Data not synced' for 500 status errors", () => {
+    it("shows 'Data not synced' for all rejected requests", () => {
       const pendingState = {
         ...initialState,
         loading: true,
@@ -63,98 +63,6 @@ describe("DisplayDataSlice", () => {
       expect(state.roi["/test/path"].error).toBe("Data not synced")
       expect(state.roi["/test/path"].pending).toBe(false)
       expect(state.roi["/test/path"].fulfilled).toBe(false)
-    })
-
-    it("extracts error message from axios response data", () => {
-      const pendingState = {
-        ...initialState,
-        loading: true,
-        loadingStack: [true],
-        roi: {
-          "/test/path": {
-            type: "roi" as const,
-            data: [],
-            pending: true,
-            fulfilled: false,
-            error: null,
-            roiUniqueList: [],
-          },
-        },
-      }
-
-      const action = {
-        type: getRoiData.rejected.type,
-        meta: { arg: { path: "/test/path", workspaceId: 1 } },
-        payload: {
-          response: { status: 404, data: { message: "File not found" } },
-          message: "Request failed with status code 404",
-        },
-        error: { message: "Rejected" },
-      }
-
-      const state = reducer(pendingState, action)
-
-      expect(state.roi["/test/path"].error).toBe("File not found")
-    })
-
-    it("uses axios error message as fallback", () => {
-      const pendingState = {
-        ...initialState,
-        loading: true,
-        loadingStack: [true],
-        roi: {
-          "/test/path": {
-            type: "roi" as const,
-            data: [],
-            pending: true,
-            fulfilled: false,
-            error: null,
-            roiUniqueList: [],
-          },
-        },
-      }
-
-      const action = {
-        type: getRoiData.rejected.type,
-        meta: { arg: { path: "/test/path", workspaceId: 1 } },
-        payload: {
-          message: "Network Error",
-        },
-        error: { message: "Rejected" },
-      }
-
-      const state = reducer(pendingState, action)
-
-      expect(state.roi["/test/path"].error).toBe("Network Error")
-    })
-
-    it("shows default message when no error info available", () => {
-      const pendingState = {
-        ...initialState,
-        loading: true,
-        loadingStack: [true],
-        roi: {
-          "/test/path": {
-            type: "roi" as const,
-            data: [],
-            pending: true,
-            fulfilled: false,
-            error: null,
-            roiUniqueList: [],
-          },
-        },
-      }
-
-      const action = {
-        type: getRoiData.rejected.type,
-        meta: { arg: { path: "/test/path", workspaceId: 1 } },
-        payload: undefined,
-        error: { message: "Rejected" },
-      }
-
-      const state = reducer(pendingState, action)
-
-      expect(state.roi["/test/path"].error).toBe("Data unavailable")
     })
 
     it("updates loading state correctly", () => {
@@ -189,7 +97,7 @@ describe("DisplayDataSlice", () => {
   })
 
   describe("getImageData.rejected", () => {
-    it("shows 'Image not synced' for 500 status errors", () => {
+    it("shows 'Image not synced' for all rejected requests", () => {
       const pendingState = {
         ...initialState,
         image: {
@@ -225,110 +133,6 @@ describe("DisplayDataSlice", () => {
       expect(state.image["/test/image.tiff"].error).toBe("Image not synced")
       expect(state.image["/test/image.tiff"].pending).toBe(false)
       expect(state.image["/test/image.tiff"].fulfilled).toBe(false)
-    })
-
-    it("extracts error message from axios response data", () => {
-      const pendingState = {
-        ...initialState,
-        image: {
-          "/test/image.tiff": {
-            type: "image" as const,
-            data: [],
-            pending: true,
-            fulfilled: false,
-            error: null,
-          },
-        },
-      }
-
-      const action = {
-        type: getImageData.rejected.type,
-        meta: {
-          arg: {
-            path: "/test/image.tiff",
-            workspaceId: 1,
-            startIndex: 1,
-            endIndex: 1,
-          },
-        },
-        payload: {
-          response: { status: 404, data: { message: "Image file not found" } },
-          message: "Request failed with status code 404",
-        },
-        error: { message: "Rejected" },
-      }
-
-      const state = reducer(pendingState, action)
-
-      expect(state.image["/test/image.tiff"].error).toBe("Image file not found")
-    })
-
-    it("uses axios error message as fallback", () => {
-      const pendingState = {
-        ...initialState,
-        image: {
-          "/test/image.tiff": {
-            type: "image" as const,
-            data: [],
-            pending: true,
-            fulfilled: false,
-            error: null,
-          },
-        },
-      }
-
-      const action = {
-        type: getImageData.rejected.type,
-        meta: {
-          arg: {
-            path: "/test/image.tiff",
-            workspaceId: 1,
-            startIndex: 1,
-            endIndex: 1,
-          },
-        },
-        payload: {
-          message: "Network Error",
-        },
-        error: { message: "Rejected" },
-      }
-
-      const state = reducer(pendingState, action)
-
-      expect(state.image["/test/image.tiff"].error).toBe("Network Error")
-    })
-
-    it("shows default message when no error info available", () => {
-      const pendingState = {
-        ...initialState,
-        image: {
-          "/test/image.tiff": {
-            type: "image" as const,
-            data: [],
-            pending: true,
-            fulfilled: false,
-            error: null,
-          },
-        },
-      }
-
-      const action = {
-        type: getImageData.rejected.type,
-        meta: {
-          arg: {
-            path: "/test/image.tiff",
-            workspaceId: 1,
-            startIndex: 1,
-            endIndex: 1,
-          },
-        },
-        payload: undefined,
-        error: { message: "Rejected" },
-      }
-
-      const state = reducer(pendingState, action)
-
-      expect(state.image["/test/image.tiff"].error).toBe("Image unavailable")
     })
   })
 

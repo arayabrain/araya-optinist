@@ -402,10 +402,12 @@ async def get_outputs_remote_bucket_name(
             except (ValueError, IndexError, AssertionError):
                 pass
 
-    # Also check query params for workspace_id
+    # Also check query params for workspace_id and unique_id
+    query_params = dict(req.query_params)
     if not workspace_id:
-        query_params = dict(req.query_params)
         workspace_id = query_params.get("workspace_id")
+    if not unique_id:
+        unique_id = query_params.get("unique_id")
 
     if workspace_id:
         workspace = None

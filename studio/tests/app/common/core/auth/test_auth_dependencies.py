@@ -390,6 +390,57 @@ class TestGetOutputsRemoteBucketName:
 
         assert result == "owner-bucket-from-query"
 
+    @pytest.mark.asyncio
+    async def test_extracts_unique_id_from_query_params_for_published_check(self):
+        """Should extract unique_id from query params for published experiment check.
+
+        This tests the scenario where an authenticated user accesses published
+        dataview data they don't own. The unique_id must be extracted from query
+        params to verify the data is published.
+        """
+        mock_req = MagicMock()
+        # URL path doesn't contain full DIRPATH.OUTPUT_DIR prefix
+        mock_req.url.path = "/outputs/image/7/tutorial2/cell_roi.json"
+        # Both workspace_id and unique_id in query params
+        mock_req.query_params = {"workspace_id": "7", "unique_id": "tutorial2"}
+        mock_db = MagicMock()
+
+        mock_user = MagicMock()
+        mock_user.id = 3
+        mock_user.remote_bucket_name = "user-bucket-3"
+
+        mock_workspace = MagicMock()
+        mock_workspace.user = MagicMock()
+        mock_workspace.user.remote_bucket_name = "owner-bucket-2"
+
+        mock_published_record = MagicMock()
+
+        with patch("studio.app.dir_path.DIRPATH") as mock_dirpath:
+            mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
+            with patch(
+                "studio.app.common.core.experiment.experiment.ExptOutputPathIds",
+                side_effect=ValueError("Invalid path"),
+            ):
+                mock_query = mock_db.query.return_value
+                # User doesn't have direct access to workspace
+                mock_query.join.return_value.filter.return_value.first.return_value = (
+                    None
+                )
+                # Published record check succeeds, then workspace lookup
+                mock_query.filter.return_value.first.side_effect = [
+                    mock_published_record,  # Published record check
+                    mock_workspace,  # Workspace lookup
+                ]
+
+                result = await get_outputs_remote_bucket_name(
+                    req=mock_req,
+                    current_user=mock_user,
+                    db=mock_db,
+                )
+
+        # Should use workspace owner's bucket, not the current user's bucket
+        assert result == "owner-bucket-2"
+
 
 class TestGetUserRemoteBucketName:
     """Test _get_user_remote_bucket_name helper"""
