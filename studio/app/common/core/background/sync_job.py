@@ -27,6 +27,14 @@ from studio.app.dir_path import DIRPATH
 logger = AppLogger.get_logger()
 
 
+class SyncRetryError(Exception):
+    """Exception indicating sync should be retried"""
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)
+
+
 class PublishedExperimentSyncJob:
     """Background job to sync published experiments"""
 
@@ -202,7 +210,7 @@ class PublishedExperimentSyncJob:
 
             if os.path.exists(local_path):
                 # Already exists, check if complete
-                required_files = ["experiment.yaml", "workflow.yaml"]
+                required_files = [DIRPATH.EXPERIMENT_YML, DIRPATH.WORKFLOW_YML]
 
                 all_exist = all(
                     os.path.exists(os.path.join(local_path, f)) for f in required_files
@@ -226,35 +234,40 @@ class PublishedExperimentSyncJob:
                         workspace_id, unique_id, sync_mode="essential_only"
                     )
 
-                    if success:
-                        logger.info(f"Successfully synced {workspace_id}/{unique_id}")
-                        cls._mark_sync_complete(exp_id)
-                        cls._clear_retry_count(exp_id)
-                        return True
-                    else:
-                        if attempt < max_retries - 1:
-                            wait_time = 2**attempt  # 1s, 2s, 4s
-                            logger.warning(
-                                f"Download failed, retrying in {wait_time}s..."
-                            )
-                            await asyncio.sleep(wait_time)
-                        else:
-                            logger.error(
-                                f"Failed to download {workspace_id}/{unique_id} "
-                                f"after {max_retries} attempts"
-                            )
+                    if not success:
+                        raise SyncRetryError("Download returned failure status")
+
+                    # Validate that required files were actually downloaded
+                    required_files = [DIRPATH.EXPERIMENT_YML, DIRPATH.WORKFLOW_YML]
+                    missing = [
+                        f
+                        for f in required_files
+                        if not os.path.exists(os.path.join(local_path, f))
+                    ]
+
+                    if missing:
+                        raise SyncRetryError(
+                            f"Required files missing from S3: {missing}"
+                        )
+
+                    logger.info(f"Successfully synced {workspace_id}/{unique_id}")
+                    cls._mark_sync_complete(exp_id)
+                    cls._clear_retry_count(exp_id)
+                    return True
 
                 except Exception as e:
+                    is_expected_retry = isinstance(e, SyncRetryError)
+                    error_msg = str(e)
+
                     if attempt < max_retries - 1:
-                        wait_time = 2**attempt
-                        logger.warning(
-                            f"Download error: {e}, retrying in {wait_time}s..."
-                        )
+                        wait_time = 2**attempt  # 1s, 2s, 4s
+                        logger.warning(f"{error_msg}, retrying in {wait_time}s...")
                         await asyncio.sleep(wait_time)
                     else:
                         logger.error(
-                            f"Download failed after {max_retries} attempts: {e}",
-                            exc_info=True,
+                            f"Failed to sync {workspace_id}/{unique_id} "
+                            f"after {max_retries} attempts: {error_msg}",
+                            exc_info=not is_expected_retry,
                         )
 
             # All retries failed
