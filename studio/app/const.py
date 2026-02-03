@@ -44,10 +44,6 @@ LARGE_FILE_PATTERNS = tuple(ACCEPT_FILE_EXT.ALL_EXT.value + [".pkl"])
 # YAML for snakemake config
 VISUALIZATION_SYNC_PATTERNS = (".json", ".tif", ".tiff", ".yaml")
 
-# Thumbnail files for fast DataView loading
-# Pattern "_thumb.png" matches all thumbnail files
-THUMBNAIL_FILE_PATTERNS = ("_thumb.png",)
-
 
 # Thumbnail type identifiers
 class ThumbnailType(StrEnum):
@@ -58,6 +54,11 @@ class ThumbnailType(StrEnum):
     def filename(self) -> str:
         """Get the thumbnail filename for this type."""
         return f"{self.value}_thumb.png"
+
+
+# ThumbnailType-related constants (can't be class attrs due to StrEnum behavior)
+ThumbnailType.DIRNAME = "thumbnails"
+ThumbnailType.FILE_PATTERNS = ("_thumb.png",)
 
 
 # Metadata cache filenames for input data

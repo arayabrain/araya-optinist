@@ -336,7 +336,7 @@ async def _validate_experiment_exists_in_s3(
         return True, None  # Skip validation if S3 not configured
 
     s3_controller = S3StorageController(bucket_name)
-    s3_path = f"app/studio_data/output/{workspace_id}/{unique_id}/"
+    s3_path = S3StorageController.make_s3_output_prefix(workspace_id, unique_id)
 
     try:
         async with s3_controller._S3StorageController__get_s3_client() as client:

@@ -51,7 +51,13 @@ def _get_thumbnail_png_path(
         Absolute path to the thumbnail PNG file
     """
     return join_filepath(
-        [DIRPATH.OUTPUT_DIR, workspace_id, unique_id, "thumbnails", thumb_type.filename]
+        [
+            DIRPATH.OUTPUT_DIR,
+            workspace_id,
+            unique_id,
+            ThumbnailType.DIRNAME,
+            thumb_type.filename,
+        ]
     )
 
 
@@ -84,7 +90,7 @@ async def get_or_generate_thumbnail(
     Returns:
         Path to the thumbnail PNG file (may be newly generated)
     """
-    from studio.app.common.core.dataview.dataview_services import DataviewService
+    from studio.app.common.core.dataview.thumbnail_generator import ThumbnailGenerator
     from studio.app.common.core.utils.filepath_creater import create_directory
 
     thumb_path = _get_thumbnail_png_path(workspace_id, unique_id, thumb_type)
@@ -106,20 +112,10 @@ async def get_or_generate_thumbnail(
 
     # Download from S3 if needed
     if not os.path.exists(abs_original_path) and RemoteStorageController.is_available():
-        try:
-            s3_controller = S3StorageController(remote_bucket_name)
-            if thumb_type == ThumbnailType.INPUT:
-                # Download input file
-                filename = os.path.basename(original_path)
-                await s3_controller.download_input_data(workspace_id, filename)
-            else:
-                # Download output file (cell_roi.json)
-                await s3_controller.download_experiment(
-                    workspace_id, unique_id, sync_mode="visualization"
-                )
-        except Exception as e:
-            logger.warning(f"Failed to download original file for thumbnail: {e}")
-            return normalize_output_path(original_path)  # Fall back to original
+        s3_controller = S3StorageController(remote_bucket_name)
+        await s3_controller.download_thumbnail_source(
+            workspace_id, unique_id, original_path, thumb_type
+        )
 
     # Generate thumbnail if original file now exists
     if os.path.exists(abs_original_path):
@@ -128,9 +124,11 @@ async def get_or_generate_thumbnail(
             create_directory(thumb_dir)
 
             if thumb_type == ThumbnailType.INPUT:
-                DataviewService._generate_tiff_thumbnail(abs_original_path, thumb_path)
+                ThumbnailGenerator.generate_tiff_thumbnail(
+                    abs_original_path, thumb_path
+                )
             else:
-                DataviewService._generate_roi_thumbnail(abs_original_path, thumb_path)
+                ThumbnailGenerator.generate_roi_thumbnail(abs_original_path, thumb_path)
 
             logger.info(f"Lazy-generated thumbnail: {thumb_path}")
 

@@ -369,52 +369,21 @@ async def get_outputs_remote_bucket_name(
     Security: For authenticated users, verifies they have access to the workspace
     (owner, shared user, or published data) before returning the owner's bucket.
     """
-    import re
-
     from sqlmodel import or_
 
     from studio.app.common.core.experiment.experiment import ExptOutputPathIds
     from studio.app.common.models.experiment import ExperimentRecord
     from studio.app.common.models.workspace import Workspace, WorkspacesShareUser
     from studio.app.common.schemas.dataview import PublishStatus
-    from studio.app.dir_path import DIRPATH
 
     request_url_path = req.url.path
 
-    # Try to extract workspace_id and unique_id from output path
-    # Pattern: /outputs/image//app/studio_data/output/{workspace_id}/{unique_id}/...
-    data_file_path = re.sub(r"^/outputs/[^/]+/", "", request_url_path)
-
-    workspace_id = None
-    unique_id = None
-
-    if data_file_path.startswith(DIRPATH.OUTPUT_DIR):
-        # Trim to workspace_id/unique_id level
-        # (ExptOutputPathIds expects 2-3 components)
-        relative_path = data_file_path[len(DIRPATH.OUTPUT_DIR) :].lstrip("/")
-        path_parts = relative_path.split("/")
-        if len(path_parts) >= 2:
-            trimmed_path = "/".join([DIRPATH.OUTPUT_DIR, path_parts[0], path_parts[1]])
-            try:
-                ids = ExptOutputPathIds(trimmed_path)
-                workspace_id = ids.workspace_id
-                unique_id = ids.unique_id
-            except (ValueError, IndexError, AssertionError):
-                pass
-    else:
-        # Handle simpler URL patterns like
-        # /outputs/thumbnail/{workspace_id}/{unique_id}/...
-        # After stripping /outputs/{type}/,
-        # the path is just {workspace_id}/{unique_id}/...
-        path_parts = data_file_path.split("/")
-        if len(path_parts) >= 2:
-            # First part should be workspace_id, second should be unique_id
-            potential_workspace_id = path_parts[0]
-            potential_unique_id = path_parts[1]
-            # Validate workspace_id looks like a number
-            if potential_workspace_id.isdigit():
-                workspace_id = potential_workspace_id
-                unique_id = potential_unique_id
+    # Extract workspace_id and unique_id from output path using centralized method
+    ids = ExptOutputPathIds.from_request_url(
+        request_url_path, DataviewService.OUTPUTS_URL_PREFIX
+    )
+    workspace_id = ids.workspace_id
+    unique_id = ids.unique_id
 
     # Also check query params for workspace_id and unique_id
     query_params = dict(req.query_params)
