@@ -304,6 +304,20 @@ async def get_thumbnail(
 
     # If thumbnail still doesn't exist, try to generate it
     if not os.path.exists(thumb_path):
+        # Sync essential config files (yaml) so we can determine source paths
+        # Note: thumbnails_only mode doesn't download the config files needed to
+        # find the source TIFF/JSON files for generation
+        if RemoteStorageController.is_available():
+            try:
+                async with RemoteStorageSimpleReader(
+                    remote_bucket_name
+                ) as remote_storage_controller:
+                    await remote_storage_controller.download_experiment(
+                        workspace_id, unique_id, sync_mode="essential_only"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to sync config files from S3: {e}")
+
         # Get the original file path for generation
         if thumb_type == ThumbnailType.INPUT:
             # Need to find the input TIFF file

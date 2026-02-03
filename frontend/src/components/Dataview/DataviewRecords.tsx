@@ -1099,7 +1099,7 @@ const DataviewRecords = ({
                       listCheck.length !== 0 &&
                       handleOpenPublishAll(
                         "Bulk Publish",
-                        `Publish "${listCheck.length} records" at once. Is this OK?`,
+                        `Confirm publishling "${listCheck.length} records" at once.`,
                         "on",
                       )
                     }
@@ -1123,7 +1123,7 @@ const DataviewRecords = ({
                       listCheck.length !== 0 &&
                       handleOpenPublishAll(
                         "Bulk UnPublish",
-                        `Unpublish "${listCheck.length} records" at once. Is this OK?`,
+                        `Confirm unpublishing "${listCheck.length} records" at once.`,
                         "off",
                       )
                     }

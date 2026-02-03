@@ -401,6 +401,20 @@ async def get_outputs_remote_bucket_name(
                 unique_id = ids.unique_id
             except (ValueError, IndexError, AssertionError):
                 pass
+    else:
+        # Handle simpler URL patterns like
+        # /outputs/thumbnail/{workspace_id}/{unique_id}/...
+        # After stripping /outputs/{type}/,
+        # the path is just {workspace_id}/{unique_id}/...
+        path_parts = data_file_path.split("/")
+        if len(path_parts) >= 2:
+            # First part should be workspace_id, second should be unique_id
+            potential_workspace_id = path_parts[0]
+            potential_unique_id = path_parts[1]
+            # Validate workspace_id looks like a number
+            if potential_workspace_id.isdigit():
+                workspace_id = potential_workspace_id
+                unique_id = potential_unique_id
 
     # Also check query params for workspace_id and unique_id
     query_params = dict(req.query_params)

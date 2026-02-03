@@ -219,19 +219,40 @@ async def public_reproduce_experiment(
         raise HTTPException(status_code=404)
 
     # Ensure experiment is available on local EBS (download from S3 if needed)
+    # Also try to sync if status is pending/error - the local data might be incomplete
     experiment_path = os.path.join(DIRPATH.OUTPUT_DIR, workspace_id, unique_id)
-    if not os.path.exists(experiment_path):
-        s3_bucket = os.environ.get("S3_DEFAULT_BUCKET_NAME")
+    needs_sync = not os.path.exists(experiment_path)
+    if not needs_sync and hasattr(record, "local_sync_status"):
+        # Also sync if status indicates data might be incomplete
+        needs_sync = record.local_sync_status in [
+            LocalSyncStatus.pending.value,
+            LocalSyncStatus.error.value,
+        ]
+
+    if needs_sync:
+        # Get owner's bucket from workspace
+        workspace = (
+            db.query(models.Workspace)
+            .filter(models.Workspace.id == int(workspace_id))
+            .first()
+        )
+        owner_bucket = None
+        if workspace and workspace.user:
+            owner_bucket = getattr(workspace.user, "remote_bucket_name", None)
+        s3_bucket = owner_bucket or os.environ.get("S3_DEFAULT_BUCKET_NAME")
+
         if s3_bucket:
             logger.info(
-                f"Downloading published experiment {workspace_id}/{unique_id} from S3"
+                f"Downloading published experiment {workspace_id}/{unique_id} "
+                f"from S3 bucket {s3_bucket}"
             )
             s3_controller = S3StorageController(s3_bucket)
             available = await s3_controller.download_experiment(workspace_id, unique_id)
 
             if not available:
                 logger.error(
-                    f"Failed to download experiment {workspace_id}/{unique_id} from S3"
+                    f"Failed to download experiment {workspace_id}/{unique_id} "
+                    f"from S3 bucket {s3_bucket}"
                 )
                 return JSONResponse(
                     status_code=503,
@@ -242,44 +263,34 @@ async def public_reproduce_experiment(
                     },
                 )
 
-    # Check local sync status
-    if hasattr(record, "local_sync_status"):
-        if record.local_sync_status == LocalSyncStatus.pending.value:
-            # Experiment is published but not yet synced to this instance
-            logger.info(
-                f"Experiment {workspace_id}/{unique_id} is pending sync, "
-                f"returning 202"
-            )
-            return JSONResponse(
-                status_code=202,
-                content={
-                    "status": "pending_sync",
-                    "message": (
-                        "Publishing in progress, check back in a few minutes. "
-                        "Experiments are typically available within 5 minutes."
-                    ),
-                    "retry_after": 300,  # Suggest retry after 5 minutes
-                },
-                headers={"Retry-After": "300"},
-            )
-
-        elif record.local_sync_status == LocalSyncStatus.error.value:
-            # Sync failed, return error
-            logger.error(f"Experiment {workspace_id}/{unique_id} has sync error")
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "status": "sync_error",
-                    "message": "Experiment sync failed, please try again later",
-                },
-            )
-
-    # Validate experiment is displayable (not corrupted)
+    # Validate experiment is displayable (checks if required files exist locally)
+    # This should be done BEFORE checking sync status, because on-demand download
+    # may have just succeeded
     display_validation = PublishValidator.validate_for_display(
         workspace_id=workspace_id,
         unique_id=unique_id,
     )
     if not display_validation.is_displayable:
+        # Data is not available locally - check if we should return pending or error
+        if hasattr(record, "local_sync_status"):
+            if record.local_sync_status == LocalSyncStatus.pending.value:
+                logger.info(
+                    f"Experiment {workspace_id}/{unique_id} is pending sync "
+                    f"and not yet available locally"
+                )
+                return JSONResponse(
+                    status_code=202,
+                    content={
+                        "status": "pending_sync",
+                        "message": (
+                            "Publishing in progress, check back in a few minutes. "
+                            "Experiments are typically available within 5 minutes."
+                        ),
+                        "retry_after": 300,
+                    },
+                    headers={"Retry-After": "300"},
+                )
+        # For error status or no status, return data error
         logger.error(
             f"Experiment {workspace_id}/{unique_id} is not displayable: "
             f"{display_validation.reason}"
@@ -293,7 +304,17 @@ async def public_reproduce_experiment(
             },
         )
 
-    # Data is synced and available locally
+    # Data is valid and available locally - update sync status if needed
+    if hasattr(record, "local_sync_status"):
+        if record.local_sync_status != LocalSyncStatus.synced.value:
+            logger.info(
+                f"Experiment {workspace_id}/{unique_id} data is available, "
+                f"updating sync status from '{record.local_sync_status}' to 'synced'"
+            )
+            record.local_sync_status = LocalSyncStatus.synced.value
+            db.add(record)
+            db.commit()
+
     return await reproduce_experiment(workspace_id, unique_id)
 
 
