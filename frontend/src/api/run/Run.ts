@@ -90,6 +90,12 @@ export type RunResultDTO = {
   }
 }
 
+// Response wrapper from poll endpoint - includes sync status for S3 upload tracking
+export type PollRunResultDTO = {
+  nodeResults: RunResultDTO
+  syncStatus?: string | null // "processing", "success", "error", or null
+}
+
 export type OutputPathsDTO = {
   [outputKey: string]: {
     path: string
@@ -103,7 +109,7 @@ export async function runResult(data: {
   workspaceId: number
   uid: string
   pendingNodeIdList: string[]
-}): Promise<RunResultDTO> {
+}): Promise<PollRunResultDTO> {
   const { workspaceId, uid, pendingNodeIdList } = data
   const response = await axios.post(
     `${BASE_URL}/run/result/${workspaceId}/${uid}`,

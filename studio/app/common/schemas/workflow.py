@@ -4,7 +4,7 @@ from typing import Dict, Optional
 from psutil import Process
 
 from studio.app.common.core.experiment.experiment import ExptFunction
-from studio.app.common.core.workflow.workflow import Edge, Node
+from studio.app.common.core.workflow.workflow import Edge, Message, Node
 
 
 @dataclass
@@ -57,3 +57,11 @@ class WorkflowProcessInfo:
 class WorkflowErrorInfo:
     has_error: bool
     error_log: str
+
+
+@dataclass
+class PollRunResultResponse:
+    """Response wrapper for poll run result with sync status for S3 upload."""
+
+    nodeResults: Dict[str, Message]
+    syncStatus: Optional[str] = None  # "processing", "success", "error", or None
