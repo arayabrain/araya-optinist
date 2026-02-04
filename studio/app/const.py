@@ -69,3 +69,21 @@ class MetadataCacheFile(StrEnum):
     IMAGE_SHAPE = ".image_shape.json"
     HDF5_STRUCTURE = ".hdf5_structure.json"
     MAT_STRUCTURE = ".mat_structure.json"
+
+
+# Map file extensions to display labels for placeholder thumbnails
+EXTENSION_LABELS = {
+    # HDF5 formats
+    ".hdf5": "HDF5",
+    ".h5": "HDF5",
+    ".nwb": "NWB",
+    # MATLAB
+    ".mat": "MATLAB",
+    # Microscope formats
+    ".nd2": "Nikon ND2",
+    ".oir": "Olympus OIR",
+    ".isxd": "Inscopix ISXD",
+    ".thor.zip": "ThorLabs",
+    # CSV
+    ".csv": "CSV",
+}

@@ -439,14 +439,24 @@ class DataviewService:
         """
 
         # Make input data (image) thumbnails path (from WorkflowConfig)
+        # Check all input node types, not just IMAGE
         image_url = None
         workflow_config = (
             workflow_config_
             if workflow_config_
             else WorkflowConfigReader.read(workspace_id, unique_id)
         )
+        input_node_types = [
+            NodeType.IMAGE,
+            NodeType.HDF5,
+            NodeType.MATLAB,
+            NodeType.MICROSCOPE,
+            NodeType.CSV,
+            NodeType.FLUO,
+            NodeType.BEHAVIOR,
+        ]
         for _, node in workflow_config.nodeDict.items():
-            if node.type == NodeType.IMAGE:
+            if node.type in input_node_types and node.data.path:
                 image_url = normalize_output_path(node.data.path[0])
                 break
 
@@ -478,17 +488,21 @@ class DataviewService:
         """
         Generate PNG thumbnails for DataView.
 
-        Creates small PNG images from input TIFF and ROI data for fast loading
-        in DataView. These are ~50-100KB vs full TIFFs which can be 100MB+.
+        Creates small PNG images from input files and ROI data for fast loading
+        in DataView. These are ~50-100KB vs full data files which can be 100MB+.
+
+        For TIFF files: renders first frame as grayscale image
+        For other formats (HDF5, MAT, microscope, etc.): generates placeholder
+        with file type label
 
         Stores in: {output_dir}/{workspace_id}/{unique_id}/thumbnails/
-        - input_thumb.png (first frame of input TIFF)
+        - input_thumb.png (first frame of input TIFF or placeholder)
         - roi_thumb.png (rendered ROI overlay)
 
         Args:
             workspace_id: Workspace identifier
             unique_id: Experiment unique identifier
-            image_path: Path to input TIFF file (optional)
+            image_path: Path to input file (TIFF, HDF5, MAT, etc.) (optional)
             roi_path: Path to cell_roi.json file (optional)
 
         Returns:
@@ -505,22 +519,40 @@ class DataviewService:
         input_thumb_path = None
         roi_thumb_path = None
 
-        # Generate input thumbnail from TIFF
+        # Generate input thumbnail
         if image_path:
             abs_image_path = cls._resolve_image_path(workspace_id, image_path)
-            if abs_image_path and os.path.exists(abs_image_path):
-                try:
-                    create_directory(thumb_dir)
-                    input_thumb_path = join_filepath(
-                        [thumb_dir, ThumbnailType.INPUT.filename]
+            try:
+                create_directory(thumb_dir)
+                input_thumb_path = join_filepath(
+                    [thumb_dir, ThumbnailType.INPUT.filename]
+                )
+
+                # Check if it's a TIFF file that we can render
+                if ThumbnailGenerator.can_generate_tiff_thumbnail(image_path):
+                    if abs_image_path and os.path.exists(abs_image_path):
+                        ThumbnailGenerator.generate_tiff_thumbnail(
+                            abs_image_path, input_thumb_path
+                        )
+                        logger.info(f"Generated TIFF thumbnail: {input_thumb_path}")
+                    else:
+                        # TIFF file not found locally, generate placeholder
+                        ThumbnailGenerator.generate_placeholder_thumbnail(
+                            input_thumb_path, file_path=image_path
+                        )
+                        logger.info(
+                            f"Generated placeholder thumbnail (TIFF not found): "
+                            f"{input_thumb_path}"
+                        )
+                else:
+                    # Non-TIFF file (HDF5, MAT, microscope, etc.) - generate placeholder
+                    ThumbnailGenerator.generate_placeholder_thumbnail(
+                        input_thumb_path, file_path=image_path
                     )
-                    ThumbnailGenerator.generate_tiff_thumbnail(
-                        abs_image_path, input_thumb_path
-                    )
-                    logger.info(f"Generated input thumbnail: {input_thumb_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to generate input thumbnail: {e}")
-                    input_thumb_path = None
+                    logger.info(f"Generated placeholder thumbnail: {input_thumb_path}")
+            except Exception as e:
+                logger.warning(f"Failed to generate input thumbnail: {e}")
+                input_thumb_path = None
 
         # Generate ROI thumbnail from cell_roi.json
         if roi_path:
