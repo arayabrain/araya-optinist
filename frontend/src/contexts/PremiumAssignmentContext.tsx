@@ -286,19 +286,19 @@ export const PremiumAssignmentProvider: React.FC<{
    * Auto-release on logout
    */
   const autoReleaseOnLogout = useCallback(async (): Promise<unknown> => {
-    // Check if we have an active assignment by making a fresh status call
-    try {
-      const currentStatus = await getPremiumStatus()
-      if (currentStatus?.assignment) {
-        return await release()
-      }
-      return null
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.warn("Failed to check status before logout release:", error)
+    // Check local state - if no assignment recorded, skip the API call
+    if (!state.assignmentResult?.assigned) {
       return null
     }
-  }, [release])
+
+    try {
+      return await release()
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn("Failed to release premium instance on logout:", error)
+      return null
+    }
+  }, [release, state.assignmentResult?.assigned])
 
   // Inactivity monitoring for premium users
   useEffect(() => {
