@@ -25,6 +25,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.db.database import session_scope
+from studio.app.const import ThumbnailConst
 from studio.app.dir_path import DIRPATH
 
 # NOTE: cloud_utils imports are kept inside functions to avoid circular imports:
@@ -1066,8 +1067,6 @@ class S3StorageController(BaseRemoteStorageController):
         Returns:
             True if upload successful, False otherwise
         """
-        from studio.app.const import ThumbnailType
-
         if not os.path.exists(thumbnail_path):
             logger.warning(f"Thumbnail file not found: {thumbnail_path}")
             return False
@@ -1077,7 +1076,7 @@ class S3StorageController(BaseRemoteStorageController):
         s3_path = join_filepath(
             [
                 self.make_s3_output_prefix(workspace_id, unique_id).rstrip("/"),
-                ThumbnailType.DIRNAME,
+                ThumbnailConst.DIRNAME,
                 filename,
             ]
         )

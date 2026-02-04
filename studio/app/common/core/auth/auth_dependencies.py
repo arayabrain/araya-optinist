@@ -36,8 +36,9 @@ from studio.app.common.models.subscription import (
 )
 from studio.app.common.schemas.users import User
 
-# Request-scoped cache key for user context
+# Request-scoped cache keys
 _REQUEST_USER_CACHE_KEY = "_cached_user_context"
+_REQUEST_OUTPUTS_BUCKET_CACHE_KEY = "_cached_outputs_bucket_name"
 
 logger = AppLogger.get_logger()
 
@@ -368,6 +369,30 @@ async def get_outputs_remote_bucket_name(
 
     Security: For authenticated users, verifies they have access to the workspace
     (owner, shared user, or published data) before returning the owner's bucket.
+
+    Uses request-scoped caching to avoid redundant database queries within
+    the same request.
+    """
+    # Check for cached bucket name in request state (request-scoped cache)
+    if hasattr(req.state, _REQUEST_OUTPUTS_BUCKET_CACHE_KEY):
+        return getattr(req.state, _REQUEST_OUTPUTS_BUCKET_CACHE_KEY)
+
+    bucket_name = await _resolve_outputs_remote_bucket_name(req, current_user, db)
+
+    # Cache in request state for subsequent calls within this request
+    setattr(req.state, _REQUEST_OUTPUTS_BUCKET_CACHE_KEY, bucket_name)
+
+    return bucket_name
+
+
+async def _resolve_outputs_remote_bucket_name(
+    req: Request,
+    current_user: Optional[User],
+    db: Session,
+) -> str:
+    """
+    Internal function to resolve the bucket name for outputs requests.
+    Called by get_outputs_remote_bucket_name after cache check.
     """
     from sqlmodel import or_
 

@@ -182,7 +182,6 @@ class WorkflowResult:
         if is_all_nodes_finished:
             # Operate remote storage data.
             if RemoteStorageController.is_available():
-                # upload latest EXPERIMENT_YML
                 remote_bucket_name = RemoteSyncStatusFileUtil.get_remote_bucket_name(
                     self.workspace_id, self.unique_id
                 )
@@ -191,10 +190,32 @@ class WorkflowResult:
                     self.workspace_id,
                     self.unique_id,
                 ) as remote_storage_controller:
+                    # Upload experiment.yaml and all JSON visualization files
+                    # JSON files are created during observation by save_json()
+                    # and need to be synced to S3 for remote viewing
+                    target_files = [DIRPATH.EXPERIMENT_YML]
+
+                    # Find all JSON files in function directories
+                    # Use recursive glob to include nested files like:
+                    # - {function_id}/*.json (ROI, heatmap, etc.)
+                    # - {function_id}/timeseries/*.json (fluorescence traces)
+                    # - {function_id}/csv/*.json (CSV data)
+                    json_files = glob(
+                        join_filepath([self.workflow_dirpath, "**", "*.json"]),
+                        recursive=True,
+                    )
+                    for json_file in json_files:
+                        # Get relative path from experiment directory
+                        rel_path = os.path.relpath(json_file, self.workflow_dirpath)
+                        target_files.append(rel_path)
+
+                    logger.info(
+                        f"Uploading observation files to S3: {len(target_files)} files"
+                    )
                     await remote_storage_controller.upload_experiment(
                         self.workspace_id,
                         self.unique_id,
-                        [DIRPATH.EXPERIMENT_YML],
+                        target_files,
                     )
 
         return node_results

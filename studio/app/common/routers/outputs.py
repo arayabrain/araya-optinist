@@ -28,7 +28,12 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
 )
 from studio.app.common.schemas.outputs import JsonTimeSeriesData, OutputData
-from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT, ThumbnailType
+from studio.app.const import (
+    ACCEPT_FILE_EXT,
+    ORIGINAL_DATA_EXT,
+    ThumbnailConst,
+    ThumbnailType,
+)
 from studio.app.dir_path import DIRPATH
 
 router = APIRouter(prefix="/outputs", tags=["outputs"])
@@ -55,7 +60,7 @@ def _get_thumbnail_png_path(
             DIRPATH.OUTPUT_DIR,
             workspace_id,
             unique_id,
-            ThumbnailType.DIRNAME,
+            ThumbnailConst.DIRNAME,
             thumb_type.filename,
         ]
     )

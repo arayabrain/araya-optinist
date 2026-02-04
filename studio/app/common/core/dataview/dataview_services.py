@@ -30,7 +30,7 @@ from studio.app.common.schemas.dataview import (
     PublishValidationResult,
 )
 from studio.app.common.schemas.workflow import WorkflowConfig
-from studio.app.const import ThumbnailType
+from studio.app.const import ThumbnailConst, ThumbnailType
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -499,7 +499,7 @@ class DataviewService:
         )
 
         thumb_dir = join_filepath(
-            [DIRPATH.OUTPUT_DIR, workspace_id, unique_id, ThumbnailType.DIRNAME]
+            [DIRPATH.OUTPUT_DIR, workspace_id, unique_id, ThumbnailConst.DIRNAME]
         )
 
         input_thumb_path = None

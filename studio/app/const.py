@@ -56,9 +56,12 @@ class ThumbnailType(StrEnum):
         return f"{self.value}_thumb.png"
 
 
-# ThumbnailType-related constants (can't be class attrs due to StrEnum behavior)
-ThumbnailType.DIRNAME = "thumbnails"
-ThumbnailType.FILE_PATTERNS = ("_thumb.png",)
+@dataclass(frozen=True)
+class ThumbnailConst:
+    """Constants related to thumbnail storage and file patterns."""
+
+    DIRNAME: str = "thumbnails"
+    FILE_PATTERNS: tuple = ("_thumb.png",)
 
 
 # Metadata cache filenames for input data

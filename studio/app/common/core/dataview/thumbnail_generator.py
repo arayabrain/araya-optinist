@@ -11,9 +11,9 @@ import tifffile
 class ThumbnailGenerator:
     """Utility class for generating PNG thumbnails from various sources."""
 
-    @staticmethod
+    @classmethod
     def generate_tiff_thumbnail(
-        tiff_path: str, output_path: str, max_size: int = 512
+        cls, tiff_path: str, output_path: str, max_size: int = 512
     ) -> None:
         """
         Generate a PNG thumbnail from the first frame of a TIFF file.
@@ -54,9 +54,9 @@ class ThumbnailGenerator:
         # Save as PNG
         imageio.imwrite(output_path, img_normalized)
 
-    @staticmethod
+    @classmethod
     def generate_roi_thumbnail(
-        roi_json_path: str, output_path: str, size: Tuple[int, int] = (512, 512)
+        cls, roi_json_path: str, output_path: str, size: Tuple[int, int] = (512, 512)
     ) -> None:
         """
         Generate a PNG thumbnail from ROI data (cell_roi.json).
@@ -130,7 +130,7 @@ class ThumbnailGenerator:
                     scaled_x[(i + 1) % len(scaled_x)],
                     scaled_y[(i + 1) % len(scaled_y)],
                 )
-                ThumbnailGenerator._draw_line(img, x1, y1, x2, y2, color)
+                cls._draw_line(img, x1, y1, x2, y2, color)
 
         imageio.imwrite(output_path, img)
 
