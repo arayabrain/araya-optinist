@@ -1,7 +1,6 @@
 """Thumbnail generation utilities for DataView."""
 
 import json
-from typing import Tuple
 
 import imageio.v3 as imageio
 import numpy as np
@@ -56,113 +55,120 @@ class ThumbnailGenerator:
 
     @classmethod
     def generate_roi_thumbnail(
-        cls, roi_json_path: str, output_path: str, size: Tuple[int, int] = (512, 512)
+        cls, roi_json_path: str, output_path: str, max_size: int = 512
     ) -> None:
         """
         Generate a PNG thumbnail from ROI data (cell_roi.json).
 
-        Creates a colored image showing ROI outlines/masks.
+        Creates a colored image showing ROI masks where each ROI gets a distinct color.
+
+        The cell_roi.json format is a pandas DataFrame in "split" orientation:
+        {"columns": [...], "index": [...], "data": [[[...pixel values...]]]}
+
+        The data contains a 2D mask where pixel values indicate ROI membership
+        (0 = background, 1+ = ROI index).
 
         Args:
             roi_json_path: Path to cell_roi.json file
             output_path: Path to save PNG thumbnail
-            size: Output image size (width, height)
+            max_size: Maximum dimension for thumbnail (default 512px)
         """
         with open(roi_json_path) as f:
             roi_data = json.load(f)
 
-        # Initialize blank image (RGB)
-        img = np.zeros((size[1], size[0], 3), dtype=np.uint8)
-
-        # Get all ROIs and determine bounding box
-        all_x = []
-        all_y = []
-        rois = []
-
-        for key, value in roi_data.items():
-            if isinstance(value, dict) and "x" in value and "y" in value:
-                x_coords = value["x"]
-                y_coords = value["y"]
-                if x_coords and y_coords:
-                    all_x.extend(x_coords)
-                    all_y.extend(y_coords)
-                    rois.append((x_coords, y_coords))
-
-        if not rois:
-            # No ROIs found, save blank image
+        # Extract the mask array from pandas split format
+        # Format: {"columns": [...], "index": [...], "data": [[[row0], [row1], ...]]}
+        if "data" not in roi_data:
+            # Fallback: white image (indicates no data)
+            img = np.full((max_size, max_size, 3), 255, dtype=np.uint8)
             imageio.imwrite(output_path, img)
             return
 
-        # Calculate scaling to fit ROIs in output image
-        min_x, max_x = min(all_x), max(all_x)
-        min_y, max_y = min(all_y), max(all_y)
-        roi_width = max_x - min_x
-        roi_height = max_y - min_y
-
-        if roi_width == 0 or roi_height == 0:
+        # The data is nested: outer list is rows of the DataFrame,
+        # each row contains the image data
+        data = roi_data["data"]
+        if not data or not data[0]:
+            img = np.full((max_size, max_size, 3), 255, dtype=np.uint8)
             imageio.imwrite(output_path, img)
             return
 
-        # Add padding (10%)
-        padding = 0.1
-        scale_x = size[0] * (1 - 2 * padding) / roi_width
-        scale_y = size[1] * (1 - 2 * padding) / roi_height
-        scale = min(scale_x, scale_y)
+        # Convert to numpy array - data[0] is the first row containing the 2D mask
+        mask = np.array(data[0], dtype=np.float32)
 
-        offset_x = size[0] * padding - min_x * scale
-        offset_y = size[1] * padding - min_y * scale
+        # Handle case where mask might be 1D (flattened) or have extra dimensions
+        if mask.ndim == 1:
+            # Try to infer square shape
+            side = int(np.sqrt(len(mask)))
+            if side * side == len(mask):
+                mask = mask.reshape(side, side)
+            else:
+                img = np.full((max_size, max_size, 3), 255, dtype=np.uint8)
+                imageio.imwrite(output_path, img)
+                return
 
-        # Generate colors for each ROI
-        np.random.seed(42)  # Consistent colors
-        colors = np.random.randint(100, 255, size=(len(rois), 3), dtype=np.uint8)
+        # Get unique ROI values (excluding 0 which is background)
+        unique_vals = np.unique(mask)
+        unique_vals = unique_vals[unique_vals > 0]
 
-        # Draw each ROI
-        for idx, (x_coords, y_coords) in enumerate(rois):
-            color = tuple(int(c) for c in colors[idx])
-            # Scale and offset coordinates
-            scaled_x = [int(x * scale + offset_x) for x in x_coords]
-            scaled_y = [int(y * scale + offset_y) for y in y_coords]
+        if len(unique_vals) == 0:
+            # No ROIs found, save white image
+            img = np.full((max_size, max_size, 3), 255, dtype=np.uint8)
+            imageio.imwrite(output_path, img)
+            return
 
-            # Draw polygon outline
-            for i in range(len(scaled_x)):
-                x1, y1 = scaled_x[i], scaled_y[i]
-                x2, y2 = (
-                    scaled_x[(i + 1) % len(scaled_x)],
-                    scaled_y[(i + 1) % len(scaled_y)],
-                )
-                cls._draw_line(img, x1, y1, x2, y2, color)
+        # Create RGB image with white background
+        h, w = mask.shape
+        img = np.full((h, w, 3), 255, dtype=np.uint8)
+
+        # Generate distinct colors for each ROI using HSV color space
+        np.random.seed(42)  # Consistent colors across runs
+        n_rois = len(unique_vals)
+
+        # Use golden ratio for hue distribution to get well-separated colors
+        hues = np.linspace(0, 1, n_rois, endpoint=False)
+        np.random.shuffle(hues)
+
+        for i, val in enumerate(unique_vals):
+            # Convert HSV to RGB (H: 0-1, S: 0.7-1.0, V: 0.7-1.0)
+            hue = hues[i % len(hues)]
+            saturation = 0.8 + np.random.random() * 0.2
+            value = 0.7 + np.random.random() * 0.3
+
+            # HSV to RGB conversion
+            c = value * saturation
+            x = c * (1 - abs((hue * 6) % 2 - 1))
+            m = value - c
+
+            if hue < 1 / 6:
+                r, g, b = c, x, 0
+            elif hue < 2 / 6:
+                r, g, b = x, c, 0
+            elif hue < 3 / 6:
+                r, g, b = 0, c, x
+            elif hue < 4 / 6:
+                r, g, b = 0, x, c
+            elif hue < 5 / 6:
+                r, g, b = x, 0, c
+            else:
+                r, g, b = c, 0, x
+
+            color = (
+                int((r + m) * 255),
+                int((g + m) * 255),
+                int((b + m) * 255),
+            )
+
+            # Fill ROI pixels with this color
+            roi_mask = mask == val
+            img[roi_mask] = color
+
+        # Resize if larger than max_size while preserving aspect ratio
+        if max(h, w) > max_size:
+            scale = max_size / max(h, w)
+            new_h, new_w = int(h * scale), int(w * scale)
+            # Simple resize using slicing (nearest neighbor)
+            y_indices = (np.arange(new_h) * h / new_h).astype(int)
+            x_indices = (np.arange(new_w) * w / new_w).astype(int)
+            img = img[np.ix_(y_indices, x_indices)]
 
         imageio.imwrite(output_path, img)
-
-    @staticmethod
-    def _draw_line(
-        img: np.ndarray,
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
-        color: Tuple[int, int, int],
-    ) -> None:
-        """Draw a line on an image using Bresenham's algorithm."""
-        h, w = img.shape[:2]
-
-        dx = abs(x2 - x1)
-        dy = abs(y2 - y1)
-        sx = 1 if x1 < x2 else -1
-        sy = 1 if y1 < y2 else -1
-        err = dx - dy
-
-        while True:
-            if 0 <= x1 < w and 0 <= y1 < h:
-                img[y1, x1] = color
-
-            if x1 == x2 and y1 == y2:
-                break
-
-            e2 = 2 * err
-            if e2 > -dy:
-                err -= dy
-                x1 += sx
-            if e2 < dx:
-                err += dx
-                y1 += sy
