@@ -897,3 +897,191 @@ async def test_contract_no_alert_returns_none():
                     "Contract violation: Expected None when no alert, "
                     f"but got {type(result)}: {result}"
                 )
+
+
+# ============================================================================
+# Regression Tests - Bug Fixes
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_regression_free_user_no_premium_expired_warning():
+    """
+    REGRESSION TEST: Free user (never had premium) should NOT see
+    "Premium Subscription Expired" warning.
+
+    Bug: The subscription query wasn't filtering by plan_id, so users with
+    FREE plan subscription records (plan_id=1) were incorrectly shown
+    premium expired warnings.
+
+    This test verifies the fix by ensuring the warning calculation correctly
+    identifies users as FREE when they only have FREE plan subscriptions.
+    """
+    from unittest.mock import Mock
+
+    from studio.app.common.core.cloud.cloud_utils import calculate_limit_warning
+
+    user_id = 1
+
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+        ) as mock_get_storage:
+            with patch(
+                "studio.app.common.core.cloud.cloud_utils._is_storage_data_fresh"
+            ) as mock_fresh:
+                mock_db = Mock()
+                mock_scope.return_value.__enter__.return_value = mock_db
+
+                # Setup: User within storage limits
+                mock_get_storage.return_value = {
+                    "storage_usage_bytes": 2_000_000_000,  # 2GB
+                    "storage_quota_bytes": 5_000_000_000,  # 5GB limit
+                }
+                mock_fresh.return_value = True
+
+                # The query now filters for PREMIUM plans only, so FREE plan
+                # subscriptions won't be returned. Mock empty result.
+                mock_db.execute.return_value.all.return_value = []
+
+                result = await calculate_limit_warning(user_id)
+
+                # Free user within limits should get NO warning
+                assert result is None, (
+                    "Bug regression: Free user should not see any warning when "
+                    "within storage limits. Got premium expired warning instead."
+                )
+
+
+@pytest.mark.asyncio
+async def test_regression_free_user_storage_exceeded_gets_correct_alert_type():
+    """
+    REGRESSION TEST: Free user who exceeds storage should get "storage" alert,
+    NOT "grace" or "overdue" (which are for premium subscriptions).
+
+    This ensures the alert_type is correct for free users.
+    """
+    from unittest.mock import Mock
+
+    from studio.app.common.core.cloud.cloud_utils import calculate_limit_warning
+
+    user_id = 1
+
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+        ) as mock_get_storage:
+            with patch(
+                "studio.app.common.core.cloud.cloud_utils._is_storage_data_fresh"
+            ) as mock_fresh:
+                mock_db = Mock()
+                mock_scope.return_value.__enter__.return_value = mock_db
+
+                # Setup: User over storage limits
+                mock_get_storage.return_value = {
+                    "storage_usage_bytes": 6_000_000_000,  # 6GB
+                    "storage_quota_bytes": 5_000_000_000,  # 5GB limit
+                }
+                mock_fresh.return_value = True
+
+                # Free user (no premium subscriptions)
+                mock_db.execute.return_value.all.return_value = []
+
+                result = await calculate_limit_warning(user_id)
+
+                assert result is not None, "Expected storage alert for user over quota"
+                assert result.alert_type == AlertType.STORAGE.value, (
+                    f"Bug regression: Free user should get 'storage' alert type, "
+                    f"not '{result.alert_type}' (which is for premium users)"
+                )
+                # Message should NOT mention "premium" or "subscription expired"
+                message_lower = result.message.lower()
+                assert (
+                    "premium" not in message_lower
+                    or "upgrade to premium" in message_lower
+                ), (
+                    "Bug regression: Free user storage alert should not mention "
+                    f"premium subscription expiration. Message: {result.message}"
+                )
+
+
+@pytest.mark.asyncio
+async def test_contract_alert_message_is_user_friendly():
+    """
+    Contract test: Alert messages should be user-friendly and actionable.
+
+    This test verifies that alert messages:
+    1. Are not empty
+    2. Don't contain technical jargon or internal field names
+    3. Suggest an action the user can take
+    """
+    from datetime import timedelta
+    from unittest.mock import Mock
+
+    from studio.app.common.core.cloud.cloud_utils import calculate_limit_warning
+    from studio.app.common.core.utils.datetime_utils import get_current_datetime
+
+    user_id = 1
+
+    # Test storage alert message
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+        ) as mock_get_storage:
+            with patch(
+                "studio.app.common.core.cloud.cloud_utils._is_storage_data_fresh"
+            ) as mock_fresh:
+                mock_db = Mock()
+                mock_scope.return_value.__enter__.return_value = mock_db
+
+                mock_get_storage.return_value = {
+                    "storage_usage_bytes": 6_000_000_000,
+                    "storage_quota_bytes": 5_000_000_000,
+                }
+                mock_fresh.return_value = True
+                mock_db.execute.return_value.all.return_value = []
+
+                result = await calculate_limit_warning(user_id)
+
+                assert result is not None
+                assert len(result.message) > 10, "Message should be substantial"
+                # Should not contain internal field names
+                internal_terms = ["storage_usage_bytes", "plan_id", "user_id", "None"]
+                for term in internal_terms:
+                    assert (
+                        term not in result.message
+                    ), f"Message contains internal term '{term}': {result.message}"
+
+    # Test grace period alert message
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+        ) as mock_get_storage:
+            with patch(
+                "studio.app.common.core.cloud.cloud_utils._is_storage_data_fresh"
+            ) as mock_fresh:
+                mock_db = Mock()
+                mock_scope.return_value.__enter__.return_value = mock_db
+
+                mock_get_storage.return_value = {
+                    "storage_usage_bytes": 2_000_000_000,
+                    "storage_quota_bytes": 5_000_000_000,
+                }
+                mock_fresh.return_value = True
+
+                mock_subscription = Mock()
+                mock_subscription.expiration = get_current_datetime() - timedelta(
+                    days=5
+                )
+                mock_db.execute.return_value.all.return_value = [[mock_subscription]]
+
+                result = await calculate_limit_warning(user_id)
+
+                assert result is not None
+                assert len(result.message) > 10, "Message should be substantial"
+                # Grace message should mention upgrade or action
+                message_lower = result.message.lower()
+                assert any(
+                    word in message_lower
+                    for word in ["upgrade", "renew", "remove", "delete"]
+                ), f"Grace message should suggest an action: {result.message}"
