@@ -30,14 +30,17 @@ const initialState: User = {
   listUserSearch: undefined,
   listUser: undefined,
   loading: false,
+  logoutGeneration: 0,
 }
 
 export const userSlice = createSlice({
   name: USER_SLICE_NAME,
   initialState,
   reducers: {
-    logout: () => {
+    logout: (state) => {
       // Set logout flag to prevent token refresh during logout
+      // Note: Flag is NOT reset here - must call setLoggingOut(false)
+      // after navigation completes
       setLoggingOut(true)
 
       // Remove tokens synchronously first - this is the critical step
@@ -52,11 +55,15 @@ export const userSlice = createSlice({
       // Clear premium routing information
       routingService.clearRoutingInfo()
 
-      // Reset logout flag immediately after cleanup
-      // This ensures any pending checks see the cleared state
-      setLoggingOut(false)
+      // NOTE: setLoggingOut(false) is intentionally NOT called here
+      // The caller (Profile.tsx) must call it after navigation completes
+      // to prevent stale API calls from attempting refresh
 
-      return initialState
+      // Increment logoutGeneration to help components detect stale closures
+      return {
+        ...initialState,
+        logoutGeneration: state.logoutGeneration + 1,
+      }
     },
     resetUserSearch: (state) => {
       state.listUserSearch = []

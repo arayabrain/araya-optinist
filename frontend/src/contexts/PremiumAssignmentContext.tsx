@@ -339,18 +339,41 @@ export const PremiumAssignmentProvider: React.FC<{
    */
   const autoReleaseOnLogout = useCallback(async (): Promise<unknown> => {
     // Check if we have an active assignment by making a fresh status call
+    let hasAssignment = false
+
     try {
       const currentStatus = await getPremiumStatus()
-      if (currentStatus?.assignment) {
-        return await release()
-      }
-      return null
+      hasAssignment = !!currentStatus?.assignment
     } catch (error) {
       // eslint-disable-next-line no-console
       console.warn("Failed to check status before logout release:", error)
-      return null
+      // Assume we might have an assignment if status check fails
+      // It's better to attempt release unnecessarily than to leave orphaned instance
+      hasAssignment = true
     }
-  }, [release])
+
+    if (hasAssignment) {
+      try {
+        return await release()
+      } catch (releaseError) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          "Primary release failed, using beacon fallback:",
+          releaseError,
+        )
+        // Use sendBeacon as fallback for reliability (Case 9 fix)
+        if (currentUser?.uid) {
+          const beaconData = JSON.stringify({ user_uid: currentUser.uid })
+          navigator.sendBeacon(
+            "/api/users/me/premium/release-beacon",
+            beaconData,
+          )
+        }
+        throw releaseError
+      }
+    }
+    return null
+  }, [release, currentUser])
 
   // Inactivity monitoring for premium users
   useEffect(() => {

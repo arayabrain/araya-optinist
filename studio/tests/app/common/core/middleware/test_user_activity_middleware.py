@@ -339,3 +339,106 @@ class TestBackwardsCompatibility:
         )
 
         assert FreeUserActivityMiddleware is UserActivityMiddleware
+
+
+class TestActivityCacheInvalidation:
+    """Test activity cache invalidation on logout"""
+
+    def test_invalidate_activity_cache_clears_free_cache(self):
+        """invalidate_activity_cache should clear free user cache entry"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _free_activity_cache,
+            _update_cache_after_commit,
+            invalidate_activity_cache,
+        )
+
+        # Set up cache entry
+        _free_activity_cache.clear()
+        _update_cache_after_commit(TEST_USER_ID, TIER_FREE)
+        assert TEST_USER_ID in _free_activity_cache
+
+        # Invalidate
+        invalidate_activity_cache(TEST_USER_ID)
+
+        # Should be cleared
+        assert TEST_USER_ID not in _free_activity_cache
+
+    def test_invalidate_activity_cache_clears_premium_cache(self):
+        """invalidate_activity_cache should clear premium user cache entry"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _premium_activity_cache,
+            _update_cache_after_commit,
+            invalidate_activity_cache,
+        )
+
+        # Set up cache entry
+        _premium_activity_cache.clear()
+        _update_cache_after_commit(TEST_USER_ID, TIER_PREMIUM)
+        assert TEST_USER_ID in _premium_activity_cache
+
+        # Invalidate
+        invalidate_activity_cache(TEST_USER_ID)
+
+        # Should be cleared
+        assert TEST_USER_ID not in _premium_activity_cache
+
+    def test_invalidate_activity_cache_clears_both_caches(self):
+        """invalidate_activity_cache should clear both free and premium caches"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _free_activity_cache,
+            _premium_activity_cache,
+            _update_cache_after_commit,
+            invalidate_activity_cache,
+        )
+
+        # Set up cache entries in both caches
+        _free_activity_cache.clear()
+        _premium_activity_cache.clear()
+        _update_cache_after_commit(TEST_USER_ID, TIER_FREE)
+        _update_cache_after_commit(TEST_USER_ID, TIER_PREMIUM)
+        assert TEST_USER_ID in _free_activity_cache
+        assert TEST_USER_ID in _premium_activity_cache
+
+        # Invalidate
+        invalidate_activity_cache(TEST_USER_ID)
+
+        # Both should be cleared
+        assert TEST_USER_ID not in _free_activity_cache
+        assert TEST_USER_ID not in _premium_activity_cache
+
+    def test_invalidate_nonexistent_user_does_not_raise(self):
+        """invalidate_activity_cache should not raise for nonexistent user"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _free_activity_cache,
+            _premium_activity_cache,
+            invalidate_activity_cache,
+        )
+
+        # Clear caches
+        _free_activity_cache.clear()
+        _premium_activity_cache.clear()
+
+        # Should not raise
+        invalidate_activity_cache(999999)  # Non-existent user ID
+
+    def test_rapid_relogin_gets_fresh_activity(self):
+        """After cache invalidation, re-login should record fresh activity"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _free_activity_cache,
+            _should_update_activity,
+            _update_cache_after_commit,
+            invalidate_activity_cache,
+        )
+
+        # Simulate login and activity
+        _free_activity_cache.clear()
+        _update_cache_after_commit(TEST_USER_ID, TIER_FREE)
+
+        # Should be cached (would skip update)
+        assert _should_update_activity(TEST_USER_ID, TIER_FREE) is False
+
+        # Simulate logout - invalidate cache
+        invalidate_activity_cache(TEST_USER_ID)
+
+        # Simulate re-login - should now record activity
+        assert _should_update_activity(TEST_USER_ID, TIER_FREE) is True

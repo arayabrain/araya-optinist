@@ -10,6 +10,9 @@ from studio.app.common.core.cloud.cloud_utils import (
     get_user_storage_usage,
 )
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.middleware.user_activity_middleware import (
+    invalidate_activity_cache,
+)
 from studio.app.common.core.premium.premium_assignment_service import (
     premium_assignment_service,
 )
@@ -136,6 +139,9 @@ async def release_premium_instance(current_user: User = Depends(get_current_user
     This endpoint should be called on logout for premium users.
     """
     try:
+        # Invalidate activity cache to prevent stale cache on rapid re-login (Case 10)
+        invalidate_activity_cache(current_user.id)
+
         # Call the premium assignment service
         result = await premium_assignment_service.release_premium_user(
             current_user.id, current_user.uid
@@ -216,6 +222,9 @@ async def logout_free_user(
         }
 
     try:
+        # Invalidate activity cache to prevent stale cache on rapid re-login (Case 10)
+        invalidate_activity_cache(current_user.id)
+
         # Get the free user assignment
         statement = select(FreeUserAssignment).where(
             FreeUserAssignment.user_id == current_user.id

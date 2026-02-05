@@ -243,6 +243,22 @@ def invalidate_user_tier_cache(uid: str) -> None:
         _user_tier_cache.pop(uid, None)
 
 
+def invalidate_activity_cache(user_id: int) -> None:
+    """
+    Invalidate the activity cache for a specific user.
+
+    Call this when a user logs out to prevent stale cache entries on rapid re-login.
+    This ensures the first activity after re-login is properly recorded instead of
+    being skipped due to the cache TTL. (Case 10 fix)
+
+    Args:
+        user_id: Database user ID to invalidate
+    """
+    with _cache_lock:
+        _free_activity_cache.pop(user_id, None)
+        _premium_activity_cache.pop(user_id, None)
+
+
 def _should_update_activity(user_id: int, tier: str) -> bool:
     """
     Check if we should update activity for this user (throttling).

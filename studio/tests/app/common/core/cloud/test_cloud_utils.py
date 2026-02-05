@@ -392,7 +392,7 @@ async def test_get_current_user_storage_usage_calculation_fails_fallback():
 @pytest.mark.asyncio
 async def test_calculate_limit_warning_free_user_no_warning():
     """
-    Case 1: Free user, no storage limit exceeded → No warning
+    Free user, no storage limit exceeded → No warning
     """
     user_id = 1
 
@@ -424,7 +424,7 @@ async def test_calculate_limit_warning_free_user_no_warning():
 @pytest.mark.asyncio
 async def test_calculate_limit_warning_free_user_storage_exceeded():
     """
-    Case 2: Free user, storage limit exceeded → Storage warning
+    Free user, storage limit exceeded → Storage warning
     """
     user_id = 1
     excess_bytes = 750_000_000  # 0.75 GB excess
@@ -462,7 +462,7 @@ async def test_calculate_limit_warning_free_user_storage_exceeded():
 @pytest.mark.asyncio
 async def test_calculate_limit_warning_premium_active_storage_exceeded():
     """
-    Case 3: Premium user (active), storage limit exceeded → Storage warning only
+    Premium user (active), storage limit exceeded → Storage warning only
     """
     user_id = 1
 
@@ -502,7 +502,7 @@ async def test_calculate_limit_warning_premium_active_storage_exceeded():
 @pytest.mark.asyncio
 async def test_calculate_limit_warning_premium_warning_storage_ok():
     """
-    Case 4: Premium user in WARNING period, storage OK → Subscription warning only
+    Premium user in WARNING period, storage OK → Subscription warning only
     Note: After grace period expires, user falls back to FREE quota (5GB)
     """
     user_id = 1
@@ -559,7 +559,7 @@ async def test_calculate_limit_warning_premium_warning_storage_ok():
 @pytest.mark.asyncio
 async def test_calculate_limit_warning_premium_warning_storage_exceeded():
     """
-    Case 5: Premium user in WARNING period, storage exceeded → Combined warning
+    Premium user in WARNING period, storage exceeded → Combined warning
     Note: After grace period expires, user falls back to FREE quota (5GB)
     """
     user_id = 1

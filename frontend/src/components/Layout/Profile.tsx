@@ -16,6 +16,7 @@ import IconButton from "@mui/material/IconButton"
 
 import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 import { logout } from "store/slice/User/UserSlice"
+import { setLoggingOut } from "utils/axios"
 
 const Profile: FC = () => {
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null)
@@ -47,6 +48,11 @@ const Profile: FC = () => {
 
     dispatch(logout())
     navigate("/login")
+
+    // Reset isLoggingOut flag after logout and navigation are initiated
+    // The flag protects token removal (in logout reducer) from race conditions
+    // with 401 handlers. By this point tokens are already removed. (Case 7 fix)
+    setLoggingOut(false)
   }
 
   const onClickAccount = () => {

@@ -52,7 +52,7 @@ async def test_should_trigger_full_scan():
     user_id = 123
     current_storage = 1000000000  # 1 GB
 
-    # Test case 1: Delta above 5% threshold
+    # Delta above 5% threshold
     with patch(
         "studio.app.common.core.cloud.cloud_utils.session_scope"
     ) as mock_session:
@@ -72,7 +72,7 @@ async def test_should_trigger_full_scan():
         should_scan = await _should_trigger_full_scan(user_id)
         assert should_scan is True
 
-    # Test case 2: Delta below 5% threshold
+    # Delta below 5% threshold
     with patch(
         "studio.app.common.core.cloud.cloud_utils.session_scope"
     ) as mock_session:
