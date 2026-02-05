@@ -1,5 +1,6 @@
 import { createSlice, isAnyOf, PayloadAction } from "@reduxjs/toolkit"
 
+import { SYNC_STATUS } from "api/run/Run"
 import { publicDataviewReproduceWorkflow } from "store/slice/Dataview/DataviewActions"
 import { convertFunctionsToRunResultDTO } from "store/slice/Experiments/ExperimentsUtils"
 import { clearFlowElements } from "store/slice/FlowElement/FlowElementSlice"
@@ -66,7 +67,7 @@ export const pipelineSlice = createSlice({
           // - "processing" while uploading (keep button disabled)
           // - null/undefined if remote storage is not enabled
           const syncStatus = action.payload.syncStatus
-          const isSyncComplete = syncStatus !== "processing"
+          const isSyncComplete = syncStatus !== SYNC_STATUS.PROCESSING
           if (runResultPendingList.length === 0 && isSyncComplete) {
             // 終了
             state.run.status = RUN_STATUS.FINISHED
