@@ -167,6 +167,16 @@ describe("UserSlice", () => {
       )
     })
 
+    it("should clear localStorage storageAlertDismissed", () => {
+      const state = userSlice.reducer(undefined, { type: "@@INIT" })
+
+      userSlice.reducer(state, logout())
+
+      expect(localStorageMock.removeItem).toHaveBeenCalledWith(
+        "storageAlertDismissed",
+      )
+    })
+
     it("should clear sessionStorage storage-refreshed-on-login", () => {
       const state = userSlice.reducer(undefined, { type: "@@INIT" })
 

@@ -1,9 +1,17 @@
-import { describe, it, expect, beforeEach, jest } from "@jest/globals"
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  afterEach,
+  jest,
+} from "@jest/globals"
 
 import {
   syncActivityAcrossTabs,
   getLastActivityFromAnyTab,
   onActivityFromOtherTab,
+  TabSyncService,
 } from "utils/crossTabSync"
 
 // Note: CrossTabLeaderElection uses timers and is tested separately
@@ -145,5 +153,269 @@ describe("Activity Sync Functions", () => {
 
       unsubscribe()
     })
+  })
+})
+
+// ============================================================================
+// TabSyncService Tests (Cases 54-56)
+// ============================================================================
+
+describe("TabSyncService", () => {
+  let service: TabSyncService
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let mockChannel: any
+
+  beforeEach(() => {
+    mockChannel = {
+      postMessage: jest.fn(),
+      close: jest.fn(),
+      onmessage: null,
+    }
+
+    // Mock BroadcastChannel
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    global.BroadcastChannel = jest.fn(() => mockChannel) as any
+
+    service = new TabSyncService()
+  })
+
+  afterEach(() => {
+    service.destroy()
+  })
+
+  describe("broadcast", () => {
+    it("should post message to channel", () => {
+      service.broadcast({ type: "STORAGE_UPDATED" })
+
+      expect(mockChannel.postMessage).toHaveBeenCalledWith({
+        type: "STORAGE_UPDATED",
+      })
+    })
+
+    it("should include payload when provided", () => {
+      service.broadcast({
+        type: "ALERT_DISMISSED",
+        payload: { alertId: "test-alert" },
+      })
+
+      expect(mockChannel.postMessage).toHaveBeenCalledWith({
+        type: "ALERT_DISMISSED",
+        payload: { alertId: "test-alert" },
+      })
+    })
+  })
+
+  describe("convenience methods", () => {
+    it("broadcastStorageUpdate should broadcast STORAGE_UPDATED", () => {
+      service.broadcastStorageUpdate()
+
+      expect(mockChannel.postMessage).toHaveBeenCalledWith({
+        type: "STORAGE_UPDATED",
+      })
+    })
+
+    it("broadcastAlertDismissed should broadcast with alertId", () => {
+      service.broadcastAlertDismissed("my-alert-123")
+
+      expect(mockChannel.postMessage).toHaveBeenCalledWith({
+        type: "ALERT_DISMISSED",
+        payload: { alertId: "my-alert-123" },
+      })
+    })
+
+    it("broadcastPremiumReleased should broadcast PREMIUM_RELEASED", () => {
+      service.broadcastPremiumReleased()
+
+      expect(mockChannel.postMessage).toHaveBeenCalledWith({
+        type: "PREMIUM_RELEASED",
+      })
+    })
+
+    it("broadcastLogout should broadcast LOGOUT", () => {
+      service.broadcastLogout()
+
+      expect(mockChannel.postMessage).toHaveBeenCalledWith({
+        type: "LOGOUT",
+      })
+    })
+  })
+
+  describe("on (type-specific handlers)", () => {
+    it("should call handler for matching message type", () => {
+      const handler = jest.fn()
+      service.on("LOGOUT", handler)
+
+      // Simulate incoming message
+      if (mockChannel.onmessage) {
+        mockChannel.onmessage({
+          data: { type: "LOGOUT" },
+        } as MessageEvent)
+      }
+
+      expect(handler).toHaveBeenCalledWith({ type: "LOGOUT" })
+    })
+
+    it("should not call handler for non-matching message type", () => {
+      const handler = jest.fn()
+      service.on("LOGOUT", handler)
+
+      if (mockChannel.onmessage) {
+        mockChannel.onmessage({
+          data: { type: "STORAGE_UPDATED" },
+        } as MessageEvent)
+      }
+
+      expect(handler).not.toHaveBeenCalled()
+    })
+
+    it("should return unsubscribe function", () => {
+      const handler = jest.fn()
+      const unsubscribe = service.on("LOGOUT", handler)
+
+      unsubscribe()
+
+      if (mockChannel.onmessage) {
+        mockChannel.onmessage({
+          data: { type: "LOGOUT" },
+        } as MessageEvent)
+      }
+
+      expect(handler).not.toHaveBeenCalled()
+    })
+
+    it("should support multiple handlers for same type", () => {
+      const handler1 = jest.fn()
+      const handler2 = jest.fn()
+      service.on("LOGOUT", handler1)
+      service.on("LOGOUT", handler2)
+
+      if (mockChannel.onmessage) {
+        mockChannel.onmessage({
+          data: { type: "LOGOUT" },
+        } as MessageEvent)
+      }
+
+      expect(handler1).toHaveBeenCalled()
+      expect(handler2).toHaveBeenCalled()
+    })
+  })
+
+  describe("onAny (global handlers)", () => {
+    it("should call global handler for any message type", () => {
+      const handler = jest.fn()
+      service.onAny(handler)
+
+      if (mockChannel.onmessage) {
+        mockChannel.onmessage({
+          data: { type: "LOGOUT" },
+        } as MessageEvent)
+        mockChannel.onmessage({
+          data: { type: "STORAGE_UPDATED" },
+        } as MessageEvent)
+      }
+
+      expect(handler).toHaveBeenCalledTimes(2)
+    })
+
+    it("should return unsubscribe function", () => {
+      const handler = jest.fn()
+      const unsubscribe = service.onAny(handler)
+
+      unsubscribe()
+
+      if (mockChannel.onmessage) {
+        mockChannel.onmessage({
+          data: { type: "LOGOUT" },
+        } as MessageEvent)
+      }
+
+      expect(handler).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("error handling", () => {
+    it("should not throw if handler throws", () => {
+      const errorHandler = jest.fn().mockImplementation(() => {
+        throw new Error("Handler error")
+      })
+      const safeHandler = jest.fn()
+
+      service.on("LOGOUT", errorHandler)
+      service.on("LOGOUT", safeHandler)
+
+      expect(() => {
+        if (mockChannel.onmessage) {
+          mockChannel.onmessage({
+            data: { type: "LOGOUT" },
+          } as MessageEvent)
+        }
+      }).not.toThrow()
+
+      // Other handlers should still be called
+      expect(safeHandler).toHaveBeenCalled()
+    })
+
+    it("should ignore messages without type", () => {
+      const handler = jest.fn()
+      service.onAny(handler)
+
+      expect(() => {
+        if (mockChannel.onmessage) {
+          mockChannel.onmessage({
+            data: { payload: "no type" },
+          } as MessageEvent)
+        }
+      }).not.toThrow()
+
+      expect(handler).not.toHaveBeenCalled()
+    })
+
+    it("should ignore null messages", () => {
+      const handler = jest.fn()
+      service.onAny(handler)
+
+      expect(() => {
+        if (mockChannel.onmessage) {
+          mockChannel.onmessage({
+            data: null,
+          } as MessageEvent)
+        }
+      }).not.toThrow()
+
+      expect(handler).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("destroy", () => {
+    it("should close the channel", () => {
+      service.destroy()
+
+      expect(mockChannel.close).toHaveBeenCalled()
+    })
+
+    it("should not broadcast after destroy", () => {
+      service.destroy()
+      service.broadcast({ type: "LOGOUT" })
+
+      // postMessage should not be called after destroy
+      // (only the calls before destroy count)
+      expect(mockChannel.postMessage).not.toHaveBeenCalled()
+    })
+  })
+})
+
+describe("TabSyncService without BroadcastChannel support", () => {
+  it("should not throw if BroadcastChannel is undefined", () => {
+    const originalBroadcastChannel = global.BroadcastChannel
+    // @ts-expect-error - Testing undefined case
+    delete global.BroadcastChannel
+
+    expect(() => {
+      const service = new TabSyncService()
+      service.broadcast({ type: "LOGOUT" })
+      service.destroy()
+    }).not.toThrow()
+
+    global.BroadcastChannel = originalBroadcastChannel
   })
 })

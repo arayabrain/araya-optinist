@@ -50,6 +50,7 @@ export const userSlice = createSlice({
 
       // Clear dismissed alerts so they can appear again for the next user
       localStorage.removeItem("dismissedAlerts")
+      localStorage.removeItem("storageAlertDismissed")
       // Clear session storage to prevent stale state on browser back
       sessionStorage.removeItem("storage-refreshed-on-login")
       // Clear premium routing information

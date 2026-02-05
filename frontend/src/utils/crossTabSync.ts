@@ -187,3 +187,153 @@ export const onActivityFromOtherTab = (
   window.addEventListener("storage", handler)
   return () => window.removeEventListener("storage", handler)
 }
+
+// ============================================================================
+// TabSyncService - BroadcastChannel for real-time cross-tab communication
+// ============================================================================
+
+export type TabSyncMessageType =
+  | "STORAGE_UPDATED"
+  | "ALERT_DISMISSED"
+  | "PREMIUM_RELEASED"
+  | "LOGOUT"
+
+export interface TabSyncMessage {
+  type: TabSyncMessageType
+  payload?: unknown
+}
+
+type MessageHandler = (message: TabSyncMessage) => void
+
+const TAB_SYNC_CHANNEL = "app_sync"
+
+/**
+ * Service for real-time cross-tab communication using BroadcastChannel.
+ *
+ * Use this for events that need immediate synchronization across all tabs,
+ * such as logout, premium release, or storage updates.
+ *
+ * BroadcastChannel is preferred over localStorage events for:
+ * - Lower latency (direct message passing vs storage polling)
+ * - Larger payload support
+ * - Cleaner API for pub/sub patterns
+ */
+export class TabSyncService {
+  private channel: BroadcastChannel | null = null
+  private handlers: Map<TabSyncMessageType, Set<MessageHandler>> = new Map()
+  private globalHandlers: Set<MessageHandler> = new Set()
+
+  constructor() {
+    if (typeof BroadcastChannel !== "undefined") {
+      this.channel = new BroadcastChannel(TAB_SYNC_CHANNEL)
+      this.channel.onmessage = this.handleMessage
+    }
+  }
+
+  /**
+   * Broadcast a message to all other tabs.
+   */
+  broadcast(message: TabSyncMessage): void {
+    if (this.channel) {
+      this.channel.postMessage(message)
+    }
+  }
+
+  /**
+   * Subscribe to messages of a specific type.
+   * Returns an unsubscribe function.
+   */
+  on(type: TabSyncMessageType, handler: MessageHandler): () => void {
+    if (!this.handlers.has(type)) {
+      this.handlers.set(type, new Set())
+    }
+    this.handlers.get(type)!.add(handler)
+
+    return () => {
+      this.handlers.get(type)?.delete(handler)
+    }
+  }
+
+  /**
+   * Subscribe to all messages.
+   * Returns an unsubscribe function.
+   */
+  onAny(handler: MessageHandler): () => void {
+    this.globalHandlers.add(handler)
+    return () => {
+      this.globalHandlers.delete(handler)
+    }
+  }
+
+  /**
+   * Broadcast storage update event.
+   */
+  broadcastStorageUpdate(): void {
+    this.broadcast({ type: "STORAGE_UPDATED" })
+  }
+
+  /**
+   * Broadcast alert dismissal event.
+   */
+  broadcastAlertDismissed(alertId: string): void {
+    this.broadcast({ type: "ALERT_DISMISSED", payload: { alertId } })
+  }
+
+  /**
+   * Broadcast premium release event.
+   */
+  broadcastPremiumReleased(): void {
+    this.broadcast({ type: "PREMIUM_RELEASED" })
+  }
+
+  /**
+   * Broadcast logout event to all tabs.
+   */
+  broadcastLogout(): void {
+    this.broadcast({ type: "LOGOUT" })
+  }
+
+  private handleMessage = (event: MessageEvent<TabSyncMessage>): void => {
+    const message = event.data
+    if (!message || !message.type) return
+
+    // Call type-specific handlers
+    const typeHandlers = this.handlers.get(message.type)
+    if (typeHandlers) {
+      typeHandlers.forEach((handler) => {
+        try {
+          handler(message)
+        } catch (error) {
+          console.error(
+            `TabSyncService: Error in handler for ${message.type}:`,
+            error,
+          )
+        }
+      })
+    }
+
+    // Call global handlers
+    this.globalHandlers.forEach((handler) => {
+      try {
+        handler(message)
+      } catch (error) {
+        console.error("TabSyncService: Error in global handler:", error)
+      }
+    })
+  }
+
+  /**
+   * Clean up the BroadcastChannel.
+   */
+  destroy(): void {
+    if (this.channel) {
+      this.channel.close()
+      this.channel = null
+    }
+    this.handlers.clear()
+    this.globalHandlers.clear()
+  }
+}
+
+// Singleton instance for application-wide use
+export const tabSync = new TabSyncService()

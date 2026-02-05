@@ -10,7 +10,7 @@ import {
   jest,
   afterEach,
 } from "@jest/globals"
-import { render, screen, act, waitFor } from "@testing-library/react"
+import { render, screen, act, waitFor, fireEvent } from "@testing-library/react"
 
 import * as StorageAlertsApi from "api/storage/StorageAlerts"
 import LimitAlert from "components/common/LimitAlert"
@@ -261,6 +261,164 @@ describe("LimitAlert", () => {
         expect(screen.getByRole("progressbar")).toBeTruthy()
         expect(screen.getByText("20 days")).toBeTruthy()
       })
+    })
+  })
+
+  describe("OVERDUE Alert Acknowledgment (Case 33)", () => {
+    const overdueAlert = createMockAlert({
+      alert_type: LimitAlertType.OVERDUE,
+      message: "Your data will be deleted soon",
+      days_remaining: 0,
+    })
+
+    it("should not show close button for OVERDUE alerts", async () => {
+      mockGetMyLimitAlertApi.mockResolvedValue(overdueAlert)
+
+      renderLimitAlert()
+
+      await waitFor(() => {
+        expect(screen.getByText("Your data will be deleted soon")).toBeTruthy()
+      })
+
+      // Close icon button should not be present for OVERDUE alerts
+      const closeButtons = screen.queryAllByRole("button")
+      const closeIconButton = closeButtons.find(
+        (btn) => btn.querySelector("[data-testid=\"CloseIcon\"]") !== null,
+      )
+      expect(closeIconButton).toBeFalsy()
+    })
+
+    it("should show acknowledgment checkbox for OVERDUE alerts", async () => {
+      mockGetMyLimitAlertApi.mockResolvedValue(overdueAlert)
+
+      renderLimitAlert()
+
+      await waitFor(() => {
+        expect(screen.getByRole("checkbox")).toBeTruthy()
+      })
+
+      expect(
+        screen.getByText(/I understand my data will be deleted/i),
+      ).toBeTruthy()
+    })
+
+    it("should show Action Required warning for OVERDUE alerts", async () => {
+      mockGetMyLimitAlertApi.mockResolvedValue(overdueAlert)
+
+      renderLimitAlert()
+
+      await waitFor(() => {
+        expect(screen.getByText("Action Required")).toBeTruthy()
+      })
+    })
+
+    it("should disable dismiss button until acknowledgment", async () => {
+      mockGetMyLimitAlertApi.mockResolvedValue(overdueAlert)
+
+      renderLimitAlert()
+
+      await waitFor(() => {
+        const dismissButton = screen.getByRole("button", { name: /dismiss/i })
+        expect(dismissButton).toBeTruthy()
+        expect(dismissButton.hasAttribute("disabled")).toBe(true)
+      })
+    })
+
+    it("should enable dismiss button after acknowledgment", async () => {
+      mockGetMyLimitAlertApi.mockResolvedValue(overdueAlert)
+
+      renderLimitAlert()
+
+      await waitFor(() => {
+        expect(screen.getByRole("checkbox")).toBeTruthy()
+      })
+
+      // Check the acknowledgment checkbox
+      const checkbox = screen.getByRole("checkbox")
+      fireEvent.click(checkbox)
+
+      // Dismiss button should now be enabled
+      const dismissButton = screen.getByRole("button", { name: /dismiss/i })
+      expect(dismissButton.hasAttribute("disabled")).toBe(false)
+    })
+
+    it("should not show acknowledgment for non-OVERDUE alerts", async () => {
+      mockGetMyLimitAlertApi.mockResolvedValue(
+        createMockAlert({ alert_type: LimitAlertType.GRACE }),
+      )
+
+      renderLimitAlert()
+
+      await waitFor(() => {
+        expect(screen.getByText("Your subscription has expired")).toBeTruthy()
+      })
+
+      // No checkbox should be present
+      expect(screen.queryByRole("checkbox")).toBeFalsy()
+    })
+
+    it("should show close button for non-OVERDUE alerts", async () => {
+      mockGetMyLimitAlertApi.mockResolvedValue(
+        createMockAlert({ alert_type: LimitAlertType.STORAGE }),
+      )
+
+      renderLimitAlert()
+
+      await waitFor(() => {
+        expect(screen.getByText("Your subscription has expired")).toBeTruthy()
+      })
+
+      // There should be buttons available (including close)
+      const buttons = screen.queryAllByRole("button")
+      expect(buttons.length).toBeGreaterThan(0)
+    })
+  })
+
+  describe("OVERDUE Alert Modal (Case 33)", () => {
+    const overdueAlert = createMockAlert({
+      alert_type: LimitAlertType.OVERDUE,
+      message: "Your data will be deleted soon",
+      days_remaining: 0,
+    })
+
+    it("should show urgent dialog title for OVERDUE modal", async () => {
+      mockGetMyLimitAlertApi.mockResolvedValue(overdueAlert)
+
+      renderLimitAlert({ showAsModal: true })
+
+      await waitFor(() => {
+        expect(screen.getByText("Urgent: Data Deletion Imminent")).toBeTruthy()
+      })
+    })
+
+    it("should require acknowledgment before dismissing modal", async () => {
+      mockGetMyLimitAlertApi.mockResolvedValue(overdueAlert)
+
+      renderLimitAlert({ showAsModal: true })
+
+      await waitFor(() => {
+        const dismissButton = screen.getByRole("button", {
+          name: /remind me later/i,
+        })
+        expect(dismissButton.hasAttribute("disabled")).toBe(true)
+      })
+    })
+
+    it("should enable dismiss after checking acknowledgment in modal", async () => {
+      mockGetMyLimitAlertApi.mockResolvedValue(overdueAlert)
+
+      renderLimitAlert({ showAsModal: true })
+
+      await waitFor(() => {
+        expect(screen.getByRole("checkbox")).toBeTruthy()
+      })
+
+      fireEvent.click(screen.getByRole("checkbox"))
+
+      const dismissButton = screen.getByRole("button", {
+        name: /remind me later/i,
+      })
+      expect(dismissButton.hasAttribute("disabled")).toBe(false)
     })
   })
 })

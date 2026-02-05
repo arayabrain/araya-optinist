@@ -5,6 +5,10 @@ from studio.app.common.core.auth import auth
 from studio.app.common.core.auth.auth_dependencies import get_admin_user
 from studio.app.common.core.cloud.cloud_utils import calculate_limit_warning
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.middleware.user_activity_middleware import (
+    clear_free_user_logged_out_at,
+    clear_logged_out_status,
+)
 from studio.app.common.db.database import get_db
 from studio.app.common.schemas.auth import AccessToken, RefreshToken, Token, UserAuth
 
@@ -17,6 +21,14 @@ logger = AppLogger.get_logger()
 async def login(user_data: UserAuth, db: Session = Depends(get_db)):
     try:
         token, user = await auth.authenticate_user(db, user_data)
+
+        # Clear logged_out_at for free users to prevent cleanup job from
+        # deleting their data after re-login
+        try:
+            clear_logged_out_status(user.id)
+            clear_free_user_logged_out_at(user.id)
+        except Exception as e:
+            logger.warning(f"Failed to clear logout status for user {user.id}: {e}")
 
         # Note: Experiment metadata sync is handled lazily:
         # - Workspace-level sync when user views experiments list (get_experiments)

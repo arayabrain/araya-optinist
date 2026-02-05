@@ -26,6 +26,7 @@ import {
   RoutingInfo,
 } from "api/premium/PremiumAssignmentApi"
 import { PlanName, SubscriptionStatus } from "const/Subscription"
+import { useSleepDetection } from "hooks/useSleepDetection"
 import { selectLogoutGeneration } from "store/slice/User/UserSelector"
 import { RootState } from "store/store"
 import {
@@ -33,6 +34,7 @@ import {
   syncActivityAcrossTabs,
   getLastActivityFromAnyTab,
   onActivityFromOtherTab,
+  tabSync,
 } from "utils/crossTabSync"
 import { routingService } from "utils/routing/RoutingService"
 
@@ -42,6 +44,10 @@ const MAX_POLL_INTERVAL_MS = 60000
 const MAX_POLL_ATTEMPTS = 120 // ~10 minutes at initial rate
 const BACKOFF_MULTIPLIER = 1.5
 const ERROR_BACKOFF_MULTIPLIER = 2
+
+// Heartbeat retry configuration (Case 49)
+const HEARTBEAT_MAX_RETRIES = 3
+const HEARTBEAT_RETRY_DELAY_MS = 1000
 
 interface PremiumAssignmentState {
   isAssigning: boolean
@@ -53,6 +59,7 @@ interface PremiumAssignmentState {
   isPremiumUser: boolean
   showInactivityWarning: boolean
   lastActivityTime: number
+  heartbeatFailing: boolean
 }
 
 interface PremiumAssignmentContextType extends PremiumAssignmentState {
@@ -95,6 +102,7 @@ export const PremiumAssignmentProvider: React.FC<{
     isPremiumUser: false,
     showInactivityWarning: false,
     lastActivityTime: Date.now(),
+    heartbeatFailing: false,
   })
 
   // Flag to prevent multiple auto-assignment attempts per session
@@ -146,6 +154,7 @@ export const PremiumAssignmentProvider: React.FC<{
         isPremiumUser: false,
         showInactivityWarning: false,
         lastActivityTime: Date.now(),
+        heartbeatFailing: false,
       })
       setHasAttemptedAutoAssignment(false)
       isReleasingOnLogoutRef.current = false
@@ -208,27 +217,51 @@ export const PremiumAssignmentProvider: React.FC<{
   }, [])
 
   /**
-   * Record user activity by sending heartbeat
+   * Sleep utility for retry delays
+   */
+  const sleep = useCallback(
+    (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+    [],
+  )
+
+  /**
+   * Record user activity by sending heartbeat with retry logic (Case 49)
    */
   const recordActivity = useCallback(async (): Promise<void> => {
     if (!isPremiumUser) return
 
-    try {
-      await sendPremiumHeartbeat()
-      const now = Date.now()
-      setState((prev) => ({
-        ...prev,
-        lastActivityTime: now,
-        showInactivityWarning: false,
-      }))
-      // Sync activity timestamp to other tabs
-      syncActivityAcrossTabs(now)
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.warn("Failed to record premium user activity:", error)
-      throw error // Re-throw for caller to handle
+    for (let attempt = 0; attempt < HEARTBEAT_MAX_RETRIES; attempt++) {
+      try {
+        await sendPremiumHeartbeat()
+        const now = Date.now()
+        setState((prev) => ({
+          ...prev,
+          lastActivityTime: now,
+          showInactivityWarning: false,
+          heartbeatFailing: false,
+        }))
+        syncActivityAcrossTabs(now)
+        return
+      } catch (error) {
+        const isLastAttempt = attempt === HEARTBEAT_MAX_RETRIES - 1
+        if (isLastAttempt) {
+          // eslint-disable-next-line no-console
+          console.error("Heartbeat failed after retries:", error)
+          const now = Date.now()
+          setState((prev) => ({
+            ...prev,
+            lastActivityTime: now,
+            heartbeatFailing: true,
+          }))
+          syncActivityAcrossTabs(now)
+          throw error
+        }
+        // eslint-disable-next-line no-console
+        console.warn(`Heartbeat attempt ${attempt + 1} failed, retrying...`)
+        await sleep(HEARTBEAT_RETRY_DELAY_MS * (attempt + 1))
+      }
     }
-  }, [isPremiumUser])
+  }, [isPremiumUser, sleep])
 
   /**
    * Assign premium instance
@@ -293,6 +326,10 @@ export const PremiumAssignmentProvider: React.FC<{
         assignmentResult: null,
         statusResult: null,
       }))
+
+      // Notify other tabs about premium release
+      tabSync.broadcastPremiumReleased()
+
       return result
     } catch (error: unknown) {
       // eslint-disable-next-line no-console
@@ -507,6 +544,34 @@ export const PremiumAssignmentProvider: React.FC<{
       unsubscribe()
     }
   }, [isPremiumUser, currentUser, state.assignmentResult, autoReleaseOnLogout])
+
+  // Sleep/wake detection callback (Cases 50-51)
+  const handleDeviceWake = useCallback(() => {
+    if (!isPremiumUser || !state.assignmentResult) return
+    // eslint-disable-next-line no-console
+    console.log("Device wake detected - checking activity status")
+    recordActivity().catch((error) => {
+      // eslint-disable-next-line no-console
+      console.warn("Failed to record activity after wake:", error)
+    })
+  }, [isPremiumUser, state.assignmentResult, recordActivity])
+
+  // Detect sleep/wake cycles and refresh activity status (Cases 50-51)
+  useSleepDetection(handleDeviceWake, {
+    enabled: isPremiumUser && !!state.assignmentResult,
+  })
+
+  // Listen for premium release events from other tabs (Cases 54-56)
+  useEffect(() => {
+    const unsubscribe = tabSync.on("PREMIUM_RELEASED", () => {
+      setState((prev) => ({
+        ...prev,
+        assignmentResult: null,
+        statusResult: null,
+      }))
+    })
+    return unsubscribe
+  }, [])
 
   // Auto-assign when premium user is detected
   useEffect(() => {

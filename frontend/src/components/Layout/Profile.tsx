@@ -1,11 +1,17 @@
-import { FC, useState, MouseEvent } from "react"
-import { useDispatch } from "react-redux"
+import { FC, useState, MouseEvent, useEffect, useCallback } from "react"
+import { useDispatch, useSelector } from "react-redux"
 import { useNavigate } from "react-router-dom"
 
 import AccountCircleIcon from "@mui/icons-material/AccountCircle"
 import Logout from "@mui/icons-material/Logout"
 import PortraitIcon from "@mui/icons-material/Portrait"
 import {
+  Box,
+  Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   ListItemIcon,
   ListItemText,
   Menu,
@@ -15,14 +21,18 @@ import {
 import IconButton from "@mui/material/IconButton"
 
 import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
+import { selectPipelineIsStartedSuccess } from "store/slice/Pipeline/PipelineSelectors"
 import { logout } from "store/slice/User/UserSlice"
 import { setLoggingOut } from "utils/axios"
+import { tabSync } from "utils/crossTabSync"
 
 const Profile: FC = () => {
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null)
+  const [showJobWarning, setShowJobWarning] = useState(false)
   const navigate = useNavigate()
   const dispatch = useDispatch()
   const { autoReleaseOnLogout, isPremiumUser } = usePremiumAssignment()
+  const hasRunningJob = useSelector(selectPipelineIsStartedSuccess)
 
   const handleMenu = (event: MouseEvent<HTMLElement>) => {
     setAnchorEl(event.currentTarget)
@@ -32,27 +42,53 @@ const Profile: FC = () => {
     setAnchorEl(null)
   }
 
+  const performLogout = useCallback(
+    async (broadcast: boolean = true) => {
+      if (isPremiumUser) {
+        try {
+          await autoReleaseOnLogout()
+        } catch (error) {
+          // eslint-disable-next-line no-console
+          console.warn("Failed to release premium instance on logout:", error)
+        }
+      }
+
+      if (broadcast) {
+        tabSync.broadcastLogout()
+      }
+
+      dispatch(logout())
+      navigate("/login")
+      setLoggingOut(false)
+    },
+    [isPremiumUser, autoReleaseOnLogout, dispatch, navigate],
+  )
+
+  useEffect(() => {
+    const unsubscribe = tabSync.on("LOGOUT", () => {
+      performLogout(false)
+    })
+    return unsubscribe
+  }, [performLogout])
+
   const onClickLogout = async () => {
     setAnchorEl(null)
 
-    // Release premium instance before logout if user is premium
-    if (isPremiumUser) {
-      try {
-        await autoReleaseOnLogout()
-      } catch (error) {
-        // eslint-disable-next-line no-console
-        console.warn("Failed to release premium instance on logout:", error)
-        // Continue with logout even if release fails
-      }
+    if (hasRunningJob) {
+      setShowJobWarning(true)
+      return
     }
 
-    dispatch(logout())
-    navigate("/login")
+    await performLogout()
+  }
 
-    // Reset isLoggingOut flag after logout and navigation are initiated
-    // The flag protects token removal (in logout reducer) from race conditions
-    // with 401 handlers. By this point tokens are already removed. (Case 7 fix)
-    setLoggingOut(false)
+  const handleCloseJobWarning = () => {
+    setShowJobWarning(false)
+  }
+
+  const handleProceedLogout = async () => {
+    setShowJobWarning(false)
+    await performLogout()
   }
 
   const onClickAccount = () => {
@@ -99,6 +135,25 @@ const Profile: FC = () => {
           <ListItemText>Sign Out</ListItemText>
         </MenuItem>
       </Menu>
+      <Dialog open={showJobWarning} onClose={handleCloseJobWarning}>
+        <DialogTitle>Jobs Running</DialogTitle>
+        <DialogContent>
+          <Box>
+            You have jobs currently running. They will continue processing in
+            the background but you will not see the results until you log back
+            in.
+          </Box>
+          <Box sx={{ mt: 2 }}>Do you want to sign out anyway?</Box>
+        </DialogContent>
+        <DialogActions>
+          <Button variant="outlined" onClick={handleCloseJobWarning}>
+            Cancel
+          </Button>
+          <Button variant="contained" onClick={handleProceedLogout}>
+            Sign Out Anyway
+          </Button>
+        </DialogActions>
+      </Dialog>
     </>
   )
 }

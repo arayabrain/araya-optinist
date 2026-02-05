@@ -320,6 +320,40 @@ def clear_logged_out_status(user_id: int) -> None:
         _logged_out_users.pop(user_id, None)
 
 
+def clear_free_user_logged_out_at(user_id: int) -> bool:
+    """
+    Clear logged_out_at timestamp for a free user on re-login.
+
+    This prevents the cleanup job from deleting a user's data after they
+    log back in. The cleanup job only processes users with a non-null
+    logged_out_at timestamp that's older than the grace period.
+
+    Args:
+        user_id: Database user ID
+
+    Returns:
+        True if updated successfully (or no assignment exists), False on error
+    """
+    try:
+        with session_scope() as session:
+            assignment = (
+                session.query(FreeUserAssignment)
+                .filter(FreeUserAssignment.user_id == user_id)
+                .first()
+            )
+
+            if assignment and assignment.logged_out_at is not None:
+                assignment.logged_out_at = None
+                assignment.last_activity = get_current_datetime()
+                session.commit()
+                logger.debug(f"Cleared logged_out_at for user {user_id} on re-login")
+
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to clear logged_out_at for user {user_id}: {e}")
+        return False
+
+
 def _should_update_activity(user_id: int, tier: str) -> bool:
     """
     Check if we should update activity for this user (throttling).
