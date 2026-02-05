@@ -11,6 +11,7 @@ import React, {
   useEffect,
   useState,
   useCallback,
+  useRef,
 } from "react"
 import { useSelector } from "react-redux"
 
@@ -26,6 +27,12 @@ import {
 } from "api/premium/PremiumAssignmentApi"
 import { PlanName, SubscriptionStatus } from "const/Subscription"
 import { RootState } from "store/store"
+import {
+  CrossTabLeaderElection,
+  syncActivityAcrossTabs,
+  getLastActivityFromAnyTab,
+  onActivityFromOtherTab,
+} from "utils/crossTabSync"
 import { routingService } from "utils/routing/RoutingService"
 
 interface PremiumAssignmentState {
@@ -84,6 +91,10 @@ export const PremiumAssignmentProvider: React.FC<{
   const [hasAttemptedAutoAssignment, setHasAttemptedAutoAssignment] =
     useState(false)
 
+  // Cross-tab leader election for coordinating polling
+  const [isTabLeader, setIsTabLeader] = useState(false)
+  const leaderElectionRef = useRef<CrossTabLeaderElection | null>(null)
+
   // Calculate premium user status
   const isPremiumUser =
     currentUser?.subscription_plan_name === PlanName.PREMIUM &&
@@ -100,6 +111,43 @@ export const PremiumAssignmentProvider: React.FC<{
     setHasAttemptedAutoAssignment(false)
   }, [currentUser?.id])
 
+  // Initialize cross-tab leader election for premium users
+  useEffect(() => {
+    if (!isPremiumUser) {
+      // Clean up leader election if user is not premium
+      if (leaderElectionRef.current) {
+        leaderElectionRef.current.destroy()
+        leaderElectionRef.current = null
+        setIsTabLeader(false)
+      }
+      return
+    }
+
+    // Create leader election instance
+    leaderElectionRef.current = new CrossTabLeaderElection(
+      () => {
+        // eslint-disable-next-line no-console
+        console.log("This tab became the leader for premium polling")
+        setIsTabLeader(true)
+      },
+      () => {
+        // eslint-disable-next-line no-console
+        console.log("This tab lost leadership for premium polling")
+        setIsTabLeader(false)
+      },
+    )
+
+    // Check initial leadership state
+    setIsTabLeader(leaderElectionRef.current.getIsLeader())
+
+    return () => {
+      if (leaderElectionRef.current) {
+        leaderElectionRef.current.destroy()
+        leaderElectionRef.current = null
+      }
+    }
+  }, [isPremiumUser])
+
   /**
    * Dismiss inactivity warning
    */
@@ -115,14 +163,18 @@ export const PremiumAssignmentProvider: React.FC<{
 
     try {
       await sendPremiumHeartbeat()
+      const now = Date.now()
       setState((prev) => ({
         ...prev,
-        lastActivityTime: Date.now(),
+        lastActivityTime: now,
         showInactivityWarning: false,
       }))
+      // Sync activity timestamp to other tabs
+      syncActivityAcrossTabs(now)
     } catch (error) {
       // eslint-disable-next-line no-console
       console.warn("Failed to record premium user activity:", error)
+      throw error // Re-throw for caller to handle
     }
   }, [isPremiumUser])
 
@@ -306,17 +358,24 @@ export const PremiumAssignmentProvider: React.FC<{
       return
     }
 
-    let inactivityCheckInterval: NodeJS.Timeout | null = null
+    let inactivityCheckInterval: ReturnType<typeof setInterval> | null = null
 
     const checkInactivity = () => {
       const now = Date.now()
-      const timeSinceLastActivity = now - state.lastActivityTime
+      // Check activity from any tab, not just this one
+      const lastActivityAnyTab = getLastActivityFromAnyTab()
+      const effectiveLastActivity = Math.max(
+        state.lastActivityTime,
+        lastActivityAnyTab,
+      )
+      const timeSinceLastActivity = now - effectiveLastActivity
 
       const oneHourMs = 60 * 60 * 1000 // 1 hour
       const twoHoursMs = 2 * 60 * 60 * 1000 // 2 hours
       // eslint-disable-next-line no-console
       console.log(
-        `Inactivity check: ${Math.round(timeSinceLastActivity / 1000 / 60)}min since last activity`,
+        `Inactivity check: ${Math.round(timeSinceLastActivity / 1000 / 60)}min ` +
+          "since last activity (any tab)",
       )
 
       if (timeSinceLastActivity >= twoHoursMs) {
@@ -342,10 +401,20 @@ export const PremiumAssignmentProvider: React.FC<{
     // Check inactivity every 30 seconds
     inactivityCheckInterval = setInterval(checkInactivity, 30 * 1000)
 
+    // Listen for activity from other tabs to dismiss warning
+    const unsubscribe = onActivityFromOtherTab((timestamp) => {
+      setState((prev) => ({
+        ...prev,
+        lastActivityTime: Math.max(prev.lastActivityTime, timestamp),
+        showInactivityWarning: false,
+      }))
+    })
+
     return () => {
       if (inactivityCheckInterval) {
         clearInterval(inactivityCheckInterval)
       }
+      unsubscribe()
     }
   }, [
     isPremiumUser,
@@ -376,9 +445,11 @@ export const PremiumAssignmentProvider: React.FC<{
   ])
 
   // Poll for premium instance when user is on temporary shared instance
+  // Only the leader tab polls to prevent duplicate API calls
   useEffect(() => {
     if (
       !isPremiumUser ||
+      !isTabLeader ||
       !state.assignmentResult?.assigned ||
       !state.assignmentResult?.is_shared ||
       state.assignmentResult?.assignment_source !== "autoscaling_temp"
@@ -388,10 +459,10 @@ export const PremiumAssignmentProvider: React.FC<{
 
     // eslint-disable-next-line no-console
     console.log(
-      "User is on temporary shared instance, polling for premium instance...",
+      "Leader tab: polling for premium instance (on temporary shared)...",
     )
 
-    let pollInterval: NodeJS.Timeout | null = null
+    let pollInterval: ReturnType<typeof setInterval> | null = null
 
     const pollForPremiumInstance = async () => {
       try {
@@ -433,6 +504,7 @@ export const PremiumAssignmentProvider: React.FC<{
     }
   }, [
     isPremiumUser,
+    isTabLeader,
     state.assignmentResult?.assigned,
     state.assignmentResult?.is_shared,
     state.assignmentResult?.assignment_source,
@@ -440,22 +512,22 @@ export const PremiumAssignmentProvider: React.FC<{
 
   // Handle browser close/refresh for premium users
   useEffect(() => {
-    if (!isPremiumUser) return
+    if (!isPremiumUser || !currentUser) return
 
     const handleBeforeUnload = () => {
-      // Try to release premium assignment on browser close/refresh
-      // Note: This is best-effort and may not always complete due to browser limitations
-      autoReleaseOnLogout().catch((error) => {
-        // eslint-disable-next-line no-console
-        console.warn("Failed to release on beforeunload:", error)
-      })
+      // Use sendBeacon for reliable delivery during page unload
+      // Unlike fetch/XHR, sendBeacon is guaranteed to be sent even when page closes
+      if (state.assignmentResult?.instance_id) {
+        const beaconData = JSON.stringify({ user_uid: currentUser.uid })
+        navigator.sendBeacon("/api/users/me/premium/release-beacon", beaconData)
+      }
     }
 
     window.addEventListener("beforeunload", handleBeforeUnload)
     return () => {
       window.removeEventListener("beforeunload", handleBeforeUnload)
     }
-  }, [isPremiumUser, autoReleaseOnLogout])
+  }, [isPremiumUser, currentUser, state.assignmentResult])
 
   const contextValue: PremiumAssignmentContextType = {
     ...state,

@@ -7,10 +7,13 @@
 
 import React, { useEffect, useState } from "react"
 
+import { AxiosError } from "axios"
+
 import { Alert, Button, Snackbar } from "@mui/material"
 
 import { PremiumTiming } from "const/Subscription"
 import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
+import { logout } from "utils/auth/AuthUtils"
 
 const InactivityWarning: React.FC = () => {
   const { showInactivityWarning, dismissInactivityWarning, recordActivity } =
@@ -39,13 +42,27 @@ const InactivityWarning: React.FC = () => {
     return () => clearInterval(countdownInterval)
   }, [showInactivityWarning])
 
-  const handleStayActive = () => {
-    // Record activity and dismiss warning
-    recordActivity().catch((error) => {
-      // eslint-disable-next-line no-console
-      console.warn("Failed to record activity:", error)
-    })
-    dismissInactivityWarning()
+  const [sessionExpired, setSessionExpired] = useState(false)
+
+  const handleStayActive = async () => {
+    try {
+      await recordActivity()
+      dismissInactivityWarning()
+    } catch (error) {
+      // Check if session has expired (401 error)
+      if (error instanceof AxiosError && error.response?.status === 401) {
+        setSessionExpired(true)
+        // Give user time to see the message, then logout
+        setTimeout(() => {
+          logout()
+        }, 2000)
+      } else {
+        // eslint-disable-next-line no-console
+        console.warn("Failed to record activity:", error)
+        // Still dismiss the warning even if heartbeat failed
+        dismissInactivityWarning()
+      }
+    }
   }
 
   const formatTime = (minutes: number) => {
@@ -64,17 +81,19 @@ const InactivityWarning: React.FC = () => {
       // Don't auto-hide - user must interact
     >
       <Alert
-        severity="warning"
+        severity={sessionExpired ? "error" : "warning"}
         variant="filled"
         action={
-          <Button
-            color="inherit"
-            size="small"
-            onClick={handleStayActive}
-            sx={{ fontWeight: "bold" }}
-          >
-            Stay Active
-          </Button>
+          !sessionExpired && (
+            <Button
+              color="inherit"
+              size="small"
+              onClick={handleStayActive}
+              sx={{ fontWeight: "bold" }}
+            >
+              Stay Active
+            </Button>
+          )
         }
         sx={{
           minWidth: "400px",
@@ -84,16 +103,26 @@ const InactivityWarning: React.FC = () => {
           },
         }}
       >
-        <strong>Premium Instance Inactivity Warning</strong>
-        <br />
-        You&apos;ve been inactive for 1 hour. Your premium instance will be
-        automatically released in {formatTime(countdown)} if no activity is
-        detected.
-        <br />
-        <small>
-          Click &quot;Stay Active&quot; or interact with the page to keep your
-          instance active.
-        </small>
+        {sessionExpired ? (
+          <>
+            <strong>Session Expired</strong>
+            <br />
+            Your session has expired. Redirecting to login...
+          </>
+        ) : (
+          <>
+            <strong>Premium Instance Inactivity Warning</strong>
+            <br />
+            You&apos;ve been inactive for 1 hour. Your premium instance will be
+            automatically released in {formatTime(countdown)} if no activity is
+            detected.
+            <br />
+            <small>
+              Click &quot;Stay Active&quot; or interact with the page to keep
+              your instance active.
+            </small>
+          </>
+        )}
       </Alert>
     </Snackbar>
   )

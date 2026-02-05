@@ -44,28 +44,32 @@ class PremiumAssignmentService:
 
     def _check_rate_limit(self, user_id: int) -> bool:
         """Check if user is within rate limit for assignment attempts"""
+        can_assign, _ = self.can_assign_premium(user_id)
+        if can_assign:
+            _assignment_attempts[user_id] = time.time()
+            logger.info(f"User {user_id} rate limit check passed, recording timestamp")
+        return can_assign
+
+    def can_assign_premium(self, user_id: int) -> tuple:
+        """
+        Check if user can request premium assignment.
+
+        Returns:
+            tuple: (can_assign: bool, seconds_remaining: int)
+        """
         current_time = time.time()
         last_attempt = _assignment_attempts.get(user_id, 0)
+        elapsed = current_time - last_attempt
 
-        # Debug logging
-        logger.info(
-            f"Rate limit check for user {user_id}: current_time={current_time}, "
-            f"last_attempt={last_attempt}, diff={current_time - last_attempt}"
-        )
-
-        if current_time - last_attempt < _RATE_LIMIT_SECONDS:
+        if elapsed < _RATE_LIMIT_SECONDS:
+            remaining = int(_RATE_LIMIT_SECONDS - elapsed)
             logger.warning(
-                f"User {user_id} rate limited: {current_time - last_attempt}s < "
-                f"{_RATE_LIMIT_SECONDS}s"
+                f"User {user_id} rate limited: {elapsed:.1f}s < "
+                f"{_RATE_LIMIT_SECONDS}s, {remaining}s remaining"
             )
-            return False  # Rate limited
+            return False, remaining
 
-        _assignment_attempts[user_id] = current_time
-        logger.info(
-            f"User {user_id} rate limit check passed, recording timestamp "
-            f"{current_time}"
-        )
-        return True
+        return True, 0
 
     def _cleanup_old_attempts(self):
         """Clean up old assignment attempts from memory"""
@@ -123,14 +127,18 @@ class PremiumAssignmentService:
                 del _assignment_attempts[user_id]
 
             # Check rate limiting to prevent concurrent calls
-            if not self._check_rate_limit(user_id):
+            can_assign, seconds_remaining = self.can_assign_premium(user_id)
+            if not can_assign:
                 logger.warning(f"Rate limited assignment attempt for user {user_id}")
                 return {
                     "success": False,
                     "message": f"Assignment request too frequent. "
-                    f"Please wait {_RATE_LIMIT_SECONDS} seconds.",
+                    f"Please wait {seconds_remaining} seconds.",
                     "requires_retry": False,
+                    "retry_after": seconds_remaining,
                 }
+            # Record the attempt timestamp
+            _assignment_attempts[user_id] = time.time()
 
             # Local development mode - skip Lambda call if running on localhost
             if is_local_environment():
@@ -269,10 +277,9 @@ class PremiumAssignmentService:
                 f"{user_id} (uid: {user_uid}) from assigned instance"
             )
 
-            # Clear rate limiting for this user on release/logout
-            if user_id in _assignment_attempts:
-                del _assignment_attempts[user_id]
-                logger.info(f"Cleared rate limiting cache for user {user_id}")
+            # NOTE: Rate limit cache is NOT cleared on release/logout.
+            # This prevents rapid re-login attempts. The cache expires naturally
+            # after _RATE_LIMIT_SECONDS (30s).
 
             # Prepare the release request
             # Format as Lambda expects from API Gateway (with body field)

@@ -1,6 +1,6 @@
 from typing import Dict
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
@@ -164,6 +164,38 @@ async def release_premium_instance(current_user: User = Depends(get_current_user
         )
         # Don't fail on release errors - just log them
         return {"message": "Release completed with warnings", "released": True}
+
+
+@router.post("/premium/release-beacon", response_model=Dict)
+async def release_premium_beacon(request: Request):
+    """
+    Beacon endpoint for reliable cleanup on browser close/refresh.
+
+    Uses navigator.sendBeacon for reliable delivery during page unload.
+    Does not require authentication since the user may be closing the browser.
+    The user_uid in the request body identifies which assignment to release.
+    """
+    try:
+        body = await request.json()
+        user_uid = body.get("user_uid")
+
+        if not user_uid:
+            logger.warning("Beacon release called without user_uid")
+            return {"success": False, "message": "Missing user_uid"}
+
+        # Call the premium assignment service to release
+        # Note: We use user_id=0 since we don't have the DB ID from beacon
+        result = await premium_assignment_service.release_premium_user(
+            user_id=0, user_uid=user_uid
+        )
+
+        logger.info(f"Beacon release for user_uid {user_uid}: {result.get('message')}")
+        return {"success": True, "message": result.get("message", "Release processed")}
+
+    except Exception as e:
+        logger.warning(f"Beacon release failed: {e}")
+        # Always return success for beacon - it's fire-and-forget
+        return {"success": False, "message": str(e)}
 
 
 @router.post("/free/logout", response_model=Dict)
