@@ -94,15 +94,18 @@ export const runPostData: RunPostData = {
 }
 
 export const pollRunResultPayload = {
-  node1: {
-    status: "success",
-    message: "Node 1 completed successfully",
-    name: "Node 1",
-    outputPaths: {
-      output1: { path: "/path/to/output1", type: "images" },
+  nodeResults: {
+    node1: {
+      status: "success",
+      message: "Node 1 completed successfully",
+      name: "Node 1",
+      outputPaths: {
+        output1: { path: "/path/to/output1", type: "images" },
+      },
     },
+    node2: { status: "failed", message: "Node 2 failed", name: "Node 2" },
   },
-  node2: { status: "failed", message: "Node 2 failed", name: "Node 2" },
+  syncStatus: "success",
 }
 
 export const createFulfilledWithRunPostDataAction = (

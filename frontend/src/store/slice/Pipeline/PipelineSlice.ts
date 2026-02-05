@@ -59,14 +59,14 @@ export const pipelineSlice = createSlice({
           const runResultPendingList = Object.values(
             state.run.runResult,
           ).filter(isNodeResultPending)
-          // Only mark as finished when all nodes are done AND S3 upload is complete
-          // syncStatus will be "success" when upload is done, "processing" while uploading,
-          // or null/undefined if remote storage is not enabled
+          // Only mark as finished when all nodes are done AND S3 sync is not in progress
+          // syncStatus will be:
+          // - "success" when upload completed successfully
+          // - "error" when upload failed (still allow button to enable for retry)
+          // - "processing" while uploading (keep button disabled)
+          // - null/undefined if remote storage is not enabled
           const syncStatus = action.payload.syncStatus
-          const isSyncComplete =
-            syncStatus === null ||
-            syncStatus === undefined ||
-            syncStatus === "success"
+          const isSyncComplete = syncStatus !== "processing"
           if (runResultPendingList.length === 0 && isSyncComplete) {
             // 終了
             state.run.status = RUN_STATUS.FINISHED
