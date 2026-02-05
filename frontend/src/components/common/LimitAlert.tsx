@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react"
+import React, { useCallback, useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 
 import { useSnackbar } from "notistack"
@@ -54,7 +54,26 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
     return false
   })
 
-  const fetchLimitAlert = async () => {
+  // Cross-tab sync: listen for dismissal changes from other tabs
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === "dismissedAlerts" && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue)
+          if (parsed.limitAlert === true) {
+            setDismissed(true)
+          }
+        } catch {
+          // Ignore parse errors
+        }
+      }
+    }
+
+    window.addEventListener("storage", handleStorageChange)
+    return () => window.removeEventListener("storage", handleStorageChange)
+  }, [])
+
+  const fetchLimitAlert = useCallback(async () => {
     try {
       setLoading(true)
       const alertResponse = await getMyLimitAlertApi()
@@ -64,7 +83,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
   const handleDismiss = () => {
     // Persist dismissal in localStorage
@@ -104,7 +123,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
         setLoading(false)
       }
     }
-  }, [autoCheck])
+  }, [autoCheck, fetchLimitAlert])
 
   if (loading) {
     return showAsModal ? null : (
@@ -169,14 +188,15 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
     return "primary"
   }
 
+  // Clamp days to 0 minimum for display and calculations
+  const safeDaysRemaining = Math.max(0, alert.days_remaining ?? 0)
   const progressValue =
-    alert.days_remaining > 0
+    safeDaysRemaining > 0
       ? Math.max(
           SubscriptionPeriods.MIN_PROGRESS_PERCENT,
           Math.min(
             SubscriptionPeriods.MAX_PROGRESS_PERCENT,
-            (alert.days_remaining /
-              SubscriptionPeriods.PROGRESS_REFERENCE_DAYS) *
+            (safeDaysRemaining / SubscriptionPeriods.PROGRESS_REFERENCE_DAYS) *
               SubscriptionPeriods.MAX_PROGRESS_PERCENT,
           ),
         )
@@ -201,15 +221,15 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
           {alert.message}
         </Typography>
 
-        {/* Days remaining progress bar */}
-        {alert.days_remaining > 0 && (
+        {/* Days remaining progress bar - show even at 0 to indicate urgency */}
+        {alert.days_remaining !== undefined && (
           <Box sx={{ mb: 2 }}>
             <Box display="flex" justifyContent="space-between" mb={1}>
               <Typography variant="caption" fontWeight="bold">
                 Days Remaining
               </Typography>
               <Typography variant="caption" fontWeight="bold">
-                {alert.days_remaining} days
+                {safeDaysRemaining} days
               </Typography>
             </Box>
             <LinearProgress
@@ -273,26 +293,30 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
         {/* Action buttons - only show when not in modal mode */}
         {!showAsModal && (
           <Box display="flex" gap={1} flexWrap="wrap">
-            <Button
-              variant="contained"
-              color="primary"
-              startIcon={<UpgradeIcon />}
-              onClick={handleUpgrade}
-              size="small"
-            >
-              Upgrade to Premium
-            </Button>
-            <Button
-              variant="contained"
-              color="primary"
-              onClick={() => {
-                handleDismiss()
-                window.location.href = "/workspace"
-              }}
-              size="small"
-            >
-              Manage Files
-            </Button>
+            {showUpgradeButton && (
+              <Button
+                variant="contained"
+                color="primary"
+                startIcon={<UpgradeIcon />}
+                onClick={handleUpgrade}
+                size="small"
+              >
+                Upgrade to Premium
+              </Button>
+            )}
+            {showManageFilesButton && (
+              <Button
+                variant="contained"
+                color="primary"
+                onClick={() => {
+                  handleDismiss()
+                  navigate("/workspaces")
+                }}
+                size="small"
+              >
+                Manage Files
+              </Button>
+            )}
           </Box>
         )}
       </Alert>

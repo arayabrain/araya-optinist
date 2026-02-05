@@ -191,3 +191,94 @@ class TestRateLimitCleanup:
         service.clear_rate_limit_cache()
 
         assert len(_assignment_attempts) == 0
+
+
+class TestRateLimitCacheOnReleaseFailure:
+    """Test rate limit cache preserved on release failure (Case 44)"""
+
+    def setup_method(self):
+        """Clear cache before each test"""
+        _assignment_attempts.clear()
+
+    def teardown_method(self):
+        """Clear cache after each test"""
+        _assignment_attempts.clear()
+
+    @pytest.mark.asyncio
+    async def test_cache_not_cleared_on_lambda_error(self):
+        """Test rate limit cache is NOT cleared when Lambda call fails"""
+        service = PremiumAssignmentService()
+
+        # Simulate an assignment attempt
+        _assignment_attempts[1] = time.time()
+
+        # Simulate Lambda error
+        with patch.object(service, "_get_lambda_client") as mock_client:
+            mock_lambda = mock_client.return_value
+            mock_lambda.invoke.side_effect = Exception("Lambda invocation failed")
+
+            result = await service.release_premium_user(user_id=1, user_uid="test-uid")
+
+        # Release should still return success (to not block logout)
+        assert result["success"] is True
+        assert "warnings" in result
+
+        # Rate limit cache should still be in effect
+        assert 1 in _assignment_attempts
+        can_assign, _ = service.can_assign_premium(user_id=1)
+        assert can_assign is False
+
+    @pytest.mark.asyncio
+    async def test_cache_not_cleared_on_non_200_response(self):
+        """Test rate limit cache preserved on non-200 Lambda response"""
+        service = PremiumAssignmentService()
+
+        # Simulate an assignment attempt
+        _assignment_attempts[1] = time.time()
+
+        # Simulate non-200 response from Lambda
+        with patch.object(service, "_get_lambda_client") as mock_client:
+            mock_lambda = mock_client.return_value
+            mock_response_payload = (
+                b'{"statusCode": 500, "body": "{\\"error\\": \\"Internal error\\"}"}'
+            )
+            mock_lambda.invoke.return_value = {
+                "Payload": AsyncMock(read=lambda: mock_response_payload)
+            }
+
+            result = await service.release_premium_user(user_id=1, user_uid="test-uid")
+
+        # Release should still return success (to not block logout)
+        assert result["success"] is True
+
+        # Rate limit cache should still be in effect
+        assert 1 in _assignment_attempts
+        can_assign, _ = service.can_assign_premium(user_id=1)
+        assert can_assign is False
+
+    @pytest.mark.asyncio
+    async def test_cache_not_cleared_on_partial_success(self):
+        """Test rate limit cache preserved even on successful release"""
+        service = PremiumAssignmentService()
+
+        # Simulate an assignment attempt
+        _assignment_attempts[1] = time.time()
+
+        # Simulate successful release response
+        with patch.object(service, "_get_lambda_client") as mock_client:
+            mock_lambda = mock_client.return_value
+            mock_response_payload = (
+                b'{"statusCode": 200, "body": "{\\"success\\": true, '
+                b'\\"message\\": \\"Released\\"}"}'
+            )
+            mock_lambda.invoke.return_value = {
+                "Payload": AsyncMock(read=lambda: mock_response_payload)
+            }
+
+            await service.release_premium_user(user_id=1, user_uid="test-uid")
+
+        # Rate limit cache should STILL be in effect (per Case 1 fix)
+        # This prevents rapid re-login attempts
+        assert 1 in _assignment_attempts
+        can_assign, _ = service.can_assign_premium(user_id=1)
+        assert can_assign is False

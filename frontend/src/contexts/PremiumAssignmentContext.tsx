@@ -26,6 +26,7 @@ import {
   RoutingInfo,
 } from "api/premium/PremiumAssignmentApi"
 import { PlanName, SubscriptionStatus } from "const/Subscription"
+import { selectLogoutGeneration } from "store/slice/User/UserSelector"
 import { RootState } from "store/store"
 import {
   CrossTabLeaderElection,
@@ -34,6 +35,13 @@ import {
   onActivityFromOtherTab,
 } from "utils/crossTabSync"
 import { routingService } from "utils/routing/RoutingService"
+
+// Polling configuration constants
+const INITIAL_POLL_INTERVAL_MS = 5000
+const MAX_POLL_INTERVAL_MS = 60000
+const MAX_POLL_ATTEMPTS = 120 // ~10 minutes at initial rate
+const BACKOFF_MULTIPLIER = 1.5
+const ERROR_BACKOFF_MULTIPLIER = 2
 
 interface PremiumAssignmentState {
   isAssigning: boolean
@@ -74,6 +82,8 @@ export const PremiumAssignmentProvider: React.FC<{
   children: React.ReactNode
 }> = ({ children }) => {
   const currentUser = useSelector((state: RootState) => state.user.currentUser)
+  // Track logout generation to detect stale closures
+  const logoutGeneration = useSelector(selectLogoutGeneration)
 
   const [state, setState] = useState<PremiumAssignmentState>({
     isAssigning: false,
@@ -91,9 +101,20 @@ export const PremiumAssignmentProvider: React.FC<{
   const [hasAttemptedAutoAssignment, setHasAttemptedAutoAssignment] =
     useState(false)
 
+  // Polling state with backoff
+  const [pollInterval, setPollInterval] = useState(INITIAL_POLL_INTERVAL_MS)
+  const [pollAttempts, setPollAttempts] = useState(0)
+
   // Cross-tab leader election for coordinating polling
   const [isTabLeader, setIsTabLeader] = useState(false)
   const leaderElectionRef = useRef<CrossTabLeaderElection | null>(null)
+
+  // Guard against double release during logout
+  const isReleasingOnLogoutRef = useRef(false)
+
+  // Refs for values that inactivity check needs but shouldn't trigger re-renders
+  const lastActivityTimeRef = useRef(state.lastActivityTime)
+  const showInactivityWarningRef = useRef(state.showInactivityWarning)
 
   // Calculate premium user status
   const isPremiumUser =
@@ -110,6 +131,37 @@ export const PremiumAssignmentProvider: React.FC<{
   useEffect(() => {
     setHasAttemptedAutoAssignment(false)
   }, [currentUser?.id])
+
+  // Reset state when logout generation changes to prevent stale closures
+  useEffect(() => {
+    if (logoutGeneration > 0) {
+      // Clear any cached assignment state on logout
+      setState({
+        isAssigning: false,
+        isReleasing: false,
+        assignmentResult: null,
+        statusResult: null,
+        routingInfo: null,
+        error: null,
+        isPremiumUser: false,
+        showInactivityWarning: false,
+        lastActivityTime: Date.now(),
+      })
+      setHasAttemptedAutoAssignment(false)
+      isReleasingOnLogoutRef.current = false
+    }
+    // Only run on logoutGeneration change, not initial mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [logoutGeneration])
+
+  // Sync refs with state to avoid including in inactivity effect dependencies
+  useEffect(() => {
+    lastActivityTimeRef.current = state.lastActivityTime
+  }, [state.lastActivityTime])
+
+  useEffect(() => {
+    showInactivityWarningRef.current = state.showInactivityWarning
+  }, [state.showInactivityWarning])
 
   // Initialize cross-tab leader election for premium users
   useEffect(() => {
@@ -338,44 +390,59 @@ export const PremiumAssignmentProvider: React.FC<{
    * Auto-release on logout
    */
   const autoReleaseOnLogout = useCallback(async (): Promise<unknown> => {
-    // Check if we have an active assignment by making a fresh status call
-    let hasAssignment = false
+    // Prevent double release attempts
+    // This can happen if inactivity interval fires during logout handler
+    if (isReleasingOnLogoutRef.current) {
+      // eslint-disable-next-line no-console
+      console.log("Release already in progress, skipping duplicate call")
+      return null
+    }
+    isReleasingOnLogoutRef.current = true
 
     try {
-      const currentStatus = await getPremiumStatus()
-      hasAssignment = !!currentStatus?.assignment
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.warn("Failed to check status before logout release:", error)
-      // Assume we might have an assignment if status check fails
-      // It's better to attempt release unnecessarily than to leave orphaned instance
-      hasAssignment = true
-    }
+      // Check if we have an active assignment by making a fresh status call
+      let hasAssignment = false
 
-    if (hasAssignment) {
       try {
-        return await release()
-      } catch (releaseError) {
+        const currentStatus = await getPremiumStatus()
+        hasAssignment = !!currentStatus?.assignment
+      } catch (error) {
         // eslint-disable-next-line no-console
-        console.warn(
-          "Primary release failed, using beacon fallback:",
-          releaseError,
-        )
-        // Use sendBeacon as fallback for reliability (Case 9 fix)
-        if (currentUser?.uid) {
-          const beaconData = JSON.stringify({ user_uid: currentUser.uid })
-          navigator.sendBeacon(
-            "/api/users/me/premium/release-beacon",
-            beaconData,
-          )
-        }
-        throw releaseError
+        console.warn("Failed to check status before logout release:", error)
+        // Assume we might have an assignment if status check fails
+        // It's better to attempt release unnecessarily than to leave orphaned instance
+        hasAssignment = true
       }
+
+      if (hasAssignment) {
+        try {
+          return await release()
+        } catch (releaseError) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            "Primary release failed, using beacon fallback:",
+            releaseError,
+          )
+          // Use sendBeacon as fallback for reliability
+          if (currentUser?.uid) {
+            const beaconData = JSON.stringify({ user_uid: currentUser.uid })
+            navigator.sendBeacon(
+              "/api/users/me/premium/release-beacon",
+              beaconData,
+            )
+          }
+          throw releaseError
+        }
+      }
+      return null
+    } finally {
+      // Reset flag after release completes (or fails)
+      isReleasingOnLogoutRef.current = false
     }
-    return null
   }, [release, currentUser])
 
   // Inactivity monitoring for premium users
+  // Uses refs for lastActivityTime/showInactivityWarning to avoid interval churn
   useEffect(() => {
     if (!isPremiumUser || !currentUser || !state.assignmentResult) {
       return
@@ -388,7 +455,7 @@ export const PremiumAssignmentProvider: React.FC<{
       // Check activity from any tab, not just this one
       const lastActivityAnyTab = getLastActivityFromAnyTab()
       const effectiveLastActivity = Math.max(
-        state.lastActivityTime,
+        lastActivityTimeRef.current,
         lastActivityAnyTab,
       )
       const timeSinceLastActivity = now - effectiveLastActivity
@@ -413,7 +480,7 @@ export const PremiumAssignmentProvider: React.FC<{
         })
       } else if (
         timeSinceLastActivity >= oneHourMs &&
-        !state.showInactivityWarning
+        !showInactivityWarningRef.current
       ) {
         // eslint-disable-next-line no-console
         console.log("1 hour of inactivity detected - showing warning")
@@ -439,14 +506,7 @@ export const PremiumAssignmentProvider: React.FC<{
       }
       unsubscribe()
     }
-  }, [
-    isPremiumUser,
-    currentUser,
-    state.assignmentResult,
-    state.lastActivityTime,
-    state.showInactivityWarning,
-    autoReleaseOnLogout,
-  ])
+  }, [isPremiumUser, currentUser, state.assignmentResult, autoReleaseOnLogout])
 
   // Auto-assign when premium user is detected
   useEffect(() => {
@@ -467,29 +527,51 @@ export const PremiumAssignmentProvider: React.FC<{
     autoAssignOnLogin,
   ])
 
+  // Reset polling state when user changes or gets a dedicated instance
+  useEffect(() => {
+    if (!state.assignmentResult?.is_shared) {
+      setPollInterval(INITIAL_POLL_INTERVAL_MS)
+      setPollAttempts(0)
+    }
+  }, [state.assignmentResult?.is_shared])
+
   // Poll for premium instance when user is on temporary shared instance
   // Only the leader tab polls to prevent duplicate API calls
   useEffect(() => {
-    if (
-      !isPremiumUser ||
-      !isTabLeader ||
-      !state.assignmentResult?.assigned ||
-      !state.assignmentResult?.is_shared ||
-      state.assignmentResult?.assignment_source !== "autoscaling_temp"
-    ) {
+    const shouldPoll =
+      isPremiumUser &&
+      isTabLeader &&
+      state.assignmentResult?.assigned &&
+      state.assignmentResult?.is_shared &&
+      state.assignmentResult?.assignment_source === "autoscaling_temp"
+
+    if (!shouldPoll) {
+      return
+    }
+
+    // Check if we've exceeded max attempts
+    if (pollAttempts >= MAX_POLL_ATTEMPTS) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `Max poll attempts (${MAX_POLL_ATTEMPTS}) reached. Stopping polling.`,
+      )
+      setState((prev) => ({
+        ...prev,
+        error:
+          "No premium instance available after extended wait. " +
+          "Please try again later or contact support.",
+      }))
       return
     }
 
     // eslint-disable-next-line no-console
     console.log(
-      "Leader tab: polling for premium instance (on temporary shared)...",
+      `Polling for premium instance (attempt ${pollAttempts + 1}/${MAX_POLL_ATTEMPTS}, ` +
+        `interval ${pollInterval}ms)...`,
     )
 
-    let pollInterval: ReturnType<typeof setInterval> | null = null
-
-    const pollForPremiumInstance = async () => {
+    const timeoutId = setTimeout(async () => {
       try {
-        // Check if premium instance is now available
         const result = await assignPremiumInstance()
 
         if (result.assigned && !result.is_shared) {
@@ -500,37 +582,38 @@ export const PremiumAssignmentProvider: React.FC<{
             assignmentResult: result,
             error: null,
           }))
-
-          // Stop polling
-          if (pollInterval) {
-            clearInterval(pollInterval)
-            pollInterval = null
-          }
+          // Reset polling state on success
+          setPollInterval(INITIAL_POLL_INTERVAL_MS)
+          setPollAttempts(0)
         } else {
           // eslint-disable-next-line no-console
-          console.log("Still on temporary instance, will retry...")
+          console.log("Still on temporary instance, will retry with backoff...")
+          setPollAttempts((prev) => prev + 1)
+          // Exponential backoff capped at MAX_POLL_INTERVAL_MS
+          setPollInterval((prev) =>
+            Math.min(prev * BACKOFF_MULTIPLIER, MAX_POLL_INTERVAL_MS),
+          )
         }
       } catch (error) {
         // eslint-disable-next-line no-console
         console.warn("Error polling for premium instance:", error)
+        setPollAttempts((prev) => prev + 1)
+        // More aggressive backoff on errors
+        setPollInterval((prev) =>
+          Math.min(prev * ERROR_BACKOFF_MULTIPLIER, MAX_POLL_INTERVAL_MS),
+        )
       }
-    }
+    }, pollInterval)
 
-    // Poll every 5 seconds
-    pollInterval = setInterval(pollForPremiumInstance, 5000)
-
-    // Cleanup on unmount or when conditions change
-    return () => {
-      if (pollInterval) {
-        clearInterval(pollInterval)
-      }
-    }
+    return () => clearTimeout(timeoutId)
   }, [
     isPremiumUser,
     isTabLeader,
     state.assignmentResult?.assigned,
     state.assignmentResult?.is_shared,
     state.assignmentResult?.assignment_source,
+    pollInterval,
+    pollAttempts,
   ])
 
   // Handle browser close/refresh for premium users

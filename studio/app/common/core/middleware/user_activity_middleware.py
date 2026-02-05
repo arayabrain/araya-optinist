@@ -53,6 +53,12 @@ _premium_activity_cache = {}
 _cache_lock = threading.Lock()
 _CACHE_TTL_SECONDS = 60  # Only update DB once per minute per user
 
+# Track recently logged out users to prevent orphaned background activity updates
+# Key: user_id, Value: logout timestamp
+_logged_out_users = {}
+_logged_out_lock = threading.Lock()
+_LOGGED_OUT_TTL_SECONDS = 10  # Clear entry after 10 seconds (background tasks are fast)
+
 # Cache instance ID (fetch once at startup, reuse for all requests)
 _instance_id_cache = None
 _instance_id_lock = threading.Lock()
@@ -249,7 +255,7 @@ def invalidate_activity_cache(user_id: int) -> None:
 
     Call this when a user logs out to prevent stale cache entries on rapid re-login.
     This ensures the first activity after re-login is properly recorded instead of
-    being skipped due to the cache TTL. (Case 10 fix)
+    being skipped due to the cache TTL.
 
     Args:
         user_id: Database user ID to invalidate
@@ -257,6 +263,61 @@ def invalidate_activity_cache(user_id: int) -> None:
     with _cache_lock:
         _free_activity_cache.pop(user_id, None)
         _premium_activity_cache.pop(user_id, None)
+
+
+def mark_user_logged_out(user_id: int) -> None:
+    """
+    Mark a user as logged out to prevent orphaned background activity updates.
+
+    Background activity tasks are fire-and-forget. If a user logs out while an
+    activity update is queued or in progress, the task may complete with stale
+    data. This function marks the user as logged out so background tasks can
+    skip the update.
+
+    Args:
+        user_id: Database user ID to mark as logged out
+    """
+    with _logged_out_lock:
+        _logged_out_users[user_id] = time.time()
+
+
+def is_user_logged_out(user_id: int) -> bool:
+    """
+    Check if a user has recently logged out.
+
+    Used by background activity tasks to skip updates for logged out users.
+    Entries are automatically cleaned up after TTL expires.
+
+    Args:
+        user_id: Database user ID to check
+
+    Returns:
+        True if user logged out recently and entry hasn't expired
+    """
+    with _logged_out_lock:
+        logout_time = _logged_out_users.get(user_id)
+        if logout_time is None:
+            return False
+        # Check if entry has expired
+        if time.time() - logout_time > _LOGGED_OUT_TTL_SECONDS:
+            del _logged_out_users[user_id]
+            return False
+        return True
+
+
+def clear_logged_out_status(user_id: int) -> None:
+    """
+    Clear logged out status for a user on re-login.
+
+    Call this when a user logs back in to clear the logged out flag.
+    This prevents the edge case where a rapid re-login still sees the
+    logged out status.
+
+    Args:
+        user_id: Database user ID to clear
+    """
+    with _logged_out_lock:
+        _logged_out_users.pop(user_id, None)
 
 
 def _should_update_activity(user_id: int, tier: str) -> bool:
@@ -298,11 +359,15 @@ async def _update_free_user_activity_async(user_id: int):
     Update last_activity timestamp for free tier user (async wrapper).
     Runs in background to avoid blocking request.
     """
+    if is_user_logged_out(user_id):
+        logger.debug(f"Skipping activity update for logged out user {user_id}")
+        return
+
     # Update cache immediately (optimistic) to reduce perceived latency
     _update_cache_after_commit(user_id, TIER_FREE)
 
     # Run blocking database call in thread pool (fire-and-forget)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(None, _update_free_user_activity_sync, user_id)
     except Exception as e:
@@ -325,6 +390,12 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
         True if update successful, False otherwise
     """
     try:
+        if is_user_logged_out(user_id):
+            logger.debug(
+                f"Skipping free user activity DB update for logged out user {user_id}"
+            )
+            return False
+
         # Get current instance ID from EC2 metadata or environment
         instance_id = _get_instance_id()
 
@@ -376,11 +447,15 @@ async def _update_premium_user_activity_async(user_id: int):
     Update last_activity timestamp for premium tier user (async wrapper).
     Runs in background to avoid blocking request.
     """
+    if is_user_logged_out(user_id):
+        logger.debug(f"Skipping activity update for logged out user {user_id}")
+        return
+
     # Update cache immediately (optimistic) to reduce perceived latency
     _update_cache_after_commit(user_id, TIER_PREMIUM)
 
     # Run blocking database call in thread pool (fire-and-forget)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(None, _update_premium_user_activity_sync, user_id)
     except Exception as e:
@@ -402,6 +477,12 @@ def _update_premium_user_activity_sync(user_id: int) -> bool:
         True if update successful, False otherwise
     """
     try:
+        if is_user_logged_out(user_id):
+            logger.debug(
+                f"Skipping premium activity DB update for logged out user {user_id}"
+            )
+            return False
+
         with session_scope() as session:
             now = datetime.now(timezone.utc)
 

@@ -442,3 +442,155 @@ class TestActivityCacheInvalidation:
 
         # Simulate re-login - should now record activity
         assert _should_update_activity(TEST_USER_ID, TIER_FREE) is True
+
+
+class TestLoggedOutUserTracking:
+    """Test Case 11: Background activity updates for logged out users"""
+
+    def setup_method(self):
+        """Clear logged out users tracking before each test"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _logged_out_users,
+        )
+
+        _logged_out_users.clear()
+
+    def test_mark_user_logged_out_adds_to_tracking(self):
+        """mark_user_logged_out should add user to tracking set"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _logged_out_users,
+            mark_user_logged_out,
+        )
+
+        mark_user_logged_out(TEST_USER_ID)
+        assert TEST_USER_ID in _logged_out_users
+
+    def test_is_user_logged_out_returns_true_for_recent_logout(self):
+        """is_user_logged_out should return True for recently logged out user"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            is_user_logged_out,
+            mark_user_logged_out,
+        )
+
+        mark_user_logged_out(TEST_USER_ID)
+        assert is_user_logged_out(TEST_USER_ID) is True
+
+    def test_is_user_logged_out_returns_false_for_non_logged_out_user(self):
+        """is_user_logged_out should return False for user not logged out"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            is_user_logged_out,
+        )
+
+        assert is_user_logged_out(TEST_USER_ID) is False
+
+    def test_is_user_logged_out_returns_false_after_ttl_expires(self):
+        """is_user_logged_out should return False after TTL expires"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _LOGGED_OUT_TTL_SECONDS,
+            _logged_out_lock,
+            _logged_out_users,
+            is_user_logged_out,
+        )
+
+        # Set old logout timestamp
+        with _logged_out_lock:
+            _logged_out_users[TEST_USER_ID] = time.time() - _LOGGED_OUT_TTL_SECONDS - 1
+
+        # Should return False (expired)
+        assert is_user_logged_out(TEST_USER_ID) is False
+
+        # Entry should also be cleaned up
+        assert TEST_USER_ID not in _logged_out_users
+
+    def test_clear_logged_out_status_removes_tracking(self):
+        """clear_logged_out_status should remove user from tracking"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _logged_out_users,
+            clear_logged_out_status,
+            mark_user_logged_out,
+        )
+
+        mark_user_logged_out(TEST_USER_ID)
+        assert TEST_USER_ID in _logged_out_users
+
+        clear_logged_out_status(TEST_USER_ID)
+        assert TEST_USER_ID not in _logged_out_users
+
+    def test_clear_logged_out_status_does_not_raise_for_nonexistent_user(self):
+        """clear_logged_out_status should not raise for non-existent user"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            clear_logged_out_status,
+        )
+
+        # Should not raise
+        clear_logged_out_status(999999)
+
+    @pytest.mark.asyncio
+    async def test_free_activity_update_skipped_for_logged_out_user(self):
+        """Background activity update should be skipped for logged out user"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _update_free_user_activity_async,
+            mark_user_logged_out,
+        )
+
+        # Mark user as logged out
+        mark_user_logged_out(TEST_USER_ID)
+
+        # Mock the sync function to ensure it's not called
+        with patch(
+            "studio.app.common.core.middleware.user_activity_middleware."
+            "_update_free_user_activity_sync"
+        ) as mock_sync:
+            await _update_free_user_activity_async(TEST_USER_ID)
+
+            # Should not be called because user is logged out
+            mock_sync.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_premium_activity_update_skipped_for_logged_out_user(self):
+        """Background premium activity update should be skipped for logged out user"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _update_premium_user_activity_async,
+            mark_user_logged_out,
+        )
+
+        # Mark user as logged out
+        mark_user_logged_out(TEST_USER_ID)
+
+        # Mock the sync function to ensure it's not called
+        with patch(
+            "studio.app.common.core.middleware.user_activity_middleware."
+            "_update_premium_user_activity_sync"
+        ) as mock_sync:
+            await _update_premium_user_activity_async(TEST_USER_ID)
+
+            # Should not be called because user is logged out
+            mock_sync.assert_not_called()
+
+    def test_free_activity_sync_skipped_for_logged_out_user(self):
+        """Sync DB update should be skipped for logged out user (second check)"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _update_free_user_activity_sync,
+            mark_user_logged_out,
+        )
+
+        # Mark user as logged out
+        mark_user_logged_out(TEST_USER_ID)
+
+        # Should return False without attempting DB update
+        result = _update_free_user_activity_sync(TEST_USER_ID)
+        assert result is False
+
+    def test_premium_activity_sync_skipped_for_logged_out_user(self):
+        """Sync premium DB update should be skipped for logged out user"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _update_premium_user_activity_sync,
+            mark_user_logged_out,
+        )
+
+        # Mark user as logged out
+        mark_user_logged_out(TEST_USER_ID)
+
+        # Should return False without attempting DB update
+        result = _update_premium_user_activity_sync(TEST_USER_ID)
+        assert result is False

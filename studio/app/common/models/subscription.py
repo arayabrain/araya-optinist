@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from typing import Any, Dict, Optional
 
 from sqlalchemy import BIGINT, JSON, TIMESTAMP, Boolean, DateTime
@@ -260,3 +261,175 @@ class UserStorageUsage(SQLModel, table=True):
         if self.storage_quota_bytes == 0:
             return 0.0
         return round((self.storage_usage_bytes / self.storage_quota_bytes) * 100, 2)
+
+
+class StorageOperationStatus(str, Enum):
+    """Status of storage operation for idempotent tracking."""
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class StorageOperationType(str, Enum):
+    """Type of storage operation."""
+
+    INCREMENT = "increment"
+    DECREMENT = "decrement"
+
+
+class StorageOperation(SQLModel, table=True):
+    """
+    Tracks storage operations for idempotent increment/decrement.
+    Prevents double-counting when operations fail or retry.
+    """
+
+    __tablename__ = "storage_operations"
+
+    id: Optional[int] = Field(
+        sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
+        default=None,
+    )
+    user_id: int = Field(
+        sa_column=Column(BIGINT, nullable=False, index=True),
+        description="User ID for this storage operation",
+    )
+    idempotency_key: str = Field(
+        sa_column=Column(String(255), nullable=False, unique=True, index=True),
+        description="Unique key to prevent duplicate operations",
+    )
+    operation_type: str = Field(
+        sa_column=Column(
+            SQLEnum(
+                "increment",
+                "decrement",
+                name="storage_operation_type_enum",
+            ),
+            nullable=False,
+        ),
+    )
+    bytes_delta: int = Field(
+        sa_column=Column(BIGINT, nullable=False),
+        description="Number of bytes to add (positive) or remove (negative)",
+    )
+    status: str = Field(
+        sa_column=Column(
+            SQLEnum(
+                "pending",
+                "completed",
+                "failed",
+                name="storage_operation_status_enum",
+            ),
+            nullable=False,
+            default="pending",
+        ),
+        default=StorageOperationStatus.PENDING.value,
+    )
+    error_message: Optional[str] = Field(
+        sa_column=Column(String(500), nullable=True),
+        default=None,
+        description="Error message if operation failed",
+    )
+    created_at: Optional[datetime] = Field(
+        default_factory=get_current_datetime,
+        sa_column=Column(TIMESTAMP, server_default=func.current_timestamp()),
+    )
+    completed_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime, nullable=True),
+        default=None,
+    )
+
+
+class DeletionStep(str, Enum):
+    """
+    User deletion step tracking for safe deletion ordering.
+    Firebase is deleted FIRST to prevent orphaned accounts.
+    """
+
+    STARTED = "started"
+    FIREBASE_PENDING = "firebase_pending"
+    FIREBASE_DELETED = "firebase_deleted"
+    STRIPE_CANCELLED = "stripe_cancelled"
+    S3_DELETED = "s3_deleted"
+    WORKSPACES_DELETED = "workspaces_deleted"
+    COMPLETED = "completed"
+
+
+class DeletionStatus(str, Enum):
+    """Status of user deletion process."""
+
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class UserDeletionRecord(SQLModel, table=True):
+    """
+    Tracks user deletion progress for recovery from failures.
+    Uses two-phase commit for Firebase deletion to prevent orphaned accounts.
+    """
+
+    __tablename__ = "user_deletion_records"
+
+    id: Optional[int] = Field(
+        sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
+        default=None,
+    )
+    user_id: int = Field(
+        sa_column=Column(BIGINT, nullable=False),
+        description="FK to users.id being deleted",
+    )
+    user_uid: str = Field(
+        sa_column=Column(String(128), nullable=False),
+        description="Firebase UID for recovery checks",
+    )
+    step: str = Field(
+        sa_column=Column(
+            SQLEnum(
+                "started",
+                "firebase_pending",
+                "firebase_deleted",
+                "stripe_cancelled",
+                "s3_deleted",
+                "workspaces_deleted",
+                "completed",
+                name="deletion_step_enum",
+            ),
+            nullable=False,
+            default="started",
+        ),
+        default=DeletionStep.STARTED.value,
+    )
+    status: str = Field(
+        sa_column=Column(
+            SQLEnum(
+                "in_progress",
+                "completed",
+                "failed",
+                name="deletion_status_enum",
+            ),
+            nullable=False,
+            default="in_progress",
+        ),
+        default=DeletionStatus.IN_PROGRESS.value,
+    )
+    error: Optional[str] = Field(
+        sa_column=Column(Text, nullable=True),
+        default=None,
+        description="Error message if deletion failed",
+    )
+    started_at: Optional[datetime] = Field(
+        default_factory=get_current_datetime,
+        sa_column=Column(TIMESTAMP, server_default=func.current_timestamp()),
+    )
+    completed_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime, nullable=True),
+        default=None,
+    )
+    updated_at: Optional[datetime] = Field(
+        sa_column=Column(
+            TIMESTAMP,
+            server_default=func.current_timestamp(),
+            onupdate=func.current_timestamp(),
+        ),
+    )
