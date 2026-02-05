@@ -252,6 +252,45 @@ if (status === 202) {
 3. **Success State (200):**
    - Normal workflow details rendering
 
+### Thumbnail Loading States
+
+**File:** `frontend/src/components/Dataview/DataviewRecords.tsx`
+
+Thumbnail rendering handles both new (PNG) and legacy (TIFF) thumbnails:
+
+```tsx
+const renderThumbnailCell = (params: { row: DataviewType }) => {
+  const thumbnailPath = params?.row?.thumbnails?.image_url
+
+  // Check if PNG (fast) or TIFF (needs download)
+  const isLegacyTiff = thumbnailPath?.endsWith('.tif') || thumbnailPath?.endsWith('.tiff')
+
+  if (isLegacyTiff) {
+    return <ImagePlotSimpleWithLoading filePath={thumbnailPath} />
+  }
+
+  // PNG thumbnails are fast and direct
+  return <img src={`/api/outputs/data/${thumbnailPath}`} />
+}
+```
+
+**File:** `frontend/src/components/Dataview/InputsView.tsx`, `OutputsView.tsx`
+
+Loading overlay for full visualization:
+
+```tsx
+const [isSyncing, setIsSyncing] = useState(false)
+
+if (isSyncing) {
+  return (
+    <Dialog open={open}>
+      <CircularProgress />
+      <Typography>Loading visualization data...</Typography>
+    </Dialog>
+  )
+}
+```
+
 ---
 
 ## Flow Diagrams
@@ -495,3 +534,382 @@ Experiment {workspace_id}/{unique_id} is pending sync, returning 202
 ### Added
 - `studio/app/common/schemas/dataview.py` - LocalSyncStatus enum
 - `studio/alembic/versions/a5b9c8d7e6f5_add_sync_logout_and_versioning.py` - Database migration
+
+---
+
+## Thumbnail Path Handling
+
+### Database Storage
+
+The `thumbnails` JSON field in ExperimentRecord stores thumbnail paths:
+
+```json
+{
+  "image_url": "output/workspace-123/exp-abc/thumbnails/input_thumb.png",
+  "roi_url": "output/workspace-123/exp-abc/thumbnails/roi_thumb.png"
+}
+```
+
+### Generation at Experiment Completion
+
+Thumbnails are generated when experiments complete:
+- `input_thumb.png`: First frame of input TIFF normalized to uint8
+- `roi_thumb.png`: Rendered cell_roi.json as colored image
+
+**File:** `studio/app/common/core/dataview/dataview_services.py`
+
+### Lazy Generation Fallback
+
+For legacy experiments without PNG thumbnails:
+
+1. Frontend requests thumbnail
+2. Backend checks if PNG exists
+3. If not, downloads original TIFF from S3
+4. Generates PNG, uploads to S3, returns to frontend
+
+**File:** `studio/app/common/routers/outputs.py` - `get_or_generate_thumbnail()`
+
+---
+
+## Multi-Tenant S3 Bucket Architecture
+
+### Why Bucket Lookup is Essential
+
+In OptiNiSt Cloud, each user has their own S3 bucket for data storage. When accessing published or shared data, the system must determine **which bucket** contains the data—the **workspace owner's bucket**, not the requesting user's bucket.
+
+**Key Insight:** Data is always stored in the workspace owner's S3 bucket, even when shared with other users.
+
+```
+Example: User B views published data from User A's workspace
+
+  User A (workspace owner)        User B (viewer)
+  ┌─────────────────────┐         ┌─────────────────────┐
+  │ user-a-bucket       │         │ user-b-bucket       │
+  │ ├── workspace-123/  │         │ ├── workspace-456/  │  ← User B's data
+  │ │   └── exp-abc/    │         │ └── ...             │
+  │ │       └── data... │         └─────────────────────┘
+  │ └── ...             │
+  └─────────────────────┘
+            ↑
+            │  Data is stored HERE (in owner's bucket)
+            │
+  ┌─────────┴───────────────────────────────────────────────────────────┐
+  │ Backend must resolve: workspace_id → owner → owner's bucket name    │
+  └─────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow: Frontend → API → S3 Bucket
+
+The bucket lookup process uses `workspace_id` to find the correct S3 bucket.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ 1. Frontend Request                                                 │
+│    GET /outputs/image/{filepath}?workspace_id=123                   │
+│    Headers: { Authorization: Bearer <token> }                       │
+│    (or for public: DATAVIEW_PUBLIC_REQUEST: true)                   │
+└─────────────────────────────────────────────────────────────────────┘
+                                 ↓
+┌─────────────────────────────────────────────────────────────────────┐
+│ 2. FastAPI Dependency: get_outputs_remote_bucket_name()             │
+│    auth_dependencies.py:358-507                                     │
+│                                                                     │
+│    Step 2a: Extract workspace_id from request                       │
+│    ┌─────────────────────────────────────────────────────────────┐  │
+│    │ Priority:                                                   │  │
+│    │ 1. Query params: ?workspace_id=123                          │  │
+│    │ 2. URL path parsing: /outputs/image/.../output/123/...      │  │
+│    └─────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│    Step 2b: Validate access (for authenticated users)               │
+│    ┌─────────────────────────────────────────────────────────────┐  │
+│    │ Check if user has access via:                               │  │
+│    │ 1. Is workspace owner? → Yes → Allow                        │  │
+│    │ 2. Is shared user? → Yes → Allow                            │  │
+│    │ 3. Is data published? → Yes → Allow                         │  │
+│    │ 4. None of above → Fall back to user's own bucket           │  │
+│    └─────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│    Step 2c: Return workspace owner's bucket name                    │
+└─────────────────────────────────────────────────────────────────────┘
+                                 ↓
+┌─────────────────────────────────────────────────────────────────────┐
+│ 3. Endpoint Handler: get_image()                                    │
+│    outputs.py:337-393                                               │
+│                                                                     │
+│    Uses resolved bucket name to:                                    │
+│    - On-demand sync visualization files from S3                     │
+│    - Read and return data to frontend                               │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Access Validation Logic
+
+The `get_outputs_remote_bucket_name` function implements multi-tier access validation:
+
+```python
+# File: studio/app/common/core/auth/auth_dependencies.py
+
+async def get_outputs_remote_bucket_name(req, current_user, db) -> str:
+    """
+    Resolution priority:
+    1. Extract workspace_id from query params or URL path
+    2. For authenticated users:
+       a. Check if owner or shared user → Use owner's bucket
+       b. Check if data is published → Use owner's bucket
+       c. Otherwise → Fall back to requesting user's bucket
+    3. For public requests (no auth):
+       → Use workspace owner's bucket (access already validated)
+    """
+```
+
+**Security Layers:**
+
+| Access Type | Validation | Bucket Returned |
+|-------------|------------|-----------------|
+| Workspace Owner | `Workspace.user_id == current_user.id` | Owner's bucket |
+| Shared User | `WorkspacesShareUser.user_id == current_user.id` | Owner's bucket |
+| Published Data | `ExperimentRecord.publish_status == 1` | Owner's bucket |
+| Public Dataview | `DATAVIEW_PUBLIC_REQUEST` header + publish check | Owner's bucket |
+| No Access | None of above | Requesting user's bucket (fallback) |
+
+---
+
+## Public Dataview Request Flow
+
+Public access (unauthenticated) to published data uses a special HTTP header.
+
+### Header-Based Public Access
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ Frontend: Viewing published data without login                      │
+└─────────────────────────────────────────────────────────────────────┘
+                                 ↓
+┌─────────────────────────────────────────────────────────────────────┐
+│ HTTP Request                                                        │
+│   GET /outputs/image/{path}?workspace_id=123                        │
+│   Headers:                                                          │
+│     DATAVIEW_PUBLIC_REQUEST: true  ← Special header                 │
+│     (No Authorization header)                                       │
+└─────────────────────────────────────────────────────────────────────┘
+                                 ↓
+┌─────────────────────────────────────────────────────────────────────┐
+│ Backend: DataviewService.is_dataview_public_outputs_request()       │
+│   dataview_services.py:120-130                                      │
+│                                                                     │
+│   Checks:                                                           │
+│   1. Has DATAVIEW_PUBLIC_REQUEST header?                            │
+│   2. Is outputs endpoint (matches /outputs/* pattern)?              │
+└─────────────────────────────────────────────────────────────────────┘
+                                 ↓
+┌─────────────────────────────────────────────────────────────────────┐
+│ Backend: DataviewService.validate_dataview_public_outputs_request() │
+│   dataview_services.py:133-192                                      │
+│                                                                     │
+│   Validation:                                                       │
+│   1. Extract workspace_id and unique_id from URL                    │
+│   2. Query: Is ExperimentRecord.publish_status == 1?                │
+│   3. Allow access only if data is published                         │
+└─────────────────────────────────────────────────────────────────────┘
+                                 ↓
+┌─────────────────────────────────────────────────────────────────────┐
+│ Backend: get_current_user_for_dataview_outputs()                    │
+│   auth_dependencies.py:161-189                                      │
+│                                                                     │
+│   Returns None for public requests (no authenticated user)          │
+│   → Signals to bucket lookup that this is a public request          │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Frontend Header Implementation
+
+```typescript
+// File: frontend/src/utils/axios.ts (axios interceptor)
+
+// For public dataview requests, add the special header
+if (isPublicDataviewRequest) {
+  config.headers['DATAVIEW_PUBLIC_REQUEST'] = 'true'
+}
+```
+
+---
+
+## On-Demand Visualization Sync
+
+Files are synced from S3 to local storage on-demand when accessed.
+
+### Sync Modes
+
+| Mode | Files Downloaded | Use Case |
+|------|------------------|----------|
+| `visualization` | JSON, TIFF | Fast initial viewing |
+| `all` | JSON, TIFF, PKL, NWB | Edit ROI functionality |
+
+### Sync Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ 1. User clicks to view experiment data                              │
+│    Frontend: dispatch(getImageData({ path, workspaceId }))          │
+└─────────────────────────────────────────────────────────────────────┘
+                                 ↓
+┌─────────────────────────────────────────────────────────────────────┐
+│ 2. Backend: GET /outputs/image/{path}?workspace_id=123              │
+│    Endpoint calls _ensure_visualization_synced() before reading     │
+└─────────────────────────────────────────────────────────────────────┘
+                                 ↓
+┌─────────────────────────────────────────────────────────────────────┐
+│ 3. _ensure_visualization_synced()                                   │
+│    outputs.py:141-197                                               │
+│                                                                     │
+│    ┌─────────────────────────────────────────────────────────────┐  │
+│    │ Check sync status file:                                     │  │
+│    │ if RemoteSyncStatusFileUtil.check_sync_status_unsynced():   │  │
+│    │     → Download visualization files from S3                  │  │
+│    │     → Download input files (if needed for viewing)          │  │
+│    │ else:                                                       │  │
+│    │     → Already synced, skip download                         │  │
+│    └─────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+                                 ↓
+┌─────────────────────────────────────────────────────────────────────┐
+│ 4. Return data to frontend                                          │
+│    Data is now available locally for fast repeated access           │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Background Full Sync
+
+After visualization files are loaded, a background task downloads remaining files:
+
+```python
+# File: outputs.py:37-72
+
+async def _background_full_sync(remote_bucket_name, workspace_id, unique_id):
+    """
+    Background task to download PKL and NWB files.
+    Prepares experiment for Edit ROI without blocking the user.
+    """
+    # Only runs if still unsynced (visualization-only sync doesn't mark as synced)
+    if RemoteSyncStatusFileUtil.check_sync_status_unsynced(workspace_id, unique_id):
+        await remote_storage_controller.download_experiment(
+            workspace_id, unique_id, sync_mode="all"
+        )
+```
+
+---
+
+## Endpoint Parameter Reference
+
+### Endpoints That Pass workspace_id
+
+These endpoints include `workspace_id` as a parameter, enabling reliable bucket lookup:
+
+| Endpoint | Parameter | Purpose |
+|----------|-----------|---------|
+| `GET /outputs/image/{filepath}` | `workspace_id` (query) | Image/ROI data |
+| `GET /outputs/csv/{filepath}` | `workspace_id` (query) | CSV input data |
+| `GET /outputs/matlab/{filepath}` | `workspace_id` (query) | MATLAB input data |
+| `POST /outputs/sync/{workspace_id}/{unique_id}` | `workspace_id` (path) | Manual sync trigger |
+
+### Endpoints That Extract workspace_id from Path
+
+These endpoints extract `workspace_id` from the file path when not provided as a parameter:
+
+| Endpoint | Path Pattern | Extraction |
+|----------|--------------|------------|
+| `GET /outputs/inittimedata/{dirpath}` | `.../output/{workspace_id}/{unique_id}/...` | Path parsing |
+| `GET /outputs/timedata/{dirpath}` | `.../output/{workspace_id}/{unique_id}/...` | Path parsing |
+| `GET /outputs/alltimedata/{dirpath}` | `.../output/{workspace_id}/{unique_id}/...` | Path parsing |
+| `GET /outputs/data/{filepath}` | `.../output/{workspace_id}/{unique_id}/...` | Path parsing |
+
+### Path Parsing Logic
+
+```python
+# File: auth_dependencies.py:386-403
+
+# Pattern: /outputs/image//app/studio_data/output/{workspace_id}/{unique_id}/...
+data_file_path = re.sub(r"^/outputs/[^/]+/", "", request_url_path)
+
+if data_file_path.startswith(DIRPATH.OUTPUT_DIR):
+    relative_path = data_file_path[len(DIRPATH.OUTPUT_DIR):].lstrip("/")
+    path_parts = relative_path.split("/")
+    if len(path_parts) >= 2:
+        workspace_id = path_parts[0]
+        unique_id = path_parts[1]
+```
+
+---
+
+## Error Handling and Fallbacks
+
+### Bucket Lookup Fallback Chain
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ 1. Try to find workspace owner's bucket                             │
+│    ↓ Failed                                                         │
+│ 2. Fall back to authenticated user's bucket                         │
+│    ↓ No authenticated user                                          │
+│ 3. Fall back to default bucket (S3_DEFAULT_BUCKET_NAME)             │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Sync Error Handling
+
+| Scenario | Frontend Behavior |
+|----------|-------------------|
+| File not found after sync | Show "Click to download" button |
+| S3 download fails | Show error message with retry |
+| Network timeout | Show error message with retry |
+
+### Download Button UX
+
+When data is not yet available locally, the frontend shows a download icon:
+
+```typescript
+// File: ImagePlotSimple.tsx, RoiPlotSimple.tsx
+
+if (error != null) {
+  return (
+    <Box>
+      <Typography color="error">{error}</Typography>
+      <Tooltip title="Download">
+        <IconButton onClick={handleRetry}>
+          <CloudDownloadIcon color="primary" />
+        </IconButton>
+      </Tooltip>
+    </Box>
+  )
+}
+```
+
+---
+
+## Debugging Bucket Lookup
+
+### Log Messages
+
+Key log messages for debugging bucket resolution:
+
+```
+# Successful owner bucket resolution
+Outputs: user {id} has direct access to workspace {workspace_id}
+Outputs: using owner bucket {bucket} for workspace {workspace_id}
+
+# Published data access
+Outputs: experiment {workspace_id}/{unique_id} is published, allowing access for user {id}
+
+# Fallback scenarios
+Outputs: falling back to user {id}'s bucket {bucket} for workspace {workspace_id}
+Outputs: falling back to default bucket {bucket}
+```
+
+### Common Issues
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| Data loads from wrong bucket | workspace_id not passed | Ensure frontend passes workspace_id |
+| Published data 403 error | publish_status not set | Check ExperimentRecord.publish_status |
+| Sync never completes | Missing bucket permissions | Check S3 IAM policies |

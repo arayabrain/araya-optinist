@@ -93,6 +93,8 @@ const PUBLIC_ROUTES = [
   /^\/register$/,
   /^\/reset-password$/,
   /^\/account-deleted$/,
+  /^\/subscription\/thanks$/, // Checkout success - validates via session_id
+  /^\/subscription\/failed$/, // Checkout failed - validates via session_id
 ]
 
 export const isPublicRoute = (pathname: string): boolean => {

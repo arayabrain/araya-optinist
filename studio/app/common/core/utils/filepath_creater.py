@@ -1,6 +1,36 @@
 import os
 import shutil
 
+from studio.app.dir_path import DIRPATH
+
+
+def normalize_output_path(path: str) -> str:
+    """
+    Convert absolute output path to relative path.
+
+    Handles paths like:
+    - /tmp/studio/output/93/tutorial1/... → 93/tutorial1/...
+    - /app/studio_data/output/93/tutorial1/... → 93/tutorial1/...
+
+    Args:
+        path: The path to normalize (may be absolute or relative)
+
+    Returns:
+        Relative path without output directory prefix
+    """
+    if not path:
+        return path
+
+    # Strip OUTPUT_DIR prefix if present
+    if path.startswith(DIRPATH.OUTPUT_DIR):
+        return path[len(DIRPATH.OUTPUT_DIR) :].lstrip("/")
+
+    # Handle common Docker path prefix
+    if path.startswith("/app/studio_data/output/"):
+        return path[len("/app/studio_data/output/") :]
+
+    return path
+
 
 def join_filepath(path_list):
     if isinstance(path_list, str):

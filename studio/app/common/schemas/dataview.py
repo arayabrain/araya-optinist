@@ -71,6 +71,20 @@ class DataviewRecord(BaseModel):
         orm_mode = True
 
 
+class PublishValidationResult(BaseModel):
+    """Result of validating whether an experiment can be published."""
+
+    can_publish: bool = Field(description="Whether the experiment can be published")
+    is_displayable: bool = Field(
+        default=True,
+        description="Whether the experiment data can be displayed "
+        "(regardless of publish)",
+    )
+    reason: Optional[str] = Field(
+        default=None, description="Reason if cannot publish or display"
+    )
+
+
 class DataviewRecordSearchOptions(BaseModel):
     uid: Optional[str] = Field(
         default="", description="partial match (experiment_records.uid)"

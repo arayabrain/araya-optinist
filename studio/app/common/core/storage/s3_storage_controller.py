@@ -13,6 +13,8 @@ from studio.app.common import models as common_model
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
 
+    from studio.app.const import ThumbnailType
+
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.file_filter import FileSyncFilter
 from studio.app.common.core.storage.remote_storage_controller import (
@@ -23,6 +25,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.db.database import session_scope
+from studio.app.const import ThumbnailConst
 from studio.app.dir_path import DIRPATH
 
 # NOTE: cloud_utils imports are kept inside functions to avoid circular imports:
@@ -36,6 +39,7 @@ class S3StorageController(BaseRemoteStorageController):
     S3 Storage Controller
     """
 
+    S3_BASE_PATH = "app/studio_data"
     S3_INPUT_DIR = "input"
     S3_OUTPUT_DIR = "output"
 
@@ -63,7 +67,7 @@ class S3StorageController(BaseRemoteStorageController):
         # Snakemake expects: /app/studio_data/input/{workspace_id}/{filename}
         # S3 mapping: s3://bucket/app/studio_data/input/{workspace_id}/{filename}
         input_data_remote_path = join_filepath(
-            ["app", "studio_data", __class__.S3_INPUT_DIR, workspace_id, filename]
+            [__class__.S3_BASE_PATH, __class__.S3_INPUT_DIR, workspace_id, filename]
         )
         return input_data_remote_path
 
@@ -78,13 +82,48 @@ class S3StorageController(BaseRemoteStorageController):
         # Snakemake expects: /app/studio_data/output/{workspace_id}/{unique_id}
         # S3 mapping: s3://bucket/app/studio_data/output/{workspace_id}/{unique_id}
         experiment_remote_path = join_filepath(
-            ["app", "studio_data", __class__.S3_OUTPUT_DIR, workspace_id, unique_id]
+            [__class__.S3_BASE_PATH, __class__.S3_OUTPUT_DIR, workspace_id, unique_id]
         )
         logger.info(
             f"S3 experiment path: {experiment_remote_path} "
             f"(workspace_id='{workspace_id}', unique_id='{unique_id}')"
         )
         return experiment_remote_path
+
+    @staticmethod
+    def make_s3_output_prefix(workspace_id: str = None, unique_id: str = None) -> str:
+        """
+        Build S3 prefix path for experiment output data.
+
+        Args:
+            workspace_id: Optional workspace identifier
+            unique_id: Optional experiment unique identifier
+
+        Returns:
+            S3 prefix like "app/studio_data/output/{workspace_id}/{unique_id}/"
+        """
+        parts = [S3StorageController.S3_BASE_PATH, S3StorageController.S3_OUTPUT_DIR]
+        if workspace_id:
+            parts.append(workspace_id)
+        if unique_id:
+            parts.append(unique_id)
+        return "/".join(parts) + "/"
+
+    @staticmethod
+    def make_s3_input_prefix(workspace_id: str = None) -> str:
+        """
+        Build S3 prefix path for input data.
+
+        Args:
+            workspace_id: Optional workspace identifier
+
+        Returns:
+            S3 prefix like "app/studio_data/input/{workspace_id}/"
+        """
+        parts = [S3StorageController.S3_BASE_PATH, S3StorageController.S3_INPUT_DIR]
+        if workspace_id:
+            parts.append(workspace_id)
+        return "/".join(parts) + "/"
 
     @property
     def bucket_name(self) -> str:
@@ -135,9 +174,6 @@ class S3StorageController(BaseRemoteStorageController):
             workspace_id, filename
         )
 
-        if os.path.isfile(input_data_local_path):
-            logger.debug(f"Skip download input data: {input_data_remote_path}")
-
         logger.info(
             "Download input data from remote storage (S3). [%s] [%s -> %s]",
             self.bucket_name,
@@ -170,6 +206,23 @@ class S3StorageController(BaseRemoteStorageController):
                 s3_file_path = s3_object["Key"]
                 file_size = s3_object["Size"]
 
+                # Compute local path from S3 path for each file
+                # s3_file_path: app/studio_data/input/{workspace_id}/{relative_path}
+                # local path:   {INPUT_DIR}/{workspace_id}/{relative_path}
+                s3_prefix = __class__.make_s3_input_prefix()
+                relative_path = s3_file_path.replace(s3_prefix, "")
+                local_file_path = os.path.join(DIRPATH.INPUT_DIR, relative_path)
+
+                # Skip if file already exists locally with correct size
+                if os.path.isfile(local_file_path):
+                    local_size = os.path.getsize(local_file_path)
+                    if local_size == file_size:
+                        logger.debug(
+                            f"Skip download (already exists): {s3_file_path} "
+                            f"({file_size:,} bytes)"
+                        )
+                        continue
+
                 logger.info(
                     f"Download data from S3 [{self.bucket_name}] "
                     f"({index+1}/{target_files_count}) "
@@ -177,13 +230,13 @@ class S3StorageController(BaseRemoteStorageController):
                 )
 
                 # Create local directory before downloading
-                input_data_local_dir = os.path.dirname(input_data_local_path)
-                if not os.path.exists(input_data_local_dir):
-                    os.makedirs(input_data_local_dir, exist_ok=True)
-                    logger.info(f"Created directory: {input_data_local_dir}")
+                local_file_dir = os.path.dirname(local_file_path)
+                if not os.path.exists(local_file_dir):
+                    os.makedirs(local_file_dir, exist_ok=True)
+                    logger.info(f"Created directory: {local_file_dir}")
 
                 await __s3_client.download_file(
-                    self.bucket_name, s3_file_path, input_data_local_path
+                    self.bucket_name, s3_file_path, local_file_path
                 )
 
                 logger.info(
@@ -244,7 +297,7 @@ class S3StorageController(BaseRemoteStorageController):
 
         Uses pagination to handle workspaces with >1000 files.
         """
-        prefix = f"app/studio_data/{self.S3_INPUT_DIR}/{workspace_id}/"
+        prefix = self.make_s3_input_prefix(workspace_id)
         objects = []
 
         async with self.__get_s3_client() as s3_client:
@@ -353,7 +406,7 @@ class S3StorageController(BaseRemoteStorageController):
         async with self.__get_s3_client() as __s3_client:
             workspaces_response = await __s3_client.list_objects_v2(
                 Bucket=self.bucket_name,
-                Prefix=f"app/studio_data/{__class__.S3_OUTPUT_DIR}/",
+                Prefix=__class__.make_s3_output_prefix(),
                 Delimiter="/",
             )
 
@@ -418,9 +471,13 @@ class S3StorageController(BaseRemoteStorageController):
                             DIRPATH.DATA_DIR, experiment_dir, metadata_filename
                         )
 
-                        if "app/studio_data/app/studio_data/" in flie_local_path:
+                        # Fix duplicate path issue
+                        dup_path = (
+                            f"/{__class__.S3_BASE_PATH}/{__class__.S3_BASE_PATH}/"
+                        )
+                        if dup_path in flie_local_path:
                             flie_local_path = flie_local_path.replace(
-                                "/app/studio_data/app/studio_data/", "/app/studio_data/"
+                                dup_path, f"/{__class__.S3_BASE_PATH}/"
                             )
 
                         if not os.path.isfile(flie_local_path):
@@ -462,9 +519,7 @@ class S3StorageController(BaseRemoteStorageController):
         ]
 
         # Construct the S3 path for this specific experiment
-        experiment_prefix = (
-            f"app/studio_data/{__class__.S3_OUTPUT_DIR}/{workspace_id}/{unique_id}/"
-        )
+        experiment_prefix = __class__.make_s3_output_prefix(workspace_id, unique_id)
 
         logger.info(
             f"Downloading experiment metadata from S3: [{self.bucket_name}]"
@@ -682,8 +737,10 @@ class S3StorageController(BaseRemoteStorageController):
                 )
                 return False
 
-            # cleaning data from local path
-            if os.path.isdir(experiment_local_path):
+            # cleaning data from local path (only for full sync, not partial syncs)
+            # Partial syncs (visualization, essential_only) should preserve existing
+            # files to avoid redundant downloads
+            if sync_mode == "all" and os.path.isdir(experiment_local_path):
                 await self._clear_local_experiment_data(experiment_local_path)
 
             # do download data from remote storage
@@ -716,7 +773,7 @@ class S3StorageController(BaseRemoteStorageController):
                     s3_file_path, sync_mode
                 )
                 if not should_sync:
-                    logger.info(
+                    logger.debug(
                         f"Skipping {s3_file_path}: {reason} ({file_size:,} bytes)"
                     )
                     continue
@@ -726,12 +783,24 @@ class S3StorageController(BaseRemoteStorageController):
                     os.path.dirname(DIRPATH.OUTPUT_DIR), s3_file_path
                 )
 
-                if "app/studio_data/app/studio_data/" in local_abs_path:
+                # Fix duplicate path issue
+                dup_path = f"/{__class__.S3_BASE_PATH}/{__class__.S3_BASE_PATH}/"
+                if dup_path in local_abs_path:
                     local_abs_path = local_abs_path.replace(
-                        "/app/studio_data/app/studio_data/", "/app/studio_data/"
+                        dup_path, f"/{__class__.S3_BASE_PATH}/"
                     )
 
                 local_abs_dir = os.path.dirname(local_abs_path)
+
+                # Skip if file already exists locally with correct size
+                if os.path.isfile(local_abs_path):
+                    local_size = os.path.getsize(local_abs_path)
+                    if local_size == file_size:
+                        logger.debug(
+                            f"Skip download (already exists): {s3_file_path} "
+                            f"({file_size:,} bytes)"
+                        )
+                        continue
 
                 logger.info(
                     f"Download data from S3 [{self.bucket_name}] "
@@ -801,8 +870,7 @@ class S3StorageController(BaseRemoteStorageController):
 
             s3_file_path = join_filepath(
                 [
-                    "app",
-                    "studio_data",
+                    __class__.S3_BASE_PATH,
                     __class__.S3_OUTPUT_DIR,
                     workspace_id,
                     unique_id,
@@ -944,6 +1012,91 @@ class S3StorageController(BaseRemoteStorageController):
                 # Don't fail the deletion if storage tracking fails
 
         return True
+
+    async def download_thumbnail_source(
+        self,
+        workspace_id: str,
+        unique_id: str,
+        original_path: str,
+        thumb_type: "ThumbnailType",
+    ) -> bool:
+        """
+        Download the source file needed to generate a thumbnail.
+
+        For INPUT thumbnails: downloads the input TIFF file
+        For ROI thumbnails: downloads experiment files with visualization sync mode
+
+        Args:
+            workspace_id: Workspace identifier
+            unique_id: Experiment unique identifier
+            original_path: Path to original file
+            thumb_type: ThumbnailType.INPUT or ThumbnailType.ROI
+
+        Returns:
+            True if download succeeded, False otherwise
+        """
+        from studio.app.const import ThumbnailType
+
+        try:
+            if thumb_type == ThumbnailType.INPUT:
+                filename = os.path.basename(original_path)
+                await self.download_input_data(workspace_id, filename)
+            else:
+                await self.download_experiment(
+                    workspace_id, unique_id, sync_mode="visualization"
+                )
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to download thumbnail source: {e}")
+            return False
+
+    async def upload_thumbnail(
+        self, workspace_id: str, unique_id: str, thumbnail_path: str
+    ) -> bool:
+        """
+        Upload a generated thumbnail PNG to S3 for persistence.
+
+        This allows thumbnails generated lazily on one instance to be
+        available to other instances without regeneration.
+
+        Args:
+            workspace_id: Workspace identifier
+            unique_id: Experiment unique identifier
+            thumbnail_path: Local path to the thumbnail PNG file
+
+        Returns:
+            True if upload successful, False otherwise
+        """
+        if not os.path.exists(thumbnail_path):
+            logger.warning(f"Thumbnail file not found: {thumbnail_path}")
+            return False
+
+        # Construct S3 path
+        filename = os.path.basename(thumbnail_path)
+        s3_path = join_filepath(
+            [
+                self.make_s3_output_prefix(workspace_id, unique_id).rstrip("/"),
+                ThumbnailConst.DIRNAME,
+                filename,
+            ]
+        )
+
+        file_size = os.path.getsize(thumbnail_path)
+        logger.info(f"Uploading thumbnail to S3: {s3_path} ({file_size:,} bytes)")
+
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: boto3.client("s3").upload_file(
+                    thumbnail_path, self.bucket_name, s3_path
+                ),
+            )
+            logger.info(f"Successfully uploaded thumbnail: {s3_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to upload thumbnail: {e}")
+            return False
 
     async def delete_workspace(
         self, workspace_id: str, directory_type: StorageDirectoryType

@@ -1,7 +1,8 @@
-import { useEffect, ReactElement, memo } from "react"
+import { useEffect, ReactElement, memo, useState } from "react"
 import { useDispatch, useSelector } from "react-redux"
 
 import CloseIcon from "@mui/icons-material/Close"
+import CloudSyncIcon from "@mui/icons-material/CloudSync"
 import {
   Box,
   styled,
@@ -18,6 +19,7 @@ import {
   DialogContent,
   IconButton,
   Fade,
+  CircularProgress,
 } from "@mui/material"
 
 import { DisplayDataItem } from "components/Workspace/Visualize/DisplayDataItem"
@@ -146,13 +148,20 @@ const BaseNodesView = ({
   emptyMessage,
 }: NodesViewProps) => {
   const dispatch = useDispatch<AppDispatch>()
+  const [isSyncing, setIsSyncing] = useState(false)
 
   useEffect(() => {
     if (open && uid && workspaceId) {
+      // Show syncing overlay while loading visualization data
+      setIsSyncing(true)
       const api = is_public
         ? publicDataviewReproduceWorkflow
         : reproduceWorkflow
-      dispatch(api({ workspaceId, uid }))
+      dispatch(api({ workspaceId, uid })).finally(() => {
+        setIsSyncing(false)
+      })
+    } else {
+      setIsSyncing(false)
     }
   }, [open, is_public, uid, workspaceId, dispatch])
 
@@ -197,6 +206,18 @@ const BaseNodesView = ({
           overflow: "hidden",
         }}
       >
+        {/* Loading overlay while syncing visualization data */}
+        {isSyncing && (
+          <SyncOverlay>
+            <CircularProgress size={48} />
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 2 }}>
+              <CloudSyncIcon color="primary" />
+              <Typography variant="body1" color="textSecondary">
+                Loading visualization data...
+              </Typography>
+            </Box>
+          </SyncOverlay>
+        )}
         <ContentArea>
           <TitleHeader>
             <Typography
@@ -235,6 +256,7 @@ const BaseNodesView = ({
             "&:hover": {
               backgroundColor: "action.hover",
             },
+            zIndex: 1, // Ensure close button is above sync overlay
           }}
         >
           <CloseIcon />
@@ -266,6 +288,20 @@ const TitleHeader = styled(Box)(() => ({
 const EmptyMessage = styled(Box)(() => ({
   textAlign: "center",
   color: "gray",
+}))
+
+const SyncOverlay = styled(Box)(({ theme }) => ({
+  position: "absolute",
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  justifyContent: "center",
+  backgroundColor: "rgba(255, 255, 255, 0.9)",
+  zIndex: theme.zIndex.modal - 1,
 }))
 
 const LoadingContainer = styled(Box)(() => ({

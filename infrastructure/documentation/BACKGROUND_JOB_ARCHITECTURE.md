@@ -28,11 +28,39 @@ Background jobs run in a dedicated ECS service, separate from the API process. T
 
 | Job | Interval | Purpose |
 |-----|----------|---------|
-| `PublishedExperimentSyncJob` | 5 min | Sync published experiments from S3 to local |
+| `PublishedExperimentSyncJob` | 5 min | Two-phase sync: thumbnails first, then metadata |
+| `ThumbnailMigrationJob` | Daily | Generate PNG thumbnails for legacy experiments (temporary) |
 | `DataCleanupJob` | 60 min | Clean up data for logged-out free users |
 | `StorageReconciliationJob` | 60 min | Reconcile incremental tracking with S3 |
 
 All jobs are defined in `studio/app/common/core/background/`.
+
+### PublishedExperimentSyncJob: Two-Phase Sync
+
+The sync job uses a two-phase strategy for faster Dataview thumbnail loading:
+
+**Phase 1: Thumbnails (sync_mode="thumbnails_only")**
+- Downloads only PNG thumbnail files (~50-100KB each)
+- Higher throughput: 50+ experiments per run
+- Makes Dataview usable quickly
+
+**Phase 2: Metadata (sync_mode="essential_only")**
+- Downloads remaining YAML/JSON files
+- Completes the sync for experiment listing
+
+### ThumbnailMigrationJob (Temporary)
+
+One-time migration to generate PNG thumbnails for existing experiments.
+
+**File:** `studio/app/common/core/background/thumbnail_migration_job.py`
+
+**Behavior:**
+- Runs daily until all legacy experiments have thumbnails
+- Processes experiments without `thumbnails/input_thumb.png`
+- Generates PNG from first frame of input TIFF
+- Can be disabled after migration completes
+
+**Removal:** After all experiments have thumbnails, remove this job and file.
 
 ---
 

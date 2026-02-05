@@ -31,12 +31,20 @@ export type TypeData = {
 export const initialState: {
   data: TypeData
   loading: boolean
+  error: {
+    public: string | null
+    private: string | null
+  }
 } = {
   data: {
     public: initData,
     private: initData,
   },
   loading: false,
+  error: {
+    public: null,
+    private: null,
+  },
 }
 
 export const databaseSlice = createSlice({
@@ -45,14 +53,38 @@ export const databaseSlice = createSlice({
   reducers: {},
   extraReducers: (builder) => {
     builder
+      // All addCase calls must come before addMatcher calls
       .addCase(getDataviewRecords.pending, (state) => {
-        state.data.private = initData
+        // Don't reset data on pending - keep showing previous data while loading
         state.loading = true
+        state.error.private = null
       })
       .addCase(getPublicDataviewRecords.pending, (state) => {
-        state.data.public = initData
+        // Don't reset data on pending - keep showing previous data while loading
         state.loading = true
+        state.error.public = null
       })
+      .addCase(getDataviewRecords.fulfilled, (state, action) => {
+        state.data.private = action.payload
+        state.loading = false
+        state.error.private = null
+      })
+      .addCase(getPublicDataviewRecords.fulfilled, (state, action) => {
+        state.data.public = action.payload
+        state.loading = false
+        state.error.public = null
+      })
+      .addCase(getDataviewRecords.rejected, (state, action) => {
+        // Keep previous data on error, but set error state
+        state.loading = false
+        state.error.private = action.error.message || "Failed to load data"
+      })
+      .addCase(getPublicDataviewRecords.rejected, (state, action) => {
+        // Keep previous data on error, but set error state
+        state.loading = false
+        state.error.public = action.error.message || "Failed to load data"
+      })
+      // addMatcher calls come after all addCase calls
       .addMatcher(
         isAnyOf(
           postPublish.pending,
@@ -63,22 +95,8 @@ export const databaseSlice = createSlice({
           state.loading = true
         },
       )
-      .addMatcher(isAnyOf(getDataviewRecords.fulfilled), (state, action) => {
-        state.data.private = action.payload
-        state.loading = false
-      })
-      .addMatcher(
-        isAnyOf(getPublicDataviewRecords.fulfilled),
-        (state, action) => {
-          state.data.public = action.payload
-          state.loading = false
-        },
-      )
       .addMatcher(
         isAnyOf(
-          getDataviewRecords.rejected,
-          getPublicDataviewRecords.rejected,
-
           postPublish.fulfilled,
           postPublish.rejected,
           postPublishAll.rejected,

@@ -5,7 +5,16 @@ import { useSelector, useDispatch } from "react-redux"
 import createColormap from "colormap"
 import { max, uniq } from "lodash"
 
-import { LinearProgress, Typography, Box } from "@mui/material"
+import CloudDownloadIcon from "@mui/icons-material/CloudDownload"
+import CloudSyncIcon from "@mui/icons-material/CloudSync"
+import {
+  CircularProgress,
+  LinearProgress,
+  Typography,
+  Box,
+  IconButton,
+  Tooltip,
+} from "@mui/material"
 
 import { getRoiData } from "store/slice/DisplayData/DisplayDataActions"
 import {
@@ -18,12 +27,14 @@ import { AppDispatch } from "store/store"
 interface RoiPlotSimpleProps {
   filePath: string
   workspaceId: number
+  uniqueId?: string
   onClick?: () => void
 }
 
 export const RoiPlotSimple = memo(function RoiPlotSimple({
   filePath,
   workspaceId,
+  uniqueId,
   onClick,
 }: RoiPlotSimpleProps) {
   // Use selectors instead of direct state access
@@ -63,9 +74,9 @@ export const RoiPlotSimple = memo(function RoiPlotSimple({
 
   useEffect(() => {
     if (workspaceId && filePath) {
-      dispatch(getRoiData({ path: filePath, workspaceId }))
+      dispatch(getRoiData({ path: filePath, workspaceId, uniqueId }))
     }
-  }, [dispatch, filePath, workspaceId])
+  }, [dispatch, filePath, workspaceId, uniqueId])
 
   if (!filePath) {
     return (
@@ -83,13 +94,47 @@ export const RoiPlotSimple = memo(function RoiPlotSimple({
     )
   }
 
+  const handleRetry = () => {
+    if (workspaceId && filePath) {
+      dispatch(getRoiData({ path: filePath, workspaceId, uniqueId }))
+    }
+  }
+
   if (isPending) {
     return <LinearProgress />
   } else if (error != null) {
     return (
-      <Typography color="error" variant="caption">
-        {error}
-      </Typography>
+      <Box
+        sx={{
+          width: 100,
+          height: 80,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 0.5,
+        }}
+      >
+        <Typography
+          color="error"
+          variant="caption"
+          sx={{ fontSize: "0.65rem" }}
+        >
+          {error}
+        </Typography>
+        <Tooltip title="Download">
+          <IconButton
+            size="small"
+            onClick={(e) => {
+              e.stopPropagation()
+              handleRetry()
+            }}
+            sx={{ padding: 0.25 }}
+          >
+            <CloudDownloadIcon sx={{ fontSize: 16 }} color="primary" />
+          </IconButton>
+        </Tooltip>
+      </Box>
     )
   } else if (roiData && roiData.length > 0 && maxIndex > 0) {
     const roi2DArray = roiData[0] // Get the actual 2D ROI array
@@ -171,4 +216,72 @@ export const RoiPlotSimple = memo(function RoiPlotSimple({
       </Box>
     )
   }
+})
+
+interface RoiPlotSimpleWithLoadingProps extends RoiPlotSimpleProps {
+  /** If true, show a sync indicator for legacy JSON files that may need on-demand sync */
+  showSyncIndicator?: boolean
+}
+
+/**
+ * RoiPlotSimple with loading state indicator for legacy JSON files.
+ *
+ * Legacy JSON files may need on-demand sync from S3, which can take longer.
+ * This component shows a sync indicator when loading potentially large files.
+ *
+ * Note: PNG thumbnails are handled directly by the parent component (DataviewRecords)
+ * and don't go through this component.
+ */
+export const RoiPlotSimpleWithLoading = memo(function RoiPlotSimpleWithLoading({
+  filePath,
+  workspaceId,
+  uniqueId,
+  onClick,
+  showSyncIndicator = true,
+}: RoiPlotSimpleWithLoadingProps) {
+  const [isSyncing, setIsSyncing] = useState(false)
+  const isPending = useSelector(selectRoiDataIsPending(filePath ?? ""))
+  const roiData = useSelector(selectRoiData(filePath ?? ""))
+
+  // Show sync indicator when loading
+  useEffect(() => {
+    if (showSyncIndicator && isPending && !roiData) {
+      setIsSyncing(true)
+    } else if (roiData) {
+      setIsSyncing(false)
+    }
+  }, [showSyncIndicator, isPending, roiData])
+
+  return (
+    <Box sx={{ position: "relative", width: 100, height: 80 }}>
+      <RoiPlotSimple
+        filePath={filePath}
+        workspaceId={workspaceId}
+        uniqueId={uniqueId}
+        onClick={onClick}
+      />
+      {isSyncing && (
+        <Box
+          sx={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: "rgba(255, 255, 255, 0.8)",
+            gap: 0.5,
+          }}
+        >
+          <CircularProgress size={20} />
+          <Tooltip title="Syncing from cloud storage">
+            <CloudSyncIcon sx={{ fontSize: 14, color: "primary.main" }} />
+          </Tooltip>
+        </Box>
+      )}
+    </Box>
+  )
 })

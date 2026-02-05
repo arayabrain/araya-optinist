@@ -20,7 +20,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.subscription.constants import SyncStatusConstants
 from studio.app.common.db.database import session_scope
-from studio.app.common.models import ExperimentRecord, Workspace
+from studio.app.common.models import ExperimentRecord, User, Workspace
 from studio.app.common.schemas.dataview import LocalSyncStatus, PublishStatus
 from studio.app.dir_path import DIRPATH
 
@@ -38,15 +38,26 @@ class SyncRetryError(Exception):
 class PublishedExperimentSyncJob:
     """Background job to sync published experiments"""
 
+    # Higher limit for thumbnail-only sync (thumbnails are small ~50-100KB)
+    THUMBNAIL_SYNC_LIMIT = 50
+    # Standard limit for metadata sync
+    METADATA_SYNC_LIMIT = SyncStatusConstants.MAX_SYNC_PER_RUN
+
     @classmethod
     async def run(cls):
         """
-        Main sync job execution with file locking:
-        1. Acquire lock to prevent concurrent runs
-        2. Query published experiments with local_sync_status='pending'
-        3. Download from S3 to local storage
-        4. Update sync status in database
-        5. Handle errors with retry logic
+        Main sync job execution with two-phase sync:
+
+        Phase 1: Sync thumbnail PNGs (fast, more per run)
+        - Thumbnails are ~50-100KB vs full TIFFs which can be 100MB+
+        - Can sync 50+ experiments' thumbnails per run
+        - Enables fast DataView loading immediately
+
+        Phase 2: Sync remaining metadata (YAML files)
+        - Sync experiment.yaml, workflow.yaml, snakemake_config.yaml
+        - Standard limit per run
+
+        Uses file locking to prevent concurrent runs.
         """
         # Use FileLock for cross-platform file locking
         # timeout=0 means non-blocking (skip if lock is already held)
@@ -54,7 +65,12 @@ class PublishedExperimentSyncJob:
 
         try:
             with lock:
-                logger.info("Starting published experiment sync job")
+                logger.info("Starting published experiment sync job (two-phase)")
+
+                # Phase 1: Sync thumbnails first (fast)
+                await cls._sync_thumbnails()
+
+                # Phase 2: Sync remaining metadata
                 await cls._run_sync_logic()
 
         except Timeout:
@@ -65,18 +81,69 @@ class PublishedExperimentSyncJob:
             logger.error(f"Fatal error in sync job: {e}", exc_info=True)
 
     @classmethod
+    async def _sync_thumbnails(cls):
+        """
+        Phase 1: Download thumbnail PNGs for pending experiments.
+
+        This is fast because:
+        - Thumbnails are small (~50-100KB each)
+        - We use thumbnails_only sync mode
+        - We can process many more experiments per run
+        """
+        # Get pending experiments (use higher limit for thumbnails)
+        pending = cls._get_pending_experiments(limit=cls.THUMBNAIL_SYNC_LIMIT)
+
+        if not pending:
+            logger.debug("No pending experiments for thumbnail sync")
+            return
+
+        logger.info(f"Phase 1: Syncing thumbnails for {len(pending)} experiments")
+
+        # Cache S3 controllers per bucket to avoid creating duplicates
+        s3_controllers: dict[str, S3StorageController] = {}
+
+        def get_s3_controller(bucket_name: str) -> S3StorageController:
+            if bucket_name not in s3_controllers:
+                s3_controllers[bucket_name] = S3StorageController(bucket_name)
+            return s3_controllers[bucket_name]
+
+        # Sync thumbnails with higher concurrency (they're small files)
+        max_concurrent = 10
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def sync_thumbnails_for_experiment(
+            workspace_id, unique_id, exp_id, bucket_name
+        ):
+            async with semaphore:
+                try:
+                    s3_controller = get_s3_controller(bucket_name)
+                    # Only download thumbnails
+                    await s3_controller.download_experiment(
+                        workspace_id, unique_id, sync_mode="thumbnails_only"
+                    )
+                    return (workspace_id, unique_id, exp_id, True)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to sync thumbnails for {workspace_id}/{unique_id} "
+                        f"from bucket {bucket_name}: {e}"
+                    )
+                    return (workspace_id, unique_id, exp_id, False)
+
+        tasks = [sync_thumbnails_for_experiment(w, u, e, b) for w, u, e, b in pending]
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Count successes
+        success_count = sum(1 for r in results if not isinstance(r, Exception) and r[3])
+        logger.info(
+            f"Phase 1 complete: {success_count}/{len(pending)} thumbnails synced"
+        )
+
+    @classmethod
     async def _run_sync_logic(cls):
         """Execute the actual sync logic"""
         try:
-            # Get S3 storage controller
-            bucket_name = os.environ.get("S3_DEFAULT_BUCKET_NAME")
-            if not bucket_name:
-                logger.error("S3_DEFAULT_BUCKET_NAME not configured, skipping sync")
-                return
-
-            s3_controller = S3StorageController(bucket_name)
-
-            # Get pending experiments
+            # Get pending experiments (now includes bucket name)
             pending_experiments = cls._get_pending_experiments()
 
             if not pending_experiments:
@@ -85,22 +152,32 @@ class PublishedExperimentSyncJob:
 
             logger.info(f"Found {len(pending_experiments)} experiments to sync")
 
+            # Cache S3 controllers per bucket to avoid creating duplicates
+            s3_controllers: dict[str, S3StorageController] = {}
+
+            def get_s3_controller(bucket_name: str) -> S3StorageController:
+                if bucket_name not in s3_controllers:
+                    s3_controllers[bucket_name] = S3StorageController(bucket_name)
+                return s3_controllers[bucket_name]
+
             # Sync experiments in parallel with limited concurrency
             # Limit to 3 concurrent downloads to avoid overloading S3/network
             max_concurrent = 3
             semaphore = asyncio.Semaphore(max_concurrent)
 
-            async def sync_with_semaphore(workspace_id, unique_id, exp_id):
+            async def sync_with_semaphore(workspace_id, unique_id, exp_id, bucket_name):
                 """Wrapper to limit concurrent downloads"""
                 async with semaphore:
                     try:
+                        s3_controller = get_s3_controller(bucket_name)
                         success = await cls._sync_experiment(
                             s3_controller, workspace_id, unique_id, exp_id
                         )
                         return (workspace_id, unique_id, exp_id, success, None)
                     except Exception as e:
                         logger.error(
-                            f"Error syncing experiment {workspace_id}/{unique_id}: {e}",
+                            f"Error syncing experiment {workspace_id}/{unique_id} "
+                            f"from bucket {bucket_name}: {e}",
                             exc_info=True,
                         )
                         cls._mark_sync_error(exp_id)
@@ -108,8 +185,8 @@ class PublishedExperimentSyncJob:
 
             # Create tasks for all pending experiments
             tasks = [
-                sync_with_semaphore(workspace_id, unique_id, exp_id)
-                for workspace_id, unique_id, exp_id in pending_experiments
+                sync_with_semaphore(workspace_id, unique_id, exp_id, bucket_name)
+                for workspace_id, unique_id, exp_id, bucket_name in pending_experiments
             ]
 
             # Execute all syncs in parallel (limited by semaphore)
@@ -143,24 +220,37 @@ class PublishedExperimentSyncJob:
             logger.error(f"Error in sync logic: {e}", exc_info=True)
 
     @classmethod
-    def _get_pending_experiments(cls) -> List[Tuple[str, str, int]]:
+    def _get_pending_experiments(
+        cls, limit: int = None
+    ) -> List[Tuple[str, str, int, str]]:
         """
         Query database for published experiments with pending or error sync status.
 
         IMPORTANT: This now includes experiments with 'error' status to enable
         automatic retry of failed syncs.
 
+        Args:
+            limit: Maximum number of experiments to return (defaults to
+                SyncStatusConstants.MAX_SYNC_PER_RUN)
+
         Returns:
-            List of tuples: (workspace_id, unique_id, experiment_record_id)
+            List of tuples: (workspace_id, unique_id, experiment_record_id, bucket_name)
         """
+        if limit is None:
+            limit = SyncStatusConstants.MAX_SYNC_PER_RUN
+
+        default_bucket = os.environ.get("S3_DEFAULT_BUCKET_NAME")
+
         with session_scope() as db:
             statement = (
                 select(
                     ExperimentRecord.workspace_id,
                     ExperimentRecord.uid,
                     ExperimentRecord.id,
+                    User.attributes,
                 )
                 .join(Workspace, Workspace.id == ExperimentRecord.workspace_id)
+                .join(User, User.id == Workspace.user_id)
                 .where(ExperimentRecord.publish_status == PublishStatus.on.value)
                 .where(
                     ExperimentRecord.local_sync_status.in_(
@@ -173,12 +263,26 @@ class PublishedExperimentSyncJob:
                 .where(Workspace.deleted == 0)
                 .where(ExperimentRecord.success == 1)
                 .order_by(ExperimentRecord.analyzed_at.desc())
-                .limit(SyncStatusConstants.MAX_SYNC_PER_RUN)
+                .limit(limit)
             )
 
             result = db.execute(statement)
 
-            return [(str(row[0]), row[1], row[2]) for row in result]
+            experiments = []
+            for row in result:
+                workspace_id = str(row[0])
+                unique_id = row[1]
+                exp_id = row[2]
+                user_attributes = row[3]
+                # Get bucket name from user attributes, fall back to default
+                bucket_name = (
+                    user_attributes.get("remote_bucket_name")
+                    if user_attributes
+                    else None
+                ) or default_bucket
+                experiments.append((workspace_id, unique_id, exp_id, bucket_name))
+
+            return experiments
 
     @classmethod
     async def _sync_experiment(

@@ -16,6 +16,7 @@ from studio.app.common.core.auth.auth_helper import (
     extract_uid_from_jwt_token,
 )
 from studio.app.common.core.dataview.dataview_services import DataviewService
+from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
 from studio.app.common.core.subscription.constants import (
@@ -35,8 +36,11 @@ from studio.app.common.models.subscription import (
 )
 from studio.app.common.schemas.users import User
 
-# Request-scoped cache key for user context
+# Request-scoped cache keys
 _REQUEST_USER_CACHE_KEY = "_cached_user_context"
+_REQUEST_OUTPUTS_BUCKET_CACHE_KEY = "_cached_outputs_bucket_name"
+
+logger = AppLogger.get_logger()
 
 
 def _enrich_user_with_basic_attributes(
@@ -152,6 +156,37 @@ async def get_current_user_with_dataview_outputs_check(
             )
 
     # Fallback to get_current_user()
+    return await get_current_user(res, req, ex_token, credential, db)
+
+
+async def get_current_user_for_dataview_outputs(
+    req: Request,
+    res: Response,
+    ex_token: Optional[str] = Depends(APIKeyHeader(name="ExToken", auto_error=False)),
+    credential: HTTPAuthorizationCredentials = Depends(HTTPBearer(auto_error=False)),
+    db: Session = Depends(get_db),
+) -> Optional[User]:
+    """
+    Get current user for dataview outputs, returning None for public requests.
+
+    Unlike get_current_user_with_dataview_outputs_check, this function:
+    - Returns None for public dataview requests (for bucket lookup purposes)
+    - Returns authenticated user if credentials are provided
+    - Does not raise 403 for invalid public requests (just returns None)
+
+    Used by get_outputs_remote_bucket_name to determine which S3 bucket to use.
+    """
+    # For public dataview requests, return None to indicate no authenticated user
+    if DataviewService.is_dataview_public_outputs_request(req):
+        # Try to get user if credentials provided, but don't require it
+        if credential or ex_token:
+            try:
+                return await get_current_user(res, req, ex_token, credential, db)
+            except HTTPException:
+                return None
+        return None
+
+    # For non-public requests, require authentication
     return await get_current_user(res, req, ex_token, credential, db)
 
 
@@ -319,3 +354,164 @@ def _get_user_remote_bucket_name(
     assert remote_bucket_name, f"Invalid remote_bucket_name: {remote_bucket_name}"
 
     return remote_bucket_name
+
+
+async def get_outputs_remote_bucket_name(
+    req: Request,
+    current_user: User = Depends(get_current_user_for_dataview_outputs),
+    db: Session = Depends(get_db),
+) -> str:
+    """
+    Get remote bucket name for outputs requests.
+    Always looks up the workspace owner's bucket based on workspace_id,
+    since data is stored in the owner's bucket even for shared workspaces.
+    Falls back to current user's bucket if workspace owner can't be determined.
+
+    Security: For authenticated users, verifies they have access to the workspace
+    (owner, shared user, or published data) before returning the owner's bucket.
+
+    Uses request-scoped caching to avoid redundant database queries within
+    the same request.
+    """
+    # Check for cached bucket name in request state (request-scoped cache)
+    if hasattr(req.state, _REQUEST_OUTPUTS_BUCKET_CACHE_KEY):
+        return getattr(req.state, _REQUEST_OUTPUTS_BUCKET_CACHE_KEY)
+
+    bucket_name = await _resolve_outputs_remote_bucket_name(req, current_user, db)
+
+    # Cache in request state for subsequent calls within this request
+    setattr(req.state, _REQUEST_OUTPUTS_BUCKET_CACHE_KEY, bucket_name)
+
+    return bucket_name
+
+
+async def _resolve_outputs_remote_bucket_name(
+    req: Request,
+    current_user: Optional[User],
+    db: Session,
+) -> str:
+    """
+    Internal function to resolve the bucket name for outputs requests.
+    Called by get_outputs_remote_bucket_name after cache check.
+    """
+    from sqlmodel import or_
+
+    from studio.app.common.core.experiment.experiment import ExptOutputPathIds
+    from studio.app.common.models.experiment import ExperimentRecord
+    from studio.app.common.models.workspace import Workspace, WorkspacesShareUser
+    from studio.app.common.schemas.dataview import PublishStatus
+
+    request_url_path = req.url.path
+
+    # Extract workspace_id and unique_id from output path using centralized method
+    ids = ExptOutputPathIds.from_request_url(
+        request_url_path, DataviewService.OUTPUTS_URL_PREFIX
+    )
+    workspace_id = ids.workspace_id
+    unique_id = ids.unique_id
+
+    # Also check query params for workspace_id and unique_id
+    query_params = dict(req.query_params)
+    if not workspace_id:
+        workspace_id = query_params.get("workspace_id")
+    if not unique_id:
+        unique_id = query_params.get("unique_id")
+
+    if workspace_id:
+        workspace = None
+
+        # For authenticated users, first check if they have direct access
+        # (owner or shared user)
+        if current_user is not None:
+            workspace = (
+                db.query(Workspace)
+                .join(
+                    WorkspacesShareUser,
+                    WorkspacesShareUser.workspace_id == Workspace.id,
+                    isouter=True,
+                )
+                .filter(
+                    Workspace.id == int(workspace_id),
+                    Workspace.deleted.is_(False),
+                    or_(
+                        Workspace.user_id == current_user.id,
+                        WorkspacesShareUser.user_id == current_user.id,
+                    ),
+                )
+                .first()
+            )
+
+            if workspace:
+                logger.debug(
+                    f"Outputs: user {current_user.id} has direct access to "
+                    f"workspace {workspace_id}"
+                )
+
+            # If user doesn't have direct access, check if the data is published
+            if workspace is None and unique_id:
+                logger.debug(
+                    f"Outputs: user {current_user.id} has no direct access to "
+                    f"workspace {workspace_id}, checking if {unique_id} is published"
+                )
+                published_record = (
+                    db.query(ExperimentRecord)
+                    .filter(
+                        ExperimentRecord.workspace_id == int(workspace_id),
+                        ExperimentRecord.uid == unique_id,
+                        ExperimentRecord.publish_status == PublishStatus.on.value,
+                    )
+                    .first()
+                )
+                if published_record:
+                    # Data is published, allow access to the workspace bucket
+                    logger.info(
+                        f"Outputs: experiment {workspace_id}/{unique_id} is published, "
+                        f"allowing access for user {current_user.id}"
+                    )
+                    workspace = (
+                        db.query(Workspace)
+                        .filter(
+                            Workspace.id == int(workspace_id),
+                            Workspace.deleted.is_(False),
+                        )
+                        .first()
+                    )
+                else:
+                    logger.debug(
+                        f"Outputs: experiment {workspace_id}/{unique_id} "
+                        f"is not published"
+                    )
+        else:
+            # For public requests (current_user is None), just look up the workspace
+            # Public access is already validated by
+            # get_current_user_for_dataview_outputs
+            workspace = (
+                db.query(Workspace)
+                .filter(
+                    Workspace.id == int(workspace_id),
+                    Workspace.deleted.is_(False),
+                )
+                .first()
+            )
+
+        if workspace and workspace.user:
+            owner_bucket = getattr(workspace.user, "remote_bucket_name", None)
+            if owner_bucket:
+                logger.debug(
+                    f"Outputs: using owner bucket {owner_bucket} "
+                    f"for workspace {workspace_id}"
+                )
+                return owner_bucket
+
+    # Fall back to current user's bucket or default
+    if current_user is not None:
+        fallback_bucket = _get_user_remote_bucket_name(current_user)
+        logger.debug(
+            f"Outputs: falling back to user {current_user.id}'s bucket "
+            f"{fallback_bucket} for workspace {workspace_id}"
+        )
+        return fallback_bucket
+
+    fallback_bucket = _get_user_remote_bucket_name(None)
+    logger.debug(f"Outputs: falling back to default bucket {fallback_bucket}")
+    return fallback_bucket

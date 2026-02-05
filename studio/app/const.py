@@ -45,8 +45,45 @@ LARGE_FILE_PATTERNS = tuple(ACCEPT_FILE_EXT.ALL_EXT.value + [".pkl"])
 VISUALIZATION_SYNC_PATTERNS = (".json", ".tif", ".tiff", ".yaml")
 
 
+# Thumbnail type identifiers
+class ThumbnailType(StrEnum):
+    INPUT = "input"  # First frame of input TIFF
+    ROI = "roi"  # Rendered ROI overlay from cell_roi.json
+
+    @property
+    def filename(self) -> str:
+        """Get the thumbnail filename for this type."""
+        return f"{self.value}_thumb.png"
+
+
+@dataclass(frozen=True)
+class ThumbnailConst:
+    """Constants related to thumbnail storage and file patterns."""
+
+    DIRNAME: str = "thumbnails"
+    FILE_PATTERNS: tuple = ("_thumb.png",)
+
+
 # Metadata cache filenames for input data
 class MetadataCacheFile(StrEnum):
     IMAGE_SHAPE = ".image_shape.json"
     HDF5_STRUCTURE = ".hdf5_structure.json"
     MAT_STRUCTURE = ".mat_structure.json"
+
+
+# Map file extensions to display labels for placeholder thumbnails
+EXTENSION_LABELS = {
+    # HDF5 formats
+    ".hdf5": "HDF5",
+    ".h5": "HDF5",
+    ".nwb": "NWB",
+    # MATLAB
+    ".mat": "MATLAB",
+    # Microscope formats
+    ".nd2": "Nikon ND2",
+    ".oir": "Olympus OIR",
+    ".isxd": "Inscopix ISXD",
+    ".thor.zip": "ThorLabs",
+    # CSV
+    ".csv": "CSV",
+}

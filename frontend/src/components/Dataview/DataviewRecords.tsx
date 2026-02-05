@@ -17,6 +17,7 @@ import InsightsIcon from "@mui/icons-material/Insights"
 import PublicIcon from "@mui/icons-material/Public"
 import PublicOffIcon from "@mui/icons-material/PublicOff"
 import {
+  Alert,
   Box,
   Checkbox,
   Chip,
@@ -50,9 +51,16 @@ import PaginationCustom from "components/common/PaginationCustom"
 import SwitchCustom from "components/common/SwitchCustom"
 import InputsView from "components/Dataview/InputsView"
 import OutputsView from "components/Dataview/OutputsView"
+import { ThumbnailImage } from "components/Dataview/ThumbnailImage"
 import { WorkflowDetailsView } from "components/Dataview/WorkflowDetailsView"
-import { ImagePlotSimple } from "components/Workspace/Visualize/Plot/ImagePlotSimple"
-import { RoiPlotSimple } from "components/Workspace/Visualize/Plot/RoiPlotSimple"
+import {
+  ImagePlotSimple,
+  ImagePlotSimpleWithLoading,
+} from "components/Workspace/Visualize/Plot/ImagePlotSimple"
+import {
+  RoiPlotSimple,
+  RoiPlotSimpleWithLoading,
+} from "components/Workspace/Visualize/Plot/RoiPlotSimple"
 import { DELAY_TIME_INPUT_CONFIRMED } from "const/Form"
 import {
   getDataviewRecords,
@@ -65,6 +73,8 @@ import {
   selectDataviewPrivateData,
   selectDataviewPublicData,
   selectDataviewLoading,
+  selectDataviewPrivateError,
+  selectDataviewPublicError,
 } from "store/slice/Dataview/DataviewSelectors"
 import { DataviewType } from "store/slice/Dataview/DataviewType"
 import { AppDispatch } from "store/store"
@@ -339,11 +349,11 @@ const defineColumns = (
     sortable: false,
     renderCell: (params: { row: DataviewType }) => {
       const workspaceId = params?.row?.workspace.id
+      const uniqueId = params?.row?.uid
       const thumbnailPath = params?.row?.thumbnails?.image_url
-      // Add workspace_id as query parameter to make the path unique per workspace
-      const filePath = thumbnailPath
-        ? `${thumbnailPath}?workspace_id=${workspaceId}&start_index=1&end_index=1`
-        : null
+      // Check if it's a PNG thumbnail (new format) or TIFF (legacy)
+      const isPngThumb = thumbnailPath && thumbnailPath.includes("_thumb.png")
+      const filePath = thumbnailPath ? thumbnailPath.replace(/^\//, "") : null
 
       return (
         <Box
@@ -360,13 +370,24 @@ const defineColumns = (
         >
           <Box sx={{ width: 100, height: 80 }}>
             {filePath ? (
-              <ImagePlotSimple
-                filePath={filePath}
-                workspaceId={workspaceId}
-                onClick={() =>
-                  handleOpenInputsView(workspaceId, params?.row?.uid)
-                }
-              />
+              isPngThumb ? (
+                // PNG thumbnail - uses authenticated API to fetch
+                <ThumbnailImage
+                  workspaceId={workspaceId}
+                  uniqueId={uniqueId}
+                  thumbType="input"
+                  onClick={() => handleOpenInputsView(workspaceId, uniqueId)}
+                  alt="Input thumbnail"
+                />
+              ) : (
+                // Legacy TIFF - may need on-demand sync, show with loading indicator
+                <ImagePlotSimpleWithLoading
+                  filePath={filePath}
+                  workspaceId={workspaceId}
+                  uniqueId={uniqueId}
+                  onClick={() => handleOpenInputsView(workspaceId, uniqueId)}
+                />
+              )
             ) : (
               <Box
                 sx={{
@@ -377,9 +398,7 @@ const defineColumns = (
                   justifyContent: "center",
                   cursor: "pointer",
                 }}
-                onClick={() =>
-                  handleOpenInputsView(workspaceId, params?.row?.uid)
-                }
+                onClick={() => handleOpenInputsView(workspaceId, uniqueId)}
               >
                 <ImageIcon color={"primary"} fontSize="large" />
               </Box>
@@ -397,11 +416,11 @@ const defineColumns = (
     sortable: false,
     renderCell: (params: { row: DataviewType }) => {
       const workspaceId = params?.row?.workspace.id
+      const uniqueId = params?.row?.uid
       const thumbnailPath = params?.row?.thumbnails?.roi_url
-      // Add workspace_id as query parameter to make the path unique per workspace
-      const filePath = thumbnailPath
-        ? `${thumbnailPath}?workspace_id=${workspaceId}`
-        : null
+      // Check if it's a PNG thumbnail (new format) or JSON (legacy)
+      const isPngThumb = thumbnailPath && thumbnailPath.includes("_thumb.png")
+      const filePath = thumbnailPath ? thumbnailPath.replace(/^\//, "") : null
 
       return (
         <Box
@@ -418,13 +437,24 @@ const defineColumns = (
         >
           <Box sx={{ width: 100, height: 80 }}>
             {filePath ? (
-              <RoiPlotSimple
-                filePath={filePath}
-                workspaceId={workspaceId}
-                onClick={() =>
-                  handleOpenOutputsView(workspaceId, params?.row?.uid)
-                }
-              />
+              isPngThumb ? (
+                // PNG thumbnail - uses authenticated API to fetch
+                <ThumbnailImage
+                  workspaceId={workspaceId}
+                  uniqueId={uniqueId}
+                  thumbType="roi"
+                  onClick={() => handleOpenOutputsView(workspaceId, uniqueId)}
+                  alt="ROI thumbnail"
+                />
+              ) : (
+                // Legacy JSON - may need on-demand sync, show with loading indicator
+                <RoiPlotSimpleWithLoading
+                  filePath={filePath}
+                  workspaceId={workspaceId}
+                  uniqueId={uniqueId}
+                  onClick={() => handleOpenOutputsView(workspaceId, uniqueId)}
+                />
+              )
             ) : (
               <Box
                 sx={{
@@ -435,9 +465,7 @@ const defineColumns = (
                   justifyContent: "center",
                   cursor: "pointer",
                 }}
-                onClick={() =>
-                  handleOpenOutputsView(workspaceId, params?.row?.uid)
-                }
+                onClick={() => handleOpenOutputsView(workspaceId, uniqueId)}
               >
                 <ImageIcon color={"primary"} fontSize="large" />
               </Box>
@@ -575,6 +603,9 @@ const DataviewRecords = ({
     is_public ? selectDataviewPublicData : selectDataviewPrivateData,
   )
   const loading = useSelector(selectDataviewLoading)
+  const error = useSelector(
+    is_public ? selectDataviewPublicError : selectDataviewPrivateError,
+  )
 
   const [openPublishAll, setOpenPublishAll] = useState<{
     title: string
@@ -1068,7 +1099,7 @@ const DataviewRecords = ({
                       listCheck.length !== 0 &&
                       handleOpenPublishAll(
                         "Bulk Publish",
-                        `Publish "${listCheck.length} records" at once. Is this OK?`,
+                        `Confirm publishling "${listCheck.length} records" at once.`,
                         "on",
                       )
                     }
@@ -1092,7 +1123,7 @@ const DataviewRecords = ({
                       listCheck.length !== 0 &&
                       handleOpenPublishAll(
                         "Bulk UnPublish",
-                        `Unpublish "${listCheck.length} records" at once. Is this OK?`,
+                        `Confirm unpublishing "${listCheck.length} records" at once.`,
                         "off",
                       )
                     }
@@ -1113,6 +1144,11 @@ const DataviewRecords = ({
           ) : null}
         </Box>
       ) : null}
+      {error && !loading && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {error}
+        </Alert>
+      )}
       <DataGrid
         columns={
           !is_public && !readonly

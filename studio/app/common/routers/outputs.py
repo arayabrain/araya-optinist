@@ -3,9 +3,10 @@ from glob import glob
 from typing import Optional
 
 import pandas as pd
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import FileResponse
 
-from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
+from studio.app.common.core.auth.auth_dependencies import get_outputs_remote_bucket_name
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
@@ -20,18 +21,139 @@ from studio.app.common.core.utils.file_reader import JsonReader, Reader
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
+    normalize_output_path,
 )
 from studio.app.common.core.utils.json_writer import JsonWriter, save_tiff2json
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
 )
 from studio.app.common.schemas.outputs import JsonTimeSeriesData, OutputData
-from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT
+from studio.app.const import (
+    ACCEPT_FILE_EXT,
+    ORIGINAL_DATA_EXT,
+    ThumbnailConst,
+    ThumbnailType,
+)
 from studio.app.dir_path import DIRPATH
 
 router = APIRouter(prefix="/outputs", tags=["outputs"])
 
 logger = AppLogger.get_logger()
+
+
+def _get_thumbnail_png_path(
+    workspace_id: str, unique_id: str, thumb_type: ThumbnailType
+) -> str:
+    """
+    Get the expected path for a thumbnail PNG.
+
+    Args:
+        workspace_id: Workspace identifier
+        unique_id: Experiment unique identifier
+        thumb_type: ThumbnailType.INPUT or ThumbnailType.ROI
+
+    Returns:
+        Absolute path to the thumbnail PNG file
+    """
+    return join_filepath(
+        [
+            DIRPATH.OUTPUT_DIR,
+            workspace_id,
+            unique_id,
+            ThumbnailConst.DIRNAME,
+            thumb_type.filename,
+        ]
+    )
+
+
+async def get_or_generate_thumbnail(
+    workspace_id: str,
+    unique_id: str,
+    original_path: str,
+    remote_bucket_name: str,
+    thumb_type: ThumbnailType,
+) -> str:
+    """
+    Get thumbnail path, generating if needed (lazy migration).
+
+    For backward compatibility with experiments that don't have PNG thumbnails:
+    1. Check if PNG thumbnail exists → return it
+    2. If not, check if original file exists locally
+       - If not, download from S3
+    3. Generate PNG from the original file
+    4. Upload PNG to S3 for future use
+    5. Return PNG path
+
+    Args:
+        workspace_id: Workspace identifier
+        unique_id: Experiment unique identifier
+        original_path: Path to original TIFF or JSON file
+        remote_bucket_name: S3 bucket name for remote storage
+        thumb_type: ThumbnailType.INPUT (for TIFF) or ThumbnailType.ROI
+            (for cell_roi.json)
+
+    Returns:
+        Path to the thumbnail PNG file (may be newly generated)
+    """
+    from studio.app.common.core.dataview.thumbnail_generator import ThumbnailGenerator
+    from studio.app.common.core.utils.filepath_creater import create_directory
+
+    thumb_path = _get_thumbnail_png_path(workspace_id, unique_id, thumb_type)
+
+    # Check if PNG thumbnail already exists
+    if os.path.exists(thumb_path):
+        return normalize_output_path(thumb_path)
+
+    # Resolve the original file path
+    abs_original_path = original_path
+    if not os.path.isabs(original_path):
+        # Try output directory first
+        abs_original_path = join_filepath([DIRPATH.OUTPUT_DIR, original_path])
+
+    # For input files (TIFFs), the path might be just a filename
+    if thumb_type == ThumbnailType.INPUT and not os.path.exists(abs_original_path):
+        filename = os.path.basename(original_path)
+        abs_original_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
+
+    # Download from S3 if needed
+    if not os.path.exists(abs_original_path) and RemoteStorageController.is_available():
+        s3_controller = S3StorageController(remote_bucket_name)
+        await s3_controller.download_thumbnail_source(
+            workspace_id, unique_id, original_path, thumb_type
+        )
+
+    # Generate thumbnail if original file now exists
+    if os.path.exists(abs_original_path):
+        try:
+            thumb_dir = os.path.dirname(thumb_path)
+            create_directory(thumb_dir)
+
+            if thumb_type == ThumbnailType.INPUT:
+                ThumbnailGenerator.generate_tiff_thumbnail(
+                    abs_original_path, thumb_path
+                )
+            else:
+                ThumbnailGenerator.generate_roi_thumbnail(abs_original_path, thumb_path)
+
+            logger.info(f"Lazy-generated thumbnail: {thumb_path}")
+
+            # Upload to S3 for future use (fire and forget)
+            if RemoteStorageController.is_available():
+                try:
+                    s3_controller = S3StorageController(remote_bucket_name)
+                    await s3_controller.upload_thumbnail(
+                        workspace_id, unique_id, thumb_path
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to upload generated thumbnail to S3: {e}")
+
+            return normalize_output_path(thumb_path)
+
+        except Exception as e:
+            logger.warning(f"Failed to generate thumbnail: {e}")
+
+    # Fall back to original path if all else fails
+    return normalize_output_path(original_path)
 
 
 async def _background_full_sync(
@@ -87,7 +209,7 @@ async def sync_visualization_files(
     workspace_id: str,
     unique_id: str,
     background_tasks: BackgroundTasks,
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ) -> bool:
     """
     Lazy-load visualization files from S3.
@@ -136,6 +258,128 @@ async def sync_visualization_files(
     )
 
     return result
+
+
+@router.get(
+    "/thumbnail/{workspace_id}/{unique_id}/{thumb_type}",
+    description="""
+    Get a thumbnail PNG image for an experiment.
+    Syncs from S3 if not available locally, or generates on-demand if needed.
+
+    Args:
+        workspace_id: Workspace identifier
+        unique_id: Experiment unique identifier
+        thumb_type: Either "input" or "roi"
+
+    Returns:
+        PNG image file
+    """,
+)
+async def get_thumbnail(
+    workspace_id: str,
+    unique_id: str,
+    thumb_type: ThumbnailType,
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
+):
+    """
+    Serve thumbnail PNG images for DataView.
+
+    This endpoint handles:
+    1. Syncing thumbnails from S3 if not available locally
+    2. Generating thumbnails on-demand from source files if needed
+    3. Serving the PNG file with proper content type
+    """
+
+    # Get the expected thumbnail path
+    thumb_path = _get_thumbnail_png_path(workspace_id, unique_id, thumb_type)
+
+    # Try to sync thumbnail from S3 if not available locally
+    if not os.path.exists(thumb_path) and RemoteStorageController.is_available():
+        try:
+            async with RemoteStorageSimpleReader(
+                remote_bucket_name
+            ) as remote_storage_controller:
+                await remote_storage_controller.download_experiment(
+                    workspace_id, unique_id, sync_mode="thumbnails_only"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to sync thumbnail from S3: {e}")
+
+    # If thumbnail still doesn't exist, try to generate it
+    if not os.path.exists(thumb_path):
+        # Sync essential config files (yaml) so we can determine source paths
+        # Note: thumbnails_only mode doesn't download the config files needed to
+        # find the source TIFF/JSON files for generation
+        if RemoteStorageController.is_available():
+            try:
+                async with RemoteStorageSimpleReader(
+                    remote_bucket_name
+                ) as remote_storage_controller:
+                    await remote_storage_controller.download_experiment(
+                        workspace_id, unique_id, sync_mode="essential_only"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to sync config files from S3: {e}")
+
+        # Get the original file path for generation
+        if thumb_type == ThumbnailType.INPUT:
+            # Need to find the input TIFF file
+            try:
+                input_filenames = SmkUtils.get_datatypes_inputs(
+                    workspace_id, unique_id, apply_basename=True
+                )
+                if input_filenames:
+                    original_path = input_filenames[0]
+                else:
+                    raise HTTPException(
+                        status_code=404, detail="No input files found for thumbnail"
+                    )
+            except (AssertionError, KeyError):
+                raise HTTPException(
+                    status_code=404, detail="Could not determine input file"
+                )
+        else:
+            # ROI thumbnail uses cell_roi.json - need to find actual path from config
+            from studio.app.common.core.dataview.dataview_services import (
+                DataviewService,
+            )
+
+            try:
+                thumbnails = DataviewService.make_dataview_thumnail_paths(
+                    workspace_id, unique_id
+                )
+                if thumbnails.roi_url:
+                    original_path = thumbnails.roi_url
+                else:
+                    raise HTTPException(
+                        status_code=404, detail="No ROI data found for thumbnail"
+                    )
+            except Exception as e:
+                logger.warning(f"Could not determine ROI path: {e}")
+                raise HTTPException(
+                    status_code=404, detail="Could not determine ROI file path"
+                )
+
+        # Generate thumbnail (may download source from S3 if needed)
+        # Note: get_or_generate_thumbnail returns a normalized (relative) path
+        await get_or_generate_thumbnail(
+            workspace_id, unique_id, original_path, remote_bucket_name, thumb_type
+        )
+        # Re-get the absolute path since generation should have created the file
+        thumb_path = _get_thumbnail_png_path(workspace_id, unique_id, thumb_type)
+
+    # Check if thumbnail exists after all attempts
+    if not os.path.exists(thumb_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Thumbnail not available: {thumb_type.filename}",
+        )
+
+    return FileResponse(
+        thumb_path,
+        media_type="image/png",
+        filename=thumb_type.filename,
+    )
 
 
 async def _ensure_visualization_synced(dirpath: str, remote_bucket_name: str) -> None:
@@ -213,25 +457,29 @@ def get_initial_timeseries_data(dirpath) -> JsonTimeSeriesData:
 async def get_inittimedata(
     dirpath: str,
     isFull: Optional[bool] = None,
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
-    # On-demand sync if files don't exist
-    await _ensure_visualization_synced(dirpath, remote_bucket_name)
+    # Normalize and convert to absolute path for filesystem operations
+    dirpath = normalize_output_path(dirpath)
+    abs_dirpath = join_filepath([DIRPATH.OUTPUT_DIR, dirpath])
 
-    full_json_dirpath = dirpath + ORIGINAL_DATA_EXT
+    # On-demand sync if files don't exist
+    await _ensure_visualization_synced(abs_dirpath, remote_bucket_name)
+
+    full_json_dirpath = abs_dirpath + ORIGINAL_DATA_EXT
     if isFull and os.path.exists(full_json_dirpath):
-        dirpath = full_json_dirpath
+        abs_dirpath = full_json_dirpath
 
     file_numbers = sorted(
         [
             os.path.splitext(os.path.basename(x))[0]
-            for x in glob(join_filepath([dirpath, "*.json"]))
+            for x in glob(join_filepath([abs_dirpath, "*.json"]))
         ]
     )
 
     # Handle empty case
     if not file_numbers:
-        return_data = get_initial_timeseries_data(dirpath)
+        return_data = get_initial_timeseries_data(abs_dirpath)
         return_data.meta = {"title": "0 ROIs found"}  # Set informative message
         return return_data
 
@@ -240,7 +488,7 @@ async def get_inittimedata(
     str_index = str(index)
 
     json_data = JsonReader.read_as_timeseries(
-        join_filepath([dirpath, f"{str(index)}.json"])
+        join_filepath([abs_dirpath, f"{str(index)}.json"])
     )
 
     data = {
@@ -254,7 +502,7 @@ async def get_inittimedata(
             for i in file_numbers
         }
 
-    return_data = get_initial_timeseries_data(dirpath)
+    return_data = get_initial_timeseries_data(abs_dirpath)
     return_data.xrange = json_data.xrange
     if json_data.std is not None:
         return_data.std = std
@@ -272,20 +520,24 @@ async def get_timedata(
     dirpath: str,
     index: int,
     isFull: Optional[bool] = None,
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
-    # On-demand sync if files don't exist
-    await _ensure_visualization_synced(dirpath, remote_bucket_name)
+    # Normalize and convert to absolute path for filesystem operations
+    dirpath = normalize_output_path(dirpath)
+    abs_dirpath = join_filepath([DIRPATH.OUTPUT_DIR, dirpath])
 
-    full_json_dirpath = dirpath + ORIGINAL_DATA_EXT
+    # On-demand sync if files don't exist
+    await _ensure_visualization_synced(abs_dirpath, remote_bucket_name)
+
+    full_json_dirpath = abs_dirpath + ORIGINAL_DATA_EXT
     if isFull and os.path.exists(full_json_dirpath):
-        dirpath = full_json_dirpath
+        abs_dirpath = full_json_dirpath
 
     json_data = JsonReader.read_as_timeseries(
-        join_filepath([dirpath, f"{str(index)}.json"])
+        join_filepath([abs_dirpath, f"{str(index)}.json"])
     )
 
-    return_data = get_initial_timeseries_data(dirpath)
+    return_data = get_initial_timeseries_data(abs_dirpath)
 
     str_index = str(index)
     return_data.data[str_index] = json_data.data
@@ -298,14 +550,18 @@ async def get_timedata(
 @router.get("/alltimedata/{dirpath:path}", response_model=JsonTimeSeriesData)
 async def get_alltimedata(
     dirpath: str,
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
+    # Normalize and convert to absolute path for filesystem operations
+    dirpath = normalize_output_path(dirpath)
+    abs_dirpath = join_filepath([DIRPATH.OUTPUT_DIR, dirpath])
+
     # On-demand sync if files don't exist
-    await _ensure_visualization_synced(dirpath, remote_bucket_name)
+    await _ensure_visualization_synced(abs_dirpath, remote_bucket_name)
 
-    return_data = get_initial_timeseries_data(dirpath)
+    return_data = get_initial_timeseries_data(abs_dirpath)
 
-    for i, path in enumerate(glob(join_filepath([dirpath, "*.json"]))):
+    for i, path in enumerate(glob(join_filepath([abs_dirpath, "*.json"]))):
         str_idx = str(os.path.splitext(os.path.basename(path))[0])
         json_data = JsonReader.read_as_timeseries(path)
         if i == 0:
@@ -321,51 +577,83 @@ async def get_alltimedata(
 @router.get("/data/{filepath:path}", response_model=OutputData)
 async def get_file(
     filepath: str,
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
-    # On-demand sync if files don't exist
-    await _ensure_visualization_synced(os.path.dirname(filepath), remote_bucket_name)
+    # Normalize and convert to absolute path for filesystem operations
+    filepath = normalize_output_path(filepath)
+    abs_filepath = join_filepath([DIRPATH.OUTPUT_DIR, filepath])
 
-    return JsonReader.read_as_output(filepath)
+    # On-demand sync if files don't exist
+    await _ensure_visualization_synced(
+        os.path.dirname(abs_filepath), remote_bucket_name
+    )
+
+    return JsonReader.read_as_output(abs_filepath)
 
 
 @router.get("/html/{filepath:path}", response_model=OutputData)
 async def get_html(filepath: str):
-    return Reader.read_as_output(filepath)
+    # Normalize and convert to absolute path for filesystem operations
+    filepath = normalize_output_path(filepath)
+    abs_filepath = join_filepath([DIRPATH.OUTPUT_DIR, filepath])
+    return Reader.read_as_output(abs_filepath)
 
 
 @router.get("/image/{filepath:path}", response_model=OutputData)
 async def get_image(
     filepath: str,
     workspace_id: str,
+    unique_id: Optional[str] = None,  # For published data access validation
     start_index: Optional[int] = 0,
     end_index: Optional[int] = 10,
     isFull: Optional[bool] = None,
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
+    # Normalize filepath for backward compatibility with existing DB records
+    # that may contain absolute paths like /app/studio_data/output/...
+    filepath = normalize_output_path(filepath)
+
+    # Convert to absolute path for filesystem operations
+    abs_filepath = join_filepath([DIRPATH.OUTPUT_DIR, filepath])
+
     # On-demand sync if files don't exist
-    await _ensure_visualization_synced(os.path.dirname(filepath), remote_bucket_name)
+    await _ensure_visualization_synced(
+        os.path.dirname(abs_filepath), remote_bucket_name
+    )
 
     filename, ext = os.path.splitext(os.path.basename(filepath))
 
     if filename == "cell_roi" and isFull:
-        full_cell_roi_filepath = filepath + ORIGINAL_DATA_EXT
+        full_cell_roi_filepath = abs_filepath + ORIGINAL_DATA_EXT
         if os.path.exists(full_cell_roi_filepath):
-            filepath = full_cell_roi_filepath
+            abs_filepath = full_cell_roi_filepath
 
     if ext in ACCEPT_FILE_EXT.TIFF_EXT.value:
-        if not filepath.startswith(join_filepath([DIRPATH.OUTPUT_DIR, workspace_id])):
-            filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filepath])
+        # Check if this is an input file (just filename)
+        # vs output file (has workspace path)
+        is_input_file = not filepath.startswith(f"{workspace_id}/")
+        if is_input_file:
+            abs_filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filepath])
 
             # On-demand sync for input files
-            if not os.path.exists(filepath) and RemoteStorageController.is_available():
+            if (
+                not os.path.exists(abs_filepath)
+                and RemoteStorageController.is_available()
+            ):
                 logger.info(f"On-demand sync for input file: {workspace_id}/{filename}")
                 s3_controller = S3StorageController(remote_bucket_name)
                 await s3_controller.download_input_data(workspace_id, filename + ext)
 
+            # Return 404 if file still doesn't exist after sync attempt
+            if not os.path.exists(abs_filepath):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Input file not found: {filename}{ext}",
+                )
+
         save_dirpath = join_filepath(
             [
-                os.path.dirname(filepath),
+                os.path.dirname(abs_filepath),
                 filename,
             ]
         )
@@ -373,9 +661,35 @@ async def get_image(
             [save_dirpath, f"{filename}_{str(start_index)}_{str(end_index)}.json"]
         )
         if not os.path.exists(json_filepath):
-            save_tiff2json(filepath, save_dirpath, start_index, end_index)
+            save_tiff2json(abs_filepath, save_dirpath, start_index, end_index)
     else:
-        json_filepath = filepath
+        json_filepath = abs_filepath
+        # Check if output file exists after sync attempt
+        if not os.path.exists(json_filepath):
+            if remote_bucket_name:
+                logger.warning(f"File not found after sync attempt: {json_filepath}")
+                # Distinguish between "syncing in progress" vs "file doesn't exist"
+                # If the experiment directory exists but the file doesn't, the file
+                # likely doesn't exist in S3 either (analysis incomplete)
+                experiment_dir = os.path.dirname(os.path.dirname(json_filepath))
+                if os.path.exists(experiment_dir):
+                    # Experiment dir exists but file missing -
+                    # likely analysis incomplete
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Output file not found. "
+                        "Analysis may not have generated this file.",
+                    )
+                else:
+                    # Experiment dir doesn't exist - sync may still be in progress
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Data syncing. Please retry.",
+                    )
+            raise HTTPException(
+                status_code=404,
+                detail="Output file not found",
+            )
 
     return JsonReader.read_as_output(json_filepath)
 
@@ -384,7 +698,7 @@ async def get_image(
 async def get_csv(
     filepath: str,
     workspace_id: str,
-    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
     original_filename = os.path.basename(filepath)
     filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filepath])

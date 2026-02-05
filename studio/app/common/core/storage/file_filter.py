@@ -2,6 +2,7 @@ from studio.app.const import (
     ESSENTIAL_SYNC_PATTERNS,
     LARGE_FILE_PATTERNS,
     VISUALIZATION_SYNC_PATTERNS,
+    ThumbnailConst,
 )
 
 
@@ -28,6 +29,12 @@ class FileSyncFilter:
             return (True, "sync_mode=all")
 
         file_lower = file_path.lower()
+
+        # Thumbnails only mode: sync only PNG thumbnail files for fast DataView loading
+        if sync_mode == "thumbnails_only":
+            if any(pattern in file_lower for pattern in ThumbnailConst.FILE_PATTERNS):
+                return (True, "thumbnail file")
+            return (False, "not needed for thumbnails")
 
         # Visualization mode: only sync JSON and TIFF files needed for viewing
         if sync_mode == "visualization":

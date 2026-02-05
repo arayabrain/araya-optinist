@@ -180,6 +180,7 @@ will sync metadata on-demand when accessed via `ensure_synced_async()`.
 
 | Mode | Files Downloaded | Use Case |
 |------|------------------|----------|
+| `thumbnails_only` | `*_thumb.png` | Fast Dataview thumbnails |
 | `essential_only` | `.yaml`, `.yml`, `.json` | Metadata sync for listing |
 | `visualization` | `.json`, `.tif`, `.tiff`, `.yaml` | Viewing results |
 | `all` | All files including `.pkl`, `.nwb` | Edit ROI, Reproduce |
@@ -187,11 +188,30 @@ will sync metadata on-demand when accessed via `ensure_synced_async()`.
 ### File Patterns (from `studio/app/const.py`)
 
 ```python
+THUMBNAIL_FILE_PATTERNS = ("input_thumb.png", "roi_thumb.png", "_thumb.png")
 ESSENTIAL_SYNC_PATTERNS = (".yaml", ".yml", ".json")
 LARGE_FILE_PATTERNS = tuple(ACCEPT_FILE_EXT.ALL_EXT.value + [".pkl"])
-# YAML included for snakemake.yaml (needed to look up input file references)
 VISUALIZATION_SYNC_PATTERNS = (".json", ".tif", ".tiff", ".yaml")
 ```
+
+### Thumbnail Storage Structure
+
+PNG thumbnails are stored alongside experiment data:
+
+```
+/output/{workspace_id}/{unique_id}/
+├── thumbnails/
+│   ├── input_thumb.png    # First frame of input TIFF (~50-100KB)
+│   └── roi_thumb.png      # Rendered ROI overlay (~50-100KB)
+├── experiment.yaml
+├── workflow.yaml
+└── ... (other output files)
+```
+
+**Why PNGs?**
+- Original TIFFs can be 100MB+, PNGs are ~50-100KB
+- Background sync can download 50+ thumbnails per run vs 10 TIFFs
+- Immediate Dataview visibility after restart
 
 ---
 
