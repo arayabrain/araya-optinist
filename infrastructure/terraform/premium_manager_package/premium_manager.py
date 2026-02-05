@@ -64,13 +64,8 @@ if TYPE_CHECKING:
     from mypy_boto3_lambda import LambdaClient
 
 # Constants
-# Default fallback value for premium user count in development/testing scenarios
-# Used when database queries fail or no premium users exist
-DEFAULT_DEVELOPMENT_CAPACITY = 3
-
-# Default hours before idle premium instances are converted to standby pool
-# Can be overridden by PREMIUM_IDLE_TIMEOUT_HOURS environment variable
-DEFAULT_IDLE_TIMEOUT_HOURS = 3
+DEFAULT_DEVELOPMENT_CAPACITY = 3  # Fallback capacity for dev/testing
+DEFAULT_IDLE_TIMEOUT_HOURS = 3  # Hours before idle instances become standby
 
 
 def generate_routing_id(uid: str, secret_key: str) -> str:
@@ -277,12 +272,10 @@ def _store_user_assignment_transaction(
         is_shared: Whether instance is shared
         is_standby: Whether this is a standby pool assignment (user_id should be None)
     """
-    # Initialize variable for workflow count preservation (only used for non-standby)
     active_workflows_from_free = 0
 
     with connection.cursor() as cursor:
-        # For standby instances (user_id=None), check by instance_id instead
-        # because WHERE user_id = NULL doesn't match any rows in SQL
+        # For standby instances, check by instance_id (NULL user_id won't match)
         if is_standby or user_id is None:
             cursor.execute(
                 """SELECT instance_id FROM premium_user_assignments
@@ -328,10 +321,7 @@ def _store_user_assignment_transaction(
                     f"assignment (attempt #{new_attempts})"
                 )
 
-            # Clean up any existing free_user_assignments record for this user
-            # This prevents workflow tracking from updating the wrong table
-            # when a user upgrades from free to premium tier
-            # First, check if there are active workflows to preserve the count
+            # Check for active workflows to preserve before removing free tier record
             cursor.execute(
                 """SELECT active_workflow_count FROM free_user_assignments
                    WHERE user_id = %s""",
@@ -360,16 +350,11 @@ def _store_user_assignment_transaction(
                     f"(user upgraded to premium)"
                 )
 
-        # Track active workflows to preserve from free tier
-        # (0 if standby or no free record)
+        # Preserve active workflow count from free tier
         preserved_workflow_count = (
             active_workflows_from_free if not is_standby and user_id else 0
         )
 
-        # Insert new assignment with enhanced tracking including is_standby
-        # Use CASE to set standby_created_at to NOW() only if is_standby is true
-        # Convert Python booleans to integers (1/0) for MySQL compatibility
-        # Preserve active_workflow_count from free tier if user had active workflows
         cursor.execute(
             """
             INSERT INTO premium_user_assignments
@@ -2060,6 +2045,87 @@ def cleanup_duplicate_rules_for_routing_id(listener_arn: str, routing_id: str) -
         return 0
 
 
+def target_group_exists(target_group_arn: str) -> bool:
+    """
+    Check if a target group exists in AWS.
+
+    Args:
+        target_group_arn: The ARN of the target group to check
+
+    Returns:
+        True if target group exists, False otherwise
+    """
+    if not target_group_arn or not target_group_arn.strip():
+        return False
+
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+
+    try:
+        elbv2.describe_target_groups(TargetGroupArns=[target_group_arn])
+        return True
+    except elbv2.exceptions.TargetGroupNotFoundException:
+        return False
+    except Exception as e:
+        if "TargetGroupNotFound" in str(e):
+            return False
+        print(f"Error checking target group {target_group_arn}: {e}")
+        raise
+
+
+def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
+    """
+    Create a new target group for a premium user, or return existing one if
+    a target group with the same name already exists.
+
+    This handles the edge case where a previous migration partially failed
+    and left an orphaned target group.
+
+    Args:
+        user_id: The user ID for naming the target group
+        vpc_id: The VPC ID for the target group
+
+    Returns:
+        The ARN of the created or existing target group
+    """
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+    target_group_name = f"premium-{user_id}-tg"
+
+    try:
+        response = elbv2.create_target_group(
+            Name=target_group_name,
+            Protocol="HTTP",
+            Port=8000,
+            VpcId=vpc_id,
+            HealthCheckPath="/health",
+            HealthCheckProtocol="HTTP",
+            HealthCheckIntervalSeconds=30,
+            HealthyThresholdCount=2,
+            UnhealthyThresholdCount=3,
+            Tags=[
+                {"Key": "UserID", "Value": str(user_id)},
+                {"Key": "Type", "Value": "premium-user"},
+                {"Key": "Service", "Value": "optinist-premium"},
+            ],
+        )
+        return response["TargetGroups"][0]["TargetGroupArn"]
+
+    except Exception as e:
+        if "DuplicateTargetGroupName" in str(e):
+            print(
+                f"Target group {target_group_name} already exists, "
+                f"retrieving existing ARN"
+            )
+            try:
+                response = elbv2.describe_target_groups(Names=[target_group_name])
+                existing_arn = response["TargetGroups"][0]["TargetGroupArn"]
+                print(f"Found existing target group: {existing_arn}")
+                return existing_arn
+            except Exception as describe_error:
+                print(f"Failed to retrieve existing target group: {describe_error}")
+                raise
+        raise
+
+
 def get_next_available_priority(listener_arn: str, start_priority: int = 100) -> int:
     """
     Find next available ALB rule priority by querying existing rules.
@@ -2134,8 +2200,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
             ),
         }
 
-    # EARLY CHECK: Return existing assignment if user is already assigned
-    # This prevents unnecessary resource creation and potential duplicates
+    # Return existing assignment if user is already assigned
     try:
         existing_assignment = get_existing_user_assignment(user_id)
         if existing_assignment:
@@ -2145,8 +2210,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                 f"instance {existing_instance_id}"
             )
 
-            # If user is on autoscaling-pool, trigger migration to dedicated instance
-            # This handles cases where the initial migration timed out or failed
+            # Trigger migration if user is stuck on autoscaling-pool
             if existing_instance_id == PremiumAssignment.AUTOSCALING_POOL:
                 print(
                     f"User {user_id} is on autoscaling-pool, "
@@ -2169,8 +2233,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                 ),
             }
     except Exception as check_error:
-        # CRITICAL: If we can't verify assignment status, fail fast to prevent
-        # cleanup_duplicate_rules_for_routing_id() from deleting valid rules
+        # Fail fast if we can't verify assignment status
         print(f"Error: Failed to check existing assignment: {check_error}")
         return {
             "statusCode": 503,
@@ -2255,9 +2318,6 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
             instance_id = instance["instance_id"]
             print(f"[{i+1}/{len(running_instances)}] Evaluating instance {instance_id}")
 
-            # Check instance readiness with retry (instances may be starting)
-            # Use short timeout during assignment - if not ready quickly,
-            # fall through to autoscaling pool
             print(f"Checking readiness for instance {instance_id}...")
             is_ready = check_instance_readiness_with_retry(
                 instance_id, max_wait_seconds=30, retry_interval=10
@@ -2323,10 +2383,8 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
         else:
             print(" PRIORITY 1 FAILED: No dedicated instances available")
 
-        # 2. PRIORITY 2: Share with least loaded instance (immediate assignment)
-        # This provides the fastest user experience when no dedicated instance available
+        # PRIORITY 2: Share with least loaded instance
         if not instance_to_use and least_loaded_instance:
-            # Share with least loaded instance for immediate assignment
             instance_to_use = least_loaded_instance
             is_shared = True
             instance_state = InstanceState.RUNNING
@@ -2344,9 +2402,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                 needs_scaling = True
                 print("→ Flagged for background scaling after assignment")
 
-        # 2.5. PRIORITY 2.5: Temporary assignment to autoscaling pool (immediate login)
-        # If NO premium instances are running, allow immediate login via shared pool
-        # then migrate to dedicated premium instance when ready
+        # PRIORITY 2.5: Temporary assignment to autoscaling pool for immediate login
         no_premium_available = len(running_instances) == 0 or not available_dedicated
         if not instance_to_use and no_premium_available:
             print(
@@ -2646,8 +2702,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                 Targets=[{"Id": instance_id, "Port": 8000}],
             )
 
-        # 9. Create ALB listener rule for user routing
-        # Generate non-reversible routing ID from user_id
+        # Create ALB listener rule for user routing
         routing_secret_key = get_required_env_var("ROUTING_SECRET_KEY")
         routing_id = generate_routing_id(str(user_id), routing_secret_key)
         print(
@@ -2655,11 +2710,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
             f"(truncated for security)"
         )
 
-        # Clean up any existing duplicate rules for this routing_id
-        # This prevents rule accumulation from failed/retried assignments
         cleanup_duplicate_rules_for_routing_id(alb_listener_arn, routing_id)
-
-        # Get next available priority dynamically to avoid conflicts
         priority = get_next_available_priority(alb_listener_arn, start_priority=100)
 
         rule_response = elbv2.create_rule(
@@ -2686,9 +2737,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
 
         rule_arn = rule_response["Rules"][0]["RuleArn"]
 
-        # Clean up any standby placeholder assignment before storing new one
-        # This handles both standby instances and aws_fallback instances that were
-        # previously registered as standby
+        # Clean up standby placeholder before storing new assignment
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -2707,7 +2756,6 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
         # Clean up reservation placeholder
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
-                # Remove the reservation placeholder
                 cursor.execute(
                     """DELETE FROM premium_user_assignments
                        WHERE instance_id = %s
@@ -2717,23 +2765,14 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                 )
                 connection.commit()
 
-        # If this was a shared assignment, trigger scaling BEFORE storing in DB
-        # This way, if scaling fails, we haven't written the DB entry yet
-        # and the user can retry immediately without being blocked by stale entry
+        # Trigger scaling before DB write so failures don't block retries
         if needs_scaling:
             print("Triggering scaling for shared assignment...")
             scale_premium_instances_if_needed()
-            # Always trigger migration for autoscaling-pool assignments
-            # Even if scaling wasn't needed, there may be available instances
-            # that the user can be migrated to
             print("Triggering async migration for autoscaling-pool user...")
             invoke_migration_async()
 
-        # 10. Store assignment in RDS with state tracking
-        # This is intentionally the LAST major operation so that:
-        # - If anything above fails, no DB entry exists to block retries
-        # - Orphaned AWS resources are cleaned up by hourly cleanup job
-        # - User can retry immediately without waiting for stale entry cleanup
+        # Store assignment last - orphaned AWS resources cleaned up hourly
         store_user_assignment(
             user_id,
             instance_id,
@@ -2798,9 +2837,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as reservation_error:
             print(f"Failed to release reservation: {str(reservation_error)}")
 
-        # Safety net: Clean up DB entry if it was written
-        # This shouldn't normally happen since DB write is now last,
-        # but provides defense-in-depth if code is refactored later
+        # Clean up DB entry if it was written (defense-in-depth)
         try:
             if assignment_stored:
                 print(f"Cleaning up DB assignment for user {user_id} after error")
@@ -2888,7 +2925,7 @@ def scale_premium_instances_if_needed():
         # Get subscriber count for comparison
         total_subscribers = count_total_premium_users()
 
-        # SOLUTION 3: Count pending instance creations
+        # Count pending instance creations to prevent over-provisioning
         pending_standby_count = count_pending_standby_creations()
         pending_running_count = count_pending_running_creations()
 
@@ -2913,7 +2950,7 @@ def scale_premium_instances_if_needed():
             print(f"Scaling blocked: {launching_count} instances already launching")
             return False
 
-        # SOLUTION 3: Check if pending running instances will satisfy demand
+        # Check if pending running instances will satisfy demand
         if pending_running_count > 0:
             print(
                 f"Running instance creation in progress: {pending_running_count} "
@@ -3453,31 +3490,14 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
 
                 old_instance_id = assignment["instance_id"]
                 old_target_group_arn = assignment["target_group_arn"]
-                old_rule_arn = assignment["alb_rule_arn"]
+                # Normalize empty string to None for consistent checks
+                old_rule_arn = assignment["alb_rule_arn"] or None
 
                 # Special handling for autoscaling-pool migration
                 if old_instance_id == PremiumAssignment.AUTOSCALING_POOL:
-                    # Create new dedicated target group for this user
+                    # Create or get existing target group (handles duplicate names)
                     vpc_id = get_required_env_var("VPC_ID")
-                    target_group_response = elbv2.create_target_group(
-                        Name=f"premium-{user_id}-tg",
-                        Protocol="HTTP",
-                        Port=8000,
-                        VpcId=vpc_id,
-                        HealthCheckPath="/health",
-                        HealthCheckProtocol="HTTP",
-                        HealthCheckIntervalSeconds=30,
-                        HealthyThresholdCount=2,
-                        UnhealthyThresholdCount=3,
-                        Tags=[
-                            {"Key": "UserID", "Value": str(user_id)},
-                            {"Key": "Type", "Value": "premium-user"},
-                            {"Key": "Service", "Value": "optinist-premium"},
-                        ],
-                    )
-                    new_target_group_arn = target_group_response["TargetGroups"][0][
-                        "TargetGroupArn"
-                    ]
+                    new_target_group_arn = create_or_get_target_group(user_id, vpc_id)
 
                     # Register new instance to new target group
                     elbv2.register_targets(
@@ -3485,24 +3505,104 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                         Targets=[{"Id": new_instance_id, "Port": 8000}],
                     )
 
-                    # Update ALB rule to point to new target group
-                    elbv2.modify_rule(
-                        RuleArn=old_rule_arn,
-                        Actions=[
-                            {"Type": "forward", "TargetGroupArn": new_target_group_arn}
-                        ],
-                    )
+                    # Check if old ALB rule exists, create new one if not
+                    rule_exists = False
+                    if old_rule_arn and old_rule_arn.strip():
+                        try:
+                            elbv2.describe_rules(RuleArns=[old_rule_arn])
+                            rule_exists = True
+                        except elbv2.exceptions.RuleNotFoundException:
+                            print(
+                                f"Old ALB rule {old_rule_arn} not found, "
+                                f"creating new rule"
+                            )
+                        except Exception as e:
+                            if "RuleNotFound" in str(e):
+                                print(
+                                    f"Old ALB rule not found (error: {e}), "
+                                    f"creating new rule"
+                                )
+                            else:
+                                raise
 
-                    # Update assignment with new target group
+                    if rule_exists:
+                        # Update existing ALB rule to point to new target group
+                        elbv2.modify_rule(
+                            RuleArn=old_rule_arn,
+                            Actions=[
+                                {
+                                    "Type": "forward",
+                                    "TargetGroupArn": new_target_group_arn,
+                                }
+                            ],
+                        )
+                        new_rule_arn = old_rule_arn
+                    else:
+                        # Create new ALB rule for this user
+                        alb_listener_arn = get_required_env_var("ALB_LISTENER_ARN")
+                        routing_secret_key = get_required_env_var("ROUTING_SECRET_KEY")
+                        routing_id = generate_routing_id(
+                            str(user_id), routing_secret_key
+                        )
+
+                        # Get next available priority
+                        priority = get_next_available_priority(
+                            alb_listener_arn, start_priority=100
+                        )
+
+                        rule_response = elbv2.create_rule(
+                            ListenerArn=alb_listener_arn,
+                            Priority=priority,
+                            Conditions=[
+                                {
+                                    "Field": "http-header",
+                                    "HttpHeaderConfig": {
+                                        "HttpHeaderName": RoutingHeaders.USER_TIER,
+                                        "Values": [
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ],
+                                    },
+                                },
+                                {
+                                    "Field": "http-header",
+                                    "HttpHeaderConfig": {
+                                        "HttpHeaderName": RoutingHeaders.ROUTING_ID,
+                                        "Values": [routing_id],
+                                    },
+                                },
+                            ],
+                            Actions=[
+                                {
+                                    "Type": "forward",
+                                    "TargetGroupArn": new_target_group_arn,
+                                }
+                            ],
+                        )
+                        new_rule_arn = rule_response["Rules"][0]["RuleArn"]
+                        print(f"Created new ALB rule: {new_rule_arn}")
+
+                    # Update assignment with new target group and rule ARN
                     cursor.execute(
                         """UPDATE premium_user_assignments
                            SET instance_id = %s, target_group_arn = %s,
+                               alb_rule_arn = %s,
                                is_shared = 0, last_state_check = NOW()
                            WHERE user_id = %s""",
-                        (new_instance_id, new_target_group_arn, user_id),
+                        (new_instance_id, new_target_group_arn, new_rule_arn, user_id),
                     )
                 else:
                     # Normal migration: deregister from old, register to new
+                    # First verify target group exists
+                    if not target_group_exists(old_target_group_arn):
+                        print(
+                            f"Target group {old_target_group_arn} not found, "
+                            f"creating new one for user {user_id}"
+                        )
+                        vpc_id = get_required_env_var("VPC_ID")
+                        old_target_group_arn = create_or_get_target_group(
+                            user_id, vpc_id
+                        )
+
                     elbv2.deregister_targets(
                         TargetGroupArn=old_target_group_arn,
                         Targets=[{"Id": old_instance_id, "Port": 8000}],
@@ -3514,12 +3614,13 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                         Targets=[{"Id": new_instance_id, "Port": 8000}],
                     )
 
-                    # Update RDS assignment
+                    # Update RDS assignment (include target_group_arn in case recreated)
                     cursor.execute(
                         """UPDATE premium_user_assignments
-                           SET instance_id = %s, is_shared = 0, last_state_check = NOW()
+                           SET instance_id = %s, target_group_arn = %s,
+                               is_shared = 0, last_state_check = NOW()
                            WHERE user_id = %s""",
-                        (new_instance_id, user_id),
+                        (new_instance_id, old_target_group_arn, user_id),
                     )
 
                 connection.commit()  # Commit the migration
@@ -3553,8 +3654,9 @@ def release_premium_user(user_id: int) -> Dict[str, Any]:
         try:
             assignment = remove_user_assignment(user_id)
             instance_id = assignment["instance_id"]
-            target_group_arn = assignment["target_group_arn"]
-            rule_arn = assignment["alb_rule_arn"]
+            # Normalize empty strings to None for consistent checks
+            target_group_arn = assignment["target_group_arn"] or None
+            rule_arn = assignment["alb_rule_arn"] or None
             print(f"Found assignment for user {user_id} on instance {instance_id}")
         except Exception as assignment_error:
             print(f"No assignment found for user {user_id}: {str(assignment_error)}")
@@ -3563,7 +3665,7 @@ def release_premium_user(user_id: int) -> Dict[str, Any]:
             rule_arn = None
 
         # 2. Delete ALB listener rule (if it exists)
-        if rule_arn:
+        if rule_arn and rule_arn.strip():
             try:
                 elbv2.delete_rule(RuleArn=rule_arn)
                 print(f"Deleted ALB rule: {rule_arn}")
@@ -3578,6 +3680,7 @@ def release_premium_user(user_id: int) -> Dict[str, Any]:
         autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
         if (
             target_group_arn
+            and target_group_arn.strip()
             and target_group_arn != PremiumAssignment.STANDBY
             and target_group_arn != autoscaling_tg_arn
         ):
@@ -3723,8 +3826,7 @@ def scale_down_if_possible():
                     f"(min running needed: {min_running_needed})"
                 )
 
-                # Deregister container instances from ECS BEFORE stopping EC2 instances
-                # This prevents "ghost" registrations that confuse the ECS scheduler
+                # Deregister from ECS before stopping to prevent ghost registrations
                 for instance_id in idle_instance_ids:
                     deregister_container_instance_from_ecs(instance_id)
 
@@ -3759,7 +3861,6 @@ def get_standby_pool_count():
                 )
                 results = cursor.fetchall()
 
-                # Convert to dictionary with default values
                 status_counts = {
                     InstanceState.STOPPED: 0,
                     InstanceState.RUNNING: 0,
@@ -3825,22 +3926,16 @@ def convert_running_instance_to_standby(instance_id: str):
     ec2: "EC2Client" = boto3.client("ec2")
 
     try:
-        # Deregister container instance from ECS BEFORE stopping EC2 instance
-        # This prevents "ghost" registrations that confuse the ECS scheduler
         deregister_container_instance_from_ecs(instance_id)
 
-        # Stop the instance
         print(f"Stopping instance {instance_id} to convert to standby")
         ec2.stop_instances(InstanceIds=[instance_id])
 
-        # Wait for it to stop
         waiter = ec2.get_waiter("instance_stopped")
         waiter.wait(
             InstanceIds=[instance_id], WaiterConfig={"Delay": 15, "MaxAttempts": 20}
         )
 
-        # Add to standby pool in database with is_standby flag
-        # Use NULL for standby instances (no real user assigned)
         store_user_assignment(
             user_id=None,
             instance_id=instance_id,
@@ -4191,10 +4286,7 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                 elif real_users:
                     # Check if this is a shared instance:
                     # 1. Multiple users on the instance, OR
-                    # 2. Any user has is_shared=1 flag (incorrectly marked as shared)
-                    # Note: is_shared is stored as INT(0/1) in MySQL, so we compare
-                    # to integer 1, not boolean True. The raw dict from cursor
-                    # returns 0 or 1, not Python bool.
+                    # Check if any user has is_shared=1 flag
                     has_shared_flag = any(
                         user.get("is_shared", 0) == 1 for user in real_users
                     )
@@ -4205,6 +4297,22 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                             f"{len(real_users)} users, "
                             f"has_shared_flag={has_shared_flag}"
                         )
+
+        # If we have users needing migration but no running instances,
+        # trigger scaling to start stopped instances
+        if shared_instances and not available_instances:
+            print(
+                "Users need migration but no running instances available. "
+                "Triggering scaling to start stopped instances..."
+            )
+            scaled = scale_premium_instances_if_needed()
+            return {
+                "migrations_performed": 0,
+                "available_instances": 0,
+                "shared_instances_found": len(shared_instances),
+                "scaling_triggered": scaled,
+                "message": "No running instances - triggered scaling",
+            }
 
         # Only migrate if we have available instances
         if not available_instances or not shared_instances:
@@ -4236,35 +4344,25 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                 f"Triggering scaling..."
             )
             scale_premium_instances_if_needed()
-            # Note: New instances will be picked up on next migration run
-            # For now, migrate as many users as possible with available capacity
 
         migrations_performed = 0
 
-        # Migrate users from shared instances to dedicated instances
         for instance_id, users in shared_instances:
             if not available_instances:
                 break
 
-            # For autoscaling pool, migrate ALL users (it's a temporary assignment)
-            # For premium instances with multiple users, keep first user (without
-            # is_shared flag), migrate others
-            # For single user with is_shared=1 flag, migrate them too
-            # (incorrect assignment)
+            # Determine which users to migrate based on instance type
             if instance_id == PremiumAssignment.AUTOSCALING_POOL:
-                users_to_migrate = users  # Migrate all users from autoscaling pool
+                users_to_migrate = users
                 print(f"Migrating ALL {len(users)} users from autoscaling pool")
             elif len(users) == 1:
-                # Single user incorrectly marked as shared - migrate them
                 users_to_migrate = users
                 print(
                     f"Migrating single user {users[0].get('user_id')} "
                     f"incorrectly marked as shared"
                 )
             else:
-                # Multiple users - migrate all with is_shared=1,
-                # or keep first and migrate rest
-                # Note: is_shared is INT(0/1) in MySQL - compare to int, not bool
+                # Multiple users - migrate those with is_shared=1, or all but first
                 users_with_shared_flag = [
                     u for u in users if u.get("is_shared", 0) == 1
                 ]
@@ -4282,8 +4380,6 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                     )
 
             for user_dict in users_to_migrate:
-                # Extract user_id from the dictionary returned by
-                # get_assigned_users_for_instance
                 user_id = user_dict.get("user_id")
                 if not user_id:
                     print(f"Warning: Skipping user with missing user_id: {user_dict}")
@@ -4292,8 +4388,7 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                 if not available_instances:
                     break
 
-                # Try instances until one succeeds (handles race conditions
-                # where concurrent Lambdas may have claimed instances)
+                # Try instances until one succeeds (handles concurrent claims)
                 migration_successful = False
                 while available_instances and not migration_successful:
                     new_instance_id = available_instances.pop(0)
