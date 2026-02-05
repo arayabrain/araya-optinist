@@ -17,6 +17,8 @@ from studio.app.common.core.storage.remote_storage_controller import (
 )
 from studio.app.common.core.subscription.constants import (
     PlanName,
+    StorageQuota,
+    StorageSize,
     SubscriptionPeriods,
     SubscriptionPlanIds,
     SubscriptionStatus,
@@ -417,6 +419,14 @@ async def create_user(
             expiration=SubscriptionService.get_current_datetime(),
         )
         db.add(subscription)
+
+        # Create storage usage record with free plan quota
+        storage_usage = UserStorageUsage(
+            user_id=user_db.id,
+            storage_usage_bytes=0,
+            storage_quota_bytes=StorageQuota.FREE * StorageSize.GB,
+        )
+        db.add(storage_usage)
 
         # Commit all changes
         db.commit()

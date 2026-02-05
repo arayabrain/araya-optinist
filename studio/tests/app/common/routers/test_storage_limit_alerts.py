@@ -1052,7 +1052,7 @@ async def test_contract_alert_message_is_user_friendly():
                         term not in result.message
                     ), f"Message contains internal term '{term}': {result.message}"
 
-    # Test grace period alert message
+    # Test grace period alert message (requires storage over free limit)
     with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
         with patch(
             "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
@@ -1063,8 +1063,9 @@ async def test_contract_alert_message_is_user_friendly():
                 mock_db = Mock()
                 mock_scope.return_value.__enter__.return_value = mock_db
 
+                # Storage over free tier limit to trigger grace period alert
                 mock_get_storage.return_value = {
-                    "storage_usage_bytes": 2_000_000_000,
+                    "storage_usage_bytes": 8_000_000_000,  # 8GB over 5GB limit
                     "storage_quota_bytes": 5_000_000_000,
                 }
                 mock_fresh.return_value = True
