@@ -127,7 +127,7 @@ const FooterBottom = styled(Box)({
 
 const FooterAttribution = styled(Typography)({
   fontSize: "0.75rem",
-  color: "#9ca3af",
+  color: "#6b7280",
   fontStyle: "italic",
 })
 

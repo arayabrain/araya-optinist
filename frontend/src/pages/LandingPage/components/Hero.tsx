@@ -46,10 +46,6 @@ export const Hero = () => {
               <span>NWB (Neurodata Without Borders) compatible</span>
             </Badge>
           </HeroBadges>
-          <Attribution>
-            Araya OptiNiSt is developed based on OptiNiSt by OIST (Okinawa
-            Institute of Science and Technology)
-          </Attribution>
         </HeroContent>
         <HeroVisual>
           <HeroGlow />
