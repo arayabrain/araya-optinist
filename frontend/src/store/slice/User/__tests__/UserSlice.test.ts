@@ -12,24 +12,34 @@ import type { RootState } from "store/store"
  * - logoutGeneration is preserved through logout (other state reset)
  */
 
-// Mock dependencies
+// Mock dependencies - use mock prefix for hoisting compatibility
+const mockSetLoggingOut = jest.fn()
+const mockRemoveToken = jest.fn()
+const mockRemoveRefreshToken = jest.fn()
+const mockRemoveExToken = jest.fn()
+const mockSaveToken = jest.fn()
+const mockSaveRefreshToken = jest.fn()
+const mockSaveExToken = jest.fn()
+const mockClearRoutingInfo = jest.fn()
+const mockUpdateRoutingInfo = jest.fn()
+
 jest.mock("utils/axios", () => ({
-  setLoggingOut: jest.fn(),
+  setLoggingOut: mockSetLoggingOut,
 }))
 
 jest.mock("utils/auth/AuthUtils", () => ({
-  removeToken: jest.fn(),
-  removeRefreshToken: jest.fn(),
-  removeExToken: jest.fn(),
-  saveToken: jest.fn(),
-  saveRefreshToken: jest.fn(),
-  saveExToken: jest.fn(),
+  removeToken: mockRemoveToken,
+  removeRefreshToken: mockRemoveRefreshToken,
+  removeExToken: mockRemoveExToken,
+  saveToken: mockSaveToken,
+  saveRefreshToken: mockSaveRefreshToken,
+  saveExToken: mockSaveExToken,
 }))
 
 jest.mock("utils/routing/RoutingService", () => ({
   routingService: {
-    clearRoutingInfo: jest.fn(),
-    updateRoutingInfo: jest.fn(),
+    clearRoutingInfo: mockClearRoutingInfo,
+    updateRoutingInfo: mockUpdateRoutingInfo,
   },
 }))
 
@@ -139,13 +149,12 @@ describe("UserSlice", () => {
       expect(stateAfterLogout.loading).toBe(false)
     })
 
-    it("should call setLoggingOut(true)", async () => {
-      const axiosModule = await import("utils/axios")
+    it("should call setLoggingOut(true)", () => {
       const state = userSlice.reducer(undefined, { type: "@@INIT" })
 
       userSlice.reducer(state, logout())
 
-      expect(axiosModule.setLoggingOut).toHaveBeenCalledWith(true)
+      expect(mockSetLoggingOut).toHaveBeenCalledWith(true)
     })
 
     it("should clear localStorage dismissedAlerts", () => {

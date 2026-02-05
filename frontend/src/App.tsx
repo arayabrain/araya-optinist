@@ -56,6 +56,7 @@ const App: FC = () => {
   ) : (
     <SnackbarProvider
       maxSnack={5}
+      preventDuplicate={true}
       action={(snackbarKey) => (
         <SnackbarCloseButton snackbarKey={snackbarKey} />
       )}

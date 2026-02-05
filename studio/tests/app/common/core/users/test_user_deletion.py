@@ -689,3 +689,235 @@ async def test_resume_deletion_skips_completed_steps(mock_db, mock_user):
     mock_stripe.handle_cancel_user_subscription.assert_not_called()
     # User should be marked inactive
     assert mock_user.active is False
+
+
+# ============================================================================
+# Contract Tests: Cases 26-27 - Stripe/S3 Deletion Guarantees
+# ============================================================================
+
+
+class TestUserDeletionContract:
+    """Contract tests for user deletion guarantees (Cases 26-27)."""
+
+    @pytest.mark.asyncio
+    async def test_contract_firebase_deleted_blocks_login(self, mock_db, mock_user):
+        """If Firebase deleted, user cannot authenticate (Case 26-27 guarantee)."""
+        mock_query_result = Mock()
+        mock_query_result.filter.return_value = mock_query_result
+        mock_query_result.first.return_value = mock_user
+        mock_query_result.all.return_value = []
+        mock_db.query.return_value = mock_query_result
+
+        firebase_deleted = False
+
+        def track_firebase_delete(uid):
+            nonlocal firebase_deleted
+            firebase_deleted = True
+
+        with patch("studio.app.common.core.users.crud_users.firebase_auth") as mock_fb:
+            mock_fb.delete_user.side_effect = track_firebase_delete
+
+            with patch(
+                "studio.app.common.core.users.crud_users.StripeService"
+            ) as mock_stripe:
+                mock_stripe.handle_cancel_user_subscription = AsyncMock()
+                with patch(
+                    "studio.app.common.core.users.crud_users.RemoteStorageController"
+                ) as mock_storage:
+                    mock_storage.is_available.return_value = False
+
+                    await delete_user(mock_db, 1, 1)
+
+        # Firebase must be deleted
+        assert firebase_deleted is True
+        # Verify Firebase was called with correct UID
+        mock_fb.delete_user.assert_called_with(mock_user.uid)
+
+    @pytest.mark.asyncio
+    async def test_contract_stripe_failure_does_not_resurrect_user(
+        self, mock_db, mock_user
+    ):
+        """Stripe failure should not prevent user from being deleted (Case 26)."""
+        mock_query_result = Mock()
+        mock_query_result.filter.return_value = mock_query_result
+        mock_query_result.first.return_value = mock_user
+        mock_query_result.all.return_value = []
+        mock_db.query.return_value = mock_query_result
+
+        with patch("studio.app.common.core.users.crud_users.firebase_auth"):
+            with patch(
+                "studio.app.common.core.users.crud_users.StripeService"
+            ) as mock_stripe:
+                mock_stripe.handle_cancel_user_subscription = AsyncMock(
+                    side_effect=Exception("Stripe API error")
+                )
+                with patch(
+                    "studio.app.common.core.users.crud_users.RemoteStorageController"
+                ) as mock_storage:
+                    mock_storage.is_available.return_value = False
+
+                    result = await delete_user(mock_db, 1, 1)
+
+        # User must still be marked inactive
+        assert result is True
+        assert mock_user.active is False
+
+    @pytest.mark.asyncio
+    async def test_contract_s3_failure_does_not_resurrect_user(
+        self, mock_db, mock_user
+    ):
+        """S3 failure should not prevent user from being deleted (Case 27)."""
+        mock_query_result = Mock()
+        mock_query_result.filter.return_value = mock_query_result
+        mock_query_result.first.return_value = mock_user
+        mock_query_result.all.return_value = []
+        mock_db.query.return_value = mock_query_result
+
+        with patch("studio.app.common.core.users.crud_users.firebase_auth"):
+            with patch(
+                "studio.app.common.core.users.crud_users.StripeService"
+            ) as mock_stripe:
+                mock_stripe.handle_cancel_user_subscription = AsyncMock()
+                with patch(
+                    "studio.app.common.core.users.crud_users.RemoteStorageController"
+                ) as mock_storage:
+                    mock_storage.is_available.return_value = True
+                with patch(
+                    "studio.app.common.core.users.crud_users.RemoteStorageSimpleWriter"
+                ) as mock_writer:
+                    mock_context = AsyncMock()
+                    mock_context.delete_bucket = AsyncMock(
+                        side_effect=Exception("S3 API error")
+                    )
+                    mock_writer.return_value.__aenter__.return_value = mock_context
+
+                    result = await delete_user(mock_db, 1, 1)
+
+        # User must still be marked inactive
+        assert result is True
+        assert mock_user.active is False
+
+    @pytest.mark.asyncio
+    async def test_contract_incomplete_deletion_recoverable_from_any_step(
+        self, mock_db, mock_user
+    ):
+        """Incomplete deletion must be recoverable from any step (Case 26-27)."""
+        # Test recovery from each deletion step
+        recoverable_steps = [
+            DeletionStep.FIREBASE_DELETED,  # After Firebase deleted
+            DeletionStep.STRIPE_CANCELLED,  # After Stripe cancelled
+            DeletionStep.S3_DELETED,  # After S3 deleted
+            DeletionStep.WORKSPACES_DELETED,  # After workspaces deleted
+        ]
+
+        for step in recoverable_steps:
+            record = Mock(spec=UserDeletionRecord)
+            record.user_id = 1
+            record.user_uid = mock_user.uid
+            record.step = step.value
+            record.status = DeletionStatus.IN_PROGRESS.value
+
+            mock_query_result = Mock()
+            mock_query_result.filter.return_value = mock_query_result
+            mock_query_result.first.return_value = mock_user
+            mock_query_result.all.return_value = []
+            mock_db.query.return_value = mock_query_result
+
+            with patch(
+                "studio.app.common.core.users.crud_users.StripeService"
+            ) as mock_stripe:
+                mock_stripe.handle_cancel_user_subscription = AsyncMock()
+                with patch(
+                    "studio.app.common.core.users.crud_users.RemoteStorageController"
+                ) as mock_storage:
+                    mock_storage.is_available.return_value = False
+
+                    result = await resume_deletion_from_step(record, mock_db)
+
+            # Must reach completed state
+            assert result is True, f"Recovery failed from step: {step.value}"
+            assert record.status == DeletionStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_contract_deletion_order_is_firebase_first(self, mock_db, mock_user):
+        """Firebase must be deleted before any other cleanup (Case 26-27)."""
+        mock_query_result = Mock()
+        mock_query_result.filter.return_value = mock_query_result
+        mock_query_result.first.return_value = mock_user
+        mock_query_result.all.return_value = []
+        mock_db.query.return_value = mock_query_result
+
+        operation_order = []
+
+        with patch("studio.app.common.core.users.crud_users.firebase_auth") as mock_fb:
+            mock_fb.delete_user.side_effect = lambda uid: operation_order.append(
+                "firebase"
+            )
+
+            with patch(
+                "studio.app.common.core.users.crud_users.StripeService"
+            ) as mock_stripe:
+
+                async def stripe_op(*args, **kwargs):
+                    operation_order.append("stripe")
+
+                mock_stripe.handle_cancel_user_subscription = AsyncMock(
+                    side_effect=stripe_op
+                )
+                with patch(
+                    "studio.app.common.core.users.crud_users.RemoteStorageController"
+                ) as mock_storage:
+                    mock_storage.is_available.return_value = True
+                with patch(
+                    "studio.app.common.core.users.crud_users.RemoteStorageSimpleWriter"
+                ) as mock_writer:
+                    mock_context = AsyncMock()
+
+                    async def s3_op(*args, **kwargs):
+                        operation_order.append("s3")
+
+                    mock_context.delete_bucket = AsyncMock(side_effect=s3_op)
+                    mock_writer.return_value.__aenter__.return_value = mock_context
+
+                    await delete_user(mock_db, 1, 1)
+
+        # Firebase must be first
+        assert len(operation_order) >= 1
+        assert operation_order[0] == "firebase"
+        # Other operations should follow
+        if len(operation_order) >= 2:
+            assert operation_order[1] == "stripe"
+
+    @pytest.mark.asyncio
+    async def test_contract_no_orphaned_state_on_failure(self, mock_db, mock_user):
+        """User should not be in orphaned state on any failure path (Case 26-27)."""
+        mock_query_result = Mock()
+        mock_query_result.filter.return_value = mock_query_result
+        mock_query_result.first.return_value = mock_user
+        mock_query_result.all.return_value = []
+        mock_db.query.return_value = mock_query_result
+
+        added_records = []
+        mock_db.add.side_effect = lambda obj: added_records.append(obj)
+
+        with patch("studio.app.common.core.users.crud_users.firebase_auth") as mock_fb:
+            mock_fb.delete_user.side_effect = FirebaseError(
+                code=500, message="Auth error"
+            )
+
+            with pytest.raises(HTTPException):
+                await delete_user(mock_db, 1, 1)
+
+        # Find deletion record
+        deletion_records = [
+            r for r in added_records if isinstance(r, UserDeletionRecord)
+        ]
+        assert len(deletion_records) == 1
+        deletion_record = deletion_records[0]
+
+        # Record must have proper status for recovery
+        assert deletion_record.status == DeletionStatus.FAILED.value
+        # Error must be recorded
+        assert deletion_record.error is not None
+        # User must still be active (nothing was deleted)
+        assert mock_user.active is True
