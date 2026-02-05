@@ -7,6 +7,7 @@ import { SnackbarProvider, SnackbarKey, useSnackbar } from "notistack"
 import Close from "@mui/icons-material/Close"
 import IconButton from "@mui/material/IconButton"
 
+import ErrorBoundary from "components/common/ErrorBoundary"
 import Loading from "components/common/Loading"
 import Layout from "components/Layout"
 import { RETRY_WAIT } from "const/Mode"
@@ -54,58 +55,60 @@ const App: FC = () => {
   return loading ? (
     <Loading loading={true} />
   ) : (
-    <SnackbarProvider
-      maxSnack={5}
-      preventDuplicate={true}
-      action={(snackbarKey) => (
-        <SnackbarCloseButton snackbarKey={snackbarKey} />
-      )}
-      style={{ maxWidth: "600px" }}
-    >
-      <BrowserRouter>
-        <Layout>
-          {isStandalone ? (
-            <Routes>
-              <Route path="/" element={<Workspace />} />
-              <Route path="*" element={<Navigate replace to="/" />} />
-            </Routes>
-          ) : (
-            <Routes>
-              {/* Public routes */}
-              <Route path="/" element={<Navigate replace to="/public" />} />
-              <Route path="/public" element={<PublicDataview />} />
-              <Route path="/account-deleted" element={<AccountDelete />} />
-              <Route path="/login" element={<Login />} />
-              <Route path="/register" element={<RegistrationForm />} />
-              <Route path="/reset-password" element={<ResetPassword />} />
+    <ErrorBoundary>
+      <SnackbarProvider
+        maxSnack={5}
+        preventDuplicate={true}
+        action={(snackbarKey) => (
+          <SnackbarCloseButton snackbarKey={snackbarKey} />
+        )}
+        style={{ maxWidth: "600px" }}
+      >
+        <BrowserRouter>
+          <Layout>
+            {isStandalone ? (
+              <Routes>
+                <Route path="/" element={<Workspace />} />
+                <Route path="*" element={<Navigate replace to="/" />} />
+              </Routes>
+            ) : (
+              <Routes>
+                {/* Public routes */}
+                <Route path="/" element={<Navigate replace to="/public" />} />
+                <Route path="/public" element={<PublicDataview />} />
+                <Route path="/account-deleted" element={<AccountDelete />} />
+                <Route path="/login" element={<Login />} />
+                <Route path="/register" element={<RegistrationForm />} />
+                <Route path="/reset-password" element={<ResetPassword />} />
 
-              {/* Authenticated routes */}
-              <Route path="/dashboard" element={<Dashboard />} />
-              <Route path="/account" element={<Account />} />
-              <Route path="/account-manager" element={<AccountManager />} />
+                {/* Authenticated routes */}
+                <Route path="/dashboard" element={<Dashboard />} />
+                <Route path="/account" element={<Account />} />
+                <Route path="/account-manager" element={<AccountManager />} />
 
-              <Route path="/dataview">
-                <Route path="" element={<Dataview />} />
-                <Route path=":workspaceId" element={<Dataview />} />
-              </Route>
+                <Route path="/dataview">
+                  <Route path="" element={<Dataview />} />
+                  <Route path=":workspaceId" element={<Dataview />} />
+                </Route>
 
-              <Route path="/workspaces">
-                <Route path="" element={<Workspaces />} />
-                <Route path=":workspaceId" element={<Workspace />} />
-              </Route>
+                <Route path="/workspaces">
+                  <Route path="" element={<Workspaces />} />
+                  <Route path=":workspaceId" element={<Workspace />} />
+                </Route>
 
-              <Route path="/subscription/thanks" element={<Thanks />} />
-              <Route path="/subscription/failed" element={<Failed />} />
-              <Route path="/subscription" element={<SubscriptionPage />} />
-              <Route path="/subscription/manage" element={<InvoicesPage />} />
+                <Route path="/subscription/thanks" element={<Thanks />} />
+                <Route path="/subscription/failed" element={<Failed />} />
+                <Route path="/subscription" element={<SubscriptionPage />} />
+                <Route path="/subscription/manage" element={<InvoicesPage />} />
 
-              {/* Catch-all */}
-              <Route path="*" element={<Navigate replace to="/" />} />
-            </Routes>
-          )}
-        </Layout>
-      </BrowserRouter>
-    </SnackbarProvider>
+                {/* Catch-all */}
+                <Route path="*" element={<Navigate replace to="/" />} />
+              </Routes>
+            )}
+          </Layout>
+        </BrowserRouter>
+      </SnackbarProvider>
+    </ErrorBoundary>
   )
 }
 

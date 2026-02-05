@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, Optional
 
-from sqlalchemy import BIGINT, JSON, TIMESTAMP, Boolean, DateTime
+from sqlalchemy import BIGINT, INTEGER, JSON, TIMESTAMP, Boolean, DateTime
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import String, Text, UniqueConstraint
 from sqlalchemy.sql import func
@@ -98,6 +98,24 @@ class UserSubscription(SQLModel, table=True):
             server_default=func.current_timestamp(),
             onupdate=func.current_timestamp(),
         ),
+    )
+    # Payment failure tracking for Case 73
+    payment_failed_at: Optional[datetime] = Field(
+        sa_column=Column(
+            TIMESTAMP,
+            nullable=True,
+            comment="Timestamp of last payment failure",
+        ),
+        default=None,
+    )
+    payment_failure_count: int = Field(
+        sa_column=Column(
+            INTEGER,
+            nullable=False,
+            default=0,
+            comment="Count of consecutive payment failures",
+        ),
+        default=0,
     )
 
 
@@ -330,6 +348,12 @@ class StorageOperation(SQLModel, table=True):
         default=None,
         description="Error message if operation failed",
     )
+    # Retry tracking for Case 72
+    retry_count: int = Field(
+        sa_column=Column(INTEGER, nullable=False, default=0),
+        default=0,
+        description="Number of retry attempts for failed operations",
+    )
     created_at: Optional[datetime] = Field(
         default_factory=get_current_datetime,
         sa_column=Column(TIMESTAMP, server_default=func.current_timestamp()),
@@ -338,6 +362,10 @@ class StorageOperation(SQLModel, table=True):
         sa_column=Column(DateTime, nullable=True),
         default=None,
     )
+
+
+# Constants for storage operation retry (Case 72)
+STORAGE_OPERATION_MAX_RETRIES = 5
 
 
 class DeletionStep(str, Enum):

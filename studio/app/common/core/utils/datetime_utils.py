@@ -105,3 +105,28 @@ def format_date_for_display(dt: datetime, format_string: str = "%Y-%m-%d") -> st
     Used for subscription dates and other user-facing UTC timestamps.
     """
     return f"{dt.strftime(format_string)} ({TIMEZONE_UTC})"
+
+
+def ensure_utc(dt: datetime | None) -> datetime | None:
+    """
+    Ensure a datetime is UTC-aware.
+
+    Naive datetimes are assumed to already be in UTC and are made timezone-aware.
+    Aware datetimes are converted to UTC.
+
+    Args:
+        dt: A datetime object (naive or aware) or None.
+
+    Returns:
+        A UTC-aware datetime or None if input was None.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=TZ_UTC)
+    return dt.astimezone(TZ_UTC)
+
+
+def is_datetime_aware(dt: datetime | None) -> bool:
+    """Check if a datetime is timezone-aware."""
+    return dt is not None and dt.tzinfo is not None

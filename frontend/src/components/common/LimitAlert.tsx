@@ -33,6 +33,38 @@ import { SubscriptionPeriods, LimitAlertType } from "const/Subscription"
 import { getToken } from "utils/auth/AuthUtils"
 import { tabSync } from "utils/crossTabSync"
 
+/**
+ * Format time remaining with appropriate granularity.
+ * Shows hours when less than 1 day, otherwise shows days (rounded up at 12+ hours).
+ */
+const formatTimeRemaining = (
+  daysRemaining: number,
+  deletionDate?: string | null,
+): string => {
+  if (daysRemaining <= 0) return "0 days"
+
+  if (daysRemaining >= 1) {
+    return `${Math.floor(daysRemaining)} day${daysRemaining >= 2 ? "s" : ""}`
+  }
+
+  // Less than 1 day - calculate hours from deletion date if available
+  if (deletionDate) {
+    const now = new Date()
+    const endDate = new Date(deletionDate)
+    const diffMs = endDate.getTime() - now.getTime()
+
+    if (diffMs <= 0) return "0 hours"
+
+    const hours = Math.ceil(diffMs / (1000 * 60 * 60))
+    return `${hours} hour${hours !== 1 ? "s" : ""}`
+  }
+
+  // Fallback to hours estimate from fractional days
+  const hours = Math.ceil(daysRemaining * 24)
+  if (hours <= 0) return "Less than 1 hour"
+  return `${hours} hour${hours !== 1 ? "s" : ""}`
+}
+
 interface LimitAlertProps {
   showAsModal?: boolean
   onClose?: () => void
@@ -291,10 +323,10 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
           <Box sx={{ mb: 2 }}>
             <Box display="flex" justifyContent="space-between" mb={1}>
               <Typography variant="caption" fontWeight="bold">
-                Days Remaining
+                Time Remaining
               </Typography>
               <Typography variant="caption" fontWeight="bold">
-                {safeDaysRemaining} days
+                {formatTimeRemaining(safeDaysRemaining, alert.deletion_date)}
               </Typography>
             </Box>
             <LinearProgress

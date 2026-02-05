@@ -21,6 +21,8 @@ class TestReleasePremiumBeacon:
         """Test successful beacon release with valid user_uid"""
         mock_request = MagicMock()
         mock_request.json = AsyncMock(return_value={"user_uid": "test-user-123"})
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter.return_value.first.return_value = None
 
         with patch(
             "studio.app.common.routers.users_me.premium_assignment_service"
@@ -32,7 +34,7 @@ class TestReleasePremiumBeacon:
                 }
             )
 
-            result = await release_premium_beacon(request=mock_request)
+            result = await release_premium_beacon(request=mock_request, db=mock_db)
 
             assert result["success"] is True
             mock_service.release_premium_user.assert_called_once_with(
@@ -66,6 +68,8 @@ class TestReleasePremiumBeacon:
         """Test beacon release handles service errors gracefully"""
         mock_request = MagicMock()
         mock_request.json = AsyncMock(return_value={"user_uid": "test-user-123"})
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter.return_value.first.return_value = None
 
         with patch(
             "studio.app.common.routers.users_me.premium_assignment_service"
@@ -74,7 +78,7 @@ class TestReleasePremiumBeacon:
                 side_effect=Exception("Lambda timeout")
             )
 
-            result = await release_premium_beacon(request=mock_request)
+            result = await release_premium_beacon(request=mock_request, db=mock_db)
 
             # Should not raise, just return failure
             assert result["success"] is False

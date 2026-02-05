@@ -499,6 +499,57 @@ async def _update_premium_user_activity_async(user_id: int):
         )
 
 
+def increment_heartbeat_failures(user_id: int) -> int:
+    """
+    Increment heartbeat_failures counter for a premium user.
+
+    Called when heartbeat fails to track consecutive failures. The auto-release
+    Lambda should give extra grace period to users with failing heartbeats.
+
+    Args:
+        user_id: Database user ID
+
+    Returns:
+        New failure count, or -1 on error
+    """
+    try:
+        with session_scope() as session:
+            result = session.execute(
+                text(
+                    """
+                UPDATE premium_user_assignments
+                SET heartbeat_failures = heartbeat_failures + 1
+                WHERE user_id = :user_id
+                AND status = 'active'
+                AND is_standby = 0
+                """
+                ),
+                {"user_id": user_id},
+            )
+            session.commit()
+
+            if result.rowcount > 0:
+                # Get current count
+                row = session.execute(
+                    text(
+                        """
+                    SELECT heartbeat_failures FROM premium_user_assignments
+                    WHERE user_id = :user_id AND status = 'active'
+                    """
+                    ),
+                    {"user_id": user_id},
+                ).fetchone()
+                count = row[0] if row else 0
+                logger.debug(
+                    f"Incremented heartbeat failures for user {user_id} to {count}"
+                )
+                return count
+            return 0
+    except Exception as e:
+        logger.error(f"Error incrementing heartbeat failures for user {user_id}: {e}")
+        return -1
+
+
 def _update_premium_user_activity_sync(user_id: int) -> bool:
     """
     Update last_activity timestamp for premium tier user (sync implementation).
@@ -520,13 +571,13 @@ def _update_premium_user_activity_sync(user_id: int) -> bool:
         with session_scope() as session:
             now = datetime.now(timezone.utc)
 
-            # Update last_activity for this user's premium assignment
+            # Update last_activity and reset heartbeat_failures on successful heartbeat
             # Uses raw SQL for efficiency (no need to load full ORM object)
             result = session.execute(
                 text(
                     """
                 UPDATE premium_user_assignments
-                SET last_activity = :now
+                SET last_activity = :now, heartbeat_failures = 0
                 WHERE user_id = :user_id
                 AND status = 'active'
                 AND is_standby = 0

@@ -246,3 +246,152 @@ class TestGetPendingStorageOperations:
         operations = get_pending_storage_operations(user_id=1)
 
         assert operations == []
+
+
+class TestProcessStalePendingOperations:
+    """Tests for process_stale_pending_operations function (Case 69)."""
+
+    @patch("studio.app.common.core.cloud.cloud_utils.increment_user_storage")
+    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
+    def test_retries_stale_increment_operations(self, mock_session, mock_increment):
+        """Should retry stale pending increment operations."""
+        from datetime import datetime, timedelta, timezone
+
+        from studio.app.common.core.cloud.cloud_utils import (
+            STALE_PENDING_THRESHOLD_MINUTES,
+            process_stale_pending_operations,
+        )
+
+        # Create mock stale operation
+        mock_op = MagicMock()
+        mock_op.idempotency_key = "test_key"
+        mock_op.operation_type = "increment"
+        mock_op.user_id = 1
+        mock_op.bytes_delta = 1000
+        mock_op.retry_count = 0
+        mock_op.created_at = datetime.now(timezone.utc) - timedelta(
+            minutes=STALE_PENDING_THRESHOLD_MINUTES + 5
+        )
+
+        mock_db = MagicMock()
+        mock_session.return_value.__enter__.return_value = mock_db
+        mock_db.execute.return_value.all.return_value = [(mock_op,)]
+        mock_increment.return_value = True
+
+        result = process_stale_pending_operations()
+
+        assert result["processed"] == 1
+        assert result["succeeded"] == 1
+        assert result["failed"] == 0
+        mock_increment.assert_called_once_with(1, 1000)
+        assert mock_op.status == "completed"
+
+    @patch("studio.app.common.core.cloud.cloud_utils.decrement_user_storage")
+    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
+    def test_retries_stale_decrement_operations(self, mock_session, mock_decrement):
+        """Should retry stale pending decrement operations."""
+        from datetime import datetime, timedelta, timezone
+
+        from studio.app.common.core.cloud.cloud_utils import (
+            STALE_PENDING_THRESHOLD_MINUTES,
+            process_stale_pending_operations,
+        )
+
+        mock_op = MagicMock()
+        mock_op.idempotency_key = "test_key"
+        mock_op.operation_type = "decrement"
+        mock_op.user_id = 1
+        mock_op.bytes_delta = 500
+        mock_op.retry_count = 0
+        mock_op.created_at = datetime.now(timezone.utc) - timedelta(
+            minutes=STALE_PENDING_THRESHOLD_MINUTES + 5
+        )
+
+        mock_db = MagicMock()
+        mock_session.return_value.__enter__.return_value = mock_db
+        mock_db.execute.return_value.all.return_value = [(mock_op,)]
+        mock_decrement.return_value = True
+
+        result = process_stale_pending_operations()
+
+        assert result["processed"] == 1
+        assert result["succeeded"] == 1
+        mock_decrement.assert_called_once_with(1, 500)
+
+    @patch("studio.app.common.core.cloud.cloud_utils.increment_user_storage")
+    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
+    def test_marks_failed_after_max_retries(self, mock_session, mock_increment):
+        """Should mark operation as failed after exceeding max retries."""
+        from datetime import datetime, timedelta, timezone
+
+        from studio.app.common.core.cloud.cloud_utils import (
+            STALE_PENDING_THRESHOLD_MINUTES,
+            process_stale_pending_operations,
+        )
+
+        mock_op = MagicMock()
+        mock_op.idempotency_key = "test_key"
+        mock_op.operation_type = "increment"
+        mock_op.user_id = 1
+        mock_op.bytes_delta = 1000
+        mock_op.retry_count = 5  # Already at max
+        mock_op.created_at = datetime.now(timezone.utc) - timedelta(
+            minutes=STALE_PENDING_THRESHOLD_MINUTES + 5
+        )
+
+        mock_db = MagicMock()
+        mock_session.return_value.__enter__.return_value = mock_db
+        mock_db.execute.return_value.all.return_value = [(mock_op,)]
+
+        result = process_stale_pending_operations(max_retries=3)
+
+        assert result["processed"] == 1
+        assert result["failed"] == 1
+        assert result["succeeded"] == 0
+        mock_increment.assert_not_called()
+        assert mock_op.status == "failed"
+
+    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
+    def test_returns_empty_result_on_error(self, mock_session):
+        """Should return empty result dict on errors."""
+        from studio.app.common.core.cloud.cloud_utils import (
+            process_stale_pending_operations,
+        )
+
+        mock_session.return_value.__enter__.side_effect = Exception("DB error")
+
+        result = process_stale_pending_operations()
+
+        assert result == {"processed": 0, "succeeded": 0, "failed": 0}
+
+    @patch("studio.app.common.core.cloud.cloud_utils.increment_user_storage")
+    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
+    def test_handles_operation_failure_gracefully(self, mock_session, mock_increment):
+        """Should handle individual operation failures gracefully."""
+        from datetime import datetime, timedelta, timezone
+
+        from studio.app.common.core.cloud.cloud_utils import (
+            STALE_PENDING_THRESHOLD_MINUTES,
+            process_stale_pending_operations,
+        )
+
+        mock_op = MagicMock()
+        mock_op.idempotency_key = "test_key"
+        mock_op.operation_type = "increment"
+        mock_op.user_id = 1
+        mock_op.bytes_delta = 1000
+        mock_op.retry_count = 0
+        mock_op.created_at = datetime.now(timezone.utc) - timedelta(
+            minutes=STALE_PENDING_THRESHOLD_MINUTES + 5
+        )
+
+        mock_db = MagicMock()
+        mock_session.return_value.__enter__.return_value = mock_db
+        mock_db.execute.return_value.all.return_value = [(mock_op,)]
+        mock_increment.side_effect = Exception("Operation failed")
+
+        result = process_stale_pending_operations()
+
+        assert result["processed"] == 1
+        assert result["failed"] == 1
+        assert "Operation failed" in mock_op.error_message

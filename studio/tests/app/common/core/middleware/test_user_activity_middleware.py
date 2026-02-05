@@ -749,3 +749,107 @@ class TestClearFreeUserLoggedOutAt:
             # This means cleanup job query (WHERE logged_out_at IS NOT NULL)
             # won't select this user
             assert mock_assignment.logged_out_at is None
+
+
+class TestHeartbeatFailureTracking:
+    """Test Case 71: Heartbeat failure tracking for grace period"""
+
+    def test_increment_heartbeat_failures_increments_count(self):
+        """increment_heartbeat_failures should increment counter in DB"""
+        from unittest.mock import MagicMock, patch
+
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            increment_heartbeat_failures,
+        )
+
+        # Mock DB session
+        mock_result = MagicMock()
+        mock_result.rowcount = 1
+        mock_row = (3,)  # Simulating heartbeat_failures = 3 after increment
+
+        mock_session = MagicMock()
+        mock_session.execute.side_effect = [
+            mock_result,
+            MagicMock(fetchone=lambda: mock_row),
+        ]
+
+        with patch(
+            "studio.app.common.core.middleware.user_activity_middleware.session_scope"
+        ) as mock_session_scope:
+            mock_session_scope.return_value.__enter__.return_value = mock_session
+
+            count = increment_heartbeat_failures(TEST_USER_ID)
+
+            assert count == 3
+            mock_session.commit.assert_called_once()
+
+    def test_increment_heartbeat_failures_returns_zero_if_no_assignment(self):
+        """increment_heartbeat_failures should return 0 if no active assignment"""
+        from unittest.mock import MagicMock, patch
+
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            increment_heartbeat_failures,
+        )
+
+        mock_result = MagicMock()
+        mock_result.rowcount = 0  # No rows updated
+
+        mock_session = MagicMock()
+        mock_session.execute.return_value = mock_result
+
+        with patch(
+            "studio.app.common.core.middleware.user_activity_middleware.session_scope"
+        ) as mock_session_scope:
+            mock_session_scope.return_value.__enter__.return_value = mock_session
+
+            count = increment_heartbeat_failures(TEST_USER_ID)
+
+            assert count == 0
+
+    def test_increment_heartbeat_failures_returns_negative_on_error(self):
+        """increment_heartbeat_failures should return -1 on DB error"""
+        from unittest.mock import patch
+
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            increment_heartbeat_failures,
+        )
+
+        with patch(
+            "studio.app.common.core.middleware.user_activity_middleware.session_scope"
+        ) as mock_session_scope:
+            mock_session_scope.return_value.__enter__.side_effect = Exception(
+                "DB connection failed"
+            )
+
+            count = increment_heartbeat_failures(TEST_USER_ID)
+
+            assert count == -1
+
+    def test_premium_activity_sync_resets_heartbeat_failures(self):
+        """Successful heartbeat should reset heartbeat_failures to 0"""
+        # This is tested by checking the SQL query includes heartbeat_failures = 0
+        # The actual DB behavior would be tested in integration tests
+        from unittest.mock import MagicMock, patch
+
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _update_premium_user_activity_sync,
+        )
+
+        mock_result = MagicMock()
+        mock_result.rowcount = 1
+
+        mock_session = MagicMock()
+        mock_session.execute.return_value = mock_result
+
+        with patch(
+            "studio.app.common.core.middleware.user_activity_middleware.session_scope"
+        ) as mock_session_scope:
+            mock_session_scope.return_value.__enter__.return_value = mock_session
+
+            result = _update_premium_user_activity_sync(TEST_USER_ID)
+
+            assert result is True
+            # Verify the SQL includes heartbeat_failures = 0
+            call_args = mock_session.execute.call_args
+            sql_text = str(call_args[0][0])
+            assert "heartbeat_failures = 0" in sql_text

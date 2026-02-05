@@ -374,6 +374,49 @@ describe("LimitAlert", () => {
     })
   })
 
+  describe("Time Remaining Formatting (Case 89)", () => {
+    it("should display hours when less than 1 day remaining", async () => {
+      // Set deletion_date to 12 hours from now
+      const twelveHoursFromNow = new Date(Date.now() + 12 * 60 * 60 * 1000)
+      mockGetMyLimitAlertApi.mockResolvedValue(
+        createMockAlert({
+          days_remaining: 0.5,
+          deletion_date: twelveHoursFromNow.toISOString(),
+        }),
+      )
+
+      renderLimitAlert()
+
+      await waitFor(() => {
+        expect(screen.getByText(/hour/i)).toBeTruthy()
+      })
+    })
+
+    it("should display days for 1 or more days remaining", async () => {
+      mockGetMyLimitAlertApi.mockResolvedValue(
+        createMockAlert({ days_remaining: 5 }),
+      )
+
+      renderLimitAlert()
+
+      await waitFor(() => {
+        expect(screen.getByText("5 days")).toBeTruthy()
+      })
+    })
+
+    it("should display singular day for exactly 1 day", async () => {
+      mockGetMyLimitAlertApi.mockResolvedValue(
+        createMockAlert({ days_remaining: 1 }),
+      )
+
+      renderLimitAlert()
+
+      await waitFor(() => {
+        expect(screen.getByText("1 day")).toBeTruthy()
+      })
+    })
+  })
+
   describe("OVERDUE Alert Modal (Case 33)", () => {
     const overdueAlert = createMockAlert({
       alert_type: LimitAlertType.OVERDUE,

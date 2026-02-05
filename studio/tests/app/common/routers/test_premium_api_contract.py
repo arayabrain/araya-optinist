@@ -624,6 +624,8 @@ async def test_contract_beacon_release_success():
 
     mock_request = MagicMock()
     mock_request.json = AsyncMock(return_value={"user_uid": "test-user-123"})
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter.return_value.first.return_value = None
 
     with patch(
         "studio.app.common.routers.users_me.premium_assignment_service"
@@ -634,7 +636,7 @@ async def test_contract_beacon_release_success():
 
         from studio.app.common.routers.users_me import release_premium_beacon
 
-        result = await release_premium_beacon(request=mock_request)
+        result = await release_premium_beacon(request=mock_request, db=mock_db)
 
         validate_contract(
             result,

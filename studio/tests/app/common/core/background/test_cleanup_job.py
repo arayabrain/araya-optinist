@@ -56,13 +56,16 @@ class TestCleanupUserData:
         with patch.object(
             DataCleanupJob, "_verify_s3_backup_exists", return_value=True
         ):
-            with patch("os.path.exists", return_value=True):
-                with patch("os.path.isdir", return_value=True):
-                    with patch("os.listdir", return_value=["exp123"]):
-                        with patch("shutil.rmtree") as mock_rmtree:
-                            result = DataCleanupJob._cleanup_user_data(
-                                "123", ["workspace1"]
-                            )
+            with patch.object(
+                DataCleanupJob, "_check_user_relogin", return_value=False
+            ):
+                with patch("os.path.exists", return_value=True):
+                    with patch("os.path.isdir", return_value=True):
+                        with patch("os.listdir", return_value=["exp123"]):
+                            with patch("shutil.rmtree") as mock_rmtree:
+                                result = DataCleanupJob._cleanup_user_data(
+                                    "123", ["workspace1"]
+                                )
 
         assert result is True
         assert mock_rmtree.call_count >= 1
@@ -72,13 +75,16 @@ class TestCleanupUserData:
         with patch.object(
             DataCleanupJob, "_verify_s3_backup_exists", return_value=False
         ):
-            with patch("os.path.exists", return_value=True):
-                with patch("os.path.isdir", return_value=True):
-                    with patch("os.listdir", return_value=["exp123"]):
-                        with patch("shutil.rmtree") as mock_rmtree:
-                            result = DataCleanupJob._cleanup_user_data(
-                                "123", ["workspace1"]
-                            )
+            with patch.object(
+                DataCleanupJob, "_check_user_relogin", return_value=False
+            ):
+                with patch("os.path.exists", return_value=True):
+                    with patch("os.path.isdir", return_value=True):
+                        with patch("os.listdir", return_value=["exp123"]):
+                            with patch("shutil.rmtree") as mock_rmtree:
+                                result = DataCleanupJob._cleanup_user_data(
+                                    "123", ["workspace1"]
+                                )
 
         assert result is False
         # Input directory is always deleted (1 call), but experiments are kept

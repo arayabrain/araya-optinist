@@ -282,3 +282,174 @@ class TestRateLimitCacheOnReleaseFailure:
         assert 1 in _assignment_attempts
         can_assign, _ = service.can_assign_premium(user_id=1)
         assert can_assign is False
+
+
+class TestRateLimitRegressions:
+    """Regression tests to prevent rate limit bypass bugs"""
+
+    def setup_method(self):
+        """Clear cache before each test"""
+        _assignment_attempts.clear()
+
+    def teardown_method(self):
+        """Clear cache after each test"""
+        _assignment_attempts.clear()
+
+    def test_rate_limit_enforced_at_30_seconds_not_shorter(self):
+        """
+        Regression test: Rate limit must be 30 seconds, not shorter.
+
+        This prevents bugs where debug code or other changes reduce
+        the effective rate limit window (e.g., clearing after 5 seconds).
+        """
+        service = PremiumAssignmentService()
+
+        # Record attempt at 10 seconds ago (well under 30s limit)
+        _assignment_attempts[1] = time.time() - 10
+
+        # Should still be rate limited
+        can_assign, remaining = service.can_assign_premium(user_id=1)
+
+        assert (
+            can_assign is False
+        ), "Rate limit should be enforced at 30 seconds, not shorter"
+        assert remaining > 15, (
+            f"Expected >15s remaining but got {remaining}s - "
+            "rate limit window may have been reduced"
+        )
+
+    def test_rate_limit_enforced_at_25_seconds(self):
+        """Verify rate limit is still active at 25 seconds"""
+        service = PremiumAssignmentService()
+
+        # Record attempt at 25 seconds ago
+        _assignment_attempts[1] = time.time() - 25
+
+        can_assign, remaining = service.can_assign_premium(user_id=1)
+
+        assert can_assign is False, "Rate limit should still be active at 25 seconds"
+        assert 3 <= remaining <= 7, f"Expected ~5s remaining but got {remaining}s"
+
+    def test_rate_limit_expires_after_full_30_seconds(self):
+        """Verify rate limit expires after full 30 seconds"""
+        service = PremiumAssignmentService()
+
+        # Record attempt at 31 seconds ago (just past the 30s limit)
+        _assignment_attempts[1] = time.time() - 31
+
+        can_assign, remaining = service.can_assign_premium(user_id=1)
+
+        assert can_assign is True, "Rate limit should expire after 30 seconds"
+        assert remaining == 0, "No time remaining after rate limit expires"
+
+    def test_rate_limit_constant_is_30_seconds(self):
+        """Verify the rate limit constant hasn't been changed"""
+        assert (
+            _RATE_LIMIT_SECONDS == 30
+        ), f"Rate limit constant should be 30 seconds, not {_RATE_LIMIT_SECONDS}"
+
+
+class TestLambdaTimeoutHandling:
+    """Tests for Lambda timeout and retry handling (Case 68)."""
+
+    def setup_method(self):
+        """Clear cache before each test"""
+        _assignment_attempts.clear()
+
+    def teardown_method(self):
+        """Clear cache after each test"""
+        _assignment_attempts.clear()
+
+    def test_timeout_constants_defined(self):
+        """Verify timeout constants are properly defined."""
+        from studio.app.common.core.premium.premium_assignment_service import (
+            LAMBDA_MAX_RETRIES,
+            LAMBDA_RETRY_BASE_DELAY_SECONDS,
+            LAMBDA_TIMEOUT_SECONDS,
+        )
+
+        assert LAMBDA_TIMEOUT_SECONDS == 60
+        assert LAMBDA_MAX_RETRIES == 2
+        assert LAMBDA_RETRY_BASE_DELAY_SECONDS == 2
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_requires_retry(self):
+        """Timeout should return requires_retry=True with retry_after."""
+        service = PremiumAssignmentService()
+
+        def slow_invoke(*args, **kwargs):
+            # Simulate slow Lambda that will timeout
+            time.sleep(0.5)
+            return {"Payload": AsyncMock(read=lambda: b"{}")}
+
+        # Mock is_local_environment to return False so Lambda path is taken
+        with patch(
+            "studio.app.common.core.premium.premium_assignment_service."
+            "is_local_environment",
+            return_value=False,
+        ):
+            with patch.object(service, "_get_lambda_client") as mock_client:
+                mock_lambda = mock_client.return_value
+                mock_lambda.invoke.side_effect = slow_invoke
+
+                # Reduce timeout for test speed
+                with patch(
+                    "studio.app.common.core.premium.premium_assignment_service."
+                    "LAMBDA_TIMEOUT_SECONDS",
+                    0.1,
+                ):
+                    with patch(
+                        "studio.app.common.core.premium.premium_assignment_service."
+                        "LAMBDA_RETRY_BASE_DELAY_SECONDS",
+                        0.01,
+                    ):
+                        result = await service.assign_premium_user(
+                            user_id=1, user_uid="test-uid"
+                        )
+
+        assert result["success"] is False
+        assert result["requires_retry"] is True
+        assert "retry_after" in result
+        assert "timed out" in result["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_successful_assignment_after_retry(self):
+        """Should succeed after transient error on retry."""
+        service = PremiumAssignmentService()
+        call_count = 0
+
+        def invoke_with_retry(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call fails
+                raise Exception("Transient error")
+            # Subsequent calls succeed
+            return {
+                "Payload": AsyncMock(
+                    read=lambda: b'{"statusCode": 200, "body": "{\\"success\\": true, '
+                    b'\\"instance_id\\": \\"test-instance\\"}"}'
+                )
+            }
+
+        with patch(
+            "studio.app.common.core.premium.premium_assignment_service."
+            "is_local_environment",
+            return_value=False,
+        ):
+            with patch.object(service, "_get_lambda_client") as mock_client:
+                mock_lambda = mock_client.return_value
+                mock_lambda.invoke.side_effect = invoke_with_retry
+
+                with patch(
+                    "studio.app.common.core.premium.premium_assignment_service."
+                    "LAMBDA_RETRY_BASE_DELAY_SECONDS",
+                    0.01,
+                ):
+                    result = await service.assign_premium_user(
+                        user_id=1, user_uid="test-uid"
+                    )
+
+        # Should succeed on retry
+        assert result["success"] is True
+        assert call_count == 2  # First fails, second succeeds

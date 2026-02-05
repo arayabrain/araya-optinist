@@ -676,6 +676,192 @@ def cleanup_old_storage_operations(days_old: int = 7) -> int:
         return 0
 
 
+def process_failed_storage_operations(
+    max_retries: int | None = None, batch_size: int = 100
+) -> int:
+    """
+    Process failed storage operations with retry logic (Case 72).
+
+    This function finds failed decrement operations and retries them.
+    Operations that have exceeded max_retries are logged but not retried.
+
+    Args:
+        max_retries: Maximum number of retries per operation (defaults to constant)
+        batch_size: Number of operations to process in one batch
+
+    Returns:
+        Number of operations successfully retried
+    """
+    from studio.app.common.models.subscription import STORAGE_OPERATION_MAX_RETRIES
+
+    if max_retries is None:
+        max_retries = STORAGE_OPERATION_MAX_RETRIES
+
+    retried_count = 0
+
+    try:
+        with session_scope() as db:
+            # Get failed operations that haven't exceeded retry limit
+            failed_ops = db.execute(
+                select(StorageOperation)
+                .where(
+                    StorageOperation.status == StorageOperationStatus.FAILED.value,
+                    StorageOperation.retry_count < max_retries,
+                )
+                .order_by(StorageOperation.created_at)
+                .limit(batch_size)
+            ).all()
+
+            for row in failed_ops:
+                op = row[0]
+                try:
+                    # Update retry count
+                    op.retry_count = op.retry_count + 1
+
+                    # Get current storage usage record
+                    usage = db.execute(
+                        select(UserStorageUsage).where(
+                            UserStorageUsage.user_id == op.user_id
+                        )
+                    ).first()
+
+                    if not usage:
+                        logger.warning(
+                            f"No storage record for user {op.user_id}, skipping"
+                        )
+                        continue
+
+                    usage_record = usage[0]
+
+                    # Apply decrement (only for decrement operations)
+                    if op.operation_type == StorageOperationType.DECREMENT.value:
+                        new_usage = max(
+                            0, usage_record.storage_usage_bytes - op.bytes_delta
+                        )
+                        usage_record.storage_usage_bytes = new_usage
+                        usage_record.last_updated = datetime.now(timezone.utc)
+
+                    # Mark as completed
+                    op.status = StorageOperationStatus.COMPLETED.value
+                    op.completed_at = datetime.now(timezone.utc)
+                    op.error_message = None
+
+                    db.commit()
+                    retried_count += 1
+                    logger.info(
+                        f"Retried storage operation {op.id} for user {op.user_id}"
+                    )
+
+                except Exception as retry_error:
+                    # Update error message but keep as failed
+                    op.error_message = str(retry_error)[:200]
+                    db.commit()
+                    logger.warning(f"Retry failed for operation {op.id}: {retry_error}")
+
+            if retried_count > 0:
+                logger.info(f"Successfully retried {retried_count} storage operations")
+
+            return retried_count
+
+    except Exception as e:
+        logger.error(f"Failed to process failed storage operations: {e}")
+        return 0
+
+
+# Stale pending operations older than this are considered abandoned
+STALE_PENDING_THRESHOLD_MINUTES = 30
+
+
+def process_stale_pending_operations(
+    max_retries: int = 3, batch_size: int = 50
+) -> dict:
+    """
+    Process storage operations that have been PENDING too long (Case 69 recovery).
+
+    Operations can become stuck pending if the app crashes between creating
+    the pending record and completing the operation. This function retries them.
+
+    Args:
+        max_retries: Maximum retry attempts before marking as failed
+        batch_size: Number of operations to process per batch
+
+    Returns:
+        dict with counts: {'processed': int, 'succeeded': int, 'failed': int}
+    """
+    result = {"processed": 0, "succeeded": 0, "failed": 0}
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        minutes=STALE_PENDING_THRESHOLD_MINUTES
+    )
+
+    try:
+        with session_scope() as db:
+            # Find stale pending operations
+            stale_ops = db.execute(
+                select(StorageOperation)
+                .where(
+                    StorageOperation.status == StorageOperationStatus.PENDING.value,
+                    StorageOperation.created_at < cutoff,
+                )
+                .order_by(StorageOperation.created_at)
+                .limit(batch_size)
+            ).all()
+
+            for (op,) in stale_ops:
+                result["processed"] += 1
+                current_retries = op.retry_count or 0
+
+                if current_retries >= max_retries:
+                    # Too many retries - mark as failed
+                    op.status = StorageOperationStatus.FAILED.value
+                    op.error_message = "Exceeded max retries for stale pending"
+                    result["failed"] += 1
+                    logger.warning(
+                        f"Stale operation {op.idempotency_key} exceeded max retries"
+                    )
+                    continue
+
+                try:
+                    # Retry the operation
+                    op.retry_count = current_retries + 1
+
+                    if op.operation_type == StorageOperationType.INCREMENT.value:
+                        success = increment_user_storage(op.user_id, op.bytes_delta)
+                    else:
+                        success = decrement_user_storage(op.user_id, op.bytes_delta)
+
+                    if success:
+                        op.status = StorageOperationStatus.COMPLETED.value
+                        op.completed_at = datetime.now(timezone.utc)
+                        result["succeeded"] += 1
+                        logger.info(f"Recovered stale operation {op.idempotency_key}")
+                    else:
+                        op.status = StorageOperationStatus.FAILED.value
+                        op.error_message = "Recovery retry returned false"
+                        result["failed"] += 1
+                        logger.warning(
+                            f"Failed to recover stale operation {op.idempotency_key}"
+                        )
+                except Exception as e:
+                    op.error_message = str(e)[:200]
+                    result["failed"] += 1
+                    logger.error(
+                        f"Error recovering operation {op.idempotency_key}: {e}"
+                    )
+
+            db.commit()
+
+        if result["processed"] > 0:
+            logger.info(
+                f"Processed {result['processed']} stale pending operations: "
+                f"{result['succeeded']} succeeded, {result['failed']} failed"
+            )
+        return result
+
+    except Exception as e:
+        logger.error(f"Failed to process stale pending operations: {e}")
+        return result
+
+
 async def get_current_user_storage_usage(user_id: int, force_live: bool = False) -> int:
     """
     Get current storage usage for a user with hybrid caching approach.

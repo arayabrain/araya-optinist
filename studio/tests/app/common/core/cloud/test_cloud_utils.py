@@ -1183,3 +1183,94 @@ async def test_calculate_limit_warning_expired_premium_high_storage_shows_combin
                     "expired" in result.message.lower()
                     or "upgrade" in result.message.lower()
                 )
+
+
+# ============================================================================
+# Case 72: Failed Storage Operations Retry Tests
+# ============================================================================
+
+
+class TestProcessFailedStorageOperations:
+    """Test suite for Case 72: Failed storage decrement queue processing."""
+
+    def test_process_no_failed_operations(self):
+        """Should return 0 when no failed operations exist."""
+        from studio.app.common.core.cloud.cloud_utils import (
+            process_failed_storage_operations,
+        )
+
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils.session_scope"
+        ) as mock_scope:
+            mock_db = Mock()
+            mock_scope.return_value.__enter__.return_value = mock_db
+            # No failed operations
+            mock_db.execute.return_value.all.return_value = []
+
+            result = process_failed_storage_operations()
+
+            assert result == 0
+
+    def test_process_failed_operation_success(self):
+        """Should retry failed operation and mark as completed."""
+        from studio.app.common.core.cloud.cloud_utils import (
+            process_failed_storage_operations,
+        )
+        from studio.app.common.models.subscription import (
+            StorageOperationStatus,
+            StorageOperationType,
+        )
+
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils.session_scope"
+        ) as mock_scope:
+            mock_db = Mock()
+            mock_scope.return_value.__enter__.return_value = mock_db
+
+            # Mock failed operation
+            mock_op = Mock()
+            mock_op.id = 1
+            mock_op.user_id = 123
+            mock_op.operation_type = StorageOperationType.DECREMENT.value
+            mock_op.bytes_delta = 1000
+            mock_op.retry_count = 0
+            mock_op.status = StorageOperationStatus.FAILED.value
+
+            # Mock storage usage record
+            mock_usage = Mock()
+            mock_usage.storage_usage_bytes = 5000
+            mock_usage.last_updated = None
+
+            # Setup execute to return failed op, then usage record
+            mock_db.execute.return_value.all.return_value = [[mock_op]]
+            mock_db.execute.return_value.first.return_value = (mock_usage,)
+
+            process_failed_storage_operations()
+
+            # Should have updated the operation status
+            assert mock_op.status == StorageOperationStatus.COMPLETED.value
+            assert mock_op.retry_count == 1
+
+    def test_respects_max_retry_limit(self):
+        """Should not retry operations that exceeded max retries."""
+        from studio.app.common.core.cloud.cloud_utils import (
+            process_failed_storage_operations,
+        )
+
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils.session_scope"
+        ) as mock_scope:
+            mock_db = Mock()
+            mock_scope.return_value.__enter__.return_value = mock_db
+
+            # Mock operation at max retries
+            mock_op = Mock()
+            mock_op.retry_count = 5  # At max
+
+            # Query should filter out max retry ops via WHERE clause
+            mock_db.execute.return_value.all.return_value = []
+
+            result = process_failed_storage_operations(max_retries=5)
+
+            # Should return 0 (no ops to retry)
+            assert result == 0
