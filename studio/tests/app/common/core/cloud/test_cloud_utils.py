@@ -1241,9 +1241,8 @@ class TestProcessFailedStorageOperations:
             mock_usage.storage_usage_bytes = 5000
             mock_usage.last_updated = None
 
-            # Setup execute to return failed op, then usage record
-            mock_db.execute.return_value.all.return_value = [[mock_op]]
-            mock_db.execute.return_value.first.return_value = (mock_usage,)
+            # Setup execute to return failed op with usage (from JOIN query)
+            mock_db.execute.return_value.all.return_value = [(mock_op, mock_usage)]
 
             process_failed_storage_operations()
 

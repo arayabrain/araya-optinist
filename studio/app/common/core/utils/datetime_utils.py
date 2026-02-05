@@ -18,6 +18,7 @@ logic changes here, the following Lambda packages should also be updated:
 
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ def format_date_for_display(dt: datetime, format_string: str = "%Y-%m-%d") -> st
     return f"{dt.strftime(format_string)} ({TIMEZONE_UTC})"
 
 
-def ensure_utc(dt: datetime | None) -> datetime | None:
+def ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
     """
     Ensure a datetime is UTC-aware.
 
@@ -127,6 +128,6 @@ def ensure_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(TZ_UTC)
 
 
-def is_datetime_aware(dt: datetime | None) -> bool:
+def is_datetime_aware(dt: Optional[datetime]) -> bool:
     """Check if a datetime is timezone-aware."""
     return dt is not None and dt.tzinfo is not None

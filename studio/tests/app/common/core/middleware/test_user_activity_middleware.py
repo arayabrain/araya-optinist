@@ -841,15 +841,15 @@ class TestHeartbeatFailureTracking:
         mock_session = MagicMock()
         mock_session.execute.return_value = mock_result
 
-        with patch(
-            "studio.app.common.core.middleware.user_activity_middleware.session_scope"
-        ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.return_value = mock_session
+        middleware_path = "studio.app.common.core.middleware.user_activity_middleware"
+        with patch(f"{middleware_path}.is_user_logged_out", return_value=False):
+            with patch(f"{middleware_path}.session_scope") as mock_session_scope:
+                mock_session_scope.return_value.__enter__.return_value = mock_session
 
-            result = _update_premium_user_activity_sync(TEST_USER_ID)
+                result = _update_premium_user_activity_sync(TEST_USER_ID)
 
-            assert result is True
-            # Verify the SQL includes heartbeat_failures = 0
-            call_args = mock_session.execute.call_args
-            sql_text = str(call_args[0][0])
-            assert "heartbeat_failures = 0" in sql_text
+                assert result is True
+                # Verify the SQL includes heartbeat_failures = 0
+                call_args = mock_session.execute.call_args
+                sql_text = str(call_args[0][0])
+                assert "heartbeat_failures = 0" in sql_text

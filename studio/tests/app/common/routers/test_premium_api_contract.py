@@ -630,22 +630,24 @@ async def test_contract_beacon_release_success():
     with patch(
         "studio.app.common.routers.users_me.premium_assignment_service"
     ) as mock_service:
-        mock_service.release_premium_user = AsyncMock(
-            return_value={"success": True, "message": "Released"}
-        )
+        with patch("studio.app.common.routers.users_me.invalidate_activity_cache"):
+            with patch("studio.app.common.routers.users_me.mark_user_logged_out"):
+                mock_service.release_premium_user = AsyncMock(
+                    return_value={"success": True, "message": "Released"}
+                )
 
-        from studio.app.common.routers.users_me import release_premium_beacon
+                from studio.app.common.routers.users_me import release_premium_beacon
 
-        result = await release_premium_beacon(request=mock_request, db=mock_db)
+                result = await release_premium_beacon(request=mock_request, db=mock_db)
 
-        validate_contract(
-            result,
-            BEACON_RESULT_REQUIRED_FIELDS,
-            BEACON_RESULT_OPTIONAL_FIELDS,
-            context="BeaconResult (success)",
-        )
+                validate_contract(
+                    result,
+                    BEACON_RESULT_REQUIRED_FIELDS,
+                    BEACON_RESULT_OPTIONAL_FIELDS,
+                    context="BeaconResult (success)",
+                )
 
-        assert result["success"] is True
+                assert result["success"] is True
 
 
 @pytest.mark.asyncio
@@ -657,10 +659,11 @@ async def test_contract_beacon_release_missing_uid():
 
     mock_request = MagicMock()
     mock_request.json = AsyncMock(return_value={})
+    mock_db = MagicMock()
 
     from studio.app.common.routers.users_me import release_premium_beacon
 
-    result = await release_premium_beacon(request=mock_request)
+    result = await release_premium_beacon(request=mock_request, db=mock_db)
 
     validate_contract(
         result,

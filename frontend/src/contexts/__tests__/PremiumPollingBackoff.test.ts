@@ -81,8 +81,8 @@ describe("Polling Backoff Logic (Case 43)", () => {
       expect(interval).toBe(MAX_POLL_INTERVAL_MS)
     })
 
-    it("should reach max interval after ~13 polls", () => {
-      // 5000 * 1.5^13 = 5000 * 189.6 = ~947265, capped at 60000
+    it("should reach max interval after ~7 polls", () => {
+      // 5000 * 1.5^7 = 5000 * 17.09 = ~85,429, capped at 60000
       // Find when it first reaches 60000
       let interval = INITIAL_POLL_INTERVAL_MS
       let polls = 0
@@ -90,9 +90,9 @@ describe("Polling Backoff Logic (Case 43)", () => {
         interval *= BACKOFF_MULTIPLIER
         polls++
       }
-      // Should take about 12-13 polls to reach max
-      expect(polls).toBeGreaterThanOrEqual(12)
-      expect(polls).toBeLessThanOrEqual(15)
+      // Should take about 7 polls to reach max (5000 -> 7500 -> 11250 -> ...)
+      expect(polls).toBeGreaterThanOrEqual(6)
+      expect(polls).toBeLessThanOrEqual(8)
     })
   })
 

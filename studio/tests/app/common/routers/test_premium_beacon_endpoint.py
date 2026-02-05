@@ -27,27 +27,32 @@ class TestReleasePremiumBeacon:
         with patch(
             "studio.app.common.routers.users_me.premium_assignment_service"
         ) as mock_service:
-            mock_service.release_premium_user = AsyncMock(
-                return_value={
-                    "success": True,
-                    "message": "Released from instance i-123456",
-                }
-            )
+            with patch("studio.app.common.routers.users_me.invalidate_activity_cache"):
+                with patch("studio.app.common.routers.users_me.mark_user_logged_out"):
+                    mock_service.release_premium_user = AsyncMock(
+                        return_value={
+                            "success": True,
+                            "message": "Released from instance i-123456",
+                        }
+                    )
 
-            result = await release_premium_beacon(request=mock_request, db=mock_db)
+                    result = await release_premium_beacon(
+                        request=mock_request, db=mock_db
+                    )
 
-            assert result["success"] is True
-            mock_service.release_premium_user.assert_called_once_with(
-                user_id=0, user_uid="test-user-123"
-            )
+                    assert result["success"] is True
+                    mock_service.release_premium_user.assert_called_once_with(
+                        user_id=0, user_uid="test-user-123"
+                    )
 
     @pytest.mark.asyncio
     async def test_beacon_release_missing_user_uid(self):
         """Test beacon release with missing user_uid returns failure"""
         mock_request = MagicMock()
         mock_request.json = AsyncMock(return_value={})
+        mock_db = MagicMock()
 
-        result = await release_premium_beacon(request=mock_request)
+        result = await release_premium_beacon(request=mock_request, db=mock_db)
 
         assert result["success"] is False
         assert "Missing user_uid" in result["message"]
@@ -57,8 +62,9 @@ class TestReleasePremiumBeacon:
         """Test beacon release with null user_uid returns failure"""
         mock_request = MagicMock()
         mock_request.json = AsyncMock(return_value={"user_uid": None})
+        mock_db = MagicMock()
 
-        result = await release_premium_beacon(request=mock_request)
+        result = await release_premium_beacon(request=mock_request, db=mock_db)
 
         assert result["success"] is False
         assert "Missing user_uid" in result["message"]
@@ -74,15 +80,19 @@ class TestReleasePremiumBeacon:
         with patch(
             "studio.app.common.routers.users_me.premium_assignment_service"
         ) as mock_service:
-            mock_service.release_premium_user = AsyncMock(
-                side_effect=Exception("Lambda timeout")
-            )
+            with patch("studio.app.common.routers.users_me.invalidate_activity_cache"):
+                with patch("studio.app.common.routers.users_me.mark_user_logged_out"):
+                    mock_service.release_premium_user = AsyncMock(
+                        side_effect=Exception("Lambda timeout")
+                    )
 
-            result = await release_premium_beacon(request=mock_request, db=mock_db)
+                    result = await release_premium_beacon(
+                        request=mock_request, db=mock_db
+                    )
 
-            # Should not raise, just return failure
-            assert result["success"] is False
-            assert "Lambda timeout" in result["message"]
+                    # Should not raise, just return failure
+                    assert result["success"] is False
+                    assert "Lambda timeout" in result["message"]
 
     @pytest.mark.asyncio
     async def test_beacon_release_invalid_json(self):
@@ -91,8 +101,9 @@ class TestReleasePremiumBeacon:
         mock_request.json = AsyncMock(
             side_effect=json.JSONDecodeError("Invalid", "", 0)
         )
+        mock_db = MagicMock()
 
-        result = await release_premium_beacon(request=mock_request)
+        result = await release_premium_beacon(request=mock_request, db=mock_db)
 
         # Should not raise, just return failure
         assert result["success"] is False

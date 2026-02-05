@@ -9,6 +9,15 @@ const ThrowError = ({ shouldThrow }: { shouldThrow: boolean }) => {
   return <div>No error</div>
 }
 
+// Controllable component that uses external state for throw behavior
+let shouldThrowExternal = false
+const ControllableThrowError = () => {
+  if (shouldThrowExternal) {
+    throw new Error("Test error message")
+  }
+  return <div>No error</div>
+}
+
 describe("ErrorBoundary", () => {
   const originalConsoleError = console.error
 
@@ -18,6 +27,7 @@ describe("ErrorBoundary", () => {
 
   afterEach(() => {
     console.error = originalConsoleError
+    shouldThrowExternal = false
   })
 
   it("should render children when no error occurs", () => {
@@ -80,21 +90,21 @@ describe("ErrorBoundary", () => {
   })
 
   it("should recover when Try Again is clicked and error is fixed", () => {
-    const { rerender } = render(
+    // Use external state so the component doesn't throw when re-rendered
+    shouldThrowExternal = true
+
+    render(
       <ErrorBoundary>
-        <ThrowError shouldThrow={true} />
+        <ControllableThrowError />
       </ErrorBoundary>,
     )
 
     expect(screen.getByText("Something went wrong")).toBeInTheDocument()
 
-    fireEvent.click(screen.getByText("Try Again"))
+    // Fix the error condition BEFORE clicking Try Again
+    shouldThrowExternal = false
 
-    rerender(
-      <ErrorBoundary>
-        <ThrowError shouldThrow={false} />
-      </ErrorBoundary>,
-    )
+    fireEvent.click(screen.getByText("Try Again"))
 
     expect(screen.getByText("No error")).toBeInTheDocument()
     expect(screen.queryByText("Something went wrong")).not.toBeInTheDocument()

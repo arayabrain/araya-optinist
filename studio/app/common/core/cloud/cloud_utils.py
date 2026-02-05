@@ -701,9 +701,13 @@ def process_failed_storage_operations(
 
     try:
         with session_scope() as db:
-            # Get failed operations that haven't exceeded retry limit
-            failed_ops = db.execute(
-                select(StorageOperation)
+            # Get failed operations with storage usage in single query (avoid N+1)
+            failed_ops_with_usage = db.execute(
+                select(StorageOperation, UserStorageUsage)
+                .outerjoin(
+                    UserStorageUsage,
+                    StorageOperation.user_id == UserStorageUsage.user_id,
+                )
                 .where(
                     StorageOperation.status == StorageOperationStatus.FAILED.value,
                     StorageOperation.retry_count < max_retries,
@@ -712,26 +716,15 @@ def process_failed_storage_operations(
                 .limit(batch_size)
             ).all()
 
-            for row in failed_ops:
-                op = row[0]
+            for op, usage_record in failed_ops_with_usage:
                 try:
-                    # Update retry count
                     op.retry_count = op.retry_count + 1
 
-                    # Get current storage usage record
-                    usage = db.execute(
-                        select(UserStorageUsage).where(
-                            UserStorageUsage.user_id == op.user_id
-                        )
-                    ).first()
-
-                    if not usage:
+                    if not usage_record:
                         logger.warning(
                             f"No storage record for user {op.user_id}, skipping"
                         )
                         continue
-
-                    usage_record = usage[0]
 
                     # Apply decrement (only for decrement operations)
                     if op.operation_type == StorageOperationType.DECREMENT.value:
@@ -753,7 +746,6 @@ def process_failed_storage_operations(
                     )
 
                 except Exception as retry_error:
-                    # Update error message but keep as failed
                     op.error_message = str(retry_error)[:200]
                     db.commit()
                     logger.warning(f"Retry failed for operation {op.id}: {retry_error}")

@@ -43,6 +43,7 @@ export const useVisibilityAwarePolling = (
   const [isVisible, setIsVisible] = useState(() => !document.hidden)
   const [isPaused, setIsPaused] = useState(false)
   const lastPollRef = useRef<number>(0)
+  const hasVisibilityChangedRef = useRef(false)
 
   const pollNow = useCallback(async () => {
     lastPollRef.current = Date.now()
@@ -58,6 +59,7 @@ export const useVisibilityAwarePolling = (
 
   useEffect(() => {
     const handleVisibilityChange = () => {
+      hasVisibilityChangedRef.current = true
       setIsVisible(!document.hidden)
     }
 
@@ -68,6 +70,8 @@ export const useVisibilityAwarePolling = (
   }, [])
 
   useEffect(() => {
+    // Only run on actual visibility changes, not on initial mount
+    if (!hasVisibilityChangedRef.current) return
     if (!runOnVisible || !enabled || isPaused || !isVisible) return
 
     const timeSinceLastPoll = Date.now() - lastPollRef.current
