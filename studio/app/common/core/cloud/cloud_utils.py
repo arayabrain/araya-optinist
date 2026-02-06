@@ -15,7 +15,6 @@ from studio.app.common.core.subscription.constants import (
     StorageSize,
     SubscriptionLifecycleStatus,
     SubscriptionPeriods,
-    SubscriptionPlanIds,
     SubscriptionStatus,
     SubscriptionType,
 )
@@ -449,7 +448,7 @@ def increment_storage_idempotent(
     Args:
         user_id: User ID to update
         bytes_delta: Number of bytes to add
-        idempotency_key: Unique key (e.g., "upload_{experiment_id}_{file_hash}")
+        idempotency_key: Unique key for dedup
 
     Returns:
         True if operation completed (or was already done), False on failure
@@ -459,35 +458,36 @@ def increment_storage_idempotent(
 
     try:
         with session_scope() as db:
-            # Check if already processed
             existing = db.execute(
                 select(StorageOperation).where(
                     StorageOperation.idempotency_key == idempotency_key,
-                    StorageOperation.status == StorageOperationStatus.COMPLETED.value,
+                    StorageOperation.status
+                    == StorageOperationStatus.COMPLETED.value,
                 )
             ).first()
 
             if existing:
                 logger.debug(
-                    f"Idempotent increment already done for key {idempotency_key}"
+                    f"Idempotent increment already done "
+                    f"for key {idempotency_key}"
                 )
                 return True
 
-            # Check for pending operation (in-flight)
             pending = db.execute(
                 select(StorageOperation).where(
                     StorageOperation.idempotency_key == idempotency_key,
-                    StorageOperation.status == StorageOperationStatus.PENDING.value,
+                    StorageOperation.status
+                    == StorageOperationStatus.PENDING.value,
                 )
             ).first()
 
             if pending:
                 logger.warning(
-                    f"Pending operation exists for key {idempotency_key}, skipping"
+                    f"Pending operation exists "
+                    f"for key {idempotency_key}, skipping"
                 )
                 return False
 
-            # Create pending operation record
             operation = StorageOperation(
                 user_id=user_id,
                 idempotency_key=idempotency_key,
@@ -500,15 +500,15 @@ def increment_storage_idempotent(
 
             operation_id = operation.id
 
-        # Perform the actual increment (separate transaction)
         success = increment_user_storage(user_id, bytes_delta)
 
-        # Mark operation complete or failed
         with session_scope() as db:
             op = db.get(StorageOperation, operation_id)
             if op:
                 if success:
-                    op.status = StorageOperationStatus.COMPLETED.value
+                    op.status = (
+                        StorageOperationStatus.COMPLETED.value
+                    )
                     op.completed_at = datetime.now(timezone.utc)
                 else:
                     op.status = StorageOperationStatus.FAILED.value
@@ -519,8 +519,8 @@ def increment_storage_idempotent(
 
     except Exception as e:
         logger.error(
-            f"Failed idempotent increment for user {user_id}, key {idempotency_key}: "
-            f"{e}"
+            f"Failed idempotent increment for user {user_id}, "
+            f"key {idempotency_key}: {e}"
         )
         return False
 
@@ -537,7 +537,7 @@ def decrement_storage_idempotent(
     Args:
         user_id: User ID to update
         bytes_delta: Number of bytes to remove (positive value)
-        idempotency_key: Unique key (e.g., "delete_{experiment_id}")
+        idempotency_key: Unique key for dedup
 
     Returns:
         True if operation completed (or was already done), False on failure
@@ -547,35 +547,36 @@ def decrement_storage_idempotent(
 
     try:
         with session_scope() as db:
-            # Check if already processed
             existing = db.execute(
                 select(StorageOperation).where(
                     StorageOperation.idempotency_key == idempotency_key,
-                    StorageOperation.status == StorageOperationStatus.COMPLETED.value,
+                    StorageOperation.status
+                    == StorageOperationStatus.COMPLETED.value,
                 )
             ).first()
 
             if existing:
                 logger.debug(
-                    f"Idempotent decrement already done for key {idempotency_key}"
+                    f"Idempotent decrement already done "
+                    f"for key {idempotency_key}"
                 )
                 return True
 
-            # Check for pending operation
             pending = db.execute(
                 select(StorageOperation).where(
                     StorageOperation.idempotency_key == idempotency_key,
-                    StorageOperation.status == StorageOperationStatus.PENDING.value,
+                    StorageOperation.status
+                    == StorageOperationStatus.PENDING.value,
                 )
             ).first()
 
             if pending:
                 logger.warning(
-                    f"Pending operation exists for key {idempotency_key}, skipping"
+                    f"Pending operation exists "
+                    f"for key {idempotency_key}, skipping"
                 )
                 return False
 
-            # Create pending operation record
             operation = StorageOperation(
                 user_id=user_id,
                 idempotency_key=idempotency_key,
@@ -588,15 +589,15 @@ def decrement_storage_idempotent(
 
             operation_id = operation.id
 
-        # Perform the actual decrement (separate transaction)
         success = decrement_user_storage(user_id, bytes_delta)
 
-        # Mark operation complete or failed
         with session_scope() as db:
             op = db.get(StorageOperation, operation_id)
             if op:
                 if success:
-                    op.status = StorageOperationStatus.COMPLETED.value
+                    op.status = (
+                        StorageOperationStatus.COMPLETED.value
+                    )
                     op.completed_at = datetime.now(timezone.utc)
                 else:
                     op.status = StorageOperationStatus.FAILED.value
@@ -607,48 +608,33 @@ def decrement_storage_idempotent(
 
     except Exception as e:
         logger.error(
-            f"Failed idempotent decrement for user {user_id}, key {idempotency_key}: "
-            f"{e}"
+            f"Failed idempotent decrement for user {user_id}, "
+            f"key {idempotency_key}: {e}"
         )
         return False
 
 
 def get_pending_storage_operations(user_id: int) -> list:
-    """
-    Get pending storage operations for reconciliation.
-    Used by reconciliation job to retry failed operations.
-
-    Args:
-        user_id: User ID to check
-
-    Returns:
-        List of pending StorageOperation records
-    """
+    """Get pending storage operations for reconciliation."""
     try:
         with session_scope() as db:
             result = db.execute(
                 select(StorageOperation).where(
                     StorageOperation.user_id == user_id,
-                    StorageOperation.status == StorageOperationStatus.PENDING.value,
+                    StorageOperation.status
+                    == StorageOperationStatus.PENDING.value,
                 )
             ).all()
             return [row[0] for row in result] if result else []
     except Exception as e:
-        logger.error(f"Failed to get pending operations for user {user_id}: {e}")
+        logger.error(
+            f"Failed to get pending operations for user {user_id}: {e}"
+        )
         return []
 
 
 def cleanup_old_storage_operations(days_old: int = 7) -> int:
-    """
-    Clean up completed storage operations older than specified days.
-    Keeps failed operations for debugging.
-
-    Args:
-        days_old: Delete completed operations older than this
-
-    Returns:
-        Number of operations deleted
-    """
+    """Clean up completed storage operations older than specified days."""
     try:
         from sqlalchemy import delete
 
@@ -657,7 +643,8 @@ def cleanup_old_storage_operations(days_old: int = 7) -> int:
         with session_scope() as db:
             result = db.execute(
                 delete(StorageOperation).where(
-                    StorageOperation.status == StorageOperationStatus.COMPLETED.value,
+                    StorageOperation.status
+                    == StorageOperationStatus.COMPLETED.value,
                     StorageOperation.completed_at < cutoff,
                 )
             )
@@ -680,19 +667,14 @@ def process_failed_storage_operations(
     max_retries: int | None = None, batch_size: int = 100
 ) -> int:
     """
-    Process failed storage operations with retry logic (Case 72).
+    Process failed storage operations with retry logic.
 
-    This function finds failed decrement operations and retries them.
-    Operations that have exceeded max_retries are logged but not retried.
-
-    Args:
-        max_retries: Maximum number of retries per operation (defaults to constant)
-        batch_size: Number of operations to process in one batch
-
-    Returns:
-        Number of operations successfully retried
+    Finds failed decrement operations and retries them.
+    Operations exceeding max_retries are logged but not retried.
     """
-    from studio.app.common.models.subscription import STORAGE_OPERATION_MAX_RETRIES
+    from studio.app.common.models.subscription import (
+        STORAGE_OPERATION_MAX_RETRIES,
+    )
 
     if max_retries is None:
         max_retries = STORAGE_OPERATION_MAX_RETRIES
@@ -701,15 +683,16 @@ def process_failed_storage_operations(
 
     try:
         with session_scope() as db:
-            # Get failed operations with storage usage in single query (avoid N+1)
             failed_ops_with_usage = db.execute(
                 select(StorageOperation, UserStorageUsage)
                 .outerjoin(
                     UserStorageUsage,
-                    StorageOperation.user_id == UserStorageUsage.user_id,
+                    StorageOperation.user_id
+                    == UserStorageUsage.user_id,
                 )
                 .where(
-                    StorageOperation.status == StorageOperationStatus.FAILED.value,
+                    StorageOperation.status
+                    == StorageOperationStatus.FAILED.value,
                     StorageOperation.retry_count < max_retries,
                 )
                 .order_by(StorageOperation.created_at)
@@ -722,45 +705,61 @@ def process_failed_storage_operations(
 
                     if not usage_record:
                         logger.warning(
-                            f"No storage record for user {op.user_id}, skipping"
+                            f"No storage record for user "
+                            f"{op.user_id}, skipping"
                         )
                         continue
 
-                    # Apply decrement (only for decrement operations)
-                    if op.operation_type == StorageOperationType.DECREMENT.value:
+                    if (
+                        op.operation_type
+                        == StorageOperationType.DECREMENT.value
+                    ):
                         new_usage = max(
-                            0, usage_record.storage_usage_bytes - op.bytes_delta
+                            0,
+                            usage_record.storage_usage_bytes
+                            - op.bytes_delta,
                         )
                         usage_record.storage_usage_bytes = new_usage
-                        usage_record.last_updated = datetime.now(timezone.utc)
+                        usage_record.last_updated = datetime.now(
+                            timezone.utc
+                        )
 
-                    # Mark as completed
-                    op.status = StorageOperationStatus.COMPLETED.value
+                    op.status = (
+                        StorageOperationStatus.COMPLETED.value
+                    )
                     op.completed_at = datetime.now(timezone.utc)
                     op.error_message = None
 
                     db.commit()
                     retried_count += 1
                     logger.info(
-                        f"Retried storage operation {op.id} for user {op.user_id}"
+                        f"Retried storage operation {op.id} "
+                        f"for user {op.user_id}"
                     )
 
                 except Exception as retry_error:
                     op.error_message = str(retry_error)[:200]
                     db.commit()
-                    logger.warning(f"Retry failed for operation {op.id}: {retry_error}")
+                    logger.warning(
+                        f"Retry failed for operation "
+                        f"{op.id}: {retry_error}"
+                    )
 
             if retried_count > 0:
-                logger.info(f"Successfully retried {retried_count} storage operations")
+                logger.info(
+                    f"Successfully retried {retried_count} "
+                    f"storage operations"
+                )
 
             return retried_count
 
     except Exception as e:
-        logger.error(f"Failed to process failed storage operations: {e}")
+        logger.error(
+            f"Failed to process failed storage operations: {e}"
+        )
         return 0
 
 
-# Stale pending operations older than this are considered abandoned
 STALE_PENDING_THRESHOLD_MINUTES = 30
 
 
@@ -768,17 +767,10 @@ def process_stale_pending_operations(
     max_retries: int = 3, batch_size: int = 50
 ) -> dict:
     """
-    Process storage operations that have been PENDING too long (Case 69 recovery).
+    Process storage operations stuck in PENDING too long (recovery).
 
-    Operations can become stuck pending if the app crashes between creating
-    the pending record and completing the operation. This function retries them.
-
-    Args:
-        max_retries: Maximum retry attempts before marking as failed
-        batch_size: Number of operations to process per batch
-
-    Returns:
-        dict with counts: {'processed': int, 'succeeded': int, 'failed': int}
+    Operations can become stuck if the app crashes between creating
+    the pending record and completing the operation.
     """
     result = {"processed": 0, "succeeded": 0, "failed": 0}
     cutoff = datetime.now(timezone.utc) - timedelta(
@@ -787,11 +779,11 @@ def process_stale_pending_operations(
 
     try:
         with session_scope() as db:
-            # Find stale pending operations
             stale_ops = db.execute(
                 select(StorageOperation)
                 .where(
-                    StorageOperation.status == StorageOperationStatus.PENDING.value,
+                    StorageOperation.status
+                    == StorageOperationStatus.PENDING.value,
                     StorageOperation.created_at < cutoff,
                 )
                 .order_by(StorageOperation.created_at)
@@ -803,54 +795,76 @@ def process_stale_pending_operations(
                 current_retries = op.retry_count or 0
 
                 if current_retries >= max_retries:
-                    # Too many retries - mark as failed
                     op.status = StorageOperationStatus.FAILED.value
-                    op.error_message = "Exceeded max retries for stale pending"
+                    op.error_message = (
+                        "Exceeded max retries for stale pending"
+                    )
                     result["failed"] += 1
                     logger.warning(
-                        f"Stale operation {op.idempotency_key} exceeded max retries"
+                        f"Stale operation {op.idempotency_key} "
+                        f"exceeded max retries"
                     )
                     continue
 
                 try:
-                    # Retry the operation
                     op.retry_count = current_retries + 1
 
-                    if op.operation_type == StorageOperationType.INCREMENT.value:
-                        success = increment_user_storage(op.user_id, op.bytes_delta)
+                    if (
+                        op.operation_type
+                        == StorageOperationType.INCREMENT.value
+                    ):
+                        success = increment_user_storage(
+                            op.user_id, op.bytes_delta
+                        )
                     else:
-                        success = decrement_user_storage(op.user_id, op.bytes_delta)
+                        success = decrement_user_storage(
+                            op.user_id, op.bytes_delta
+                        )
 
                     if success:
-                        op.status = StorageOperationStatus.COMPLETED.value
+                        op.status = (
+                            StorageOperationStatus.COMPLETED.value
+                        )
                         op.completed_at = datetime.now(timezone.utc)
                         result["succeeded"] += 1
-                        logger.info(f"Recovered stale operation {op.idempotency_key}")
+                        logger.info(
+                            f"Recovered stale operation "
+                            f"{op.idempotency_key}"
+                        )
                     else:
-                        op.status = StorageOperationStatus.FAILED.value
-                        op.error_message = "Recovery retry returned false"
+                        op.status = (
+                            StorageOperationStatus.FAILED.value
+                        )
+                        op.error_message = (
+                            "Recovery retry returned false"
+                        )
                         result["failed"] += 1
                         logger.warning(
-                            f"Failed to recover stale operation {op.idempotency_key}"
+                            f"Failed to recover stale operation "
+                            f"{op.idempotency_key}"
                         )
                 except Exception as e:
                     op.error_message = str(e)[:200]
                     result["failed"] += 1
                     logger.error(
-                        f"Error recovering operation {op.idempotency_key}: {e}"
+                        f"Error recovering operation "
+                        f"{op.idempotency_key}: {e}"
                     )
 
             db.commit()
 
         if result["processed"] > 0:
             logger.info(
-                f"Processed {result['processed']} stale pending operations: "
-                f"{result['succeeded']} succeeded, {result['failed']} failed"
+                f"Processed {result['processed']} stale pending "
+                f"operations: {result['succeeded']} succeeded, "
+                f"{result['failed']} failed"
             )
         return result
 
     except Exception as e:
-        logger.error(f"Failed to process stale pending operations: {e}")
+        logger.error(
+            f"Failed to process stale pending operations: {e}"
+        )
         return result
 
 
@@ -1015,6 +1029,7 @@ async def _calculate_local_user_storage(user_id: int) -> int:
 
         # Calculate total storage from input and output folders
         total_usage = 0
+        import os
 
         from studio.app.common.core.utils.file_reader import get_folder_size
         from studio.app.dir_path import DIRPATH
@@ -1098,19 +1113,15 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
             storage_quota_gb = storage_quota_bytes / StorageSize.GB
 
             # Step 1: Determine subscription status
-            # Only look at premium subscriptions - free plan records should not
-            # trigger "premium expired" warnings
             query_result = db.execute(
                 select(UserSubscription)
                 .where(UserSubscription.user_id == user_id)
-                .where(UserSubscription.plan_id == SubscriptionPlanIds.PREMIUM)
                 .order_by(UserSubscription.expiration.desc())
             )
             result_rows = query_result.all()
 
             logger.info(
-                f"Found {len(result_rows)} premium subscription records "
-                f"for user {user_id}"
+                f"Found {len(result_rows)} subscription records for user {user_id}"
             )
 
             subscription_status = None
@@ -1204,7 +1215,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
                 f"(effective quota for {subscription_status})"
             )
 
-            # Free user, no storage limit exceeded
+            # Case 1: Free user, no storage limit exceeded → No warning
             if (
                 subscription_status == SubscriptionLifecycleStatus.FREE
                 and not storage_exceeded
@@ -1214,7 +1225,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
                 )
                 return None
 
-            # Free user, storage limit exceeded
+            # Case 2: Free user, storage limit exceeded → Storage warning
             if (
                 subscription_status == SubscriptionLifecycleStatus.FREE
                 and storage_exceeded
@@ -1241,7 +1252,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
                     ),
                 )
 
-            # Premium user active, storage limit exceeded
+            # Case 3: Premium user active, storage limit exceeded → Storage warning only
             if (
                 subscription_status == SubscriptionLifecycleStatus.ACTIVE
                 and storage_exceeded
@@ -1264,16 +1275,15 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
                 )
 
             # Cases 4 & 5: Premium user with subscription issues (grace/warning/overdue)
-            # Only show alert if storage exceeds free tier limit
             match subscription_status:
                 case (
                     SubscriptionLifecycleStatus.GRACE
                     | SubscriptionLifecycleStatus.WARNING
                     | SubscriptionLifecycleStatus.OVERDUE
-                ) if storage_exceeded:
+                ):
                     logger.info(
                         f"User {user_id}: Creating limit warning "
-                        f"(status: {subscription_status}, storage_exceeded: True)"
+                        f"(status: {subscription_status})"
                     )
 
                     # Determine alert type using AlertType enum
@@ -1319,21 +1329,11 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
                         message=message,
                     )
 
-                case (
-                    SubscriptionLifecycleStatus.GRACE
-                    | SubscriptionLifecycleStatus.WARNING
-                    | SubscriptionLifecycleStatus.OVERDUE
-                ):
-                    # Storage is under free tier limit, no warning needed
-                    logger.info(
-                        f"User {user_id}: No warning needed "
-                        f"(status: {subscription_status}, storage within free limit)"
-                    )
                 case _:
                     pass
 
             # All other cases: No warning needed
-            logger.info(f"User {user_id}: No warning needed")
+            logger.info(f"User {user_id}: No warning needed (other cases)")
             return None
 
     except Exception as e:
@@ -1358,7 +1358,7 @@ def _generate_subscription_warning_message(
     date_str = subscription_end.strftime("%B %d, %Y")
 
     if storage_exceeded:
-        # Both storage and subscription issues
+        # Case 4: Both storage and subscription issues
         match subscription_status:
             case SubscriptionLifecycleStatus.GRACE:
                 return (
@@ -1387,7 +1387,7 @@ def _generate_subscription_warning_message(
             case _:
                 return f"Your premium subscription expired on {date_str}."
     else:
-        # Subscription issue only (user within storage limits)
+        # Case 5: Subscription issue only (user within storage limits)
         match subscription_status:
             case SubscriptionLifecycleStatus.GRACE:
                 return (
