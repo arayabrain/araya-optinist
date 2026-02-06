@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth import authenticate_user
 from studio.app.common.core.auth.auth_email_service import AuthEmailService
+from studio.app.common.core.cloud.cloud_utils import ensure_user_bucket_exists
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
@@ -394,16 +395,14 @@ async def create_user(
 
         # Create remote storage bucket
         if RemoteStorageController.is_available():
-            new_bucket_name = RemoteStorageController.create_user_bucket_name(
-                id=user_db.id
+            bucket_name = await ensure_user_bucket_exists(
+                user_db.id, db, auto_commit=False
             )
-
-            async with RemoteStorageSimpleWriter(
-                new_bucket_name
-            ) as remote_storage_controller:
-                await remote_storage_controller.create_bucket()
-
-            user_db.attributes = {"remote_bucket_name": new_bucket_name}
+            if not bucket_name:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to create storage bucket for user.",
+                )
 
         # Create subscription user record
         # expiration is set to current time for free plan.
