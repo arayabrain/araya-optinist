@@ -1,11 +1,23 @@
 from datetime import datetime
+from enum import Enum
 from typing import List, Optional
 
+from sqlalchemy import Enum as SQLEnum
+from sqlalchemy import Text
 from sqlalchemy.dialects.mysql import BIGINT
 from sqlalchemy.sql.functions import current_timestamp
 from sqlmodel import Column, Field, ForeignKey, Relationship, String, UniqueConstraint
 
 from studio.app.common.models.base import Base, TimestampMixin
+
+
+class WorkspaceStatus(str, Enum):
+    """Status enum for workspace lifecycle management."""
+
+    ACTIVE = "active"
+    DELETING = "deleting"
+    PARTIAL_DELETE = "partial_delete"
+    DELETED = "deleted"
 
 
 class WorkspacesShareUser(Base, table=True):
@@ -37,11 +49,29 @@ class Workspace(Base, TimestampMixin, table=True):
         ),
     )
     deleted: bool = Field(nullable=False)
+    status: WorkspaceStatus = Field(
+        sa_column=Column(
+            SQLEnum(WorkspaceStatus),
+            nullable=False,
+            default=WorkspaceStatus.ACTIVE,
+            server_default=WorkspaceStatus.ACTIVE.value,
+        ),
+        default=WorkspaceStatus.ACTIVE,
+    )
     input_data_usage: int = Field(
         sa_column=Column(
             BIGINT(unsigned=True), nullable=False, comment="data usage in bytes"
         ),
         default=0,
+    )
+    failed_experiment_uids: Optional[str] = Field(
+        sa_column=Column(
+            Text,
+            nullable=True,
+            default=None,
+            comment="Comma-separated UIDs of experiments that failed to delete",
+        ),
+        default=None,
     )
 
     user: Optional["User"] = Relationship(back_populates="workspace")  # noqa: F821
