@@ -502,12 +502,12 @@ async def test_calculate_limit_warning_premium_active_storage_exceeded():
 @pytest.mark.asyncio
 async def test_calculate_limit_warning_premium_warning_storage_ok():
     """
-    Case 4: Premium user in WARNING period, storage OK → Subscription warning only
-    Note: After grace period expires, user falls back to FREE quota (5GB)
+    Case 4: Premium user in WARNING period, storage OK -> No warning.
+    When storage is under the free tier limit, no data deletion
+    warning is needed.
     """
     user_id = 1
     grace_period = SubscriptionPeriods.GRACE_PERIOD_DAYS
-    warning_period = SubscriptionPeriods.WARNING_PERIOD_DAYS
 
     with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
         with patch(
@@ -519,41 +519,23 @@ async def test_calculate_limit_warning_premium_warning_storage_ok():
                 mock_db = Mock()
                 mock_scope.return_value.__enter__.return_value = mock_db
 
-                # Mock storage info: 2GB used of 5GB FREE quota (within limits)
-                # After expiration, user falls back to FREE quota
                 mock_get_storage.return_value = {
-                    "storage_usage_bytes": 2_000_000_000,  # 2 GB
-                    "storage_quota_bytes": 5_000_000_000,  # 5 GB (FREE quota)
+                    "storage_usage_bytes": 2_000_000_000,
+                    "storage_quota_bytes": 5_000_000_000,
                 }
                 mock_fresh.return_value = True
 
-                # Mock expired subscription in WARNING period
-                # Expired 10 days ago, so in warning period (0-30 days after grace)
                 expiration_date = get_current_datetime() - timedelta(
                     days=grace_period + 10
                 )
-                deletion_date = expiration_date + timedelta(
-                    days=grace_period + warning_period
-                )
-
                 mock_subscription = Mock()
                 mock_subscription.expiration = expiration_date
                 mock_db.execute.return_value.all.return_value = [[mock_subscription]]
 
                 result = await calculate_limit_warning(user_id)
 
-                assert result is not None
-                assert result.has_alert is True
-                assert result.alert_type == AlertType.GRACE.value
-                # days_remaining is (deletion_date - now).days
-                # Expected: warning_period - 10 days remaining until deletion
-                expected_days = (deletion_date - get_current_datetime()).days
-                assert (
-                    result.days_remaining >= expected_days - 1
-                )  # Allow 1 day variance for test timing
-                assert result.days_remaining <= expected_days + 1
-                assert "expired" in result.message
-                assert "upgrade" in result.message.lower()
+                # No warning when storage is under free tier limit
+                assert result is None
 
 
 @pytest.mark.asyncio
@@ -697,11 +679,8 @@ async def test_calculate_limit_warning_premium_active_no_storage_issue():
 @pytest.mark.asyncio
 async def test_calculate_limit_warning_premium_in_grace_period():
     """
-    Test: Premium user in GRACE period (0-30 days after expiration) with
-    storage within FREE quota limits → Grace warning (subscription expired,
-    but no storage issue).
-    Note: During grace period, effective quota is FREE (5GB), so we must use
-    storage within that limit to avoid storage-exceeded warnings.
+    Case 6: Premium user in GRACE period with storage within FREE
+    quota limits -> No warning needed (storage under free limit).
     """
     user_id = 1
 
@@ -715,15 +694,12 @@ async def test_calculate_limit_warning_premium_in_grace_period():
                 mock_db = Mock()
                 mock_scope.return_value.__enter__.return_value = mock_db
 
-                # Mock storage info: within FREE quota limits (2GB of 5GB)
-                # During grace period, effective quota falls back to FREE (5GB)
                 mock_get_storage.return_value = {
-                    "storage_usage_bytes": 2_000_000_000,  # 2GB
-                    "storage_quota_bytes": 5_000_000_000,  # 5GB FREE quota
+                    "storage_usage_bytes": 2_000_000_000,
+                    "storage_quota_bytes": 5_000_000_000,
                 }
                 mock_fresh.return_value = True
 
-                # Mock subscription expired 3 days ago (in grace period)
                 mock_subscription = Mock()
                 mock_subscription.expiration = get_current_datetime() - timedelta(
                     days=3
@@ -732,11 +708,8 @@ async def test_calculate_limit_warning_premium_in_grace_period():
 
                 result = await calculate_limit_warning(user_id)
 
-                # Grace period warning should appear (subscription expired)
-                assert result is not None
-                assert result.alert_type == AlertType.GRACE.value
-                assert result.has_alert is True
-                assert "expired" in result.message
+                # No warning when storage is under free tier limit
+                assert result is None
 
 
 @pytest.mark.asyncio
@@ -791,3 +764,441 @@ async def test_calculate_limit_warning_exception_handling():
         result = await calculate_limit_warning(user_id)
 
         assert result is None  # Should return None on exception
+
+
+# ============================================================================
+# Regression Tests - Bug Fixes
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_calculate_limit_warning_query_filters_premium_only():
+    """
+    REGRESSION TEST: Verify subscription query filters for premium
+    plans only.
+    """
+    user_id = 1
+
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils." "get_user_storage_usage"
+        ) as mock_get_storage:
+            with patch(
+                "studio.app.common.core.cloud.cloud_utils." "_is_storage_data_fresh"
+            ) as mock_fresh:
+                mock_db = Mock()
+                mock_scope.return_value.__enter__.return_value = mock_db
+
+                mock_get_storage.return_value = {
+                    "storage_usage_bytes": 2_000_000_000,
+                    "storage_quota_bytes": 5_000_000_000,
+                }
+                mock_fresh.return_value = True
+                mock_db.execute.return_value.all.return_value = []
+
+                await calculate_limit_warning(user_id)
+
+                assert mock_db.execute.called
+
+                call_args = mock_db.execute.call_args
+                query = call_args[0][0]
+                query_str = str(query)
+                assert "plan_id" in query_str, (
+                    "Query must filter by plan_id to only fetch "
+                    "premium subscriptions. "
+                    f"Query was: {query_str}"
+                )
+
+
+@pytest.mark.asyncio
+async def test_calculate_limit_warning_free_plan_no_premium_warning():
+    """
+    REGRESSION TEST: User with only FREE plan subscription should
+    NOT get premium expired warning.
+    """
+    user_id = 1
+
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils." "get_user_storage_usage"
+        ) as mock_get_storage:
+            with patch(
+                "studio.app.common.core.cloud.cloud_utils." "_is_storage_data_fresh"
+            ) as mock_fresh:
+                mock_db = Mock()
+                mock_scope.return_value.__enter__.return_value = mock_db
+
+                mock_get_storage.return_value = {
+                    "storage_usage_bytes": 2_000_000_000,
+                    "storage_quota_bytes": 5_000_000_000,
+                }
+                mock_fresh.return_value = True
+                # Empty because FREE plan records are filtered out
+                mock_db.execute.return_value.all.return_value = []
+
+                result = await calculate_limit_warning(user_id)
+
+                assert result is None, (
+                    "User with only FREE plan subscription should "
+                    "not get any warning when within storage limits"
+                )
+
+
+# ============================================================================
+# Edge Case Tests - Alert Visibility
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_calculate_limit_warning_just_expired_grace_period():
+    """
+    Premium subscription JUST expired (day 1 of grace period)
+    with storage under free limit should NOT show warning.
+    """
+    user_id = 1
+
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils." "get_user_storage_usage"
+        ) as mock_get_storage:
+            with patch(
+                "studio.app.common.core.cloud.cloud_utils." "_is_storage_data_fresh"
+            ) as mock_fresh:
+                mock_db = Mock()
+                mock_scope.return_value.__enter__.return_value = mock_db
+
+                mock_get_storage.return_value = {
+                    "storage_usage_bytes": 2_000_000_000,
+                    "storage_quota_bytes": 5_000_000_000,
+                }
+                mock_fresh.return_value = True
+
+                mock_subscription = Mock()
+                mock_subscription.expiration = get_current_datetime() - timedelta(
+                    days=1
+                )
+                mock_db.execute.return_value.all.return_value = [[mock_subscription]]
+
+                result = await calculate_limit_warning(user_id)
+
+                assert result is None
+
+
+@pytest.mark.asyncio
+async def test_calculate_limit_warning_last_day_of_grace():
+    """
+    Premium subscription on last day of grace period with storage
+    under free limit should NOT show warning.
+    """
+    user_id = 1
+    grace_period = SubscriptionPeriods.GRACE_PERIOD_DAYS
+
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils." "get_user_storage_usage"
+        ) as mock_get_storage:
+            with patch(
+                "studio.app.common.core.cloud.cloud_utils." "_is_storage_data_fresh"
+            ) as mock_fresh:
+                mock_db = Mock()
+                mock_scope.return_value.__enter__.return_value = mock_db
+
+                mock_get_storage.return_value = {
+                    "storage_usage_bytes": 2_000_000_000,
+                    "storage_quota_bytes": 5_000_000_000,
+                }
+                mock_fresh.return_value = True
+
+                mock_subscription = Mock()
+                mock_subscription.expiration = get_current_datetime() - timedelta(
+                    days=grace_period
+                )
+                mock_db.execute.return_value.all.return_value = [[mock_subscription]]
+
+                result = await calculate_limit_warning(user_id)
+
+                assert result is None
+
+
+@pytest.mark.asyncio
+async def test_calculate_limit_warning_premium_expires_today():
+    """
+    Premium subscription expiring today (still active) should NOT
+    show any warning if storage is within limits.
+    """
+    user_id = 1
+
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils." "get_user_storage_usage"
+        ) as mock_get_storage:
+            with patch(
+                "studio.app.common.core.cloud.cloud_utils." "_is_storage_data_fresh"
+            ) as mock_fresh:
+                mock_db = Mock()
+                mock_scope.return_value.__enter__.return_value = mock_db
+
+                mock_get_storage.return_value = {
+                    "storage_usage_bytes": 50_000_000_000,
+                    "storage_quota_bytes": 200_000_000_000,
+                }
+                mock_fresh.return_value = True
+
+                mock_subscription = Mock()
+                mock_subscription.expiration = get_current_datetime() + timedelta(
+                    hours=1
+                )
+                mock_db.execute.return_value.all.return_value = [[mock_subscription]]
+
+                result = await calculate_limit_warning(user_id)
+
+                assert result is None
+
+
+@pytest.mark.asyncio
+async def test_calculate_limit_warning_storage_exactly_at_limit():
+    """
+    Storage usage exactly at the limit should NOT trigger warning.
+    """
+    user_id = 1
+    quota_bytes = 5_000_000_000
+
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils." "get_user_storage_usage"
+        ) as mock_get_storage:
+            with patch(
+                "studio.app.common.core.cloud.cloud_utils." "_is_storage_data_fresh"
+            ) as mock_fresh:
+                mock_db = Mock()
+                mock_scope.return_value.__enter__.return_value = mock_db
+
+                mock_get_storage.return_value = {
+                    "storage_usage_bytes": quota_bytes,
+                    "storage_quota_bytes": quota_bytes,
+                }
+                mock_fresh.return_value = True
+                mock_db.execute.return_value.all.return_value = []
+
+                result = await calculate_limit_warning(user_id)
+
+                assert result is None
+
+
+@pytest.mark.asyncio
+async def test_calculate_limit_warning_storage_one_byte_over():
+    """
+    Storage usage 1 byte over the limit should trigger warning.
+    """
+    user_id = 1
+    quota_bytes = 5_000_000_000
+
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils." "get_user_storage_usage"
+        ) as mock_get_storage:
+            with patch(
+                "studio.app.common.core.cloud.cloud_utils." "_is_storage_data_fresh"
+            ) as mock_fresh:
+                mock_db = Mock()
+                mock_scope.return_value.__enter__.return_value = mock_db
+
+                mock_get_storage.return_value = {
+                    "storage_usage_bytes": quota_bytes + 1,
+                    "storage_quota_bytes": quota_bytes,
+                }
+                mock_fresh.return_value = True
+                mock_db.execute.return_value.all.return_value = []
+
+                result = await calculate_limit_warning(user_id)
+
+                assert result is not None
+                assert result.has_alert is True
+                assert result.alert_type == AlertType.STORAGE.value
+
+
+@pytest.mark.asyncio
+async def test_calculate_limit_warning_zero_storage_usage():
+    """
+    User with zero storage usage should never get storage warning.
+    """
+    user_id = 1
+
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils." "get_user_storage_usage"
+        ) as mock_get_storage:
+            with patch(
+                "studio.app.common.core.cloud.cloud_utils." "_is_storage_data_fresh"
+            ) as mock_fresh:
+                mock_db = Mock()
+                mock_scope.return_value.__enter__.return_value = mock_db
+
+                mock_get_storage.return_value = {
+                    "storage_usage_bytes": 0,
+                    "storage_quota_bytes": 5_000_000_000,
+                }
+                mock_fresh.return_value = True
+                mock_db.execute.return_value.all.return_value = []
+
+                result = await calculate_limit_warning(user_id)
+
+                assert result is None
+
+
+@pytest.mark.asyncio
+async def test_calculate_limit_warning_multiple_subscriptions():
+    """
+    User with multiple subscription records should use the most
+    recent to determine status.
+    """
+    user_id = 1
+
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils." "get_user_storage_usage"
+        ) as mock_get_storage:
+            with patch(
+                "studio.app.common.core.cloud.cloud_utils." "_is_storage_data_fresh"
+            ) as mock_fresh:
+                mock_db = Mock()
+                mock_scope.return_value.__enter__.return_value = mock_db
+
+                mock_get_storage.return_value = {
+                    "storage_usage_bytes": 50_000_000_000,
+                    "storage_quota_bytes": 200_000_000_000,
+                }
+                mock_fresh.return_value = True
+
+                mock_sub_active = Mock()
+                mock_sub_active.expiration = get_current_datetime() + timedelta(days=30)
+                mock_sub_old = Mock()
+                mock_sub_old.expiration = get_current_datetime() - timedelta(days=60)
+                mock_db.execute.return_value.all.return_value = [
+                    [mock_sub_active],
+                    [mock_sub_old],
+                ]
+
+                result = await calculate_limit_warning(user_id)
+
+                assert result is None
+
+
+@pytest.mark.asyncio
+async def test_calculate_limit_warning_expired_premium_high_storage():
+    """
+    Expired premium user with storage exceeding FREE quota should
+    see combined warning.
+    """
+    user_id = 1
+
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils." "get_user_storage_usage"
+        ) as mock_get_storage:
+            with patch(
+                "studio.app.common.core.cloud.cloud_utils." "_is_storage_data_fresh"
+            ) as mock_fresh:
+                mock_db = Mock()
+                mock_scope.return_value.__enter__.return_value = mock_db
+
+                mock_get_storage.return_value = {
+                    "storage_usage_bytes": 100_000_000_000,
+                    "storage_quota_bytes": 5_000_000_000,
+                }
+                mock_fresh.return_value = True
+
+                mock_subscription = Mock()
+                mock_subscription.expiration = get_current_datetime() - timedelta(
+                    days=5
+                )
+                mock_db.execute.return_value.all.return_value = [[mock_subscription]]
+
+                result = await calculate_limit_warning(user_id)
+
+                assert result is not None
+                assert result.has_alert is True
+                assert result.alert_type == AlertType.GRACE.value
+                assert result.excess_data_bytes > 0
+                assert (
+                    "expired" in result.message.lower()
+                    or "upgrade" in result.message.lower()
+                )
+
+
+# ============================================================================
+# Case 72: Failed Storage Operations Retry Tests
+# ============================================================================
+
+
+class TestProcessFailedStorageOperations:
+    """Case 72: Failed storage decrement queue processing."""
+
+    def test_process_no_failed_operations(self):
+        """Should return 0 when no failed operations exist."""
+        from studio.app.common.core.cloud.cloud_utils import (
+            process_failed_storage_operations,
+        )
+
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils.session_scope"
+        ) as mock_scope:
+            mock_db = Mock()
+            mock_scope.return_value.__enter__.return_value = mock_db
+            mock_db.execute.return_value.all.return_value = []
+
+            result = process_failed_storage_operations()
+
+            assert result == 0
+
+    def test_process_failed_operation_success(self):
+        """Should retry failed operation and mark as completed."""
+        from studio.app.common.core.cloud.cloud_utils import (
+            process_failed_storage_operations,
+        )
+        from studio.app.common.models.subscription import (
+            StorageOperationStatus,
+            StorageOperationType,
+        )
+
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils.session_scope"
+        ) as mock_scope:
+            mock_db = Mock()
+            mock_scope.return_value.__enter__.return_value = mock_db
+
+            mock_op = Mock()
+            mock_op.id = 1
+            mock_op.user_id = 123
+            mock_op.operation_type = StorageOperationType.DECREMENT.value
+            mock_op.bytes_delta = 1000
+            mock_op.retry_count = 0
+            mock_op.status = StorageOperationStatus.FAILED.value
+
+            mock_usage = Mock()
+            mock_usage.storage_usage_bytes = 5000
+            mock_usage.last_updated = None
+
+            mock_db.execute.return_value.all.return_value = [(mock_op, mock_usage)]
+
+            process_failed_storage_operations()
+
+            assert mock_op.status == StorageOperationStatus.COMPLETED.value
+            assert mock_op.retry_count == 1
+
+    def test_respects_max_retry_limit(self):
+        """Should not retry operations that exceeded max retries."""
+        from studio.app.common.core.cloud.cloud_utils import (
+            process_failed_storage_operations,
+        )
+
+        with patch(
+            "studio.app.common.core.cloud.cloud_utils.session_scope"
+        ) as mock_scope:
+            mock_db = Mock()
+            mock_scope.return_value.__enter__.return_value = mock_db
+            mock_db.execute.return_value.all.return_value = []
+
+            result = process_failed_storage_operations(max_retries=5)
+
+            assert result == 0

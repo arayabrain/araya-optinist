@@ -15,6 +15,7 @@ from studio.app.common.core.subscription.constants import (
     StorageSize,
     SubscriptionLifecycleStatus,
     SubscriptionPeriods,
+    SubscriptionPlanIds,
     SubscriptionStatus,
     SubscriptionType,
 )
@@ -1058,15 +1059,19 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
             storage_quota_gb = storage_quota_bytes / StorageSize.GB
 
             # Step 1: Determine subscription status
+            # Only look at premium subscriptions - free plan records
+            # should not trigger "premium expired" warnings
             query_result = db.execute(
                 select(UserSubscription)
                 .where(UserSubscription.user_id == user_id)
+                .where(UserSubscription.plan_id == SubscriptionPlanIds.PREMIUM)
                 .order_by(UserSubscription.expiration.desc())
             )
             result_rows = query_result.all()
 
             logger.info(
-                f"Found {len(result_rows)} subscription records for user {user_id}"
+                f"Found {len(result_rows)} premium subscription "
+                f"records for user {user_id}"
             )
 
             subscription_status = None
@@ -1220,15 +1225,17 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
                 )
 
             # Cases 4 & 5: Premium user with subscription issues (grace/warning/overdue)
+            # Only show alert if storage exceeds free tier limit
             match subscription_status:
                 case (
                     SubscriptionLifecycleStatus.GRACE
                     | SubscriptionLifecycleStatus.WARNING
                     | SubscriptionLifecycleStatus.OVERDUE
-                ):
+                ) if storage_exceeded:
                     logger.info(
                         f"User {user_id}: Creating limit warning "
-                        f"(status: {subscription_status})"
+                        f"(status: {subscription_status}, "
+                        f"storage_exceeded: True)"
                     )
 
                     # Determine alert type using AlertType enum
@@ -1274,6 +1281,17 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
                         message=message,
                     )
 
+                case (
+                    SubscriptionLifecycleStatus.GRACE
+                    | SubscriptionLifecycleStatus.WARNING
+                    | SubscriptionLifecycleStatus.OVERDUE
+                ):
+                    # Storage is under free tier limit, no warning
+                    logger.info(
+                        f"User {user_id}: No warning needed "
+                        f"(status: {subscription_status}, "
+                        f"storage within free limit)"
+                    )
                 case _:
                     pass
 
