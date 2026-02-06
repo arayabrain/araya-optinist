@@ -793,6 +793,24 @@ async def delete_file(
         # Clean up metadata cache entries
         _remove_from_metadata_cache(workspace_id, filename)
 
+        # Upload updated metadata to S3 so it stays in sync
+        if RemoteStorageController.is_available():
+            metadata_file = None
+            if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
+                metadata_file = MetadataCacheFile.IMAGE_SHAPE
+            elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
+                metadata_file = MetadataCacheFile.HDF5_STRUCTURE
+            elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
+                metadata_file = MetadataCacheFile.MAT_STRUCTURE
+
+            if metadata_file:
+                async with RemoteStorageSimpleWriter(
+                    remote_bucket_name
+                ) as remote_storage_controller:
+                    await remote_storage_controller.upload_input_data(
+                        workspace_id, metadata_file
+                    )
+
         if WorkspaceDataCapacityService.is_available():
             background_tasks.add_task(
                 WorkspaceDataCapacityService.update_workspace_data_usage,
