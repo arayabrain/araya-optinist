@@ -412,16 +412,12 @@ def increment_heartbeat_failures(user_id: int) -> int:
                 ).fetchone()
                 count = row[0] if row else 0
                 logger.debug(
-                    f"Incremented heartbeat failures "
-                    f"for user {user_id} to {count}"
+                    f"Incremented heartbeat failures for user {user_id} to {count}"
                 )
                 return count
             return 0
     except Exception as e:
-        logger.error(
-            f"Error incrementing heartbeat failures "
-            f"for user {user_id}: {e}"
-        )
+        logger.error(f"Error incrementing heartbeat failures for user {user_id}: {e}")
         return -1
 
 

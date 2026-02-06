@@ -292,9 +292,7 @@ async def send_premium_heartbeat(current_user: User = Depends(get_current_user))
                 "activity_update": result.get("timestamp"),
             }
         else:
-            failure_count = increment_heartbeat_failures(
-                current_user.id
-            )
+            failure_count = increment_heartbeat_failures(current_user.id)
             return {
                 "message": "No active assignment found",
                 "updated": False,
@@ -305,13 +303,8 @@ async def send_premium_heartbeat(current_user: User = Depends(get_current_user))
             }
 
     except Exception as e:
-        logger.error(
-            f"Error processing heartbeat for user "
-            f"{current_user.id}: {e}"
-        )
-        failure_count = increment_heartbeat_failures(
-            current_user.id
-        )
+        logger.error(f"Error processing heartbeat for user " f"{current_user.id}: {e}")
+        failure_count = increment_heartbeat_failures(current_user.id)
         return {
             "message": f"Heartbeat processed with warnings: {str(e)}",
             "updated": False,

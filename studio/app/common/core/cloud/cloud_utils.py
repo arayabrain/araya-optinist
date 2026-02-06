@@ -461,30 +461,26 @@ def increment_storage_idempotent(
             existing = db.execute(
                 select(StorageOperation).where(
                     StorageOperation.idempotency_key == idempotency_key,
-                    StorageOperation.status
-                    == StorageOperationStatus.COMPLETED.value,
+                    StorageOperation.status == StorageOperationStatus.COMPLETED.value,
                 )
             ).first()
 
             if existing:
                 logger.debug(
-                    f"Idempotent increment already done "
-                    f"for key {idempotency_key}"
+                    f"Idempotent increment already done " f"for key {idempotency_key}"
                 )
                 return True
 
             pending = db.execute(
                 select(StorageOperation).where(
                     StorageOperation.idempotency_key == idempotency_key,
-                    StorageOperation.status
-                    == StorageOperationStatus.PENDING.value,
+                    StorageOperation.status == StorageOperationStatus.PENDING.value,
                 )
             ).first()
 
             if pending:
                 logger.warning(
-                    f"Pending operation exists "
-                    f"for key {idempotency_key}, skipping"
+                    f"Pending operation exists " f"for key {idempotency_key}, skipping"
                 )
                 return False
 
@@ -506,9 +502,7 @@ def increment_storage_idempotent(
             op = db.get(StorageOperation, operation_id)
             if op:
                 if success:
-                    op.status = (
-                        StorageOperationStatus.COMPLETED.value
-                    )
+                    op.status = StorageOperationStatus.COMPLETED.value
                     op.completed_at = datetime.now(timezone.utc)
                 else:
                     op.status = StorageOperationStatus.FAILED.value
@@ -550,30 +544,26 @@ def decrement_storage_idempotent(
             existing = db.execute(
                 select(StorageOperation).where(
                     StorageOperation.idempotency_key == idempotency_key,
-                    StorageOperation.status
-                    == StorageOperationStatus.COMPLETED.value,
+                    StorageOperation.status == StorageOperationStatus.COMPLETED.value,
                 )
             ).first()
 
             if existing:
                 logger.debug(
-                    f"Idempotent decrement already done "
-                    f"for key {idempotency_key}"
+                    f"Idempotent decrement already done " f"for key {idempotency_key}"
                 )
                 return True
 
             pending = db.execute(
                 select(StorageOperation).where(
                     StorageOperation.idempotency_key == idempotency_key,
-                    StorageOperation.status
-                    == StorageOperationStatus.PENDING.value,
+                    StorageOperation.status == StorageOperationStatus.PENDING.value,
                 )
             ).first()
 
             if pending:
                 logger.warning(
-                    f"Pending operation exists "
-                    f"for key {idempotency_key}, skipping"
+                    f"Pending operation exists " f"for key {idempotency_key}, skipping"
                 )
                 return False
 
@@ -595,9 +585,7 @@ def decrement_storage_idempotent(
             op = db.get(StorageOperation, operation_id)
             if op:
                 if success:
-                    op.status = (
-                        StorageOperationStatus.COMPLETED.value
-                    )
+                    op.status = StorageOperationStatus.COMPLETED.value
                     op.completed_at = datetime.now(timezone.utc)
                 else:
                     op.status = StorageOperationStatus.FAILED.value
@@ -621,15 +609,12 @@ def get_pending_storage_operations(user_id: int) -> list:
             result = db.execute(
                 select(StorageOperation).where(
                     StorageOperation.user_id == user_id,
-                    StorageOperation.status
-                    == StorageOperationStatus.PENDING.value,
+                    StorageOperation.status == StorageOperationStatus.PENDING.value,
                 )
             ).all()
             return [row[0] for row in result] if result else []
     except Exception as e:
-        logger.error(
-            f"Failed to get pending operations for user {user_id}: {e}"
-        )
+        logger.error(f"Failed to get pending operations for user {user_id}: {e}")
         return []
 
 
@@ -643,8 +628,7 @@ def cleanup_old_storage_operations(days_old: int = 7) -> int:
         with session_scope() as db:
             result = db.execute(
                 delete(StorageOperation).where(
-                    StorageOperation.status
-                    == StorageOperationStatus.COMPLETED.value,
+                    StorageOperation.status == StorageOperationStatus.COMPLETED.value,
                     StorageOperation.completed_at < cutoff,
                 )
             )
@@ -672,9 +656,7 @@ def process_failed_storage_operations(
     Finds failed decrement operations and retries them.
     Operations exceeding max_retries are logged but not retried.
     """
-    from studio.app.common.models.subscription import (
-        STORAGE_OPERATION_MAX_RETRIES,
-    )
+    from studio.app.common.models.subscription import STORAGE_OPERATION_MAX_RETRIES
 
     if max_retries is None:
         max_retries = STORAGE_OPERATION_MAX_RETRIES
@@ -687,12 +669,10 @@ def process_failed_storage_operations(
                 select(StorageOperation, UserStorageUsage)
                 .outerjoin(
                     UserStorageUsage,
-                    StorageOperation.user_id
-                    == UserStorageUsage.user_id,
+                    StorageOperation.user_id == UserStorageUsage.user_id,
                 )
                 .where(
-                    StorageOperation.status
-                    == StorageOperationStatus.FAILED.value,
+                    StorageOperation.status == StorageOperationStatus.FAILED.value,
                     StorageOperation.retry_count < max_retries,
                 )
                 .order_by(StorageOperation.created_at)
@@ -705,58 +685,44 @@ def process_failed_storage_operations(
 
                     if not usage_record:
                         logger.warning(
-                            f"No storage record for user "
-                            f"{op.user_id}, skipping"
+                            f"No storage record for user " f"{op.user_id}, skipping"
                         )
                         continue
 
-                    if (
-                        op.operation_type
-                        == StorageOperationType.DECREMENT.value
-                    ):
+                    if op.operation_type == StorageOperationType.DECREMENT.value:
                         new_usage = max(
                             0,
-                            usage_record.storage_usage_bytes
-                            - op.bytes_delta,
+                            usage_record.storage_usage_bytes - op.bytes_delta,
                         )
                         usage_record.storage_usage_bytes = new_usage
-                        usage_record.last_updated = datetime.now(
-                            timezone.utc
-                        )
+                        usage_record.last_updated = datetime.now(timezone.utc)
 
-                    op.status = (
-                        StorageOperationStatus.COMPLETED.value
-                    )
+                    op.status = StorageOperationStatus.COMPLETED.value
                     op.completed_at = datetime.now(timezone.utc)
                     op.error_message = None
 
                     db.commit()
                     retried_count += 1
                     logger.info(
-                        f"Retried storage operation {op.id} "
-                        f"for user {op.user_id}"
+                        f"Retried storage operation {op.id} " f"for user {op.user_id}"
                     )
 
                 except Exception as retry_error:
                     op.error_message = str(retry_error)[:200]
                     db.commit()
                     logger.warning(
-                        f"Retry failed for operation "
-                        f"{op.id}: {retry_error}"
+                        f"Retry failed for operation " f"{op.id}: {retry_error}"
                     )
 
             if retried_count > 0:
                 logger.info(
-                    f"Successfully retried {retried_count} "
-                    f"storage operations"
+                    f"Successfully retried {retried_count} " f"storage operations"
                 )
 
             return retried_count
 
     except Exception as e:
-        logger.error(
-            f"Failed to process failed storage operations: {e}"
-        )
+        logger.error(f"Failed to process failed storage operations: {e}")
         return 0
 
 
@@ -782,8 +748,7 @@ def process_stale_pending_operations(
             stale_ops = db.execute(
                 select(StorageOperation)
                 .where(
-                    StorageOperation.status
-                    == StorageOperationStatus.PENDING.value,
+                    StorageOperation.status == StorageOperationStatus.PENDING.value,
                     StorageOperation.created_at < cutoff,
                 )
                 .order_by(StorageOperation.created_at)
@@ -796,48 +761,31 @@ def process_stale_pending_operations(
 
                 if current_retries >= max_retries:
                     op.status = StorageOperationStatus.FAILED.value
-                    op.error_message = (
-                        "Exceeded max retries for stale pending"
-                    )
+                    op.error_message = "Exceeded max retries for stale pending"
                     result["failed"] += 1
                     logger.warning(
-                        f"Stale operation {op.idempotency_key} "
-                        f"exceeded max retries"
+                        f"Stale operation {op.idempotency_key} " f"exceeded max retries"
                     )
                     continue
 
                 try:
                     op.retry_count = current_retries + 1
 
-                    if (
-                        op.operation_type
-                        == StorageOperationType.INCREMENT.value
-                    ):
-                        success = increment_user_storage(
-                            op.user_id, op.bytes_delta
-                        )
+                    if op.operation_type == StorageOperationType.INCREMENT.value:
+                        success = increment_user_storage(op.user_id, op.bytes_delta)
                     else:
-                        success = decrement_user_storage(
-                            op.user_id, op.bytes_delta
-                        )
+                        success = decrement_user_storage(op.user_id, op.bytes_delta)
 
                     if success:
-                        op.status = (
-                            StorageOperationStatus.COMPLETED.value
-                        )
+                        op.status = StorageOperationStatus.COMPLETED.value
                         op.completed_at = datetime.now(timezone.utc)
                         result["succeeded"] += 1
                         logger.info(
-                            f"Recovered stale operation "
-                            f"{op.idempotency_key}"
+                            f"Recovered stale operation " f"{op.idempotency_key}"
                         )
                     else:
-                        op.status = (
-                            StorageOperationStatus.FAILED.value
-                        )
-                        op.error_message = (
-                            "Recovery retry returned false"
-                        )
+                        op.status = StorageOperationStatus.FAILED.value
+                        op.error_message = "Recovery retry returned false"
                         result["failed"] += 1
                         logger.warning(
                             f"Failed to recover stale operation "
@@ -847,8 +795,7 @@ def process_stale_pending_operations(
                     op.error_message = str(e)[:200]
                     result["failed"] += 1
                     logger.error(
-                        f"Error recovering operation "
-                        f"{op.idempotency_key}: {e}"
+                        f"Error recovering operation " f"{op.idempotency_key}: {e}"
                     )
 
             db.commit()
@@ -862,9 +809,7 @@ def process_stale_pending_operations(
         return result
 
     except Exception as e:
-        logger.error(
-            f"Failed to process stale pending operations: {e}"
-        )
+        logger.error(f"Failed to process stale pending operations: {e}")
         return result
 
 
