@@ -599,3 +599,77 @@ async def test_no_legacy_fields_in_routing_info(mock_premium_user):
         f"If these are new fields, add them to ROUTING_INFO_REQUIRED_FIELDS "
         f"or ROUTING_INFO_OPTIONAL_FIELDS and update frontend interface."
     )
+
+
+# ============================================================================
+# Contract Tests: POST /users/me/premium/release-beacon
+# ============================================================================
+
+# BeaconResult interface (used by sendBeacon on browser close)
+BEACON_RESULT_REQUIRED_FIELDS = {
+    "success": bool,
+}
+
+BEACON_RESULT_OPTIONAL_FIELDS = {
+    "message": str,
+}
+
+
+@pytest.mark.asyncio
+async def test_contract_beacon_release_success():
+    """
+    Contract test: Beacon release response matches expected interface.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_request = MagicMock()
+    mock_request.json = AsyncMock(return_value={"user_uid": "test-user-123"})
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter.return_value.first.return_value = None
+
+    with patch(
+        "studio.app.common.routers.users_me.premium_assignment_service"
+    ) as mock_service:
+        with patch("studio.app.common.routers.users_me.invalidate_activity_cache"):
+            with patch("studio.app.common.routers.users_me.mark_user_logged_out"):
+                mock_service.release_premium_user = AsyncMock(
+                    return_value={"success": True, "message": "Released"}
+                )
+
+                from studio.app.common.routers.users_me import release_premium_beacon
+
+                result = await release_premium_beacon(request=mock_request, db=mock_db)
+
+                validate_contract(
+                    result,
+                    BEACON_RESULT_REQUIRED_FIELDS,
+                    BEACON_RESULT_OPTIONAL_FIELDS,
+                    context="BeaconResult (success)",
+                )
+
+                assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_contract_beacon_release_missing_uid():
+    """
+    Contract test: Beacon release response when user_uid missing.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_request = MagicMock()
+    mock_request.json = AsyncMock(return_value={})
+    mock_db = MagicMock()
+
+    from studio.app.common.routers.users_me import release_premium_beacon
+
+    result = await release_premium_beacon(request=mock_request, db=mock_db)
+
+    validate_contract(
+        result,
+        BEACON_RESULT_REQUIRED_FIELDS,
+        BEACON_RESULT_OPTIONAL_FIELDS,
+        context="BeaconResult (missing uid)",
+    )
+
+    assert result["success"] is False

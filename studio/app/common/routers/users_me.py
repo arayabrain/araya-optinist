@@ -1,6 +1,6 @@
 from typing import Dict
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
@@ -10,6 +10,10 @@ from studio.app.common.core.cloud.cloud_utils import (
     get_user_storage_usage,
 )
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.middleware.user_activity_middleware import (
+    invalidate_activity_cache,
+    mark_user_logged_out,
+)
 from studio.app.common.core.premium.premium_assignment_service import (
     premium_assignment_service,
 )
@@ -136,6 +140,9 @@ async def release_premium_instance(current_user: User = Depends(get_current_user
     This endpoint should be called on logout for premium users.
     """
     try:
+        invalidate_activity_cache(current_user.id)
+        mark_user_logged_out(current_user.id)
+
         # Call the premium assignment service
         result = await premium_assignment_service.release_premium_user(
             current_user.id, current_user.uid
@@ -166,6 +173,55 @@ async def release_premium_instance(current_user: User = Depends(get_current_user
         return {"message": "Release completed with warnings", "released": True}
 
 
+@router.post("/premium/release-beacon", response_model=Dict)
+async def release_premium_beacon(
+    request: Request, db: Session = Depends(get_db)
+):
+    """
+    Beacon endpoint for reliable cleanup on browser close/refresh.
+
+    Uses navigator.sendBeacon for reliable delivery during page
+    unload. Does not require authentication since the user may be
+    closing the browser.
+    """
+    from studio.app.common.models.user import User as UserModel
+
+    try:
+        body = await request.json()
+        user_uid = body.get("user_uid")
+
+        if not user_uid:
+            logger.warning("Beacon release called without user_uid")
+            return {"success": False, "message": "Missing user_uid"}
+
+        user = (
+            db.query(UserModel)
+            .filter(UserModel.uid == user_uid)
+            .first()
+        )
+        if user:
+            invalidate_activity_cache(user.id)
+            mark_user_logged_out(user.id)
+
+        user_id = user.id if user else 0
+        result = await premium_assignment_service.release_premium_user(
+            user_id=user_id, user_uid=user_uid
+        )
+
+        logger.info(
+            f"Beacon release for user_uid {user_uid}: "
+            f"{result.get('message')}"
+        )
+        return {
+            "success": True,
+            "message": result.get("message", "Release processed"),
+        }
+
+    except Exception as e:
+        logger.warning(f"Beacon release failed: {e}")
+        return {"success": False, "message": str(e)}
+
+
 @router.post("/free/logout", response_model=Dict)
 async def logout_free_user(
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
@@ -184,6 +240,9 @@ async def logout_free_user(
         }
 
     try:
+        invalidate_activity_cache(current_user.id)
+        mark_user_logged_out(current_user.id)
+
         # Get the free user assignment
         statement = select(FreeUserAssignment).where(
             FreeUserAssignment.user_id == current_user.id

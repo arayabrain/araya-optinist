@@ -7,4 +7,6 @@ export type User = {
   listUserSearch?: UserDTO[]
   loading: boolean
   listUser?: UserListDTO
+  // Increments on each logout to help components detect stale closures
+  logoutGeneration: number
 }

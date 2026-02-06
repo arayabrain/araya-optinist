@@ -14,12 +14,14 @@ from studio.app.common.core.utils.datetime_utils import (
     TIMEZONE_UTC,
     TZ_UTC,
     datetime_from_timestamp,
+    ensure_utc,
     format_date_for_display,
     get_current_datetime,
     get_current_datetime_formatted,
     get_current_timestamp,
     get_datetime_for_timezone,
     get_datetime_for_timezone_formatted,
+    is_datetime_aware,
 )
 
 
@@ -194,3 +196,71 @@ class TestConstants:
     def test_tz_utc_constant(self):
         """TZ_UTC should be timezone.utc."""
         assert TZ_UTC == timezone.utc
+
+
+class TestEnsureUtc:
+    """Tests for ensure_utc function."""
+
+    def test_ensure_utc_none_returns_none(self):
+        """ensure_utc(None) should return None."""
+        assert ensure_utc(None) is None
+
+    def test_ensure_utc_naive_datetime_becomes_utc_aware(self):
+        """ensure_utc should make naive datetime UTC-aware."""
+        naive = datetime(2024, 1, 15, 10, 30, 45)
+        result = ensure_utc(naive)
+        assert result.tzinfo == timezone.utc
+        assert result.year == 2024
+        assert result.month == 1
+        assert result.day == 15
+        assert result.hour == 10
+
+    def test_ensure_utc_utc_aware_returns_same(self):
+        """ensure_utc should return UTC datetime unchanged."""
+        utc_dt = datetime(2024, 1, 15, 10, 30, 45, tzinfo=timezone.utc)
+        result = ensure_utc(utc_dt)
+        assert result == utc_dt
+        assert result.tzinfo == timezone.utc
+
+    def test_ensure_utc_converts_other_timezone_to_utc(self):
+        """ensure_utc should convert non-UTC timezone to UTC."""
+        from zoneinfo import ZoneInfo
+
+        # 10:30 in New York during winter (UTC-5)
+        ny_tz = ZoneInfo("America/New_York")
+        ny_dt = datetime(2024, 1, 15, 10, 30, 45, tzinfo=ny_tz)
+        result = ensure_utc(ny_dt)
+        assert result.tzinfo == timezone.utc
+        # 10:30 EST = 15:30 UTC
+        assert result.hour == 15
+
+    def test_ensure_utc_preserves_microseconds(self):
+        """ensure_utc should preserve microseconds."""
+        naive = datetime(2024, 1, 15, 10, 30, 45, 123456)
+        result = ensure_utc(naive)
+        assert result.microsecond == 123456
+
+
+class TestIsDatetimeAware:
+    """Tests for is_datetime_aware function."""
+
+    def test_is_datetime_aware_none_returns_false(self):
+        """is_datetime_aware(None) should return False."""
+        assert is_datetime_aware(None) is False
+
+    def test_is_datetime_aware_naive_returns_false(self):
+        """is_datetime_aware should return False for naive datetime."""
+        naive = datetime(2024, 1, 15, 10, 30, 45)
+        assert is_datetime_aware(naive) is False
+
+    def test_is_datetime_aware_utc_returns_true(self):
+        """is_datetime_aware should return True for UTC datetime."""
+        utc_dt = datetime(2024, 1, 15, 10, 30, 45, tzinfo=timezone.utc)
+        assert is_datetime_aware(utc_dt) is True
+
+    def test_is_datetime_aware_other_timezone_returns_true(self):
+        """is_datetime_aware should return True for any timezone-aware datetime."""
+        from zoneinfo import ZoneInfo
+
+        ny_dt = datetime(2024, 1, 15, 10, 30, 45, tzinfo=ZoneInfo("America/New_York"))
+        assert is_datetime_aware(ny_dt) is True

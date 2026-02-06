@@ -1,3 +1,4 @@
+import asyncio
 import glob
 import os
 import pickle
@@ -41,6 +42,10 @@ from studio.app.const import DATE_FORMAT
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
+
+# S3 deletion retry configuration
+S3_DELETION_MAX_RETRIES = 3
+S3_DELETION_BASE_DELAY_SECONDS = 1.0
 
 
 class ExptConfigWriter:
@@ -182,11 +187,16 @@ class ExptDataWriter:
         self.unique_id = unique_id
 
     async def delete_data(self) -> bool:
+        """
+        Delete experiment data from S3 and local filesystem.
+        Handles local filesystem deletion failure separately from S3.
+        """
         experiment_path = join_filepath(
             [DIRPATH.OUTPUT_DIR, self.workspace_id, self.unique_id]
         )
 
-        result = False
+        s3_result = True  # Default to True if S3 not available
+        local_result = False
 
         try:
             # Check the expt is running or if don't have status it will return None
@@ -203,7 +213,7 @@ class ExptDataWriter:
                 )
                 return False
 
-            # Operate remote storage data.
+            # Operate remote storage data with retry logic
             if RemoteStorageController.is_available():
                 # Check for remote-sync-lock-file
                 # - If lock file exists, an exception is raised (raise_error=True)
@@ -211,29 +221,110 @@ class ExptDataWriter:
                     self.workspace_id, self.unique_id, raise_error=True
                 )
 
-                # delete remote data
-                async with RemoteStorageDeleter(
-                    self.remote_bucket_name, self.workspace_id, self.unique_id
-                ) as remote_storage_controller:
-                    result = await remote_storage_controller.delete_experiment(
-                        self.workspace_id, self.unique_id
+                # Delete remote data with retry for transient failures
+                s3_result = await self._delete_remote_data_with_retry()
+
+                if not s3_result:
+                    logger.error(
+                        f"S3 deletion failed after {S3_DELETION_MAX_RETRIES} retries "
+                        f"for experiment '{self.unique_id}'"
                     )
+                    # Continue with local deletion anyway - reconciliation job
+                    # will clean up S3 later
 
-            # delete local data
-            shutil.rmtree(experiment_path)
+            # Handle local deletion separately
+            try:
+                if os.path.exists(experiment_path):
+                    shutil.rmtree(experiment_path)
+                    logger.info(f"Deleted experiment data at: {experiment_path}")
+                else:
+                    logger.debug(f"Local path already deleted: {experiment_path}")
+                local_result = True
+            except PermissionError as pe:
+                logger.error(
+                    f"Permission denied deleting local data for '{self.unique_id}': "
+                    f"{pe}. S3 deletion status: {s3_result}"
+                )
+                local_result = False
+            except OSError as oe:
+                logger.error(
+                    f"OS error deleting local data for '{self.unique_id}': {oe}. "
+                    f"S3 deletion status: {s3_result}"
+                )
+                local_result = False
+            except Exception as local_error:
+                logger.error(
+                    f"Failed to delete local data for '{self.unique_id}': "
+                    f"{local_error}. S3 deletion status: {s3_result}"
+                )
+                local_result = False
 
-            logger.info(f"Deleted experiment data at: {experiment_path}")
+            # If S3 succeeded but local failed, return success since S3 is authoritative
+            if s3_result and not local_result:
+                logger.warning(
+                    f"S3 deletion succeeded but local deletion failed for "
+                    f"'{self.unique_id}'. Local data may remain orphaned at "
+                    f"{experiment_path}"
+                )
+                # Return True since the important S3 data is deleted
+                # Local cleanup can happen later via cleanup job
+                return True
 
-            result = True
+            return s3_result and local_result
 
         except Exception as e:
             logger.error(
                 f"Failed to delete experiment '{self.unique_id}': {e}",
                 exc_info=True,
             )
-            result = False
+            return False
 
-        return result
+    async def _delete_remote_data_with_retry(self) -> bool:
+        """
+        Delete remote (S3) data with exponential backoff retry.
+
+        Retries transient S3 failures up to S3_DELETION_MAX_RETRIES times
+        with exponential backoff between attempts.
+
+        Returns:
+            True if deletion succeeded, False if all retries exhausted
+        """
+        for attempt in range(S3_DELETION_MAX_RETRIES):
+            try:
+                async with RemoteStorageDeleter(
+                    self.remote_bucket_name, self.workspace_id, self.unique_id
+                ) as remote_storage_controller:
+                    result = await remote_storage_controller.delete_experiment(
+                        self.workspace_id, self.unique_id
+                    )
+                    if result:
+                        if attempt > 0:
+                            logger.info(
+                                f"S3 deletion succeeded on attempt {attempt + 1} "
+                                f"for experiment '{self.unique_id}'"
+                            )
+                        return True
+                    else:
+                        logger.warning(
+                            f"S3 deletion attempt {attempt + 1} returned False "
+                            f"for '{self.unique_id}'"
+                        )
+
+            except Exception as e:
+                if attempt < S3_DELETION_MAX_RETRIES - 1:
+                    delay = S3_DELETION_BASE_DELAY_SECONDS * (2**attempt)
+                    logger.warning(
+                        f"S3 deletion attempt {attempt + 1} failed for "
+                        f"'{self.unique_id}': {e}. Retrying in {delay}s..."
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        f"S3 deletion failed after {S3_DELETION_MAX_RETRIES} "
+                        f"attempts for '{self.unique_id}': {e}"
+                    )
+
+        return False
 
     async def rename(self, new_name: str) -> ExptConfig:
         # Operate remote storage data.

@@ -63,8 +63,15 @@ export interface RefreshStorageResponse {
   message: string
 }
 
-export const refreshAllWorkspacesStorageApi =
-  async (): Promise<RefreshStorageResponse> => {
-    const response = await axios.post("/workspaces/refresh-storage")
-    return response.data
-  }
+export interface RefreshStorageOptions {
+  signal?: AbortSignal
+}
+
+export const refreshAllWorkspacesStorageApi = async (
+  options?: RefreshStorageOptions,
+): Promise<RefreshStorageResponse> => {
+  const response = await axios.post("/workspaces/refresh-storage", null, {
+    signal: options?.signal,
+  })
+  return response.data
+}
