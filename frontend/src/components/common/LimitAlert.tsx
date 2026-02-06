@@ -137,7 +137,9 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
     }
   }, [])
 
+  // Check if this is an OVERDUE alert that requires acknowledgment
   const isOverdueAlert = alert?.alert_type === LimitAlertType.OVERDUE
+  const canDismissOverdue = !isOverdueAlert || acknowledgedOverdue
 
   const handleDismiss = () => {
     // OVERDUE alerts require explicit acknowledgment before dismissal

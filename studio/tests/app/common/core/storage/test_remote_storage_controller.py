@@ -305,6 +305,43 @@ class TestSyncStatusOnPartialFailure:
     """Tests for Case 69: Verify sync status reflects actual operation result."""
 
     @pytest.mark.asyncio
+    async def test_upload_experiment_false_result_marks_error_status(self):
+        """When upload_experiment returns False, status should be ERROR."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_controller = MagicMock()
+        mock_controller.upload_experiment = AsyncMock(return_value=False)
+
+        with patch.object(
+            RemoteSyncStatusFileUtil,
+            "create_sync_status_file_for_success",
+        ) as mock_success, patch.object(
+            RemoteSyncStatusFileUtil,
+            "create_sync_status_file_for_error",
+        ) as mock_error, patch.object(
+            RemoteSyncStatusFileUtil,
+            "create_sync_status_file_for_processing",
+        ) as mock_processing:
+            controller = RemoteStorageController.__new__(
+                RemoteStorageController
+            )
+            controller._RemoteStorageController__controller = (
+                mock_controller
+            )
+            controller._RemoteStorageController__remote_bucket_name = (
+                "test-bucket"
+            )
+
+            result = await controller.upload_experiment(
+                "ws1", "exp1", None
+            )
+
+            assert result is False
+            mock_processing.assert_called_once()
+            mock_error.assert_called_once()
+            mock_success.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_upload_experiment_true_result_marks_success_status(self):
         """When upload_experiment returns True, status should be SUCCESS."""
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -329,6 +366,41 @@ class TestSyncStatusOnPartialFailure:
             mock_processing.assert_called_once()
             mock_success.assert_called_once()
             mock_error.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_experiment_false_result_marks_error_status(self):
+        """When delete_experiment returns False, status should be ERROR."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_controller = MagicMock()
+        mock_controller.delete_experiment = AsyncMock(return_value=False)
+
+        with patch.object(
+            RemoteSyncStatusFileUtil,
+            "create_sync_status_file_for_success",
+        ) as mock_success, patch.object(
+            RemoteSyncStatusFileUtil,
+            "create_sync_status_file_for_error",
+        ) as mock_error, patch.object(
+            RemoteSyncStatusFileUtil,
+            "create_sync_status_file_for_processing",
+        ) as mock_processing:
+            controller = RemoteStorageController.__new__(
+                RemoteStorageController
+            )
+            controller._RemoteStorageController__controller = (
+                mock_controller
+            )
+            controller._RemoteStorageController__remote_bucket_name = (
+                "test-bucket"
+            )
+
+            result = await controller.delete_experiment("ws1", "exp1")
+
+            assert result is False
+            mock_processing.assert_called_once()
+            mock_error.assert_called_once()
+            mock_success.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_experiment_true_result_marks_success_status(self):

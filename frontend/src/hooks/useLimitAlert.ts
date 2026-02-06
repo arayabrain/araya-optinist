@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react"
 
-import { useSnackbar, SnackbarKey } from "notistack"
+import { useSnackbar, SnackbarKey, SnackbarAction } from "notistack"
 
 import {
   getMyLimitAlertApi,
