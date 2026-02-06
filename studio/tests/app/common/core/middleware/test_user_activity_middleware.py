@@ -749,5 +749,3 @@ class TestClearFreeUserLoggedOutAt:
             # This means cleanup job query (WHERE logged_out_at IS NOT NULL)
             # won't select this user
             assert mock_assignment.logged_out_at is None
-
-

@@ -681,9 +681,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
             query_result = db.execute(
                 select(UserSubscription)
                 .where(UserSubscription.user_id == user_id)
-                .where(
-                    UserSubscription.plan_id == SubscriptionPlanIds.PREMIUM
-                )
+                .where(UserSubscription.plan_id == SubscriptionPlanIds.PREMIUM)
                 .order_by(UserSubscription.expiration.desc())
             )
             result_rows = query_result.all()

@@ -312,15 +312,11 @@ def clear_free_user_logged_out_at(user_id: int) -> bool:
                 assignment.logged_out_at = None
                 assignment.last_activity = get_current_datetime()
                 session.commit()
-                logger.debug(
-                    f"Cleared logged_out_at for user {user_id} on re-login"
-                )
+                logger.debug(f"Cleared logged_out_at for user {user_id} on re-login")
 
         return True
     except Exception as e:
-        logger.warning(
-            f"Failed to clear logged_out_at for user {user_id}: {e}"
-        )
+        logger.warning(f"Failed to clear logged_out_at for user {user_id}: {e}")
         return False
 
 
@@ -364,9 +360,7 @@ async def _update_free_user_activity_async(user_id: int):
     Runs in background to avoid blocking request.
     """
     if is_user_logged_out(user_id):
-        logger.debug(
-            f"Skipping activity update for logged out user {user_id}"
-        )
+        logger.debug(f"Skipping activity update for logged out user {user_id}")
         return
 
     # Update cache immediately (optimistic) to reduce perceived latency
@@ -455,9 +449,7 @@ async def _update_premium_user_activity_async(user_id: int):
     Runs in background to avoid blocking request.
     """
     if is_user_logged_out(user_id):
-        logger.debug(
-            f"Skipping activity update for logged out user {user_id}"
-        )
+        logger.debug(f"Skipping activity update for logged out user {user_id}")
         return
 
     # Update cache immediately (optimistic) to reduce perceived latency
@@ -488,8 +480,7 @@ def _update_premium_user_activity_sync(user_id: int) -> bool:
     try:
         if is_user_logged_out(user_id):
             logger.debug(
-                f"Skipping premium activity DB update "
-                f"for logged out user {user_id}"
+                f"Skipping premium activity DB update " f"for logged out user {user_id}"
             )
             return False
 

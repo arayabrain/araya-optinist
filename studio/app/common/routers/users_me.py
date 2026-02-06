@@ -174,9 +174,7 @@ async def release_premium_instance(current_user: User = Depends(get_current_user
 
 
 @router.post("/premium/release-beacon", response_model=Dict)
-async def release_premium_beacon(
-    request: Request, db: Session = Depends(get_db)
-):
+async def release_premium_beacon(request: Request, db: Session = Depends(get_db)):
     """
     Beacon endpoint for reliable cleanup on browser close/refresh.
 
@@ -194,11 +192,7 @@ async def release_premium_beacon(
             logger.warning("Beacon release called without user_uid")
             return {"success": False, "message": "Missing user_uid"}
 
-        user = (
-            db.query(UserModel)
-            .filter(UserModel.uid == user_uid)
-            .first()
-        )
+        user = db.query(UserModel).filter(UserModel.uid == user_uid).first()
         if user:
             invalidate_activity_cache(user.id)
             mark_user_logged_out(user.id)
@@ -209,8 +203,7 @@ async def release_premium_beacon(
         )
 
         logger.info(
-            f"Beacon release for user_uid {user_uid}: "
-            f"{result.get('message')}"
+            f"Beacon release for user_uid {user_uid}: " f"{result.get('message')}"
         )
         return {
             "success": True,
