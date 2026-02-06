@@ -423,17 +423,10 @@ class WebhookService:
             if subscription:
                 subscription.sync_status = SyncStatus.FAILED
                 subscription.updated_at = SubscriptionService.get_current_datetime()
-                # Track payment failure details for Case 73
-                subscription.payment_failed_at = (
-                    SubscriptionService.get_current_datetime()
-                )
-                subscription.payment_failure_count = (
-                    subscription.payment_failure_count or 0
-                ) + 1
                 db.commit()
                 logger.info(
-                    f"Marked subscription as failed for user {user_account.user_id}"
-                    f" (failure count: {subscription.payment_failure_count})"
+                    "Marked subscription as failed for user %s",
+                    user_account.user_id,
                 )
 
                 # Invalidate cache so user sees payment failure warning immediately
@@ -932,9 +925,6 @@ class WebhookService:
                 user_subscription.updated_at = (
                     SubscriptionService.get_current_datetime()
                 )
-                # Reset payment failure tracking on successful payment
-                user_subscription.payment_failed_at = None
-                user_subscription.payment_failure_count = 0
 
             except Exception as e:
                 logger.error(f"Webhook: Error updating subscription: {str(e)}")

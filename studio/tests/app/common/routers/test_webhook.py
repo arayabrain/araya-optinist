@@ -5,6 +5,7 @@ import pytest
 from sqlmodel import Session
 
 from studio.app.common.core.subscription.checkout_service import CheckoutService
+from studio.app.common.core.subscription.constants import SyncStatus
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
@@ -452,8 +453,6 @@ class TestPaymentFailureTracking:
         subscription.id = 1
         subscription.user_id = 123
         subscription.sync_status = None
-        subscription.payment_failed_at = None
-        subscription.payment_failure_count = 0
         subscription.expiration = get_current_datetime() + timedelta(days=30)
         return subscription
 
@@ -465,45 +464,10 @@ class TestPaymentFailureTracking:
         user.uid = "user_uid_123"
         return user
 
-    def test_payment_failed_increments_failure_count(
+    def test_payment_failed_sets_sync_status_failed(
         self, mock_db, mock_user_account, mock_subscription, mock_user
     ):
-        """Payment failure should increment failure count"""
-        invoice_data = {
-            "id": "in_test123",
-            "customer": "cus_test123",
-        }
-
-        # Setup query chain
-        mock_db.query.side_effect = [
-            Mock(
-                filter=Mock(
-                    return_value=Mock(first=Mock(return_value=mock_user_account))
-                )
-            ),
-            Mock(
-                filter=Mock(
-                    return_value=Mock(first=Mock(return_value=mock_subscription))
-                )
-            ),
-            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
-        ]
-
-        with patch(
-            "studio.app.common.core.subscription.webhook_service."
-            "invalidate_user_tier_cache"
-        ):
-            WebhookService.handle_payment_failed(mock_db, invoice_data)
-
-        assert mock_subscription.payment_failure_count == 1
-        assert mock_subscription.payment_failed_at is not None
-
-    def test_multiple_payment_failures_increment_count(
-        self, mock_db, mock_user_account, mock_subscription, mock_user
-    ):
-        """Multiple payment failures should increment count each time"""
-        mock_subscription.payment_failure_count = 2  # Already 2 failures
-
+        """Payment failure should set sync_status to FAILED"""
         invoice_data = {
             "id": "in_test123",
             "customer": "cus_test123",
@@ -529,7 +493,7 @@ class TestPaymentFailureTracking:
         ):
             WebhookService.handle_payment_failed(mock_db, invoice_data)
 
-        assert mock_subscription.payment_failure_count == 3
+        assert mock_subscription.sync_status == SyncStatus.FAILED
 
 
 class TestWebhookCacheInvalidation:
@@ -573,7 +537,6 @@ class TestWebhookCacheInvalidation:
         subscription.expiration = get_current_datetime() + timedelta(days=5)
         subscription.sync_status = None
         subscription.updated_at = None
-        subscription.payment_failure_count = 0
         return subscription
 
     def test_payment_failed_invalidates_cache(

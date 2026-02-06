@@ -2,7 +2,6 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
-from sqlalchemy import DateTime
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import Text
 from sqlalchemy.dialects.mysql import BIGINT
@@ -59,24 +58,11 @@ class Workspace(Base, TimestampMixin, table=True):
         ),
         default=WorkspaceStatus.ACTIVE,
     )
-    deleted_at: Optional[datetime] = Field(
-        sa_column=Column(DateTime, nullable=True),
-        default=None,
-    )
     input_data_usage: int = Field(
         sa_column=Column(
             BIGINT(unsigned=True), nullable=False, comment="data usage in bytes"
         ),
         default=0,
-    )
-    deletion_error: Optional[str] = Field(
-        sa_column=Column(
-            Text,
-            nullable=True,
-            default=None,
-            comment="Error details if deletion partially failed",
-        ),
-        default=None,
     )
     failed_experiment_uids: Optional[str] = Field(
         sa_column=Column(

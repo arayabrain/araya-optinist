@@ -7,7 +7,6 @@ Tests cover:
 - Row-level locking with with_for_update(nowait=True)
 """
 
-from datetime import datetime
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -42,7 +41,6 @@ def mock_workspace():
     ws.name = "Test Workspace"
     ws.deleted = False
     ws.status = WorkspaceStatus.ACTIVE
-    ws.deleted_at = None
     return ws
 
 
@@ -80,17 +78,6 @@ def test_workspace_model_has_status_field():
     assert ws.status == WorkspaceStatus.ACTIVE
 
 
-def test_workspace_model_has_deleted_at_field():
-    """Workspace model should have deleted_at timestamp field."""
-    ws = Workspace(
-        name="Test",
-        user_id=1,
-        deleted=False,
-        deleted_at=None,
-    )
-    assert ws.deleted_at is None
-
-
 # ============================================================================
 # Tests: Successful Deletion Flow
 # ============================================================================
@@ -116,8 +103,6 @@ async def test_delete_workspace_success(mock_db, mock_workspace):
     assert success is True
     assert "success" in message.lower()
     assert mock_workspace.status == WorkspaceStatus.DELETING
-    assert mock_workspace.deleted_at is not None
-    assert isinstance(mock_workspace.deleted_at, datetime)
     mock_db.commit.assert_called()
 
 
@@ -290,32 +275,6 @@ async def test_delete_workspace_rollback_on_content_deletion_failure(
     assert exc_info.value.status_code == 500
     # Status should be reverted to ACTIVE
     assert mock_workspace.status == WorkspaceStatus.ACTIVE
-
-
-@pytest.mark.asyncio
-async def test_delete_workspace_rollback_preserves_deleted_at_none(
-    mock_db, mock_workspace
-):
-    """Test deleted_at remains None if deletion fails."""
-    mock_result = Mock()
-    mock_result.scalar_one_or_none.return_value = mock_workspace
-    mock_db.execute.return_value = mock_result
-
-    original_deleted_at = mock_workspace.deleted_at
-
-    with patch.object(
-        WorkspaceService,
-        "delete_workspace_contents",
-        new_callable=AsyncMock,
-        side_effect=HTTPException(status_code=500, detail="Test error"),
-    ):
-        with pytest.raises(HTTPException):
-            await WorkspaceService.process_workspace_deletion(
-                mock_db, "test-bucket", "1", "1"
-            )
-
-    # deleted_at should not have been set
-    assert mock_workspace.deleted_at == original_deleted_at
 
 
 # ============================================================================

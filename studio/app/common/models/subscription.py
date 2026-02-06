@@ -99,24 +99,6 @@ class UserSubscription(SQLModel, table=True):
             onupdate=func.current_timestamp(),
         ),
     )
-    # Payment failure tracking for Case 73
-    payment_failed_at: Optional[datetime] = Field(
-        sa_column=Column(
-            TIMESTAMP,
-            nullable=True,
-            comment="Timestamp of last payment failure",
-        ),
-        default=None,
-    )
-    payment_failure_count: int = Field(
-        sa_column=Column(
-            INTEGER,
-            nullable=False,
-            default=0,
-            comment="Count of consecutive payment failures",
-        ),
-        default=0,
-    )
 
 
 class SubscriptionProvider(SQLModel, table=True):

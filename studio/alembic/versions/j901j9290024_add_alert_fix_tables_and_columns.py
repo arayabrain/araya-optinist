@@ -9,9 +9,8 @@ Tables created:
 
 Columns added:
 - experiment_records.deletion_error (Case 14)
-- workspaces.status, deleted_at, deletion_error, failed_experiment_uids (Cases 19, 23)
+- workspaces.status, failed_experiment_uids (Cases 19, 23)
 - premium_user_assignments.heartbeat_failures (Case 71)
-- subscription_users.payment_failed_at, payment_failure_count (Case 73)
 
 Revision ID: j901j9290024
 Revises: i901i9280023
@@ -64,21 +63,6 @@ def upgrade() -> None:
 
     op.add_column(
         "workspaces",
-        sa.Column("deleted_at", sa.DateTime(), nullable=True),
-    )
-
-    op.add_column(
-        "workspaces",
-        sa.Column(
-            "deletion_error",
-            sa.Text(),
-            nullable=True,
-            comment="Error details if deletion partially failed",
-        ),
-    )
-
-    op.add_column(
-        "workspaces",
         sa.Column(
             "failed_experiment_uids",
             sa.Text(),
@@ -98,30 +82,6 @@ def upgrade() -> None:
             nullable=False,
             server_default="0",
             comment="Consecutive heartbeat failures, used for grace period",
-        ),
-    )
-
-    # =========================================================================
-    # Case 73: subscription_users payment failure tracking
-    # =========================================================================
-    op.add_column(
-        "subscription_users",
-        sa.Column(
-            "payment_failed_at",
-            sa.TIMESTAMP(),
-            nullable=True,
-            comment="Timestamp of last payment failure",
-        ),
-    )
-
-    op.add_column(
-        "subscription_users",
-        sa.Column(
-            "payment_failure_count",
-            sa.INTEGER(),
-            nullable=False,
-            server_default="0",
-            comment="Count of consecutive payment failures",
         ),
     )
 
@@ -367,17 +327,11 @@ def downgrade() -> None:
     op.drop_table("deletion_tasks")
     op.drop_table("storage_operations")
 
-    # Drop subscription_users columns
-    op.drop_column("subscription_users", "payment_failure_count")
-    op.drop_column("subscription_users", "payment_failed_at")
-
     # Drop premium_user_assignments column
     op.drop_column("premium_user_assignments", "heartbeat_failures")
 
     # Drop workspaces columns
     op.drop_column("workspaces", "failed_experiment_uids")
-    op.drop_column("workspaces", "deletion_error")
-    op.drop_column("workspaces", "deleted_at")
     op.drop_column("workspaces", "status")
 
     # Drop experiment_records column

@@ -1,6 +1,5 @@
 import os
 import shutil
-from datetime import datetime, timezone
 from typing import List, Tuple
 
 from fastapi import HTTPException, status
@@ -102,11 +101,6 @@ class WorkspaceService:
             # Store failed experiment UIDs for retry
             ws.status = WorkspaceStatus.PARTIAL_DELETE
             ws.failed_experiment_uids = ",".join(failed_experiments)
-            ws.deletion_error = (
-                f"Partial deletion: {failed_count}/{total_count} experiments failed. "
-                f"Failed UIDs: {', '.join(failed_experiments[:5])}"
-                + ("..." if len(failed_experiments) > 5 else "")
-            )
 
             # Still try to delete workspace files for successfully deleted experiments
             # This cleans up as much as possible
@@ -202,9 +196,6 @@ class WorkspaceService:
             try:
                 # Delete workspace storage files
                 await cls.delete_workspace_contents(db, ws, remote_bucket_name)
-
-                # Mark as fully deleted with timestamp
-                ws.deleted_at = datetime.now(timezone.utc)
 
                 # Commit all DB changes
                 db.commit()
@@ -302,7 +293,6 @@ class WorkspaceService:
                 # No failed experiments, mark as deleted
                 ws.deleted = True
                 ws.status = WorkspaceStatus.DELETED
-                ws.deletion_error = None
                 ws.failed_experiment_uids = None
                 db.commit()
                 return True, "Workspace deletion completed (no failed experiments)"
@@ -328,9 +318,11 @@ class WorkspaceService:
                 # Still have failures
                 ws.status = WorkspaceStatus.PARTIAL_DELETE
                 ws.failed_experiment_uids = ",".join(still_failed)
-                ws.deletion_error = (
-                    f"Retry partial deletion: {len(still_failed)} experiments "
-                    f"still failing"
+                logger.warning(
+                    "Retry partial deletion: %d experiments still "
+                    "failing for workspace %s",
+                    len(still_failed),
+                    str(ws.id),
                 )
                 db.commit()
                 return False, f"Retry failed for {len(still_failed)} experiments"
@@ -347,9 +339,7 @@ class WorkspaceService:
 
                 ws.deleted = True
                 ws.status = WorkspaceStatus.DELETED
-                ws.deletion_error = None
                 ws.failed_experiment_uids = None
-                ws.deleted_at = datetime.now(timezone.utc)
                 db.commit()
                 return True, "Workspace deletion completed successfully"
 
