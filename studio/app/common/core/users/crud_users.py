@@ -570,9 +570,7 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
             await StripeService.handle_cancel_user_subscription(db, user_db)
         except HTTPException as e:
             if e.status_code == 404:
-                logger.info(
-                    f"No subscription to cancel for user {user_id}, skipping"
-                )
+                logger.info(f"No subscription to cancel for user {user_id}, skipping")
             else:
                 raise
 
