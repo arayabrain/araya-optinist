@@ -481,3 +481,109 @@ class TestS3StorageControllerUploadThumbnail:
             )
 
         assert result is False
+
+
+class TestNoSuchBucketErrorHandling:
+    """Tests for NoSuchBucket error handling"""
+
+    def test_is_no_such_bucket_error_with_client_error(self):
+        """Detects NoSuchBucket from ClientError"""
+        from botocore.exceptions import ClientError
+
+        from studio.app.common.core.storage.s3_storage_controller import (
+            _is_no_such_bucket_error,
+        )
+
+        error = ClientError(
+            {"Error": {"Code": "NoSuchBucket", "Message": "Bucket does not exist"}},
+            "ListObjectsV2",
+        )
+        assert _is_no_such_bucket_error(error) is True
+
+    def test_is_no_such_bucket_error_with_other_client_error(self):
+        """Returns False for other ClientError codes"""
+        from botocore.exceptions import ClientError
+
+        from studio.app.common.core.storage.s3_storage_controller import (
+            _is_no_such_bucket_error,
+        )
+
+        error = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Access denied"}},
+            "ListObjectsV2",
+        )
+        assert _is_no_such_bucket_error(error) is False
+
+    def test_is_no_such_bucket_error_with_regular_exception(self):
+        """Returns False for regular exceptions"""
+        from studio.app.common.core.storage.s3_storage_controller import (
+            _is_no_such_bucket_error,
+        )
+
+        error = Exception("Some other error")
+        assert _is_no_such_bucket_error(error) is False
+
+
+class TestListInputDataObjectsNoSuchBucket:
+    """Tests for list_input_data_objects NoSuchBucket handling"""
+
+    def setup_method(self):
+        self.controller = S3StorageController("test-bucket")
+
+    @pytest.mark.asyncio
+    async def test_list_input_data_objects_no_such_bucket_returns_empty(self):
+        """Returns empty list when bucket does not exist"""
+        from botocore.exceptions import ClientError
+
+        mock_client = AsyncMock()
+        mock_client.list_objects_v2.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchBucket", "Message": "Bucket does not exist"}},
+            "ListObjectsV2",
+        )
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+
+        with patch.object(
+            self.controller,
+            "_S3StorageController__get_s3_client",
+            return_value=mock_client,
+        ):
+            result = await self.controller.list_input_data_objects("1")
+
+        assert result == []
+
+
+class TestDownloadAllExperimentsMetasNoSuchBucket:
+    """Tests for download_all_experiments_metas NoSuchBucket handling"""
+
+    def setup_method(self):
+        self.controller = S3StorageController("test-bucket")
+
+    @pytest.mark.asyncio
+    async def test_download_all_experiments_metas_no_such_bucket_raises(self):
+        """Raises RemoteStorageBucketNotFoundError when bucket does not exist"""
+        from botocore.exceptions import ClientError
+
+        from studio.app.common.core.storage.remote_storage_controller import (
+            RemoteStorageBucketNotFoundError,
+        )
+
+        mock_client = AsyncMock()
+        mock_client.list_objects_v2.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchBucket", "Message": "Bucket does not exist"}},
+            "ListObjectsV2",
+        )
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+
+        with patch.object(
+            self.controller,
+            "_S3StorageController__get_s3_client",
+            return_value=mock_client,
+        ):
+            with pytest.raises(RemoteStorageBucketNotFoundError) as exc_info:
+                await self.controller._S3StorageController__download_all_experiments_metas_via_boto3(  # noqa: E501
+                    ["1"]
+                )
+
+        assert "test-bucket" in str(exc_info.value)
