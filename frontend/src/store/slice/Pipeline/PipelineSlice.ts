@@ -1,6 +1,6 @@
 import { createSlice, isAnyOf, PayloadAction } from "@reduxjs/toolkit"
 
-import { SYNC_STATUS } from "api/run/Run"
+import { COMPLETE_STATUS } from "api/run/Run"
 import { publicDataviewReproduceWorkflow } from "store/slice/Dataview/DataviewActions"
 import { convertFunctionsToRunResultDTO } from "store/slice/Experiments/ExperimentsUtils"
 import { clearFlowElements } from "store/slice/FlowElement/FlowElementSlice"
@@ -60,15 +60,11 @@ export const pipelineSlice = createSlice({
           const runResultPendingList = Object.values(
             state.run.runResult,
           ).filter(isNodeResultPending)
-          // Only mark as finished when all nodes are done AND S3 sync is not in progress
-          // syncStatus will be:
-          // - "success" when upload completed successfully
-          // - "error" when upload failed (still allow button to enable for retry)
-          // - "processing" while uploading (keep button disabled)
-          // - null/undefined if remote storage is not enabled
-          const syncStatus = action.payload.syncStatus
-          const isSyncComplete = syncStatus !== SYNC_STATUS.PROCESSING
-          if (runResultPendingList.length === 0 && isSyncComplete) {
+          // Only mark as finished when all nodes complete AND
+          // post-run processing (e.g. remote upload) is not in progress
+          const { completeStatus } = action.payload
+          const isComplete = completeStatus !== COMPLETE_STATUS.PROCESSING
+          if (runResultPendingList.length === 0 && isComplete) {
             // 終了
             state.run.status = RUN_STATUS.FINISHED
           }

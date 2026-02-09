@@ -90,19 +90,21 @@ export type RunResultDTO = {
   }
 }
 
-// Sync status values from backend RemoteSyncStatus enum
-export const SYNC_STATUS = {
+// Post-run completion status values from backend
+export const COMPLETE_STATUS = {
   PROCESSING: "processing",
   SUCCESS: "success",
   ERROR: "error",
 } as const
 
-export type SyncStatus = (typeof SYNC_STATUS)[keyof typeof SYNC_STATUS] | null
+export type CompleteStatus =
+  | (typeof COMPLETE_STATUS)[keyof typeof COMPLETE_STATUS]
+  | null
 
-// Response wrapper from poll endpoint - includes sync status for S3 upload tracking
+// Response wrapper from poll endpoint - includes post-run completion tracking
 export type PollRunResultDTO = {
   nodeResults: RunResultDTO
-  syncStatus?: SyncStatus
+  completeStatus?: CompleteStatus
 }
 
 export type OutputPathsDTO = {

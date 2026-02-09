@@ -10,7 +10,7 @@ import {
   AlgorithmNodePostData,
   EdgeDict,
   RunPostData,
-  SYNC_STATUS,
+  COMPLETE_STATUS,
 } from "api/run/Run"
 import { ParamType, ParamMap } from "utils/param/ParamType"
 
@@ -106,7 +106,7 @@ export const pollRunResultPayload = {
     },
     node2: { status: "failed", message: "Node 2 failed", name: "Node 2" },
   },
-  syncStatus: SYNC_STATUS.SUCCESS,
+  completeStatus: COMPLETE_STATUS.SUCCESS,
 }
 
 export const createFulfilledWithRunPostDataAction = (

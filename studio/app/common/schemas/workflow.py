@@ -61,7 +61,7 @@ class WorkflowErrorInfo:
 
 @dataclass
 class PollRunResultResponse:
-    """Response wrapper for poll run result with sync status for S3 upload."""
+    """Response wrapper for poll run result with post-run completion status."""
 
     nodeResults: Dict[str, Message]
-    syncStatus: Optional[str] = None  # "processing", "success", "error", or None
+    completeStatus: Optional[str] = None  # "processing", "success", "error", or None

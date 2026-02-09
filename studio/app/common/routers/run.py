@@ -193,19 +193,18 @@ async def run_result(
                 uid,
             )
 
-        # Get sync status for S3 upload tracking
-        # This allows the frontend to know when data upload is complete
-        sync_status = None
+        # Check post-run completion status (e.g. remote storage upload)
+        complete_status = None
         if RemoteStorageController.is_available():
-            sync_status_enum = RemoteSyncStatusFileUtil.check_sync_status_file(
+            status_enum = RemoteSyncStatusFileUtil.check_sync_status_file(
                 workspace_id, uid
             )
-            if sync_status_enum:
-                sync_status = sync_status_enum.value
+            if status_enum:
+                complete_status = status_enum.value
 
         return PollRunResultResponse(
             nodeResults=node_results,
-            syncStatus=sync_status,
+            completeStatus=complete_status,
         )
 
     except RemoteStorageLockError as e:

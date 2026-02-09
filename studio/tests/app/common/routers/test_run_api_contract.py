@@ -28,7 +28,7 @@ POLL_RUN_RESULT_DTO_REQUIRED_FIELDS = {
 }
 
 POLL_RUN_RESULT_DTO_OPTIONAL_FIELDS = {
-    "syncStatus": (str, type(None)),  # "processing", "success", "error", or None
+    "completeStatus": (str, type(None)),
 }
 
 # RunResultDTO item (value in nodeResults) - dict of node results by nodeId
@@ -116,7 +116,7 @@ def validate_contract(
 
 def test_contract_poll_run_result_dto_structure():
     """
-    Contract test: PollRunResultDTO has nodeResults wrapper and optional syncStatus.
+    Contract test: PollRunResultDTO has nodeResults wrapper and optional completeStatus.
     """
     poll_result = {
         "nodeResults": {
@@ -131,7 +131,7 @@ def test_contract_poll_run_result_dto_structure():
                 "name": "CaImAn",
             },
         },
-        "syncStatus": RemoteSyncStatus.SUCCESS.value,
+        "completeStatus": RemoteSyncStatus.SUCCESS.value,
     }
 
     # Validate wrapper structure
@@ -154,28 +154,28 @@ def test_contract_poll_run_result_dto_structure():
         )
 
 
-def test_contract_poll_run_result_dto_sync_status_values():
+def test_contract_poll_run_result_dto_complete_status_values():
     """
-    Contract test: syncStatus can be processing, success, error, or None.
+    Contract test: completeStatus can be processing, success, error, or None.
     """
-    valid_sync_statuses = [
+    valid_complete_statuses = [
         RemoteSyncStatus.PROCESSING.value,
         RemoteSyncStatus.SUCCESS.value,
         RemoteSyncStatus.ERROR.value,
         None,
     ]
 
-    for status in valid_sync_statuses:
+    for status in valid_complete_statuses:
         poll_result = {
             "nodeResults": {},
-            "syncStatus": status,
+            "completeStatus": status,
         }
         # Should not raise
         validate_contract(
             poll_result,
             POLL_RUN_RESULT_DTO_REQUIRED_FIELDS,
             POLL_RUN_RESULT_DTO_OPTIONAL_FIELDS,
-            context=f"PollRunResultDTO with syncStatus={status}",
+            context=f"PollRunResultDTO completeStatus={status}",
         )
 
 
@@ -487,7 +487,7 @@ def test_contract_poll_run_result_is_dict():
         "nodeResults": {
             "node1": {"status": "success", "message": "", "name": "Test"},
         },
-        "syncStatus": None,
+        "completeStatus": None,
     }
 
     assert isinstance(poll_result, dict)
@@ -500,7 +500,7 @@ def test_contract_poll_run_result_empty_node_results():
     """
     poll_result = {
         "nodeResults": {},
-        "syncStatus": None,
+        "completeStatus": None,
     }
 
     assert isinstance(poll_result, dict)
