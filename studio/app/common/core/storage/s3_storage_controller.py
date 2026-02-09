@@ -914,7 +914,7 @@ class S3StorageController(BaseRemoteStorageController):
         # Uses idempotent operation to prevent double-counting on retries
         if total_bytes_uploaded > 0:
             try:
-                from studio.app.common.core.cloud.cloud_utils import (
+                from studio.app.common.core.cloud.storage_operations import (
                     increment_storage_idempotent,
                 )
 
@@ -997,7 +997,7 @@ class S3StorageController(BaseRemoteStorageController):
         # Uses idempotent operation to prevent double-counting on retries
         if total_bytes_deleted > 0:
             try:
-                from studio.app.common.core.cloud.cloud_utils import (
+                from studio.app.common.core.cloud.storage_operations import (
                     decrement_storage_idempotent,
                 )
 

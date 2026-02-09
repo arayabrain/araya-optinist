@@ -42,13 +42,13 @@ class TestStorageOperationModel:
 class TestIdempotentStorageIncrement:
     """Tests for increment_storage_idempotent function."""
 
-    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
-    @patch("studio.app.common.core.cloud.cloud_utils.increment_user_storage")
+    @patch("studio.app.common.core.cloud.storage_operations.session_scope")
+    @patch("studio.app.common.core.cloud.storage_operations.increment_user_storage")
     def test_idempotent_increment_prevents_double_count(
         self, mock_increment, mock_session
     ):
         """Same idempotency key should not increment twice."""
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             increment_storage_idempotent,
         )
 
@@ -71,13 +71,13 @@ class TestIdempotentStorageIncrement:
         # Should not call actual increment since already completed
         mock_increment.assert_not_called()
 
-    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
-    @patch("studio.app.common.core.cloud.cloud_utils.increment_user_storage")
+    @patch("studio.app.common.core.cloud.storage_operations.session_scope")
+    @patch("studio.app.common.core.cloud.storage_operations.increment_user_storage")
     def test_idempotent_increment_creates_new_operation(
         self, mock_increment, mock_session
     ):
         """New idempotency key should create operation and increment."""
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             increment_storage_idempotent,
         )
 
@@ -104,7 +104,7 @@ class TestIdempotentStorageIncrement:
 
     def test_idempotent_increment_skips_zero_bytes(self):
         """Zero bytes should return True without doing anything."""
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             increment_storage_idempotent,
         )
 
@@ -118,7 +118,7 @@ class TestIdempotentStorageIncrement:
 
     def test_idempotent_increment_skips_negative_bytes(self):
         """Negative bytes should return True without doing anything."""
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             increment_storage_idempotent,
         )
 
@@ -134,13 +134,13 @@ class TestIdempotentStorageIncrement:
 class TestIdempotentStorageDecrement:
     """Tests for decrement_storage_idempotent function."""
 
-    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
-    @patch("studio.app.common.core.cloud.cloud_utils.decrement_user_storage")
+    @patch("studio.app.common.core.cloud.storage_operations.session_scope")
+    @patch("studio.app.common.core.cloud.storage_operations.decrement_user_storage")
     def test_idempotent_decrement_prevents_double_subtraction(
         self, mock_decrement, mock_session
     ):
         """Same idempotency key should not decrement twice."""
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             decrement_storage_idempotent,
         )
 
@@ -163,7 +163,7 @@ class TestIdempotentStorageDecrement:
 
     def test_idempotent_decrement_skips_zero_bytes(self):
         """Zero bytes should return True without doing anything."""
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             decrement_storage_idempotent,
         )
 
@@ -179,10 +179,10 @@ class TestIdempotentStorageDecrement:
 class TestStorageOperationCleanup:
     """Tests for cleanup_old_storage_operations function."""
 
-    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
+    @patch("studio.app.common.core.cloud.storage_operations.session_scope")
     def test_cleanup_deletes_old_completed_operations(self, mock_session):
         """Should delete completed operations older than specified days."""
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             cleanup_old_storage_operations,
         )
 
@@ -198,10 +198,10 @@ class TestStorageOperationCleanup:
         assert deleted == 5
         mock_db.commit.assert_called_once()
 
-    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
+    @patch("studio.app.common.core.cloud.storage_operations.session_scope")
     def test_cleanup_handles_errors(self, mock_session):
         """Should return 0 and not raise on errors."""
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             cleanup_old_storage_operations,
         )
 
@@ -215,10 +215,10 @@ class TestStorageOperationCleanup:
 class TestGetPendingStorageOperations:
     """Tests for get_pending_storage_operations function."""
 
-    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
+    @patch("studio.app.common.core.cloud.storage_operations.session_scope")
     def test_returns_pending_operations(self, mock_session):
         """Should return list of pending operations for user."""
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             get_pending_storage_operations,
         )
 
@@ -234,10 +234,10 @@ class TestGetPendingStorageOperations:
 
         assert len(operations) == 1
 
-    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
+    @patch("studio.app.common.core.cloud.storage_operations.session_scope")
     def test_returns_empty_list_on_error(self, mock_session):
         """Should return empty list on errors."""
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             get_pending_storage_operations,
         )
 
@@ -251,13 +251,13 @@ class TestGetPendingStorageOperations:
 class TestProcessStalePendingOperations:
     """Tests for process_stale_pending_operations function (Case 69)."""
 
-    @patch("studio.app.common.core.cloud.cloud_utils.increment_user_storage")
-    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
+    @patch("studio.app.common.core.cloud.storage_operations.increment_user_storage")
+    @patch("studio.app.common.core.cloud.storage_operations.session_scope")
     def test_retries_stale_increment_operations(self, mock_session, mock_increment):
         """Should retry stale pending increment operations."""
         from datetime import datetime, timedelta, timezone
 
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             STALE_PENDING_THRESHOLD_MINUTES,
             process_stale_pending_operations,
         )
@@ -286,13 +286,13 @@ class TestProcessStalePendingOperations:
         mock_increment.assert_called_once_with(1, 1000)
         assert mock_op.status == "completed"
 
-    @patch("studio.app.common.core.cloud.cloud_utils.decrement_user_storage")
-    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
+    @patch("studio.app.common.core.cloud.storage_operations.decrement_user_storage")
+    @patch("studio.app.common.core.cloud.storage_operations.session_scope")
     def test_retries_stale_decrement_operations(self, mock_session, mock_decrement):
         """Should retry stale pending decrement operations."""
         from datetime import datetime, timedelta, timezone
 
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             STALE_PENDING_THRESHOLD_MINUTES,
             process_stale_pending_operations,
         )
@@ -318,13 +318,13 @@ class TestProcessStalePendingOperations:
         assert result["succeeded"] == 1
         mock_decrement.assert_called_once_with(1, 500)
 
-    @patch("studio.app.common.core.cloud.cloud_utils.increment_user_storage")
-    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
+    @patch("studio.app.common.core.cloud.storage_operations.increment_user_storage")
+    @patch("studio.app.common.core.cloud.storage_operations.session_scope")
     def test_marks_failed_after_max_retries(self, mock_session, mock_increment):
         """Should mark operation as failed after exceeding max retries."""
         from datetime import datetime, timedelta, timezone
 
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             STALE_PENDING_THRESHOLD_MINUTES,
             process_stale_pending_operations,
         )
@@ -351,10 +351,10 @@ class TestProcessStalePendingOperations:
         mock_increment.assert_not_called()
         assert mock_op.status == "failed"
 
-    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
+    @patch("studio.app.common.core.cloud.storage_operations.session_scope")
     def test_returns_empty_result_on_error(self, mock_session):
         """Should return empty result dict on errors."""
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             process_stale_pending_operations,
         )
 
@@ -364,13 +364,13 @@ class TestProcessStalePendingOperations:
 
         assert result == {"processed": 0, "succeeded": 0, "failed": 0}
 
-    @patch("studio.app.common.core.cloud.cloud_utils.increment_user_storage")
-    @patch("studio.app.common.core.cloud.cloud_utils.session_scope")
+    @patch("studio.app.common.core.cloud.storage_operations.increment_user_storage")
+    @patch("studio.app.common.core.cloud.storage_operations.session_scope")
     def test_handles_operation_failure_gracefully(self, mock_session, mock_increment):
         """Should handle individual operation failures gracefully."""
         from datetime import datetime, timedelta, timezone
 
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             STALE_PENDING_THRESHOLD_MINUTES,
             process_stale_pending_operations,
         )

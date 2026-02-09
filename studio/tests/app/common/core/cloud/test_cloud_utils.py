@@ -1136,12 +1136,12 @@ class TestProcessFailedStorageOperations:
 
     def test_process_no_failed_operations(self):
         """Should return 0 when no failed operations exist."""
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             process_failed_storage_operations,
         )
 
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.session_scope"
+            "studio.app.common.core.cloud.storage_operations.session_scope"
         ) as mock_scope:
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
@@ -1153,7 +1153,7 @@ class TestProcessFailedStorageOperations:
 
     def test_process_failed_operation_success(self):
         """Should retry failed operation and mark as completed."""
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             process_failed_storage_operations,
         )
         from studio.app.common.models.subscription import (
@@ -1162,7 +1162,7 @@ class TestProcessFailedStorageOperations:
         )
 
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.session_scope"
+            "studio.app.common.core.cloud.storage_operations.session_scope"
         ) as mock_scope:
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
@@ -1188,12 +1188,12 @@ class TestProcessFailedStorageOperations:
 
     def test_respects_max_retry_limit(self):
         """Should not retry operations that exceeded max retries."""
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_operations import (
             process_failed_storage_operations,
         )
 
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.session_scope"
+            "studio.app.common.core.cloud.storage_operations.session_scope"
         ) as mock_scope:
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
