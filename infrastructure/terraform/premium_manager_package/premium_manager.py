@@ -3489,9 +3489,11 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                     return False
 
                 old_instance_id = assignment["instance_id"]
-                old_target_group_arn = assignment["target_group_arn"]
-                # Normalize empty string to None for consistent checks
-                old_rule_arn = assignment["alb_rule_arn"] or None
+                # Normalize empty/whitespace strings to None
+                old_target_group_arn = (
+                    assignment["target_group_arn"] or ""
+                ).strip() or None
+                old_rule_arn = (assignment["alb_rule_arn"] or "").strip() or None
 
                 # Special handling for autoscaling-pool migration
                 if old_instance_id == PremiumAssignment.AUTOSCALING_POOL:
@@ -3507,7 +3509,7 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
 
                     # Check if old ALB rule exists, create new one if not
                     rule_exists = False
-                    if old_rule_arn and old_rule_arn.strip():
+                    if old_rule_arn:
                         try:
                             elbv2.describe_rules(RuleArns=[old_rule_arn])
                             rule_exists = True
@@ -3654,9 +3656,9 @@ def release_premium_user(user_id: int) -> Dict[str, Any]:
         try:
             assignment = remove_user_assignment(user_id)
             instance_id = assignment["instance_id"]
-            # Normalize empty strings to None for consistent checks
-            target_group_arn = assignment["target_group_arn"] or None
-            rule_arn = assignment["alb_rule_arn"] or None
+            # Normalize empty/whitespace strings to None
+            target_group_arn = (assignment["target_group_arn"] or "").strip() or None
+            rule_arn = (assignment["alb_rule_arn"] or "").strip() or None
             print(f"Found assignment for user {user_id} on instance {instance_id}")
         except Exception as assignment_error:
             print(f"No assignment found for user {user_id}: {str(assignment_error)}")
@@ -3665,7 +3667,7 @@ def release_premium_user(user_id: int) -> Dict[str, Any]:
             rule_arn = None
 
         # 2. Delete ALB listener rule (if it exists)
-        if rule_arn and rule_arn.strip():
+        if rule_arn:
             try:
                 elbv2.delete_rule(RuleArn=rule_arn)
                 print(f"Deleted ALB rule: {rule_arn}")
@@ -3680,7 +3682,6 @@ def release_premium_user(user_id: int) -> Dict[str, Any]:
         autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
         if (
             target_group_arn
-            and target_group_arn.strip()
             and target_group_arn != PremiumAssignment.STANDBY
             and target_group_arn != autoscaling_tg_arn
         ):

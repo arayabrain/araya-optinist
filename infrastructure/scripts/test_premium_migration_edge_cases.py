@@ -39,35 +39,14 @@ aws_constants_layer_path = os.path.join(
 if os.path.exists(aws_constants_layer_path):
     sys.path.insert(0, aws_constants_layer_path)
 
-
-class MockRow:
-    """Mock database row that supports both dict and index access"""
-
-    def __init__(self, data):
-        self.data = data
-
-    def __getitem__(self, key):
-        if isinstance(key, int):
-            return list(self.data.values())[key]
-        return self.data.get(key)
-
-    def get(self, key, default=None):
-        return self.data.get(key, default)
+from test_constants import MOCK_ENV_VARS_BASE, MockRow  # noqa: E402
 
 
 class TestTargetGroupHelpers:
     """Tests for target_group_exists and create_or_get_target_group helpers"""
 
     def setup_method(self):
-        self.mock_env_vars = {
-            "RDS_HOST": "test-db.example.com:3306",
-            "RDS_USER": "test_user",
-            "RDS_PASSWORD": "test_pass",
-            "RDS_DATABASE": "test_db",
-            "VPC_ID": "vpc-test123",
-            "ALB_LISTENER_ARN": "arn:aws:elbv2:region:account:listener/test",
-            "ROUTING_SECRET_KEY": "test-secret-key-12345",
-        }
+        self.mock_env_vars = {**MOCK_ENV_VARS_BASE}
 
     def test_target_group_exists_returns_true_when_found(self):
         """target_group_exists returns True when target group is found"""
@@ -216,14 +195,8 @@ class TestMigrationEdgeCases:
         self.test_user_id = 12345
         self.test_instance_id = "i-testinstance"
         self.mock_env_vars = {
-            "RDS_HOST": "test-db.example.com:3306",
-            "RDS_USER": "test_user",
-            "RDS_PASSWORD": "test_pass",
-            "RDS_DATABASE": "test_db",
-            "VPC_ID": "vpc-test123",
-            "ALB_LISTENER_ARN": "arn:aws:elbv2:region:account:listener/test",
+            **MOCK_ENV_VARS_BASE,
             "AUTOSCALING_TARGET_GROUP_ARN": "arn:aws:elbv2:tg/autoscaling",
-            "ROUTING_SECRET_KEY": "test-secret-key-12345",
             "CLUSTER_NAME": "test-cluster",
         }
 
@@ -449,11 +422,7 @@ class TestReleaseEdgeCases:
     def setup_method(self):
         self.test_user_id = 12345
         self.mock_env_vars = {
-            "RDS_HOST": "test-db.example.com:3306",
-            "RDS_USER": "test_user",
-            "RDS_PASSWORD": "test_pass",
-            "RDS_DATABASE": "test_db",
-            "VPC_ID": "vpc-test123",
+            **MOCK_ENV_VARS_BASE,
             "AUTOSCALING_TARGET_GROUP_ARN": "arn:aws:elbv2:tg/autoscaling",
         }
 
