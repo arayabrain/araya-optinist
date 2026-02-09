@@ -117,9 +117,6 @@ export const PremiumAssignmentProvider: React.FC<{
   const [isTabLeader, setIsTabLeader] = useState(false)
   const leaderElectionRef = useRef<CrossTabLeaderElection | null>(null)
 
-  // Guard against double release during logout
-  const isReleasingOnLogoutRef = useRef(false)
-
   // Refs for values that inactivity check needs but shouldn't trigger re-renders
   const lastActivityTimeRef = useRef(state.lastActivityTime)
   const showInactivityWarningRef = useRef(state.showInactivityWarning)
@@ -157,7 +154,6 @@ export const PremiumAssignmentProvider: React.FC<{
         heartbeatFailing: false,
       })
       setHasAttemptedAutoAssignment(false)
-      isReleasingOnLogoutRef.current = false
     }
     // Only run on logoutGeneration change, not initial mount
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -427,56 +423,15 @@ export const PremiumAssignmentProvider: React.FC<{
    * Auto-release on logout
    */
   const autoReleaseOnLogout = useCallback(async (): Promise<unknown> => {
-    // Prevent double release attempts
-    // This can happen if inactivity interval fires during logout handler
-    if (isReleasingOnLogoutRef.current) {
-      // eslint-disable-next-line no-console
-      console.log("Release already in progress, skipping duplicate call")
-      return null
-    }
-    isReleasingOnLogoutRef.current = true
-
+    // Always attempt release regardless of local state.
     try {
-      // Check if we have an active assignment by making a fresh status call
-      let hasAssignment = false
-
-      try {
-        const currentStatus = await getPremiumStatus()
-        hasAssignment = !!currentStatus?.assignment
-      } catch (error) {
-        // eslint-disable-next-line no-console
-        console.warn("Failed to check status before logout release:", error)
-        // Assume we might have an assignment if status check fails
-        // It's better to attempt release unnecessarily than to leave orphaned instance
-        hasAssignment = true
-      }
-
-      if (hasAssignment) {
-        try {
-          return await release()
-        } catch (releaseError) {
-          // eslint-disable-next-line no-console
-          console.warn(
-            "Primary release failed, using beacon fallback:",
-            releaseError,
-          )
-          // Use sendBeacon as fallback for reliability
-          if (currentUser?.uid) {
-            const beaconData = JSON.stringify({ user_uid: currentUser.uid })
-            navigator.sendBeacon(
-              "/api/users/me/premium/release-beacon",
-              beaconData,
-            )
-          }
-          throw releaseError
-        }
-      }
+      return await release()
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn("Failed to release premium instance on logout:", error)
       return null
-    } finally {
-      // Reset flag after release completes (or fails)
-      isReleasingOnLogoutRef.current = false
     }
-  }, [release, currentUser])
+  }, [release])
 
   // Inactivity monitoring for premium users
   // Uses refs for lastActivityTime/showInactivityWarning to avoid interval churn

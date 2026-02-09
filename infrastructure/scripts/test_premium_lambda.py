@@ -77,22 +77,7 @@ if os.path.exists(aws_constants_layer_path):
     sys.path.insert(0, aws_constants_layer_path)
 
 from aws_constants import ECSTaskStatus  # noqa: E402
-
-
-class MockRow:
-    """Mock database row that behaves like
-    a dictionary but also supports index access"""
-
-    def __init__(self, data):
-        self.data = data
-
-    def __getitem__(self, key):
-        if isinstance(key, int):
-            return list(self.data.values())[key]
-        return self.data.get(key)
-
-    def get(self, key, default=None):
-        return self.data.get(key, default)
+from test_constants import MOCK_ENV_VARS_PREMIUM, MockRow  # noqa: E402
 
 
 class TestLambdaIntegration:
@@ -103,27 +88,7 @@ class TestLambdaIntegration:
         self.test_user_id = "test_user_12345"
         self.test_instance_id = "i-testlambda123"
 
-        # Mock environment variables
-        self.mock_env_vars = {
-            "RDS_HOST": "test-db.example.com:3306",
-            "RDS_USER": "test_user",
-            "RDS_PASSWORD": "test_pass",
-            "RDS_DATABASE": "test_db",
-            "VPC_ID": "vpc-test123",
-            "ALB_LISTENER_ARN": (
-                "arn:aws:elasticloadbalancing:region:account:listener/test"
-            ),
-            "AUTOSCALING_TARGET_GROUP_ARN": (
-                "arn:aws:elasticloadbalancing:region:account:" "targetgroup/asg"
-            ),
-            "CLUSTER_NAME": "test-cluster",
-            "PREMIUM_SERVICE_NAME": "subscr-optinist-premium-service",
-            "PREMIUM_INSTANCE_IDS": "i-test1,i-test2,i-test3",
-            "PREMIUM_STANDBY_POOL_SIZE": "2",
-            "PREMIUM_IDLE_TIMEOUT_HOURS": "3",
-            "PREMIUM_SAFETY_BUFFER": "1",
-            "ABSOLUTE_MAX": "10",
-        }
+        self.mock_env_vars = {**MOCK_ENV_VARS_PREMIUM}
 
     def setup_db_mock(self, fetchone_values=None, fetchall_values=None):
         """

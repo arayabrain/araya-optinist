@@ -3,7 +3,10 @@ from sqlmodel import Session
 
 from studio.app.common.core.auth import auth
 from studio.app.common.core.auth.auth_dependencies import get_admin_user
-from studio.app.common.core.cloud.cloud_utils import calculate_limit_warning
+from studio.app.common.core.cloud.cloud_utils import (
+    calculate_limit_warning,
+    ensure_user_bucket_exists,
+)
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware.user_activity_middleware import (
     clear_free_user_logged_out_at,
@@ -28,11 +31,23 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
             clear_logged_out_status(user.id)
             clear_free_user_logged_out_at(user.id)
         except Exception as e:
-            logger.warning(f"Failed to clear logout status for user {user.id}: {e}")
+            logger.warning(
+                f"Failed to clear logout status for user {user.id}: {e}"
+            )
 
-        # Note: Experiment metadata sync is handled lazily:
-        # - Workspace-level sync when user views experiments list (get_experiments)
-        # - Single experiment sync on-demand (ensure_synced_async)
+        # Ensure user's S3 bucket exists on sign-in
+        try:
+            bucket = await ensure_user_bucket_exists(user.id)
+            if bucket:
+                logger.warning(
+                    f"Bucket recovery on login for user "
+                    f"{user.id}: {bucket}"
+                )
+        except Exception as bucket_error:
+            logger.warning(
+                f"Bucket check failed for user "
+                f"{user.id}: {bucket_error}"
+            )
 
         # Check for limit warnings after successful login
         try:
