@@ -31,23 +31,15 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
             clear_logged_out_status(user.id)
             clear_free_user_logged_out_at(user.id)
         except Exception as e:
-            logger.warning(
-                f"Failed to clear logout status for user {user.id}: {e}"
-            )
+            logger.warning(f"Failed to clear logout status for user {user.id}: {e}")
 
         # Ensure user's S3 bucket exists on sign-in
         try:
             bucket = await ensure_user_bucket_exists(user.id)
             if bucket:
-                logger.warning(
-                    f"Bucket recovery on login for user "
-                    f"{user.id}: {bucket}"
-                )
+                logger.warning(f"Bucket recovery on login for user {user.id}: {bucket}")
         except Exception as bucket_error:
-            logger.warning(
-                f"Bucket check failed for user "
-                f"{user.id}: {bucket_error}"
-            )
+            logger.warning(f"Bucket check failed for user {user.id}: {bucket_error}")
 
         # Check for limit warnings after successful login
         try:

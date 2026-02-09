@@ -322,19 +322,11 @@ class TestSyncStatusOnPartialFailure:
             RemoteSyncStatusFileUtil,
             "create_sync_status_file_for_processing",
         ) as mock_processing:
-            controller = RemoteStorageController.__new__(
-                RemoteStorageController
-            )
-            controller._RemoteStorageController__controller = (
-                mock_controller
-            )
-            controller._RemoteStorageController__remote_bucket_name = (
-                "test-bucket"
-            )
+            controller = RemoteStorageController.__new__(RemoteStorageController)
+            controller._RemoteStorageController__controller = mock_controller
+            controller._RemoteStorageController__remote_bucket_name = "test-bucket"
 
-            result = await controller.upload_experiment(
-                "ws1", "exp1", None
-            )
+            result = await controller.upload_experiment("ws1", "exp1", None)
 
             assert result is False
             mock_processing.assert_called_once()
@@ -385,15 +377,9 @@ class TestSyncStatusOnPartialFailure:
             RemoteSyncStatusFileUtil,
             "create_sync_status_file_for_processing",
         ) as mock_processing:
-            controller = RemoteStorageController.__new__(
-                RemoteStorageController
-            )
-            controller._RemoteStorageController__controller = (
-                mock_controller
-            )
-            controller._RemoteStorageController__remote_bucket_name = (
-                "test-bucket"
-            )
+            controller = RemoteStorageController.__new__(RemoteStorageController)
+            controller._RemoteStorageController__controller = mock_controller
+            controller._RemoteStorageController__remote_bucket_name = "test-bucket"
 
             result = await controller.delete_experiment("ws1", "exp1")
 
