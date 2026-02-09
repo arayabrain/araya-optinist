@@ -11,7 +11,6 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
     get_user_remote_bucket_name,
 )
-from studio.app.common.core.cloud.cloud_utils import ensure_user_bucket_exists
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_services import ExperimentService
 from studio.app.common.core.logger import AppLogger
@@ -108,18 +107,11 @@ async def fetch_last_experiment(
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
     except RemoteStorageBucketNotFoundError as e:
-        logger.warning(f"User bucket not found, attempting to create: {e}")
-        # Try to create the bucket
-        bucket_name = await ensure_user_bucket_exists(current_user.id)
-        if bucket_name:
-            logger.info(f"Bucket created for user {current_user.id}: {bucket_name}")
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Storage was initialized. Please retry.",
-            )
+        logger.error(f"User bucket not found for user {current_user.id}: {e}")
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Storage not available. Please contact support.",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Storage bucket not found. "
+            "Please sign out and sign in again to recover.",
         )
     except Exception as e:
         logger.error(e, exc_info=True)
