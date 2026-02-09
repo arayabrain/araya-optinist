@@ -15,7 +15,7 @@ Tested endpoints:
   - POST /run/filter/{workspace_id}/{uid}/{node_id} -> str
 """
 
-from studio.app.common.core.storage.remote_storage_controller import RemoteSyncStatus
+from studio.app.common.schemas.workflow import CompleteStatus
 
 # ============================================================================
 # Frontend Contract Definitions
@@ -131,7 +131,7 @@ def test_contract_poll_run_result_dto_structure():
                 "name": "CaImAn",
             },
         },
-        "completeStatus": RemoteSyncStatus.SUCCESS.value,
+        "completeStatus": CompleteStatus.SUCCESS.value,
     }
 
     # Validate wrapper structure
@@ -159,9 +159,9 @@ def test_contract_poll_run_result_dto_complete_status_values():
     Contract test: completeStatus can be processing, success, error, or None.
     """
     valid_complete_statuses = [
-        RemoteSyncStatus.PROCESSING.value,
-        RemoteSyncStatus.SUCCESS.value,
-        RemoteSyncStatus.ERROR.value,
+        CompleteStatus.PROCESSING.value,
+        CompleteStatus.SUCCESS.value,
+        CompleteStatus.ERROR.value,
         None,
     ]
 

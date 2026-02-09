@@ -1,10 +1,19 @@
 from dataclasses import dataclass
+from enum import Enum
 from typing import Dict, Optional
 
 from psutil import Process
 
 from studio.app.common.core.experiment.experiment import ExptFunction
 from studio.app.common.core.workflow.workflow import Edge, Message, Node
+
+
+class CompleteStatus(Enum):
+    """Post-run completion status (e.g. remote storage upload)."""
+
+    PROCESSING = "processing"
+    SUCCESS = "success"
+    ERROR = "error"
 
 
 @dataclass
@@ -64,4 +73,10 @@ class PollRunResultResponse:
     """Response wrapper for poll run result with post-run completion status."""
 
     nodeResults: Dict[str, Message]
-    completeStatus: Optional[str] = None  # "processing", "success", "error", or None
+    completeStatus: Optional[str] = None
+
+    @staticmethod
+    def from_complete_status(
+        status_enum: Optional[CompleteStatus],
+    ) -> Optional[str]:
+        return status_enum.value if status_enum else None

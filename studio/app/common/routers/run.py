@@ -32,7 +32,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_owner,
 )
 from studio.app.common.schemas.users import User
-from studio.app.common.schemas.workflow import PollRunResultResponse
+from studio.app.common.schemas.workflow import CompleteStatus, PollRunResultResponse
 
 router = APIRouter(prefix="/run", tags=["run"])
 
@@ -196,15 +196,17 @@ async def run_result(
         # Check post-run completion status (e.g. remote storage upload)
         complete_status = None
         if RemoteStorageController.is_available():
-            status_enum = RemoteSyncStatusFileUtil.check_sync_status_file(
+            sync_status = RemoteSyncStatusFileUtil.check_sync_status_file(
                 workspace_id, uid
             )
-            if status_enum:
-                complete_status = status_enum.value
+            if sync_status:
+                complete_status = CompleteStatus(sync_status.value)
 
         return PollRunResultResponse(
             nodeResults=node_results,
-            completeStatus=complete_status,
+            completeStatus=(
+                PollRunResultResponse.from_complete_status(complete_status)
+            ),
         )
 
     except RemoteStorageLockError as e:
