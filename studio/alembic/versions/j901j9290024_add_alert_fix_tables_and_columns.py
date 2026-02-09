@@ -9,7 +9,7 @@ Tables created:
 
 Columns added:
 - experiment_records.deletion_error (Case 14)
-- workspaces.status, failed_experiment_uids (Cases 19, 23)
+- workspaces.deletion_state, failed_experiment_uids (Cases 19, 23)
 - premium_user_assignments.heartbeat_failures (Case 71)
 
 Revision ID: j901j9290024
@@ -48,7 +48,7 @@ def upgrade() -> None:
     op.add_column(
         "workspaces",
         sa.Column(
-            "status",
+            "deletion_state",
             sa.Enum(
                 "active",
                 "deleting",
@@ -332,7 +332,7 @@ def downgrade() -> None:
 
     # Drop workspaces columns
     op.drop_column("workspaces", "failed_experiment_uids")
-    op.drop_column("workspaces", "status")
+    op.drop_column("workspaces", "deletion_state")
 
     # Drop experiment_records column
     op.drop_column("experiment_records", "deletion_error")

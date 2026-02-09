@@ -40,7 +40,7 @@ def mock_workspace():
     ws.user_id = 1
     ws.name = "Test Workspace"
     ws.deleted = False
-    ws.status = WorkspaceStatus.ACTIVE
+    ws.deletion_state = WorkspaceStatus.ACTIVE
     return ws
 
 
@@ -67,15 +67,15 @@ def test_workspace_status_is_string_enum():
 # ============================================================================
 
 
-def test_workspace_model_has_status_field():
-    """Workspace model should have status field."""
+def test_workspace_model_has_deletion_state_field():
+    """Workspace model should have deletion_state field."""
     ws = Workspace(
         name="Test",
         user_id=1,
         deleted=False,
-        status=WorkspaceStatus.ACTIVE,
+        deletion_state=WorkspaceStatus.ACTIVE,
     )
-    assert ws.status == WorkspaceStatus.ACTIVE
+    assert ws.deletion_state == WorkspaceStatus.ACTIVE
 
 
 # ============================================================================
@@ -102,7 +102,7 @@ async def test_delete_workspace_success(mock_db, mock_workspace):
 
     assert success is True
     assert "success" in message.lower()
-    assert mock_workspace.status == WorkspaceStatus.DELETING
+    assert mock_workspace.deletion_state == WorkspaceStatus.DELETING
     mock_db.commit.assert_called()
 
 
@@ -117,7 +117,7 @@ async def test_delete_workspace_marks_status_before_deletion(mock_db, mock_works
 
     async def capture_status_during_deletion(db, ws, bucket_name):
         nonlocal status_during_deletion
-        status_during_deletion = ws.status
+        status_during_deletion = ws.deletion_state
 
     with patch.object(
         WorkspaceService,
@@ -171,7 +171,7 @@ async def test_delete_workspace_already_deleted_raises_404(mock_db, mock_workspa
 @pytest.mark.asyncio
 async def test_delete_workspace_already_deleting_raises_404(mock_db, mock_workspace):
     """Test that workspace in DELETING status returns 404 (filtered by query)."""
-    mock_workspace.status = WorkspaceStatus.DELETING
+    mock_workspace.deletion_state = WorkspaceStatus.DELETING
     mock_result = Mock()
     mock_result.scalar_one_or_none.return_value = None
     mock_db.execute.return_value = mock_result
@@ -274,7 +274,7 @@ async def test_delete_workspace_rollback_on_content_deletion_failure(
 
     assert exc_info.value.status_code == 500
     # Status should be reverted to ACTIVE
-    assert mock_workspace.status == WorkspaceStatus.ACTIVE
+    assert mock_workspace.deletion_state == WorkspaceStatus.ACTIVE
 
 
 # ============================================================================
@@ -322,7 +322,7 @@ async def test_delete_workspace_filters_out_deleted_workspaces(mock_db, mock_wor
 @pytest.mark.asyncio
 async def test_delete_workspace_filters_out_deleting_status(mock_db, mock_workspace):
     """Test query excludes workspaces with DELETING status."""
-    mock_workspace.status = WorkspaceStatus.DELETING
+    mock_workspace.deletion_state = WorkspaceStatus.DELETING
     mock_result = Mock()
     mock_result.scalar_one_or_none.return_value = None
     mock_db.execute.return_value = mock_result
@@ -446,7 +446,7 @@ class TestWorkspacePartialDeletion:
         # Should be 207 Multi-Status (partial success)
         assert exc_info.value.status_code == 207
         # Workspace should be marked as partial delete
-        assert mock_workspace.status == WorkspaceStatus.PARTIAL_DELETE
+        assert mock_workspace.deletion_state == WorkspaceStatus.PARTIAL_DELETE
         # Failed UIDs should be stored
         assert "exp2" in mock_workspace.failed_experiment_uids
 
@@ -482,7 +482,7 @@ class TestWorkspacePartialDeletion:
         """Should retry deletion only for failed experiments."""
         mock_ws = Mock(spec=Workspace)
         mock_ws.id = 1
-        mock_ws.status = WorkspaceStatus.PARTIAL_DELETE
+        mock_ws.deletion_state = WorkspaceStatus.PARTIAL_DELETE
         mock_ws.failed_experiment_uids = "exp1,exp2"
         mock_ws.deleted = False
 
@@ -507,14 +507,14 @@ class TestWorkspacePartialDeletion:
         assert mock_delete.call_count == 2
         assert success is True
         assert mock_ws.deleted is True
-        assert mock_ws.status == WorkspaceStatus.DELETED
+        assert mock_ws.deletion_state == WorkspaceStatus.DELETED
 
     @pytest.mark.asyncio
     async def test_retry_partial_deletion_handles_still_failing(self, mock_db):
         """Should update failed UIDs if some experiments still fail."""
         mock_ws = Mock(spec=Workspace)
         mock_ws.id = 1
-        mock_ws.status = WorkspaceStatus.PARTIAL_DELETE
+        mock_ws.deletion_state = WorkspaceStatus.PARTIAL_DELETE
         mock_ws.failed_experiment_uids = "exp1,exp2"
         mock_ws.deleted = False
 
@@ -536,5 +536,5 @@ class TestWorkspacePartialDeletion:
             )
 
         assert success is False
-        assert mock_ws.status == WorkspaceStatus.PARTIAL_DELETE
+        assert mock_ws.deletion_state == WorkspaceStatus.PARTIAL_DELETE
         assert "exp2" in mock_ws.failed_experiment_uids

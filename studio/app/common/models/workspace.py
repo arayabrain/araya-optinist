@@ -49,7 +49,7 @@ class Workspace(Base, TimestampMixin, table=True):
         ),
     )
     deleted: bool = Field(nullable=False)
-    status: WorkspaceStatus = Field(
+    deletion_state: WorkspaceStatus = Field(
         sa_column=Column(
             SQLEnum(WorkspaceStatus),
             nullable=False,

@@ -88,7 +88,7 @@ class WorkspaceService:
 
             # Soft delete the workspace
             ws.deleted = True
-            ws.status = WorkspaceStatus.DELETED
+            ws.deletion_state = WorkspaceStatus.DELETED
         else:
             failed_count = len(failed_experiments)
             total_count = len(deleted_statuses)
@@ -99,7 +99,7 @@ class WorkspaceService:
             )
 
             # Store failed experiment UIDs for retry
-            ws.status = WorkspaceStatus.PARTIAL_DELETE
+            ws.deletion_state = WorkspaceStatus.PARTIAL_DELETE
             ws.failed_experiment_uids = ",".join(failed_experiments)
 
             # Still try to delete workspace files for successfully deleted experiments
@@ -175,7 +175,7 @@ class WorkspaceService:
                     Workspace.id == workspace_id,
                     Workspace.user_id == user_id,
                     Workspace.deleted.is_(False),
-                    Workspace.status != WorkspaceStatus.DELETING,
+                    Workspace.deletion_state != WorkspaceStatus.DELETING,
                 )
                 .with_for_update(nowait=True)
             )
@@ -190,7 +190,7 @@ class WorkspaceService:
                 )
 
             # Mark workspace as DELETING to prevent new operations
-            ws.status = WorkspaceStatus.DELETING
+            ws.deletion_state = WorkspaceStatus.DELETING
             db.commit()
 
             try:
@@ -203,7 +203,7 @@ class WorkspaceService:
 
             except Exception as e:
                 # Rollback workspace status if deletion fails
-                ws.status = WorkspaceStatus.ACTIVE
+                ws.deletion_state = WorkspaceStatus.ACTIVE
                 db.commit()
                 raise e
 
@@ -269,7 +269,7 @@ class WorkspaceService:
                 .where(
                     Workspace.id == workspace_id,
                     Workspace.user_id == user_id,
-                    Workspace.status == WorkspaceStatus.PARTIAL_DELETE,
+                    Workspace.deletion_state == WorkspaceStatus.PARTIAL_DELETE,
                 )
                 .with_for_update(nowait=True)
             )
@@ -292,13 +292,13 @@ class WorkspaceService:
             if not failed_uids:
                 # No failed experiments, mark as deleted
                 ws.deleted = True
-                ws.status = WorkspaceStatus.DELETED
+                ws.deletion_state = WorkspaceStatus.DELETED
                 ws.failed_experiment_uids = None
                 db.commit()
                 return True, "Workspace deletion completed (no failed experiments)"
 
             # Mark as deleting for retry
-            ws.status = WorkspaceStatus.DELETING
+            ws.deletion_state = WorkspaceStatus.DELETING
             db.commit()
 
             # Retry deletion for failed experiments
@@ -316,7 +316,7 @@ class WorkspaceService:
 
             if still_failed:
                 # Still have failures
-                ws.status = WorkspaceStatus.PARTIAL_DELETE
+                ws.deletion_state = WorkspaceStatus.PARTIAL_DELETE
                 ws.failed_experiment_uids = ",".join(still_failed)
                 logger.warning(
                     "Retry partial deletion: %d experiments still "
@@ -338,7 +338,7 @@ class WorkspaceService:
                 )
 
                 ws.deleted = True
-                ws.status = WorkspaceStatus.DELETED
+                ws.deletion_state = WorkspaceStatus.DELETED
                 ws.failed_experiment_uids = None
                 db.commit()
                 return True, "Workspace deletion completed successfully"
