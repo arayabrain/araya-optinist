@@ -4,12 +4,12 @@ Add tables and columns for alert/edge case fixes from ALERT_FIX_SUMMARY.
 
 Tables created:
 - user_deletion_records: Two-phase user deletion tracking (Case 25)
-- deletion_tasks: Persistent deletion task queue (Case 18)
+- background_tasks: Persistent background task queue (Case 18)
 - storage_operations: Idempotent storage tracking (Cases 16-17)
 
 Columns added:
 - experiment_records.deletion_error (Case 14)
-- workspaces.deletion_state, failed_experiment_uids (Cases 19, 23)
+- workspaces.deletion_state (Cases 19, 23)
 - premium_user_assignments.heartbeat_failures (Case 71)
 
 Revision ID: j901j9290024
@@ -58,16 +58,6 @@ def upgrade() -> None:
             ),
             nullable=False,
             server_default="active",
-        ),
-    )
-
-    op.add_column(
-        "workspaces",
-        sa.Column(
-            "failed_experiment_uids",
-            sa.Text(),
-            nullable=True,
-            comment="Comma-separated UIDs of experiments that failed to delete",
         ),
     )
 
@@ -157,10 +147,10 @@ def upgrade() -> None:
     )
 
     # =========================================================================
-    # Case 18: deletion_tasks table
+    # Case 18: background_tasks table (generic task queue)
     # =========================================================================
     op.create_table(
-        "deletion_tasks",
+        "background_tasks",
         sa.Column(
             "id",
             mysql.BIGINT(unsigned=True),
@@ -173,11 +163,11 @@ def upgrade() -> None:
             mysql.BIGINT(unsigned=True),
             nullable=False,
             index=True,
-            comment="User who initiated the deletion",
+            comment="User who initiated the task",
         ),
         sa.Column(
             "task_type",
-            sa.Enum("experiment", "workspace", name="deletion_task_type_enum"),
+            sa.Enum("experiment", "workspace", name="background_task_type_enum"),
             nullable=False,
         ),
         sa.Column(
@@ -191,7 +181,7 @@ def upgrade() -> None:
             "workspace_id",
             mysql.BIGINT(unsigned=True),
             nullable=True,
-            comment="Workspace ID for experiment deletions",
+            comment="Workspace ID for experiment tasks",
         ),
         sa.Column(
             "status",
@@ -201,7 +191,7 @@ def upgrade() -> None:
                 "completed",
                 "failed",
                 "retrying",
-                name="deletion_task_status_enum",
+                name="background_task_status_enum",
             ),
             nullable=False,
             server_default=sa.text("'queued'"),
@@ -224,7 +214,7 @@ def upgrade() -> None:
             "error_message",
             sa.Text(),
             nullable=True,
-            comment="Error message if deletion failed",
+            comment="Error message if task failed",
         ),
         sa.Column(
             "started_at",
@@ -252,7 +242,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
         # Composite index for background worker queries
-        sa.Index("idx_deletion_tasks_status_created", "status", "created_at"),
+        sa.Index("idx_background_tasks_status_created", "status", "created_at"),
     )
 
     # =========================================================================
@@ -324,14 +314,13 @@ def upgrade() -> None:
 def downgrade() -> None:
     # Drop tables
     op.drop_table("user_deletion_records")
-    op.drop_table("deletion_tasks")
+    op.drop_table("background_tasks")
     op.drop_table("storage_operations")
 
     # Drop premium_user_assignments column
     op.drop_column("premium_user_assignments", "heartbeat_failures")
 
-    # Drop workspaces columns
-    op.drop_column("workspaces", "failed_experiment_uids")
+    # Drop workspaces column
     op.drop_column("workspaces", "deletion_state")
 
     # Drop experiment_records column

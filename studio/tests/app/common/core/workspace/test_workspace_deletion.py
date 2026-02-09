@@ -410,7 +410,6 @@ class TestWorkspacePartialDeletion:
         """Should continue deleting remaining experiments if one fails."""
         from studio.app.common.models.experiment import ExperimentRecord
 
-        # Mock three experiment records
         mock_exp1 = Mock(spec=ExperimentRecord)
         mock_exp1.uid = "exp1"
         mock_exp2 = Mock(spec=ExperimentRecord)
@@ -424,86 +423,109 @@ class TestWorkspacePartialDeletion:
             mock_exp3,
         ]
 
-        # exp2 fails
         async def mock_delete_experiment(db, bucket, ws_id, uid, auto_commit):
             if uid == "exp2":
                 return False
             return True
 
         with patch(
-            "studio.app.common.core.workspace.workspace_services.ExperimentService"
-            ".delete_experiment",
+            "studio.app.common.core.workspace.workspace_services"
+            ".ExperimentService.delete_experiment",
             side_effect=mock_delete_experiment,
-        ):
-            with patch.object(
-                WorkspaceService, "delete_workspace_files", new_callable=AsyncMock
-            ):
-                with pytest.raises(HTTPException) as exc_info:
-                    await WorkspaceService.delete_workspace_contents(
-                        mock_db, mock_workspace, "test-bucket"
-                    )
+        ), patch.object(
+            WorkspaceService,
+            "delete_workspace_files",
+            new_callable=AsyncMock,
+        ), patch(
+            "studio.app.common.core.workspace.workspace_services"
+            ".BackgroundTaskService.queue_experiment_deletion",
+        ) as mock_queue:
+            with pytest.raises(HTTPException) as exc_info:
+                await WorkspaceService.delete_workspace_contents(
+                    mock_db, mock_workspace, "test-bucket"
+                )
 
-        # Should be 207 Multi-Status (partial success)
         assert exc_info.value.status_code == 207
-        # Workspace should be marked as partial delete
         assert mock_workspace.deletion_state == WorkspaceStatus.PARTIAL_DELETE
-        # Failed UIDs should be stored
-        assert "exp2" in mock_workspace.failed_experiment_uids
+        # Failed experiment queued via BackgroundTaskService
+        mock_queue.assert_called_once_with(
+            user_id=mock_workspace.user_id,
+            workspace_id=mock_workspace.id,
+            experiment_uid="exp2",
+        )
 
     @pytest.mark.asyncio
-    async def test_delete_workspace_contents_stores_failed_uids(
+    async def test_delete_workspace_contents_queues_failed_uids(
         self, mock_db, mock_workspace
     ):
-        """Should store failed experiment UIDs for retry."""
+        """Should queue failed experiment UIDs via BackgroundTaskService."""
         from studio.app.common.models.experiment import ExperimentRecord
 
         mock_exp = Mock(spec=ExperimentRecord)
         mock_exp.uid = "failed_exp"
-        mock_db.query.return_value.filter.return_value.all.return_value = [mock_exp]
+        mock_db.query.return_value.filter.return_value.all.return_value = [
+            mock_exp,
+        ]
 
         with patch(
-            "studio.app.common.core.workspace.workspace_services.ExperimentService"
-            ".delete_experiment",
+            "studio.app.common.core.workspace.workspace_services"
+            ".ExperimentService.delete_experiment",
             new_callable=AsyncMock,
             return_value=False,
-        ):
-            with patch.object(
-                WorkspaceService, "delete_workspace_files", new_callable=AsyncMock
-            ):
-                with pytest.raises(HTTPException):
-                    await WorkspaceService.delete_workspace_contents(
-                        mock_db, mock_workspace, "test-bucket"
-                    )
+        ), patch.object(
+            WorkspaceService,
+            "delete_workspace_files",
+            new_callable=AsyncMock,
+        ), patch(
+            "studio.app.common.core.workspace.workspace_services"
+            ".BackgroundTaskService.queue_experiment_deletion",
+        ) as mock_queue:
+            with pytest.raises(HTTPException):
+                await WorkspaceService.delete_workspace_contents(
+                    mock_db, mock_workspace, "test-bucket"
+                )
 
-        assert mock_workspace.failed_experiment_uids == "failed_exp"
+        mock_queue.assert_called_once_with(
+            user_id=mock_workspace.user_id,
+            workspace_id=mock_workspace.id,
+            experiment_uid="failed_exp",
+        )
 
     @pytest.mark.asyncio
     async def test_retry_partial_deletion_retries_failed_experiments(self, mock_db):
         """Should retry deletion only for failed experiments."""
         mock_ws = Mock(spec=Workspace)
         mock_ws.id = 1
+        mock_ws.user_id = 1
         mock_ws.deletion_state = WorkspaceStatus.PARTIAL_DELETE
-        mock_ws.failed_experiment_uids = "exp1,exp2"
         mock_ws.deleted = False
 
         mock_result = Mock()
         mock_result.scalar_one_or_none.return_value = mock_ws
         mock_db.execute.return_value = mock_result
 
+        # Mock failed tasks from BackgroundTaskService
+        mock_task1 = Mock(resource_id="exp1")
+        mock_task2 = Mock(resource_id="exp2")
+
         with patch(
-            "studio.app.common.core.workspace.workspace_services.ExperimentService"
-            ".delete_experiment",
+            "studio.app.common.core.workspace.workspace_services"
+            ".BackgroundTaskService.get_failed_tasks_for_workspace",
+            return_value=[mock_task1, mock_task2],
+        ), patch(
+            "studio.app.common.core.workspace.workspace_services"
+            ".ExperimentService.delete_experiment",
             new_callable=AsyncMock,
             return_value=True,
-        ) as mock_delete:
-            with patch.object(
-                WorkspaceService, "delete_workspace_files", new_callable=AsyncMock
-            ):
-                success, message = await WorkspaceService.retry_partial_deletion(
-                    mock_db, "test-bucket", "1", "1"
-                )
+        ) as mock_delete, patch.object(
+            WorkspaceService,
+            "delete_workspace_files",
+            new_callable=AsyncMock,
+        ):
+            success, message = await WorkspaceService.retry_partial_deletion(
+                mock_db, "test-bucket", "1", "1"
+            )
 
-        # Should have called delete for both failed experiments
         assert mock_delete.call_count == 2
         assert success is True
         assert mock_ws.deleted is True
@@ -511,30 +533,43 @@ class TestWorkspacePartialDeletion:
 
     @pytest.mark.asyncio
     async def test_retry_partial_deletion_handles_still_failing(self, mock_db):
-        """Should update failed UIDs if some experiments still fail."""
+        """Should queue still-failing experiments via BackgroundTaskService."""
         mock_ws = Mock(spec=Workspace)
         mock_ws.id = 1
+        mock_ws.user_id = 1
         mock_ws.deletion_state = WorkspaceStatus.PARTIAL_DELETE
-        mock_ws.failed_experiment_uids = "exp1,exp2"
         mock_ws.deleted = False
 
         mock_result = Mock()
         mock_result.scalar_one_or_none.return_value = mock_ws
         mock_db.execute.return_value = mock_result
 
-        # exp2 still fails
+        mock_task1 = Mock(resource_id="exp1")
+        mock_task2 = Mock(resource_id="exp2")
+
         async def mock_delete(db, bucket, ws_id, uid, auto_commit):
             return uid != "exp2"
 
         with patch(
-            "studio.app.common.core.workspace.workspace_services.ExperimentService"
-            ".delete_experiment",
+            "studio.app.common.core.workspace.workspace_services"
+            ".BackgroundTaskService.get_failed_tasks_for_workspace",
+            return_value=[mock_task1, mock_task2],
+        ), patch(
+            "studio.app.common.core.workspace.workspace_services"
+            ".ExperimentService.delete_experiment",
             side_effect=mock_delete,
-        ):
+        ), patch(
+            "studio.app.common.core.workspace.workspace_services"
+            ".BackgroundTaskService.queue_experiment_deletion",
+        ) as mock_queue:
             success, message = await WorkspaceService.retry_partial_deletion(
                 mock_db, "test-bucket", "1", "1"
             )
 
         assert success is False
         assert mock_ws.deletion_state == WorkspaceStatus.PARTIAL_DELETE
-        assert "exp2" in mock_ws.failed_experiment_uids
+        mock_queue.assert_called_once_with(
+            user_id=mock_ws.user_id,
+            workspace_id=mock_ws.id,
+            experiment_uid="exp2",
+        )

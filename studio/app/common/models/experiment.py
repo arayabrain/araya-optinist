@@ -11,8 +11,8 @@ from studio.app.common.models.base import Base, TimestampMixin
 from studio.app.common.schemas.dataview import LocalSyncStatus, PublishStatus
 
 
-class DeletionTaskStatus(str, Enum):
-    """Status of deletion task."""
+class BackgroundTaskStatus(str, Enum):
+    """Status of background task."""
 
     QUEUED = "queued"
     IN_PROGRESS = "in_progress"
@@ -21,8 +21,8 @@ class DeletionTaskStatus(str, Enum):
     RETRYING = "retrying"
 
 
-class DeletionTaskType(str, Enum):
-    """Type of deletion task."""
+class BackgroundTaskType(str, Enum):
+    """Type of background task."""
 
     EXPERIMENT = "experiment"
     WORKSPACE = "workspace"
@@ -99,14 +99,14 @@ class ExperimentRecord(Base, TimestampMixin, table=True):
     )
 
 
-class DeletionTask(Base, TimestampMixin, table=True):
+class BackgroundTask(Base, TimestampMixin, table=True):
     """
-    Persistent deletion task queue.
-    Ensures deletions complete even if user logs out.
+    Persistent background task queue.
+    Ensures tasks complete even if user logs out.
     Tasks are processed by a background worker independently of user session.
     """
 
-    __tablename__ = "deletion_tasks"
+    __tablename__ = "background_tasks"
 
     user_id: int = Field(
         sa_column=Column(BIGINT(unsigned=True), nullable=False, index=True),
@@ -117,11 +117,11 @@ class DeletionTask(Base, TimestampMixin, table=True):
             SQLEnum(
                 "experiment",
                 "workspace",
-                name="deletion_task_type_enum",
+                name="background_task_type_enum",
             ),
             nullable=False,
         ),
-        description="Type of resource being deleted",
+        description="Type of resource being processed",
     )
     resource_id: str = Field(
         sa_column=Column(String(100), nullable=False, index=True),
@@ -140,12 +140,12 @@ class DeletionTask(Base, TimestampMixin, table=True):
                 "completed",
                 "failed",
                 "retrying",
-                name="deletion_task_status_enum",
+                name="background_task_status_enum",
             ),
             nullable=False,
             default="queued",
         ),
-        default=DeletionTaskStatus.QUEUED.value,
+        default=BackgroundTaskStatus.QUEUED.value,
     )
     retry_count: int = Field(
         sa_column=Column(Integer(), nullable=False, default=0),

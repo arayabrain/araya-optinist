@@ -1,27 +1,27 @@
 """
-Deletion Task Service - Persistent deletion queue.
-Ensures deletions complete even if user logs out.
+Background Task Service - Persistent task queue.
+Ensures tasks complete even if user logs out.
 """
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.db.database import session_scope
 from studio.app.common.models.experiment import (
-    DeletionTask,
-    DeletionTaskStatus,
-    DeletionTaskType,
+    BackgroundTask,
+    BackgroundTaskStatus,
+    BackgroundTaskType,
 )
 
 logger = AppLogger.get_logger()
 
-DELETION_TASK_MAX_RETRIES = 3
+BACKGROUND_TASK_MAX_RETRIES = 3
 
 
-class DeletionTaskService:
-    """Service for managing persistent deletion tasks."""
+class BackgroundTaskService:
+    """Service for managing persistent background tasks."""
 
     @staticmethod
     def queue_experiment_deletion(
@@ -33,26 +33,20 @@ class DeletionTaskService:
         Queue an experiment deletion task.
         Returns immediately - deletion happens in background.
 
-        Args:
-            user_id: User initiating deletion
-            workspace_id: Workspace containing the experiment
-            experiment_uid: Unique ID of experiment to delete
-
         Returns:
             Task ID if queued successfully, None on failure
         """
         try:
             with session_scope() as db:
-                # Check for existing pending/in-progress task
                 existing = db.execute(
-                    select(DeletionTask).where(
-                        DeletionTask.resource_id == experiment_uid,
-                        DeletionTask.task_type == DeletionTaskType.EXPERIMENT.value,
-                        DeletionTask.status.in_(
+                    select(BackgroundTask).where(
+                        BackgroundTask.resource_id == experiment_uid,
+                        BackgroundTask.task_type == BackgroundTaskType.EXPERIMENT.value,
+                        BackgroundTask.status.in_(
                             [
-                                DeletionTaskStatus.QUEUED.value,
-                                DeletionTaskStatus.IN_PROGRESS.value,
-                                DeletionTaskStatus.RETRYING.value,
+                                BackgroundTaskStatus.QUEUED.value,
+                                BackgroundTaskStatus.IN_PROGRESS.value,
+                                BackgroundTaskStatus.RETRYING.value,
                             ]
                         ),
                     )
@@ -60,23 +54,25 @@ class DeletionTaskService:
 
                 if existing:
                     logger.info(
-                        f"Deletion task already exists for experiment {experiment_uid}"
+                        "Background task already exists "
+                        f"for experiment {experiment_uid}"
                     )
                     return existing[0].id
 
-                task = DeletionTask(
+                task = BackgroundTask(
                     user_id=user_id,
-                    task_type=DeletionTaskType.EXPERIMENT.value,
+                    task_type=BackgroundTaskType.EXPERIMENT.value,
                     resource_id=experiment_uid,
                     workspace_id=workspace_id,
-                    status=DeletionTaskStatus.QUEUED.value,
-                    max_retries=DELETION_TASK_MAX_RETRIES,
+                    status=BackgroundTaskStatus.QUEUED.value,
+                    max_retries=BACKGROUND_TASK_MAX_RETRIES,
                 )
                 db.add(task)
                 db.commit()
 
                 logger.info(
-                    f"Queued deletion task {task.id} for experiment {experiment_uid}"
+                    f"Queued background task {task.id} "
+                    f"for experiment {experiment_uid}"
                 )
                 return task.id
 
@@ -93,25 +89,20 @@ class DeletionTaskService:
         Queue a workspace deletion task.
         Returns immediately - deletion happens in background.
 
-        Args:
-            user_id: User initiating deletion
-            workspace_id: Workspace to delete
-
         Returns:
             Task ID if queued successfully, None on failure
         """
         try:
             with session_scope() as db:
-                # Check for existing pending/in-progress task
                 existing = db.execute(
-                    select(DeletionTask).where(
-                        DeletionTask.resource_id == str(workspace_id),
-                        DeletionTask.task_type == DeletionTaskType.WORKSPACE.value,
-                        DeletionTask.status.in_(
+                    select(BackgroundTask).where(
+                        BackgroundTask.resource_id == str(workspace_id),
+                        BackgroundTask.task_type == BackgroundTaskType.WORKSPACE.value,
+                        BackgroundTask.status.in_(
                             [
-                                DeletionTaskStatus.QUEUED.value,
-                                DeletionTaskStatus.IN_PROGRESS.value,
-                                DeletionTaskStatus.RETRYING.value,
+                                BackgroundTaskStatus.QUEUED.value,
+                                BackgroundTaskStatus.IN_PROGRESS.value,
+                                BackgroundTaskStatus.RETRYING.value,
                             ]
                         ),
                     )
@@ -119,23 +110,24 @@ class DeletionTaskService:
 
                 if existing:
                     logger.info(
-                        f"Deletion task already exists for workspace {workspace_id}"
+                        "Background task already exists "
+                        f"for workspace {workspace_id}"
                     )
                     return existing[0].id
 
-                task = DeletionTask(
+                task = BackgroundTask(
                     user_id=user_id,
-                    task_type=DeletionTaskType.WORKSPACE.value,
+                    task_type=BackgroundTaskType.WORKSPACE.value,
                     resource_id=str(workspace_id),
                     workspace_id=workspace_id,
-                    status=DeletionTaskStatus.QUEUED.value,
-                    max_retries=DELETION_TASK_MAX_RETRIES,
+                    status=BackgroundTaskStatus.QUEUED.value,
+                    max_retries=BACKGROUND_TASK_MAX_RETRIES,
                 )
                 db.add(task)
                 db.commit()
 
                 logger.info(
-                    f"Queued deletion task {task.id} for workspace {workspace_id}"
+                    f"Queued background task {task.id} " f"for workspace {workspace_id}"
                 )
                 return task.id
 
@@ -146,33 +138,30 @@ class DeletionTaskService:
     @staticmethod
     def get_pending_tasks(limit: int = 10) -> list:
         """
-        Get pending deletion tasks for processing.
-
-        Args:
-            limit: Maximum number of tasks to return
+        Get pending tasks for processing.
 
         Returns:
-            List of DeletionTask records
+            List of BackgroundTask records
         """
         try:
             with session_scope() as db:
                 result = db.execute(
-                    select(DeletionTask)
+                    select(BackgroundTask)
                     .where(
-                        DeletionTask.status.in_(
+                        BackgroundTask.status.in_(
                             [
-                                DeletionTaskStatus.QUEUED.value,
-                                DeletionTaskStatus.RETRYING.value,
+                                BackgroundTaskStatus.QUEUED.value,
+                                BackgroundTaskStatus.RETRYING.value,
                             ]
                         )
                     )
-                    .order_by(DeletionTask.created_at)
+                    .order_by(BackgroundTask.created_at)
                     .limit(limit)
                 ).all()
                 return [row[0] for row in result] if result else []
 
         except Exception as e:
-            logger.error(f"Failed to get pending deletion tasks: {e}")
+            logger.error(f"Failed to get pending background tasks: {e}")
             return []
 
     @staticmethod
@@ -180,9 +169,9 @@ class DeletionTaskService:
         """Mark a task as in progress."""
         try:
             with session_scope() as db:
-                task = db.get(DeletionTask, task_id)
+                task = db.get(BackgroundTask, task_id)
                 if task:
-                    task.status = DeletionTaskStatus.IN_PROGRESS.value
+                    task.status = BackgroundTaskStatus.IN_PROGRESS.value
                     task.started_at = datetime.now(timezone.utc)
                     db.commit()
                     return True
@@ -196,12 +185,12 @@ class DeletionTaskService:
         """Mark a task as completed."""
         try:
             with session_scope() as db:
-                task = db.get(DeletionTask, task_id)
+                task = db.get(BackgroundTask, task_id)
                 if task:
-                    task.status = DeletionTaskStatus.COMPLETED.value
+                    task.status = BackgroundTaskStatus.COMPLETED.value
                     task.completed_at = datetime.now(timezone.utc)
                     db.commit()
-                    logger.info(f"Deletion task {task_id} completed successfully")
+                    logger.info(f"Background task {task_id} completed")
                     return True
                 return False
         except Exception as e:
@@ -216,23 +205,26 @@ class DeletionTaskService:
         """
         try:
             with session_scope() as db:
-                task = db.get(DeletionTask, task_id)
+                task = db.get(BackgroundTask, task_id)
                 if task:
                     task.retry_count += 1
-                    task.error_message = error_message[:1000]  # Truncate
+                    task.error_message = error_message[:1000]
 
                     if task.retry_count >= task.max_retries:
-                        task.status = DeletionTaskStatus.FAILED.value
+                        task.status = BackgroundTaskStatus.FAILED.value
                         task.completed_at = datetime.now(timezone.utc)
                         logger.error(
-                            f"Deletion task {task_id} failed after "
-                            f"{task.retry_count} attempts: {error_message}"
+                            f"Background task {task_id} failed "
+                            f"after {task.retry_count} attempts: "
+                            f"{error_message}"
                         )
                     else:
-                        task.status = DeletionTaskStatus.RETRYING.value
+                        task.status = BackgroundTaskStatus.RETRYING.value
                         logger.warning(
-                            f"Deletion task {task_id} will retry "
-                            f"(attempt {task.retry_count}/{task.max_retries})"
+                            f"Background task {task_id} will "
+                            f"retry (attempt "
+                            f"{task.retry_count}/"
+                            f"{task.max_retries})"
                         )
 
                     db.commit()
@@ -244,10 +236,10 @@ class DeletionTaskService:
 
     @staticmethod
     def get_task_status(task_id: int) -> Optional[dict]:
-        """Get the status of a deletion task."""
+        """Get the status of a background task."""
         try:
             with session_scope() as db:
-                task = db.get(DeletionTask, task_id)
+                task = db.get(BackgroundTask, task_id)
                 if task:
                     return {
                         "id": task.id,
@@ -265,12 +257,37 @@ class DeletionTaskService:
             return None
 
     @staticmethod
+    def get_failed_tasks_for_workspace(
+        workspace_id: int,
+        task_type: str,
+    ) -> List[BackgroundTask]:
+        """
+        Get failed tasks for a specific workspace and type.
+        Used to find experiments that failed deletion for retry.
+
+        Returns:
+            List of failed BackgroundTask records
+        """
+        try:
+            with session_scope() as db:
+                result = db.execute(
+                    select(BackgroundTask).where(
+                        BackgroundTask.workspace_id == workspace_id,
+                        BackgroundTask.task_type == task_type,
+                        BackgroundTask.status == BackgroundTaskStatus.FAILED.value,
+                    )
+                ).all()
+                return [row[0] for row in result] if result else []
+        except Exception as e:
+            logger.error(
+                "Failed to get failed tasks for " f"workspace {workspace_id}: {e}"
+            )
+            return []
+
+    @staticmethod
     def cleanup_old_tasks(days_old: int = 30) -> int:
         """
         Clean up completed/failed tasks older than specified days.
-
-        Args:
-            days_old: Delete tasks older than this
 
         Returns:
             Number of tasks deleted
@@ -284,14 +301,14 @@ class DeletionTaskService:
 
             with session_scope() as db:
                 result = db.execute(
-                    delete(DeletionTask).where(
-                        DeletionTask.status.in_(
+                    delete(BackgroundTask).where(
+                        BackgroundTask.status.in_(
                             [
-                                DeletionTaskStatus.COMPLETED.value,
-                                DeletionTaskStatus.FAILED.value,
+                                BackgroundTaskStatus.COMPLETED.value,
+                                BackgroundTaskStatus.FAILED.value,
                             ]
                         ),
-                        DeletionTask.completed_at < cutoff,
+                        BackgroundTask.completed_at < cutoff,
                     )
                 )
                 deleted_count = result.rowcount
@@ -299,11 +316,12 @@ class DeletionTaskService:
 
                 if deleted_count > 0:
                     logger.info(
-                        f"Cleaned up {deleted_count} old deletion tasks "
+                        f"Cleaned up {deleted_count} old "
+                        f"background tasks "
                         f"(older than {days_old} days)"
                     )
                 return deleted_count
 
         except Exception as e:
-            logger.error(f"Failed to cleanup old deletion tasks: {e}")
+            logger.error("Failed to cleanup old background tasks: " f"{e}")
             return 0

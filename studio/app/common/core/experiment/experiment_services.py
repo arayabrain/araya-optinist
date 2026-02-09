@@ -5,7 +5,9 @@ from typing import Optional
 from fastapi import HTTPException, status
 from sqlmodel import Session
 
-from studio.app.common.core.experiment.deletion_task_service import DeletionTaskService
+from studio.app.common.core.experiment.background_task_service import (
+    BackgroundTaskService,
+)
 from studio.app.common.core.experiment.experiment import ExptConfig
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_record_services import (
@@ -118,7 +120,7 @@ class ExperimentService:
         Returns:
             Dict with task_id and status, or error message
         """
-        task_id = DeletionTaskService.queue_experiment_deletion(
+        task_id = BackgroundTaskService.queue_experiment_deletion(
             user_id=user_id,
             workspace_id=workspace_id,
             experiment_uid=unique_id,

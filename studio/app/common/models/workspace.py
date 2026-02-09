@@ -3,7 +3,6 @@ from enum import Enum
 from typing import List, Optional
 
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy import Text
 from sqlalchemy.dialects.mysql import BIGINT
 from sqlalchemy.sql.functions import current_timestamp
 from sqlmodel import Column, Field, ForeignKey, Relationship, String, UniqueConstraint
@@ -64,16 +63,6 @@ class Workspace(Base, TimestampMixin, table=True):
         ),
         default=0,
     )
-    failed_experiment_uids: Optional[str] = Field(
-        sa_column=Column(
-            Text,
-            nullable=True,
-            default=None,
-            comment="Comma-separated UIDs of experiments that failed to delete",
-        ),
-        default=None,
-    )
-
     user: Optional["User"] = Relationship(back_populates="workspace")  # noqa: F821
     user_share: List["User"] = Relationship(  # noqa: F821
         back_populates="workspace_share", link_model=WorkspacesShareUser

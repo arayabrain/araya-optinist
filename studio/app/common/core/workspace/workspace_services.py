@@ -7,6 +7,9 @@ from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, or_, select
 
 from studio.app.common import models as common_model
+from studio.app.common.core.experiment.background_task_service import (
+    BackgroundTaskService,
+)
 from studio.app.common.core.experiment.experiment_services import ExperimentService
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
@@ -14,7 +17,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     StorageDirectoryType,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
-from studio.app.common.models.experiment import ExperimentRecord
+from studio.app.common.models.experiment import BackgroundTaskType, ExperimentRecord
 from studio.app.common.models.workspace import Workspace, WorkspaceStatus
 from studio.app.dir_path import DIRPATH
 
@@ -98,9 +101,14 @@ class WorkspaceService:
                 f"{failed_count}/{total_count} experiments failed"
             )
 
-            # Store failed experiment UIDs for retry
+            # Queue failed experiments for background retry
             ws.deletion_state = WorkspaceStatus.PARTIAL_DELETE
-            ws.failed_experiment_uids = ",".join(failed_experiments)
+            for uid in failed_experiments:
+                BackgroundTaskService.queue_experiment_deletion(
+                    user_id=ws.user_id,
+                    workspace_id=ws.id,
+                    experiment_uid=uid,
+                )
 
             # Still try to delete workspace files for successfully deleted experiments
             # This cleans up as much as possible
@@ -280,22 +288,21 @@ class WorkspaceService:
             if not ws:
                 return False, "Workspace not found or not in partial deletion state"
 
-            # Get failed experiment UIDs
-            failed_uids = []
-            if ws.failed_experiment_uids:
-                failed_uids = [
-                    uid.strip()
-                    for uid in ws.failed_experiment_uids.split(",")
-                    if uid.strip()
-                ]
+            # Get failed experiment UIDs from background tasks
+            failed_tasks = BackgroundTaskService.get_failed_tasks_for_workspace(
+                workspace_id=ws.id,
+                task_type=BackgroundTaskType.EXPERIMENT.value,
+            )
+            failed_uids = [t.resource_id for t in failed_tasks]
 
             if not failed_uids:
-                # No failed experiments, mark as deleted
                 ws.deleted = True
                 ws.deletion_state = WorkspaceStatus.DELETED
-                ws.failed_experiment_uids = None
                 db.commit()
-                return True, "Workspace deletion completed (no failed experiments)"
+                return (
+                    True,
+                    "Workspace deletion completed (no failed experiments)",
+                )
 
             # Mark as deleting for retry
             ws.deletion_state = WorkspaceStatus.DELETING
@@ -315,9 +322,13 @@ class WorkspaceService:
                     still_failed.append(uid)
 
             if still_failed:
-                # Still have failures
                 ws.deletion_state = WorkspaceStatus.PARTIAL_DELETE
-                ws.failed_experiment_uids = ",".join(still_failed)
+                for uid in still_failed:
+                    BackgroundTaskService.queue_experiment_deletion(
+                        user_id=ws.user_id,
+                        workspace_id=ws.id,
+                        experiment_uid=uid,
+                    )
                 logger.warning(
                     "Retry partial deletion: %d experiments still "
                     "failing for workspace %s",
@@ -325,11 +336,14 @@ class WorkspaceService:
                     str(ws.id),
                 )
                 db.commit()
-                return False, f"Retry failed for {len(still_failed)} experiments"
+                return (
+                    False,
+                    f"Retry failed for {len(still_failed)} experiments",
+                )
             else:
-                # All experiments deleted, complete workspace deletion
                 await cls.delete_workspace_files(
-                    workspace_id=str(ws.id), remote_bucket_name=remote_bucket_name
+                    workspace_id=str(ws.id),
+                    remote_bucket_name=remote_bucket_name,
                 )
                 await cls.delete_workspace_files(
                     workspace_id=str(ws.id),
@@ -339,9 +353,11 @@ class WorkspaceService:
 
                 ws.deleted = True
                 ws.deletion_state = WorkspaceStatus.DELETED
-                ws.failed_experiment_uids = None
                 db.commit()
-                return True, "Workspace deletion completed successfully"
+                return (
+                    True,
+                    "Workspace deletion completed successfully",
+                )
 
         except OperationalError as e:
             db.rollback()
