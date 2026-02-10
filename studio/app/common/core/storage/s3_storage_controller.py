@@ -852,10 +852,9 @@ class S3StorageController(BaseRemoteStorageController):
                 RemoteSyncStatusFileUtil.REMOTE_SYNC_STATUS_FILE,
             }
             # Exclude internal directories that should never be uploaded
-            excluded_dirs = {".snakemake"}
             for root, dirs, files in os.walk(experiment_local_path):
                 # Skip excluded directories (modifies dirs in-place to prevent descent)
-                dirs[:] = [d for d in dirs if d not in excluded_dirs]
+                dirs[:] = [d for d in dirs if d not in self.UPLOAD_EXPERIMENT_EXCLUDED_DIRS]
                 for filename in files:
                     # Skip coordination files
                     if filename in coordination_files:
