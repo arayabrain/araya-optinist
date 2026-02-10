@@ -70,6 +70,15 @@ class RemoteStorageLockError(Exception):
         return (self.__class__, (self.workspace_id, self.unique_id))
 
 
+class RemoteStorageBucketNotFoundError(Exception):
+    """Raised when user's S3 bucket does not exist."""
+
+    def __init__(self, bucket_name: str):
+        self.bucket_name = bucket_name
+        message = f"S3 bucket does not exist: {bucket_name}"
+        super().__init__(message)
+
+
 class RemoteSyncStatusFileUtil:
     REMOTE_SYNC_STATUS_FILE = "remote_sync_stat.json"
 
@@ -324,6 +333,36 @@ class RemoteSyncLockFileUtil:
 
 
 class BaseRemoteStorageController(metaclass=ABCMeta):
+    # Directories to be excluded when uploading experimental data to remote storage
+    UPLOAD_EXPERIMENT_EXCLUDED_DIRS = {".snakemake"}
+
+    @staticmethod
+    def create_upload_experiment_ignore_function(excluded_dirs: set = None):
+        """
+        Create an ignore function for shutil.copytree used in upload_experiment.
+        Excludes specified directories from being uploaded to remote storage.
+
+        Args:
+            excluded_dirs: Set of directory names to exclude.
+                          If None, uses UPLOAD_EXPERIMENT_EXCLUDED_DIRS.
+
+        Returns:
+            A function suitable for use with shutil.copytree's ignore parameter.
+        """
+        if excluded_dirs is None:
+            excluded_dirs = BaseRemoteStorageController.UPLOAD_EXPERIMENT_EXCLUDED_DIRS
+
+        def ignore_excluded(dir_path, files):
+            # Get the basename of current directory
+            dir_name = os.path.basename(dir_path)
+            # If current directory is in excluded list, ignore all contents
+            if dir_name in excluded_dirs:
+                return files
+            # Otherwise, ignore only subdirectories that match excluded_dirs
+            return [f for f in files if f in excluded_dirs]
+
+        return ignore_excluded
+
     @abstractmethod
     def _make_input_data_local_path(self, workspace_id: str, filename: str) -> str:
         """

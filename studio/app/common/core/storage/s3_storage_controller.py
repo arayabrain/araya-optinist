@@ -15,10 +15,13 @@ if TYPE_CHECKING:
 
     from studio.app.const import ThumbnailType
 
+from botocore.exceptions import ClientError
+
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.file_filter import FileSyncFilter
 from studio.app.common.core.storage.remote_storage_controller import (
     BaseRemoteStorageController,
+    RemoteStorageBucketNotFoundError,
     RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
     StorageDirectoryType,
@@ -32,6 +35,13 @@ from studio.app.dir_path import DIRPATH
 # cloud_utils.py → s3_storage_monitor.py → s3_storage_controller.py → cloud_utils.py
 
 logger = AppLogger.get_logger()
+
+
+def _is_no_such_bucket_error(e: Exception) -> bool:
+    """Check if exception is a NoSuchBucket error from S3."""
+    if isinstance(e, ClientError):
+        return e.response.get("Error", {}).get("Code") == "NoSuchBucket"
+    return "NoSuchBucket" in str(type(e).__name__)
 
 
 class S3StorageController(BaseRemoteStorageController):
@@ -296,44 +306,51 @@ class S3StorageController(BaseRemoteStorageController):
         """List all input data objects in S3 for a workspace.
 
         Uses pagination to handle workspaces with >1000 files.
+        Returns empty list if bucket does not exist.
         """
         prefix = self.make_s3_input_prefix(workspace_id)
         objects = []
 
-        async with self.__get_s3_client() as s3_client:
-            continuation_token = None
+        try:
+            async with self.__get_s3_client() as s3_client:
+                continuation_token = None
 
-            while True:
-                # Build request parameters
-                list_params = {
-                    "Bucket": self.bucket_name,
-                    "Prefix": prefix,
-                }
-                if continuation_token:
-                    list_params["ContinuationToken"] = continuation_token
+                while True:
+                    # Build request parameters
+                    list_params = {
+                        "Bucket": self.bucket_name,
+                        "Prefix": prefix,
+                    }
+                    if continuation_token:
+                        list_params["ContinuationToken"] = continuation_token
 
-                s3_list = await s3_client.list_objects_v2(**list_params)
+                    s3_list = await s3_client.list_objects_v2(**list_params)
 
-                if not s3_list or s3_list.get("KeyCount", 0) == 0:
-                    break
+                    if not s3_list or s3_list.get("KeyCount", 0) == 0:
+                        break
 
-                for obj in s3_list.get("Contents", []):
-                    key = obj["Key"]
-                    filename = key.replace(prefix, "")
-                    if filename and not filename.endswith("/"):
-                        objects.append(
-                            {
-                                "filename": filename,
-                                "size": obj["Size"],
-                                "last_modified": obj["LastModified"].isoformat(),
-                            }
-                        )
+                    for obj in s3_list.get("Contents", []):
+                        key = obj["Key"]
+                        filename = key.replace(prefix, "")
+                        if filename and not filename.endswith("/"):
+                            objects.append(
+                                {
+                                    "filename": filename,
+                                    "size": obj["Size"],
+                                    "last_modified": obj["LastModified"].isoformat(),
+                                }
+                            )
 
-                # Check if there are more pages
-                if s3_list.get("IsTruncated"):
-                    continuation_token = s3_list.get("NextContinuationToken")
-                else:
-                    break
+                    # Check if there are more pages
+                    if s3_list.get("IsTruncated"):
+                        continuation_token = s3_list.get("NextContinuationToken")
+                    else:
+                        break
+        except Exception as e:
+            if _is_no_such_bucket_error(e):
+                logger.warning(f"Bucket does not exist: {self.bucket_name}")
+                return []
+            raise
 
         return objects
 
@@ -403,12 +420,18 @@ class S3StorageController(BaseRemoteStorageController):
         """
 
         # Search workspaces directories listing on S3
-        async with self.__get_s3_client() as __s3_client:
-            workspaces_response = await __s3_client.list_objects_v2(
-                Bucket=self.bucket_name,
-                Prefix=__class__.make_s3_output_prefix(),
-                Delimiter="/",
-            )
+        try:
+            async with self.__get_s3_client() as __s3_client:
+                workspaces_response = await __s3_client.list_objects_v2(
+                    Bucket=self.bucket_name,
+                    Prefix=__class__.make_s3_output_prefix(),
+                    Delimiter="/",
+                )
+        except Exception as e:
+            if _is_no_such_bucket_error(e):
+                logger.warning(f"Bucket does not exist: {self.bucket_name}")
+                raise RemoteStorageBucketNotFoundError(self.bucket_name) from e
+            raise
 
         if "CommonPrefixes" not in workspaces_response:
             logger.warning(
@@ -851,7 +874,12 @@ class S3StorageController(BaseRemoteStorageController):
                 RemoteSyncLockFileUtil.REMOTE_SYNC_LOCK_FILE,
                 RemoteSyncStatusFileUtil.REMOTE_SYNC_STATUS_FILE,
             }
-            for root, _, files in os.walk(experiment_local_path):
+            # Exclude internal directories that should never be uploaded
+            for root, dirs, files in os.walk(experiment_local_path):
+                # Skip excluded directories (modifies dirs in-place to prevent descent)
+                dirs[:] = [
+                    d for d in dirs if d not in self.UPLOAD_EXPERIMENT_EXCLUDED_DIRS
+                ]
                 for filename in files:
                     # Skip coordination files
                     if filename in coordination_files:
