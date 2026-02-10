@@ -75,24 +75,18 @@ const RegistrationForm = () => {
   const [showPassword, setShowPassword] = useState(false)
   const [showResendSnackbar, setShowResendSnackbar] = useState(false)
   const [fieldErrors, setFieldErrors] = useState<Record<string, boolean>>({})
-  const [resendCooldown, setResendCooldown] = useState(0)
-  const cooldownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [resendCooldown, setResendCooldown] = useState(false)
+  const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Start cooldown timer
-  const startCooldown = useCallback((seconds: number) => {
-    setResendCooldown(seconds)
-    cooldownTimerRef.current = setInterval(() => {
-      setResendCooldown((prev) => {
-        if (prev <= 1) {
-          if (cooldownTimerRef.current) {
-            clearInterval(cooldownTimerRef.current)
-            cooldownTimerRef.current = null
-          }
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
+  const startCooldown = useCallback(() => {
+    setResendCooldown(true)
+    if (cooldownTimerRef.current) {
+      clearTimeout(cooldownTimerRef.current)
+    }
+    cooldownTimerRef.current = setTimeout(() => {
+      setResendCooldown(false)
+      cooldownTimerRef.current = null
+    }, 60000)
   }, [])
 
   // Cleanup on mount/unmount
@@ -102,7 +96,7 @@ const RegistrationForm = () => {
     return () => {
       dispatch(clearAllRegistrationState())
       if (cooldownTimerRef.current) {
-        clearInterval(cooldownTimerRef.current)
+        clearTimeout(cooldownTimerRef.current)
       }
     }
   }, [dispatch])
@@ -200,7 +194,7 @@ const RegistrationForm = () => {
     if (registerUser.fulfilled.match(resultAction)) {
       // eslint-disable-next-line no-console
       console.log("Pre-registration successful! Please verify your email.")
-      startCooldown(60)
+      startCooldown()
     } else {
       // eslint-disable-next-line no-console
       console.error("Pre-registration failed:", resultAction.payload)
@@ -209,7 +203,7 @@ const RegistrationForm = () => {
 
   // Handle resend email
   const handleResendEmail = async () => {
-    startCooldown(60)
+    startCooldown()
     const resultAction = await dispatch(resendVerificationEmail(formData.email))
 
     if (resendVerificationEmail.fulfilled.match(resultAction)) {
@@ -246,24 +240,22 @@ const RegistrationForm = () => {
                 </Typography>
               </Alert>
 
-              {resendCooldown > 0 && (
+              {resendCooldown && (
                 <Alert severity="warning" sx={{ mb: 2, fontSize: 12 }}>
-                  Please wait {resendCooldown} seconds before requesting another
-                  verification email.
+                  Please wait a while before requesting another verification
+                  email.
                 </Alert>
               )}
 
               <ResendButton
                 onClick={handleResendEmail}
-                disabled={resendingEmail || resendCooldown > 0}
+                disabled={resendingEmail || resendCooldown}
               >
                 {resendingEmail ? (
                   <>
                     <CircularProgress size={16} sx={{ mr: 1 }} />
                     Sending...
                   </>
-                ) : resendCooldown > 0 ? (
-                  `Resend Verification Email (${resendCooldown}s)`
                 ) : (
                   "Resend Verification Email"
                 )}
