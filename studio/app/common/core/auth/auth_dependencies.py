@@ -300,7 +300,7 @@ def __get_current_user_record(db: Session, uid: str) -> sqlalchemy.engine.row.Ro
         .outerjoin(UserSubscription, UserSubscription.user_id == UserModel.id)
         .outerjoin(SubscriptionPlans, SubscriptionPlans.id == UserSubscription.plan_id)
         .outerjoin(UserStorageUsage, UserStorageUsage.user_id == UserModel.id)
-        .filter(UserModel.uid == uid)
+        .filter(UserModel.uid == uid, UserModel.active.is_(True))
         .group_by(UserModel.id)
         .first()
     )
