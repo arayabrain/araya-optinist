@@ -9,7 +9,6 @@ Tables created:
 
 Columns added:
 - experiment_records.deletion_error (Case 14)
-- workspaces.deletion_state (Cases 19, 23)
 - premium_user_assignments.heartbeat_failures (Case 71)
 
 Revision ID: j901j9290024
@@ -39,25 +38,6 @@ def upgrade() -> None:
             sa.String(255),
             nullable=True,
             comment="Error if deletion partially failed (S3 ok, DB not)",
-        ),
-    )
-
-    # =========================================================================
-    # Cases 19, 23: workspaces table updates
-    # =========================================================================
-    op.add_column(
-        "workspaces",
-        sa.Column(
-            "deletion_state",
-            sa.Enum(
-                "active",
-                "deleting",
-                "partial_delete",
-                "deleted",
-                name="workspace_status_enum",
-            ),
-            nullable=False,
-            server_default="active",
         ),
     )
 
@@ -319,9 +299,6 @@ def downgrade() -> None:
 
     # Drop premium_user_assignments column
     op.drop_column("premium_user_assignments", "heartbeat_failures")
-
-    # Drop workspaces column
-    op.drop_column("workspaces", "deletion_state")
 
     # Drop experiment_records column
     op.drop_column("experiment_records", "deletion_error")

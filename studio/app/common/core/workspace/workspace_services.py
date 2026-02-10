@@ -17,8 +17,8 @@ from studio.app.common.core.storage.remote_storage_controller import (
     StorageDirectoryType,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
-from studio.app.common.models.experiment import BackgroundTaskType, ExperimentRecord
-from studio.app.common.models.workspace import Workspace, WorkspaceStatus
+from studio.app.common.models.experiment import ExperimentRecord
+from studio.app.common.models.workspace import Workspace
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -31,18 +31,19 @@ class WorkspaceService:
         db: Session,
         ws: Workspace,
         remote_bucket_name: str,
-    ):
+    ) -> List[str]:
         """
-        Delete workspace contents with partial deletion recovery.
-        Continues deleting remaining experiments even if some fail.
+        Delete workspace contents. Returns failed experiment UIDs.
+
+        Returns:
+            Empty list on full success, or list of failed UIDs.
         """
         workspace_id = str(ws.id)
-        logger.info(f"Deleting workspace data for workspace '{workspace_id}'")
+        logger.info(f"Deleting workspace data for workspace " f"'{workspace_id}'")
 
         deleted_statuses = []
         failed_experiments = []
 
-        # Query ExperimentRecords from database (source of truth)
         experiment_records = (
             db.query(ExperimentRecord)
             .filter(ExperimentRecord.workspace_id == ws.id)
@@ -54,7 +55,6 @@ class WorkspaceService:
             f"for workspace '{workspace_id}'"
         )
 
-        # Delete each experiment (S3 + local + DB record)
         for record in experiment_records:
             try:
                 deleted_status = await ExperimentService.delete_experiment(
@@ -69,74 +69,56 @@ class WorkspaceService:
                     failed_experiments.append(record.uid)
             except Exception as e:
                 logger.error(
-                    f"Error deleting experiment {record.uid} in workspace "
-                    f"{workspace_id}: {e}"
+                    f"Error deleting experiment {record.uid} "
+                    f"in workspace {workspace_id}: {e}"
                 )
                 deleted_statuses.append(False)
                 failed_experiments.append(record.uid)
 
-        # Check if all deletions succeeded (or there were no experiments)
         if len(deleted_statuses) == 0 or all(deleted_statuses):
-            # Delete the workspace directory itself (cleanup any remaining files)
             await cls.delete_workspace_files(
-                workspace_id=workspace_id, remote_bucket_name=remote_bucket_name
+                workspace_id=workspace_id,
+                remote_bucket_name=remote_bucket_name,
             )
-
-            # Delete input directory
             await cls.delete_workspace_files(
                 workspace_id=workspace_id,
                 remote_bucket_name=remote_bucket_name,
                 is_input_dir=True,
             )
-
-            # Soft delete the workspace
             ws.deleted = True
-            ws.deletion_state = WorkspaceStatus.DELETED
-        else:
-            failed_count = len(failed_experiments)
-            total_count = len(deleted_statuses)
+            return []
 
-            logger.warning(
-                f"Partial workspace deletion for '{workspace_id}': "
-                f"{failed_count}/{total_count} experiments failed"
+        failed_count = len(failed_experiments)
+        total_count = len(deleted_statuses)
+        logger.warning(
+            f"Partial workspace deletion for '{workspace_id}': "
+            f"{failed_count}/{total_count} experiments failed"
+        )
+
+        # Clean up workspace files for successfully deleted experiments
+        try:
+            await cls.delete_workspace_files(
+                workspace_id=workspace_id,
+                remote_bucket_name=remote_bucket_name,
             )
-
-            # Queue failed experiments for background retry
-            ws.deletion_state = WorkspaceStatus.PARTIAL_DELETE
-            for uid in failed_experiments:
-                BackgroundTaskService.queue_experiment_deletion(
-                    user_id=ws.user_id,
-                    workspace_id=ws.id,
-                    experiment_uid=uid,
-                )
-
-            # Still try to delete workspace files for successfully deleted experiments
-            # This cleans up as much as possible
-            try:
-                await cls.delete_workspace_files(
-                    workspace_id=workspace_id, remote_bucket_name=remote_bucket_name
-                )
-                await cls.delete_workspace_files(
-                    workspace_id=workspace_id,
-                    remote_bucket_name=remote_bucket_name,
-                    is_input_dir=True,
-                )
-            except Exception as cleanup_error:
-                logger.error(f"Error cleaning up workspace files: {cleanup_error}")
-
-            # Raise exception to notify caller of partial failure
-            raise HTTPException(
-                status_code=status.HTTP_207_MULTI_STATUS,
-                detail=f"Partial deletion: {failed_count}/{total_count} experiments "
-                f"failed to delete. Workspace marked for retry.",
+            await cls.delete_workspace_files(
+                workspace_id=workspace_id,
+                remote_bucket_name=remote_bucket_name,
+                is_input_dir=True,
             )
+        except Exception as cleanup_error:
+            logger.error(f"Error cleaning up workspace files: " f"{cleanup_error}")
+
+        return failed_experiments
 
     @classmethod
     async def delete_workspace_files(
-        cls, workspace_id: str, remote_bucket_name, is_input_dir: bool = False
+        cls,
+        workspace_id: str,
+        remote_bucket_name,
+        is_input_dir: bool = False,
     ):
         if RemoteStorageController.is_available():
-            # delete remote data
             remote_storage_controller = RemoteStorageController(remote_bucket_name)
             if is_input_dir:
                 await remote_storage_controller.delete_workspace(
@@ -145,7 +127,8 @@ class WorkspaceService:
                 )
             else:
                 await remote_storage_controller.delete_workspace(
-                    workspace_id, directory_type=StorageDirectoryType.OUTPUT
+                    workspace_id,
+                    directory_type=StorageDirectoryType.OUTPUT,
                 )
 
         if is_input_dir:
@@ -157,7 +140,7 @@ class WorkspaceService:
                 shutil.rmtree(directory)
                 logger.info(f"Deleted directory: {directory}")
             else:
-                logger.warning(f"'{directory}' already deleted or never existed")
+                logger.warning(f"'{directory}' already deleted " f"or never existed")
         except Exception as e:
             logger.error(
                 f"Failed to delete directory '{directory}': {e}",
@@ -165,25 +148,34 @@ class WorkspaceService:
             )
 
     @classmethod
-    async def process_workspace_deletion(
-        cls, db: Session, remote_bucket_name: str, workspace_id: str, user_id: str
+    async def initiate_workspace_deletion(
+        cls,
+        db: Session,
+        remote_bucket_name: str,
+        workspace_id: str,
+        user_id: str,
     ) -> Tuple[bool, str]:
         """
-        Delete workspace with row-level locking for concurrent request protection.
+        API entry point for workspace deletion.
+        Creates a background task and processes deletion.
 
         Returns:
             Tuple of (success: bool, message: str)
         """
         try:
-            # Acquire exclusive lock on workspace row using with_for_update
-            # nowait=True causes immediate failure if row is already locked
+            # Check for active task before acquiring row lock
+            if BackgroundTaskService.has_active_workspace_task(int(workspace_id)):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Workspace deletion already in progress",
+                )
+
             stmt = (
                 select(Workspace)
                 .where(
                     Workspace.id == workspace_id,
                     Workspace.user_id == user_id,
                     Workspace.deleted.is_(False),
-                    Workspace.deletion_state != WorkspaceStatus.DELETING,
                 )
                 .with_for_update(nowait=True)
             )
@@ -194,45 +186,73 @@ class WorkspaceService:
             if not ws:
                 raise HTTPException(
                     status_code=404,
-                    detail="Workspace not found or already being deleted",
+                    detail="Workspace not found or already deleted",
                 )
 
-            # Mark workspace as DELETING to prevent new operations
-            ws.deletion_state = WorkspaceStatus.DELETING
+            # Create background task as "in progress" marker
+            task_id = BackgroundTaskService.queue_workspace_deletion(
+                user_id=int(user_id),
+                workspace_id=int(workspace_id),
+            )
+            BackgroundTaskService.mark_in_progress(task_id)
             db.commit()
 
             try:
-                # Delete workspace storage files
-                await cls.delete_workspace_contents(db, ws, remote_bucket_name)
+                failed_uids = await cls.delete_workspace_contents(
+                    db, ws, remote_bucket_name
+                )
 
-                # Commit all DB changes
+                if not failed_uids:
+                    db.commit()
+                    BackgroundTaskService.mark_completed(task_id)
+                    return True, "Workspace deleted successfully"
+
+                # Partial failure: queue failed experiments
+                for uid in failed_uids:
+                    BackgroundTaskService.queue_experiment_deletion(
+                        user_id=ws.user_id,
+                        workspace_id=ws.id,
+                        experiment_uid=uid,
+                    )
+
+                failed_count = len(failed_uids)
+                BackgroundTaskService.mark_failed(
+                    task_id,
+                    f"{failed_count} experiments failed",
+                )
                 db.commit()
-                return True, "Workspace deleted successfully"
+                raise HTTPException(
+                    status_code=status.HTTP_207_MULTI_STATUS,
+                    detail=(
+                        f"Partial deletion: {failed_count} "
+                        f"experiments failed to delete. "
+                        f"Queued for background retry."
+                    ),
+                )
 
+            except HTTPException:
+                raise
             except Exception as e:
-                # Rollback workspace status if deletion fails
-                ws.deletion_state = WorkspaceStatus.ACTIVE
-                db.commit()
-                raise e
+                BackgroundTaskService.mark_failed(task_id, str(e)[:500])
+                raise
 
         except OperationalError as e:
             db.rollback()
-            # Check if this is a lock acquisition failure
             if (
                 "could not obtain lock" in str(e).lower()
                 or "lock wait" in str(e).lower()
             ):
                 logger.warning(
-                    "Workspace %s is being modified by another request",
+                    "Workspace %s is being modified by " "another request",
                     workspace_id,
                 )
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail="Workspace is being modified by another request",
+                    detail=("Workspace is being modified by " "another request"),
                 )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Database error during workspace deletion: {workspace_id}",
+                detail=("Database error during workspace " f"deletion: {workspace_id}"),
             )
         except HTTPException:
             db.rollback()
@@ -247,37 +267,31 @@ class WorkspaceService:
             )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to delete or update workspace {workspace_id}.",
+                detail=(f"Failed to delete or update " f"workspace {workspace_id}."),
             )
 
     @classmethod
-    async def retry_partial_deletion(
+    async def execute_workspace_deletion(
         cls,
         db: Session,
         remote_bucket_name: str,
-        workspace_id: str,
-        user_id: str,
+        workspace_id: int,
+        user_id: int,
     ) -> Tuple[bool, str]:
         """
-        Retry deletion for a workspace that had partial deletion failure.
-
-        Args:
-            db: Database session
-            remote_bucket_name: S3 bucket name
-            workspace_id: Workspace to retry deletion
-            user_id: User who owns the workspace
+        Worker entry point for workspace deletion.
+        Task already exists and is marked in_progress by worker.
 
         Returns:
             Tuple of (success: bool, message: str)
         """
         try:
-            # Get workspace with partial delete status
             stmt = (
                 select(Workspace)
                 .where(
                     Workspace.id == workspace_id,
                     Workspace.user_id == user_id,
-                    Workspace.deletion_state == WorkspaceStatus.PARTIAL_DELETE,
+                    Workspace.deleted.is_(False),
                 )
                 .with_for_update(nowait=True)
             )
@@ -286,104 +300,51 @@ class WorkspaceService:
             ws = result.scalar_one_or_none()
 
             if not ws:
-                return False, "Workspace not found or not in partial deletion state"
+                return True, "Already deleted"
 
-            # Get failed experiment UIDs from background tasks
-            failed_tasks = BackgroundTaskService.get_failed_tasks_for_workspace(
-                workspace_id=ws.id,
-                task_type=BackgroundTaskType.EXPERIMENT.value,
+            failed_uids = await cls.delete_workspace_contents(
+                db, ws, remote_bucket_name
             )
-            failed_uids = [t.resource_id for t in failed_tasks]
 
             if not failed_uids:
-                ws.deleted = True
-                ws.deletion_state = WorkspaceStatus.DELETED
                 db.commit()
-                return (
-                    True,
-                    "Workspace deletion completed (no failed experiments)",
-                )
+                return True, "Workspace deleted successfully"
 
-            # Mark as deleting for retry
-            ws.deletion_state = WorkspaceStatus.DELETING
-            db.commit()
-
-            # Retry deletion for failed experiments
-            still_failed = []
+            # Queue failed experiments for background retry
             for uid in failed_uids:
-                try:
-                    success = await ExperimentService.delete_experiment(
-                        db, remote_bucket_name, str(ws.id), uid, auto_commit=False
-                    )
-                    if not success:
-                        still_failed.append(uid)
-                except Exception as e:
-                    logger.error(f"Retry deletion failed for {uid}: {e}")
-                    still_failed.append(uid)
-
-            if still_failed:
-                ws.deletion_state = WorkspaceStatus.PARTIAL_DELETE
-                for uid in still_failed:
-                    BackgroundTaskService.queue_experiment_deletion(
-                        user_id=ws.user_id,
-                        workspace_id=ws.id,
-                        experiment_uid=uid,
-                    )
-                logger.warning(
-                    "Retry partial deletion: %d experiments still "
-                    "failing for workspace %s",
-                    len(still_failed),
-                    str(ws.id),
-                )
-                db.commit()
-                return (
-                    False,
-                    f"Retry failed for {len(still_failed)} experiments",
-                )
-            else:
-                await cls.delete_workspace_files(
-                    workspace_id=str(ws.id),
-                    remote_bucket_name=remote_bucket_name,
-                )
-                await cls.delete_workspace_files(
-                    workspace_id=str(ws.id),
-                    remote_bucket_name=remote_bucket_name,
-                    is_input_dir=True,
+                BackgroundTaskService.queue_experiment_deletion(
+                    user_id=ws.user_id,
+                    workspace_id=ws.id,
+                    experiment_uid=uid,
                 )
 
-                ws.deleted = True
-                ws.deletion_state = WorkspaceStatus.DELETED
-                db.commit()
-                return (
-                    True,
-                    "Workspace deletion completed successfully",
-                )
+            db.commit()
+            return (
+                False,
+                f"{len(failed_uids)} experiments failed",
+            )
 
         except OperationalError as e:
             db.rollback()
             if "could not obtain lock" in str(e).lower():
-                return False, "Workspace is being modified by another request"
+                return (
+                    False,
+                    "Workspace is being modified by " "another request",
+                )
             return False, f"Database error: {e}"
         except Exception as e:
             db.rollback()
-            logger.error(f"Retry partial deletion failed: {e}", exc_info=True)
+            logger.error(
+                f"Worker workspace deletion failed: {e}",
+                exc_info=True,
+            )
             return False, f"Error: {e}"
 
     @staticmethod
     def get_user_accessible_workspace_ids(db: Session, user_id: int) -> List[int]:
         """
-        Get all workspace IDs that a user has access to (owned or shared).
-
-        This function centralizes the workspace access query logic that was
-        duplicated across cloud_utils.py, workspace.py router,
-        and s3_storage_monitor.py.
-
-        Args:
-            db: Database session
-            user_id: User ID to get accessible workspaces for
-
-        Returns:
-            List of workspace IDs the user can access
+        Get all workspace IDs that a user has access to
+        (owned or shared).
         """
         try:
             workspaces_query = (
@@ -408,6 +369,6 @@ class WorkspaceService:
 
         except Exception as e:
             logger.error(
-                f"Failed to get accessible workspace IDs for user {user_id}: {e}"
+                "Failed to get accessible workspace IDs " f"for user {user_id}: {e}"
             )
             return []

@@ -257,6 +257,44 @@ class BackgroundTaskService:
             return None
 
     @staticmethod
+    def has_active_workspace_task(workspace_id: int) -> bool:
+        """Check if a workspace has an active deletion task."""
+        return BackgroundTaskService.get_active_workspace_task(workspace_id) is not None
+
+    @staticmethod
+    def get_active_workspace_task(
+        workspace_id: int,
+    ) -> Optional[BackgroundTask]:
+        """
+        Get the active deletion task for a workspace.
+
+        Returns:
+            BackgroundTask if active, None otherwise
+        """
+        try:
+            with session_scope() as db:
+                result = db.execute(
+                    select(BackgroundTask).where(
+                        BackgroundTask.resource_id == str(workspace_id),
+                        BackgroundTask.task_type == BackgroundTaskType.WORKSPACE.value,
+                        BackgroundTask.status.in_(
+                            [
+                                BackgroundTaskStatus.QUEUED.value,
+                                BackgroundTaskStatus.IN_PROGRESS.value,
+                                BackgroundTaskStatus.RETRYING.value,
+                            ]
+                        ),
+                    )
+                ).first()
+                return result[0] if result else None
+        except Exception as e:
+            logger.error(
+                "Failed to get active workspace task "
+                f"for workspace {workspace_id}: {e}"
+            )
+            return None
+
+    @staticmethod
     def get_failed_tasks_for_workspace(
         workspace_id: int,
         task_type: str,

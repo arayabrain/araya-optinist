@@ -652,7 +652,7 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
         )
         for ws in workspaces:
             try:
-                await WorkspaceService.process_workspace_deletion(
+                await WorkspaceService.initiate_workspace_deletion(
                     db, user_db.remote_bucket_name, ws.id, user_id
                 )
             except Exception as e:
@@ -809,7 +809,7 @@ async def resume_deletion_from_step(record: UserDeletionRecord, db: Session) -> 
         )
         for ws in workspaces:
             try:
-                await WorkspaceService.process_workspace_deletion(
+                await WorkspaceService.initiate_workspace_deletion(
                     db, user_db.remote_bucket_name, ws.id, record.user_id
                 )
             except Exception as e:

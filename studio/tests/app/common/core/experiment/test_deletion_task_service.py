@@ -244,6 +244,80 @@ class TestBackgroundTaskServicePending:
         assert tasks == []
 
 
+class TestBackgroundTaskServiceActiveWorkspaceTask:
+    """Tests for active workspace task detection."""
+
+    @patch("studio.app.common.core.experiment" ".background_task_service.session_scope")
+    def test_has_active_workspace_task_true(self, mock_session):
+        """Should return True when active task exists."""
+        from studio.app.common.core.experiment.background_task_service import (
+            BackgroundTaskService,
+        )
+
+        mock_db = MagicMock()
+        mock_session.return_value.__enter__.return_value = mock_db
+
+        mock_task = MagicMock(spec=BackgroundTask)
+        mock_result = MagicMock()
+        mock_result.first.return_value = (mock_task,)
+        mock_db.execute.return_value = mock_result
+
+        assert BackgroundTaskService.has_active_workspace_task(1) is True
+
+    @patch("studio.app.common.core.experiment" ".background_task_service.session_scope")
+    def test_has_active_workspace_task_false(self, mock_session):
+        """Should return False when no active task."""
+        from studio.app.common.core.experiment.background_task_service import (
+            BackgroundTaskService,
+        )
+
+        mock_db = MagicMock()
+        mock_session.return_value.__enter__.return_value = mock_db
+
+        mock_result = MagicMock()
+        mock_result.first.return_value = None
+        mock_db.execute.return_value = mock_result
+
+        assert BackgroundTaskService.has_active_workspace_task(1) is False
+
+    @patch("studio.app.common.core.experiment" ".background_task_service.session_scope")
+    def test_get_active_workspace_task_returns_task(self, mock_session):
+        """Should return the active task."""
+        from studio.app.common.core.experiment.background_task_service import (
+            BackgroundTaskService,
+        )
+
+        mock_db = MagicMock()
+        mock_session.return_value.__enter__.return_value = mock_db
+
+        mock_task = MagicMock(spec=BackgroundTask)
+        mock_task.id = 10
+        mock_result = MagicMock()
+        mock_result.first.return_value = (mock_task,)
+        mock_db.execute.return_value = mock_result
+
+        task = BackgroundTaskService.get_active_workspace_task(1)
+        assert task is not None
+        assert task.id == 10
+
+    @patch("studio.app.common.core.experiment" ".background_task_service.session_scope")
+    def test_get_active_workspace_task_returns_none(self, mock_session):
+        """Should return None when no active task."""
+        from studio.app.common.core.experiment.background_task_service import (
+            BackgroundTaskService,
+        )
+
+        mock_db = MagicMock()
+        mock_session.return_value.__enter__.return_value = mock_db
+
+        mock_result = MagicMock()
+        mock_result.first.return_value = None
+        mock_db.execute.return_value = mock_result
+
+        task = BackgroundTaskService.get_active_workspace_task(1)
+        assert task is None
+
+
 class TestBackgroundTaskServiceCleanup:
     """Tests for cleanup of old tasks."""
 

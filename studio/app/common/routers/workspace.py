@@ -304,7 +304,7 @@ async def delete_workspace(
     current_user: User = Depends(get_current_user),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
-    await WorkspaceService.process_workspace_deletion(
+    await WorkspaceService.initiate_workspace_deletion(
         db, remote_bucket_name, workspace_id, current_user.id
     )
 

@@ -216,8 +216,9 @@ class BackgroundTaskWorker:
         """Delete a workspace and all its experiments."""
         try:
             with session_scope() as db:
-                success, message = await WorkspaceService.process_workspace_deletion(
+                success, message = await WorkspaceService.execute_workspace_deletion(
                     db=db,
+                    remote_bucket_name=(cls._get_remote_bucket_name()),
                     workspace_id=workspace_id,
                     user_id=user_id,
                 )
