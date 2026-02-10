@@ -1,14 +1,14 @@
 from dataclasses import dataclass
-from enum import Enum
 from typing import Dict, Optional
 
 from psutil import Process
 
+from studio.app.common.core.compat import StrEnum
 from studio.app.common.core.experiment.experiment import ExptFunction
 from studio.app.common.core.workflow.workflow import Edge, Message, Node
 
 
-class CompleteStatus(Enum):
+class CompleteStatus(StrEnum):
     """Post-run completion status (e.g. remote storage upload)."""
 
     PROCESSING = "processing"
