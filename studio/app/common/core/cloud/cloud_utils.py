@@ -28,6 +28,98 @@ from studio.app.common.schemas.storage import LimitWarning
 logger = AppLogger.get_logger()
 
 
+async def ensure_user_bucket_exists(
+    user_id: int, db=None, auto_commit: bool = True
+) -> Optional[str]:
+    """
+    Ensure a user has a valid S3 bucket. Creates one if missing.
+
+    This function handles:
+    1. User has no bucket name in DB -> generate name, create bucket, save to DB
+    2. User has bucket name but bucket doesn't exist -> create the bucket
+
+    Args:
+        user_id: The user's database ID
+        db: Optional database session. If None, creates a new session.
+        auto_commit: If True, commits DB changes. Set False when caller manages
+            the transaction (e.g., during user creation).
+
+    Returns:
+        The bucket name if successful, None if failed or storage not available.
+    """
+    from studio.app.common.core.storage.remote_storage_controller import (
+        RemoteStorageController,
+    )
+
+    if not RemoteStorageController.is_available():
+        logger.debug("Remote storage not available, skipping bucket creation")
+        return None
+
+    try:
+        # Use provided session or create new one
+        if db is None:
+            with session_scope() as db:
+                return await _ensure_user_bucket_exists_impl(
+                    user_id, db, auto_commit=True
+                )
+        else:
+            return await _ensure_user_bucket_exists_impl(user_id, db, auto_commit)
+
+    except Exception as e:
+        logger.error(f"Failed to ensure bucket exists for user {user_id}: {e}")
+        return None
+
+
+async def _ensure_user_bucket_exists_impl(
+    user_id: int, db, auto_commit: bool = True
+) -> Optional[str]:
+    """Implementation of ensure_user_bucket_exists with db session."""
+    from studio.app.common.core.storage.remote_storage_controller import (
+        RemoteStorageController,
+        RemoteStorageSimpleWriter,
+    )
+
+    # Get user from DB
+    user = db.query(UserModel).filter(UserModel.id == user_id).first()
+    if not user:
+        logger.error(f"User {user_id} not found in database")
+        return None
+
+    # Check if user already has a bucket name
+    bucket_name = None
+    if user.attributes and isinstance(user.attributes, dict):
+        bucket_name = user.attributes.get("remote_bucket_name")
+
+    # Generate new bucket name if not exists
+    if not bucket_name:
+        bucket_name = RemoteStorageController.create_user_bucket_name(id=user_id)
+        logger.info(f"Generated new bucket name for user {user_id}: {bucket_name}")
+
+    # Create bucket (idempotent - will succeed if already exists)
+    try:
+        async with RemoteStorageSimpleWriter(bucket_name) as storage:
+            await storage.create_bucket()
+        logger.info(f"Bucket created/verified for user {user_id}: {bucket_name}")
+    except Exception as e:
+        # Check if bucket already exists (not an error)
+        if "BucketAlreadyOwnedByYou" in str(e) or "BucketAlreadyExists" in str(e):
+            logger.debug(f"Bucket already exists for user {user_id}: {bucket_name}")
+        else:
+            logger.error(f"Failed to create bucket for user {user_id}: {e}")
+            raise
+
+    # Update user attributes if bucket name was newly generated
+    if not user.attributes or not user.attributes.get("remote_bucket_name"):
+        new_attributes = dict(user.attributes) if user.attributes else {}
+        new_attributes["remote_bucket_name"] = bucket_name
+        user.attributes = new_attributes
+        if auto_commit:
+            db.commit()
+        logger.info(f"Updated user {user_id} attributes with bucket name")
+
+    return bucket_name
+
+
 def _get_fallback_storage_quota(user_id: int) -> Dict[str, Any]:
     """
     Get fallback storage quota when storage usage table doesn't exist.
