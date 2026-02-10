@@ -383,7 +383,7 @@ class TestActivityCacheInvalidation:
         assert TEST_USER_ID not in _premium_activity_cache
 
     def test_invalidate_activity_cache_clears_both_caches(self):
-        """invalidate_activity_cache should clear both free and premium caches"""
+        """invalidate_activity_cache should clear both caches"""
         from studio.app.common.core.middleware.user_activity_middleware import (
             _free_activity_cache,
             _premium_activity_cache,
@@ -419,7 +419,7 @@ class TestActivityCacheInvalidation:
         _premium_activity_cache.clear()
 
         # Should not raise
-        invalidate_activity_cache(999999)  # Non-existent user ID
+        invalidate_activity_cache(999999)
 
     def test_rapid_relogin_gets_fresh_activity(self):
         """After cache invalidation, re-login should record fresh activity"""
@@ -466,7 +466,7 @@ class TestLoggedOutUserTracking:
         assert TEST_USER_ID in _logged_out_users
 
     def test_is_user_logged_out_returns_true_for_recent_logout(self):
-        """is_user_logged_out should return True for recently logged out user"""
+        """is_user_logged_out returns True for recently logged out user"""
         from studio.app.common.core.middleware.user_activity_middleware import (
             is_user_logged_out,
             mark_user_logged_out,
@@ -475,8 +475,8 @@ class TestLoggedOutUserTracking:
         mark_user_logged_out(TEST_USER_ID)
         assert is_user_logged_out(TEST_USER_ID) is True
 
-    def test_is_user_logged_out_returns_false_for_non_logged_out_user(self):
-        """is_user_logged_out should return False for user not logged out"""
+    def test_is_user_logged_out_returns_false_for_non_logged_out(self):
+        """is_user_logged_out returns False for user not logged out"""
         from studio.app.common.core.middleware.user_activity_middleware import (
             is_user_logged_out,
         )
@@ -494,7 +494,9 @@ class TestLoggedOutUserTracking:
 
         # Set old logout timestamp
         with _logged_out_lock:
-            _logged_out_users[TEST_USER_ID] = time.time() - _LOGGED_OUT_TTL_SECONDS - 1
+            _logged_out_users[TEST_USER_ID] = (
+                time.time() - _LOGGED_OUT_TTL_SECONDS - 1
+            )
 
         # Should return False (expired)
         assert is_user_logged_out(TEST_USER_ID) is False
@@ -516,7 +518,7 @@ class TestLoggedOutUserTracking:
         clear_logged_out_status(TEST_USER_ID)
         assert TEST_USER_ID not in _logged_out_users
 
-    def test_clear_logged_out_status_does_not_raise_for_nonexistent_user(self):
+    def test_clear_logged_out_status_no_raise_for_nonexistent(self):
         """clear_logged_out_status should not raise for non-existent user"""
         from studio.app.common.core.middleware.user_activity_middleware import (
             clear_logged_out_status,
@@ -526,8 +528,8 @@ class TestLoggedOutUserTracking:
         clear_logged_out_status(999999)
 
     @pytest.mark.asyncio
-    async def test_free_activity_update_skipped_for_logged_out_user(self):
-        """Background activity update should be skipped for logged out user"""
+    async def test_free_activity_update_skipped_for_logged_out(self):
+        """Background activity update skipped for logged out user"""
         from studio.app.common.core.middleware.user_activity_middleware import (
             _update_free_user_activity_async,
             mark_user_logged_out,
@@ -547,8 +549,8 @@ class TestLoggedOutUserTracking:
             mock_sync.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_premium_activity_update_skipped_for_logged_out_user(self):
-        """Background premium activity update should be skipped for logged out user"""
+    async def test_premium_activity_skipped_for_logged_out(self):
+        """Background premium activity skipped for logged out user"""
         from studio.app.common.core.middleware.user_activity_middleware import (
             _update_premium_user_activity_async,
             mark_user_logged_out,
@@ -568,7 +570,7 @@ class TestLoggedOutUserTracking:
             mock_sync.assert_not_called()
 
     def test_free_activity_sync_skipped_for_logged_out_user(self):
-        """Sync DB update should be skipped for logged out user (second check)"""
+        """Sync DB update skipped for logged out user (second check)"""
         from studio.app.common.core.middleware.user_activity_middleware import (
             _update_free_user_activity_sync,
             mark_user_logged_out,
@@ -581,8 +583,8 @@ class TestLoggedOutUserTracking:
         result = _update_free_user_activity_sync(TEST_USER_ID)
         assert result is False
 
-    def test_premium_activity_sync_skipped_for_logged_out_user(self):
-        """Sync premium DB update should be skipped for logged out user"""
+    def test_premium_activity_sync_skipped_for_logged_out(self):
+        """Sync premium DB update skipped for logged out user"""
         from studio.app.common.core.middleware.user_activity_middleware import (
             _update_premium_user_activity_sync,
             mark_user_logged_out,
@@ -600,7 +602,7 @@ class TestClearFreeUserLoggedOutAt:
     """Test Case 58/62: Clear logged_out_at on re-login"""
 
     def test_clear_logged_out_at_clears_timestamp(self):
-        """clear_free_user_logged_out_at should clear logged_out_at field"""
+        """clear_free_user_logged_out_at should clear logged_out_at"""
         from datetime import datetime
         from unittest.mock import MagicMock, patch
 
@@ -617,9 +619,12 @@ class TestClearFreeUserLoggedOutAt:
         )
 
         with patch(
-            "studio.app.common.core.middleware.user_activity_middleware.session_scope"
+            "studio.app.common.core.middleware."
+            "user_activity_middleware.session_scope"
         ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.return_value = mock_session
+            mock_session_scope.return_value.__enter__.return_value = (
+                mock_session
+            )
 
             result = clear_free_user_logged_out_at(TEST_USER_ID)
 
@@ -645,20 +650,27 @@ class TestClearFreeUserLoggedOutAt:
         )
 
         with patch(
-            "studio.app.common.core.middleware.user_activity_middleware.session_scope"
+            "studio.app.common.core.middleware."
+            "user_activity_middleware.session_scope"
         ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.return_value = mock_session
+            mock_session_scope.return_value.__enter__.return_value = (
+                mock_session
+            )
             with patch(
-                "studio.app.common.core.middleware.user_activity_middleware."
-                "get_current_datetime"
+                "studio.app.common.core.middleware."
+                "user_activity_middleware.get_current_datetime"
             ) as mock_now:
-                mock_now.return_value = datetime(2025, 1, 15, 12, 0, 0)
+                mock_now.return_value = datetime(
+                    2025, 1, 15, 12, 0, 0
+                )
                 clear_free_user_logged_out_at(TEST_USER_ID)
 
-                assert mock_assignment.last_activity == datetime(2025, 1, 15, 12, 0, 0)
+                assert mock_assignment.last_activity == datetime(
+                    2025, 1, 15, 12, 0, 0
+                )
 
-    def test_clear_logged_out_at_returns_true_if_no_assignment(self):
-        """clear_free_user_logged_out_at should return True if no assignment exists"""
+    def test_clear_logged_out_at_true_if_no_assignment(self):
+        """Should return True if no assignment exists"""
         from unittest.mock import MagicMock, patch
 
         from studio.app.common.core.middleware.user_activity_middleware import (
@@ -666,20 +678,25 @@ class TestClearFreeUserLoggedOutAt:
         )
 
         mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = None
+        mock_session.query.return_value.filter.return_value.first.return_value = (
+            None
+        )
 
         with patch(
-            "studio.app.common.core.middleware.user_activity_middleware.session_scope"
+            "studio.app.common.core.middleware."
+            "user_activity_middleware.session_scope"
         ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.return_value = mock_session
+            mock_session_scope.return_value.__enter__.return_value = (
+                mock_session
+            )
 
             result = clear_free_user_logged_out_at(TEST_USER_ID)
 
             assert result is True
             mock_session.commit.assert_not_called()
 
-    def test_clear_logged_out_at_returns_true_if_already_null(self):
-        """clear_free_user_logged_out_at should return True if already None"""
+    def test_clear_logged_out_at_true_if_already_null(self):
+        """Should return True if already None"""
         from unittest.mock import MagicMock, patch
 
         from studio.app.common.core.middleware.user_activity_middleware import (
@@ -694,17 +711,20 @@ class TestClearFreeUserLoggedOutAt:
         )
 
         with patch(
-            "studio.app.common.core.middleware.user_activity_middleware.session_scope"
+            "studio.app.common.core.middleware."
+            "user_activity_middleware.session_scope"
         ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.return_value = mock_session
+            mock_session_scope.return_value.__enter__.return_value = (
+                mock_session
+            )
 
             result = clear_free_user_logged_out_at(TEST_USER_ID)
 
             assert result is True
             mock_session.commit.assert_not_called()
 
-    def test_clear_logged_out_at_returns_false_on_exception(self):
-        """clear_free_user_logged_out_at should return False on DB error"""
+    def test_clear_logged_out_at_false_on_exception(self):
+        """Should return False on DB error"""
         from unittest.mock import patch
 
         from studio.app.common.core.middleware.user_activity_middleware import (
@@ -712,10 +732,11 @@ class TestClearFreeUserLoggedOutAt:
         )
 
         with patch(
-            "studio.app.common.core.middleware.user_activity_middleware.session_scope"
+            "studio.app.common.core.middleware."
+            "user_activity_middleware.session_scope"
         ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.side_effect = Exception(
-                "DB connection failed"
+            mock_session_scope.return_value.__enter__.side_effect = (
+                Exception("DB connection failed")
             )
 
             result = clear_free_user_logged_out_at(TEST_USER_ID)
@@ -723,7 +744,7 @@ class TestClearFreeUserLoggedOutAt:
             assert result is False
 
     def test_clear_logged_out_at_prevents_cleanup_after_relogin(self):
-        """Clearing logged_out_at should prevent cleanup job from selecting user"""
+        """Clearing logged_out_at prevents cleanup job selecting user"""
         from unittest.mock import MagicMock, patch
 
         from studio.app.common.core.middleware.user_activity_middleware import (
@@ -739,13 +760,123 @@ class TestClearFreeUserLoggedOutAt:
         )
 
         with patch(
-            "studio.app.common.core.middleware.user_activity_middleware.session_scope"
+            "studio.app.common.core.middleware."
+            "user_activity_middleware.session_scope"
         ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.return_value = mock_session
+            mock_session_scope.return_value.__enter__.return_value = (
+                mock_session
+            )
 
             clear_free_user_logged_out_at(TEST_USER_ID)
 
             # After clearing, logged_out_at should be None
-            # This means cleanup job query (WHERE logged_out_at IS NOT NULL)
+            # Cleanup query (WHERE logged_out_at IS NOT NULL)
             # won't select this user
             assert mock_assignment.logged_out_at is None
+
+
+class TestHeartbeatFailureTracking:
+    """Case 71: Heartbeat failure tracking for grace period"""
+
+    def test_increment_heartbeat_failures(self):
+        """increment_heartbeat_failures should increment counter"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            increment_heartbeat_failures,
+        )
+
+        mock_result = MagicMock()
+        mock_result.rowcount = 1
+        mock_row = (3,)
+
+        mock_session = MagicMock()
+        mock_session.execute.side_effect = [
+            mock_result,
+            MagicMock(fetchone=lambda: mock_row),
+        ]
+
+        with patch(
+            "studio.app.common.core.middleware."
+            "user_activity_middleware.session_scope"
+        ) as mock_session_scope:
+            mock_session_scope.return_value.__enter__.return_value = (
+                mock_session
+            )
+
+            count = increment_heartbeat_failures(TEST_USER_ID)
+
+            assert count == 3
+            mock_session.commit.assert_called_once()
+
+    def test_returns_zero_if_no_assignment(self):
+        """Should return 0 if no active assignment"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            increment_heartbeat_failures,
+        )
+
+        mock_result = MagicMock()
+        mock_result.rowcount = 0
+
+        mock_session = MagicMock()
+        mock_session.execute.return_value = mock_result
+
+        with patch(
+            "studio.app.common.core.middleware."
+            "user_activity_middleware.session_scope"
+        ) as mock_session_scope:
+            mock_session_scope.return_value.__enter__.return_value = (
+                mock_session
+            )
+
+            count = increment_heartbeat_failures(TEST_USER_ID)
+
+            assert count == 0
+
+    def test_returns_negative_on_error(self):
+        """Should return -1 on DB error"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            increment_heartbeat_failures,
+        )
+
+        with patch(
+            "studio.app.common.core.middleware."
+            "user_activity_middleware.session_scope"
+        ) as mock_session_scope:
+            mock_session_scope.return_value.__enter__.side_effect = (
+                Exception("DB connection failed")
+            )
+
+            count = increment_heartbeat_failures(TEST_USER_ID)
+
+            assert count == -1
+
+    def test_premium_sync_resets_heartbeat_failures(self):
+        """Successful heartbeat should reset heartbeat_failures"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _update_premium_user_activity_sync,
+        )
+
+        mock_result = MagicMock()
+        mock_result.rowcount = 1
+
+        mock_session = MagicMock()
+        mock_session.execute.return_value = mock_result
+
+        mw_path = (
+            "studio.app.common.core.middleware."
+            "user_activity_middleware"
+        )
+        with patch(
+            f"{mw_path}.session_scope"
+        ) as mock_session_scope:
+            mock_session_scope.return_value.__enter__.return_value = (
+                mock_session
+            )
+
+            result = _update_premium_user_activity_sync(
+                TEST_USER_ID
+            )
+
+            assert result is True
+            call_args = mock_session.execute.call_args
+            sql_text = str(call_args[0][0])
+            assert "heartbeat_failures = 0" in sql_text

@@ -939,12 +939,11 @@ class S3StorageController(BaseRemoteStorageController):
                 return False
 
         # Update user storage with the total bytes uploaded (incremental approach)
+        # Uses idempotent operation to prevent double-counting on retries
         if total_bytes_uploaded > 0:
             try:
-                # Get user_id from workspace_id
-                # Import cloud_utils here to avoid circular imports
-                from studio.app.common.core.cloud.cloud_utils import (
-                    increment_user_storage,
+                from studio.app.common.core.cloud.storage_operations import (
+                    increment_storage_idempotent,
                 )
 
                 workspace_id_int = int(workspace_id)
@@ -958,16 +957,30 @@ class S3StorageController(BaseRemoteStorageController):
                     user_id = result_row[0] if result_row else None
 
                 if user_id:
-                    increment_user_storage(user_id, total_bytes_uploaded)
-                    logger.info(
-                        f"Incremented storage for user {user_id} by "
-                        f"{total_bytes_uploaded:,} bytes after upload"
+                    # Use idempotent key to prevent double-counting
+                    idempotency_key = f"exp_upload_{workspace_id}_{unique_id}"
+                    success = increment_storage_idempotent(
+                        user_id, total_bytes_uploaded, idempotency_key
                     )
+                    if success:
+                        logger.info(
+                            f"Incremented storage for user {user_id} by "
+                            f"{total_bytes_uploaded:,} bytes after upload"
+                        )
+                    else:
+                        logger.warning(
+                            f"Storage increment returned false for user {user_id} "
+                            f"(key: {idempotency_key}). Will be retried by "
+                            "reconciliation job."
+                        )
             except Exception as storage_error:
                 logger.warning(
-                    f"Failed to update storage after upload: {storage_error}"
+                    f"Failed to update storage after upload: {storage_error}. "
+                    "Pending operation will be retried by reconciliation job."
                 )
                 # Don't fail the upload if storage tracking fails
+                # The pending operation will be recovered by
+                # process_stale_pending_operations()
 
         return True
 
@@ -1022,12 +1035,11 @@ class S3StorageController(BaseRemoteStorageController):
             raise
 
         # Update user storage with the total bytes deleted (incremental approach)
+        # Uses idempotent operation to prevent double-counting on retries
         if total_bytes_deleted > 0:
             try:
-                # Get user_id from workspace_id
-                # Import cloud_utils here to avoid circular imports
-                from studio.app.common.core.cloud.cloud_utils import (
-                    decrement_user_storage,
+                from studio.app.common.core.cloud.storage_operations import (
+                    decrement_storage_idempotent,
                 )
 
                 workspace_id_int = int(workspace_id)
@@ -1041,16 +1053,30 @@ class S3StorageController(BaseRemoteStorageController):
                     user_id = result_row[0] if result_row else None
 
                 if user_id:
-                    decrement_user_storage(user_id, total_bytes_deleted)
-                    logger.info(
-                        f"Decremented storage for user {user_id} by "
-                        f"{total_bytes_deleted:,} bytes after deletion"
+                    # Use idempotent key to prevent double-counting
+                    idempotency_key = f"exp_delete_{workspace_id}_{unique_id}"
+                    success = decrement_storage_idempotent(
+                        user_id, total_bytes_deleted, idempotency_key
                     )
+                    if success:
+                        logger.info(
+                            f"Decremented storage for user {user_id} by "
+                            f"{total_bytes_deleted:,} bytes after deletion"
+                        )
+                    else:
+                        logger.warning(
+                            f"Storage decrement returned false for user {user_id} "
+                            f"(key: {idempotency_key}). Will be retried by "
+                            "reconciliation job."
+                        )
             except Exception as storage_error:
                 logger.warning(
-                    f"Failed to update storage after deletion: {storage_error}"
+                    f"Failed to update storage after deletion: {storage_error}. "
+                    "Pending operation will be retried by reconciliation job."
                 )
                 # Don't fail the deletion if storage tracking fails
+                # The pending operation will be recovered by
+                # process_stale_pending_operations()
 
         return True
 
