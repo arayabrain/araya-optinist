@@ -494,9 +494,7 @@ class TestLoggedOutUserTracking:
 
         # Set old logout timestamp
         with _logged_out_lock:
-            _logged_out_users[TEST_USER_ID] = (
-                time.time() - _LOGGED_OUT_TTL_SECONDS - 1
-            )
+            _logged_out_users[TEST_USER_ID] = time.time() - _LOGGED_OUT_TTL_SECONDS - 1
 
         # Should return False (expired)
         assert is_user_logged_out(TEST_USER_ID) is False
@@ -622,9 +620,7 @@ class TestClearFreeUserLoggedOutAt:
             "studio.app.common.core.middleware."
             "user_activity_middleware.session_scope"
         ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.return_value = (
-                mock_session
-            )
+            mock_session_scope.return_value.__enter__.return_value = mock_session
 
             result = clear_free_user_logged_out_at(TEST_USER_ID)
 
@@ -653,21 +649,15 @@ class TestClearFreeUserLoggedOutAt:
             "studio.app.common.core.middleware."
             "user_activity_middleware.session_scope"
         ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.return_value = (
-                mock_session
-            )
+            mock_session_scope.return_value.__enter__.return_value = mock_session
             with patch(
                 "studio.app.common.core.middleware."
                 "user_activity_middleware.get_current_datetime"
             ) as mock_now:
-                mock_now.return_value = datetime(
-                    2025, 1, 15, 12, 0, 0
-                )
+                mock_now.return_value = datetime(2025, 1, 15, 12, 0, 0)
                 clear_free_user_logged_out_at(TEST_USER_ID)
 
-                assert mock_assignment.last_activity == datetime(
-                    2025, 1, 15, 12, 0, 0
-                )
+                assert mock_assignment.last_activity == datetime(2025, 1, 15, 12, 0, 0)
 
     def test_clear_logged_out_at_true_if_no_assignment(self):
         """Should return True if no assignment exists"""
@@ -678,17 +668,13 @@ class TestClearFreeUserLoggedOutAt:
         )
 
         mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = (
-            None
-        )
+        mock_session.query.return_value.filter.return_value.first.return_value = None
 
         with patch(
             "studio.app.common.core.middleware."
             "user_activity_middleware.session_scope"
         ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.return_value = (
-                mock_session
-            )
+            mock_session_scope.return_value.__enter__.return_value = mock_session
 
             result = clear_free_user_logged_out_at(TEST_USER_ID)
 
@@ -714,9 +700,7 @@ class TestClearFreeUserLoggedOutAt:
             "studio.app.common.core.middleware."
             "user_activity_middleware.session_scope"
         ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.return_value = (
-                mock_session
-            )
+            mock_session_scope.return_value.__enter__.return_value = mock_session
 
             result = clear_free_user_logged_out_at(TEST_USER_ID)
 
@@ -735,8 +719,8 @@ class TestClearFreeUserLoggedOutAt:
             "studio.app.common.core.middleware."
             "user_activity_middleware.session_scope"
         ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.side_effect = (
-                Exception("DB connection failed")
+            mock_session_scope.return_value.__enter__.side_effect = Exception(
+                "DB connection failed"
             )
 
             result = clear_free_user_logged_out_at(TEST_USER_ID)
@@ -763,9 +747,7 @@ class TestClearFreeUserLoggedOutAt:
             "studio.app.common.core.middleware."
             "user_activity_middleware.session_scope"
         ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.return_value = (
-                mock_session
-            )
+            mock_session_scope.return_value.__enter__.return_value = mock_session
 
             clear_free_user_logged_out_at(TEST_USER_ID)
 
@@ -777,6 +759,14 @@ class TestClearFreeUserLoggedOutAt:
 
 class TestHeartbeatFailureTracking:
     """Case 71: Heartbeat failure tracking for grace period"""
+
+    def setup_method(self):
+        """Clear logged out state to avoid leaking from other tests"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _logged_out_users,
+        )
+
+        _logged_out_users.clear()
 
     def test_increment_heartbeat_failures(self):
         """increment_heartbeat_failures should increment counter"""
@@ -798,9 +788,7 @@ class TestHeartbeatFailureTracking:
             "studio.app.common.core.middleware."
             "user_activity_middleware.session_scope"
         ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.return_value = (
-                mock_session
-            )
+            mock_session_scope.return_value.__enter__.return_value = mock_session
 
             count = increment_heartbeat_failures(TEST_USER_ID)
 
@@ -823,9 +811,7 @@ class TestHeartbeatFailureTracking:
             "studio.app.common.core.middleware."
             "user_activity_middleware.session_scope"
         ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.return_value = (
-                mock_session
-            )
+            mock_session_scope.return_value.__enter__.return_value = mock_session
 
             count = increment_heartbeat_failures(TEST_USER_ID)
 
@@ -841,8 +827,8 @@ class TestHeartbeatFailureTracking:
             "studio.app.common.core.middleware."
             "user_activity_middleware.session_scope"
         ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.side_effect = (
-                Exception("DB connection failed")
+            mock_session_scope.return_value.__enter__.side_effect = Exception(
+                "DB connection failed"
             )
 
             count = increment_heartbeat_failures(TEST_USER_ID)
@@ -861,20 +847,11 @@ class TestHeartbeatFailureTracking:
         mock_session = MagicMock()
         mock_session.execute.return_value = mock_result
 
-        mw_path = (
-            "studio.app.common.core.middleware."
-            "user_activity_middleware"
-        )
-        with patch(
-            f"{mw_path}.session_scope"
-        ) as mock_session_scope:
-            mock_session_scope.return_value.__enter__.return_value = (
-                mock_session
-            )
+        mw_path = "studio.app.common.core.middleware." "user_activity_middleware"
+        with patch(f"{mw_path}.session_scope") as mock_session_scope:
+            mock_session_scope.return_value.__enter__.return_value = mock_session
 
-            result = _update_premium_user_activity_sync(
-                TEST_USER_ID
-            )
+            result = _update_premium_user_activity_sync(TEST_USER_ID)
 
             assert result is True
             call_args = mock_session.execute.call_args
