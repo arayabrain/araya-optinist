@@ -131,7 +131,7 @@ class DirTreeGetter:
         return files_list
 
 
-def get_image_shape_dict(workspace_id):
+def get_image_shape_dict(workspace_id: str):
     dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
     try:
         tiff_format_dict = JsonReader.read(
@@ -142,7 +142,7 @@ def get_image_shape_dict(workspace_id):
         return {}
 
 
-def update_image_shape(workspace_id, relative_file_path):
+def update_image_shape(workspace_id: str, relative_file_path: str):
     dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
     filepath = join_filepath([dirpath, relative_file_path])
 
@@ -289,7 +289,10 @@ def get_mat_structure_dict(workspace_id: str) -> dict:
 
 
 async def _update_and_upload_metadata(
-    workspace_id: str, filename: str, remote_bucket_name: str
+    workspace_id: str,
+    filename: str,
+    remote_bucket_name: str,
+    update_metadata: bool = True,
 ):
     """Update metadata cache and upload to S3 if needed.
 
@@ -300,13 +303,16 @@ async def _update_and_upload_metadata(
     try:
         # Determine file type and update appropriate metadata
         if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-            update_image_shape(workspace_id, filename)
+            if update_metadata:
+                update_image_shape(workspace_id, filename)
             metadata_file = MetadataCacheFile.IMAGE_SHAPE
         elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
-            update_hdf5_structure(workspace_id, filename)
+            if update_metadata:
+                update_hdf5_structure(workspace_id, filename)
             metadata_file = MetadataCacheFile.HDF5_STRUCTURE
         elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
-            update_mat_structure(workspace_id, filename)
+            if update_metadata:
+                update_mat_structure(workspace_id, filename)
             metadata_file = MetadataCacheFile.MAT_STRUCTURE
         else:
             # No metadata to update for this file type
@@ -794,22 +800,9 @@ async def delete_file(
         _remove_from_metadata_cache(workspace_id, filename)
 
         # Upload updated metadata to S3 so it stays in sync
-        if RemoteStorageController.is_available():
-            metadata_file = None
-            if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-                metadata_file = MetadataCacheFile.IMAGE_SHAPE
-            elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
-                metadata_file = MetadataCacheFile.HDF5_STRUCTURE
-            elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
-                metadata_file = MetadataCacheFile.MAT_STRUCTURE
-
-            if metadata_file:
-                async with RemoteStorageSimpleWriter(
-                    remote_bucket_name
-                ) as remote_storage_controller:
-                    await remote_storage_controller.upload_input_data(
-                        workspace_id, metadata_file
-                    )
+        await _update_and_upload_metadata(
+            workspace_id, filename, remote_bucket_name, update_metadata=False
+        )
 
         if WorkspaceDataCapacityService.is_available():
             background_tasks.add_task(
@@ -873,13 +866,16 @@ def download(
     current = 0
 
     try:
-        with open(filepath, "wb") as file, tqdm(
-            desc=filepath,
-            total=total,
-            unit="iB",
-            unit_scale=True,
-            unit_divisor=1024,
-        ) as bar:
+        with (
+            open(filepath, "wb") as file,
+            tqdm(
+                desc=filepath,
+                total=total,
+                unit="iB",
+                unit_scale=True,
+                unit_divisor=1024,
+            ) as bar,
+        ):
             for data in res.iter_content(chunk_size=chunk_size):
                 size = file.write(data)
                 current += size
