@@ -961,9 +961,7 @@ class S3StorageController(BaseRemoteStorageController):
             async with self.__get_s3_resource() as __s3_resource:
                 bucket = await __s3_resource.Bucket(self.bucket_name)
 
-                objects_to_delete = bucket.objects.filter(
-                    Prefix=experiment_remote_path
-                )
+                objects_to_delete = bucket.objects.filter(Prefix=experiment_remote_path)
 
                 # Collect keys and sizes before deletion
                 keys_to_delete = []
