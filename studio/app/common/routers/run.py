@@ -205,7 +205,7 @@ async def run_result(
 
         return PollRunResultResponse(
             nodeResults=node_results,
-            completeStatus=complete_status.value,
+            completeStatus=complete_status.value if complete_status else None,
         )
 
     except RemoteStorageLockError as e:
