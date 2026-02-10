@@ -874,7 +874,12 @@ class S3StorageController(BaseRemoteStorageController):
                 RemoteSyncLockFileUtil.REMOTE_SYNC_LOCK_FILE,
                 RemoteSyncStatusFileUtil.REMOTE_SYNC_STATUS_FILE,
             }
-            for root, _, files in os.walk(experiment_local_path):
+            # Exclude internal directories that should never be uploaded
+            for root, dirs, files in os.walk(experiment_local_path):
+                # Skip excluded directories (modifies dirs in-place to prevent descent)
+                dirs[:] = [
+                    d for d in dirs if d not in self.UPLOAD_EXPERIMENT_EXCLUDED_DIRS
+                ]
                 for filename in files:
                     # Skip coordination files
                     if filename in coordination_files:
@@ -993,28 +998,41 @@ class S3StorageController(BaseRemoteStorageController):
         total_bytes_deleted = 0
 
         # do delete data from remote storage
-        async with self.__get_s3_resource() as __s3_resource:
-            bucket = await __s3_resource.Bucket(self.bucket_name)
+        try:
+            async with self.__get_s3_resource() as __s3_resource:
+                bucket = await __s3_resource.Bucket(self.bucket_name)
 
-            objects_to_delete = bucket.objects.filter(Prefix=experiment_remote_path)
+                objects_to_delete = bucket.objects.filter(Prefix=experiment_remote_path)
 
-            # Collect keys and sizes before deletion
-            keys_to_delete = []
-            async for obj in objects_to_delete:
-                keys_to_delete.append({"Key": obj.key})
-                # Track size for storage update
-                total_bytes_deleted += await obj.size
+                # Collect keys and sizes before deletion
+                keys_to_delete = []
+                async for obj in objects_to_delete:
+                    keys_to_delete.append({"Key": obj.key})
+                    # Track size for storage update
+                    total_bytes_deleted += await obj.size
 
-            if keys_to_delete:
-                logger.info(
-                    f"Deleting {len(keys_to_delete)} objects "
-                    f"({total_bytes_deleted:,} bytes) from {experiment_remote_path}"
+                if keys_to_delete:
+                    logger.info(
+                        f"Deleting {len(keys_to_delete)} objects "
+                        f"({total_bytes_deleted:,} bytes) "
+                        f"from {experiment_remote_path}"
+                    )
+                    # S3 delete_objects has a limit of 1000 objects per request
+                    batch_size = 1000
+                    for i in range(0, len(keys_to_delete), batch_size):
+                        batch = keys_to_delete[i : i + batch_size]
+                        await bucket.delete_objects(Delete={"Objects": batch})
+        except Exception as e:
+            if (
+                hasattr(e, "response")
+                and e.response.get("Error", {}).get("Code") == "NoSuchBucket"
+            ):
+                logger.warning(
+                    f"[S3] Bucket '{self.bucket_name}' does not exist, "
+                    f"skipping experiment deletion for '{unique_id}'"
                 )
-                # S3 delete_objects has a limit of 1000 objects per request
-                batch_size = 1000
-                for i in range(0, len(keys_to_delete), batch_size):
-                    batch = keys_to_delete[i : i + batch_size]
-                    await bucket.delete_objects(Delete={"Objects": batch})
+                return True
+            raise
 
         # Update user storage with the total bytes deleted (incremental approach)
         # Uses idempotent operation to prevent double-counting on retries
@@ -1184,5 +1202,14 @@ class S3StorageController(BaseRemoteStorageController):
             return True
 
         except Exception as e:
+            if (
+                hasattr(e, "response")
+                and e.response.get("Error", {}).get("Code") == "NoSuchBucket"
+            ):
+                logger.warning(
+                    f"[S3] Bucket '{self.bucket_name}' does not exist, "
+                    f"skipping workspace deletion for '{workspace_id}'"
+                )
+                return True
             logger.error(f"[S3] Failed to delete workspace: {e}", exc_info=True)
             return False
