@@ -200,13 +200,12 @@ async def run_result(
                 workspace_id, uid
             )
             if sync_status:
+                # Create CompleteStatus (converted from RemoteSyncStatus)
                 complete_status = CompleteStatus(sync_status.value)
 
         return PollRunResultResponse(
             nodeResults=node_results,
-            completeStatus=(
-                PollRunResultResponse.from_complete_status(complete_status)
-            ),
+            completeStatus=complete_status.value,
         )
 
     except RemoteStorageLockError as e:
