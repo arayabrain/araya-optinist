@@ -15,15 +15,23 @@ Tested endpoints:
   - POST /run/filter/{workspace_id}/{uid}/{node_id} -> str
 """
 
+from studio.app.common.schemas.workflow import CompleteStatus
+
 # ============================================================================
 # Frontend Contract Definitions
 # ============================================================================
 # These mirror the TypeScript interfaces in Run.ts
 
-# RunResultDTO interface
-RUN_RESULT_DTO_REQUIRED_FIELDS = {}  # It's a dict with nodeId keys
+# PollRunResultDTO interface (wrapper structure for poll endpoint)
+POLL_RUN_RESULT_DTO_REQUIRED_FIELDS = {
+    "nodeResults": dict,  # Dict of node results by nodeId
+}
 
-# RunResult item (value in RunResultDTO)
+POLL_RUN_RESULT_DTO_OPTIONAL_FIELDS = {
+    "completeStatus": (str, type(None)),
+}
+
+# RunResultDTO item (value in nodeResults) - dict of node results by nodeId
 RUN_RESULT_ITEM_REQUIRED_FIELDS = {
     "status": str,
     "message": str,
@@ -106,31 +114,68 @@ def validate_contract(
 # ============================================================================
 
 
-def test_contract_run_result_dto_structure():
+def test_contract_poll_run_result_dto_structure():
     """
-    Contract test: RunResultDTO is a dict with nodeId keys.
+    Contract test: PollRunResultDTO has nodeResults wrapper and optional completeStatus.
     """
-    run_result = {
-        "node1": {
-            "status": "success",
-            "message": "Completed successfully",
-            "name": "Suite2P",
+    poll_result = {
+        "nodeResults": {
+            "node1": {
+                "status": "success",
+                "message": "Completed successfully",
+                "name": "Suite2P",
+            },
+            "node2": {
+                "status": "running",
+                "message": "Processing...",
+                "name": "CaImAn",
+            },
         },
-        "node2": {
-            "status": "running",
-            "message": "Processing...",
-            "name": "CaImAn",
-        },
+        "completeStatus": CompleteStatus.SUCCESS.value,
     }
 
-    assert isinstance(run_result, dict)
-    for node_id, result_item in run_result.items():
+    # Validate wrapper structure
+    validate_contract(
+        poll_result,
+        POLL_RUN_RESULT_DTO_REQUIRED_FIELDS,
+        POLL_RUN_RESULT_DTO_OPTIONAL_FIELDS,
+        context="PollRunResultDTO",
+    )
+
+    # Validate nodeResults contents
+    assert isinstance(poll_result["nodeResults"], dict)
+    for node_id, result_item in poll_result["nodeResults"].items():
         assert isinstance(node_id, str)
         validate_contract(
             result_item,
             RUN_RESULT_ITEM_REQUIRED_FIELDS,
             RUN_RESULT_ITEM_OPTIONAL_FIELDS,
-            context=f"RunResultDTO[{node_id}]",
+            context=f"nodeResults[{node_id}]",
+        )
+
+
+def test_contract_poll_run_result_dto_complete_status_values():
+    """
+    Contract test: completeStatus can be processing, success, error, or None.
+    """
+    valid_complete_statuses = [
+        CompleteStatus.PROCESSING.value,
+        CompleteStatus.SUCCESS.value,
+        CompleteStatus.ERROR.value,
+        None,
+    ]
+
+    for status in valid_complete_statuses:
+        poll_result = {
+            "nodeResults": {},
+            "completeStatus": status,
+        }
+        # Should not raise
+        validate_contract(
+            poll_result,
+            POLL_RUN_RESULT_DTO_REQUIRED_FIELDS,
+            POLL_RUN_RESULT_DTO_OPTIONAL_FIELDS,
+            context=f"PollRunResultDTO completeStatus={status}",
         )
 
 
@@ -434,22 +479,30 @@ def test_contract_run_returns_unique_id_string():
     assert len(unique_id) > 0
 
 
-def test_contract_run_result_is_dict():
+def test_contract_poll_run_result_is_dict():
     """
-    Contract test: RunResult is a dictionary.
+    Contract test: PollRunResultDTO has nodeResults which is a dictionary.
     """
-    run_result = {
-        "node1": {"status": "success", "message": "", "name": "Test"},
+    poll_result = {
+        "nodeResults": {
+            "node1": {"status": "success", "message": "", "name": "Test"},
+        },
+        "completeStatus": None,
     }
 
-    assert isinstance(run_result, dict)
+    assert isinstance(poll_result, dict)
+    assert isinstance(poll_result["nodeResults"], dict)
 
 
-def test_contract_empty_run_result():
+def test_contract_poll_run_result_empty_node_results():
     """
-    Contract test: RunResult can be empty dict.
+    Contract test: nodeResults can be empty dict.
     """
-    run_result = {}
+    poll_result = {
+        "nodeResults": {},
+        "completeStatus": None,
+    }
 
-    assert isinstance(run_result, dict)
-    assert len(run_result) == 0
+    assert isinstance(poll_result, dict)
+    assert isinstance(poll_result["nodeResults"], dict)
+    assert len(poll_result["nodeResults"]) == 0

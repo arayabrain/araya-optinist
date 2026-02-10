@@ -5,6 +5,7 @@ import {
   runByUidApi,
   runResult,
   RunResultDTO,
+  PollRunResultDTO,
   RunPostData,
   cancelResultApi,
   runFilterApi,
@@ -100,7 +101,7 @@ export const runByCurrentUid = createAsyncThunk<
 )
 
 export const pollRunResult = createAsyncThunk<
-  RunResultDTO,
+  PollRunResultDTO,
   {
     uid: string
   },
