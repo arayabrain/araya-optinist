@@ -7,11 +7,15 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 
-from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
+from studio.app.common.core.auth.auth_dependencies import (
+    get_current_user,
+    get_user_remote_bucket_name,
+)
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_services import ExperimentService
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteStorageBucketNotFoundError,
     RemoteStorageController,
     RemoteStorageLockError,
     RemoteStorageReader,
@@ -33,6 +37,7 @@ from studio.app.common.routers.files import (
     update_image_shape,
     update_mat_structure,
 )
+from studio.app.common.schemas.users import User
 from studio.app.common.schemas.workflow import WorkflowWithResults
 from studio.app.const import ACCEPT_FILE_EXT, MetadataCacheFile
 from studio.app.dir_path import DIRPATH
@@ -50,6 +55,7 @@ logger = AppLogger.get_logger()
 async def fetch_last_experiment(
     workspace_id: str,
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         last_expt_config = ExperimentService.get_last_experiment(workspace_id)
@@ -100,6 +106,13 @@ async def fetch_last_experiment(
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+    except RemoteStorageBucketNotFoundError as e:
+        logger.error(f"User bucket not found for user {current_user.id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Storage bucket not found. "
+            "Please sign out and sign in again to recover.",
+        )
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(
@@ -153,6 +166,13 @@ async def reproduce_experiment(
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+    except RemoteStorageBucketNotFoundError as e:
+        # Bucket is gone, so experiment data is lost - can't recover
+        logger.error(f"User bucket not found, experiment data unavailable: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Experiment data not available. Storage may have been deleted.",
+        )
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(

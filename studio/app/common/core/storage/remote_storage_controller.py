@@ -70,6 +70,15 @@ class RemoteStorageLockError(Exception):
         return (self.__class__, (self.workspace_id, self.unique_id))
 
 
+class RemoteStorageBucketNotFoundError(Exception):
+    """Raised when user's S3 bucket does not exist."""
+
+    def __init__(self, bucket_name: str):
+        self.bucket_name = bucket_name
+        message = f"S3 bucket does not exist: {bucket_name}"
+        super().__init__(message)
+
+
 class RemoteSyncStatusFileUtil:
     REMOTE_SYNC_STATUS_FILE = "remote_sync_stat.json"
 
