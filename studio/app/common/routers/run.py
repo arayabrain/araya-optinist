@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
@@ -15,13 +15,9 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageLockError,
+    RemoteSyncStatusFileUtil,
 )
-from studio.app.common.core.workflow.workflow import (
-    DataFilterParam,
-    Message,
-    NodeItem,
-    RunItem,
-)
+from studio.app.common.core.workflow.workflow import DataFilterParam, NodeItem, RunItem
 from studio.app.common.core.workflow.workflow_filter import WorkflowNodeDataFilter
 from studio.app.common.core.workflow.workflow_result import (
     WorkflowMonitor,
@@ -36,6 +32,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_owner,
 )
 from studio.app.common.schemas.users import User
+from studio.app.common.schemas.workflow import CompleteStatus, PollRunResultResponse
 
 router = APIRouter(prefix="/run", tags=["run"])
 
@@ -169,7 +166,7 @@ async def run_id(
 
 @router.post(
     "/result/{workspace_id}/{uid}",
-    response_model=Dict[str, Message],
+    response_model=PollRunResultResponse,
     dependencies=[Depends(is_workspace_available)],
 )
 async def run_result(
@@ -186,16 +183,30 @@ async def run_result(
             workspace_id, uid, remote_bucket_name
         )
 
-        res = await WorkflowResult(workspace_id, uid).observe(
+        node_results = await WorkflowResult(workspace_id, uid).observe(
             nodeDict.pendingNodeIdList
         )
-        if res:
+        if node_results:
             background_tasks.add_task(
                 WorkspaceDataCapacityService.update_experiment_data_usage,
                 workspace_id,
                 uid,
             )
-        return res
+
+        # Check post-run completion status (e.g. remote storage upload)
+        complete_status = None
+        if RemoteStorageController.is_available():
+            sync_status = RemoteSyncStatusFileUtil.check_sync_status_file(
+                workspace_id, uid
+            )
+            if sync_status:
+                # Create CompleteStatus (converted from RemoteSyncStatus)
+                complete_status = CompleteStatus(sync_status.value)
+
+        return PollRunResultResponse(
+            nodeResults=node_results,
+            completeStatus=(complete_status.value if complete_status else None),
+        )
 
     except RemoteStorageLockError as e:
         logger.error(e)

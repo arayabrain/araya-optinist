@@ -562,41 +562,52 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
             )
 
         # ----------------------------------------
-        # Delete a User remote storage data
+        # Cancel a User subscription (must succeed before deletion)
         # ----------------------------------------
 
-        # delete remote_storage bucket
-        if RemoteStorageController.is_available():
-            async with RemoteStorageSimpleWriter(
-                user_db.remote_bucket_name
-            ) as remote_storage_controller:
-                await remote_storage_controller.delete_bucket(force_delete=True)
-
-        # ----------------------------------------
-        # Cancel a User subscription
-        # ----------------------------------------
-
-        await StripeService.handle_cancel_user_subscription(db, user_db)
+        try:
+            await StripeService.handle_cancel_user_subscription(db, user_db)
+        except HTTPException as e:
+            # If no subscription found (Newly Created Free User, etc.), log and continue
+            if e.status_code == 404:
+                logger.info(f"No subscription to cancel for user {user_id}, skipping")
+            else:
+                raise e
 
         # ----------------------------------------
         # Delete a User database record
         # ----------------------------------------
 
         user_db.active = False
-
-        # ----------------------------------------
-        # Delete a User firebase account
-        # ----------------------------------------
-
-        firebase_auth.delete_user(user_db.uid)
-
-        # The transaction is committed at this point
-        # ATTENTION:
-        #   - If an exception occurs when deleting a Firebase account,
-        #     this commit may not be executed and the account may become undeletable.
-        #   - One possible solution to this issue is to add a status
-        #     when an error occurs (such as "Account suspended").
         db.commit()
+
+        # ----------------------------------------
+        # Best-effort cleanup: Firebase account
+        # ----------------------------------------
+
+        try:
+            firebase_auth.delete_user(user_db.uid)
+        except Exception as e:
+            logger.warning(
+                f"Firebase account deletion failed for user {user_id}, "
+                f"needs manual cleanup: {e}"
+            )
+
+        # ----------------------------------------
+        # Best-effort cleanup: Remote storage data
+        # ----------------------------------------
+
+        try:
+            if RemoteStorageController.is_available():
+                async with RemoteStorageSimpleWriter(
+                    user_db.remote_bucket_name
+                ) as remote_storage_controller:
+                    await remote_storage_controller.delete_bucket(force_delete=True)
+        except Exception as e:
+            logger.warning(
+                f"S3 bucket deletion failed for user {user_id}, "
+                f"needs manual cleanup: {e}"
+            )
 
         return True
 

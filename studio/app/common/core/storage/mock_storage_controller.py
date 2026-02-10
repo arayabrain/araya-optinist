@@ -360,7 +360,10 @@ class MockStorageController(BaseRemoteStorageController):
 
             # copy all files
             shutil.copytree(
-                experiment_local_path, experiment_remote_path, dirs_exist_ok=True
+                experiment_local_path,
+                experiment_remote_path,
+                dirs_exist_ok=True,
+                ignore=self.create_upload_experiment_ignore_function(),
             )
 
         return True

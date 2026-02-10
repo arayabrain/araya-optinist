@@ -90,6 +90,23 @@ export type RunResultDTO = {
   }
 }
 
+// Post-run completion status values from backend
+export const COMPLETE_STATUS = {
+  PROCESSING: "processing",
+  SUCCESS: "success",
+  ERROR: "error",
+} as const
+
+export type CompleteStatus =
+  | (typeof COMPLETE_STATUS)[keyof typeof COMPLETE_STATUS]
+  | null
+
+// Response wrapper from poll endpoint - includes post-run completion tracking
+export type PollRunResultDTO = {
+  nodeResults: RunResultDTO
+  completeStatus?: CompleteStatus
+}
+
 export type OutputPathsDTO = {
   [outputKey: string]: {
     path: string
@@ -103,7 +120,7 @@ export async function runResult(data: {
   workspaceId: number
   uid: string
   pendingNodeIdList: string[]
-}): Promise<RunResultDTO> {
+}): Promise<PollRunResultDTO> {
   const { workspaceId, uid, pendingNodeIdList } = data
   const response = await axios.post(
     `${BASE_URL}/run/result/${workspaceId}/${uid}`,
