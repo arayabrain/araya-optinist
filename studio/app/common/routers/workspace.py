@@ -527,7 +527,7 @@ async def refresh_all_workspaces_storage(
 
         # After refreshing individual workspaces, update the user's total storage usage
         try:
-            from studio.app.common.core.cloud.cloud_utils import (
+            from studio.app.common.core.cloud.storage_tracking import (
                 get_current_user_storage_usage,
             )
 

@@ -47,7 +47,7 @@ async def get_my_storage_alert(
     """
     try:
         # Use the new unified storage calculation function
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_tracking import (
             get_current_user_storage_usage,
         )
 
@@ -55,7 +55,7 @@ async def get_my_storage_alert(
         current_usage = await get_current_user_storage_usage(current_user.id)
 
         # Get user's quota and calculate alert
-        from studio.app.common.core.cloud.cloud_utils import get_user_storage_usage
+        from studio.app.common.core.cloud.storage_tracking import get_user_storage_usage
 
         storage_info = get_user_storage_usage(current_user.id)
 
@@ -120,7 +120,7 @@ async def get_my_storage_usage(
     """
     try:
         # Use the new unified storage calculation function
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_tracking import (
             get_current_user_storage_usage,
             get_user_storage_usage,
         )
@@ -245,7 +245,9 @@ async def refresh_storage_usage(
         current_usage = await monitor.get_user_s3_storage_size(current_user.id)
 
         # Update database
-        from studio.app.common.core.cloud.cloud_utils import update_user_storage_usage
+        from studio.app.common.core.cloud.storage_tracking import (
+            update_user_storage_usage,
+        )
 
         success = update_user_storage_usage(current_user.id, current_usage)
 

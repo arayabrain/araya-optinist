@@ -7,8 +7,8 @@ from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.cloud.cloud_utils import (
     CloudDebug,
     get_user_context_with_warnings,
-    get_user_storage_usage,
 )
+from studio.app.common.core.cloud.storage_tracking import get_user_storage_usage
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware.user_activity_middleware import (
     increment_heartbeat_failures,

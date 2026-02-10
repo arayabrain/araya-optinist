@@ -6,7 +6,7 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
     get_user_remote_bucket_name,
 )
-from studio.app.common.core.cloud.cloud_utils import (
+from studio.app.common.core.cloud.storage_tracking import (
     get_current_user_storage_usage,
     get_user_storage_usage,
 )

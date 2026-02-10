@@ -13,10 +13,10 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from studio.app.common.core.cloud.cloud_utils import (
+from studio.app.common.core.cloud.cloud_utils import calculate_limit_warning
+from studio.app.common.core.cloud.storage_tracking import (
     _get_fallback_storage_quota,
     _is_storage_data_fresh,
-    calculate_limit_warning,
     get_current_user_storage_usage,
 )
 from studio.app.common.core.subscription.constants import (
@@ -92,7 +92,9 @@ def test_get_fallback_storage_quota_free_plan():
     """Test fallback quota for free plan user"""
     user_id = 1
 
-    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+    with patch(
+        "studio.app.common.core.cloud.storage_tracking.session_scope"
+    ) as mock_scope:
         mock_db = Mock()
         mock_scope.return_value.__enter__.return_value = mock_db
 
@@ -114,7 +116,9 @@ def test_get_fallback_storage_quota_premium_plan():
     """Test fallback quota for premium plan user"""
     user_id = 2
 
-    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+    with patch(
+        "studio.app.common.core.cloud.storage_tracking.session_scope"
+    ) as mock_scope:
         mock_db = Mock()
         mock_scope.return_value.__enter__.return_value = mock_db
 
@@ -134,7 +138,9 @@ def test_get_fallback_storage_quota_no_subscription():
     """Test fallback quota when user has no subscription"""
     user_id = 3
 
-    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+    with patch(
+        "studio.app.common.core.cloud.storage_tracking.session_scope"
+    ) as mock_scope:
         mock_db = Mock()
         mock_scope.return_value.__enter__.return_value = mock_db
 
@@ -151,7 +157,9 @@ def test_get_fallback_storage_quota_database_error():
     """Test fallback quota when database error occurs"""
     user_id = 4
 
-    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+    with patch(
+        "studio.app.common.core.cloud.storage_tracking.session_scope"
+    ) as mock_scope:
         mock_scope.side_effect = Exception("Database connection failed")
 
         result = _get_fallback_storage_quota(user_id)
@@ -305,7 +313,7 @@ async def test_get_current_user_storage_usage_fresh_cache_hit(
     user_id = 1
 
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking.get_user_storage_usage"
     ) as mock_get_storage:
         mock_get_storage.return_value = mock_storage_info_fresh
 
@@ -325,13 +333,15 @@ async def test_get_current_user_storage_usage_stale_cache_recalculates(
     live_usage = 2_000_000_000  # 2 GB
 
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking.get_user_storage_usage"
     ) as mock_get_storage:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils._calculate_live_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking."
+            "_calculate_live_storage_usage"
         ) as mock_live_calc:
             with patch(
-                "studio.app.common.core.cloud.cloud_utils.update_user_storage_usage"
+                "studio.app.common.core.cloud.storage_tracking."
+                "update_user_storage_usage"
             ) as mock_update:
                 mock_get_storage.return_value = mock_storage_info_stale
                 mock_live_calc.return_value = live_usage
@@ -350,10 +360,10 @@ async def test_get_current_user_storage_usage_force_live():
     live_usage = 3_000_000_000
 
     with patch(
-        "studio.app.common.core.cloud.cloud_utils._calculate_live_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking._calculate_live_storage_usage"
     ) as mock_live_calc:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.update_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.update_user_storage_usage"
         ):
             mock_live_calc.return_value = live_usage
 
@@ -370,10 +380,11 @@ async def test_get_current_user_storage_usage_calculation_fails_fallback():
     cached_usage = 1_000_000_000
 
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking." "get_user_storage_usage"
     ) as mock_get_storage:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils._calculate_live_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking."
+            "_calculate_live_storage_usage"
         ) as mock_live_calc:
             mock_get_storage.return_value = {"storage_usage_bytes": cached_usage}
             mock_live_calc.side_effect = Exception("S3 connection failed")

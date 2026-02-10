@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from studio.app.common.core.cloud.cloud_utils import (
+from studio.app.common.core.cloud.storage_tracking import (
     _perform_full_scan_and_reset_delta,
     _should_trigger_full_scan,
     increment_user_storage,
@@ -23,7 +23,7 @@ async def test_increment_user_storage():
     bytes_to_add = 100 * 1024 * 1024  # 100 MB
 
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.session_scope"
+        "studio.app.common.core.cloud.storage_tracking.session_scope"
     ) as mock_session:
         mock_db = Mock()
         mock_session.return_value.__enter__.return_value = mock_db
@@ -54,7 +54,7 @@ async def test_should_trigger_full_scan():
 
     # Test case 1: Delta above 5% threshold
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.session_scope"
+        "studio.app.common.core.cloud.storage_tracking.session_scope"
     ) as mock_session:
         mock_db = Mock()
         mock_session.return_value.__enter__.return_value = mock_db
@@ -74,7 +74,7 @@ async def test_should_trigger_full_scan():
 
     # Test case 2: Delta below 5% threshold
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.session_scope"
+        "studio.app.common.core.cloud.storage_tracking.session_scope"
     ) as mock_session:
         mock_db = Mock()
         mock_session.return_value.__enter__.return_value = mock_db
@@ -99,10 +99,11 @@ async def test_advisory_lock_prevents_concurrent_scans():
     user_id = 123
 
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.session_scope"
+        "studio.app.common.core.cloud.storage_tracking.session_scope"
     ) as mock_session:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils._calculate_live_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking."
+            "_calculate_live_storage_usage"
         ) as mock_calc:
             mock_db = Mock()
             mock_session.return_value.__enter__.return_value = mock_db

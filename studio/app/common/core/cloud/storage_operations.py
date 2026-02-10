@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import select
 
-from studio.app.common.core.cloud.cloud_utils import (
+from studio.app.common.core.cloud.storage_tracking import (
     decrement_user_storage,
     increment_user_storage,
 )
