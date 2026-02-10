@@ -121,9 +121,9 @@ def _transform_user_row(item) -> UserModel:
                 user.__dict__["subscription_status"] = SubscriptionStatus.PREMIUM.value
                 user.__dict__["subscription_days_remaining"] = days_remaining
             elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
-                user.__dict__[
-                    "subscription_status"
-                ] = SubscriptionStatus.LIMIT_GRACE.value
+                user.__dict__["subscription_status"] = (
+                    SubscriptionStatus.LIMIT_GRACE.value
+                )
                 user.__dict__["subscription_days_remaining"] = (
                     SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
                 )  # Days left in grace period
@@ -569,10 +569,11 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
         try:
             await StripeService.handle_cancel_user_subscription(db, user_db)
         except HTTPException as e:
+            # If no subscription found (Newly Created Free User, etc.), log and continue
             if e.status_code == 404:
                 logger.info(f"No subscription to cancel for user {user_id}, skipping")
             else:
-                raise
+                raise e
 
         # ----------------------------------------
         # Delete a User database record
