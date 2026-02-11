@@ -1182,7 +1182,7 @@ class S3StorageController(BaseRemoteStorageController):
                 logger.error(f"Invalid category specified: {directory_type.value}")
                 return False
 
-            prefix = f"{directory_type.value}/{workspace_id}/"
+            prefix = f"{self.S3_BASE_PATH}/" f"{directory_type.value}/{workspace_id}/"
 
             async with self.__get_s3_resource() as s3_resource:
                 bucket = await s3_resource.Bucket(self.bucket_name)

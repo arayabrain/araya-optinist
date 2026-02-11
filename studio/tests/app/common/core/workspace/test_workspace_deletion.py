@@ -417,10 +417,10 @@ class TestWorkspacePartialDeletion:
     """Tests for partial workspace deletion recovery."""
 
     @pytest.mark.asyncio
-    async def test_delete_workspace_contents_continues_on_failure(
+    async def test_delete_workspace_contents_force_deletes_on_failure(
         self, mock_db, mock_workspace
     ):
-        """Should continue deleting remaining experiments."""
+        """Should force-delete workspace even if experiments fail."""
         from studio.app.common.models.experiment import ExperimentRecord
 
         mock_exp1 = Mock(spec=ExperimentRecord)
@@ -449,18 +449,20 @@ class TestWorkspacePartialDeletion:
             WorkspaceService,
             "delete_workspace_files",
             new_callable=AsyncMock,
-        ):
-            failed_uids = await WorkspaceService.delete_workspace_contents(
+        ) as mock_delete_files:
+            result = await WorkspaceService.delete_workspace_contents(
                 mock_db, mock_workspace, "test-bucket"
             )
 
-        assert failed_uids == ["exp2"]
+        assert result == []
+        assert mock_workspace.deleted is True
+        assert mock_delete_files.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_delete_workspace_contents_returns_failed_uids(
+    async def test_delete_workspace_contents_force_deletes_all_failed(
         self, mock_db, mock_workspace
     ):
-        """Should return failed UIDs list."""
+        """Should force-delete even when all experiments fail."""
         from studio.app.common.models.experiment import ExperimentRecord
 
         mock_exp = Mock(spec=ExperimentRecord)
@@ -479,17 +481,16 @@ class TestWorkspacePartialDeletion:
             "delete_workspace_files",
             new_callable=AsyncMock,
         ):
-            failed_uids = await WorkspaceService.delete_workspace_contents(
+            result = await WorkspaceService.delete_workspace_contents(
                 mock_db, mock_workspace, "test-bucket"
             )
 
-        assert failed_uids == ["failed_exp"]
+        assert result == []
+        assert mock_workspace.deleted is True
 
     @pytest.mark.asyncio
-    async def test_initiate_partial_queues_failed_experiments(
-        self, mock_db, mock_workspace
-    ):
-        """Partial failure queues experiments and marks task failed."""
+    async def test_initiate_always_completes(self, mock_db, mock_workspace):
+        """Workspace deletion always succeeds (force delete)."""
         mock_result = Mock()
         mock_result.scalar_one_or_none.return_value = mock_workspace
         mock_db.execute.return_value = mock_result
@@ -498,7 +499,7 @@ class TestWorkspacePartialDeletion:
             WorkspaceService,
             "delete_workspace_contents",
             new_callable=AsyncMock,
-            return_value=["exp2"],
+            return_value=[],
         ), patch(
             "studio.app.common.core.workspace.workspace_services"
             ".BackgroundTaskService.has_active_workspace_task",
@@ -512,23 +513,14 @@ class TestWorkspacePartialDeletion:
             ".BackgroundTaskService.mark_in_progress",
         ), patch(
             "studio.app.common.core.workspace.workspace_services"
-            ".BackgroundTaskService.mark_failed",
-        ) as mock_mark_failed, patch(
-            "studio.app.common.core.workspace.workspace_services"
-            ".BackgroundTaskService.queue_experiment_deletion",
-        ) as mock_queue_exp:
-            with pytest.raises(HTTPException) as exc_info:
-                await WorkspaceService.initiate_workspace_deletion(
-                    mock_db, "test-bucket", "1", "1"
-                )
+            ".BackgroundTaskService.mark_completed",
+        ) as mock_mark_completed:
+            success, msg = await WorkspaceService.initiate_workspace_deletion(
+                mock_db, "test-bucket", "1", "1"
+            )
 
-        assert exc_info.value.status_code == 207
-        mock_queue_exp.assert_called_once_with(
-            user_id=mock_workspace.user_id,
-            workspace_id=mock_workspace.id,
-            experiment_uid="exp2",
-        )
-        mock_mark_failed.assert_called_once_with(1, "1 experiments failed")
+        assert success is True
+        mock_mark_completed.assert_called_once_with(1)
 
 
 # ============================================================================
@@ -574,8 +566,8 @@ class TestExecuteWorkspaceDeletion:
         assert "already deleted" in msg.lower()
 
     @pytest.mark.asyncio
-    async def test_execute_partial_queues_experiments(self, mock_db, mock_workspace):
-        """Worker queues failed experiments on partial failure."""
+    async def test_execute_always_succeeds(self, mock_db, mock_workspace):
+        """Worker deletion always succeeds (force delete)."""
         mock_result = Mock()
         mock_result.scalar_one_or_none.return_value = mock_workspace
         mock_db.execute.return_value = mock_result
@@ -584,18 +576,11 @@ class TestExecuteWorkspaceDeletion:
             WorkspaceService,
             "delete_workspace_contents",
             new_callable=AsyncMock,
-            return_value=["exp1"],
-        ), patch(
-            "studio.app.common.core.workspace.workspace_services"
-            ".BackgroundTaskService.queue_experiment_deletion",
-        ) as mock_queue:
+            return_value=[],
+        ):
             success, msg = await WorkspaceService.execute_workspace_deletion(
                 mock_db, "test-bucket", 1, 1
             )
 
-        assert success is False
-        mock_queue.assert_called_once_with(
-            user_id=mock_workspace.user_id,
-            workspace_id=mock_workspace.id,
-            experiment_uid="exp1",
-        )
+        assert success is True
+        mock_db.commit.assert_called()

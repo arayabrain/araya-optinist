@@ -152,6 +152,10 @@ class RemoteSyncStatusFileUtil:
             workspace_id, unique_id
         )
 
+        os.makedirs(
+            os.path.dirname(remote_sync_status_file_path),
+            exist_ok=True,
+        )
         with open(remote_sync_status_file_path, "w") as f:
             sync_status_data = {
                 "remote_bucket_name": remote_bucket_name,
@@ -308,6 +312,10 @@ class RemoteSyncLockFileUtil:
             workspace_id, unique_id
         )
 
+        os.makedirs(
+            os.path.dirname(remote_sync_lock_file_path),
+            exist_ok=True,
+        )
         with open(remote_sync_lock_file_path, "w") as f:
             file_data = {
                 "workspace_id": workspace_id,
