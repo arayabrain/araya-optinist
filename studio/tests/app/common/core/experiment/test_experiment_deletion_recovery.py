@@ -167,28 +167,20 @@ class TestS3DeletionRetry:
     @pytest.mark.asyncio
     async def test_s3_deletion_succeeds_first_attempt(self):
         """S3 deletion should succeed on first attempt normally"""
-        from studio.app.common.core.experiment.experiment_writer import (
-            ExptDataWriter,
-        )
+        from studio.app.common.core.experiment.experiment_writer import ExptDataWriter
 
-        writer = ExptDataWriter(
-            TEST_BUCKET_NAME, TEST_WORKSPACE_ID, TEST_UNIQUE_ID
-        )
+        writer = ExptDataWriter(TEST_BUCKET_NAME, TEST_WORKSPACE_ID, TEST_UNIQUE_ID)
 
         with patch(
             "studio.app.common.core.experiment.experiment_writer."
             "RemoteStorageDeleter"
         ) as mock_deleter_class:
             mock_deleter = MagicMock()
-            mock_deleter.delete_experiment = AsyncMock(
-                return_value=True
-            )
+            mock_deleter.delete_experiment = AsyncMock(return_value=True)
             mock_deleter_class.return_value.__aenter__ = AsyncMock(
                 return_value=mock_deleter
             )
-            mock_deleter_class.return_value.__aexit__ = AsyncMock(
-                return_value=None
-            )
+            mock_deleter_class.return_value.__aexit__ = AsyncMock(return_value=None)
 
             result = await writer._delete_remote_data_with_retry()
 
@@ -198,13 +190,9 @@ class TestS3DeletionRetry:
     @pytest.mark.asyncio
     async def test_s3_deletion_retries_on_transient_failure(self):
         """S3 deletion should retry on transient failures"""
-        from studio.app.common.core.experiment.experiment_writer import (
-            ExptDataWriter,
-        )
+        from studio.app.common.core.experiment.experiment_writer import ExptDataWriter
 
-        writer = ExptDataWriter(
-            TEST_BUCKET_NAME, TEST_WORKSPACE_ID, TEST_UNIQUE_ID
-        )
+        writer = ExptDataWriter(TEST_BUCKET_NAME, TEST_WORKSPACE_ID, TEST_UNIQUE_ID)
 
         call_count = 0
 
@@ -224,9 +212,7 @@ class TestS3DeletionRetry:
             mock_deleter_class.return_value.__aenter__ = AsyncMock(
                 return_value=mock_deleter
             )
-            mock_deleter_class.return_value.__aexit__ = AsyncMock(
-                return_value=None
-            )
+            mock_deleter_class.return_value.__aexit__ = AsyncMock(return_value=None)
 
             with patch("asyncio.sleep", new_callable=AsyncMock):
                 result = await writer._delete_remote_data_with_retry()
@@ -237,13 +223,9 @@ class TestS3DeletionRetry:
     @pytest.mark.asyncio
     async def test_s3_deletion_fails_after_max_retries(self):
         """S3 deletion should fail after max retries exhausted"""
-        from studio.app.common.core.experiment.experiment_writer import (
-            ExptDataWriter,
-        )
+        from studio.app.common.core.experiment.experiment_writer import ExptDataWriter
 
-        writer = ExptDataWriter(
-            TEST_BUCKET_NAME, TEST_WORKSPACE_ID, TEST_UNIQUE_ID
-        )
+        writer = ExptDataWriter(TEST_BUCKET_NAME, TEST_WORKSPACE_ID, TEST_UNIQUE_ID)
 
         with patch(
             "studio.app.common.core.experiment.experiment_writer."
@@ -256,9 +238,7 @@ class TestS3DeletionRetry:
             mock_deleter_class.return_value.__aenter__ = AsyncMock(
                 return_value=mock_deleter
             )
-            mock_deleter_class.return_value.__aexit__ = AsyncMock(
-                return_value=None
-            )
+            mock_deleter_class.return_value.__aexit__ = AsyncMock(return_value=None)
 
             with patch("asyncio.sleep", new_callable=AsyncMock):
                 result = await writer._delete_remote_data_with_retry()
@@ -269,13 +249,9 @@ class TestS3DeletionRetry:
     @pytest.mark.asyncio
     async def test_s3_deletion_uses_exponential_backoff(self):
         """S3 deletion retry should use exponential backoff"""
-        from studio.app.common.core.experiment.experiment_writer import (
-            ExptDataWriter,
-        )
+        from studio.app.common.core.experiment.experiment_writer import ExptDataWriter
 
-        writer = ExptDataWriter(
-            TEST_BUCKET_NAME, TEST_WORKSPACE_ID, TEST_UNIQUE_ID
-        )
+        writer = ExptDataWriter(TEST_BUCKET_NAME, TEST_WORKSPACE_ID, TEST_UNIQUE_ID)
         sleep_delays = []
 
         async def track_sleep(delay):
@@ -292,13 +268,10 @@ class TestS3DeletionRetry:
             mock_deleter_class.return_value.__aenter__ = AsyncMock(
                 return_value=mock_deleter
             )
-            mock_deleter_class.return_value.__aexit__ = AsyncMock(
-                return_value=None
-            )
+            mock_deleter_class.return_value.__aexit__ = AsyncMock(return_value=None)
 
             with patch(
-                "studio.app.common.core.experiment."
-                "experiment_writer.asyncio.sleep",
+                "studio.app.common.core.experiment." "experiment_writer.asyncio.sleep",
                 side_effect=track_sleep,
             ):
                 await writer._delete_remote_data_with_retry()
@@ -333,9 +306,7 @@ class TestExperimentRecordMarkAsOrphaned:
             error_message="S3 data deleted, DB error",
         )
 
-        assert mock_experiment.deletion_error == (
-            "S3 data deleted, DB error"
-        )
+        assert mock_experiment.deletion_error == ("S3 data deleted, DB error")
 
     def test_mark_as_orphaned_handles_missing_record(self):
         """mark_as_orphaned should not raise if record not found"""
@@ -346,9 +317,7 @@ class TestExperimentRecordMarkAsOrphaned:
         )
 
         mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.one.side_effect = (
-            NoResultFound()
-        )
+        mock_db.query.return_value.filter.return_value.one.side_effect = NoResultFound()
 
         ExperimentRecordService.mark_as_orphaned(
             mock_db,
