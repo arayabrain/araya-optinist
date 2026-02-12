@@ -174,3 +174,69 @@ class TestSyncExperiment:
         assert result is True
         # Should NOT call download because local files exist
         assert mock_s3_controller.download_experiment.call_count == 0
+
+
+class TestStartupSync:
+    """Test one-time startup sync for API containers"""
+
+    @pytest.mark.asyncio
+    async def test_downloads_missing_experiments(self):
+        """Test startup sync downloads experiments missing locally"""
+        published = [
+            ("ws1", "uid1", 1, "bucket1"),
+            ("ws2", "uid2", 2, "bucket1"),
+        ]
+
+        mock_s3 = MagicMock()
+        mock_s3.download_experiment = AsyncMock(return_value=True)
+
+        with patch.object(
+            PublishedExperimentSyncJob,
+            "_get_all_published_experiments",
+            return_value=published,
+        ):
+            with patch("os.path.exists", return_value=False):
+                with patch(
+                    "studio.app.common.core.background" ".sync_job.S3StorageController",
+                    return_value=mock_s3,
+                ):
+                    await PublishedExperimentSyncJob.run_startup_sync()
+
+        # 2 experiments x 2 phases = 4 download calls
+        assert mock_s3.download_experiment.call_count == 4
+
+    @pytest.mark.asyncio
+    async def test_skips_locally_present_experiments(self):
+        """Test startup sync skips experiments already on disk"""
+        published = [
+            ("ws1", "uid1", 1, "bucket1"),
+        ]
+
+        mock_s3 = MagicMock()
+        mock_s3.download_experiment = AsyncMock(return_value=True)
+
+        with patch.object(
+            PublishedExperimentSyncJob,
+            "_get_all_published_experiments",
+            return_value=published,
+        ):
+            # Both yaml files exist locally
+            with patch("os.path.exists", return_value=True):
+                with patch(
+                    "studio.app.common.core.background" ".sync_job.S3StorageController",
+                    return_value=mock_s3,
+                ):
+                    await PublishedExperimentSyncJob.run_startup_sync()
+
+        assert mock_s3.download_experiment.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_handles_empty_published_list(self):
+        """Test startup sync handles no published experiments"""
+        with patch.object(
+            PublishedExperimentSyncJob,
+            "_get_all_published_experiments",
+            return_value=[],
+        ):
+            # Should not raise
+            await PublishedExperimentSyncJob.run_startup_sync()
