@@ -622,32 +622,47 @@ async def test_contract_beacon_release_success():
     """
     from unittest.mock import AsyncMock, MagicMock
 
+    mock_user = MagicMock()
+    mock_user.id = 1
+    mock_user.uid = "test-user-123"
+
     mock_request = MagicMock()
-    mock_request.json = AsyncMock(return_value={"user_uid": "test-user-123"})
+    mock_request.json = AsyncMock(return_value={"token": "signed-token"})
     mock_db = MagicMock()
-    mock_db.query.return_value.filter.return_value.first.return_value = None
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_user
 
     with patch(
         "studio.app.common.routers.users_me.premium_assignment_service"
     ) as mock_service:
         with patch("studio.app.common.routers.users_me.invalidate_activity_cache"):
             with patch("studio.app.common.routers.users_me.mark_user_logged_out"):
-                mock_service.release_premium_user = AsyncMock(
-                    return_value={"success": True, "message": "Released"}
-                )
+                with patch(
+                    "studio.app.common.routers.users_me" ".validate_beacon_token",
+                    return_value="test-user-123",
+                ):
+                    mock_service.release_premium_user = AsyncMock(
+                        return_value={
+                            "success": True,
+                            "message": "Released",
+                        }
+                    )
 
-                from studio.app.common.routers.users_me import release_premium_beacon
+                    from studio.app.common.routers.users_me import (
+                        release_premium_beacon,
+                    )
 
-                result = await release_premium_beacon(request=mock_request, db=mock_db)
+                    result = await release_premium_beacon(
+                        request=mock_request, db=mock_db
+                    )
 
-                validate_contract(
-                    result,
-                    BEACON_RESULT_REQUIRED_FIELDS,
-                    BEACON_RESULT_OPTIONAL_FIELDS,
-                    context="BeaconResult (success)",
-                )
+                    validate_contract(
+                        result,
+                        BEACON_RESULT_REQUIRED_FIELDS,
+                        BEACON_RESULT_OPTIONAL_FIELDS,
+                        context="BeaconResult (success)",
+                    )
 
-                assert result["success"] is True
+                    assert result["success"] is True
 
 
 @pytest.mark.asyncio
