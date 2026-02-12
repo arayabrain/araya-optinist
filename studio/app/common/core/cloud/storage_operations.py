@@ -289,6 +289,9 @@ def process_failed_storage_operations(
                         )
                         usage_record.storage_usage_bytes = new_usage
                         usage_record.last_updated = datetime.now(timezone.utc)
+                    elif op.operation_type == StorageOperationType.INCREMENT.value:
+                        usage_record.storage_usage_bytes += op.bytes_delta
+                        usage_record.last_updated = datetime.now(timezone.utc)
 
                     op.status = StorageOperationStatus.COMPLETED.value
                     op.completed_at = datetime.now(timezone.utc)
@@ -358,34 +361,16 @@ def process_stale_pending_operations(
                     )
                     continue
 
-                try:
-                    op.retry_count = current_retries + 1
-
-                    if op.operation_type == StorageOperationType.INCREMENT.value:
-                        success = increment_user_storage(op.user_id, op.bytes_delta)
-                    else:
-                        success = decrement_user_storage(op.user_id, op.bytes_delta)
-
-                    if success:
-                        op.status = StorageOperationStatus.COMPLETED.value
-                        op.completed_at = datetime.now(timezone.utc)
-                        result["succeeded"] += 1
-                        logger.info(
-                            "Recovered stale operation " f"{op.idempotency_key}"
-                        )
-                    else:
-                        op.status = StorageOperationStatus.FAILED.value
-                        op.error_message = "Recovery retry returned false"
-                        result["failed"] += 1
-                        logger.warning(
-                            "Failed to recover stale operation " f"{op.idempotency_key}"
-                        )
-                except Exception as e:
-                    op.error_message = str(e)[:200]
-                    result["failed"] += 1
-                    logger.error(
-                        "Error recovering operation " f"{op.idempotency_key}: {e}"
-                    )
+                # Mark as FAILED instead of retrying to avoid
+                # double-counting if original op already succeeded
+                op.status = StorageOperationStatus.FAILED.value
+                op.error_message = "Stale pending: deferred to reconciliation"
+                result["failed"] += 1
+                logger.warning(
+                    f"Marked stale operation "
+                    f"{op.idempotency_key} as FAILED "
+                    f"for reconciliation"
+                )
 
             db.commit()
 
