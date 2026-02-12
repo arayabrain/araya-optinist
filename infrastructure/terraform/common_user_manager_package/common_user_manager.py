@@ -439,7 +439,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     2. Check and logout inactive users (both tiers)
     """
     print(f"Common user manager triggered: {json.dumps(event)}")
-    print(f"Lambda request ID: {context.request_id if context else 'N/A'}")
+    print(f"Lambda request ID: {context.aws_request_id if context else 'N/A'}")
 
     try:
         results = {}
