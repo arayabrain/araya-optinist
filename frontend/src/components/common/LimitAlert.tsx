@@ -141,9 +141,8 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
   const isOverdueAlert = alert?.alert_type === LimitAlertType.OVERDUE
   const canDismissOverdue = !isOverdueAlert || acknowledgedOverdue
 
-  const handleDismiss = () => {
-    // OVERDUE alerts require explicit acknowledgment before dismissal
-    if (isOverdueAlert && !acknowledgedOverdue) {
+  const handleDismiss = (forceAcknowledged = false) => {
+    if (isOverdueAlert && !acknowledgedOverdue && !forceAcknowledged) {
       return
     }
 
@@ -173,11 +172,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
   }
 
   const handleUpgrade = () => {
-    // For OVERDUE alerts, set acknowledged before dismissing
-    if (isOverdueAlert) setAcknowledgedOverdue(true)
-    // Dismiss the alert when user clicks upgrade
-    handleDismiss()
-    // Navigate to payment page
+    handleDismiss(true)
     navigate("/payment")
   }
 
@@ -426,8 +421,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
                 variant="contained"
                 color="primary"
                 onClick={() => {
-                  if (isOverdueAlert) setAcknowledgedOverdue(true)
-                  handleDismiss()
+                  handleDismiss(true)
                   navigate("/workspaces")
                 }}
                 size="small"
@@ -517,8 +511,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
                   variant="contained"
                   color="primary"
                   onClick={() => {
-                    setAcknowledgedOverdue(true)
-                    handleDismiss()
+                    handleDismiss(true)
                     navigate("/workspaces")
                   }}
                 >
@@ -530,8 +523,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
                   variant="contained"
                   color="error"
                   onClick={() => {
-                    setAcknowledgedOverdue(true)
-                    handleDismiss()
+                    handleDismiss(true)
                     navigate("/subscription")
                   }}
                   startIcon={<UpgradeIcon />}
