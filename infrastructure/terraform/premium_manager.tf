@@ -8,8 +8,9 @@ resource "aws_lambda_function" "premium_manager" {
   function_name = "subscr-premium-manager"
   role          = aws_iam_role.premium_manager_lambda.arn
   handler       = "premium_manager.handler"
-  runtime       = "python3.9"
+  runtime       = "python3.11"
   timeout       = 600
+  layers        = [aws_lambda_layer_version.aws_constants.arn]
 
   source_code_hash = data.archive_file.premium_manager_zip.output_base64sha256
 
@@ -29,10 +30,15 @@ resource "aws_lambda_function" "premium_manager" {
       RDS_USER                     = var.mysql_user
       RDS_PASSWORD                 = var.mysql_password
       RDS_DATABASE                 = var.mysql_database
+      ROUTING_SECRET_KEY           = var.routing_secret_key
       # Dynamic capacity settings (use existing ABSOLUTE_MAX + minimal new ones)
       PREMIUM_SAFETY_BUFFER      = "1" # Extra instances for quick response
       PREMIUM_STANDBY_POOL_SIZE  = "1" # Number of stopped instances to maintain
       PREMIUM_IDLE_TIMEOUT_HOURS = "3" # Hours before idle instances are converted to standby
+
+      # Internal API configuration for experiment sync after migration
+      ALB_DNS_NAME        = aws_lb.autoscaling.dns_name
+      INTERNAL_API_SECRET = random_password.internal_api_secret.result
     }
   }
 
@@ -147,13 +153,15 @@ resource "null_resource" "install_dependencies" {
     command = <<-EOT
       mkdir -p ${path.module}/premium_manager_package
       /usr/bin/python3 -m pip install pymysql -t ${path.module}/premium_manager_package/ --no-cache-dir
+      cp ${path.module}/../aws_constants.py ${path.module}/premium_manager_package/aws_constants.py
     EOT
   }
 
   triggers = {
     code_changes = md5(join("", [
       filesha256("${path.module}/premium_manager_package/premium_manager.py"),
-      filesha256("${path.module}/../../studio/app/common/core/premium/premium_assignment_service.py")
+      filesha256("${path.module}/../../studio/app/common/core/premium/premium_assignment_service.py"),
+      filesha256("${path.module}/../aws_constants.py")
     ]))
   }
 }
@@ -184,8 +192,9 @@ resource "aws_lambda_function" "premium_cleanup" {
   function_name = "subscr-premium-cleanup"
   role          = aws_iam_role.premium_manager_lambda.arn
   handler       = "premium_cleanup.handler"
-  runtime       = "python3.9"
+  runtime       = "python3.11"
   timeout       = 300
+  layers        = [aws_lambda_layer_version.aws_constants.arn]
 
   source_code_hash = data.archive_file.premium_cleanup_zip.output_base64sha256
 
@@ -232,11 +241,15 @@ resource "null_resource" "install_cleanup_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
       /usr/bin/python3 -m pip install pymysql -t ${path.module}/premium_cleanup_package/ --no-cache-dir
+      cp ${path.module}/../aws_constants.py ${path.module}/premium_cleanup_package/aws_constants.py
     EOT
   }
 
   triggers = {
-    code_changes = filesha256("${path.module}/premium_cleanup_package/premium_cleanup.py")
+    code_changes = md5(join("", [
+      filesha256("${path.module}/premium_cleanup_package/premium_cleanup.py"),
+      filesha256("${path.module}/../aws_constants.py")
+    ]))
   }
 }
 
@@ -419,8 +432,11 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
       },
       # CloudWatch metrics (requires wildcard)
       {
-        Effect   = "Allow"
-        Action   = "cloudwatch:PutMetricData"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData",
+          "cloudwatch:GetMetricData"
+        ]
         Resource = "*"
       },
       # ASG Describe (read-only)
@@ -524,7 +540,7 @@ resource "aws_lambda_function" "cost_tracker" {
   function_name    = "subscr-cost-tracker"
   role             = aws_iam_role.premium_manager_lambda.arn
   handler          = "cost_tracker.handler"
-  runtime          = "python3.9"
+  runtime          = "python3.11"
   timeout          = 300
   source_code_hash = data.archive_file.cost_tracker_zip.output_base64sha256
 

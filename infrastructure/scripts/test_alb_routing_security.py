@@ -14,8 +14,21 @@ WHAT IT TESTS:
 7. Invalid JWT handling - Verify graceful handling of bad tokens
 8. Cache behavior - Verify tier caching works
 
+WHERE TO RUN:
+- Run from LOCAL machine (needs access to terraform.tfvars and terraform outputs)
+- Tests DEPLOYED server/production environment (makes HTTP requests to deployed ALB)
+- Requires access to deployed API endpoint with routing configured
+
+PERFORMANCE IMPACT:
+- Light - Makes simple GET requests to check routing headers
+- No workflows or heavy operations
+- Safe to run without affecting other users
+
 HOW TO RUN:
-  # Auto-generate tokens (recommended)
+  # Auto-generate tokens (recommended, uses default URL)
+  python infrastructure/scripts/test_alb_routing_security.py
+
+  # Test against different environment
   python infrastructure/scripts/test_alb_routing_security.py \
       --api-url https://your-alb-url.amazonaws.com
 
@@ -23,14 +36,15 @@ HOW TO RUN:
   export FIREBASE_TOKEN="your_token"
   export TEST_USER_UID="user_uid"
   export TEST_USER_TIER="premium"
-  python infrastructure/scripts/test_alb_routing_security.py \
-      --api-url https://your-alb-url.amazonaws.com
+  python infrastructure/scripts/test_alb_routing_security.py
 
 REQUIREMENTS:
 - Python 3.8+
 - requests library
+- Access to terraform.tfvars (for Firebase credentials)
+- Terraform CLI and state (for test user UIDs)
 - Access to deployed environment
-- Valid Firebase authentication token
+- Valid Firebase authentication token (auto-generated from local tfvars)
 """
 
 import argparse
@@ -40,6 +54,10 @@ import time
 from typing import Optional, Tuple
 
 import requests
+
+# Add infrastructure directory to path for aws_constants import
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from aws_constants import SubscriptionType  # noqa: E402
 
 # ANSI colors
 GREEN = "\033[92m"
@@ -55,19 +73,69 @@ except ImportError:
     generate_jwt_tokens = None
 
 
-def get_test_tokens(user_tier: str = "premium") -> Tuple[str, str, str]:
+def get_test_tokens(user_tier: str = SubscriptionType.PREMIUM) -> Tuple[str, str, str]:
     """Generate Firebase tokens for testing"""
     if not generate_jwt_tokens:
         raise RuntimeError("Cannot import get_jwt_tokens module")
 
+    # Import test user loading functions
+    try:
+        from get_jwt_tokens import (
+            get_test_users_from_config,
+            get_test_users_from_terraform,
+        )
+    except ImportError:
+        raise RuntimeError("Cannot import test user functions")
+
     print(f"Generating Firebase tokens for {user_tier} user...")
-    tokens = generate_jwt_tokens()
 
-    if user_tier not in tokens:
-        raise RuntimeError(f"No {user_tier} user token generated")
+    # Generate tokens with the correct user_type
+    tokens = generate_jwt_tokens(user_type=user_tier)
 
-    user_data = tokens[user_tier]
-    return user_data["id_token"], user_data["uid"], user_tier
+    if not tokens:
+        raise RuntimeError("Failed to generate tokens")
+
+    # Get the token using the correct key name
+    token_key = f"{user_tier}_token"
+    if token_key not in tokens:
+        raise RuntimeError(
+            f"No {user_tier} user token generated (expected key: {token_key})"
+        )
+
+    id_token = tokens[token_key]
+
+    # Get test users to extract UID
+    test_users = get_test_users_from_terraform("terraform")
+    if not test_users:
+        test_users = get_test_users_from_config()
+
+    if not test_users:
+        raise RuntimeError("Cannot find test users")
+
+    # Find the user with matching tier
+    user = None
+    for u in test_users:
+        email = u.get("email", "").lower()
+        if (
+            user_tier == SubscriptionType.PREMIUM
+            and SubscriptionType.PREMIUM in email
+            and "over" not in email
+            and "expire" not in email
+        ):
+            user = u
+            break
+        elif user_tier == SubscriptionType.FREE and SubscriptionType.FREE in email:
+            user = u
+            break
+
+    if not user:
+        raise RuntimeError(f"Cannot find {user_tier} test user")
+
+    uid = user.get("firebase_uid", "")
+    if not uid:
+        raise RuntimeError("Test user has no firebase_uid")
+
+    return id_token, uid, user_tier
 
 
 class JWTRoutingTests:
@@ -141,7 +209,7 @@ class JWTRoutingTests:
                 return False
 
             # Premium users should have routing ID
-            if self.test_user_tier == "premium":
+            if self.test_user_tier == SubscriptionType.PREMIUM:
                 if not routing_id:
                     self.print_fail("Missing x-routing-id header for premium user")
                     return False
@@ -340,7 +408,9 @@ class JWTRoutingTests:
 def main():
     parser = argparse.ArgumentParser(description="JWT-Based Routing Integration Tests")
     parser.add_argument(
-        "--api-url", default=os.environ.get("API_BASE_URL"), help="API base URL"
+        "--api-url",
+        default=os.environ.get("API_BASE_URL", "https://araya-optinist.com"),
+        help="API base URL (default: https://araya-optinist.com)",
     )
     parser.add_argument(
         "--firebase-token",
@@ -352,7 +422,7 @@ def main():
     )
     parser.add_argument(
         "--user-tier",
-        default=os.environ.get("TEST_USER_TIER", "premium"),
+        default=os.environ.get("TEST_USER_TIER", SubscriptionType.PREMIUM),
         help="User tier",
     )
     parser.add_argument(

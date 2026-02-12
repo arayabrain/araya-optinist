@@ -1,12 +1,27 @@
 /**
  * Routing Service for Premium User ALB Header Management
  *
- * Handles the logic for determining when to include premium routing headers
- * (X-User-Tier, X-User-ID) for ALB-based routing to dedicated instances.
+ * Handles the logic for managing non-reversible routing IDs issued by the backend.
+ * The backend generates cryptographically secure routing IDs from user UIDs using
+ * HMAC-SHA256, which cannot be forged or reverse-engineered.
+ *
+ * Security Flow:
+ * 1. Backend validates Firebase JWT authentication
+ * 2. Backend generates non-reversible routing_id from UID (HMAC-SHA256)
+ * 3. Backend sends routing_id in X-Routing-ID response header
+ * 4. Frontend stores routing_id and includes it in subsequent requests
+ * 5. ALB routes based on routing_id, backend validates against JWT UID
+ *
+ * Privacy: User UID is never exposed to the client, only the opaque routing_id
  */
 
 import { UserDTO } from "api/users/UsersApiDTO"
-import { PlanName, SubscriptionStatus, UserTier } from "const/Subscription"
+import {
+  PlanName,
+  RoutingHeaders,
+  SubscriptionStatus,
+  UserTier,
+} from "const/Subscription"
 
 export interface RoutingInfo {
   user_id: string
@@ -23,39 +38,70 @@ export interface PremiumAssignmentResult {
   scaling_in_progress?: boolean
 }
 
-class RoutingService {
+export class RoutingService {
   private routingInfo: RoutingInfo | null = null
+  private routingToken: string | null = null
+  private storedTier: UserTier | null = null
   private lastFetch: number = 0
   private readonly CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
+  private readonly STORAGE_KEY = "routing_id"
+  private readonly TIER_STORAGE_KEY = "routing_tier"
+
+  constructor() {
+    // Load token and tier from localStorage on initialization
+    this.loadTokenFromStorage()
+    this.loadTierFromStorage()
+  }
 
   /**
    * Get routing headers for the current user request
+   * Returns the backend-issued non-reversible routing ID and user tier
    */
   getRoutingHeaders(): Record<string, string> {
-    if (!this.routingInfo || !this.routingInfo.requires_premium_routing) {
+    if (!this.routingToken) {
       return {}
     }
 
-    return this.routingInfo.routing_headers
+    const headers: Record<string, string> = {
+      [RoutingHeaders.ROUTING_ID]: this.routingToken,
+    }
+
+    // Use routingInfo.user_tier if available, fall back to stored tier
+    const tier = this.routingInfo?.user_tier ?? this.storedTier
+    if (tier) {
+      headers[RoutingHeaders.USER_TIER] = tier
+    }
+
+    return headers
+  }
+
+  /**
+   * Update routing ID from backend response header
+   * Called by axios response interceptor when X-Routing-ID header is present
+   */
+  updateRoutingToken(token: string): void {
+    this.routingToken = token
+    this.saveTokenToStorage(token)
   }
 
   /**
    * Update routing information for a user
+   * Note: This maintains user tier info but no longer sets client-controlled headers
    */
   updateRoutingInfo(user: UserDTO): void {
     const isPremium = this.isPremiumUser(user)
+    const userTier = isPremium ? UserTier.PREMIUM : UserTier.FREE
 
     this.routingInfo = {
       user_id: user.uid || "",
-      user_tier: isPremium ? UserTier.PREMIUM : UserTier.FREE,
+      user_tier: userTier,
       requires_premium_routing: isPremium,
-      routing_headers: isPremium
-        ? {
-            "X-User-Tier": UserTier.PREMIUM,
-            "X-User-ID": user.uid || "",
-          }
-        : {},
+      routing_headers: {}, // No longer client-controlled
     }
+
+    // Persist tier to localStorage
+    this.storedTier = userTier
+    this.saveTierToStorage(userTier)
 
     this.lastFetch = Date.now()
   }
@@ -65,7 +111,18 @@ class RoutingService {
    */
   clearRoutingInfo(): void {
     this.routingInfo = null
+    this.routingToken = null
+    this.storedTier = null
     this.lastFetch = 0
+    this.clearTokenFromStorage()
+    this.clearTierFromStorage()
+  }
+
+  /**
+   * Get current routing ID (for debugging)
+   */
+  getRoutingToken(): string | null {
+    return this.routingToken
   }
 
   /**
@@ -79,7 +136,7 @@ class RoutingService {
    * Get current user tier
    */
   getUserTier(): UserTier | null {
-    return this.routingInfo?.user_tier || null
+    return this.routingInfo?.user_tier ?? this.storedTier ?? null
   }
 
   /**
@@ -106,6 +163,85 @@ class RoutingService {
    */
   getCurrentRoutingInfo(): RoutingInfo | null {
     return this.routingInfo
+  }
+
+  /**
+   * Load routing ID from localStorage
+   */
+  private loadTokenFromStorage(): void {
+    try {
+      const token = localStorage.getItem(this.STORAGE_KEY)
+      if (token) {
+        this.routingToken = token
+      }
+    } catch (e) {
+      console.warn("Failed to load routing ID from localStorage:", e)
+    }
+  }
+
+  /**
+   * Save routing ID to localStorage
+   */
+  private saveTokenToStorage(token: string): void {
+    try {
+      localStorage.setItem(this.STORAGE_KEY, token)
+    } catch (e) {
+      console.warn("Failed to save routing ID to localStorage:", e)
+    }
+  }
+
+  /**
+   * Clear routing ID from localStorage
+   */
+  private clearTokenFromStorage(): void {
+    try {
+      localStorage.removeItem(this.STORAGE_KEY)
+    } catch (e) {
+      console.warn("Failed to clear routing ID from localStorage:", e)
+    }
+  }
+
+  /**
+   * Load user tier from localStorage
+   */
+  private loadTierFromStorage(): void {
+    try {
+      const tier = localStorage.getItem(this.TIER_STORAGE_KEY)
+      if (tier && this.isValidUserTier(tier)) {
+        this.storedTier = tier as UserTier
+      }
+    } catch (e) {
+      console.warn("Failed to load user tier from localStorage:", e)
+    }
+  }
+
+  /**
+   * Save user tier to localStorage
+   */
+  private saveTierToStorage(tier: UserTier): void {
+    try {
+      localStorage.setItem(this.TIER_STORAGE_KEY, tier)
+    } catch (e) {
+      console.warn("Failed to save user tier to localStorage:", e)
+    }
+  }
+
+  /**
+   * Clear user tier from localStorage
+   */
+  private clearTierFromStorage(): void {
+    try {
+      localStorage.removeItem(this.TIER_STORAGE_KEY)
+    } catch (e) {
+      console.warn("Failed to clear user tier from localStorage:", e)
+    }
+  }
+
+  /**
+   * Validate that a string is a valid UserTier value
+   */
+  private isValidUserTier(value: string): value is UserTier {
+    return value === UserTier.PREMIUM || value === UserTier.FREE
   }
 }
 

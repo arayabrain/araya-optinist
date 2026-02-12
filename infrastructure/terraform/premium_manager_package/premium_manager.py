@@ -34,29 +34,65 @@ Required Environment Variables:
 - PREMIUM_IDLE_TIMEOUT_HOURS: Must match premium_cleanup.py value
 """
 
+import hashlib
+import hmac
 import json
 import os
-import sys
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import boto3
 import pymysql
+
+# Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
+from aws_constants import (
+    DatabaseConfig,
+    ECSTaskStatus,
+    InstanceState,
+    PremiumAssignment,
+    PremiumInstanceConfig,
+    RoutingHeaders,
+)
 from botocore.exceptions import ClientError
 
-# Add parent directory to path for shared imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
-
-from aws_constants import ECSTaskStatus  # noqa: E402
+if TYPE_CHECKING:
+    from mypy_boto3_cloudwatch import CloudWatchClient
+    from mypy_boto3_ec2 import EC2Client
+    from mypy_boto3_ecs import ECSClient
+    from mypy_boto3_elbv2 import ElasticLoadBalancingv2Client
+    from mypy_boto3_lambda import LambdaClient
 
 # Constants
-# Default fallback value for premium user count in development/testing scenarios
-# Used when database queries fail or no premium users exist
-DEFAULT_DEVELOPMENT_CAPACITY = 3
+DEFAULT_DEVELOPMENT_CAPACITY = 3  # Fallback capacity for dev/testing
+DEFAULT_IDLE_TIMEOUT_HOURS = 3  # Hours before idle instances become standby
 
 
-def get_required_env_var(var_name: str, default_value: str = None) -> str:
+def generate_routing_id(uid: str, secret_key: str) -> str:
+    """Generate non-reversible routing ID from UID using HMAC-SHA256
+
+    Creates a cryptographically secure, non-reversible identifier from the user's UID.
+    This routing ID is used in ALB routing rules instead of exposing the raw UID.
+
+    Security properties:
+    - Cannot be reverse-engineered to extract the UID
+    - Deterministic (same UID always produces same routing_id)
+    - Requires the secret key to generate (client cannot forge)
+
+    Args:
+        uid: Firebase user ID
+        secret_key: Secret key for HMAC signature
+
+    Returns:
+        16-character hex string (64 bits of entropy)
+    """
+    signature = hmac.new(
+        secret_key.encode("utf-8"), uid.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return signature[:16]  # 16 hex chars = 64 bits
+
+
+def get_required_env_var(var_name: str, default_value: str | None = None) -> str:
     """
     Safely get required environment variable with helpful error messages.
 
@@ -102,7 +138,7 @@ def get_db_connection(auto_commit=False):
 
             conn = pymysql.connect(
                 host=host,
-                port=3306,
+                port=DatabaseConfig.DEFAULT_PORT,
                 user=get_required_env_var("RDS_USER"),
                 password=get_required_env_var("RDS_PASSWORD"),
                 database=get_required_env_var("RDS_DATABASE"),
@@ -209,7 +245,7 @@ def _increment_assignment_attempts_transaction(connection, user_id: int) -> int:
             return 1
 
 
-def increment_assignment_attempts(user_id: str) -> int:
+def increment_assignment_attempts(user_id: int) -> int:
     """Increment assignment attempts for retry scenarios"""
     return _increment_assignment_attempts_transaction(user_id)
 
@@ -217,56 +253,117 @@ def increment_assignment_attempts(user_id: str) -> int:
 @with_transaction
 def _store_user_assignment_transaction(
     connection,
-    user_id: str,
+    user_id: Optional[int],
     instance_id: str,
     target_group_arn: str,
     rule_arn: str,
-    instance_state: str = "launching",
+    instance_state: str = InstanceState.LAUNCHING,
     is_shared: bool = False,
     is_standby: bool = False,
 ):
-    """Internal function: Store user assignment with transaction safety"""
-    with connection.cursor() as cursor:
-        # Check if user already has assignment with lock to prevent race conditions
-        cursor.execute(
-            """SELECT user_id, assignment_attempts FROM premium_user_assignments
-               WHERE user_id = %s FOR UPDATE""",
-            (user_id,),
-        )
-        existing = cursor.fetchone()
+    """Internal function: Store user assignment with transaction safety
 
-        if existing:
-            # User already has assignment - increment attempts counter
-            current_attempts = existing[1] if existing[1] is not None else 1
-            new_attempts = current_attempts + 1
+    Args:
+        user_id: User ID (int) or None for standby instances
+        instance_id: EC2 instance ID
+        target_group_arn: ALB target group ARN
+        rule_arn: ALB listener rule ARN
+        instance_state: Current state of instance
+        is_shared: Whether instance is shared
+        is_standby: Whether this is a standby pool assignment (user_id should be None)
+    """
+    active_workflows_from_free = 0
+
+    with connection.cursor() as cursor:
+        # For standby instances, check by instance_id (NULL user_id won't match)
+        if is_standby or user_id is None:
+            cursor.execute(
+                """SELECT instance_id FROM premium_user_assignments
+                   WHERE instance_id = %s FOR UPDATE""",
+                (instance_id,),
+            )
+            existing_instance = cursor.fetchone()
+            if existing_instance:
+                print(
+                    f"Instance {instance_id} already has an assignment entry, "
+                    f"skipping duplicate standby creation"
+                )
+                raise Exception(
+                    f"Instance {instance_id} already exists in assignments table"
+                )
+        else:
+            # For regular user assignments, check by user_id
+            cursor.execute(
+                """SELECT user_id, assignment_attempts FROM premium_user_assignments
+                   WHERE user_id = %s FOR UPDATE""",
+                (user_id,),
+            )
+            existing = cursor.fetchone()
+
+            if existing:
+                # User already has assignment - increment attempts counter
+                current_attempts = existing[1] if existing[1] is not None else 1
+                new_attempts = current_attempts + 1
+
+                cursor.execute(
+                    """UPDATE premium_user_assignments
+                       SET assignment_attempts = %s, last_state_check = NOW()
+                       WHERE user_id = %s""",
+                    (new_attempts, user_id),
+                )
+
+                print(
+                    f"User {user_id} already has assignment, "
+                    f"incremented attempts to {new_attempts}"
+                )
+                raise Exception(
+                    f"User {user_id} already has a premium "
+                    f"assignment (attempt #{new_attempts})"
+                )
+
+            # Check for active workflows to preserve before removing free tier record
+            cursor.execute(
+                """SELECT active_workflow_count FROM free_user_assignments
+                   WHERE user_id = %s""",
+                (user_id,),
+            )
+            free_record = cursor.fetchone()
+            active_workflows_from_free = 0
+            if free_record:
+                active_workflows_from_free = (
+                    free_record.get("active_workflow_count", 0) or 0
+                )
+                if active_workflows_from_free > 0:
+                    print(
+                        f"User {user_id} has {active_workflows_from_free} active "
+                        f"workflows - will preserve count in premium assignment"
+                    )
 
             cursor.execute(
-                """UPDATE premium_user_assignments
-                   SET assignment_attempts = %s, last_state_check = NOW()
-                   WHERE user_id = %s""",
-                (new_attempts, user_id),
+                """DELETE FROM free_user_assignments WHERE user_id = %s""",
+                (user_id,),
             )
+            deleted_free = cursor.rowcount
+            if deleted_free > 0:
+                print(
+                    f"Cleaned up free_user_assignments record for user {user_id} "
+                    f"(user upgraded to premium)"
+                )
 
-            print(
-                f"User {user_id} already has assignment, "
-                f"incremented attempts to {new_attempts}"
-            )
-            raise Exception(
-                f"User {user_id} already has a premium "
-                f"assignment (attempt #{new_attempts})"
-            )
+        # Preserve active workflow count from free tier
+        preserved_workflow_count = (
+            active_workflows_from_free if not is_standby and user_id else 0
+        )
 
-        # Insert new assignment with enhanced tracking including is_standby
-        # Use CASE to set standby_created_at to NOW() only if is_standby is true
-        # Convert Python booleans to integers (1/0) for MySQL compatibility
         cursor.execute(
             """
             INSERT INTO premium_user_assignments
             (user_id, instance_id, target_group_arn, alb_rule_arn, status,
              instance_state, is_shared, is_standby,
-             assignment_attempts, last_state_check, standby_created_at)
+             assignment_attempts, last_state_check, standby_created_at,
+             active_workflow_count)
             VALUES (%s, %s, %s, %s, 'active', %s, %s, %s, 1, NOW(),
-                    CASE WHEN %s = 1 THEN NOW() ELSE NULL END)
+                    CASE WHEN %s = 1 THEN NOW() ELSE NULL END, %s)
         """,
             (
                 user_id,
@@ -277,6 +374,7 @@ def _store_user_assignment_transaction(
                 1 if is_shared else 0,  # Explicit int conversion for MySQL
                 1 if is_standby else 0,  # Explicit int conversion for MySQL
                 1 if is_standby else 0,  # For the CASE WHEN
+                preserved_workflow_count,  # Preserve workflow count from free tier
             ),
         )
 
@@ -287,11 +385,11 @@ def _store_user_assignment_transaction(
 
 
 def store_user_assignment(
-    user_id: str,
+    user_id: int | str,
     instance_id: str,
     target_group_arn: str,
     rule_arn: str,
-    instance_state: str = "launching",
+    instance_state: str = InstanceState.LAUNCHING,
     is_shared: bool = False,
     is_standby: bool = False,
 ):
@@ -308,7 +406,7 @@ def store_user_assignment(
 
 
 @with_transaction
-def _remove_user_assignment_transaction(connection, user_id: str):
+def _remove_user_assignment_transaction(connection, user_id: int):
     """Internal function: Remove user assignment with transaction safety"""
     with connection.cursor() as cursor:
         # Get assignment details before deletion with lock to prevent race conditions
@@ -336,9 +434,37 @@ def _remove_user_assignment_transaction(connection, user_id: str):
     return assignment
 
 
-def remove_user_assignment(user_id: str):
+def remove_user_assignment(user_id: int):
     """Remove user assignment from RDS with proper transaction isolation"""
     return _remove_user_assignment_transaction(user_id)
+
+
+@with_transaction
+def _get_existing_user_assignment_transaction(
+    connection, user_id: int
+) -> Optional[Dict[str, Any]]:
+    """Check if user already has an active premium assignment.
+
+    Returns the assignment details if found, None otherwise.
+    This is used for early-exit optimization to avoid creating resources
+    for users who are already assigned.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT user_id, instance_id, target_group_arn, alb_rule_arn,
+                      status, instance_state, is_shared
+               FROM premium_user_assignments
+               WHERE user_id = %s AND status = %s
+               AND is_standby = 0""",
+            (user_id, PremiumAssignment.ACTIVE),
+        )
+        result = cursor.fetchone()
+        return result
+
+
+def get_existing_user_assignment(user_id: int) -> Optional[Dict[str, Any]]:
+    """Check if user already has an active premium assignment."""
+    return _get_existing_user_assignment_transaction(user_id)
 
 
 @with_transaction
@@ -389,16 +515,21 @@ def get_assigned_users_for_instance(instance_id: str):
 
 def get_all_premium_instances_with_states():
     """Get all premium instances with their AWS states"""
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
     try:
         # Get instances with premium tags (use multiple filters for robust discovery)
         response = ec2.describe_instances(
             Filters=[
                 {
                     "Name": "instance-state-name",
-                    "Values": ["pending", "running", "stopping", "stopped"],
+                    "Values": [
+                        InstanceState.PENDING,
+                        InstanceState.RUNNING,
+                        InstanceState.STOPPING,
+                        InstanceState.STOPPED,
+                    ],
                 },
-                # Use OR logic: either Name contains "premium" OR Tier tag is "premium"
+                # Use OR logic: Name/Tier/Type tags contain premium identifier
             ]
         )
 
@@ -410,9 +541,18 @@ def get_all_premium_instances_with_states():
             instance_id = instance["InstanceId"]
 
             # Check multiple criteria for premium instances
-            name_match = "premium" in tags.get("Name", "").lower()
-            tier_match = tags.get("Tier", "").lower() == "premium"
-            type_match = "premium" in tags.get("Type", "").lower()
+            name_match = (
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                in tags.get("Name", "").lower()
+            )
+            tier_match = (
+                tags.get("Tier", "").lower()
+                == PremiumInstanceConfig.INSTANCE_IDENTIFIER
+            )
+            type_match = (
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                in tags.get("Type", "").lower()
+            )
 
             # Debug logging for tag matching
             print(f"Instance {instance_id} tag analysis:")
@@ -615,7 +755,7 @@ def get_dynamic_max_capacity():
     return max_capacity
 
 
-def update_instance_state(user_id: str, new_state: str):
+def update_instance_state(user_id: int, new_state: str):
     """Update instance state for a user assignment"""
     try:
         with get_db_connection() as connection:
@@ -724,8 +864,8 @@ def register_pending_standby_creation():
                     (
                         f"creating-standby-{creation_id}",
                         f"pending-{creation_id}",
-                        "pending",
-                        "pending",
+                        InstanceState.PENDING,
+                        InstanceState.PENDING,
                     ),
                 )
                 connection.commit()
@@ -776,8 +916,8 @@ def register_pending_running_creation():
                     (
                         f"creating-running-{creation_id}",
                         f"pending-{creation_id}",
-                        "pending",
-                        "pending",
+                        InstanceState.PENDING,
+                        InstanceState.PENDING,
                     ),
                 )
                 connection.commit()
@@ -825,7 +965,7 @@ def get_available_standby_instances():
             standby_instance_ids = [
                 inst["instance_id"] for inst in db_standby_instances
             ]
-            ec2 = boto3.client("ec2")
+            ec2: "EC2Client" = boto3.client("ec2")
 
             try:
                 response = ec2.describe_instances(InstanceIds=standby_instance_ids)
@@ -837,7 +977,7 @@ def get_available_standby_instances():
                 # Only return instances that are actually stopped in AWS
                 for inst in db_standby_instances:
                     instance_id = inst["instance_id"]
-                    if aws_states.get(instance_id) == "stopped":
+                    if aws_states.get(instance_id) == InstanceState.STOPPED:
                         available_standby.append(inst)
 
                 print(
@@ -863,7 +1003,7 @@ def register_orphaned_stopped_instances():
         # Get all premium instances from AWS
         all_aws_instances = get_all_premium_instances_with_states()
         stopped_aws_instances = [
-            i for i in all_aws_instances if i["state"] == "stopped"
+            i for i in all_aws_instances if i["state"] == InstanceState.STOPPED
         ]
 
         # Get existing standby instances from database
@@ -893,12 +1033,13 @@ def register_orphaned_stopped_instances():
             instance_id = instance["instance_id"]
             try:
                 # Store as standby assignment with is_standby flag
+                # Use NULL user_id for standby instances (no real user assigned)
                 store_user_assignment(
-                    user_id=f"standby-{instance_id}",
+                    user_id=None,
                     instance_id=instance_id,
-                    target_group_arn="standby",
-                    rule_arn="standby",
-                    instance_state="launching",  # Use valid enum value
+                    target_group_arn=PremiumAssignment.STANDBY,
+                    rule_arn=PremiumAssignment.STANDBY,
+                    instance_state=InstanceState.LAUNCHING,
                     is_shared=False,
                     is_standby=True,
                 )
@@ -922,7 +1063,7 @@ def register_orphaned_stopped_instances():
 
 def create_running_instance():
     """Create a new instance and leave it running for immediate assignment"""
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
 
     try:
         # Get launch template ID from environment
@@ -996,7 +1137,7 @@ def create_running_instance():
 
 @with_transaction
 def try_reserve_instance_transaction(
-    connection, instance_id: str, user_id: str
+    connection, instance_id: str, user_id: int
 ) -> bool:
     """
     Try to reserve an instance for a user using database-level locking.
@@ -1016,22 +1157,28 @@ def try_reserve_instance_transaction(
             print(f"Instance {instance_id} already reserved/assigned")
             return False
 
-        # Create a temporary reservation
+        # Create a temporary reservation using actual user_id
         cursor.execute(
             """INSERT INTO premium_user_assignments
                (user_id, instance_id, target_group_arn, alb_rule_arn,
                 status, instance_state, is_shared, assignment_attempts,
                 last_state_check)
-               VALUES (%s, %s, 'reserving', 'reserving', 'active',
-                       'reserving', 0, 1, NOW())
+               VALUES (%s, %s, %s, %s, %s, %s, 0, 1, NOW())
             """,
-            (f"reserving-{user_id}", instance_id),
+            (
+                user_id,
+                instance_id,
+                PremiumAssignment.RESERVING,
+                PremiumAssignment.RESERVING,
+                PremiumAssignment.ACTIVE,
+                PremiumAssignment.RESERVING,
+            ),
         )
         print(f"Reserved instance {instance_id} for user {user_id}")
         return True
 
 
-def try_reserve_instance(instance_id: str, user_id: str) -> bool:
+def try_reserve_instance(instance_id: str, user_id: int) -> bool:
     """Try to reserve an instance for assignment"""
     try:
         return try_reserve_instance_transaction(instance_id, user_id)
@@ -1040,7 +1187,7 @@ def try_reserve_instance(instance_id: str, user_id: str) -> bool:
         return False
 
 
-def release_instance_reservation(instance_id: str, user_id: str):
+def release_instance_reservation(instance_id: str, user_id: int):
     """Release a reservation if assignment fails"""
     try:
         with get_db_connection() as connection:
@@ -1049,13 +1196,61 @@ def release_instance_reservation(instance_id: str, user_id: str):
                     """DELETE FROM premium_user_assignments
                        WHERE instance_id = %s
                        AND user_id = %s
-                       AND target_group_arn = 'reserving'""",
-                    (instance_id, f"reserving-{user_id}"),
+                       AND target_group_arn = %s""",
+                    (instance_id, user_id, PremiumAssignment.RESERVING),
                 )
                 connection.commit()
                 print(f"Released reservation for instance {instance_id}")
     except Exception as e:
         print(f"Error releasing reservation: {str(e)}")
+
+
+@with_transaction
+def try_reserve_instance_for_migration_transaction(
+    connection, instance_id: str, user_id: int
+) -> bool:
+    """
+    Reserve instance for migration using database-level locking.
+    Returns True if successful, False if instance already has users.
+    """
+    with connection.cursor() as cursor:
+        # Lock ALL rows for this instance
+        cursor.execute(
+            """SELECT user_id, is_standby FROM premium_user_assignments
+               WHERE instance_id = %s FOR UPDATE""",
+            (instance_id,),
+        )
+        existing = cursor.fetchall()
+
+        # Check for real user assignments (not standby)
+        real_users = [
+            a
+            for a in existing
+            if a.get("is_standby", 0) == 0 and a.get("user_id") is not None
+        ]
+
+        if real_users:
+            print(f"Instance {instance_id} already has {len(real_users)} user(s)")
+            return False
+
+        # Clean up standby entries
+        cursor.execute(
+            "DELETE FROM premium_user_assignments "
+            "WHERE instance_id = %s AND is_standby = 1",
+            (instance_id,),
+        )
+
+        print(f"Reserved instance {instance_id} for migration of user {user_id}")
+        return True
+
+
+def try_reserve_instance_for_migration(instance_id: str, user_id: int) -> bool:
+    """Wrapper with error handling"""
+    try:
+        return try_reserve_instance_for_migration_transaction(instance_id, user_id)
+    except Exception as e:
+        print(f"Failed to reserve instance {instance_id} for migration: {str(e)}")
+        return False
 
 
 def create_and_stop_standby_instance():
@@ -1064,20 +1259,16 @@ def create_and_stop_standby_instance():
     Uses database-level locking to prevent concurrent Lambda executions
     from creating duplicate standbys.
     """
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
     lock_acquired = False
     lock_name = "create_standby_lock"
     lock_timeout = 60  # seconds
     creation_id = None
 
     try:
-        # Register pending creation BEFORE acquiring lock to signal intent
-        creation_id = register_pending_standby_creation()
-        if not creation_id:
-            print("Failed to register pending standby creation")
-            return None
-
         # DISTRIBUTED LOCK: Use MySQL GET_LOCK to prevent race conditions
+        # Must acquire lock BEFORE registering pending creation to prevent
+        # multiple Lambdas from registering and then each creating an instance
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 # Try to acquire lock (returns 1 if successful,
@@ -1093,12 +1284,17 @@ def create_and_stop_standby_instance():
                         "Another Lambda is already creating a standby instance, "
                         "skipping"
                     )
-                    # Clean up our pending registration
-                    if creation_id:
-                        unregister_pending_standby_creation(creation_id)
                     return None
 
                 print("Acquired distributed lock for standby creation")
+
+                # Register pending creation AFTER acquiring lock
+                # This ensures only one Lambda registers at a time
+                creation_id = register_pending_standby_creation()
+                if not creation_id:
+                    print("Failed to register pending standby creation")
+                    cursor.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+                    return None
 
                 # STANDBY COUNT CHECK: Re-check after acquiring lock
                 standby_count = get_standby_count()
@@ -1204,12 +1400,13 @@ def create_and_stop_standby_instance():
         )
 
         # Store in assignments table as standby with is_standby flag
+        # Use NULL for standby instances (no real user assigned)
         store_user_assignment(
-            user_id=f"standby-{instance_id}",
+            user_id=None,
             instance_id=instance_id,
-            target_group_arn="standby",
-            rule_arn="standby",
-            instance_state="stopped",
+            target_group_arn=PremiumAssignment.STANDBY,
+            rule_arn=PremiumAssignment.STANDBY,
+            instance_state=InstanceState.STOPPED,
             is_shared=False,
             is_standby=True,
         )
@@ -1251,7 +1448,7 @@ def create_and_stop_standby_instance():
 
 def start_standby_instance(instance_id: str):
     """Start a stopped standby instance and prepare for user assignment"""
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
 
     try:
         print(f"Starting standby instance {instance_id}")
@@ -1286,7 +1483,7 @@ def start_standby_instance(instance_id: str):
         return False
 
 
-def get_premium_user_status(user_id: str) -> Dict[str, Any]:
+def get_premium_user_status(user_id: int) -> Dict[str, Any]:
     """Get premium user assignment status"""
     print(f"get_premium_user_status called for user_id={user_id}")
     try:
@@ -1297,7 +1494,8 @@ def get_premium_user_status(user_id: str) -> Dict[str, Any]:
                 print(f"Executing query for user_id={user_id}")
                 cursor.execute(
                     """SELECT instance_id, target_group_arn, alb_rule_arn, status,
-                    assigned_at FROM premium_user_assignments WHERE user_id = %s""",
+                    assigned_at, is_shared FROM premium_user_assignments
+                    WHERE user_id = %s""",
                     (user_id,),
                 )
                 assignment = cursor.fetchone()
@@ -1315,7 +1513,8 @@ def get_premium_user_status(user_id: str) -> Dict[str, Any]:
                 print(
                     f"Found assignment - "
                     f"instance_id={assignment['instance_id']}, "
-                    f"status={assignment['status']}"
+                    f"status={assignment['status']}, "
+                    f"is_shared={assignment['is_shared']}"
                 )
                 return {
                     "statusCode": 200,
@@ -1329,6 +1528,7 @@ def get_premium_user_status(user_id: str) -> Dict[str, Any]:
                             "assigned_at": assignment["assigned_at"].isoformat()
                             if assignment["assigned_at"]
                             else None,
+                            "is_shared": bool(assignment["is_shared"]),
                         }
                     ),
                 }
@@ -1350,7 +1550,7 @@ def is_premium_scaling_in_progress() -> bool:
     Check if a premium scaling operation is in progress using CloudWatch metrics.
     Returns True if scaling operation started within last 15 minutes.
     """
-    cloudwatch = boto3.client("cloudwatch")
+    cloudwatch: "CloudWatchClient" = boto3.client("cloudwatch")
 
     try:
         response = cloudwatch.get_metric_data(
@@ -1390,7 +1590,7 @@ def set_premium_scaling_lock(in_progress: bool) -> None:
     Args:
         in_progress: True to set lock, False to clear lock
     """
-    cloudwatch = boto3.client("cloudwatch")
+    cloudwatch: "CloudWatchClient" = boto3.client("cloudwatch")
 
     try:
         cloudwatch.put_metric_data(
@@ -1422,7 +1622,7 @@ def publish_premium_metrics(
     - RunningInstances: Count of running EC2 instances
     - IdleInstances: Count of instances with no assigned users
     """
-    cloudwatch = boto3.client("cloudwatch")
+    cloudwatch: "CloudWatchClient" = boto3.client("cloudwatch")
 
     try:
         cloudwatch.put_metric_data(
@@ -1503,7 +1703,9 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
             active_users = count_active_premium_users()
             total_premium_users = count_total_premium_users()
             all_instances = get_all_premium_instances_with_states()
-            running_instances = [i for i in all_instances if i["state"] == "running"]
+            running_instances = [
+                i for i in all_instances if i["state"] == InstanceState.RUNNING
+            ]
 
             # Count instances with no assigned users
             idle_instances = 0
@@ -1537,6 +1739,10 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
             # 7. Cleanup failed standby instances
             # (remove DB entries for terminated instances)
             cleanup_failed_standby_instances()
+
+            # 8. Cleanup ghost ECS container instance registrations
+            # (deregister container instances where EC2 is stopped/terminated)
+            cleanup_ghost_ecs_registrations()
 
             return {
                 "statusCode": 200,
@@ -1628,7 +1834,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 )
 
                 # Check if there are still users on autoscaling pool needing migration
-                autoscaling_users = get_assigned_users_for_instance("autoscaling-pool")
+                autoscaling_users = get_assigned_users_for_instance(
+                    PremiumAssignment.AUTOSCALING_POOL
+                )
                 remaining_users = len(autoscaling_users)
 
                 if migrations_performed > 0:
@@ -1664,6 +1872,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     }
                 ),
             }
+
+        # Handle fix_shared_flags action (one-time data cleanup)
+        if event.get("action") == "fix_shared_flags":
+            print("Running is_shared flag cleanup...")
+            result = fix_incorrect_is_shared_flags()
+            return {"statusCode": 200, "body": json.dumps(result)}
 
         # Handle scheduled monitoring events
         if (
@@ -1747,6 +1961,171 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
 
 
+def cleanup_duplicate_rules_for_routing_id(listener_arn: str, routing_id: str) -> int:
+    """
+    Find and delete any existing ALB rules with the same routing_id.
+
+    This prevents duplicate rules from accumulating when a user is reassigned.
+    The routing_id is deterministic (HMAC of user_id), so all rules for the
+    same user will have the same routing_id.
+
+    Args:
+        listener_arn: ALB listener ARN to check
+        routing_id: The routing ID to search for
+
+    Returns:
+        Number of rules deleted
+    """
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+
+    try:
+        # Get all existing rules for this listener
+        response = elbv2.describe_rules(ListenerArn=listener_arn)
+        rules = response.get("Rules", [])
+
+        rules_deleted = 0
+        for rule in rules:
+            if rule.get("Priority") == "default":
+                continue
+
+            # Check if this rule has the matching routing_id
+            conditions = rule.get("Conditions", [])
+            for condition in conditions:
+                http_header_config = condition.get("HttpHeaderConfig", {})
+                if (
+                    http_header_config.get("HttpHeaderName")
+                    == RoutingHeaders.ROUTING_ID
+                ):
+                    values = http_header_config.get("Values", [])
+                    if routing_id in values:
+                        # Found a rule with this routing_id - delete it
+                        rule_arn = rule["RuleArn"]
+                        try:
+                            print(
+                                f"Deleting existing rule for routing_id "
+                                f"{routing_id[:8]}...: {rule_arn}"
+                            )
+                            elbv2.delete_rule(RuleArn=rule_arn)
+                            rules_deleted += 1
+
+                            # Also try to delete the associated target group
+                            for action in rule.get("Actions", []):
+                                if action.get("Type") == "forward":
+                                    tg_arn = action.get("TargetGroupArn")
+                                    if tg_arn:
+                                        try:
+                                            elbv2.delete_target_group(
+                                                TargetGroupArn=tg_arn
+                                            )
+                                            print(
+                                                f"Deleted associated "
+                                                f"target group: {tg_arn}"
+                                            )
+                                        except Exception as tg_error:
+                                            # Target group might be
+                                            # in use or already deleted
+                                            print(
+                                                f"Could not delete target group "
+                                                f"{tg_arn}: {tg_error}"
+                                            )
+                        except Exception as delete_error:
+                            print(f"Failed to delete rule {rule_arn}: {delete_error}")
+                        break  # Move to next rule
+
+        if rules_deleted > 0:
+            print(
+                f"Cleaned up {rules_deleted} duplicate rule(s) "
+                f"for routing_id {routing_id[:8]}..."
+            )
+
+        return rules_deleted
+
+    except Exception as e:
+        print(f"Error cleaning up duplicate rules: {str(e)}")
+        return 0
+
+
+def target_group_exists(target_group_arn: str) -> bool:
+    """
+    Check if a target group exists in AWS.
+
+    Args:
+        target_group_arn: The ARN of the target group to check
+
+    Returns:
+        True if target group exists, False otherwise
+    """
+    if not target_group_arn or not target_group_arn.strip():
+        return False
+
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+
+    try:
+        elbv2.describe_target_groups(TargetGroupArns=[target_group_arn])
+        return True
+    except elbv2.exceptions.TargetGroupNotFoundException:
+        return False
+    except Exception as e:
+        if "TargetGroupNotFound" in str(e):
+            return False
+        print(f"Error checking target group {target_group_arn}: {e}")
+        raise
+
+
+def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
+    """
+    Create a new target group for a premium user, or return existing one if
+    a target group with the same name already exists.
+
+    This handles the edge case where a previous migration partially failed
+    and left an orphaned target group.
+
+    Args:
+        user_id: The user ID for naming the target group
+        vpc_id: The VPC ID for the target group
+
+    Returns:
+        The ARN of the created or existing target group
+    """
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+    target_group_name = f"premium-{user_id}-tg"
+
+    try:
+        response = elbv2.create_target_group(
+            Name=target_group_name,
+            Protocol="HTTP",
+            Port=8000,
+            VpcId=vpc_id,
+            HealthCheckPath="/health",
+            HealthCheckProtocol="HTTP",
+            HealthCheckIntervalSeconds=30,
+            HealthyThresholdCount=2,
+            UnhealthyThresholdCount=3,
+            Tags=[
+                {"Key": "UserID", "Value": str(user_id)},
+                {"Key": "Type", "Value": "premium-user"},
+                {"Key": "Service", "Value": "optinist-premium"},
+            ],
+        )
+        return response["TargetGroups"][0]["TargetGroupArn"]
+
+    except Exception as e:
+        if "DuplicateTargetGroupName" in str(e):
+            print(
+                f"Target group {target_group_name} already exists, "
+                f"retrieving existing ARN"
+            )
+            try:
+                response = elbv2.describe_target_groups(Names=[target_group_name])
+                existing_arn = response["TargetGroups"][0]["TargetGroupArn"]
+                print(f"Found existing target group: {existing_arn}")
+                return existing_arn
+            except Exception as describe_error:
+                print(f"Failed to retrieve existing target group: {describe_error}")
+                raise
+        raise
+
+
 def get_next_available_priority(listener_arn: str, start_priority: int = 100) -> int:
     """
     Find next available ALB rule priority by querying existing rules.
@@ -1761,7 +2140,7 @@ def get_next_available_priority(listener_arn: str, start_priority: int = 100) ->
     Raises:
         Exception: If no priorities available (all 1-50000 used)
     """
-    elbv2 = boto3.client("elbv2")
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
 
     try:
         # Get all existing rules for this listener
@@ -1771,10 +2150,10 @@ def get_next_available_priority(listener_arn: str, start_priority: int = 100) ->
         # Extract used priorities (excluding default rule which has priority "default")
         used_priorities = set()
         for rule in rules:
-            priority = rule.get("Priority")
-            if priority and priority != "default":
+            rule_priority = rule.get("Priority")
+            if rule_priority and rule_priority != "default":
                 try:
-                    used_priorities.add(int(priority))
+                    used_priorities.add(int(rule_priority))
                 except (ValueError, TypeError):
                     # Skip if priority is not a valid integer
                     continue
@@ -1802,12 +2181,12 @@ def get_next_available_priority(listener_arn: str, start_priority: int = 100) ->
         raise
 
 
-def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
+def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
     """Enhanced assignment with standby pool support -
     prefer stopped instances for fast startup"""
 
-    ec2 = boto3.client("ec2")
-    elbv2 = boto3.client("elbv2")
+    ec2: "EC2Client" = boto3.client("ec2")
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
 
     try:
         vpc_id = get_required_env_var("VPC_ID")
@@ -1821,18 +2200,70 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             ),
         }
 
+    # Return existing assignment if user is already assigned
+    try:
+        existing_assignment = get_existing_user_assignment(user_id)
+        if existing_assignment:
+            existing_instance_id = existing_assignment["instance_id"]
+            print(
+                f"User {user_id} already has active assignment to "
+                f"instance {existing_instance_id}"
+            )
+
+            # Trigger migration if user is stuck on autoscaling-pool
+            if existing_instance_id == PremiumAssignment.AUTOSCALING_POOL:
+                print(
+                    f"User {user_id} is on autoscaling-pool, "
+                    f"triggering migration check..."
+                )
+                invoke_migration_async()
+
+            return {
+                "statusCode": 200,
+                "body": json.dumps(
+                    {
+                        "message": f"User {user_id} already assigned to "
+                        f"instance {existing_instance_id}",
+                        "instance_id": existing_instance_id,
+                        "target_group_arn": existing_assignment["target_group_arn"],
+                        "rule_arn": existing_assignment["alb_rule_arn"],
+                        "is_shared": bool(existing_assignment.get("is_shared", False)),
+                        "assignment_source": "existing",
+                    }
+                ),
+            }
+    except Exception as check_error:
+        # Fail fast if we can't verify assignment status
+        print(f"Error: Failed to check existing assignment: {check_error}")
+        return {
+            "statusCode": 503,
+            "body": json.dumps(
+                {
+                    "error": "Service temporarily unavailable",
+                    "message": "Unable to verify assignment status. Please retry.",
+                    "assigned": False,
+                }
+            ),
+        }
+
     # Initialize variables for exception handling scope
     target_group_arn = None
     rule_arn = None
+    assignment_stored = False  # Track if DB write happened for cleanup
 
     try:
         # 0. Register any orphaned stopped instances as standby first
+        # Uses NULL user_id for standby instances (no real user)
         register_orphaned_stopped_instances()
 
         # 1. Get comprehensive instance state information
         all_instances = get_all_premium_instances_with_states()
-        running_instances = [i for i in all_instances if i["state"] == "running"]
-        launching_instances = [i for i in all_instances if i["state"] in ["pending"]]
+        running_instances = [
+            i for i in all_instances if i["state"] == InstanceState.RUNNING
+        ]
+        launching_instances = [
+            i for i in all_instances if i["state"] == InstanceState.PENDING
+        ]
         active_users = count_active_premium_users()
 
         # Get standby pool status (now includes newly registered instances)
@@ -1852,7 +2283,9 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         for instance in all_instances:
             print(f"- {instance['instance_id']}: {instance['state']}")
 
-        stopped_instances = [i for i in all_instances if i["state"] == "stopped"]
+        stopped_instances = [
+            i for i in all_instances if i["state"] == InstanceState.STOPPED
+        ]
         print(
             f" Stopped instances found in AWS: "
             f"{[i['instance_id'] for i in stopped_instances]}"
@@ -1885,9 +2318,6 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             instance_id = instance["instance_id"]
             print(f"[{i+1}/{len(running_instances)}] Evaluating instance {instance_id}")
 
-            # Check instance readiness with retry (instances may be starting)
-            # Use short timeout during assignment - if not ready quickly,
-            # fall through to autoscaling pool
             print(f"Checking readiness for instance {instance_id}...")
             is_ready = check_instance_readiness_with_retry(
                 instance_id, max_wait_seconds=30, retry_interval=10
@@ -1944,7 +2374,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         if available_dedicated:
             instance_to_use = available_dedicated
             is_shared = False
-            instance_state = "running"
+            instance_state = InstanceState.RUNNING
             assignment_source = "dedicated"
             print(
                 f"PRIORITY 1 SUCCESS: Using dedicated running instance "
@@ -1953,13 +2383,11 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         else:
             print(" PRIORITY 1 FAILED: No dedicated instances available")
 
-        # 2. PRIORITY 2: Share with least loaded instance (immediate assignment)
-        # This provides the fastest user experience when no dedicated instance available
+        # PRIORITY 2: Share with least loaded instance
         if not instance_to_use and least_loaded_instance:
-            # Share with least loaded instance for immediate assignment
             instance_to_use = least_loaded_instance
             is_shared = True
-            instance_state = "running"
+            instance_state = InstanceState.RUNNING
             assignment_source = "shared"
             print(
                 f"PRIORITY 2: Sharing instance {instance_to_use['instance_id']} "
@@ -1974,9 +2402,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                 needs_scaling = True
                 print("→ Flagged for background scaling after assignment")
 
-        # 2.5. PRIORITY 2.5: Temporary assignment to autoscaling pool (immediate login)
-        # If NO premium instances are running, allow immediate login via shared pool
-        # then migrate to dedicated premium instance when ready
+        # PRIORITY 2.5: Temporary assignment to autoscaling pool for immediate login
         no_premium_available = len(running_instances) == 0 or not available_dedicated
         if not instance_to_use and no_premium_available:
             print(
@@ -1985,9 +2411,9 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             )
 
             # Use special marker for autoscaling pool assignment
-            instance_to_use = {"instance_id": "autoscaling-pool"}
+            instance_to_use = {"instance_id": PremiumAssignment.AUTOSCALING_POOL}
             is_shared = True  # This is a temporary shared assignment
-            instance_state = "running"
+            instance_state = InstanceState.RUNNING
             assignment_source = "autoscaling_temp"
             needs_scaling = True  # Always trigger scaling for premium instance
 
@@ -2012,7 +2438,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                 # Proceed with assignment to the started instance
                 instance_to_use = {"instance_id": standby_instance_id}
                 is_shared = False
-                instance_state = "running"
+                instance_state = InstanceState.RUNNING
                 assignment_source = "standby"
 
                 print(
@@ -2030,7 +2456,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             # Find stopped instances directly from AWS that
             # are not in our standby database
             stopped_aws_instances = [
-                i for i in all_instances if i["state"] == "stopped"
+                i for i in all_instances if i["state"] == InstanceState.STOPPED
             ]
 
             # Filter out instances that are already in standby pool
@@ -2050,7 +2476,6 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                 )
 
                 # Start this AWS instance directly
-                ec2 = boto3.client("ec2")
                 try:
                     print(f"Starting AWS stopped instance {fallback_instance_id}")
                     ec2.start_instances(InstanceIds=[fallback_instance_id])
@@ -2065,7 +2490,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                     # Proceed with assignment
                     instance_to_use = {"instance_id": fallback_instance_id}
                     is_shared = False
-                    instance_state = "running"
+                    instance_state = InstanceState.RUNNING
                     assignment_source = "aws_fallback"
 
                     print(
@@ -2114,7 +2539,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                 else:
                     # Generate detailed error message for debugging
                     stopped_instances = [
-                        i for i in all_instances if i["state"] == "stopped"
+                        i for i in all_instances if i["state"] == InstanceState.STOPPED
                     ]
                     error_details = {
                         "error": "No available premium instances "
@@ -2237,7 +2662,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         instance_id = instance_to_use["instance_id"]
 
         # Special handling for autoscaling pool assignment
-        if instance_id == "autoscaling-pool":
+        if instance_id == PremiumAssignment.AUTOSCALING_POOL:
             print("Using existing autoscaling target group for temporary assignment")
             # Use the autoscaling target group instead of creating a new one
             target_group_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
@@ -2259,11 +2684,11 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                 HealthyThresholdCount=2,
                 UnhealthyThresholdCount=3,
                 Tags=[
-                    {"Key": "UserID", "Value": user_id},
+                    {"Key": "UserID", "Value": str(user_id)},
                     {"Key": "Type", "Value": "premium-user"},
                     {"Key": "Service", "Value": "optinist-premium"},
                     {"Key": "Shared", "Value": str(is_shared)},
-                    {"Key": "Source", "Value": assignment_source},
+                    {"Key": "Source", "Value": assignment_source or "unknown"},
                 ],
             )
 
@@ -2277,8 +2702,15 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                 Targets=[{"Id": instance_id, "Port": 8000}],
             )
 
-        # 9. Create ALB listener rule for user routing
-        # Get next available priority dynamically to avoid conflicts
+        # Create ALB listener rule for user routing
+        routing_secret_key = get_required_env_var("ROUTING_SECRET_KEY")
+        routing_id = generate_routing_id(str(user_id), routing_secret_key)
+        print(
+            f"Generated routing_id for user: {routing_id[:8]}... "
+            f"(truncated for security)"
+        )
+
+        cleanup_duplicate_rules_for_routing_id(alb_listener_arn, routing_id)
         priority = get_next_available_priority(alb_listener_arn, start_priority=100)
 
         rule_response = elbv2.create_rule(
@@ -2288,15 +2720,15 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                 {
                     "Field": "http-header",
                     "HttpHeaderConfig": {
-                        "HttpHeaderName": "X-User-Tier",
-                        "Values": ["premium"],
+                        "HttpHeaderName": RoutingHeaders.USER_TIER,
+                        "Values": [PremiumInstanceConfig.INSTANCE_IDENTIFIER],
                     },
                 },
                 {
                     "Field": "http-header",
                     "HttpHeaderConfig": {
-                        "HttpHeaderName": "X-User-ID",
-                        "Values": [user_id],
+                        "HttpHeaderName": RoutingHeaders.ROUTING_ID,
+                        "Values": [routing_id],
                     },
                 },
             ],
@@ -2305,9 +2737,7 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
 
         rule_arn = rule_response["Rules"][0]["RuleArn"]
 
-        # Clean up any standby placeholder assignment before storing new one
-        # This handles both standby instances and aws_fallback instances that were
-        # previously registered as standby
+        # Clean up standby placeholder before storing new assignment
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -2323,28 +2753,35 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                         f"for instance {instance_id}"
                     )
 
-        # Clean up reservation and store actual assignment
+        # Clean up reservation placeholder
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
-                # Remove the reservation placeholder
                 cursor.execute(
                     """DELETE FROM premium_user_assignments
                        WHERE instance_id = %s
                        AND user_id = %s
-                       AND target_group_arn = 'reserving'""",
-                    (instance_id, f"reserving-{user_id}"),
+                       AND target_group_arn = %s""",
+                    (instance_id, user_id, PremiumAssignment.RESERVING),
                 )
                 connection.commit()
 
-        # 10. Store assignment in RDS with state tracking
-        store_user_assignment(
-            user_id, instance_id, target_group_arn, rule_arn, instance_state, is_shared
-        )
-
-        # If this was a shared assignment, trigger scaling now that the user is stored
+        # Trigger scaling before DB write so failures don't block retries
         if needs_scaling:
             print("Triggering scaling for shared assignment...")
             scale_premium_instances_if_needed()
+            print("Triggering async migration for autoscaling-pool user...")
+            invoke_migration_async()
+
+        # Store assignment last - orphaned AWS resources cleaned up hourly
+        store_user_assignment(
+            user_id,
+            instance_id,
+            target_group_arn,
+            rule_arn,
+            instance_state or InstanceState.LAUNCHING,
+            is_shared,
+        )
+        assignment_stored = True
 
         # Initialize activity tracking for the new assignment
         try:
@@ -2375,8 +2812,16 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
 
         # Cleanup on failure
         try:
-            # Clean up target group if created
-            if target_group_arn and target_group_arn != "reserving":
+            # Clean up ALB rule if created (MUST be done before target group)
+            if rule_arn:
+                elbv2.delete_rule(RuleArn=rule_arn)
+                print(f"Cleaned up ALB rule after error: {rule_arn}")
+        except Exception as rule_cleanup_error:
+            print(f"Failed to cleanup ALB rule: {str(rule_cleanup_error)}")
+
+        try:
+            # Clean up target group if created (skip placeholder markers)
+            if target_group_arn and target_group_arn != PremiumAssignment.RESERVING:
                 elbv2.delete_target_group(TargetGroupArn=target_group_arn)
                 print(f"Cleaned up target group after error: {target_group_arn}")
         except Exception as cleanup_error:
@@ -2392,6 +2837,21 @@ def assign_premium_user(user_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as reservation_error:
             print(f"Failed to release reservation: {str(reservation_error)}")
 
+        # Clean up DB entry if it was written (defense-in-depth)
+        try:
+            if assignment_stored:
+                print(f"Cleaning up DB assignment for user {user_id} after error")
+                with get_db_connection() as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "DELETE FROM premium_user_assignments WHERE user_id = %s",
+                            (user_id,),
+                        )
+                        connection.commit()
+                print(f"Cleaned up DB assignment for user {user_id}")
+        except Exception as db_cleanup_error:
+            print(f"Failed to cleanup DB assignment: {str(db_cleanup_error)}")
+
         raise e
 
 
@@ -2402,7 +2862,7 @@ def invoke_migration_async():
     Lambda will retry for 180 seconds until instances are ready, then migrate users.
     """
     try:
-        lambda_client = boto3.client("lambda")
+        lambda_client: "LambdaClient" = boto3.client("lambda")
         function_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
 
         if not function_name:
@@ -2439,7 +2899,7 @@ def scale_premium_instances_if_needed():
     Scale up premium instances by starting stopped instances or creating new ones.
     Now accounts for pending standby creations to prevent over-provisioning.
     """
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
 
     try:
         # Get dynamic capacity limits based on premium users
@@ -2449,9 +2909,13 @@ def scale_premium_instances_if_needed():
         all_instances = get_all_premium_instances_with_states()
         active_users = count_active_premium_users()
 
-        running_instances = [i for i in all_instances if i["state"] == "running"]
+        running_instances = [
+            i for i in all_instances if i["state"] == InstanceState.RUNNING
+        ]
         launching_instances = [
-            i for i in all_instances if i["state"] in ["pending", "launching"]
+            i
+            for i in all_instances
+            if i["state"] in [InstanceState.PENDING, InstanceState.LAUNCHING]
         ]
 
         running_count = len(running_instances)
@@ -2461,7 +2925,7 @@ def scale_premium_instances_if_needed():
         # Get subscriber count for comparison
         total_subscribers = count_total_premium_users()
 
-        # SOLUTION 3: Count pending instance creations
+        # Count pending instance creations to prevent over-provisioning
         pending_standby_count = count_pending_standby_creations()
         pending_running_count = count_pending_running_creations()
 
@@ -2486,7 +2950,7 @@ def scale_premium_instances_if_needed():
             print(f"Scaling blocked: {launching_count} instances already launching")
             return False
 
-        # SOLUTION 3: Check if pending running instances will satisfy demand
+        # Check if pending running instances will satisfy demand
         if pending_running_count > 0:
             print(
                 f"Running instance creation in progress: {pending_running_count} "
@@ -2519,7 +2983,9 @@ def scale_premium_instances_if_needed():
 
         if needed_capacity > 0 and total_instances < max_capacity:
             # Try to start stopped instances first
-            stopped_instances = [i for i in all_instances if i["state"] == "stopped"]
+            stopped_instances = [
+                i for i in all_instances if i["state"] == InstanceState.STOPPED
+            ]
 
             if stopped_instances:
                 # Start stopped instances
@@ -2609,9 +3075,11 @@ def scale_premium_instances_if_needed():
         return False
 
 
-def get_ecs_container_instance_id(ec2_instance_id: str, cluster_name: str) -> str:
+def get_ecs_container_instance_id(
+    ec2_instance_id: str, cluster_name: str
+) -> str | None:
     """Map EC2 instance ID to ECS container instance ID"""
-    ecs = boto3.client("ecs")
+    ecs: "ECSClient" = boto3.client("ecs")
 
     try:
         print(f"Looking up ECS container instance for EC2 instance {ec2_instance_id}")
@@ -2645,9 +3113,65 @@ def get_ecs_container_instance_id(ec2_instance_id: str, cluster_name: str) -> st
         return None
 
 
+def deregister_container_instance_from_ecs(ec2_instance_id: str) -> bool:
+    """
+    Deregister a container instance from ECS before stopping the EC2 instance.
+
+    This prevents "ghost" registrations where stopped EC2 instances remain
+    registered in ECS with disconnected agents, confusing the ECS scheduler.
+
+    Args:
+        ec2_instance_id: The EC2 instance ID to deregister
+
+    Returns:
+        True if deregistration succeeded, False otherwise
+    """
+    ecs: "ECSClient" = boto3.client("ecs")
+
+    try:
+        cluster_name = get_required_env_var("CLUSTER_NAME")
+    except ValueError as e:
+        print(f"Cannot deregister container instance - missing CLUSTER_NAME: {str(e)}")
+        return False
+
+    try:
+        # Find the container instance ARN for this EC2 instance
+        container_instance_arn = get_ecs_container_instance_id(
+            ec2_instance_id, cluster_name
+        )
+
+        if not container_instance_arn:
+            print(
+                f"No container instance found for EC2 {ec2_instance_id} - "
+                f"may already be deregistered"
+            )
+            return True  # Not an error if already gone
+
+        # Deregister the container instance from ECS
+        print(
+            f"Deregistering container instance {container_instance_arn} "
+            f"for EC2 {ec2_instance_id}"
+        )
+        ecs.deregister_container_instance(
+            cluster=cluster_name,
+            containerInstance=container_instance_arn,
+            force=True,  # Force deregistration even if tasks are running
+        )
+
+        print(f"Successfully deregistered container instance for EC2 {ec2_instance_id}")
+        return True
+
+    except Exception as e:
+        print(
+            f"Error deregistering container instance for EC2 {ec2_instance_id}: "
+            f"{str(e)}"
+        )
+        return False
+
+
 def check_instance_readiness(instance_id: str) -> bool:
     """Check if an instance has a running ECS task and is ready for user assignment"""
-    ecs = boto3.client("ecs")
+    ecs: "ECSClient" = boto3.client("ecs")
 
     try:
         cluster_name = get_required_env_var("CLUSTER_NAME")
@@ -2701,7 +3225,7 @@ def check_instance_readiness(instance_id: str) -> bool:
             print(f"Status: {last_status} (desired: {desired_status})")
 
             if (
-                "premium" in task_def_arn.lower()
+                PremiumInstanceConfig.INSTANCE_IDENTIFIER in task_def_arn.lower()
                 and last_status == ECSTaskStatus.RUNNING
             ):
                 premium_tasks_running += 1
@@ -2798,8 +3322,8 @@ def update_premium_service_desired_count():
         cluster_name = get_required_env_var("CLUSTER_NAME")
         service_name = get_required_env_var("PREMIUM_SERVICE_NAME")
 
-        ecs = boto3.client("ecs")
-        ec2 = boto3.client("ec2")
+        ecs: "ECSClient" = boto3.client("ecs")
+        ec2: "EC2Client" = boto3.client("ec2")
 
         # Get current service status
         service_response = ecs.describe_services(
@@ -2816,7 +3340,7 @@ def update_premium_service_desired_count():
         # Count running premium instances
         response = ec2.describe_instances(
             Filters=[
-                {"Name": "instance-state-name", "Values": ["running"]},
+                {"Name": "instance-state-name", "Values": [InstanceState.RUNNING]},
                 {"Name": "tag:Tier", "Values": ["premium", "Premium"]},
             ]
         )
@@ -2859,12 +3383,65 @@ def update_premium_service_desired_count():
         traceback.print_exc()
 
 
-def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bool:
+def trigger_experiment_sync(user_id: int) -> bool:
+    """
+    Trigger experiment metadata sync for user on their new instance.
+
+    Called after a successful migration to ensure the user's experiment
+    metadata is downloaded to the new instance from S3.
+
+    Args:
+        user_id: Database user ID to sync experiments for
+
+    Returns:
+        True if sync was initiated successfully, False otherwise
+    """
+    import ssl
+    import urllib.request
+
+    alb_dns = os.environ.get("ALB_DNS_NAME")
+    internal_secret = os.environ.get("INTERNAL_API_SECRET")
+
+    if not alb_dns or not internal_secret:
+        print(
+            "Warning: ALB_DNS_NAME or INTERNAL_API_SECRET not configured, "
+            "skipping experiment sync"
+        )
+        return False
+
+    url = f"https://{alb_dns}/system-internal/sync-experiments/{user_id}"
+    headers = {
+        "X-Internal-Secret": internal_secret,
+        "Content-Type": "application/json",
+    }
+
+    try:
+        req = urllib.request.Request(url, method="POST", headers=headers, data=b"")
+        context = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=10.0, context=context) as response:
+            if response.status == 200:
+                print(f"Experiment sync initiated for user {user_id}")
+                return True
+            else:
+                print(
+                    f"Experiment sync request failed for user {user_id}: "
+                    f"status {response.status}"
+                )
+                return False
+    except Exception as e:
+        # Don't fail migration if sync fails - user can still work
+        print(f"Failed to trigger experiment sync for user {user_id}: {e}")
+        return False
+
+
+def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bool:
     """
     Migrate user from shared instance to dedicated instance.
 
     IMPORTANT: Only migrates users with no active workflows to prevent
     workflow interruption and data loss.
+    After successful migration, triggers experiment metadata sync
+    on the new instance.
     """
     # Import the utility function
     from premium_user_utils import can_migrate_user
@@ -2877,7 +3454,14 @@ def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bo
         )
         return False
 
-    elbv2 = boto3.client("elbv2")
+    # Reserve target instance first using database-level locking
+    if not try_reserve_instance_for_migration(new_instance_id, user_id):
+        print(
+            f"Cannot migrate user {user_id}: instance {new_instance_id} not available"
+        )
+        return False
+
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
 
     try:
         with get_db_connection() as connection:
@@ -2905,32 +3489,17 @@ def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bo
                     return False
 
                 old_instance_id = assignment["instance_id"]
-                old_target_group_arn = assignment["target_group_arn"]
-                old_rule_arn = assignment["alb_rule_arn"]
+                # Normalize empty/whitespace strings to None
+                old_target_group_arn = (
+                    assignment["target_group_arn"] or ""
+                ).strip() or None
+                old_rule_arn = (assignment["alb_rule_arn"] or "").strip() or None
 
                 # Special handling for autoscaling-pool migration
-                if old_instance_id == "autoscaling-pool":
-                    # Create new dedicated target group for this user
-                    vpc_id = os.environ.get("VPC_ID")
-                    target_group_response = elbv2.create_target_group(
-                        Name=f"premium-{user_id}-tg",
-                        Protocol="HTTP",
-                        Port=8000,
-                        VpcId=vpc_id,
-                        HealthCheckPath="/health",
-                        HealthCheckProtocol="HTTP",
-                        HealthCheckIntervalSeconds=30,
-                        HealthyThresholdCount=2,
-                        UnhealthyThresholdCount=3,
-                        Tags=[
-                            {"Key": "UserID", "Value": user_id},
-                            {"Key": "Type", "Value": "premium-user"},
-                            {"Key": "Service", "Value": "optinist-premium"},
-                        ],
-                    )
-                    new_target_group_arn = target_group_response["TargetGroups"][0][
-                        "TargetGroupArn"
-                    ]
+                if old_instance_id == PremiumAssignment.AUTOSCALING_POOL:
+                    # Create or get existing target group (handles duplicate names)
+                    vpc_id = get_required_env_var("VPC_ID")
+                    new_target_group_arn = create_or_get_target_group(user_id, vpc_id)
 
                     # Register new instance to new target group
                     elbv2.register_targets(
@@ -2938,24 +3507,104 @@ def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bo
                         Targets=[{"Id": new_instance_id, "Port": 8000}],
                     )
 
-                    # Update ALB rule to point to new target group
-                    elbv2.modify_rule(
-                        RuleArn=old_rule_arn,
-                        Actions=[
-                            {"Type": "forward", "TargetGroupArn": new_target_group_arn}
-                        ],
-                    )
+                    # Check if old ALB rule exists, create new one if not
+                    rule_exists = False
+                    if old_rule_arn:
+                        try:
+                            elbv2.describe_rules(RuleArns=[old_rule_arn])
+                            rule_exists = True
+                        except elbv2.exceptions.RuleNotFoundException:
+                            print(
+                                f"Old ALB rule {old_rule_arn} not found, "
+                                f"creating new rule"
+                            )
+                        except Exception as e:
+                            if "RuleNotFound" in str(e):
+                                print(
+                                    f"Old ALB rule not found (error: {e}), "
+                                    f"creating new rule"
+                                )
+                            else:
+                                raise
 
-                    # Update assignment with new target group
+                    if rule_exists:
+                        # Update existing ALB rule to point to new target group
+                        elbv2.modify_rule(
+                            RuleArn=old_rule_arn,
+                            Actions=[
+                                {
+                                    "Type": "forward",
+                                    "TargetGroupArn": new_target_group_arn,
+                                }
+                            ],
+                        )
+                        new_rule_arn = old_rule_arn
+                    else:
+                        # Create new ALB rule for this user
+                        alb_listener_arn = get_required_env_var("ALB_LISTENER_ARN")
+                        routing_secret_key = get_required_env_var("ROUTING_SECRET_KEY")
+                        routing_id = generate_routing_id(
+                            str(user_id), routing_secret_key
+                        )
+
+                        # Get next available priority
+                        priority = get_next_available_priority(
+                            alb_listener_arn, start_priority=100
+                        )
+
+                        rule_response = elbv2.create_rule(
+                            ListenerArn=alb_listener_arn,
+                            Priority=priority,
+                            Conditions=[
+                                {
+                                    "Field": "http-header",
+                                    "HttpHeaderConfig": {
+                                        "HttpHeaderName": RoutingHeaders.USER_TIER,
+                                        "Values": [
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ],
+                                    },
+                                },
+                                {
+                                    "Field": "http-header",
+                                    "HttpHeaderConfig": {
+                                        "HttpHeaderName": RoutingHeaders.ROUTING_ID,
+                                        "Values": [routing_id],
+                                    },
+                                },
+                            ],
+                            Actions=[
+                                {
+                                    "Type": "forward",
+                                    "TargetGroupArn": new_target_group_arn,
+                                }
+                            ],
+                        )
+                        new_rule_arn = rule_response["Rules"][0]["RuleArn"]
+                        print(f"Created new ALB rule: {new_rule_arn}")
+
+                    # Update assignment with new target group and rule ARN
                     cursor.execute(
                         """UPDATE premium_user_assignments
                            SET instance_id = %s, target_group_arn = %s,
-                               last_state_check = NOW()
+                               alb_rule_arn = %s,
+                               is_shared = 0, last_state_check = NOW()
                            WHERE user_id = %s""",
-                        (new_instance_id, new_target_group_arn, user_id),
+                        (new_instance_id, new_target_group_arn, new_rule_arn, user_id),
                     )
                 else:
                     # Normal migration: deregister from old, register to new
+                    # First verify target group exists
+                    if not target_group_exists(old_target_group_arn):
+                        print(
+                            f"Target group {old_target_group_arn} not found, "
+                            f"creating new one for user {user_id}"
+                        )
+                        vpc_id = get_required_env_var("VPC_ID")
+                        old_target_group_arn = create_or_get_target_group(
+                            user_id, vpc_id
+                        )
+
                     elbv2.deregister_targets(
                         TargetGroupArn=old_target_group_arn,
                         Targets=[{"Id": old_instance_id, "Port": 8000}],
@@ -2967,12 +3616,13 @@ def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bo
                         Targets=[{"Id": new_instance_id, "Port": 8000}],
                     )
 
-                    # Update RDS assignment
+                    # Update RDS assignment (include target_group_arn in case recreated)
                     cursor.execute(
-                        """UPDATE premium_user_assignments SET instance_id = %s,
-                        last_state_check = NOW()
+                        """UPDATE premium_user_assignments
+                           SET instance_id = %s, target_group_arn = %s,
+                               is_shared = 0, last_state_check = NOW()
                            WHERE user_id = %s""",
-                        (new_instance_id, user_id),
+                        (new_instance_id, old_target_group_arn, user_id),
                     )
 
                 connection.commit()  # Commit the migration
@@ -2981,6 +3631,8 @@ def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bo
                     f"Migrated user {user_id} from {old_instance_id} to "
                     f"{new_instance_id}"
                 )
+                # Trigger experiment sync on new instance (fire-and-forget)
+                trigger_experiment_sync(user_id)
                 return True
 
     except Exception as e:
@@ -2988,12 +3640,12 @@ def migrate_user_to_dedicated_instance(user_id: str, new_instance_id: str) -> bo
         return False
 
 
-def release_premium_user(user_id: str) -> Dict[str, Any]:
+def release_premium_user(user_id: int) -> Dict[str, Any]:
     """Release premium user from assigned instance
     (always succeeds to prevent logout blocking)"""
 
-    _ = boto3.client("ec2")
-    elbv2 = boto3.client("elbv2")
+    _: "EC2Client" = boto3.client("ec2")
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
 
     instance_id = None
     success = True
@@ -3004,8 +3656,9 @@ def release_premium_user(user_id: str) -> Dict[str, Any]:
         try:
             assignment = remove_user_assignment(user_id)
             instance_id = assignment["instance_id"]
-            target_group_arn = assignment["target_group_arn"]
-            rule_arn = assignment["alb_rule_arn"]
+            # Normalize empty/whitespace strings to None
+            target_group_arn = (assignment["target_group_arn"] or "").strip() or None
+            rule_arn = (assignment["alb_rule_arn"] or "").strip() or None
             print(f"Found assignment for user {user_id} on instance {instance_id}")
         except Exception as assignment_error:
             print(f"No assignment found for user {user_id}: {str(assignment_error)}")
@@ -3029,7 +3682,7 @@ def release_premium_user(user_id: str) -> Dict[str, Any]:
         autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
         if (
             target_group_arn
-            and target_group_arn != "standby"
+            and target_group_arn != PremiumAssignment.STANDBY
             and target_group_arn != autoscaling_tg_arn
         ):
             try:
@@ -3109,7 +3762,7 @@ def release_premium_user(user_id: str) -> Dict[str, Any]:
 
 def scale_down_if_possible():
     """Scale down premium instances by stopping idle instances"""
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
 
     try:
         # Get dynamic capacity settings
@@ -3119,7 +3772,9 @@ def scale_down_if_possible():
 
         # Get all premium instances with their states
         all_instances = get_all_premium_instances_with_states()
-        running_instances = [i for i in all_instances if i["state"] == "running"]
+        running_instances = [
+            i for i in all_instances if i["state"] == InstanceState.RUNNING
+        ]
 
         total_instances = len(all_instances)
         occupied_instances = 0
@@ -3171,6 +3826,11 @@ def scale_down_if_possible():
                     f"instances: {idle_instance_ids} "
                     f"(min running needed: {min_running_needed})"
                 )
+
+                # Deregister from ECS before stopping to prevent ghost registrations
+                for instance_id in idle_instance_ids:
+                    deregister_container_instance_from_ecs(instance_id)
+
                 ec2.stop_instances(InstanceIds=idle_instance_ids)
 
                 # Update ECS service desired count to match remaining running instances
@@ -3202,13 +3862,12 @@ def get_standby_pool_count():
                 )
                 results = cursor.fetchall()
 
-                # Convert to dictionary with default values
                 status_counts = {
-                    "stopped": 0,
-                    "running": 0,
-                    "pending": 0,
-                    "stopping": 0,
-                    "starting": 0,
+                    InstanceState.STOPPED: 0,
+                    InstanceState.RUNNING: 0,
+                    InstanceState.PENDING: 0,
+                    InstanceState.STOPPING: 0,
+                    InstanceState.STARTING: 0,
                 }
                 for result in results:
                     status_counts[result["instance_state"]] = result["count"]
@@ -3216,7 +3875,13 @@ def get_standby_pool_count():
                 return status_counts
     except Exception as e:
         print(f"Error getting standby pool count: {str(e)}")
-        return {"stopped": 0, "running": 0, "pending": 0, "stopping": 0, "starting": 0}
+        return {
+            InstanceState.STOPPED: 0,
+            InstanceState.RUNNING: 0,
+            InstanceState.PENDING: 0,
+            InstanceState.STOPPING: 0,
+            InstanceState.STARTING: 0,
+        }
 
 
 def convert_idle_instances_to_standby_immediate() -> int:
@@ -3230,7 +3895,9 @@ def convert_idle_instances_to_standby_immediate() -> int:
     try:
         # Get all running premium instances
         all_instances = get_all_premium_instances_with_states()
-        running_instances = [i for i in all_instances if i["state"] == "running"]
+        running_instances = [
+            i for i in all_instances if i["state"] == InstanceState.RUNNING
+        ]
 
         for instance in running_instances:
             instance_id = instance["instance_id"]
@@ -3257,26 +3924,25 @@ def convert_idle_instances_to_standby_immediate() -> int:
 
 def convert_running_instance_to_standby(instance_id: str):
     """Convert a running instance with no users to a standby instance"""
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
 
     try:
-        # Stop the instance
+        deregister_container_instance_from_ecs(instance_id)
+
         print(f"Stopping instance {instance_id} to convert to standby")
         ec2.stop_instances(InstanceIds=[instance_id])
 
-        # Wait for it to stop
         waiter = ec2.get_waiter("instance_stopped")
         waiter.wait(
             InstanceIds=[instance_id], WaiterConfig={"Delay": 15, "MaxAttempts": 20}
         )
 
-        # Add to standby pool in database with is_standby flag
         store_user_assignment(
-            user_id=f"standby-{instance_id}",
+            user_id=None,
             instance_id=instance_id,
-            target_group_arn="standby",
-            rule_arn="standby",
-            instance_state="stopped",
+            target_group_arn=PremiumAssignment.STANDBY,
+            rule_arn=PremiumAssignment.STANDBY,
+            instance_state=InstanceState.STOPPED,
             is_shared=False,
             is_standby=True,  # Set standby flag in initial INSERT
         )
@@ -3314,7 +3980,7 @@ def cleanup_excess_standby_instances(excess_count: int):
 
 def terminate_standby_instance(instance_id: str):
     """Terminate a standby instance and clean up database entry"""
-    ec2 = boto3.client("ec2")
+    ec2: "EC2Client" = boto3.client("ec2")
 
     try:
         print(f"Terminating excess standby instance {instance_id}")
@@ -3377,14 +4043,140 @@ def cleanup_failed_standby_instances():
         print(f"Error cleaning up failed standby instances: {str(e)}")
 
 
+def cleanup_ghost_ecs_registrations():
+    """
+    Clean up ghost ECS container instance registrations.
+
+    When EC2 instances are stopped or terminated outside of our normal flow
+    (e.g., instance crashes, manual stops via AWS console), the ECS container
+    instance registration may remain as a "ghost" entry with a disconnected agent.
+    This confuses the ECS scheduler which tries to place tasks on these instances.
+
+    This function finds and deregisters any container instances where:
+    - The ECS agent is not connected, OR
+    - The underlying EC2 instance is stopped/terminated
+
+    Called periodically by handle_scheduled_monitoring (every 15 minutes).
+    """
+    ecs: "ECSClient" = boto3.client("ecs")
+    ec2: "EC2Client" = boto3.client("ec2")
+
+    try:
+        cluster_name = get_required_env_var("CLUSTER_NAME")
+    except ValueError as e:
+        print(
+            f"Cannot cleanup ghost ECS registrations - missing CLUSTER_NAME: {str(e)}"
+        )
+        return
+
+    try:
+        # List all container instances in the premium cluster
+        response = ecs.list_container_instances(cluster=cluster_name)
+        container_instance_arns = response.get("containerInstanceArns", [])
+
+        if not container_instance_arns:
+            print("No container instances found in cluster - nothing to cleanup")
+            return
+
+        # Describe container instances to check agent status and EC2 mapping
+        describe_response = ecs.describe_container_instances(
+            cluster=cluster_name, containerInstances=container_instance_arns
+        )
+
+        ghost_instances = []
+        for container_instance in describe_response.get("containerInstances", []):
+            container_instance_arn = container_instance.get("containerInstanceArn")
+            ec2_instance_id = container_instance.get("ec2InstanceId")
+            agent_connected = container_instance.get("agentConnected", False)
+            status = container_instance.get("status", "UNKNOWN")
+
+            # Check if this is a ghost registration
+            is_ghost = False
+            reason = ""
+
+            # Case 1: Agent is not connected
+            if not agent_connected:
+                is_ghost = True
+                reason = "ECS agent disconnected"
+
+            # Case 2: Check if EC2 instance is stopped/terminated
+            if ec2_instance_id and not is_ghost:
+                try:
+                    ec2_response = ec2.describe_instances(InstanceIds=[ec2_instance_id])
+                    if ec2_response["Reservations"]:
+                        instance_state = ec2_response["Reservations"][0]["Instances"][
+                            0
+                        ]["State"]["Name"]
+                        if instance_state in [
+                            InstanceState.STOPPED,
+                            InstanceState.TERMINATED,
+                            InstanceState.SHUTTING_DOWN,
+                        ]:
+                            is_ghost = True
+                            reason = f"EC2 instance is {instance_state}"
+                except Exception as e:
+                    # Instance might not exist
+                    if "InvalidInstanceID" in str(e):
+                        is_ghost = True
+                        reason = "EC2 instance does not exist"
+
+            if is_ghost:
+                ghost_instances.append(
+                    {
+                        "container_instance_arn": container_instance_arn,
+                        "ec2_instance_id": ec2_instance_id,
+                        "reason": reason,
+                        "status": status,
+                    }
+                )
+
+        if not ghost_instances:
+            print("No ghost ECS registrations found")
+            return
+
+        print(f"Found {len(ghost_instances)} ghost ECS registrations to cleanup")
+
+        # Deregister ghost container instances
+        cleanup_count = 0
+        for ghost in ghost_instances:
+            try:
+                print(
+                    f"Deregistering ghost container instance "
+                    f"{ghost['container_instance_arn']} "
+                    f"(EC2: {ghost['ec2_instance_id']}, reason: {ghost['reason']})"
+                )
+                ecs.deregister_container_instance(
+                    cluster=cluster_name,
+                    containerInstance=ghost["container_instance_arn"],
+                    force=True,
+                )
+                cleanup_count += 1
+            except Exception as e:
+                print(
+                    f"Failed to deregister ghost container instance "
+                    f"{ghost['container_instance_arn']}: {str(e)}"
+                )
+
+        print(f"Cleaned up {cleanup_count} ghost ECS registrations")
+
+    except Exception as e:
+        print(f"Error cleaning up ghost ECS registrations: {str(e)}")
+
+
 def get_premium_system_status() -> Dict[str, Any]:
     """Get comprehensive status of premium system including standby pool"""
     try:
         # Get instance states
         all_instances = get_all_premium_instances_with_states()
-        running_count = len([i for i in all_instances if i["state"] == "running"])
+        running_count = len(
+            [i for i in all_instances if i["state"] == InstanceState.RUNNING]
+        )
         launching_count = len(
-            [i for i in all_instances if i["state"] in ["pending", "launching"]]
+            [
+                i
+                for i in all_instances
+                if i["state"] in [InstanceState.PENDING, InstanceState.LAUNCHING]
+            ]
         )
 
         # Get user counts
@@ -3451,13 +4243,17 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
         shared_instances = []
 
         # Check for users temporarily assigned to autoscaling pool
-        autoscaling_users = get_assigned_users_for_instance("autoscaling-pool")
+        autoscaling_users = get_assigned_users_for_instance(
+            PremiumAssignment.AUTOSCALING_POOL
+        )
         if autoscaling_users:
             print(
                 f"Found {len(autoscaling_users)} users on autoscaling pool "
                 f"needing migration"
             )
-            shared_instances.append(("autoscaling-pool", autoscaling_users))
+            shared_instances.append(
+                (PremiumAssignment.AUTOSCALING_POOL, autoscaling_users)
+            )
 
         for instance in all_instances:
             instance_id = instance["instance_id"]
@@ -3465,18 +4261,59 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
 
             print(f"Checking instance {instance_id} (state: {instance_state})")
 
-            if instance_state == "running":
+            if instance_state == InstanceState.RUNNING:
                 assigned_users = get_assigned_users_for_instance(instance_id)
+
+                # Filter out standby assignments - they have no real user
+                # Standby instances have is_standby=1 and user_id=NULL
+                real_users = [
+                    u
+                    for u in assigned_users
+                    if u.get("user_id") is not None and not u.get("is_standby")
+                ]
+
+                print(
+                    f"Instance {instance_id}: {len(assigned_users)} total assignments, "
+                    f"{len(real_users)} real users"
+                )
 
                 # Use short timeout for migration checks - don't block waiting
                 # If instance not ready quickly, skip it and use ready ones
-                if not assigned_users and check_instance_readiness_with_retry(
+                if not real_users and check_instance_readiness_with_retry(
                     instance_id, max_wait_seconds=30, retry_interval=10
                 ):
                     available_instances.append(instance_id)
                     print(f"Instance {instance_id} is available for migration")
-                elif len(assigned_users) > 1:  # Shared instance
-                    shared_instances.append((instance_id, assigned_users))
+                elif real_users:
+                    # Check if this is a shared instance:
+                    # 1. Multiple users on the instance, OR
+                    # Check if any user has is_shared=1 flag
+                    has_shared_flag = any(
+                        user.get("is_shared", 0) == 1 for user in real_users
+                    )
+                    if len(real_users) > 1 or has_shared_flag:
+                        shared_instances.append((instance_id, real_users))
+                        print(
+                            f"Instance {instance_id} marked for migration: "
+                            f"{len(real_users)} users, "
+                            f"has_shared_flag={has_shared_flag}"
+                        )
+
+        # If we have users needing migration but no running instances,
+        # trigger scaling to start stopped instances
+        if shared_instances and not available_instances:
+            print(
+                "Users need migration but no running instances available. "
+                "Triggering scaling to start stopped instances..."
+            )
+            scaled = scale_premium_instances_if_needed()
+            return {
+                "migrations_performed": 0,
+                "available_instances": 0,
+                "shared_instances_found": len(shared_instances),
+                "scaling_triggered": scaled,
+                "message": "No running instances - triggered scaling",
+            }
 
         # Only migrate if we have available instances
         if not available_instances or not shared_instances:
@@ -3490,7 +4327,7 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
         # Check if we have enough instances for all users needing migration
         total_users_needing_migration = 0
         for instance_id, users in shared_instances:
-            if instance_id == "autoscaling-pool":
+            if instance_id == PremiumAssignment.AUTOSCALING_POOL:
                 total_users_needing_migration += len(users)  # All autoscaling users
             else:
                 total_users_needing_migration += len(users) - 1  # Shared, keep one
@@ -3508,32 +4345,42 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                 f"Triggering scaling..."
             )
             scale_premium_instances_if_needed()
-            # Note: New instances will be picked up on next migration run
-            # For now, migrate as many users as possible with available capacity
 
         migrations_performed = 0
 
-        # Migrate users from shared instances to dedicated instances
         for instance_id, users in shared_instances:
             if not available_instances:
                 break
 
-            # For autoscaling pool, migrate ALL users (it's a temporary assignment)
-            # For premium instances, migrate all but one user
-            # (keep first user, migrate others)
-            if instance_id == "autoscaling-pool":
-                users_to_migrate = users  # Migrate all users from autoscaling pool
+            # Determine which users to migrate based on instance type
+            if instance_id == PremiumAssignment.AUTOSCALING_POOL:
+                users_to_migrate = users
                 print(f"Migrating ALL {len(users)} users from autoscaling pool")
-            else:
-                users_to_migrate = users[1:]  # Keep first user, migrate others
+            elif len(users) == 1:
+                users_to_migrate = users
                 print(
-                    f"Migrating {len(users_to_migrate)} users from "
-                    f"shared premium instance"
+                    f"Migrating single user {users[0].get('user_id')} "
+                    f"incorrectly marked as shared"
                 )
+            else:
+                # Multiple users - migrate those with is_shared=1, or all but first
+                users_with_shared_flag = [
+                    u for u in users if u.get("is_shared", 0) == 1
+                ]
+                if users_with_shared_flag:
+                    users_to_migrate = users_with_shared_flag
+                    print(
+                        f"Migrating {len(users_to_migrate)} users with is_shared flag "
+                        f"from {instance_id}"
+                    )
+                else:
+                    users_to_migrate = users[1:]  # Keep first user, migrate others
+                    print(
+                        f"Migrating {len(users_to_migrate)} users from "
+                        f"shared premium instance"
+                    )
 
             for user_dict in users_to_migrate:
-                # Extract user_id from the dictionary returned by
-                # get_assigned_users_for_instance
                 user_id = user_dict.get("user_id")
                 if not user_id:
                     print(f"Warning: Skipping user with missing user_id: {user_dict}")
@@ -3542,16 +4389,23 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                 if not available_instances:
                     break
 
-                new_instance_id = available_instances.pop(0)
-                if migrate_user_to_dedicated_instance(user_id, new_instance_id):
-                    migrations_performed += 1
-                    print(
-                        f"Optimized: Migrated user {user_id} to "
-                        f"dedicated instance {new_instance_id}"
-                    )
-                else:
-                    # Return instance to available list if migration failed
-                    available_instances.append(new_instance_id)
+                # Try instances until one succeeds (handles concurrent claims)
+                migration_successful = False
+                while available_instances and not migration_successful:
+                    new_instance_id = available_instances.pop(0)
+
+                    if migrate_user_to_dedicated_instance(user_id, new_instance_id):
+                        migrations_performed += 1
+                        migration_successful = True
+                        print(
+                            f"Optimized: Migrated user {user_id} to "
+                            f"dedicated instance {new_instance_id}"
+                        )
+                    else:
+                        print(f"Instance {new_instance_id} unavailable, trying next...")
+
+                if not migration_successful:
+                    print(f"Could not migrate user {user_id}: no available instances")
 
         print(
             f"Shared instance optimization complete: "
@@ -3571,7 +4425,47 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
 
 
 @with_transaction
-def update_user_activity_timestamp(connection, user_id: str) -> bool:
+def fix_incorrect_is_shared_flags(connection) -> Dict[str, Any]:
+    """
+    Fix users incorrectly marked as is_shared=1 who are alone on their instance.
+
+    This handles users who were migrated to dedicated instances but still have
+    is_shared=1, which causes them to be flagged for migration in an infinite loop.
+    """
+    with connection.cursor() as cursor:
+        # Find users with is_shared=1 who are the only active user on their instance
+        cursor.execute(
+            f"""
+            SELECT pa.user_id, pa.instance_id
+            FROM premium_user_assignments pa
+            WHERE pa.is_shared = 1 AND pa.status = 'active' AND pa.is_standby = 0
+              AND pa.instance_id != '{PremiumAssignment.AUTOSCALING_POOL}'
+              AND (SELECT COUNT(*) FROM premium_user_assignments pa2
+                   WHERE pa2.instance_id = pa.instance_id
+                   AND pa2.status = 'active' AND pa2.is_standby = 0) = 1
+        """
+        )
+        users_to_fix = cursor.fetchall()
+
+        fixed_users = []
+        for user in users_to_fix:
+            cursor.execute(
+                "UPDATE premium_user_assignments SET is_shared = 0 WHERE user_id = %s",
+                (user["user_id"],),
+            )
+            fixed_users.append(
+                {"user_id": user["user_id"], "instance_id": user["instance_id"]}
+            )
+            print(
+                f"Fixed is_shared flag for user {user['user_id']} "
+                f"on instance {user['instance_id']}"
+            )
+
+        return {"fixed_count": len(users_to_fix), "fixed_users": fixed_users}
+
+
+@with_transaction
+def update_user_activity_timestamp(connection, user_id: int) -> bool:
     """Update activity timestamp for a user with proper transaction isolation"""
     with connection.cursor() as cursor:
         cursor.execute(
@@ -3585,7 +4479,7 @@ def update_user_activity_timestamp(connection, user_id: str) -> bool:
         return cursor.rowcount > 0
 
 
-def handle_activity_update(user_id: str) -> Dict[str, Any]:
+def handle_activity_update(user_id: int) -> Dict[str, Any]:
     """Handle heartbeat activity update for a premium user"""
     try:
         print(f" Processing activity update for user {user_id}")
@@ -3635,7 +4529,7 @@ def handle_activity_update(user_id: str) -> Dict[str, Any]:
 # cleanup_stale_assignments function moved to premium_cleanup Lambda
 
 
-def update_user_activity(user_id: str) -> bool:
+def update_user_activity(user_id: int) -> bool:
     """Update last_activity timestamp for a user's assignment"""
     try:
         with get_db_connection() as connection:

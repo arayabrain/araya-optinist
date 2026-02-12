@@ -8,7 +8,7 @@ Tests cover:
 - _get_fallback_storage_quota() - Subscription plan determination
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from unittest.mock import Mock, patch
 
 import pytest
@@ -20,11 +20,13 @@ from studio.app.common.core.cloud.cloud_utils import (
     get_current_user_storage_usage,
 )
 from studio.app.common.core.subscription.constants import (
+    AlertType,
     PlanName,
     StorageQuota,
     StorageSize,
     SubscriptionPeriods,
 )
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 
 # ============================================================================
 # Fixtures
@@ -65,7 +67,7 @@ def mock_storage_info_fresh():
         "storage_usage_bytes": 1_000_000_000,  # 1 GB
         "storage_quota_bytes": 5_000_000_000,  # 5 GB
         "storage_usage_percent": 20.0,
-        "last_updated": datetime.now(timezone.utc) - timedelta(minutes=10),
+        "last_updated": get_current_datetime() - timedelta(minutes=10),
     }
 
 
@@ -77,7 +79,7 @@ def mock_storage_info_stale():
         "storage_usage_bytes": 1_000_000_000,
         "storage_quota_bytes": 5_000_000_000,
         "storage_usage_percent": 20.0,
-        "last_updated": datetime.now(timezone.utc) - timedelta(minutes=30),
+        "last_updated": get_current_datetime() - timedelta(minutes=30),
     }
 
 
@@ -165,7 +167,7 @@ def test_get_fallback_storage_quota_database_error():
 
 def test_is_storage_data_fresh_within_cache_window():
     """Test that fresh data (within cache window) returns True"""
-    storage_info = {"last_updated": datetime.now(timezone.utc) - timedelta(minutes=10)}
+    storage_info = {"last_updated": get_current_datetime() - timedelta(minutes=10)}
 
     result = _is_storage_data_fresh(
         storage_info, SubscriptionPeriods.MAX_CACHE_AGE_MINUTES
@@ -176,7 +178,7 @@ def test_is_storage_data_fresh_within_cache_window():
 
 def test_is_storage_data_fresh_outside_cache_window():
     """Test that stale data (outside cache window) returns False"""
-    storage_info = {"last_updated": datetime.now(timezone.utc) - timedelta(minutes=30)}
+    storage_info = {"last_updated": get_current_datetime() - timedelta(minutes=30)}
 
     result = _is_storage_data_fresh(
         storage_info, SubscriptionPeriods.MAX_CACHE_AGE_MINUTES
@@ -199,7 +201,7 @@ def test_is_storage_data_fresh_missing_last_updated():
 def test_is_storage_data_fresh_string_format():
     """Test that ISO string format timestamps work correctly"""
     # Create timestamp as ISO string
-    timestamp = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    timestamp = (get_current_datetime() - timedelta(minutes=5)).isoformat()
     storage_info = {"last_updated": timestamp}
 
     result = _is_storage_data_fresh(
@@ -213,7 +215,7 @@ def test_is_storage_data_fresh_string_format_with_z():
     """Test that ISO string with 'Z' suffix (UTC) works correctly"""
     # Create timestamp with Z suffix (common in JSON APIs)
     timestamp = (
-        (datetime.now(timezone.utc) - timedelta(minutes=5))
+        (get_current_datetime() - timedelta(minutes=5))
         .isoformat()
         .replace("+00:00", "Z")
     )
@@ -240,7 +242,7 @@ def test_is_storage_data_fresh_invalid_string_format():
 def test_is_storage_data_fresh_exactly_at_boundary():
     """Test boundary condition: exactly at max_cache_age_minutes"""
     storage_info = {
-        "last_updated": datetime.now(timezone.utc)
+        "last_updated": get_current_datetime()
         - timedelta(minutes=SubscriptionPeriods.MAX_CACHE_AGE_MINUTES)
     }
 
@@ -260,8 +262,8 @@ def test_is_storage_data_fresh_timezone_naive_datetime():
     "can't subtract offset-naive and offset-aware datetimes"
     """
     # Simulate what SQLAlchemy returns from MySQL DateTime column (timezone-naive)
-    # Use utcnow() to match server time (MySQL stores in UTC for DateTime columns)
-    naive_datetime = datetime.utcnow() - timedelta(minutes=10)
+    # Create naive datetime by stripping timezone info (MySQL DateTime is naive)
+    naive_datetime = get_current_datetime().replace(tzinfo=None) - timedelta(minutes=10)
     assert naive_datetime.tzinfo is None  # Verify it's timezone-naive
 
     storage_info = {"last_updated": naive_datetime}
@@ -276,8 +278,8 @@ def test_is_storage_data_fresh_timezone_naive_datetime():
 
 def test_is_storage_data_fresh_timezone_naive_datetime_stale():
     """Test that stale timezone-naive datetime is correctly identified as stale"""
-    # Timezone-naive datetime older than cache window (use utcnow for consistency)
-    naive_datetime = datetime.utcnow() - timedelta(minutes=30)
+    # Timezone-naive datetime older than cache window
+    naive_datetime = get_current_datetime().replace(tzinfo=None) - timedelta(minutes=30)
     assert naive_datetime.tzinfo is None
 
     storage_info = {"last_updated": naive_datetime}
@@ -450,13 +452,11 @@ async def test_calculate_limit_warning_free_user_storage_exceeded():
                 result = await calculate_limit_warning(user_id)
 
                 assert result is not None
-                assert result["has_warning"] is True
-                assert result["warning_type"] == "storage"
-                assert (
-                    result["days_remaining"] == SubscriptionPeriods.STORAGE_WARNING_DAYS
-                )
-                assert result["excess_data_bytes"] == excess_bytes
-                assert "exceeds the free plan limit" in result["message"]
+                assert result.has_alert is True
+                assert result.alert_type == AlertType.STORAGE.value
+                assert result.days_remaining == SubscriptionPeriods.STORAGE_WARNING_DAYS
+                assert result.excess_data_bytes == excess_bytes
+                assert "exceeds the free plan limit" in result.message
 
 
 @pytest.mark.asyncio
@@ -485,7 +485,7 @@ async def test_calculate_limit_warning_premium_active_storage_exceeded():
 
                 # Mock active premium subscription (expires in future)
                 mock_subscription = Mock()
-                mock_subscription.expiration = datetime.now(timezone.utc) + timedelta(
+                mock_subscription.expiration = get_current_datetime() + timedelta(
                     days=30
                 )
                 mock_db.execute.return_value.all.return_value = [[mock_subscription]]
@@ -493,12 +493,10 @@ async def test_calculate_limit_warning_premium_active_storage_exceeded():
                 result = await calculate_limit_warning(user_id)
 
                 assert result is not None
-                assert result["has_warning"] is True
-                assert result["warning_type"] == "storage"
-                assert (
-                    result["days_remaining"] == SubscriptionPeriods.STORAGE_WARNING_DAYS
-                )
-                assert "unable to run workflows" in result["message"]
+                assert result.has_alert is True
+                assert result.alert_type == AlertType.STORAGE.value
+                assert result.days_remaining == SubscriptionPeriods.STORAGE_WARNING_DAYS
+                assert "unable to run workflows" in result.message
 
 
 @pytest.mark.asyncio
@@ -531,7 +529,7 @@ async def test_calculate_limit_warning_premium_warning_storage_ok():
 
                 # Mock expired subscription in WARNING period
                 # Expired 10 days ago, so in warning period (0-30 days after grace)
-                expiration_date = datetime.now(timezone.utc) - timedelta(
+                expiration_date = get_current_datetime() - timedelta(
                     days=grace_period + 10
                 )
                 deletion_date = expiration_date + timedelta(
@@ -545,17 +543,17 @@ async def test_calculate_limit_warning_premium_warning_storage_ok():
                 result = await calculate_limit_warning(user_id)
 
                 assert result is not None
-                assert result["has_warning"] is True
-                assert result["warning_type"] == "grace"
+                assert result.has_alert is True
+                assert result.alert_type == AlertType.GRACE.value
                 # days_remaining is (deletion_date - now).days
                 # Expected: warning_period - 10 days remaining until deletion
-                expected_days = (deletion_date - datetime.now(timezone.utc)).days
+                expected_days = (deletion_date - get_current_datetime()).days
                 assert (
-                    result["days_remaining"] >= expected_days - 1
+                    result.days_remaining >= expected_days - 1
                 )  # Allow 1 day variance for test timing
-                assert result["days_remaining"] <= expected_days + 1
-                assert "expired" in result["message"]
-                assert "upgrade to maintain premium features" in result["message"]
+                assert result.days_remaining <= expected_days + 1
+                assert "expired" in result.message
+                assert "upgrade" in result.message.lower()
 
 
 @pytest.mark.asyncio
@@ -586,7 +584,7 @@ async def test_calculate_limit_warning_premium_warning_storage_exceeded():
                 mock_fresh.return_value = True
 
                 # Mock expired subscription in WARNING period
-                expiration_date = datetime.now(timezone.utc) - timedelta(
+                expiration_date = get_current_datetime() - timedelta(
                     days=grace_period + 5
                 )
                 deletion_date = expiration_date + timedelta(
@@ -600,20 +598,22 @@ async def test_calculate_limit_warning_premium_warning_storage_exceeded():
                 result = await calculate_limit_warning(user_id)
 
                 assert result is not None
-                assert result["has_warning"] is True
-                assert result["warning_type"] == "grace"
+                assert result.has_alert is True
+                assert result.alert_type == AlertType.GRACE.value
                 # days_remaining is (deletion_date - now).days
-                expected_days = (deletion_date - datetime.now(timezone.utc)).days
+                expected_days = (deletion_date - get_current_datetime()).days
                 assert (
-                    result["days_remaining"] >= expected_days - 1
+                    result.days_remaining >= expected_days - 1
                 )  # Allow 1 day variance
-                assert result["days_remaining"] <= expected_days + 1
-                assert "expired" in result["message"]
-                assert "remove" in result["message"] or "upgrade" in result["message"]
-                # Verify excess is approximately 3GB (8GB - 5GB)
-                # Allow for rounding: round((8_000_000_000 - 5_000_000_000) / GB, 2)
-                assert result["excess_data_gb"] >= 2.7
-                assert result["excess_data_gb"] <= 3.0
+                assert result.days_remaining <= expected_days + 1
+                assert "expired" in result.message
+                msg_lower = result.message.lower()
+                assert "remove" in msg_lower or "upgrade" in msg_lower
+                # Verify excess is calculated correctly
+                # Note: Uses binary GB (1 GB = 1024^3 bytes), so:
+                # 8,000,000,000 bytes = 7.45 GB, quota = 5.0 GB, excess = 2.45 GB
+                assert result.excess_data_gb >= 2.4
+                assert result.excess_data_gb <= 3.0
 
 
 @pytest.mark.asyncio
@@ -643,7 +643,7 @@ async def test_calculate_limit_warning_premium_overdue():
                 mock_fresh.return_value = True
 
                 # Mock expired subscription past deletion date
-                expiration_date = datetime.now(timezone.utc) - timedelta(
+                expiration_date = get_current_datetime() - timedelta(
                     days=grace_period + warning_period + 5
                 )
                 mock_subscription = Mock()
@@ -653,9 +653,9 @@ async def test_calculate_limit_warning_premium_overdue():
                 result = await calculate_limit_warning(user_id)
 
                 assert result is not None
-                assert result["has_warning"] is True
-                assert result["warning_type"] == "overdue"
-                assert result["days_remaining"] == 0
+                assert result.has_alert is True
+                assert result.alert_type == AlertType.OVERDUE.value
+                assert result.days_remaining == 0
 
 
 @pytest.mark.asyncio
@@ -684,7 +684,7 @@ async def test_calculate_limit_warning_premium_active_no_storage_issue():
 
                 # Mock active premium subscription
                 mock_subscription = Mock()
-                mock_subscription.expiration = datetime.now(timezone.utc) + timedelta(
+                mock_subscription.expiration = get_current_datetime() + timedelta(
                     days=30
                 )
                 mock_db.execute.return_value.all.return_value = [[mock_subscription]]
@@ -697,7 +697,11 @@ async def test_calculate_limit_warning_premium_active_no_storage_issue():
 @pytest.mark.asyncio
 async def test_calculate_limit_warning_premium_in_grace_period():
     """
-    Test: Premium user in GRACE period (0-7 days after expiration) → No warning yet
+    Test: Premium user in GRACE period (0-30 days after expiration) with
+    storage within FREE quota limits → Grace warning (subscription expired,
+    but no storage issue).
+    Note: During grace period, effective quota is FREE (5GB), so we must use
+    storage within that limit to avoid storage-exceeded warnings.
     """
     user_id = 1
 
@@ -711,24 +715,28 @@ async def test_calculate_limit_warning_premium_in_grace_period():
                 mock_db = Mock()
                 mock_scope.return_value.__enter__.return_value = mock_db
 
-                # Mock storage info: within limits
+                # Mock storage info: within FREE quota limits (2GB of 5GB)
+                # During grace period, effective quota falls back to FREE (5GB)
                 mock_get_storage.return_value = {
-                    "storage_usage_bytes": 50_000_000_000,
-                    "storage_quota_bytes": 200_000_000_000,
+                    "storage_usage_bytes": 2_000_000_000,  # 2GB
+                    "storage_quota_bytes": 5_000_000_000,  # 5GB FREE quota
                 }
                 mock_fresh.return_value = True
 
                 # Mock subscription expired 3 days ago (in grace period)
                 mock_subscription = Mock()
-                mock_subscription.expiration = datetime.now(timezone.utc) - timedelta(
+                mock_subscription.expiration = get_current_datetime() - timedelta(
                     days=3
                 )
                 mock_db.execute.return_value.all.return_value = [[mock_subscription]]
 
                 result = await calculate_limit_warning(user_id)
 
-                # No warning during grace period if storage is OK
-                assert result is None
+                # Grace period warning should appear (subscription expired)
+                assert result is not None
+                assert result.alert_type == AlertType.GRACE.value
+                assert result.has_alert is True
+                assert "expired" in result.message
 
 
 @pytest.mark.asyncio

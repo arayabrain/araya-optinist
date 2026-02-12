@@ -8,6 +8,7 @@ from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.constants import (
+    AlertType,
     PlanName,
     StorageQuota,
     StorageScanTriggers,
@@ -22,8 +23,101 @@ from studio.app.common.db.database import session_scope
 from studio.app.common.models import SubscriptionPlans
 from studio.app.common.models import User as UserModel
 from studio.app.common.models import UserStorageUsage, UserSubscription
+from studio.app.common.schemas.storage import LimitWarning
 
 logger = AppLogger.get_logger()
+
+
+async def ensure_user_bucket_exists(
+    user_id: int, db=None, auto_commit: bool = True
+) -> Optional[str]:
+    """
+    Ensure a user has a valid S3 bucket. Creates one if missing.
+
+    This function handles:
+    1. User has no bucket name in DB -> generate name, create bucket, save to DB
+    2. User has bucket name but bucket doesn't exist -> create the bucket
+
+    Args:
+        user_id: The user's database ID
+        db: Optional database session. If None, creates a new session.
+        auto_commit: If True, commits DB changes. Set False when caller manages
+            the transaction (e.g., during user creation).
+
+    Returns:
+        The bucket name if successful, None if failed or storage not available.
+    """
+    from studio.app.common.core.storage.remote_storage_controller import (
+        RemoteStorageController,
+    )
+
+    if not RemoteStorageController.is_available():
+        logger.debug("Remote storage not available, skipping bucket creation")
+        return None
+
+    try:
+        # Use provided session or create new one
+        if db is None:
+            with session_scope() as db:
+                return await _ensure_user_bucket_exists_impl(
+                    user_id, db, auto_commit=True
+                )
+        else:
+            return await _ensure_user_bucket_exists_impl(user_id, db, auto_commit)
+
+    except Exception as e:
+        logger.error(f"Failed to ensure bucket exists for user {user_id}: {e}")
+        return None
+
+
+async def _ensure_user_bucket_exists_impl(
+    user_id: int, db, auto_commit: bool = True
+) -> Optional[str]:
+    """Implementation of ensure_user_bucket_exists with db session."""
+    from studio.app.common.core.storage.remote_storage_controller import (
+        RemoteStorageController,
+        RemoteStorageSimpleWriter,
+    )
+
+    # Get user from DB
+    user = db.query(UserModel).filter(UserModel.id == user_id).first()
+    if not user:
+        logger.error(f"User {user_id} not found in database")
+        return None
+
+    # Check if user already has a bucket name
+    bucket_name = None
+    if user.attributes and isinstance(user.attributes, dict):
+        bucket_name = user.attributes.get("remote_bucket_name")
+
+    # Generate new bucket name if not exists
+    if not bucket_name:
+        bucket_name = RemoteStorageController.create_user_bucket_name(id=user_id)
+        logger.info(f"Generated new bucket name for user {user_id}: {bucket_name}")
+
+    # Create bucket (idempotent - will succeed if already exists)
+    try:
+        async with RemoteStorageSimpleWriter(bucket_name) as storage:
+            await storage.create_bucket()
+        logger.info(f"Bucket created/verified for user {user_id}: {bucket_name}")
+    except Exception as e:
+        # Check if bucket already exists (not an error)
+        if "BucketAlreadyOwnedByYou" in str(e) or "BucketAlreadyExists" in str(e):
+            logger.debug(f"Bucket already exists for user {user_id}: {bucket_name}")
+        else:
+            logger.error(f"Failed to create bucket for user {user_id}: {e}")
+            raise
+
+    # Update user attributes if bucket name was newly generated
+    if not user.attributes or not user.attributes.get("remote_bucket_name"):
+        new_attributes = dict(user.attributes) if user.attributes else {}
+        new_attributes["remote_bucket_name"] = bucket_name
+        user.attributes = new_attributes
+        if auto_commit:
+            db.commit()
+        logger.info(f"Updated user {user_id} attributes with bucket name")
+
+    return bucket_name
 
 
 def _get_fallback_storage_quota(user_id: int) -> Dict[str, Any]:
@@ -621,9 +715,12 @@ async def _calculate_local_user_storage(user_id: int) -> int:
         return 0
 
 
-async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
+async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
     """
-    Calculate limit warning based on subscription and storage status:
+    Calculate limit warning based on subscription and storage status.
+
+    Returns a LimitWarning Pydantic model for type-safe API responses,
+    or None if no warning is needed.
 
     Cases:
     1. Free user, no storage limit exceeded → No warning
@@ -684,6 +781,8 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
 
             subscription_status = None
             subscription_end = None
+            grace_end = None
+            deletion_date = None
             days_remaining = None
 
             if result_rows:
@@ -725,6 +824,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                     subscription_status = SubscriptionLifecycleStatus.ACTIVE
                 elif now <= grace_end:
                     subscription_status = SubscriptionLifecycleStatus.GRACE
+                    days_remaining = (grace_end - now).days
                 elif now <= deletion_date:
                     subscription_status = SubscriptionLifecycleStatus.WARNING
                     days_remaining = (deletion_date - now).days
@@ -742,8 +842,22 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                 )  # Never had premium
 
             # Step 2: Determine storage status
-            storage_exceeded = current_usage_bytes > storage_quota_bytes
-            excess_bytes = max(0, current_usage_bytes - storage_quota_bytes)
+            # For users in grace/warning/overdue period, compare against free tier limit
+            # since that's what they'll have after their subscription fully expires
+            match subscription_status:
+                case (
+                    SubscriptionLifecycleStatus.GRACE
+                    | SubscriptionLifecycleStatus.WARNING
+                    | SubscriptionLifecycleStatus.OVERDUE
+                ):
+                    effective_quota_bytes = FREE_PLAN_LIMIT_BYTES
+                    effective_quota_gb = StorageQuota.FREE
+                case _:
+                    effective_quota_bytes = storage_quota_bytes
+                    effective_quota_gb = storage_quota_gb
+
+            storage_exceeded = current_usage_bytes > effective_quota_bytes
+            excess_bytes = max(0, current_usage_bytes - effective_quota_bytes)
             excess_gb = excess_bytes / StorageSize.GB
             current_usage_gb = current_usage_bytes / StorageSize.GB
 
@@ -752,7 +866,8 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
             logger.info(f"Subscription status: {subscription_status}")
             logger.info(f"Storage exceeded: {storage_exceeded}")
             logger.info(
-                f"Current usage: {current_usage_gb:.2f}GB / {storage_quota_gb:.1f}GB"
+                f"Current usage: {current_usage_gb:.2f}GB / {effective_quota_gb:.1f}GB "
+                f"(effective quota for {subscription_status})"
             )
 
             # Case 1: Free user, no storage limit exceeded → No warning
@@ -770,97 +885,107 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
                 subscription_status == SubscriptionLifecycleStatus.FREE
                 and storage_exceeded
             ):
-                return {
-                    "has_warning": True,
-                    "warning_type": "storage",
-                    "days_remaining": SubscriptionPeriods.STORAGE_WARNING_DAYS,
-                    "excess_data_bytes": excess_bytes,
-                    "excess_data_gb": round(excess_gb, 2),
-                    "storage_usage_bytes": current_usage_bytes,
-                    "storage_usage_gb": round(current_usage_gb, 2),
-                    "storage_quota_bytes": storage_quota_bytes,
-                    "storage_quota_gb": storage_quota_gb,
-                    "deletion_date": (
+                return LimitWarning(
+                    has_alert=True,
+                    alert_type=AlertType.STORAGE.value,
+                    days_remaining=SubscriptionPeriods.STORAGE_WARNING_DAYS,
+                    excess_data_bytes=excess_bytes,
+                    excess_data_gb=round(excess_gb, 2),
+                    storage_usage_bytes=current_usage_bytes,
+                    storage_usage_gb=round(current_usage_gb, 2),
+                    storage_quota_bytes=storage_quota_bytes,
+                    storage_quota_gb=storage_quota_gb,
+                    deletion_date=(
                         SubscriptionService.get_current_datetime()
                         + timedelta(days=SubscriptionPeriods.STORAGE_WARNING_DAYS)
                     ).isoformat(),
-                    "message": (
+                    message=(
                         f"Your data usage ({round(current_usage_gb, 1)} GB) "
                         f"exceeds the free plan limit ({storage_quota_gb:.1f} GB). "
                         f"Please upgrade or remove {round(excess_gb, 1)} GB of data "
                         f"within {SubscriptionPeriods.STORAGE_WARNING_DAYS} days."
                     ),
-                }
+                )
 
             # Case 3: Premium user active, storage limit exceeded → Storage warning only
             if (
                 subscription_status == SubscriptionLifecycleStatus.ACTIVE
                 and storage_exceeded
             ):
-                return {
-                    "has_warning": True,
-                    "warning_type": "storage",
-                    "days_remaining": SubscriptionPeriods.STORAGE_WARNING_DAYS,
-                    "excess_data_bytes": excess_bytes,
-                    "excess_data_gb": round(excess_gb, 2),
-                    "storage_usage_bytes": current_usage_bytes,
-                    "storage_usage_gb": round(current_usage_gb, 2),
-                    "storage_quota_bytes": storage_quota_bytes,
-                    "storage_quota_gb": storage_quota_gb,
-                    "message": (
+                return LimitWarning(
+                    has_alert=True,
+                    alert_type=AlertType.STORAGE.value,
+                    days_remaining=SubscriptionPeriods.STORAGE_WARNING_DAYS,
+                    excess_data_bytes=excess_bytes,
+                    excess_data_gb=round(excess_gb, 2),
+                    storage_usage_bytes=current_usage_bytes,
+                    storage_usage_gb=round(current_usage_gb, 2),
+                    storage_quota_bytes=storage_quota_bytes,
+                    storage_quota_gb=storage_quota_gb,
+                    message=(
                         f"Your storage usage ({round(current_usage_gb, 1)} GB) is over "
                         f"the limit for your plan. You will be unable to run workflows."
                         f" Consider cleaning up unused data."
                     ),
-                }
-
-            # Cases 4 & 5: Premium user with subscription issues (warning/overdue)
-            if subscription_status in [
-                SubscriptionLifecycleStatus.WARNING,
-                SubscriptionLifecycleStatus.OVERDUE,
-            ]:
-                logger.info(
-                    f"User {user_id}: Creating limit warning "
-                    f"(status: {subscription_status})"
-                )
-                warning_type = (
-                    "grace"
-                    if subscription_status == SubscriptionLifecycleStatus.WARNING
-                    else "overdue"
                 )
 
-                if storage_exceeded:
-                    # Case 4: Both storage and subscription issues
-                    message = (
-                        f"Your premium subscription expired on "
-                        f"{subscription_end.strftime('%B %d, %Y')}. "
-                        f"You have {days_remaining or 0} days to upgrade or remove "
-                        f"{round(excess_gb, 1)} GB of data to stay "
-                        f"within the free plan limit."
-                    )
-                else:
-                    # Case 5: Subscription issue only (user within storage limits)
-                    message = (
-                        f"Your premium subscription expired on "
-                        f"{subscription_end.strftime('%B %d, %Y')}. "
-                        f"Please upgrade to maintain premium features."
+            # Cases 4 & 5: Premium user with subscription issues (grace/warning/overdue)
+            match subscription_status:
+                case (
+                    SubscriptionLifecycleStatus.GRACE
+                    | SubscriptionLifecycleStatus.WARNING
+                    | SubscriptionLifecycleStatus.OVERDUE
+                ):
+                    logger.info(
+                        f"User {user_id}: Creating limit warning "
+                        f"(status: {subscription_status})"
                     )
 
-                return {
-                    "has_warning": True,
-                    "warning_type": warning_type,
-                    "days_remaining": days_remaining or 0,
-                    "excess_data_bytes": excess_bytes,
-                    "excess_data_gb": round(excess_gb, 2),
-                    "storage_usage_bytes": current_usage_bytes,
-                    "storage_usage_gb": round(current_usage_gb, 2),
-                    "storage_quota_bytes": storage_quota_bytes,
-                    "storage_quota_gb": storage_quota_gb,
-                    "subscription_end_date": subscription_end.isoformat()
-                    if subscription_end
-                    else None,
-                    "message": message,
-                }
+                    # Determine alert type using AlertType enum
+                    match subscription_status:
+                        case (
+                            SubscriptionLifecycleStatus.GRACE
+                            | SubscriptionLifecycleStatus.WARNING
+                        ):
+                            alert_type = AlertType.GRACE
+                        case SubscriptionLifecycleStatus.OVERDUE:
+                            alert_type = AlertType.OVERDUE
+                        case _:
+                            alert_type = AlertType.GRACE  # Fallback
+
+                    # Generate message based on status and storage
+                    message = _generate_subscription_warning_message(
+                        subscription_status=subscription_status,
+                        subscription_end=subscription_end,
+                        storage_exceeded=storage_exceeded,
+                        current_usage_gb=current_usage_gb,
+                        effective_quota_gb=effective_quota_gb,
+                        excess_gb=excess_gb,
+                        days_remaining=days_remaining,
+                    )
+
+                    return LimitWarning(
+                        has_alert=True,
+                        alert_type=alert_type.value,
+                        days_remaining=days_remaining or 0,
+                        excess_data_bytes=excess_bytes,
+                        excess_data_gb=round(excess_gb, 2),
+                        storage_usage_bytes=current_usage_bytes,
+                        storage_usage_gb=round(current_usage_gb, 2),
+                        storage_quota_bytes=effective_quota_bytes,
+                        storage_quota_gb=effective_quota_gb,
+                        subscription_end_date=(
+                            subscription_end.isoformat() if subscription_end else None
+                        ),
+                        grace_end_date=(grace_end.isoformat() if grace_end else None),
+                        deletion_date=(
+                            deletion_date.isoformat() if deletion_date else None
+                        ),
+                        message=message,
+                    )
+
+                case _:
+                    pass
 
             # All other cases: No warning needed
             logger.info(f"User {user_id}: No warning needed (other cases)")
@@ -869,6 +994,76 @@ async def calculate_limit_warning(user_id: int) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Failed to calculate limit warning for user {user_id}: {e}")
         return None
+
+
+def _generate_subscription_warning_message(
+    subscription_status: SubscriptionLifecycleStatus,
+    subscription_end: datetime,
+    storage_exceeded: bool,
+    current_usage_gb: float,
+    effective_quota_gb: float,
+    excess_gb: float,
+    days_remaining: Optional[int],
+) -> str:
+    """
+    Generate warning message based on subscription status and storage state.
+
+    Uses match/case for cleaner status handling.
+    """
+    date_str = subscription_end.strftime("%B %d, %Y")
+
+    if storage_exceeded:
+        # Case 4: Both storage and subscription issues
+        match subscription_status:
+            case SubscriptionLifecycleStatus.GRACE:
+                return (
+                    f"Your premium subscription expired on {date_str}. "
+                    f"Your storage ({round(current_usage_gb, 1)} GB) exceeds "
+                    f"the free plan limit ({effective_quota_gb:.0f} GB). "
+                    f"You have {days_remaining or 0} days to upgrade or remove "
+                    f"{round(excess_gb, 1)} GB of data."
+                )
+            case SubscriptionLifecycleStatus.WARNING:
+                return (
+                    f"Your premium subscription expired on {date_str}. "
+                    f"Your storage ({round(current_usage_gb, 1)} GB) exceeds "
+                    f"the free plan limit ({effective_quota_gb:.0f} GB). "
+                    f"Remove {round(excess_gb, 1)} GB of data within "
+                    f"{days_remaining or 0} days or your data will be deleted."
+                )
+            case SubscriptionLifecycleStatus.OVERDUE:
+                return (
+                    f"Your premium subscription expired on {date_str}. "
+                    f"Your storage ({round(current_usage_gb, 1)} GB) exceeds "
+                    f"the free plan limit ({effective_quota_gb:.0f} GB). "
+                    f"Your data is scheduled for deletion. "
+                    f"Please upgrade or remove {round(excess_gb, 1)} GB."
+                )
+            case _:
+                return f"Your premium subscription expired on {date_str}."
+    else:
+        # Case 5: Subscription issue only (user within storage limits)
+        match subscription_status:
+            case SubscriptionLifecycleStatus.GRACE:
+                return (
+                    f"Your premium subscription expired on {date_str}. "
+                    f"You have {days_remaining or 0} days of premium features "
+                    f"remaining. Please upgrade to maintain access."
+                )
+            case SubscriptionLifecycleStatus.WARNING:
+                return (
+                    f"Your premium subscription expired on {date_str}. "
+                    f"Your data will be deleted in {days_remaining or 0} days. "
+                    f"Please upgrade to prevent data loss."
+                )
+            case SubscriptionLifecycleStatus.OVERDUE:
+                return (
+                    f"Your premium subscription expired on {date_str}. "
+                    f"Your data is scheduled for deletion. "
+                    f"Please upgrade immediately to prevent data loss."
+                )
+            case _:
+                return f"Your premium subscription expired on {date_str}."
 
 
 class CloudDebug:
@@ -1106,33 +1301,38 @@ async def _should_trigger_full_scan(user_id: int) -> bool:
 
 async def _perform_full_scan_and_reset_delta(user_id: int) -> None:
     """
-    Perform full S3 scan and reset delta counter with advisory lock protection.
+    Perform full S3 scan and reset delta counter with distributed lock protection.
 
-    Uses PostgreSQL advisory locks to prevent concurrent scans of the same user.
+    Uses MySQL GET_LOCK to prevent concurrent scans of the same user.
     If another process is already scanning this user, this function returns early.
 
     Args:
         user_id: User ID to scan
     """
     lock_acquired = False
+    lock_name = None
 
     try:
         from sqlalchemy import text, update
 
         from studio.app.common.core.subscription.constants import StorageReconciliation
 
-        # Try to acquire advisory lock for this user (non-blocking)
-        # Lock ID is based on user_id to ensure uniqueness
-        # Namespace prevents conflicts with other advisory locks in the system
-        lock_key = StorageReconciliation.ADVISORY_LOCK_NAMESPACE * 1000000 + user_id
+        # Create lock name based on user_id
+        # Namespace prevents conflicts with other locks in the system
+        lock_name = (
+            f"storage_scan_{StorageReconciliation.ADVISORY_LOCK_NAMESPACE}_{user_id}"
+        )
+        lock_timeout = 0  # Non-blocking (returns immediately)
 
         with session_scope() as db:
-            # Try to acquire lock (returns true if acquired, false if already locked)
+            # Try to acquire lock
+            # (returns 1 if acquired, 0 if already locked, NULL on error)
             lock_result = db.execute(
-                text("SELECT pg_try_advisory_lock(:lock_key)"),
-                {"lock_key": lock_key},
+                text("SELECT GET_LOCK(:lock_name, :timeout) as lock_result"),
+                {"lock_name": lock_name, "timeout": lock_timeout},
             )
-            lock_acquired = lock_result.scalar()
+            result = lock_result.scalar()
+            lock_acquired = result == 1
 
         if not lock_acquired:
             logger.info(
@@ -1140,7 +1340,7 @@ async def _perform_full_scan_and_reset_delta(user_id: int) -> None:
             )
             return
 
-        logger.debug(f"Acquired advisory lock for user {user_id} scan")
+        logger.debug(f"Acquired distributed lock for user {user_id} scan")
 
         # Do expensive S3 scan
         actual_storage = await _calculate_live_storage_usage(user_id)
@@ -1168,17 +1368,17 @@ async def _perform_full_scan_and_reset_delta(user_id: int) -> None:
         logger.error(f"Failed to perform full scan for user {user_id}: {e}")
     finally:
         # Always release the lock if we acquired it
-        if lock_acquired:
+        if lock_acquired and lock_name:
             try:
                 with session_scope() as db:
                     db.execute(
-                        text("SELECT pg_advisory_unlock(:lock_key)"),
-                        {"lock_key": lock_key},
+                        text("SELECT RELEASE_LOCK(:lock_name)"),
+                        {"lock_name": lock_name},
                     )
-                logger.debug(f"Released advisory lock for user {user_id}")
+                logger.debug(f"Released distributed lock for user {user_id}")
             except Exception as unlock_error:
                 logger.warning(
-                    f"Failed to release advisory lock for user {user_id}: "
+                    f"Failed to release distributed lock for user {user_id}: "
                     f"{unlock_error}"
                 )
 

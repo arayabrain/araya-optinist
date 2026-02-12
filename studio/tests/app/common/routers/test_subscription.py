@@ -7,6 +7,8 @@ from datetime import datetime
 
 from dateutil.relativedelta import relativedelta
 
+from studio.app.common.core.utils.datetime_utils import get_current_timestamp
+
 
 def test_month_calculations():
     """Test that relativedelta handles different month lengths correctly"""
@@ -141,7 +143,7 @@ def create_test_webhook_payload(start_date):
         "billing_reason": "subscription_cycle",
         "period_start": int(start_date.timestamp()),
         "period_end": int((start_date + relativedelta(months=1)).timestamp()),
-        "created": int(datetime.now().timestamp()),
+        "created": int(get_current_timestamp()),
     }
 
     print("You can POST this to your webhook endpoint:")

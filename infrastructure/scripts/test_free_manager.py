@@ -41,6 +41,14 @@ EXPECTED RESULT:
 EXPECTED RUNTIME:
   - Normal run (no scaling): ~2-3 minutes
   - Scale-up scenario: ~10-12 minutes (Lambda waits for instances internally)
+
+PERFORMANCE IMPACT:
+  HEAVY - Invokes Free Manager Lambda which may scale ASG and rebalance users
+  - Scales ECS service and ASG when user count exceeds threshold
+  - Rebalances users across instances during scaling
+  - Will affect free tier users during scaling operations
+  - Use during maintenance windows or off-peak hours
+
 """
 
 import argparse
@@ -48,16 +56,22 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Dict, List, Optional
 
 import boto3
 from botocore.exceptions import ClientError
 
-# Add parent directory for shared infrastructure imports
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+# Add project root and parent directory for imports
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_script_dir, "..", ".."))  # project root
+sys.path.insert(0, os.path.join(_script_dir, ".."))
 
 from aws_constants import ECSTaskStatus  # noqa: E402
+
+from studio.app.common.core.utils.datetime_utils import (  # noqa: E402
+    get_current_datetime,
+)
 
 
 class FreeManagerTester:
@@ -328,19 +342,47 @@ class FreeManagerTester:
             print(f"ERROR: Failed to get instance IDs: {e}")
             return []
 
-    def setup_test_users(self, num_users: int = 6) -> List[str]:
+    def setup_test_users(self, num_users: int = 6) -> List[int]:
         """
         Create test users with activity on first available instance.
+
+        Uses actual user IDs from the database (users matching
+        'optinist_test_user_free_%@araya.org' email pattern).
 
         Args:
             num_users: Number of test users to create (default: 6, above threshold of 5)
 
         Returns:
-            List of user IDs created
+            List of user IDs (integers) that were set up
         """
         print("\n" + "=" * 80)
         print(f"STEP 1: Simulate {num_users} active users")
         print("=" * 80)
+
+        # Get real user IDs from database
+        print("\nLooking up free test users from database...")
+        result = self._invoke_cleanup_lambda(
+            "get_free_test_user_ids", num_users=num_users
+        )
+
+        if not result or not result.get("success"):
+            print(f"ERROR: Failed to get test user IDs: {result}")
+            print("Make sure test users exist in database (run create_test_users.py)")
+            sys.exit(1)
+
+        user_ids = result.get("user_ids", [])
+        users = result.get("users", [])
+
+        if len(user_ids) < num_users:
+            print(
+                f"WARNING: Only found {len(user_ids)} test users, "
+                f"need {num_users}. Run create_test_users.py first."
+            )
+            sys.exit(1)
+
+        print(f"Found {len(user_ids)} test users:")
+        for user in users:
+            print(f"  ID {user['id']}: {user['email']}")
 
         # Get current instance ID
         instance_ids = self.get_running_instance_ids()
@@ -351,10 +393,7 @@ class FreeManagerTester:
             instance_id = "i-test001"
         else:
             instance_id = instance_ids[0]
-            print(f"Found running instance: {instance_id}")
-
-        # Create users
-        user_ids = [f"test_user_{i}" for i in range(1, num_users + 1)]
+            print(f"\nFound running instance: {instance_id}")
 
         print(f"\nCreating {num_users} test users on instance {instance_id}...")
 
@@ -709,10 +748,7 @@ class FreeManagerTester:
 
         try:
             # Query for active user count metric
-            # Must use UTC timezone for CloudWatch queries
-            from datetime import timezone
-
-            end_time = datetime.now(timezone.utc)
+            end_time = get_current_datetime()
             start_time = end_time - timedelta(minutes=10)
 
             response = self.cloudwatch_client.get_metric_statistics(
@@ -841,7 +877,7 @@ class FreeManagerTester:
         print("=" * 80)
         print(f"Terraform Dir: {self.terraform_dir}")
         print(f"AWS Region: {self.aws_region}")
-        print(f"Timestamp: {datetime.now()}")
+        print(f"Timestamp: {get_current_datetime()}")
 
         results = {
             "cleanup": False,

@@ -179,6 +179,11 @@ def _snakemake_execute_process(
     # Snakemake execution post process
     # ------------------------------------------------------------
 
+    # If workflow failed, delete the lock file BEFORE post-process
+    # so that WorkflowResult.observe_overall() can access remote storage
+    if not snakemake_result and RemoteStorageController.is_available():
+        RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
+
     try:
         # Update workflow processing results
         try:
@@ -206,9 +211,6 @@ def _snakemake_execute_process(
     if not snakemake_result:
         # Operate remote storage.
         if RemoteStorageController.is_available():
-            # force delete sync lock file
-            RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
-
             remote_bucket_name = RemoteSyncStatusFileUtil.get_remote_bucket_name(
                 workspace_id, unique_id
             )

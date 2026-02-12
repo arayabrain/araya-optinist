@@ -4,8 +4,13 @@ Background job scheduler for OptiNiSt Cloud.
 Uses APScheduler to run periodic background tasks:
 - Sync published experiments from S3 to local storage
 - Clean up data for logged-out free users
+- Reconcile storage tracking with S3
+
+This scheduler runs in a dedicated background ECS service with a single worker.
+API services disable their schedulers via DISABLE_BACKGROUND_SCHEDULER=1.
 """
 
+import os
 from typing import Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -21,6 +26,9 @@ logger = AppLogger.get_logger()
 class BackgroundScheduler:
     """
     Static class for managing background jobs scheduler.
+
+    This scheduler runs in a dedicated background service. The single-instance
+    architecture eliminates the need for multi-worker coordination.
     """
 
     _scheduler: AsyncIOScheduler = None
@@ -63,8 +71,6 @@ class BackgroundScheduler:
                 "skipping S3 configuration validation."
             )
             return
-
-        import os
 
         s3_bucket = os.environ.get("S3_DEFAULT_BUCKET_NAME")
 
@@ -119,7 +125,7 @@ class BackgroundScheduler:
 
     @classmethod
     def shutdown(cls):
-        """Shutdown the scheduler gracefully"""
+        """Shutdown the scheduler gracefully."""
         if cls._scheduler is None:
             logger.warning("Scheduler not initialized, nothing to shutdown")
             return

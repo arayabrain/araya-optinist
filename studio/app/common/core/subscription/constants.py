@@ -6,7 +6,9 @@ used throughout the subscription system to ensure consistency and
 ease of maintenance.
 """
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum
+
+from studio.app.common.core.compat import StrEnum
 
 
 # ============================================================================
@@ -302,6 +304,24 @@ class SubscriptionLifecycleStatus(StrEnum):
     WARNING = "warning"  # In warning period (after grace, before deletion)
     OVERDUE = "overdue"  # Past warning period
     FREE = "free"  # Never had premium subscription
+
+
+class AlertType(StrEnum):
+    """
+    Frontend-facing alert types for limit warnings.
+
+    Usage: API response field 'alert_type' in limit warning payloads
+    Note: Frontend expects exactly these values: "storage", "grace", "overdue"
+
+    Mapping from SubscriptionLifecycleStatus:
+    - GRACE, WARNING -> AlertType.GRACE (both are grace period warnings)
+    - OVERDUE -> AlertType.OVERDUE
+    - Storage exceeded -> AlertType.STORAGE
+    """
+
+    STORAGE = "storage"  # Storage quota exceeded
+    GRACE = "grace"  # In grace or warning period (premium features expiring)
+    OVERDUE = "overdue"  # Past all grace periods, data deletion imminent
 
 
 class SyncStatusConstants:

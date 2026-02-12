@@ -3,12 +3,11 @@ from sqlmodel import Session
 
 from studio.app.common.core.auth import auth
 from studio.app.common.core.auth.auth_dependencies import get_admin_user
-from studio.app.common.core.cloud.cloud_utils import calculate_limit_warning
-from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.storage.remote_storage_controller import (
-    RemoteStorageController,
-    RemoteStorageSimpleReader,
+from studio.app.common.core.cloud.cloud_utils import (
+    calculate_limit_warning,
+    ensure_user_bucket_exists,
 )
+from studio.app.common.core.logger import AppLogger
 from studio.app.common.db.database import get_db
 from studio.app.common.schemas.auth import AccessToken, RefreshToken, Token, UserAuth
 
@@ -22,21 +21,17 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
     try:
         token, user = await auth.authenticate_user(db, user_data)
 
-        # Operate remote storage data.
-        if RemoteStorageController.is_available():
-            # Get bucket name with fallback logic
-            from studio.app.common.core.auth.auth_dependencies import (
-                _get_user_remote_bucket_name,
+        # Ensure user's S3 bucket exists on sign-in
+        try:
+            bucket = await ensure_user_bucket_exists(user.id)
+            if bucket:
+                logger.warning(
+                    f"Bucket recovery on login for user " f"{user.id}: {bucket}"
+                )
+        except Exception as bucket_error:
+            logger.warning(
+                f"Bucket check failed for user " f"{user.id}: {bucket_error}"
             )
-
-            remote_bucket_name = _get_user_remote_bucket_name(user)
-
-            # Immediately after successful login,
-            #   download all experiments metadata.
-            async with RemoteStorageSimpleReader(
-                remote_bucket_name
-            ) as remote_storage_controller:
-                await remote_storage_controller.download_all_experiments_metas()
 
         # Check for limit warnings after successful login
         try:
@@ -44,9 +39,9 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
             if limit_warning:
                 logger.warning(
                     f"User {user.id} ({user.email}) has limit warning: "
-                    f"{limit_warning['warning_type']} - "
-                    f"{limit_warning['days_remaining']} days remaining, "
-                    f"{limit_warning['excess_data_gb']} GB over limit"
+                    f"{limit_warning.alert_type} - "
+                    f"{limit_warning.days_remaining} days remaining, "
+                    f"{limit_warning.excess_data_gb} GB over limit"
                 )
             else:
                 logger.warning(f"No limit warning for user {user.id}")

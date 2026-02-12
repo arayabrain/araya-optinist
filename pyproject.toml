@@ -87,7 +87,7 @@ xmltodict = "*"
 boto3 = "^1.38.27"
 pytest-asyncio = "^0.24.0"
 matplotlib = "3.7.*"
-concurrent-log-handler = "^0.9.25"
+concurrent-log-handler = "^0.9.28"
 numpydoc = "*"
 yapf = "*"
 setuptools = "<70"
@@ -109,6 +109,8 @@ flake8 = "6.1.*"
 isort = "5.*"
 pre-commit = "*"
 codespell = "*"
+boto3-stubs = { extras = ["autoscaling", "cloudwatch", "ec2", "ecs", "elbv2", "lambda", "s3"], version = "^1.38" }
+mypy = "^1.19.1"
 
 [tool.poetry.group.doc]
 optional = true

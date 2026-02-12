@@ -5,10 +5,12 @@ Monitors S3 storage usage and generates alerts when thresholds are exceeded.
 
 import asyncio
 import os
-from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import boto3
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
 
 from studio.app.common.core.cloud.cloud_utils import (
     get_user_storage_usage,
@@ -25,6 +27,7 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionType,
 )
 from studio.app.common.core.users import crud_users
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import session_scope
 
 logger = AppLogger.get_logger()
@@ -92,7 +95,7 @@ class S3StorageMonitor:
             logger.info(f"Checking S3 storage for user {user_id} across all workspaces")
 
             # Create sync S3 client for boto3 operations
-            s3_client = boto3.client("s3")
+            s3_client: "S3Client" = boto3.client("s3")
 
             # Check both input and output directories for each workspace
             for workspace_id in workspace_ids:
@@ -235,7 +238,7 @@ class S3StorageMonitor:
             )
 
             # Create S3 client with explicit lifecycle management
-            s3_client = boto3.client("s3")
+            s3_client: "S3Client" = boto3.client("s3")
 
             # Check both input and output directories for each workspace
             for workspace_id in workspace_ids:
@@ -401,7 +404,7 @@ class S3StorageMonitor:
                     "storage_usage_bytes": current_s3_usage,
                     "storage_quota_bytes": storage_quota,
                     "storage_usage_percent": round(storage_usage_percent, 2),
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": get_current_datetime().isoformat(),
                 }
 
         except Exception as e:

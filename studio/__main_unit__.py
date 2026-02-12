@@ -17,11 +17,25 @@ from studio.app.common.core.auth.auth_dependencies import (
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware import (
     ClientIdLoggingMiddleware,
-    FreeUserActivityMiddleware,
+    SecureRoutingMiddleware,
     SPARoutingMiddleware,
+    UserActivityMiddleware,
 )
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
+from studio.app.common.core.subscription.constants import (
+    StorageReconciliation,
+    SyncStatusConstants,
+)
+
+# Background job imports (only used in non-standalone mode)
+if not MODE.IS_STANDALONE:
+    from studio.app.common.core.background.cleanup_job import DataCleanupJob
+    from studio.app.common.core.background.scheduler import BackgroundScheduler
+    from studio.app.common.core.background.storage_reconciliation_job import (
+        StorageReconciliationJob,
+    )
+    from studio.app.common.core.background.sync_job import PublishedExperimentSyncJob
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
     is_workspace_owner,
@@ -32,6 +46,7 @@ from studio.app.common.routers import (
     dataview,
     experiment,
     files,
+    internal,
     logs,
     outputs,
     params,
@@ -75,7 +90,50 @@ async def lifespan(app: FastAPI):
         f"    # REMOTE_STORAGE_TYPE: {remote_storage_type}\n"
     )
 
+    # Initialize background job scheduler
+    # Can be disabled with DISABLE_BACKGROUND_SCHEDULER=1 env var
+    # (e.g., when using cron)
+    disable_scheduler = os.environ.get("DISABLE_BACKGROUND_SCHEDULER", "0") == "1"
+
+    if not MODE.IS_STANDALONE and not disable_scheduler:
+        logger.info("Initializing background job scheduler")
+        BackgroundScheduler.initialize()
+
+        # Add sync job (every 5 minutes)
+        BackgroundScheduler.add_job(
+            func=PublishedExperimentSyncJob.run,
+            interval_minutes=SyncStatusConstants.SYNC_INTERVAL_MINUTES,
+            job_id="published_experiment_sync",
+        )
+
+        # Add cleanup job (every 60 minutes)
+        BackgroundScheduler.add_job(
+            func=DataCleanupJob.run,
+            interval_minutes=SyncStatusConstants.CLEANUP_INTERVAL_MINUTES,
+            job_id="data_cleanup",
+        )
+
+        # Add storage reconciliation job (every 60 minutes)
+        BackgroundScheduler.add_job(
+            func=StorageReconciliationJob.run,
+            interval_minutes=StorageReconciliation.INTERVAL_MINUTES,
+            job_id="storage_reconciliation",
+        )
+
+        # Start scheduler
+        BackgroundScheduler.start()
+        logger.info("Background job scheduler started")
+    elif disable_scheduler:
+        logger.info(
+            "Background scheduler disabled by DISABLE_BACKGROUND_SCHEDULER env var"
+        )
+
     yield
+
+    # Shutdown event
+    if not MODE.IS_STANDALONE and not disable_scheduler:
+        BackgroundScheduler.shutdown()
+        logger.info("Background job scheduler shut down")
 
     logger.info('"Studio" application shutdown.')
 
@@ -100,6 +158,7 @@ add_pagination(app)
 # common routers
 app.include_router(algolist.router, dependencies=[Depends(get_current_user)])
 app.include_router(auth.router)
+app.include_router(internal.router)  # Uses internal secret auth, not JWT
 app.include_router(experiment.router, dependencies=[Depends(get_current_user)])
 app.include_router(files.router, dependencies=[Depends(get_current_user)])
 app.include_router(logs.router, dependencies=[Depends(get_current_user)])
@@ -158,8 +217,13 @@ app.add_middleware(SPARoutingMiddleware)
 # Add LoggingMiddleware to capture client_id for logging
 app.add_middleware(ClientIdLoggingMiddleware)
 
-# Add FreeUserActivityMiddleware to track free tier user activity
-app.add_middleware(FreeUserActivityMiddleware)
+# Add UserActivityMiddleware to track activity for both free and premium users
+# - Free users: enables intelligent load balancing and migration
+# - Premium users: prevents stale assignment cleanup for active users
+app.add_middleware(UserActivityMiddleware)
+
+# Add SecureRoutingMiddleware to add routing headers based on JWT validation
+app.add_middleware(SecureRoutingMiddleware)
 
 
 @app.get("/is_standalone", response_model=bool, tags=["others"])

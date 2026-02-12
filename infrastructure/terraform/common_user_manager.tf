@@ -19,15 +19,11 @@ resource "null_resource" "install_common_user_manager_dependencies" {
     command = <<-EOT
       mkdir -p ${path.module}/common_user_manager_package
       /usr/bin/python3 -m pip install pymysql sqlalchemy -t ${path.module}/common_user_manager_package/ --no-cache-dir
-      cp ${path.module}/../aws_constants.py ${path.module}/common_user_manager_package/aws_constants.py
     EOT
   }
 
   triggers = {
-    code_changes = md5(join("", [
-      filesha256("${path.module}/common_user_manager_package/common_user_manager.py"),
-      filesha256("${path.module}/../aws_constants.py")
-    ]))
+    code_changes = filesha256("${path.module}/common_user_manager_package/common_user_manager.py")
   }
 }
 
@@ -49,8 +45,9 @@ resource "aws_lambda_function" "common_user_manager" {
   function_name = "subscr-common-user-manager"
   role          = aws_iam_role.common_user_manager_lambda.arn
   handler       = "common_user_manager.handler"
-  runtime       = "python3.9"
+  runtime       = "python3.11"
   timeout       = 900 # 15 minutes
+  layers        = [aws_lambda_layer_version.aws_constants.arn]
 
   source_code_hash = data.archive_file.common_user_manager_zip.output_base64sha256
 

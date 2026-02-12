@@ -1,6 +1,8 @@
 import os
 import shutil
+from datetime import datetime
 from glob import glob
+from typing import Dict, List
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
@@ -151,6 +153,29 @@ class MockStorageController(BaseRemoteStorageController):
 
         return True
 
+    async def list_input_data_objects(self, workspace_id: str) -> List[Dict]:
+        """List all input data objects in mock storage for a workspace."""
+        workspace_input_path = self._make_workspace_input_path(workspace_id)
+
+        if not os.path.isdir(workspace_input_path):
+            return []
+
+        objects = []
+        for filename in os.listdir(workspace_input_path):
+            file_path = os.path.join(workspace_input_path, filename)
+            if os.path.isfile(file_path):
+                stat = os.stat(file_path)
+                objects.append(
+                    {
+                        "filename": filename,
+                        "size": stat.st_size,
+                        "last_modified": datetime.fromtimestamp(
+                            stat.st_mtime
+                        ).isoformat(),
+                    }
+                )
+        return objects
+
     async def download_all_experiments_metas(self, workspace_ids: list = None) -> bool:
         # ----------------------------------------
         # make paths
@@ -223,7 +248,44 @@ class MockStorageController(BaseRemoteStorageController):
 
         return True
 
-    async def download_experiment(self, workspace_id: str, unique_id: str) -> bool:
+    async def download_experiment_meta(self, workspace_id: str, unique_id: str) -> bool:
+        """
+        Download metadata files (yaml) for a single experiment from mock storage.
+        """
+        metadata_filenames = [
+            DIRPATH.EXPERIMENT_YML,
+            DIRPATH.SNAKEMAKE_CONFIG_YML,
+            DIRPATH.WORKFLOW_YML,
+        ]
+
+        experiment_remote_dir = (
+            f"{__class__.MOCK_OUTPUT_DIR}/{workspace_id}/{unique_id}"
+        )
+        experiment_local_dir = f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}"
+
+        logger.debug(
+            f"download experiment metadata from remote storage (mock). "
+            f"[{workspace_id}/{unique_id}]"
+        )
+
+        for metadata_filename in metadata_filenames:
+            remote_path = f"{experiment_remote_dir}/{metadata_filename}"
+            local_path = f"{experiment_local_dir}/{metadata_filename}"
+
+            if os.path.isfile(local_path):
+                logger.debug(f"skip copy (exists): {metadata_filename}")
+                continue
+
+            if os.path.isfile(remote_path):
+                os.makedirs(experiment_local_dir, exist_ok=True)
+                shutil.copy(remote_path, experiment_local_dir)
+                logger.debug(f"copied: {metadata_filename}")
+
+        return True
+
+    async def download_experiment(
+        self, workspace_id: str, unique_id: str, sync_mode: str = "all"
+    ) -> bool:
         # make paths
         experiment_local_path = self._make_experiment_local_path(
             workspace_id, unique_id
@@ -298,7 +360,10 @@ class MockStorageController(BaseRemoteStorageController):
 
             # copy all files
             shutil.copytree(
-                experiment_local_path, experiment_remote_path, dirs_exist_ok=True
+                experiment_local_path,
+                experiment_remote_path,
+                dirs_exist_ok=True,
+                ignore=self.create_upload_experiment_ignore_function(),
             )
 
         return True

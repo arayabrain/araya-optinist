@@ -1,5 +1,6 @@
 import { createSlice, isAnyOf, PayloadAction } from "@reduxjs/toolkit"
 
+import { COMPLETE_STATUS } from "api/run/Run"
 import { publicDataviewReproduceWorkflow } from "store/slice/Dataview/DataviewActions"
 import { convertFunctionsToRunResultDTO } from "store/slice/Experiments/ExperimentsUtils"
 import { clearFlowElements } from "store/slice/FlowElement/FlowElementSlice"
@@ -54,12 +55,16 @@ export const pipelineSlice = createSlice({
         if (state.run.status === RUN_STATUS.START_SUCCESS) {
           state.run.runResult = {
             ...state.run.runResult, // pendingのNodeResultはそのままでsuccessもしくはerrorのみ上書き
-            ...convertToRunResult(action.payload),
+            ...convertToRunResult(action.payload.nodeResults),
           }
           const runResultPendingList = Object.values(
             state.run.runResult,
           ).filter(isNodeResultPending)
-          if (runResultPendingList.length === 0) {
+          // Only mark as finished when all nodes complete AND
+          // post-run processing (e.g. remote upload) is not in progress
+          const { completeStatus } = action.payload
+          const isComplete = completeStatus !== COMPLETE_STATUS.PROCESSING
+          if (runResultPendingList.length === 0 && isComplete) {
             // 終了
             state.run.status = RUN_STATUS.FINISHED
           }

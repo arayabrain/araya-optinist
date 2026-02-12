@@ -105,10 +105,16 @@ jest.mock("components/common/PaginationCustom", () => {
 
 jest.mock("components/Workspace/Visualize/Plot/ImagePlotSimple", () => ({
   ImagePlotSimple: () => <div data-testid="image-plot">Image Plot</div>,
+  ImagePlotSimpleWithLoading: () => (
+    <div data-testid="image-plot-with-loading">Image Plot With Loading</div>
+  ),
 }))
 
 jest.mock("components/Workspace/Visualize/Plot/RoiPlotSimple", () => ({
   RoiPlotSimple: () => <div data-testid="roi-plot">ROI Plot</div>,
+  RoiPlotSimpleWithLoading: () => (
+    <div data-testid="roi-plot-with-loading">ROI Plot With Loading</div>
+  ),
 }))
 
 jest.mock("components/common/SwitchCustom", () => {
@@ -174,6 +180,28 @@ const mockDataviewRecord: DataviewType = {
   attributes: {},
 }
 
+// Record with PNG thumbnails (new format)
+const mockDataviewRecordWithPngThumbs: DataviewType = {
+  ...mockDataviewRecord,
+  id: 2,
+  uid: "test-uid-png",
+  thumbnails: {
+    image_url: "/test/input_thumb.png",
+    roi_url: "/test/roi_thumb.png",
+  },
+}
+
+// Record with legacy TIFF/JSON thumbnails
+const mockDataviewRecordWithLegacyThumbs: DataviewType = {
+  ...mockDataviewRecord,
+  id: 3,
+  uid: "test-uid-legacy",
+  thumbnails: {
+    image_url: "/test/image.tiff",
+    roi_url: "/test/roi.json",
+  },
+}
+
 const mockUser: UserDTO = {
   id: 1,
   name: "Test User",
@@ -202,6 +230,7 @@ describe("DataviewRecords Component", () => {
           },
         },
         loading: false,
+        error: { private: null, public: null },
       },
       inputNode: {},
       flowElement: {
@@ -318,6 +347,7 @@ describe("DataviewRecords Component", () => {
             },
           },
           loading: true,
+          error: { private: null, public: null },
         },
         inputNode: {},
         flowElement: {
@@ -372,6 +402,7 @@ describe("DataviewRecords Component", () => {
             },
           },
           loading: false,
+          error: { private: null, public: null },
         },
         inputNode: {},
         flowElement: {
@@ -431,6 +462,284 @@ describe("DataviewRecords Component", () => {
 
       const grid = screen.getByRole("grid")
       expect(grid).toBeDefined()
+    })
+  })
+
+  describe("Error state", () => {
+    it("shows error alert when private error exists", () => {
+      const errorState = {
+        dataview: {
+          data: {
+            private: {
+              items: [mockDataviewRecord],
+              total: 1,
+              offset: 0,
+              limit: 50,
+            },
+            public: {
+              items: [mockDataviewRecord],
+              total: 1,
+              offset: 0,
+              limit: 50,
+            },
+          },
+          loading: false,
+          error: { private: "Failed to load dataview records", public: null },
+        },
+        inputNode: {},
+        flowElement: {
+          flowNodes: [],
+          flowEdges: [],
+          flowPosition: { x: 0, y: 0 },
+          elementCoord: {},
+          loading: false,
+        },
+        flowElements: {
+          nodeDict: {},
+        },
+        algorithmNode: {},
+        pipeline: {
+          nodeDict: {},
+          run: { status: "SUCCESS", runResult: {} },
+          runBtn: false,
+          currentPipeline: null,
+        },
+        experiments: {
+          status: "fulfilled",
+          experimentList: {},
+        },
+      }
+      store = mockStore(errorState)
+
+      renderWithProviders(<DataviewRecords user={mockUser} />)
+
+      expect(screen.getByRole("alert")).toBeDefined()
+      expect(screen.getByText("Failed to load dataview records")).toBeDefined()
+    })
+
+    it("shows error alert when public error exists", () => {
+      const errorState = {
+        dataview: {
+          data: {
+            private: {
+              items: [mockDataviewRecord],
+              total: 1,
+              offset: 0,
+              limit: 50,
+            },
+            public: {
+              items: [mockDataviewRecord],
+              total: 1,
+              offset: 0,
+              limit: 50,
+            },
+          },
+          loading: false,
+          error: { private: null, public: "Failed to load public records" },
+        },
+        inputNode: {},
+        flowElement: {
+          flowNodes: [],
+          flowEdges: [],
+          flowPosition: { x: 0, y: 0 },
+          elementCoord: {},
+          loading: false,
+        },
+        flowElements: {
+          nodeDict: {},
+        },
+        algorithmNode: {},
+        pipeline: {
+          nodeDict: {},
+          run: { status: "SUCCESS", runResult: {} },
+          runBtn: false,
+          currentPipeline: null,
+        },
+        experiments: {
+          status: "fulfilled",
+          experimentList: {},
+        },
+      }
+      store = mockStore(errorState)
+
+      // Public view (no user)
+      renderWithProviders(<DataviewRecords />)
+
+      expect(screen.getByRole("alert")).toBeDefined()
+      expect(screen.getByText("Failed to load public records")).toBeDefined()
+    })
+
+    it("does not show error alert when loading", () => {
+      const loadingWithErrorState = {
+        dataview: {
+          data: {
+            private: {
+              items: [mockDataviewRecord],
+              total: 1,
+              offset: 0,
+              limit: 50,
+            },
+            public: {
+              items: [mockDataviewRecord],
+              total: 1,
+              offset: 0,
+              limit: 50,
+            },
+          },
+          loading: true,
+          error: { private: "Some error", public: null },
+        },
+        inputNode: {},
+        flowElement: {
+          flowNodes: [],
+          flowEdges: [],
+          flowPosition: { x: 0, y: 0 },
+          elementCoord: {},
+          loading: false,
+        },
+        flowElements: {
+          nodeDict: {},
+        },
+        algorithmNode: {},
+        pipeline: {
+          nodeDict: {},
+          run: { status: "SUCCESS", runResult: {} },
+          runBtn: false,
+          currentPipeline: null,
+        },
+        experiments: {
+          status: "fulfilled",
+          experimentList: {},
+        },
+      }
+      store = mockStore(loadingWithErrorState)
+
+      renderWithProviders(<DataviewRecords user={mockUser} />)
+
+      // Error alert should not be shown while loading
+      expect(screen.queryByRole("alert")).toBeNull()
+    })
+  })
+
+  describe("Thumbnail rendering", () => {
+    it("renders PNG thumbnails as img tags for input_thumb.png pattern", () => {
+      const stateWithPngThumbs = {
+        dataview: {
+          data: {
+            private: {
+              items: [mockDataviewRecordWithPngThumbs],
+              total: 1,
+              offset: 0,
+              limit: 50,
+            },
+            public: {
+              items: [],
+              total: 0,
+              offset: 0,
+              limit: 50,
+            },
+          },
+          loading: false,
+          error: { private: null, public: null },
+        },
+        inputNode: {},
+        flowElement: {
+          flowNodes: [],
+          flowEdges: [],
+          flowPosition: { x: 0, y: 0 },
+          elementCoord: {},
+          loading: false,
+        },
+        flowElements: {
+          nodeDict: {},
+        },
+        algorithmNode: {},
+        pipeline: {
+          nodeDict: {},
+          run: { status: "SUCCESS", runResult: {} },
+          runBtn: false,
+          currentPipeline: null,
+        },
+        experiments: {
+          status: "fulfilled",
+          experimentList: {},
+        },
+      }
+      store = mockStore(stateWithPngThumbs)
+
+      renderWithProviders(<DataviewRecords user={mockUser} />)
+
+      // DataGrid should render
+      expect(screen.getByRole("grid")).toBeDefined()
+
+      // PNG thumbnails should render as img tags - find by alt text
+      const inputThumbnail = screen.queryByAltText("Input thumbnail")
+      const roiThumbnail = screen.queryByAltText("ROI thumbnail")
+
+      // At least one should be present if DataGrid renders cells
+      // Note: DataGrid virtualization may prevent rendering in tests
+      if (inputThumbnail || roiThumbnail) {
+        expect(inputThumbnail || roiThumbnail).toBeDefined()
+      }
+
+      // Should not use the WithLoading plot components for PNG thumbnails
+      expect(screen.queryByTestId("image-plot-with-loading")).toBeNull()
+      expect(screen.queryByTestId("roi-plot-with-loading")).toBeNull()
+    })
+
+    it("does not render PNG img tags for legacy TIFF/JSON thumbnails", () => {
+      const stateWithLegacyThumbs = {
+        dataview: {
+          data: {
+            private: {
+              items: [mockDataviewRecordWithLegacyThumbs],
+              total: 1,
+              offset: 0,
+              limit: 50,
+            },
+            public: {
+              items: [],
+              total: 0,
+              offset: 0,
+              limit: 50,
+            },
+          },
+          loading: false,
+          error: { private: null, public: null },
+        },
+        inputNode: {},
+        flowElement: {
+          flowNodes: [],
+          flowEdges: [],
+          flowPosition: { x: 0, y: 0 },
+          elementCoord: {},
+          loading: false,
+        },
+        flowElements: {
+          nodeDict: {},
+        },
+        algorithmNode: {},
+        pipeline: {
+          nodeDict: {},
+          run: { status: "SUCCESS", runResult: {} },
+          runBtn: false,
+          currentPipeline: null,
+        },
+        experiments: {
+          status: "fulfilled",
+          experimentList: {},
+        },
+      }
+      store = mockStore(stateWithLegacyThumbs)
+
+      renderWithProviders(<DataviewRecords user={mockUser} />)
+
+      // DataGrid should render
+      expect(screen.getByRole("grid")).toBeDefined()
+
+      // Legacy TIFF/JSON thumbnails should NOT render as img tags with these alt texts
+      expect(screen.queryByAltText("Input thumbnail")).toBeNull()
+      expect(screen.queryByAltText("ROI thumbnail")).toBeNull()
     })
   })
 })

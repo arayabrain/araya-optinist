@@ -49,8 +49,8 @@ export const logout = async () => {
   removeToken()
   removeExToken()
 
-  // Clear dismissed warnings so they can appear again for the next user
-  localStorage.removeItem("dismissedWarnings")
+  // Clear dismissed alerts so they can appear again for the next user
+  localStorage.removeItem("dismissedAlerts")
   // Clear session storage to prevent stale state on browser back
   sessionStorage.removeItem("storage-refreshed-on-login")
 
@@ -93,6 +93,8 @@ const PUBLIC_ROUTES = [
   /^\/register$/,
   /^\/reset-password$/,
   /^\/account-deleted$/,
+  /^\/subscription\/thanks$/, // Checkout success - validates via session_id
+  /^\/subscription\/failed$/, // Checkout failed - validates via session_id
 ]
 
 export const isPublicRoute = (pathname: string): boolean => {

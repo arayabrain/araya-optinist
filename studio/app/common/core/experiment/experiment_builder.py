@@ -1,4 +1,5 @@
 from studio.app.common.core.experiment.experiment import ExptConfig
+from studio.app.common.core.utils.datetime_utils import TIMEZONE_KEY
 
 
 class ExptConfigBuilder:
@@ -15,6 +16,7 @@ class ExptConfigBuilder:
         self._nwbfile = None
         self._snakemake = None
         self._data_usage = None
+        self._timezone = None
 
     def set_config(self, config: ExptConfig) -> "ExptConfigBuilder":
         self._workspace_id = config.workspace_id
@@ -29,6 +31,7 @@ class ExptConfigBuilder:
         self._nwbfile = config.nwb
         self._snakemake = config.snakemake
         self._data_usage = config.data_usage
+        self._timezone = getattr(config, TIMEZONE_KEY, None)
         return self
 
     def set_workspace_id(self, workspace_id) -> "ExptConfigBuilder":
@@ -75,6 +78,10 @@ class ExptConfigBuilder:
         self._data_usage = data_usage
         return self
 
+    def set_timezone(self, timezone) -> "ExptConfigBuilder":
+        self._timezone = timezone
+        return self
+
     def build(self) -> ExptConfig:
         return ExptConfig(
             workspace_id=self._workspace_id,
@@ -89,4 +96,5 @@ class ExptConfigBuilder:
             nwb=self._nwbfile,
             snakemake=self._snakemake,
             data_usage=self._data_usage,
+            timezone=self._timezone,
         )

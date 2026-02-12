@@ -7,14 +7,19 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 
-from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
+from studio.app.common.core.auth.auth_dependencies import (
+    get_current_user,
+    get_user_remote_bucket_name,
+)
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_services import ExperimentService
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteStorageBucketNotFoundError,
     RemoteStorageController,
     RemoteStorageLockError,
     RemoteStorageReader,
+    RemoteStorageSimpleReader,
     RemoteSyncStatusFileUtil,
     upload_experiment_wrapper,
 )
@@ -27,7 +32,14 @@ from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
 )
+from studio.app.common.routers.files import (
+    update_hdf5_structure,
+    update_image_shape,
+    update_mat_structure,
+)
+from studio.app.common.schemas.users import User
 from studio.app.common.schemas.workflow import WorkflowWithResults
+from studio.app.const import ACCEPT_FILE_EXT, MetadataCacheFile
 from studio.app.dir_path import DIRPATH
 
 router = APIRouter(prefix="/workflow", tags=["workflow"])
@@ -43,21 +55,40 @@ logger = AppLogger.get_logger()
 async def fetch_last_experiment(
     workspace_id: str,
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         last_expt_config = ExperimentService.get_last_experiment(workspace_id)
+
+        # If no local experiments found, try syncing from S3 (multi-instance scenario)
+        if not last_expt_config and RemoteStorageController.is_available():
+            logger.info(
+                f"No local experiments in workspace {workspace_id}, syncing from S3"
+            )
+            async with RemoteStorageSimpleReader(
+                remote_bucket_name
+            ) as remote_storage_controller:
+                await remote_storage_controller.download_all_experiments_metas(
+                    [workspace_id]
+                )
+            # Retry finding last experiment after sync
+            last_expt_config = ExperimentService.get_last_experiment(workspace_id)
+
         if last_expt_config:
             unique_id = last_expt_config.unique_id
 
-            # sync unsynced remote storage data.
-            is_remote_synced = False
-            if RemoteStorageController.is_available():
-                is_remote_synced = await force_sync_unsynced_experiment(
-                    remote_bucket_name,
-                    workspace_id,
-                    unique_id,
-                    last_expt_config.success,
-                )
+            # Ensure experiment yaml exists locally before accessing.
+            # Downloads from S3 if not present (handles multi-instance scenarios).
+            await ExptConfigReader.ensure_synced_async(
+                workspace_id, unique_id, remote_bucket_name
+            )
+
+            # Check remote sync status without triggering full download.
+            # Full data sync is deferred to reproduce_experiment when user
+            # explicitly clicks Reproduce.
+            is_remote_synced = RemoteSyncStatusFileUtil.check_sync_status_success(
+                workspace_id, unique_id
+            )
 
             # fetch workflow
             workflow_config = WorkflowConfigReader.read(workspace_id, unique_id)
@@ -75,6 +106,13 @@ async def fetch_last_experiment(
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+    except RemoteStorageBucketNotFoundError as e:
+        logger.error(f"User bucket not found for user {current_user.id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Storage bucket not found. "
+            "Please sign out and sign in again to recover.",
+        )
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(
@@ -94,6 +132,12 @@ async def reproduce_experiment(
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     try:
+        # Ensure experiment yaml exists locally before accessing.
+        # Downloads from S3 if not present (handles multi-instance scenarios).
+        await ExptConfigReader.ensure_synced_async(
+            workspace_id, unique_id, remote_bucket_name
+        )
+
         experiment_config_path = ExptConfigReader.get_config_yaml_path(
             workspace_id, unique_id
         )
@@ -106,20 +150,10 @@ async def reproduce_experiment(
             experiment_config = ExptConfigReader.read(workspace_id, unique_id)
             workflow_config = WorkflowConfigReader.read(workspace_id, unique_id)
 
-            # sync unsynced remote storage data.
-            is_remote_synced = False
-            if RemoteStorageController.is_available():
-                is_remote_synced = await force_sync_unsynced_experiment(
-                    remote_bucket_name,
-                    workspace_id,
-                    unique_id,
-                    experiment_config.success,
-                )
-
             return WorkflowWithResults(
                 **asdict(experiment_config),
                 **asdict(workflow_config),
-                is_remote_synced=is_remote_synced,
+                is_remote_synced=True,
             )
         else:
             raise HTTPException(
@@ -132,6 +166,13 @@ async def reproduce_experiment(
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+    except RemoteStorageBucketNotFoundError as e:
+        # Bucket is gone, so experiment data is lost - can't recover
+        logger.error(f"User bucket not found, experiment data unavailable: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Experiment data not available. Storage may have been deleted.",
+        )
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(
@@ -226,6 +267,47 @@ async def import_sample_data(
             for filename in sample_data_subdir
         ]
         await asyncio.gather(*tasks)
+
+        # Generate metadata files for various file types and upload to S3
+
+        # TIFF files: .image_shape.json
+        tiff_files = [
+            p
+            for p in sample_data_subdir
+            if p.name.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value))
+        ]
+        if tiff_files:
+            for tiff_file in tiff_files:
+                update_image_shape(workspace_id, tiff_file.name)
+            await s3_controller.upload_input_data(
+                workspace_id, MetadataCacheFile.IMAGE_SHAPE
+            )
+
+        # HDF5 files: .hdf5_structure.json
+        hdf5_files = [
+            p
+            for p in sample_data_subdir
+            if p.name.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value))
+        ]
+        if hdf5_files:
+            for hdf5_file in hdf5_files:
+                update_hdf5_structure(workspace_id, hdf5_file.name)
+            await s3_controller.upload_input_data(
+                workspace_id, MetadataCacheFile.HDF5_STRUCTURE
+            )
+
+        # MATLAB files: .mat_structure.json
+        mat_files = [
+            p
+            for p in sample_data_subdir
+            if p.name.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value))
+        ]
+        if mat_files:
+            for mat_file in mat_files:
+                update_mat_structure(workspace_id, mat_file.name)
+            await s3_controller.upload_input_data(
+                workspace_id, MetadataCacheFile.MAT_STRUCTURE
+            )
 
         # ------------------------------------------------------------
         # Upload the output sample data to remote storage process.

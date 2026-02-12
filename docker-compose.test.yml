@@ -7,7 +7,7 @@ services:
       dockerfile: studio/config/docker/Dockerfile.test
     environment:
       PYTHONPATH: .
-      TZ: Asia/Tokyo
+      TZ: UTC
       STRIPE_CALLBACK_URL: http://localhost:8000
       STRIPE_SECRET_KEY: sk_test_dummy_123
       STRIPE_WEBHOOK_SECRET: whsec_dummy_123
@@ -21,5 +21,5 @@ services:
       context: ./frontend
       dockerfile: Dockerfile.test
     environment:
-      TZ: Asia/Tokyo
+      TZ: UTC
     command: yarn test:ci

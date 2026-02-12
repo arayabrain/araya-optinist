@@ -23,7 +23,15 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageWriter,
     RemoteSyncStatusFileUtil,
 )
-from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.core.utils.datetime_utils import (
+    TIMEZONE_KEY,
+    datetime_from_timestamp,
+    get_datetime_for_timezone_formatted,
+)
+from studio.app.common.core.utils.filepath_creater import (
+    join_filepath,
+    normalize_output_path,
+)
 from studio.app.common.core.utils.pickle_handler import PickleReader
 from studio.app.common.core.workflow.workflow import (
     Message,
@@ -174,7 +182,6 @@ class WorkflowResult:
         if is_all_nodes_finished:
             # Operate remote storage data.
             if RemoteStorageController.is_available():
-                # upload latest EXPERIMENT_YML
                 remote_bucket_name = RemoteSyncStatusFileUtil.get_remote_bucket_name(
                     self.workspace_id, self.unique_id
                 )
@@ -183,10 +190,32 @@ class WorkflowResult:
                     self.workspace_id,
                     self.unique_id,
                 ) as remote_storage_controller:
+                    # Upload experiment.yaml and all JSON visualization files
+                    # JSON files are created during observation by save_json()
+                    # and need to be synced to S3 for remote viewing
+                    target_files = [DIRPATH.EXPERIMENT_YML]
+
+                    # Find all JSON files in function directories
+                    # Use recursive glob to include nested files like:
+                    # - {function_id}/*.json (ROI, heatmap, etc.)
+                    # - {function_id}/timeseries/*.json (fluorescence traces)
+                    # - {function_id}/csv/*.json (CSV data)
+                    json_files = glob(
+                        join_filepath([self.workflow_dirpath, "**", "*.json"]),
+                        recursive=True,
+                    )
+                    for json_file in json_files:
+                        # Get relative path from experiment directory
+                        rel_path = os.path.relpath(json_file, self.workflow_dirpath)
+                        target_files.append(rel_path)
+
+                    logger.info(
+                        f"Uploading observation files to S3: {len(target_files)} files"
+                    )
                     await remote_storage_controller.upload_experiment(
                         self.workspace_id,
                         self.unique_id,
-                        [DIRPATH.EXPERIMENT_YML],
+                        target_files,
                     )
 
         return node_results
@@ -336,7 +365,9 @@ class NodeResult(BaseNodeResult):
         #   separate modification is required to record running info for each node.
         update_config_function.started_at = None
 
-        now = datetime.now().strftime(DATE_FORMAT)
+        # Use timezone from experiment config (user's browser timezone)
+        timezone = getattr(original_expt_config, TIMEZONE_KEY, None)
+        now = get_datetime_for_timezone_formatted(timezone, DATE_FORMAT)
         update_config_function.finished_at = now
         update_config_function.message = message.message
 
@@ -448,7 +479,11 @@ class NodeResult(BaseNodeResult):
             if isinstance(v, BaseData):
                 v.save_json(self.node_dirpath)
                 if v.output_path:
-                    output_paths[k] = v.output_path
+                    # Normalize path to relative form for storage
+                    # This ensures paths work across environments (local, Docker, etc.)
+                    output_path = v.output_path
+                    output_path.path = normalize_output_path(output_path.path)
+                    output_paths[k] = output_path
 
         return output_paths
 
@@ -494,7 +529,7 @@ class WorkflowMonitor:
                     expt_config.started_at, DATE_FORMAT
                 )
             except ValueError:
-                expt_started_time = datetime.fromtimestamp(0)
+                expt_started_time = datetime_from_timestamp(0)
 
             # Set dummy value to proceed to the next step.
             pid_data = WorkflowPIDFileData(

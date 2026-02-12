@@ -98,12 +98,12 @@ resource "aws_cloudwatch_metric_alarm" "load_average_high" {
   alarm_name          = "subscr-optinist-load-average-high"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "2"
-  metric_name         = "procstat_cpu_usage"
-  namespace           = "CWAgent"
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
   period              = "300"
   statistic           = "Average"
   threshold           = "80"
-  alarm_description   = "System load average is high"
+  alarm_description   = "EC2 CPU utilization is high"
 
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.main.name
@@ -391,20 +391,78 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["OptiNiSt/FreeUsers", "ActiveLogins", { "label" : "Active Free Tier Users" }],
-            ["OptiNiSt/Premium", "ActiveAssignments", { "label" : "Active Premium Users" }],
-            ["OptiNiSt/Premium", "InstanceUtilization", { "label" : "Premium Instance Utilization %" }],
-            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Duration" }],
-            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Errors" }]
+            ["OptiNiSt/FreeUsers", "ActiveLogins", { "label" : "Active Free Tier Users", "yAxis" : "left" }],
+            ["OptiNiSt/Premium", "ActiveAssignments", { "label" : "Active Premium Users", "yAxis" : "left" }],
+            ["OptiNiSt/Premium", "InstanceUtilization", { "label" : "Premium Instance Utilization %", "yAxis" : "right" }],
+            ["OptiNiSt/Application", "UserCPUUsage", { "label" : "User CPU Usage", "stat" : "Average", "yAxis" : "right" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Duration (ms)", "yAxis" : "right" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Errors", "yAxis" : "left" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
           title   = "User Tier Operations: Free & Premium"
           period  = 300
+          yAxis = {
+            left = {
+              label = "Count"
+              min   = 0
+            }
+            right = {
+              label = "Utilization / Duration"
+              min   = 0
+            }
+          }
         }
       },
-      # Row 4: System Health Overview
+      # Row 4: EC2 Load Average and I/O Wait
+      {
+        type   = "metric"
+        x      = 0
+        y      = 18
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "EC2 CPU Utilization %", "yAxis" : "left" }],
+            ["CWAgent", "cpu_usage_iowait", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "I/O Wait %", "yAxis" : "left" }],
+            ["CWAgent", "system_load1", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Load Average (1 min)", "yAxis" : "right" }],
+            ["CWAgent", "system_load5", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Load Average (5 min)", "yAxis" : "right" }],
+            ["CWAgent", "system_load15", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Load Average (15 min)", "yAxis" : "right" }],
+            ["ECS/ContainerInsights", "RunningTaskCount", "ServiceName", aws_ecs_service.background.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Background Tasks", "stat" : "Average", "yAxis" : "right" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-1"
+          title   = "EC2 Performance & Background Service"
+          period  = 300
+          yAxis = {
+            left = {
+              label = "Percentage"
+              min   = 0
+              max   = 100
+            }
+            right = {
+              label = "Load / Tasks"
+              min   = 0
+            }
+          }
+          annotations = {
+            horizontal = [
+              {
+                label = "High CPU Threshold (80%)"
+                value = 80
+                yAxis = "left"
+              },
+              {
+                label = "High I/O Wait Threshold (30%)"
+                value = 30
+                yAxis = "left"
+              }
+            ]
+          }
+        }
+      },
       {
         type   = "metric"
         x      = 12
@@ -413,17 +471,37 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS CPU" }],
-            ["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS Connections" }],
-            ["AWS/EFS", "ClientConnections", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Connections" }],
-            ["AWS/EFS", "DataReadIOBytes", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Read I/O" }],
-            ["AWS/EFS", "DataWriteIOBytes", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Write I/O" }]
+            ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS CPU %", "yAxis" : "left" }],
+            ["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS Connections", "yAxis" : "right" }],
+            ["AWS/RDS", "FreeStorageSpace", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS Free Storage (Bytes)", "yAxis" : "right" }],
+            ["AWS/EFS", "ClientConnections", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Connections", "yAxis" : "right" }],
+            ["AWS/EFS", "PercentIOLimit", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS I/O Limit %", "yAxis" : "left" }],
+            ["AWS/EFS", "BurstCreditBalance", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Burst Credits", "yAxis" : "right" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = "ap-northeast-1"
           title   = "Infrastructure Health: RDS & EFS"
           period  = 300
+          yAxis = {
+            left = {
+              label = "Percentage"
+              min   = 0
+              max   = 100
+            }
+          }
+          annotations = {
+            horizontal = [
+              {
+                label = "RDS CPU High (80%)"
+                value = 80
+              },
+              {
+                label = "EFS I/O Limit High (80%)"
+                value = 80
+              }
+            ]
+          }
         }
       },
       # Row 5: Autoscaling Activity and Events
@@ -489,6 +567,110 @@ resource "aws_cloudwatch_dashboard" "main" {
               }
             ]
           }
+        }
+      },
+      # Row 6: Background Jobs & User Manager
+      {
+        type   = "metric"
+        x      = 0
+        y      = 30
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["ECS/ContainerInsights", "CpuUtilized", "ServiceName", aws_ecs_service.background.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Background Service CPU", "yAxis" : "left" }],
+            ["ECS/ContainerInsights", "MemoryUtilized", "ServiceName", aws_ecs_service.background.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Background Service Memory (MB)", "yAxis" : "right" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.common_user_manager.function_name, { "label" : "User Manager Duration (ms)", "yAxis" : "left" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.common_user_manager.function_name, { "label" : "User Manager Errors", "yAxis" : "right", "stat" : "Sum" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-1"
+          title   = "Background Jobs Performance"
+          period  = 3600
+          yAxis = {
+            left = {
+              label = "Utilization"
+              min   = 0
+            }
+            right = {
+              label = "Count / Memory"
+              min   = 0
+            }
+          }
+        }
+      },
+      # Row 6: Lambda Health & Cleanup Operations
+      {
+        type   = "metric"
+        x      = 12
+        y      = 30
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.free_manager.function_name, { "label" : "Free Manager Duration (ms)" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.free_manager.function_name, { "label" : "Free Manager Errors", "yAxis" : "right" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_cleanup.function_name, { "label" : "Premium Cleanup Duration (ms)" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_cleanup.function_name, { "label" : "Premium Cleanup Errors", "yAxis" : "right" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.free_cleanup.function_name, { "label" : "Free Cleanup Duration (ms)" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.free_cleanup.function_name, { "label" : "Free Cleanup Errors", "yAxis" : "right" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.cost_tracker.function_name, { "label" : "Cost Tracker Duration (ms)" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.cost_tracker.function_name, { "label" : "Cost Tracker Errors", "yAxis" : "right" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-1"
+          title   = "Lambda Operations: Manager & Cleanup Jobs"
+          period  = 3600
+          yAxis = {
+            left = {
+              label = "Duration (ms)"
+              min   = 0
+            }
+            right = {
+              label = "Error Count"
+              min   = 0
+            }
+          }
+        }
+      },
+      # Row 7: Alarm Status - All Alarms at a Glance
+      {
+        type   = "alarm"
+        x      = 0
+        y      = 36
+        width  = 24
+        height = 4
+        properties = {
+          title = "Alarm Status Overview"
+          alarms = [
+            # Background Service Alarms
+            aws_cloudwatch_metric_alarm.background_task_stopped.arn,
+            aws_cloudwatch_metric_alarm.background_cpu_high.arn,
+            aws_cloudwatch_metric_alarm.background_memory_high.arn,
+            # Premium Tier Alarms
+            aws_cloudwatch_metric_alarm.premium_cost_high.arn,
+            aws_cloudwatch_metric_alarm.premium_cpu_high.arn,
+            aws_cloudwatch_metric_alarm.premium_memory_high.arn,
+            # Autoscaling Alarms
+            aws_cloudwatch_metric_alarm.cpu_high.arn,
+            aws_cloudwatch_metric_alarm.memory_high.arn,
+            aws_cloudwatch_metric_alarm.cpu_low.arn,
+            aws_cloudwatch_metric_alarm.memory_low.arn,
+            aws_cloudwatch_metric_alarm.load_average_high.arn,
+            aws_cloudwatch_metric_alarm.high_iowait.arn,
+            # RDS Alarms
+            aws_cloudwatch_metric_alarm.rds_cpu_high.arn,
+            aws_cloudwatch_metric_alarm.rds_connections_high.arn,
+            aws_cloudwatch_metric_alarm.rds_storage_low.arn,
+            # EFS Alarms
+            aws_cloudwatch_metric_alarm.efs_burst_credit_balance.arn,
+            aws_cloudwatch_metric_alarm.efs_throughput_high.arn,
+            # ALB Alarms
+            aws_cloudwatch_metric_alarm.alb_5xx_errors.arn,
+            aws_cloudwatch_metric_alarm.alb_response_time_high.arn
+          ]
         }
       }
     ]

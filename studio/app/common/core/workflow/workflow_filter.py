@@ -1,7 +1,6 @@
 import copy
 import os
 import shutil
-from datetime import datetime
 from glob import glob
 from typing import Optional
 
@@ -10,6 +9,7 @@ import numpy as np
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.rules.runner import Runner
+from studio.app.common.core.utils.datetime_utils import get_current_timestamp
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.utils.pickle_handler import PickleReader, PickleWriter
 from studio.app.common.core.workflow.workflow import DataFilterParam, WorkflowRunStatus
@@ -133,7 +133,7 @@ class WorkflowNodeDataFilter:
         # Trigger snakemake re-run next node by update modification time
         os.utime(
             self.pkl_filepath,
-            (os.path.getctime(self.pkl_filepath), datetime.now().timestamp()),
+            (os.path.getctime(self.pkl_filepath), get_current_timestamp()),
         )
 
         # Restore node NWB files

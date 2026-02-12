@@ -12,6 +12,7 @@ from studio.app.common.core.cloud.cloud_utils import (
     _should_trigger_full_scan,
     increment_user_storage,
 )
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 
 
 @pytest.mark.asyncio
@@ -75,8 +76,6 @@ async def test_should_trigger_full_scan():
     with patch(
         "studio.app.common.core.cloud.cloud_utils.session_scope"
     ) as mock_session:
-        from datetime import datetime, timezone
-
         mock_db = Mock()
         mock_session.return_value.__enter__.return_value = mock_db
 
@@ -84,7 +83,7 @@ async def test_should_trigger_full_scan():
         mock_storage.user_id = user_id
         mock_storage.storage_usage_bytes = current_storage
         mock_storage.delta_since_last_scan = int(0.03 * current_storage)  # 3% delta
-        mock_storage.last_full_scan = datetime.now(timezone.utc)
+        mock_storage.last_full_scan = get_current_datetime()
 
         mock_result = Mock()
         mock_result.first.return_value = (mock_storage,)

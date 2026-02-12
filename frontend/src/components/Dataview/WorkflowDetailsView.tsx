@@ -101,34 +101,53 @@ export const WorkflowDetailsView = ({
         })
         .catch((error) => {
           setLoading(false)
-          // Handle 202 (pending sync) and 503 (sync error) for public dataview
-          if (is_public && error?.response) {
-            const status = error.response.status
-            const data = error.response.data
+          // Handle errors for public dataview
+          if (is_public) {
+            if (error?.response) {
+              const status = error.response.status
+              const data = error.response.data
 
-            if (status === 202) {
-              // Experiment is published but not yet synced
-              setSyncStatus({
-                pending: true,
-                error: false,
-                message:
-                  data?.message ||
-                  "Publishing in progress, check back in a few minutes.",
-              })
-              // Auto-retry after 30 seconds (max 10 retries = 5 minutes)
-              if (retryCount < 10) {
-                setTimeout(() => {
-                  setRetryCount(retryCount + 1)
-                }, 30000)
+              if (status === 202) {
+                // Experiment is published but not yet synced
+                setSyncStatus({
+                  pending: true,
+                  error: false,
+                  message:
+                    data?.message ||
+                    "Publishing in progress, check back in a few minutes.",
+                })
+                // Auto-retry after 30 seconds (max 10 retries = 5 minutes)
+                if (retryCount < 10) {
+                  setTimeout(() => {
+                    setRetryCount(retryCount + 1)
+                  }, 30000)
+                }
+              } else if (status === 503) {
+                // Sync failed or download error
+                setSyncStatus({
+                  pending: false,
+                  error: true,
+                  message:
+                    data?.message ||
+                    "Experiment temporarily unavailable, please try again later.",
+                })
+              } else {
+                // Handle other HTTP errors (500, 404, etc.)
+                setSyncStatus({
+                  pending: false,
+                  error: true,
+                  message:
+                    data?.message ||
+                    `Failed to load experiment (${status}). Please try again.`,
+                })
               }
-            } else if (status === 503) {
-              // Sync failed or download error
+            } else {
+              // Network error - no response (blocked, offline, timeout, etc.)
               setSyncStatus({
                 pending: false,
                 error: true,
                 message:
-                  data?.message ||
-                  "Experiment temporarily unavailable, please try again later.",
+                  "Failed to load experiment. Please check your connection and try again.",
               })
             }
           }

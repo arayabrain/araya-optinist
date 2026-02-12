@@ -11,6 +11,7 @@ from studio.app.common.core.experiment.experiment import (
 )
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.utils.config_handler import ConfigReader
+from studio.app.common.core.utils.datetime_utils import TIMEZONE_KEY
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.workflow.workflow import (
     NodeRunStatus,
@@ -36,6 +37,56 @@ class ExptConfigReader:
             [DIRPATH.OUTPUT_DIR, workspace_id, "*", DIRPATH.EXPERIMENT_YML]
         )
         return path
+
+    @classmethod
+    async def ensure_synced_async(
+        cls,
+        workspace_id: str,
+        unique_id: str,
+        remote_bucket_name: str,
+    ) -> bool:
+        """
+        Ensure experiment metadata exists locally, syncing from S3 if needed.
+
+        Call this before read() in async contexts to handle cross-instance
+        scenarios where a user has been migrated to a new instance.
+
+        Args:
+            workspace_id: Workspace ID containing the experiment
+            unique_id: Unique ID of the experiment
+            remote_bucket_name: S3 bucket name for the user
+
+        Returns:
+            True if config exists (or was synced), False if sync failed
+        """
+        from studio.app.common.core.storage.remote_storage_controller import (
+            RemoteStorageController,
+            RemoteStorageSimpleReader,
+        )
+
+        config_path = cls.get_config_yaml_path(workspace_id, unique_id)
+
+        # If config exists locally, no sync needed
+        if os.path.exists(config_path):
+            return True
+
+        # Check if remote storage is available
+        if not RemoteStorageController.is_available():
+            return False
+
+        logger.info(
+            f"Experiment config not found locally, syncing from S3: "
+            f"[{workspace_id}/{unique_id}]"
+        )
+
+        try:
+            async with RemoteStorageSimpleReader(remote_bucket_name) as controller:
+                # Download only this specific experiment's metadata (efficient)
+                await controller.download_experiment_meta(workspace_id, unique_id)
+            return os.path.exists(config_path)
+        except Exception as e:
+            logger.warning(f"Failed to sync experiment from S3: {e}", exc_info=True)
+            return False
 
     @classmethod
     def read(cls, workspace_id: str, unique_id: str) -> ExptConfig:
@@ -65,6 +116,7 @@ class ExptConfigReader:
             nwb=None,
             snakemake=None,
             data_usage=None,
+            timezone=None,
         )
 
     @classmethod
@@ -82,6 +134,7 @@ class ExptConfigReader:
             nwb=config.get("nwb"),
             snakemake=config.get("snakemake"),
             data_usage=config.get("data_usage"),
+            timezone=config.get(TIMEZONE_KEY),
         )
 
     @classmethod

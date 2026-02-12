@@ -1,12 +1,17 @@
-import datetime
 import json
 import os
 import shutil
 from abc import ABCMeta, abstractmethod
+from datetime import timedelta
 from enum import Enum
+from typing import Dict, List
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
+from studio.app.common.core.utils.datetime_utils import (
+    datetime_from_timestamp,
+    get_current_datetime,
+)
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.dir_path import DIRPATH
 
@@ -63,6 +68,15 @@ class RemoteStorageLockError(Exception):
         (specifying the unpacking process)
         """
         return (self.__class__, (self.workspace_id, self.unique_id))
+
+
+class RemoteStorageBucketNotFoundError(Exception):
+    """Raised when user's S3 bucket does not exist."""
+
+    def __init__(self, bucket_name: str):
+        self.bucket_name = bucket_name
+        message = f"S3 bucket does not exist: {bucket_name}"
+        super().__init__(message)
 
 
 class RemoteSyncStatusFileUtil:
@@ -144,7 +158,7 @@ class RemoteSyncStatusFileUtil:
                 "remote_storage_type": RemoteStorageType.get_activated_type().value,
                 "action": remote_sync_action.value,
                 "status": status.value,
-                "timestamp": datetime.datetime.now(),
+                "timestamp": get_current_datetime(),
             }
             json.dump(sync_status_data, f, default=str, indent=2)
 
@@ -264,10 +278,8 @@ class RemoteSyncLockFileUtil:
         if os.path.isfile(remote_sync_lock_file_path):
             # Get lock file's modified time
             threshold_min = cls.LOCK_FILE_EXPIRE_MINUTES
-            threshold_time = datetime.datetime.now() - datetime.timedelta(
-                minutes=threshold_min
-            )
-            file_modified_time = datetime.datetime.fromtimestamp(
+            threshold_time = get_current_datetime() - timedelta(minutes=threshold_min)
+            file_modified_time = datetime_from_timestamp(
                 os.path.getmtime(remote_sync_lock_file_path)
             )
 
@@ -300,7 +312,7 @@ class RemoteSyncLockFileUtil:
             file_data = {
                 "workspace_id": workspace_id,
                 "unique_id": unique_id,
-                "timestamp": datetime.datetime.now(),
+                "timestamp": get_current_datetime(),
             }
             json.dump(file_data, f, default=str, indent=2)
 
@@ -321,6 +333,36 @@ class RemoteSyncLockFileUtil:
 
 
 class BaseRemoteStorageController(metaclass=ABCMeta):
+    # Directories to be excluded when uploading experimental data to remote storage
+    UPLOAD_EXPERIMENT_EXCLUDED_DIRS = {".snakemake"}
+
+    @staticmethod
+    def create_upload_experiment_ignore_function(excluded_dirs: set = None):
+        """
+        Create an ignore function for shutil.copytree used in upload_experiment.
+        Excludes specified directories from being uploaded to remote storage.
+
+        Args:
+            excluded_dirs: Set of directory names to exclude.
+                          If None, uses UPLOAD_EXPERIMENT_EXCLUDED_DIRS.
+
+        Returns:
+            A function suitable for use with shutil.copytree's ignore parameter.
+        """
+        if excluded_dirs is None:
+            excluded_dirs = BaseRemoteStorageController.UPLOAD_EXPERIMENT_EXCLUDED_DIRS
+
+        def ignore_excluded(dir_path, files):
+            # Get the basename of current directory
+            dir_name = os.path.basename(dir_path)
+            # If current directory is in excluded list, ignore all contents
+            if dir_name in excluded_dirs:
+                return files
+            # Otherwise, ignore only subdirectories that match excluded_dirs
+            return [f for f in files if f in excluded_dirs]
+
+        return ignore_excluded
+
     @abstractmethod
     def _make_input_data_local_path(self, workspace_id: str, filename: str) -> str:
         """
@@ -371,9 +413,24 @@ class BaseRemoteStorageController(metaclass=ABCMeta):
         """
 
     @abstractmethod
+    def list_input_data_objects(self, workspace_id: str) -> List[Dict]:
+        """
+        List all input data objects in remote storage for a workspace.
+        Returns list of dicts with filename, size, last_modified.
+        """
+
+    @abstractmethod
     def download_all_experiments_metas(self, workspace_ids: list = None) -> bool:
         """
         download all experiment metadata from remote storage.
+        """
+
+    @abstractmethod
+    def download_experiment_meta(self, workspace_id: str, unique_id: str) -> bool:
+        """
+        Download metadata files (yaml) for a single experiment from remote storage.
+        More efficient than download_all_experiments_metas when only one
+        experiment is needed.
         """
 
     @abstractmethod
@@ -547,6 +604,9 @@ class RemoteStorageController(BaseRemoteStorageController):
     async def delete_input_data(self, workspace_id: str, filename: str) -> bool:
         return await self.__controller.delete_input_data(workspace_id, filename)
 
+    async def list_input_data_objects(self, workspace_id: str) -> List[Dict]:
+        return await self.__controller.list_input_data_objects(workspace_id)
+
     async def download_all_experiments_metas(self, workspace_ids: list = None) -> bool:
         """
         Args:
@@ -555,7 +615,32 @@ class RemoteStorageController(BaseRemoteStorageController):
         """
         return await self.__controller.download_all_experiments_metas(workspace_ids)
 
-    async def download_experiment(self, workspace_id: str, unique_id: str) -> bool:
+    async def download_experiment_meta(self, workspace_id: str, unique_id: str) -> bool:
+        """
+        Download metadata files (yaml) for a single experiment from remote
+        storage. More efficient than download_all_experiments_metas when only
+        one experiment is needed.
+        """
+        return await self.__controller.download_experiment_meta(workspace_id, unique_id)
+
+    async def download_experiment(
+        self, workspace_id: str, unique_id: str, sync_mode: str = "all"
+    ) -> bool:
+        """
+        Download experiment from remote storage.
+
+        Args:
+            workspace_id: Workspace identifier
+            unique_id: Experiment identifier
+            sync_mode: 'all' (full sync), 'visualization' (json/tiff only),
+                       or 'essential_only' (yaml/json only)
+
+        Note: Only sync_mode='all' updates the sync status file and downloads
+        input data. Partial syncs (visualization, essential_only) leave the
+        status unchanged so that a full sync can still be triggered later.
+        """
+        is_full_sync = sync_mode == "all"
+
         sync_status_params = {
             "remote_bucket_name": self.bucket_name,
             "workspace_id": workspace_id,
@@ -565,32 +650,36 @@ class RemoteStorageController(BaseRemoteStorageController):
         result = False
 
         try:
-            # create sync status file
-            RemoteSyncStatusFileUtil.create_sync_status_file_for_processing(
-                **sync_status_params
-            )
+            # Only update sync status for full syncs
+            if is_full_sync:
+                RemoteSyncStatusFileUtil.create_sync_status_file_for_processing(
+                    **sync_status_params
+                )
 
             # download experiment data
             result = await self.__controller.download_experiment(
-                workspace_id, unique_id
+                workspace_id, unique_id, sync_mode=sync_mode
             )
 
-            # download input data
-            # *Download the input data related to the experiment data as well.
-            input_filenames = SmkUtils.get_datatypes_inputs(
-                workspace_id, unique_id, apply_basename=True
-            )
-            for input_filename in input_filenames:
-                await self.download_input_data(workspace_id, input_filename)
+            # Only download input data and mark success for full syncs
+            if is_full_sync:
+                # Download the input data related to the experiment data as well.
+                input_filenames = SmkUtils.get_datatypes_inputs(
+                    workspace_id, unique_id, apply_basename=True
+                )
+                for input_filename in input_filenames:
+                    await self.download_input_data(workspace_id, input_filename)
 
-            # update sync status file
-            RemoteSyncStatusFileUtil.create_sync_status_file_for_success(
-                **sync_status_params
-            )
+                # update sync status file
+                RemoteSyncStatusFileUtil.create_sync_status_file_for_success(
+                    **sync_status_params
+                )
         except Exception as e:
-            RemoteSyncStatusFileUtil.create_sync_status_file_for_error(
-                **sync_status_params
-            )
+            # Only update error status for full syncs
+            if is_full_sync:
+                RemoteSyncStatusFileUtil.create_sync_status_file_for_error(
+                    **sync_status_params
+                )
             raise e
 
         return result

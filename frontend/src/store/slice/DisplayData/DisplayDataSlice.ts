@@ -440,12 +440,13 @@ export const displayDataSlice = createSlice({
       })
       .addCase(getImageData.rejected, (state, action) => {
         const { path } = action.meta.arg
+
         state.image[path] = {
           type: "image",
           data: [],
           pending: false,
           fulfilled: false,
-          error: action.error.message ?? "rejected",
+          error: "Image not synced",
         }
       })
       .addCase(getCsvData.pending, (state, action) => {
@@ -531,7 +532,7 @@ export const displayDataSlice = createSlice({
           data: [],
           pending: false,
           fulfilled: false,
-          error: action.error.message ?? "rejected",
+          error: "Data not synced",
           roiUniqueList: [],
         }
       })

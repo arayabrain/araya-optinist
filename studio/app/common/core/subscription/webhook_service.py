@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any, Dict
 
 import stripe
@@ -23,6 +23,7 @@ from studio.app.common.core.subscription.constants import (
     SyncStatus,
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
+from studio.app.common.core.utils.datetime_utils import datetime_from_timestamp
 from studio.app.common.models.subscription import (
     SubscriptionCancellation,
     SubscriptionPlans,
@@ -260,7 +261,7 @@ class WebhookService:
                 elif current_period_start:
                     # Fallback: calculate expiration as 1 month from start
                     # This handles edge case where subscription is just created
-                    start_date = datetime.fromtimestamp(current_period_start)
+                    start_date = datetime_from_timestamp(current_period_start)
                     expiration_date = start_date + relativedelta(months=1)
                     expiration_timestamp = int(expiration_date.timestamp())
                     logger.warning(
@@ -286,7 +287,7 @@ class WebhookService:
                                     expiration_timestamp = period_end
                                     logger.info(
                                         f"Webhook: Got expiration from invoice: "
-                                        f"{datetime.fromtimestamp(period_end)}"
+                                        f"{datetime_from_timestamp(period_end)}"
                                     )
                                 else:
                                     raise HTTPException(
@@ -320,7 +321,7 @@ class WebhookService:
                         )
 
                 # Convert Unix timestamp to datetime
-                expiration_date = datetime.fromtimestamp(expiration_timestamp)
+                expiration_date = datetime_from_timestamp(expiration_timestamp)
                 logger.info(
                     f"Webhook: Using expiration date from Stripe: {expiration_date} "
                     f"(Unix timestamp: {expiration_timestamp})"
@@ -611,7 +612,7 @@ class WebhookService:
                 user_subscription.updated_at = (
                     SubscriptionService.get_current_datetime()
                 )
-                user_subscription.expiration = datetime.fromtimestamp(
+                user_subscription.expiration = datetime_from_timestamp(
                     current_period_end
                 )
             else:
@@ -875,7 +876,7 @@ class WebhookService:
                     )
 
                 # Convert Unix timestamp to datetime
-                new_expiration = datetime.fromtimestamp(period_end_timestamp)
+                new_expiration = datetime_from_timestamp(period_end_timestamp)
 
                 logger.info(
                     f"Webhook: Using expiration date from invoice: {new_expiration} "

@@ -74,13 +74,13 @@ def is_local_environment() -> bool:
         bool: True if running in local development environment
 
     Examples:
-        >>> # DATABASE_URL=postgresql://user:pass@localhost:5432/db
+        >>> # DATABASE_URL=mysql://user:pass@localhost:3306/db
         >>> is_local_environment()
         True
-        >>> # DATABASE_URL=postgresql://user:pass@[::1]:5432/db
+        >>> # DATABASE_URL=mysql://user:pass@[::1]:3306/db
         >>> is_local_environment()
         True
-        >>> # DATABASE_URL=postgresql://user:pass@prod-db.example.com:5432/db
+        >>> # DATABASE_URL=mysql://user:pass@prod-db.example.com:3306/db
         >>> is_local_environment()
         False
     """

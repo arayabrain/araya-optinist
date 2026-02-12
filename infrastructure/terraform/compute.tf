@@ -153,6 +153,7 @@ resource "aws_launch_template" "ecs" {
     ecr_repository_url    = var.ecr_repository_url
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
+    swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
   }))
   tag_specifications {
     resource_type = "instance"
@@ -345,6 +346,7 @@ resource "aws_launch_template" "premium" {
     ecr_repository_url    = var.ecr_repository_url
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
+    swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
   }))
 
   tag_specifications {
@@ -568,7 +570,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
   cpu                      = 2048
-  memory                   = 6144
+  memory                   = 7168
   task_role_arn            = aws_iam_role.ecs_task.arn
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
 
@@ -577,12 +579,17 @@ resource "aws_ecs_task_definition" "autoscaling" {
       name              = "subscr-optinist-cloud-container"
       image             = "${var.ecr_repository_url}:latest"
       cpu               = 1536
-      memory            = 5120
-      memoryReservation = 3072
+      memory            = 6656
+      memoryReservation = 4096
       essential         = true
       workingDirectory  = "/app"
       entryPoint        = ["/bin/sh", "-c"]
       command           = ["./cloud-startup.sh"]
+
+      linuxParameters = {
+        maxSwap    = 32768 # Max swap in MiB (matches 32GB host swap on EBS)
+        swappiness = 20    # Only swap under memory pressure (host also set to 20)
+      }
 
       portMappings = [
         {
@@ -722,6 +729,15 @@ resource "aws_ecs_task_definition" "autoscaling" {
           name  = "SKIP_STORAGE_CHECKS"
           value = "false"
         },
+        {
+          name  = "INTERNAL_API_SECRET"
+          value = random_password.internal_api_secret.result
+        },
+        # Disable scheduler - background jobs run in dedicated background service
+        {
+          name  = "DISABLE_BACKGROUND_SCHEDULER"
+          value = "1"
+        },
       ]
       secrets = [
         {
@@ -795,7 +811,7 @@ resource "aws_ecs_task_definition" "premium" {
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
   cpu                      = 2048
-  memory                   = 6144
+  memory                   = 7168
   task_role_arn            = aws_iam_role.ecs_task.arn
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
 
@@ -804,12 +820,18 @@ resource "aws_ecs_task_definition" "premium" {
       name              = "subscr-premium-optinist-cloud-container"
       image             = "${var.ecr_repository_url}:latest"
       cpu               = 1536
-      memory            = 5120
-      memoryReservation = 3072
+      memory            = 6656
+      memoryReservation = 4096
       essential         = true
       workingDirectory  = "/app"
       entryPoint        = ["/bin/sh", "-c"]
       command           = ["./cloud-startup.sh"]
+
+      # linuxParameters = {
+      #   maxSwap    = 32768  # Max swap in MiB (matches 32GB host swap on EBS)
+      #   swappiness = 20     # Only swap under memory pressure (host also set to 20)
+      # }
+      # NOTE: Uncomment after Stage 2 (swap enabled on instances)
 
       portMappings = [
         {
@@ -948,7 +970,16 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "SKIP_STORAGE_CHECKS"
           value = "false"
-        }
+        },
+        {
+          name  = "INTERNAL_API_SECRET"
+          value = random_password.internal_api_secret.result
+        },
+        # Disable scheduler - background jobs run in dedicated background service
+        {
+          name  = "DISABLE_BACKGROUND_SCHEDULER"
+          value = "1"
+        },
       ]
 
       mountPoints = [

@@ -54,6 +54,12 @@ HOW TO RUN:
 
 EXPECTED RESULT:
   All 9 tests should pass
+
+PERFORMANCE IMPACT:
+  Light - All tests use mocks, no real database or AWS connections
+  - No impact on other users
+  - Safe to run anytime
+
 """
 
 import os

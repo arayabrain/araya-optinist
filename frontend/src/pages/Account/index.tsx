@@ -87,6 +87,30 @@ const Account = () => {
     setIsDeleteConfirmModalOpen(true)
   }
 
+  const isPremiumUser =
+    userSubscription &&
+    !userSubscription.is_expired &&
+    userSubscription.status === SubscriptionUserStatus.SUBSCRIBED
+
+  const getDeleteAccountDescription = () => {
+    if (isPremiumUser) {
+      return `You have an active ${userSubscription.plan_name} subscription.`
+    }
+    return "Delete account will erase all of your data."
+  }
+
+  const getDeleteAccountWarnings = (): string[] | undefined => {
+    if (isPremiumUser) {
+      return [
+        "Your subscription will be immediately canceled",
+        "You will not receive a refund for the remaining period",
+        "All your data (workspaces, experiments, files) will be permanently deleted",
+        "This action cannot be undone",
+      ]
+    }
+    return undefined
+  }
+
   const onConfirmDelete = async () => {
     if (!user) return
     const data = await dispatch(deleteMe())
@@ -291,7 +315,8 @@ const Account = () => {
         onClose={handleCloseDeleteComfirmModal}
         open={isDeleteConfirmModalOpen}
         onSubmit={onConfirmDelete}
-        description="Delete account will erase all of your data. "
+        description={getDeleteAccountDescription()}
+        warningItems={getDeleteAccountWarnings()}
         iconType="warning"
       />
       <ChangePasswordModal

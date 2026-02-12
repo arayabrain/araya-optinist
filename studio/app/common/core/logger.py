@@ -5,12 +5,12 @@ import os
 import platform
 import traceback
 from contextvars import ContextVar
-from datetime import datetime
 from typing import Optional
 
 import yaml
 
 from studio.app.common.core.mode import MODE
+from studio.app.common.core.utils.datetime_utils import get_current_datetime_formatted
 from studio.app.dir_path import DIRPATH
 
 LOGGING_CLIENT_ID_KEY = "client_id"
@@ -176,6 +176,7 @@ class AppLogger:
     """
 
     LOGGER_NAME = "optinist"
+    _initialized = False  # Flag to track if logger has been initialized
 
     class ClientIdFilter(logging.Filter):
         """
@@ -214,11 +215,18 @@ class AppLogger:
             the initialization process is required because it is a separate process.
         """
 
+        # Skip if already initialized
+        if cls._initialized:
+            return
+
         # read logging config
         logging_config = cls.get_logging_config()
 
         # set logging config
         logging.config.dictConfig(logging_config)
+
+        # Mark as initialized
+        cls._initialized = True
 
     @staticmethod
     def get_logging_config() -> dict:
@@ -252,13 +260,13 @@ class AppLogger:
 
         return logging_config
 
-    @staticmethod
-    def get_logger() -> logging.Logger:
-        logger = logging.getLogger(__class__.LOGGER_NAME)
+    @classmethod
+    def get_logger(cls) -> logging.Logger:
+        logger = logging.getLogger(cls.LOGGER_NAME)
 
-        # If before initialization, call init
-        if not logger.handlers:
-            __class__.init_logger()
+        # If not initialized yet, call init
+        if not cls._initialized:
+            cls.init_logger()
 
         return logger
 
@@ -292,7 +300,7 @@ class AppLogger:
             return uid
 
         if auto_refresh:
-            datetime_str = datetime.now().strftime(
+            datetime_str = get_current_datetime_formatted(
                 "%Y-%m-%d-%w"
             )  # Refresh by period (weekly)
             hash_source = f"{uid}-{datetime_str}"

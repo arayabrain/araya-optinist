@@ -15,10 +15,13 @@ This Lambda has VPC access and can connect to RDS from inside VPC.
 import decimal
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 import pymysql
+
+# Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
+from aws_constants import DatabaseConfig
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -31,7 +34,7 @@ class DecimalEncoder(json.JSONEncoder):
         return super(DecimalEncoder, self).default(obj)
 
 
-def get_required_env_var(var_name: str, default_value: str = None) -> str:
+def get_required_env_var(var_name: str, default_value: str | None = None) -> str:
     """Safely get required environment variable with helpful error message"""
     value = os.environ.get(var_name, default_value)
     if value is None or value == "":
@@ -63,7 +66,9 @@ def get_db_connection(auto_commit=False):
             rds_host = get_required_env_var("RDS_HOST")
             conn = pymysql.connect(
                 host=rds_host.split(":")[0],
-                port=int(rds_host.split(":")[1]) if ":" in rds_host else 3306,
+                port=int(rds_host.split(":")[1])
+                if ":" in rds_host
+                else DatabaseConfig.DEFAULT_PORT,
                 user=get_required_env_var("RDS_USER"),
                 password=get_required_env_var("RDS_PASSWORD"),
                 database=get_required_env_var("RDS_DATABASE"),
@@ -171,8 +176,8 @@ def cleanup_test_user_sessions(connection, user_emails: List[str]) -> Dict[str, 
             # Delete free_user_assignments for these users
             user_id_placeholders = ", ".join(["%s"] * len(user_ids))
             cursor.execute(
-                f"""DELETE FROM free_user_assignments
-                    WHERE user_id IN ({user_id_placeholders})""",
+                "DELETE FROM free_user_assignments "
+                "WHERE user_id IN (" + user_id_placeholders + ")",
                 user_ids,
             )
             deleted_count = cursor.rowcount
@@ -191,11 +196,69 @@ def cleanup_test_user_sessions(connection, user_emails: List[str]) -> Dict[str, 
         raise e
 
 
+def get_free_test_user_ids(num_users: int = 6) -> Dict[str, Any]:
+    """
+    Get user IDs for free tier test users by email pattern.
+    Returns actual database IDs for users matching
+    'optinist_test_user_free_%@araya.org'.
+
+    Args:
+        num_users: Number of test users to return (default: 6)
+
+    Returns:
+        Dict with user IDs and emails:
+        {
+            "success": True,
+            "user_ids": [9, 10, 11, 12, 13, 14],
+            "users": [{"id": 9, "email": "optinist_test_user_free_1@araya.org"}, ...]
+        }
+    """
+    try:
+        email_pattern = "optinist_test_user_free_%@araya.org"
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """SELECT id, email FROM users
+                       WHERE email LIKE %s
+                       ORDER BY id
+                       LIMIT %s""",
+                    (email_pattern, num_users),
+                )
+                users = cursor.fetchall()
+
+                if not users:
+                    return {
+                        "success": False,
+                        "message": "No free test users found in database",
+                        "user_ids": [],
+                        "users": [],
+                    }
+
+                user_ids = [user["id"] for user in users]
+                print(f"Found {len(user_ids)} free test users: {user_ids}")
+
+                return {
+                    "success": True,
+                    "message": f"Found {len(user_ids)} free test users",
+                    "user_ids": user_ids,
+                    "users": [{"id": u["id"], "email": u["email"]} for u in users],
+                }
+
+    except Exception as e:
+        print(f"Error getting free test user IDs: {str(e)}")
+        return {
+            "success": False,
+            "message": str(e),
+            "user_ids": [],
+            "users": [],
+        }
+
+
 @with_transaction
 def cleanup_all_test_users(connection) -> Dict[str, Any]:
     """
-    Clean up all free tier sessions for users with 'test_' prefix in user_id.
-    Useful for cleaning up programmatically created test users.
+    Clean up all free tier sessions for free test users.
+    Cleans up users matching 'optinist_test_user_free_%@araya.org'.
 
     Args:
         connection: Database connection (provided by @with_transaction decorator)
@@ -204,12 +267,32 @@ def cleanup_all_test_users(connection) -> Dict[str, Any]:
         Dict with cleanup statistics
     """
     try:
-        print("Cleaning up all test users (user_id LIKE 'test_%')")
+        print("Cleaning up all free test users")
+        email_pattern = "optinist_test_user_free_%@araya.org"
 
         with connection.cursor() as cursor:
+            # First get user IDs for free test users
             cursor.execute(
-                """DELETE FROM free_user_assignments
-                   WHERE user_id LIKE 'test_%'"""
+                """SELECT id FROM users
+                   WHERE email LIKE %s""",
+                (email_pattern,),
+            )
+            users = cursor.fetchall()
+
+            if not users:
+                return {
+                    "success": True,
+                    "message": "No free test users found",
+                    "sessions_deleted": 0,
+                }
+
+            user_ids = [u["id"] for u in users]
+            placeholders = ", ".join(["%s"] * len(user_ids))
+
+            cursor.execute(
+                "DELETE FROM free_user_assignments "
+                "WHERE user_id IN (" + placeholders + ")",
+                user_ids,
             )
             deleted_count = cursor.rowcount
 
@@ -244,7 +327,7 @@ def simulate_user_activity(
         Dict with success status
     """
     try:
-        activity_time = datetime.now() - timedelta(minutes=minutes_ago)
+        activity_time = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
 
         with connection.cursor() as cursor:
             query = """
@@ -434,6 +517,84 @@ def count_active_users(activity_threshold_minutes: int = 10) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+def get_user_assignment(user_email: str) -> Dict[str, Any]:
+    """
+    Get the free_user_assignment for a specific user by email.
+    Used by test scripts to check which instance a user is assigned to.
+
+    Args:
+        user_email: The user's email address
+
+    Returns:
+        Dict with user assignment info:
+        {
+            "success": True,
+            "user_id": 123,
+            "instance_id": "i-abc123",
+            "active_workflow_count": 0,
+            "last_activity": "2024-01-01T12:00:00",
+            "migration_count": 0
+        }
+    """
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                # First, look up the user's database ID from their email
+                cursor.execute(
+                    "SELECT id FROM users WHERE email = %s",
+                    (user_email,),
+                )
+                user = cursor.fetchone()
+
+                if not user:
+                    return {
+                        "success": False,
+                        "message": f"User not found: {user_email}",
+                    }
+
+                user_id = user["id"]
+
+                # Now get the free_user_assignment for this user
+                cursor.execute(
+                    """
+                    SELECT user_id, instance_id, active_workflow_count,
+                           last_activity, migration_count
+                    FROM free_user_assignments
+                    WHERE user_id = %s
+                    """,
+                    (user_id,),
+                )
+                assignment = cursor.fetchone()
+
+                if not assignment:
+                    return {
+                        "success": True,
+                        "message": f"No assignment found for user {user_email}",
+                        "user_id": user_id,
+                        "instance_id": None,
+                    }
+
+                print(
+                    f"User {user_email} (id={user_id}) assigned to "
+                    f"instance {assignment['instance_id']}"
+                )
+
+                return {
+                    "success": True,
+                    "user_id": assignment["user_id"],
+                    "instance_id": assignment["instance_id"],
+                    "active_workflow_count": assignment["active_workflow_count"] or 0,
+                    "last_activity": assignment["last_activity"].isoformat()
+                    if assignment["last_activity"]
+                    else None,
+                    "migration_count": assignment["migration_count"] or 0,
+                }
+
+    except Exception as e:
+        print(f"Error getting user assignment: {str(e)}")
+        return {"success": False, "error": str(e)}
+
+
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Free Cleanup Lambda Handler
@@ -551,6 +712,30 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 "body": json.dumps({"result": result}, cls=DecimalEncoder),
             }
 
+        elif action == "get_free_test_user_ids":
+            num_users = event.get("num_users", 6)
+            result = get_free_test_user_ids(num_users)
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"result": result}, cls=DecimalEncoder),
+            }
+
+        elif action == "get_user_assignment":
+            user_email = event.get("user_email")
+            if not user_email:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps(
+                        {"error": "Missing required parameter: user_email"},
+                        cls=DecimalEncoder,
+                    ),
+                }
+            result = get_user_assignment(user_email)
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"result": result}, cls=DecimalEncoder),
+            }
+
         else:
             return {
                 "statusCode": 400,
@@ -564,6 +749,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                             "simulate_workflow",
                             "get_user_distribution",
                             "count_active_users",
+                            "get_free_test_user_ids",
+                            "get_user_assignment",
                         ],
                     },
                     cls=DecimalEncoder,

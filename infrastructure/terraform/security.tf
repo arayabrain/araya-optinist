@@ -456,6 +456,7 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
         Effect = "Allow"
         Action = [
           "logs:GetLogEvents",
+          "logs:FilterLogEvents",
           "logs:DescribeLogGroups",
           "logs:DescribeLogStreams",
           "iam:PassRole",
@@ -472,6 +473,8 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
           "ecs:ListClusters",
           "ecs:DescribeClusters",
           "ecs:ListContainerInstances",
+          "ecs:DescribeServices",
+          "ecs:UpdateService",
           "ecr:GetAuthorizationToken",
           "ecr:DescribeRepositories",
           "ecr:BatchCheckLayerAvailability",
@@ -481,7 +484,11 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
           "ecr:GetRepositoryPolicy",
           "cloudwatch:ListMetrics",
           "cloudwatch:GetMetricStatistics",
+          "cloudwatch:DescribeAlarms",
           "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:SetDesiredCapacity",
+          "autoscaling:SuspendProcesses",
+          "autoscaling:ResumeProcesses",
           "lambda:InvokeFunction"
         ]
         Resource = "*"
@@ -547,6 +554,76 @@ resource "aws_iam_role_policy" "ecs_task_lambda_invoke" {
           "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:subscr-premium-manager",
           "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:subscr-free-manager"
         ]
+      }
+    ]
+  })
+}
+
+# Secrets Manager access for routing HMAC key
+resource "aws_iam_role_policy" "ecs_task_routing_secret" {
+  name = "subscr-ecs-task-routing-secret"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          aws_secretsmanager_secret.routing_hmac_key.arn
+        ]
+      }
+    ]
+  })
+}
+
+# Secrets Manager access for all OptiNiSt application secrets
+# This allows ECS instances to read secrets for app_setup.sh
+resource "aws_iam_role_policy" "ecs_instance_secrets_access" {
+  name = "subscr-ecs-instance-secrets-access"
+  role = aws_iam_role.ecs_instance_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Resource = [
+          aws_secretsmanager_secret.firebase_config.arn,
+          aws_secretsmanager_secret.firebase_private_key.arn,
+          aws_secretsmanager_secret.database_config.arn,
+          aws_secretsmanager_secret.app_config.arn,
+          aws_secretsmanager_secret.stripe_config.arn
+        ]
+      }
+    ]
+  })
+}
+
+# ECS metadata access for instance ID retrieval
+# Required by cloud-startup.sh to get EC2 instance ID via ECS API fallback
+# when EC2 metadata service is unavailable
+resource "aws_iam_role_policy" "ecs_task_metadata" {
+  name = "subscr-ecs-task-metadata-access"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeTasks",
+          "ecs:DescribeContainerInstances"
+        ]
+        Resource = "*"
       }
     ]
   })
@@ -791,6 +868,148 @@ resource "aws_secretsmanager_secret_version" "rds_credentials" {
   })
 }
 
+# Store HMAC secret for routing token verification
+resource "random_password" "routing_hmac_key" {
+  length  = 64
+  special = true
+}
+
+resource "aws_secretsmanager_secret" "routing_hmac_key" {
+  name        = "subscr-premium-routing-hmac-key"
+  description = "HMAC secret key for premium routing token verification"
+}
+
+resource "aws_secretsmanager_secret_version" "routing_hmac_key" {
+  secret_id = aws_secretsmanager_secret.routing_hmac_key.id
+  secret_string = jsonencode({
+    key = random_password.routing_hmac_key.result
+  })
+}
+
+# Internal API secret for Lambda-to-backend communication
+# Used to authenticate internal sync endpoints called by Lambda managers
+resource "random_password" "internal_api_secret" {
+  length  = 64
+  special = false # Avoid special chars for easier URL/header handling
+}
+
+resource "aws_secretsmanager_secret" "internal_api_secret" {
+  name        = "subscr-internal-api-secret"
+  description = "Secret for internal API authentication between Lambda and backend"
+}
+
+resource "aws_secretsmanager_secret_version" "internal_api_secret" {
+  secret_id = aws_secretsmanager_secret.internal_api_secret.id
+  secret_string = jsonencode({
+    key = random_password.internal_api_secret.result
+  })
+}
+
+# ============================================================================
+# Firebase and Application Secrets
+# ============================================================================
+# These secrets enable deployment without terraform.tfvars access
+# Once created by Terraform, they can be read via AWS CLI by team members
+
+# Firebase web application configuration
+resource "aws_secretsmanager_secret" "firebase_config" {
+  name        = "subscr-optinist/firebase/config"
+  description = "Firebase web application configuration for OptiNiSt"
+
+  tags = {
+    Name        = "OptiNiSt Firebase Config"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "firebase_config" {
+  secret_id     = aws_secretsmanager_secret.firebase_config.id
+  secret_string = var.firebase_config_json
+}
+
+# Firebase service account private key
+resource "aws_secretsmanager_secret" "firebase_private_key" {
+  name        = "subscr-optinist/firebase/private-key"
+  description = "Firebase service account private key for OptiNiSt"
+
+  tags = {
+    Name        = "OptiNiSt Firebase Private Key"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "firebase_private_key" {
+  secret_id     = aws_secretsmanager_secret.firebase_private_key.id
+  secret_string = var.firebase_private_json
+}
+
+# Database credentials (consolidated for app_setup.sh)
+resource "aws_secretsmanager_secret" "database_config" {
+  name        = "subscr-optinist/database/config"
+  description = "MySQL/MariaDB database configuration for OptiNiSt"
+
+  tags = {
+    Name        = "OptiNiSt Database Config"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "database_config" {
+  secret_id = aws_secretsmanager_secret.database_config.id
+  secret_string = jsonencode({
+    username = var.mysql_user
+    password = var.mysql_password
+    database = var.mysql_database
+  })
+}
+
+# Application configuration secrets
+resource "aws_secretsmanager_secret" "app_config" {
+  name        = "subscr-optinist/app/config"
+  description = "OptiNiSt application configuration secrets"
+
+  tags = {
+    Name        = "OptiNiSt App Config"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "app_config" {
+  secret_id = aws_secretsmanager_secret.app_config.id
+  secret_string = jsonencode({
+    secret_key         = var.optinist_secret_key
+    routing_secret_key = var.routing_secret_key
+    org_name           = var.optinist_org_name
+    admin_name         = var.optinist_admin_name
+    admin_email        = var.optinist_admin_email
+    admin_uid          = var.optinist_admin_uid
+  })
+}
+
+# Stripe configuration
+resource "aws_secretsmanager_secret" "stripe_config" {
+  name        = "subscr-optinist/stripe/config"
+  description = "Stripe API keys and webhook secrets for OptiNiSt"
+
+  tags = {
+    Name        = "OptiNiSt Stripe Config"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "stripe_config" {
+  secret_id = aws_secretsmanager_secret.stripe_config.id
+  secret_string = jsonencode({
+    secret_key     = var.stripe_secret_key
+    webhook_secret = var.stripe_webhook_secret
+  })
+}
+
 # ==============
 # Key generation
 # ==============
@@ -830,4 +1049,31 @@ resource "local_file" "private_key" {
   content         = tls_private_key.subscr_optinist_cloud_key.private_key_pem # Fixed reference
   filename        = "${path.module}/subscr-optinist-cloud-private-key.pem"
   file_permission = "0400"
+}
+
+# ============================================================================
+# Outputs for Secrets Manager
+# ============================================================================
+# These outputs help team members find and access secrets via AWS CLI
+
+output "secrets_manager_secret_names" {
+  description = "Names of Secrets Manager secrets (use with AWS CLI: aws secretsmanager get-secret-value --secret-id <name>)"
+  value = {
+    firebase_config      = aws_secretsmanager_secret.firebase_config.name
+    firebase_private_key = aws_secretsmanager_secret.firebase_private_key.name
+    database_config      = aws_secretsmanager_secret.database_config.name
+    app_config           = aws_secretsmanager_secret.app_config.name
+    stripe_config        = aws_secretsmanager_secret.stripe_config.name
+  }
+}
+
+output "secrets_manager_secret_arns" {
+  description = "ARNs of all Secrets Manager secrets"
+  value = {
+    firebase_config      = aws_secretsmanager_secret.firebase_config.arn
+    firebase_private_key = aws_secretsmanager_secret.firebase_private_key.arn
+    database_config      = aws_secretsmanager_secret.database_config.arn
+    app_config           = aws_secretsmanager_secret.app_config.arn
+    stripe_config        = aws_secretsmanager_secret.stripe_config.arn
+  }
 }
