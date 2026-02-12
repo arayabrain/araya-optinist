@@ -71,6 +71,11 @@ def get_database_url():
 
         db_url = f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}"
 
+    ssl_mode = os.getenv("MYSQL_SSL_MODE", "")
+    if ssl_mode:
+        sep = "&" if "?" in db_url else "?"
+        db_url += f"{sep}ssl_mode={ssl_mode}"
+
     return db_url
 
 

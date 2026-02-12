@@ -85,7 +85,8 @@ def get_db_connection(auto_commit=False):
                 database=get_required_env_var("RDS_DATABASE"),
                 charset="utf8mb4",
                 cursorclass=pymysql.cursors.DictCursor,
-                autocommit=auto_commit,  # Default False for transactions
+                autocommit=auto_commit,
+                ssl_mode="REQUIRED",
             )
             yield conn
         except Exception as e:

@@ -13,6 +13,7 @@ class DatabaseConfig(BaseSettings):
     MYSQL_USER: str = Field(default=None, env="MYSQL_USER")
     MYSQL_PASSWORD: str = Field(default=None, env="MYSQL_PASSWORD")
     MYSQL_DATABASE: str = Field(default=None, env="MYSQL_DATABASE")
+    MYSQL_SSL_MODE: str = Field(default="", env="MYSQL_SSL_MODE")
     DATABASE_URL: str = Field(default=None)
 
     POOL_SIZE: int = Field(default=5)
@@ -26,7 +27,13 @@ class DatabaseConfig(BaseSettings):
         server = values.get("MYSQL_SERVER")
         database = values.get("MYSQL_DATABASE")
 
-        return f"mysql+pymysql://{user}:{password}@{server}/{database}?charset=utf8mb4"
+        url = (
+            f"mysql+pymysql://{user}:{password}" f"@{server}/{database}?charset=utf8mb4"
+        )
+        ssl_mode = values.get("MYSQL_SSL_MODE")
+        if ssl_mode:
+            url += f"&ssl_mode={ssl_mode}"
+        return url
 
     class Config:
         env_file = f"{DIRPATH.CONFIG_DIR}/.env"

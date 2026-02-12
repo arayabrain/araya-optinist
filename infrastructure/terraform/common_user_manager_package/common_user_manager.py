@@ -115,6 +115,7 @@ def get_db_connection():
                 password=get_required_env_var("RDS_PASSWORD"),
                 database=get_required_env_var("RDS_DATABASE"),
                 cursorclass=pymysql.cursors.DictCursor,
+                ssl_mode="REQUIRED",
             )
             yield conn
         finally:
@@ -147,7 +148,8 @@ def get_sqlalchemy_session():
 
     # Create SQLAlchemy engine (disposed after use for Lambda)
     connection_string = (
-        f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}" "?charset=utf8mb4"
+        f"mysql+pymysql://{user}:{password}@{host}:{port}"
+        f"/{database}?charset=utf8mb4&ssl_mode=REQUIRED"
     )
     engine = create_engine(connection_string, pool_pre_ping=True)
 
