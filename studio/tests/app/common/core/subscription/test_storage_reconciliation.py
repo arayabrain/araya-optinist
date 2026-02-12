@@ -57,11 +57,10 @@ async def test_reconciliation_job_batch_processing():
                 )
 
                 def execute_side_effect(*args, **kwargs):
-                    query = args[0] if args else ""
-                    if "COUNT(*)" in str(query):
+                    query = str(args[0]).lower() if args else ""
+                    if "count(" in query:
                         return mock_count_result
-                    elif "SELECT user_id" in str(query):
-                        # Return batches in sequence
+                    elif "user_id" in query and "limit" in query:
                         if not hasattr(execute_side_effect, "batch_count"):
                             execute_side_effect.batch_count = 0
                         execute_side_effect.batch_count += 1
@@ -133,10 +132,10 @@ async def test_reconciliation_detects_drift():
                     def execute_side_effect(*args, **kwargs):
                         nonlocal call_count
                         call_count += 1
-                        query = str(args[0]) if args else ""
-                        if "COUNT(*)" in query:
+                        query = str(args[0]).lower()
+                        if "count(" in query:
                             return mock_count_result
-                        elif "SELECT user_id" in query:
+                        elif "user_id" in query and "limit" in query:
                             if call_count <= 2:
                                 return mock_batch_result
                             return mock_empty_result
