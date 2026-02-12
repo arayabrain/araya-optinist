@@ -17,6 +17,7 @@ import { useSelector } from "react-redux"
 
 import {
   assignPremiumInstance,
+  getBeaconTokenApi,
   getPremiumStatus,
   getRoutingInfo,
   releasePremiumInstance,
@@ -116,6 +117,7 @@ export const PremiumAssignmentProvider: React.FC<{
   // Cross-tab leader election for coordinating polling
   const [isTabLeader, setIsTabLeader] = useState(false)
   const leaderElectionRef = useRef<CrossTabLeaderElection | null>(null)
+  const beaconTokenRef = useRef<string | null>(null)
 
   // Refs for values that inactivity check needs but shouldn't trigger re-renders
   const lastActivityTimeRef = useRef(state.lastActivityTime)
@@ -282,6 +284,15 @@ export const PremiumAssignmentProvider: React.FC<{
           error: result.assigned ? null : result.message,
         }))
 
+        if (result.assigned) {
+          try {
+            const tokenRes = await getBeaconTokenApi()
+            beaconTokenRef.current = tokenRes.data.token
+          } catch {
+            // Non-critical; beacon will fail gracefully
+          }
+        }
+
         return result
       } catch (error: unknown) {
         const errorMessage =
@@ -400,6 +411,12 @@ export const PremiumAssignmentProvider: React.FC<{
           assignmentResult,
           error: null,
         }))
+        try {
+          const tokenRes = await getBeaconTokenApi()
+          beaconTokenRef.current = tokenRes.data.token
+        } catch {
+          // Non-critical; beacon will fail gracefully
+        }
         return
       }
 
@@ -412,6 +429,12 @@ export const PremiumAssignmentProvider: React.FC<{
           assignmentResult: assignmentResponse,
           error: null,
         }))
+        try {
+          const tokenRes = await getBeaconTokenApi()
+          beaconTokenRef.current = tokenRes.data.token
+        } catch {
+          // Non-critical; beacon will fail gracefully
+        }
       }
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -641,10 +664,10 @@ export const PremiumAssignmentProvider: React.FC<{
     if (!isPremiumUser || !currentUser) return
 
     const handleBeforeUnload = () => {
-      // Use sendBeacon for reliable delivery during page unload
-      // Unlike fetch/XHR, sendBeacon is guaranteed to be sent even when page closes
-      if (state.assignmentResult?.instance_id) {
-        const beaconData = JSON.stringify({ user_uid: currentUser.uid })
+      if (state.assignmentResult?.instance_id && beaconTokenRef.current) {
+        const beaconData = JSON.stringify({
+          token: beaconTokenRef.current,
+        })
         navigator.sendBeacon("/api/users/me/premium/release-beacon", beaconData)
       }
     }

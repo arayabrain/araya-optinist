@@ -173,38 +173,51 @@ async def release_premium_instance(current_user: User = Depends(get_current_user
         return {"message": "Release completed with warnings", "released": True}
 
 
+@router.get("/premium/beacon-token", response_model=Dict)
+async def get_beacon_token(
+    current_user: User = Depends(get_current_user),
+):
+    from studio.app.common.core.auth.security import create_beacon_token
+
+    token = create_beacon_token(current_user.uid)
+    return {"token": token}
+
+
 @router.post("/premium/release-beacon", response_model=Dict)
 async def release_premium_beacon(request: Request, db: Session = Depends(get_db)):
     """
-    Beacon endpoint for reliable cleanup on browser close/refresh.
-
-    Uses navigator.sendBeacon for reliable delivery during page
-    unload. Does not require authentication since the user may be
-    closing the browser.
+    Beacon endpoint for reliable cleanup on browser close.
+    Authenticated via HMAC-signed token (sendBeacon cannot
+    carry Authorization headers).
     """
+    from studio.app.common.core.auth.security import validate_beacon_token
     from studio.app.common.models.user import User as UserModel
 
     try:
         body = await request.json()
-        user_uid = body.get("user_uid")
+        token = body.get("token")
+        if not token:
+            return {"success": False, "message": "Missing token"}
 
+        user_uid = validate_beacon_token(token)
         if not user_uid:
-            logger.warning("Beacon release called without user_uid")
-            return {"success": False, "message": "Missing user_uid"}
+            return {"success": False, "message": "Invalid token"}
 
         user = db.query(UserModel).filter(UserModel.uid == user_uid).first()
-        if user:
-            invalidate_activity_cache(user.id)
-            mark_user_logged_out(user.id)
+        if not user:
+            return {
+                "success": False,
+                "message": "User not found",
+            }
 
-        user_id = user.id if user else 0
+        invalidate_activity_cache(user.id)
+        mark_user_logged_out(user.id)
+
         result = await premium_assignment_service.release_premium_user(
-            user_id=user_id, user_uid=user_uid
+            user_id=user.id, user_uid=user_uid
         )
 
-        logger.info(
-            f"Beacon release for user_uid {user_uid}: " f"{result.get('message')}"
-        )
+        logger.info(f"Beacon release for user {user.id}: " f"{result.get('message')}")
         return {
             "success": True,
             "message": result.get("message", "Release processed"),
