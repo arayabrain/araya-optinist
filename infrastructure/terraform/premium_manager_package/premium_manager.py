@@ -3417,7 +3417,11 @@ def trigger_experiment_sync(user_id: int) -> bool:
 
     try:
         req = urllib.request.Request(url, method="POST", headers=headers, data=b"")
+        # Skip SSL verification for internal VPC traffic;
+        # ALB cert doesn't match AWS-generated hostname
         context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
         with urllib.request.urlopen(req, timeout=10.0, context=context) as response:
             if response.status == 200:
                 print(f"Experiment sync initiated for user {user_id}")
@@ -4222,7 +4226,6 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
     """
     Optimize shared instances by migrating users to available dedicated instances.
     Called during assignment operations to improve resource allocation.
-
     IMPORTANT: Only migrates users with no active workflows (active_workflow_count = 0)
     to prevent workflow interruption. Users with running workflows are automatically
     skipped and will be migrated on subsequent attempts after their workflows complete.
