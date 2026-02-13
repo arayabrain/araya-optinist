@@ -592,12 +592,19 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
             deletion_record.step = DeletionStep.FIREBASE_DELETED.value
             db.commit()
 
+        except firebase_auth.UserNotFoundError:
+            logger.info(
+                f"Firebase user {user_db.uid} already deleted, "
+                f"continuing cleanup for user {user_id}"
+            )
+            deletion_record.step = DeletionStep.FIREBASE_DELETED.value
+            db.commit()
+
         except FirebaseError as e:
-            # Firebase failed - abort, nothing else changed yet
             deletion_record.error = str(e)
             deletion_record.status = DeletionStatus.FAILED.value
             db.commit()
-            logger.error(f"Firebase deletion failed for user {user_id}: {e}")
+            logger.error(f"Firebase deletion failed for user " f"{user_id}: {e}")
             raise HTTPException(
                 status_code=400,
                 detail=f"Firebase deletion failed: {e}",

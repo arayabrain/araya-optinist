@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import time
 from subprocess import CalledProcessError
 from typing import TYPE_CHECKING, Dict, List
 
@@ -958,7 +959,11 @@ class S3StorageController(BaseRemoteStorageController):
 
                 if user_id:
                     # Use idempotent key to prevent double-counting
-                    idempotency_key = f"exp_upload_{workspace_id}_{unique_id}"
+                    idempotency_key = (
+                        f"exp_upload_{workspace_id}"
+                        f"_{unique_id}"
+                        f"_{int(time.time())}"
+                    )
                     success = increment_storage_idempotent(
                         user_id, total_bytes_uploaded, idempotency_key
                     )

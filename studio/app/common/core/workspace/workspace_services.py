@@ -183,12 +183,16 @@ class WorkspaceService:
                     detail="Workspace not found or already deleted",
                 )
 
-            # Create background task as "in progress" marker
             task_id = BackgroundTaskService.queue_workspace_deletion(
                 user_id=int(user_id),
                 workspace_id=int(workspace_id),
             )
-            BackgroundTaskService.mark_in_progress(task_id)
+            if task_id:
+                BackgroundTaskService.mark_in_progress(task_id)
+            else:
+                logger.warning(
+                    f"Failed to create background task " f"for workspace {workspace_id}"
+                )
             db.commit()
 
             try:
