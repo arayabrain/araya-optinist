@@ -38,9 +38,14 @@ export function useFileUploader({ fileType, nodeId }: UseFileUploaderProps) {
   const onUploadFile = useCallback(
     (formData: FormData, fileName: string) => {
       if (workspaceId) {
-        acquireWorkspaceLock(String(workspaceId), "upload")
+        if (!acquireWorkspaceLock(String(workspaceId), "upload")) {
+          return
+        }
         hasAcquiredLockRef.current = true
 
+        if (lockRefreshRef.current) {
+          clearInterval(lockRefreshRef.current)
+        }
         lockRefreshRef.current = setInterval(() => {
           refreshLock(String(workspaceId))
         }, LOCK_REFRESH_INTERVAL_MS)

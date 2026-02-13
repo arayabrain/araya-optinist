@@ -111,9 +111,14 @@ export function useRunPipeline() {
   const handleRunPipeline = useCallback(
     (name: string) => {
       if (workspaceId) {
-        acquireWorkspaceLock(workspaceId, "run")
+        if (!acquireWorkspaceLock(workspaceId, "run")) {
+          return
+        }
         hasAcquiredLockRef.current = true
 
+        if (lockRefreshRef.current) {
+          clearInterval(lockRefreshRef.current)
+        }
         lockRefreshRef.current = setInterval(() => {
           refreshLock(workspaceId)
         }, LOCK_REFRESH_INTERVAL_MS)
@@ -152,9 +157,14 @@ export function useRunPipeline() {
 
   const handleRunPipelineByUid = useCallback(() => {
     if (workspaceId) {
-      acquireWorkspaceLock(workspaceId, "run")
+      if (!acquireWorkspaceLock(workspaceId, "run")) {
+        return
+      }
       hasAcquiredLockRef.current = true
 
+      if (lockRefreshRef.current) {
+        clearInterval(lockRefreshRef.current)
+      }
       lockRefreshRef.current = setInterval(() => {
         refreshLock(workspaceId)
       }, LOCK_REFRESH_INTERVAL_MS)
