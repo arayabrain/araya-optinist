@@ -14,13 +14,12 @@ export const useLogout = () => {
 
   const performLogout = useCallback(
     async (broadcast = true) => {
+      // Fire-and-forget: don't block logout on Lambda release
       if (isPremiumUser) {
-        try {
-          await autoReleaseOnLogout()
-        } catch (error) {
+        autoReleaseOnLogout().catch((error) => {
           // eslint-disable-next-line no-console
           console.warn("Failed to release premium instance:", error)
-        }
+        })
       }
 
       if (broadcast) {
