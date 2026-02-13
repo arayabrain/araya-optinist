@@ -20,6 +20,7 @@ from studio.app.common.core.subscription.constants import (
     PaymentStatus,
     StripeWebhookEvent,
     SubscriptionCurrencyType,
+    SubscriptionPlanIds,
     SyncStatus,
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
@@ -820,7 +821,10 @@ class WebhookService:
                     )
                     user_subscription = (
                         db.query(UserSubscription)
-                        .filter(UserSubscription.user_id == user_id)
+                        .filter(
+                            UserSubscription.user_id == user_id,
+                            UserSubscription.plan_id != SubscriptionPlanIds.FREE,
+                        )
                         .order_by(UserSubscription.expiration.desc())
                         .first()
                     )

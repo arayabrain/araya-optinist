@@ -67,10 +67,6 @@ let failedQueue: Array<{
   reject: (reason?: unknown) => void
 }> = []
 
-// Timeout for debounced queue processing (Case 6 fix)
-let queueProcessTimeout: ReturnType<typeof setTimeout> | null = null
-const QUEUE_PROCESS_DELAY_MS = 100 // Batch multiple 401s within 100ms
-
 const processQueue = (error: unknown, token: string | null = null) => {
   failedQueue.forEach((prom) => {
     if (error) {
@@ -80,22 +76,6 @@ const processQueue = (error: unknown, token: string | null = null) => {
     }
   })
   failedQueue = []
-}
-
-/**
- * Debounced queue processing to batch multiple simultaneous 401 errors.
- * This prevents multiple 401s from triggering individual logout flows.
- * (Fix for Case 6: Multiple 401 errors before logout)
- */
-const processQueueDebounced = (error: unknown, token: string | null = null) => {
-  if (queueProcessTimeout) {
-    clearTimeout(queueProcessTimeout)
-  }
-
-  queueProcessTimeout = setTimeout(() => {
-    processQueue(error, token)
-    queueProcessTimeout = null
-  }, QUEUE_PROCESS_DELAY_MS)
 }
 
 // Export function to set logout state - called by logout functions
@@ -195,8 +175,7 @@ const handleUnauthorizedError = async (
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error("Token refresh failed:", e)
-    // Use debounced processing to batch multiple simultaneous 401s (Case 6 fix)
-    processQueueDebounced(e, null)
+    processQueue(e, null)
     isRefreshing = false
 
     if (

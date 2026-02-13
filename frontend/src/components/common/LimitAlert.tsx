@@ -141,9 +141,8 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
   const isOverdueAlert = alert?.alert_type === LimitAlertType.OVERDUE
   const canDismissOverdue = !isOverdueAlert || acknowledgedOverdue
 
-  const handleDismiss = () => {
-    // OVERDUE alerts require explicit acknowledgment before dismissal
-    if (isOverdueAlert && !acknowledgedOverdue) {
+  const handleDismiss = (forceAcknowledged = false) => {
+    if (isOverdueAlert && !acknowledgedOverdue && !forceAcknowledged) {
       return
     }
 
@@ -173,11 +172,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
   }
 
   const handleUpgrade = () => {
-    // For OVERDUE alerts, set acknowledged before dismissing
-    if (isOverdueAlert) setAcknowledgedOverdue(true)
-    // Dismiss the alert when user clicks upgrade
-    handleDismiss()
-    // Navigate to payment page
+    handleDismiss(true)
     navigate("/payment")
   }
 
@@ -277,7 +272,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
           // Hide close button for OVERDUE alerts - they require acknowledgment
           !showAsModal &&
           !isOverdueAlert && (
-            <IconButton size="small" onClick={handleDismiss}>
+            <IconButton size="small" onClick={() => handleDismiss()}>
               <CloseIcon />
             </IconButton>
           )
@@ -426,8 +421,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
                 variant="contained"
                 color="primary"
                 onClick={() => {
-                  if (isOverdueAlert) setAcknowledgedOverdue(true)
-                  handleDismiss()
+                  handleDismiss(true)
                   navigate("/workspaces")
                 }}
                 size="small"
@@ -440,7 +434,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
               <Button
                 variant="outlined"
                 color="inherit"
-                onClick={handleDismiss}
+                onClick={() => handleDismiss()}
                 disabled={!acknowledgedOverdue}
                 size="small"
               >
@@ -457,7 +451,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
     return (
       <Dialog
         open={Boolean(alert?.has_alert && !dismissed)}
-        onClose={isOverdueAlert ? undefined : handleDismiss}
+        onClose={isOverdueAlert ? undefined : () => handleDismiss()}
         maxWidth="md"
         fullWidth
         disableEscapeKeyDown={isOverdueAlert}
@@ -506,7 +500,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
           {isOverdueAlert ? (
             <>
               <Button
-                onClick={handleDismiss}
+                onClick={() => handleDismiss()}
                 color="inherit"
                 disabled={!acknowledgedOverdue}
               >
@@ -517,8 +511,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
                   variant="contained"
                   color="primary"
                   onClick={() => {
-                    setAcknowledgedOverdue(true)
-                    handleDismiss()
+                    handleDismiss(true)
                     navigate("/workspaces")
                   }}
                 >
@@ -530,8 +523,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
                   variant="contained"
                   color="error"
                   onClick={() => {
-                    setAcknowledgedOverdue(true)
-                    handleDismiss()
+                    handleDismiss(true)
                     navigate("/subscription")
                   }}
                   startIcon={<UpgradeIcon />}
@@ -542,7 +534,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
             </>
           ) : (
             <>
-              <Button onClick={handleDismiss} color="inherit">
+              <Button onClick={() => handleDismiss()} color="inherit">
                 Handle later
               </Button>
               {showManageFilesButton && (
