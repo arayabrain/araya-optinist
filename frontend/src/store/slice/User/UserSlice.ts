@@ -78,6 +78,10 @@ export const userSlice = createSlice({
         state.listUserSearch = action.payload
         state.loading = false
       })
+      .addCase(getMe.rejected, (state) => {
+        state.currentUser = undefined
+        state.loading = false
+      })
       .addMatcher(
         isAnyOf(login.fulfilled, proxyLogin.fulfilled),
         (_, action) => {
@@ -121,17 +125,14 @@ export const userSlice = createSlice({
           state.loading = true
         },
       )
-      .addMatcher(
-        isAnyOf(login.rejected, getMe.rejected, deleteMe.fulfilled),
-        () => {
-          removeToken()
-          removeRefreshToken()
-          removeExToken()
-          // Clear premium routing information on auth failure
-          routingService.clearRoutingInfo()
-          return initialState
-        },
-      )
+      .addMatcher(isAnyOf(login.rejected, deleteMe.fulfilled), () => {
+        removeToken()
+        removeRefreshToken()
+        removeExToken()
+        // Clear premium routing information on auth failure
+        routingService.clearRoutingInfo()
+        return initialState
+      })
   },
 })
 
