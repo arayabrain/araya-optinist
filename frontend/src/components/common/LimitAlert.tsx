@@ -272,7 +272,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
           // Hide close button for OVERDUE alerts - they require acknowledgment
           !showAsModal &&
           !isOverdueAlert && (
-            <IconButton size="small" onClick={handleDismiss}>
+            <IconButton size="small" onClick={() => handleDismiss()}>
               <CloseIcon />
             </IconButton>
           )
@@ -434,7 +434,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
               <Button
                 variant="outlined"
                 color="inherit"
-                onClick={handleDismiss}
+                onClick={() => handleDismiss()}
                 disabled={!acknowledgedOverdue}
                 size="small"
               >
@@ -451,7 +451,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
     return (
       <Dialog
         open={Boolean(alert?.has_alert && !dismissed)}
-        onClose={isOverdueAlert ? undefined : handleDismiss}
+        onClose={isOverdueAlert ? undefined : () => handleDismiss()}
         maxWidth="md"
         fullWidth
         disableEscapeKeyDown={isOverdueAlert}
@@ -500,7 +500,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
           {isOverdueAlert ? (
             <>
               <Button
-                onClick={handleDismiss}
+                onClick={() => handleDismiss()}
                 color="inherit"
                 disabled={!acknowledgedOverdue}
               >
@@ -534,7 +534,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
             </>
           ) : (
             <>
-              <Button onClick={handleDismiss} color="inherit">
+              <Button onClick={() => handleDismiss()} color="inherit">
                 Handle later
               </Button>
               {showManageFilesButton && (
