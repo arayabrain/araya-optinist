@@ -149,6 +149,10 @@ export const PremiumAssignmentProvider: React.FC<{
           error: result.assigned ? null : result.message,
         }))
 
+        if (result.assigned) {
+          routingService.setPremiumAssigned(true)
+        }
+
         return result
       } catch (error: unknown) {
         const errorMessage =
@@ -189,6 +193,9 @@ export const PremiumAssignmentProvider: React.FC<{
         assignmentResult: null,
         statusResult: null,
       }))
+
+      routingService.setPremiumAssigned(false)
+
       return result
     } catch (error: unknown) {
       // eslint-disable-next-line no-console
@@ -263,6 +270,7 @@ export const PremiumAssignmentProvider: React.FC<{
           assignmentResult,
           error: null,
         }))
+        routingService.setPremiumAssigned(true)
         return
       }
 
@@ -275,6 +283,7 @@ export const PremiumAssignmentProvider: React.FC<{
           assignmentResult: assignmentResponse,
           error: null,
         }))
+        routingService.setPremiumAssigned(true)
       }
     } catch (error) {
       // eslint-disable-next-line no-console
