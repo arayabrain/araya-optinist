@@ -671,82 +671,61 @@ async def _perform_full_scan_and_reset_delta(
     Perform full S3 scan and reset delta counter with
     distributed lock protection.
 
-    Uses MySQL GET_LOCK to prevent concurrent scans of the
-    same user. If another process is already scanning this
-    user, this function returns early.
+    Uses MySQL GET_LOCK within a single session so the lock
+    persists across the scan and DB update. If another
+    process is already scanning this user, returns early.
 
     Args:
         user_id: User ID to scan
     """
-    lock_acquired = False
-    lock_name = None
+    from sqlalchemy import text, update
+
+    lock_name = (
+        f"storage_scan_"
+        f"{StorageReconciliation.ADVISORY_LOCK_NAMESPACE}"
+        f"_{user_id}"
+    )
 
     try:
-        from sqlalchemy import text, update
-
-        lock_name = (
-            f"storage_scan_"
-            f"{StorageReconciliation.ADVISORY_LOCK_NAMESPACE}"
-            f"_{user_id}"
-        )
-        lock_timeout = 0
-
         with session_scope() as db:
             lock_result = db.execute(
                 text("SELECT GET_LOCK(:lock_name, :timeout)" " as lock_result"),
-                {
-                    "lock_name": lock_name,
-                    "timeout": lock_timeout,
-                },
+                {"lock_name": lock_name, "timeout": 0},
             )
-            result = lock_result.scalar()
-            lock_acquired = result == 1
-
-        if not lock_acquired:
-            logger.info(
-                f"Skipping scan for user {user_id}: "
-                f"another process is already scanning"
-            )
-            return
-
-        logger.debug(f"Acquired distributed lock for user " f"{user_id} scan")
-
-        actual_storage = await _calculate_live_storage_usage(user_id)
-
-        with session_scope() as db:
-            stmt = (
-                update(UserStorageUsage)
-                .where(UserStorageUsage.user_id == user_id)
-                .values(
-                    storage_usage_bytes=actual_storage,
-                    delta_since_last_scan=0,
-                    last_full_scan=(SubscriptionService.get_current_datetime()),
-                    last_updated=(SubscriptionService.get_current_datetime()),
+            if lock_result.scalar() != 1:
+                logger.info(
+                    f"Skipping scan for user {user_id}: " f"another process is scanning"
                 )
-            )
-            db.execute(stmt)
+                return
 
-        logger.info(
-            f"Full S3 scan completed for user {user_id}: "
-            f"{actual_storage:,} bytes (delta reset)"
-        )
+            try:
+                actual_storage = await _calculate_live_storage_usage(user_id)
+                now = SubscriptionService.get_current_datetime()
+                stmt = (
+                    update(UserStorageUsage)
+                    .where(UserStorageUsage.user_id == user_id)
+                    .values(
+                        storage_usage_bytes=actual_storage,
+                        delta_since_last_scan=0,
+                        last_full_scan=now,
+                        last_updated=now,
+                    )
+                )
+                db.execute(stmt)
+
+                logger.info(
+                    f"Full S3 scan completed for user "
+                    f"{user_id}: "
+                    f"{actual_storage:,} bytes (delta reset)"
+                )
+            finally:
+                db.execute(
+                    text("SELECT RELEASE_LOCK(:lock_name)"),
+                    {"lock_name": lock_name},
+                )
 
     except Exception as e:
         logger.error(f"Failed to perform full scan for " f"user {user_id}: {e}")
-    finally:
-        if lock_acquired and lock_name:
-            try:
-                with session_scope() as db:
-                    db.execute(
-                        text("SELECT RELEASE_LOCK(:lock_name)"),
-                        {"lock_name": lock_name},
-                    )
-                logger.debug(f"Released distributed lock for " f"user {user_id}")
-            except Exception as unlock_error:
-                logger.warning(
-                    f"Failed to release distributed lock "
-                    f"for user {user_id}: {unlock_error}"
-                )
 
 
 async def update_user_storage_after_workflow(
