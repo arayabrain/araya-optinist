@@ -5,6 +5,7 @@ import pytest
 from sqlmodel import Session
 
 from studio.app.common.core.subscription.checkout_service import CheckoutService
+from studio.app.common.core.subscription.constants import SyncStatus
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
@@ -57,6 +58,14 @@ class TestInvoicePaymentSucceeded:
         return plan
 
     @pytest.fixture
+    def mock_user(self):
+        """Create a mock user for cache invalidation"""
+        user = Mock()
+        user.id = "user_123"
+        user.uid = "user_uid_123"
+        return user
+
+    @pytest.fixture
     def invoice_data_subscription_cycle(self):
         """Create mock invoice data for subscription renewal"""
         return {
@@ -99,30 +108,19 @@ class TestInvoicePaymentSucceeded:
         mock_user_account,
         mock_subscription,
         mock_plan,
+        mock_user,
         invoice_data_subscription_cycle,
     ):
         """Test successful monthly subscription renewal"""
-        # Setup query chain for db.query()
-        mock_query = Mock()
-        mock_filter = Mock()
-        mock_order = Mock()
-
-        # First query returns user_account
-        mock_filter.first.return_value = mock_user_account
-        mock_query.filter.return_value = mock_filter
-
-        # Second query returns subscription
-        mock_filter2 = Mock()
-        mock_order.first.return_value = mock_subscription
-        mock_filter2.order_by.return_value = mock_order
-
         # Setup the query chain to return different results
         mock_db.query.side_effect = [
+            # 1st query: UserAccount by customer_id
             Mock(
                 filter=Mock(
                     return_value=Mock(first=Mock(return_value=mock_user_account))
                 )
             ),
+            # 2nd query: UserSubscription by user_id
             Mock(
                 filter=Mock(
                     return_value=Mock(
@@ -134,6 +132,8 @@ class TestInvoicePaymentSucceeded:
                     )
                 )
             ),
+            # 3rd query: User for cache invalidation
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
         ]
 
         with patch.object(
@@ -413,6 +413,254 @@ def test_full_webhook_payload():
         .get("subscription")
     )
     assert subscription_id == "sub_1QLzTh2eZvKYlo2C2222"
+
+
+class TestSubscriptionLookbackWindow:
+    """Test suite for Case 77: Extended lookback window for trial-to-paid conversion"""
+
+    def test_subscription_lookback_constant_is_30_days(self):
+        """RECENT_SUBSCRIPTION_WINDOW_DAYS should be 30 days for extended lookback"""
+        from studio.app.common.core.subscription.constants import (
+            RECENT_SUBSCRIPTION_WINDOW_DAYS,
+        )
+
+        assert RECENT_SUBSCRIPTION_WINDOW_DAYS == 30
+
+
+class TestPaymentFailureTracking:
+    """Test suite for Case 73: Payment failure tracking"""
+
+    @pytest.fixture
+    def mock_db(self):
+        """Create a mock database session"""
+        db = Mock(spec=Session)
+        db.query = Mock()
+        db.commit = Mock()
+        return db
+
+    @pytest.fixture
+    def mock_user_account(self):
+        """Create a mock user account"""
+        account = Mock()
+        account.user_id = 123
+        account.provider_customer_id = "cus_test123"
+        return account
+
+    @pytest.fixture
+    def mock_subscription(self):
+        """Create a mock subscription"""
+        subscription = Mock()
+        subscription.id = 1
+        subscription.user_id = 123
+        subscription.sync_status = None
+        subscription.expiration = get_current_datetime() + timedelta(days=30)
+        return subscription
+
+    @pytest.fixture
+    def mock_user(self):
+        """Create a mock user"""
+        user = Mock()
+        user.id = 123
+        user.uid = "user_uid_123"
+        return user
+
+    def test_payment_failed_sets_sync_status_failed(
+        self, mock_db, mock_user_account, mock_subscription, mock_user
+    ):
+        """Payment failure should set sync_status to FAILED"""
+        invoice_data = {
+            "id": "in_test123",
+            "customer": "cus_test123",
+        }
+
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_subscription))
+                )
+            ),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
+        ]
+
+        with patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            WebhookService.handle_payment_failed(mock_db, invoice_data)
+
+        assert mock_subscription.sync_status == SyncStatus.FAILED
+
+
+class TestWebhookCacheInvalidation:
+    """Test suite for Case 76: user tier cache invalidation in webhook handlers"""
+
+    @pytest.fixture
+    def mock_db(self):
+        """Create a mock database session"""
+        db = Mock(spec=Session)
+        db.query = Mock()
+        db.add = Mock()
+        db.flush = Mock()
+        db.commit = Mock()
+        db.rollback = Mock()
+        return db
+
+    @pytest.fixture
+    def mock_user(self):
+        """Create a mock user"""
+        user = Mock()
+        user.id = 123
+        user.uid = "user_uid_123"
+        user.email = "test@example.com"
+        return user
+
+    @pytest.fixture
+    def mock_user_account(self):
+        """Create a mock user account"""
+        account = Mock()
+        account.user_id = 123
+        account.provider_customer_id = "cus_test123"
+        return account
+
+    @pytest.fixture
+    def mock_subscription(self):
+        """Create a mock active subscription"""
+        subscription = Mock()
+        subscription.id = 1
+        subscription.user_id = 123
+        subscription.plan_id = 1
+        subscription.expiration = get_current_datetime() + timedelta(days=5)
+        subscription.sync_status = None
+        subscription.updated_at = None
+        return subscription
+
+    def test_payment_failed_invalidates_cache(
+        self, mock_db, mock_user_account, mock_subscription, mock_user
+    ):
+        """Test that handle_payment_failed invalidates user tier cache"""
+        invoice_data = {
+            "id": "in_test123",
+            "customer": "cus_test123",
+        }
+
+        # Setup query chain
+        mock_db.query.side_effect = [
+            # First query: find user account
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            # Second query: find subscription
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_subscription))
+                )
+            ),
+            # Third query: find user for cache invalidation
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
+        ]
+
+        with patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ) as mock_invalidate:
+            WebhookService.handle_payment_failed(mock_db, invoice_data)
+
+            # Verify cache invalidation was called with user UID
+            mock_invalidate.assert_called_once_with(mock_user.uid)
+
+    def test_payment_failed_no_cache_invalidation_when_no_subscription(
+        self, mock_db, mock_user_account
+    ):
+        """Test that cache is not invalidated when no subscription found"""
+        invoice_data = {
+            "id": "in_test123",
+            "customer": "cus_test123",
+        }
+
+        # Setup query chain - no subscription found
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=None)))),
+        ]
+
+        with patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ) as mock_invalidate:
+            WebhookService.handle_payment_failed(mock_db, invoice_data)
+
+            # Verify cache invalidation was NOT called
+            mock_invalidate.assert_not_called()
+
+    def test_subscription_renewal_invalidates_cache(
+        self, mock_db, mock_user_account, mock_subscription, mock_user
+    ):
+        """Test that handle_subscription_payment_succeeded invalidates cache"""
+        mock_plan = Mock()
+        mock_plan.id = 1
+
+        invoice_data = {
+            "id": "in_test123",
+            "customer": "cus_test123",
+            "subscription": "sub_stripe123",
+            "status": "paid",
+            "amount_paid": 2999,
+            "billing_reason": "subscription_cycle",
+            "lines": {"data": [{"period": {"end": 1702678399}}]},
+        }
+
+        # Setup query chain
+        mock_db.query.side_effect = [
+            # Find user account
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            # Find subscription
+            Mock(
+                filter=Mock(
+                    return_value=Mock(
+                        order_by=Mock(
+                            return_value=Mock(
+                                first=Mock(return_value=mock_subscription)
+                            )
+                        )
+                    )
+                )
+            ),
+            # Find user for cache invalidation
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
+        ]
+
+        with patch.object(
+            CheckoutService, "get_subscription_plan", return_value=mock_plan
+        ), patch.object(
+            SubscriptionService,
+            "get_current_datetime",
+            return_value=get_current_datetime(),
+        ), patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ) as mock_invalidate:
+            result = WebhookService.handle_subscription_payment_succeeded(
+                mock_db, invoice_data
+            )
+
+            assert result["success"] is True
+            # Verify cache invalidation was called
+            mock_invalidate.assert_called_once_with(mock_user.uid)
 
 
 if __name__ == "__main__":

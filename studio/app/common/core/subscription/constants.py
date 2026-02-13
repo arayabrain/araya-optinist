@@ -215,6 +215,8 @@ class SubscriptionPeriods:
     TRIAL_PERIOD_DAYS = 30
     GRACE_PERIOD_DAYS = 30
     WARNING_PERIOD_DAYS = 30
+    # Days before grace period end to warn about quota drop (Case 79)
+    QUOTA_DROP_WARNING_DAYS = 3
     STORAGE_WARNING_DAYS = 30  # Days to remove excess storage for free users
 
     # Cache age for storage usage (in minutes)
@@ -380,7 +382,8 @@ STRIPE_PROVIDER_NAME = "stripe"
 
 # Timeouts and limits
 DUPLICATE_PURCHASE_WINDOW_MINUTES = 30  # Window for detecting duplicate purchases
-RECENT_SUBSCRIPTION_WINDOW_DAYS = 7  # Window for finding recently expired subscriptions
+# Extended from 7 to 30 days for Case 77 - handles trial-to-paid with 8+ day gap
+RECENT_SUBSCRIPTION_WINDOW_DAYS = 30
 INVOICE_LIST_LIMIT = 100  # Maximum number of invoices to retrieve
 
 # Payment method types

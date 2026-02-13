@@ -20,6 +20,7 @@ from studio.app.common.core.subscription.constants import (
     PaymentStatus,
     StripeWebhookEvent,
     SubscriptionCurrencyType,
+    SubscriptionPlanIds,
     SyncStatus,
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
@@ -425,8 +426,15 @@ class WebhookService:
                 subscription.updated_at = SubscriptionService.get_current_datetime()
                 db.commit()
                 logger.info(
-                    f"Marked subscription as failed for user {user_account.user_id}"
+                    "Marked subscription as failed for user %s",
+                    user_account.user_id,
                 )
+
+                # Invalidate cache so user sees payment failure warning immediately
+                user = db.query(User).filter(User.id == user_account.user_id).first()
+                if user:
+                    invalidate_user_tier_cache(user.uid)
+                    logger.info("Invalidated tier cache after payment failure")
 
     @staticmethod
     def handle_subscription_cancelled(
@@ -787,11 +795,11 @@ class WebhookService:
                 )
 
                 # If no active subscription, check for recently expired ones
-                # (within last 7 days) - this handles trial-to-paid conversion
+                # (within extended lookback window) - handles trial-to-paid conversion
                 if not user_subscription:
                     logger.info(
-                        "Webhook: No active subscription found, "
-                        "checking for recently expired subscription"
+                        "Webhook: No active subscription found, checking for "
+                        f"subscription within {RECENT_SUBSCRIPTION_WINDOW_DAYS} days"
                     )
                     user_subscription = (
                         db.query(UserSubscription)
@@ -805,12 +813,28 @@ class WebhookService:
                         .first()
                     )
 
+                # Case 77 fallback: Look up any subscription by user regardless of date
+                if not user_subscription:
+                    logger.warning(
+                        "Webhook: No subscription within extended window, "
+                        "trying fallback (any subscription for user)"
+                    )
+                    user_subscription = (
+                        db.query(UserSubscription)
+                        .filter(
+                            UserSubscription.user_id == user_id,
+                            UserSubscription.plan_id != SubscriptionPlanIds.FREE,
+                        )
+                        .order_by(UserSubscription.expiration.desc())
+                        .first()
+                    )
+
                 logger.info(f"Webhook: Subscription query result: {user_subscription}")
 
                 if not user_subscription:
                     logger.error(f"Webhook: No subscription found for user: {user_id}")
                     logger.error(
-                        "Webhook: No active or recently expired subscription found. "
+                        "Webhook: No subscription found at all for this user. "
                         "This means the subscription wasn't created during checkout."
                     )
                     raise HTTPException(
@@ -898,7 +922,7 @@ class WebhookService:
                     detail=f"Error getting expiration from invoice: {str(e)}",
                 )
 
-            # 5. Update subscription expiration
+            # 5. Update subscription expiration and reset payment failure tracking
             try:
                 logger.info("Webhook: Updating subscription expiration...")
                 user_subscription.expiration = new_expiration
@@ -936,6 +960,12 @@ class WebhookService:
 
             # 7. Commit all changes
             db.commit()
+
+            # 8. Invalidate tier cache for immediate status update
+            user = db.query(User).filter(User.id == user_id).first()
+            if user:
+                invalidate_user_tier_cache(user.uid)
+                logger.info("Invalidated tier cache after subscription renewal")
 
             logger.info(
                 f"Webhook: Successfully processed subscription renewal for user "

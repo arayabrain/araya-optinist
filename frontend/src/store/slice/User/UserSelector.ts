@@ -15,3 +15,11 @@ export const selectListUserSearch = (state: RootState) =>
 export const isAdmin = (state: RootState) => {
   return state.user && ROLE.ADMIN === state.user.currentUser?.role_id
 }
+
+/**
+ * Selector for logout generation counter.
+ * Components can use this to detect when logout has occurred and invalidate
+ * cached user data or stale closures.
+ */
+export const selectLogoutGeneration = (state: RootState) =>
+  state.user.logoutGeneration

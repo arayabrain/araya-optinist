@@ -7,8 +7,9 @@ import type { RootState } from "store/store"
  * Tests for UserSlice
  *
  * These tests verify:
- * - Initial state values
- * - Logout action behavior
+ * - logoutGeneration is initialized to 0
+ * - logoutGeneration increments on logout
+ * - logoutGeneration is preserved through logout (other state reset)
  * - getMe.rejected does not clear tokens (prevents forced logout on transient errors)
  */
 
@@ -80,6 +81,11 @@ describe("UserSlice", () => {
   })
 
   describe("initialState", () => {
+    it("should have logoutGeneration initialized to 0", () => {
+      const state = userSlice.reducer(undefined, { type: "@@INIT" })
+      expect(state.logoutGeneration).toBe(0)
+    })
+
     it("should have currentUser as undefined", () => {
       const state = userSlice.reducer(undefined, { type: "@@INIT" })
       expect(state.currentUser).toBeUndefined()
@@ -92,6 +98,28 @@ describe("UserSlice", () => {
   })
 
   describe("logout action", () => {
+    it("should increment logoutGeneration", () => {
+      const initialState = userSlice.reducer(undefined, { type: "@@INIT" })
+      expect(initialState.logoutGeneration).toBe(0)
+
+      const stateAfterLogout = userSlice.reducer(initialState, logout())
+      expect(stateAfterLogout.logoutGeneration).toBe(1)
+    })
+
+    it("should increment logoutGeneration on each logout", () => {
+      let state = userSlice.reducer(undefined, { type: "@@INIT" })
+      expect(state.logoutGeneration).toBe(0)
+
+      state = userSlice.reducer(state, logout())
+      expect(state.logoutGeneration).toBe(1)
+
+      state = userSlice.reducer(state, logout())
+      expect(state.logoutGeneration).toBe(2)
+
+      state = userSlice.reducer(state, logout())
+      expect(state.logoutGeneration).toBe(3)
+    })
+
     it("should reset currentUser to undefined", () => {
       const stateWithUser: User = {
         currentUser: {
@@ -102,6 +130,7 @@ describe("UserSlice", () => {
         listUserSearch: undefined,
         listUser: undefined,
         loading: false,
+        logoutGeneration: 5,
       }
 
       const stateAfterLogout = userSlice.reducer(stateWithUser, logout())
@@ -114,6 +143,7 @@ describe("UserSlice", () => {
         listUserSearch: undefined,
         listUser: undefined,
         loading: true,
+        logoutGeneration: 0,
       }
 
       const stateAfterLogout = userSlice.reducer(stateWithLoading, logout())
@@ -135,6 +165,16 @@ describe("UserSlice", () => {
 
       expect(localStorageMock.removeItem).toHaveBeenCalledWith(
         "dismissedAlerts",
+      )
+    })
+
+    it("should clear localStorage storageAlertDismissed", () => {
+      const state = userSlice.reducer(undefined, { type: "@@INIT" })
+
+      userSlice.reducer(state, logout())
+
+      expect(localStorageMock.removeItem).toHaveBeenCalledWith(
+        "storageAlertDismissed",
       )
     })
 
@@ -160,6 +200,7 @@ describe("UserSlice", () => {
         listUserSearch: undefined,
         listUser: undefined,
         loading: true,
+        logoutGeneration: 0,
       }
 
       const getMeRejectedAction = {
@@ -169,15 +210,33 @@ describe("UserSlice", () => {
 
       const state = userSlice.reducer(stateWithUser, getMeRejectedAction)
 
-      // Should clear currentUser and set loading to false
       expect(state.currentUser).toBeUndefined()
       expect(state.loading).toBe(false)
-      // Should NOT call token removal functions
       expect(mockRemoveToken).not.toHaveBeenCalled()
       expect(mockRemoveRefreshToken).not.toHaveBeenCalled()
       expect(mockRemoveExToken).not.toHaveBeenCalled()
-      // Should NOT clear routing info
       expect(mockClearRoutingInfo).not.toHaveBeenCalled()
     })
+  })
+})
+
+describe("selectLogoutGeneration", () => {
+  it("should select logoutGeneration from state", async () => {
+    const { selectLogoutGeneration } = await import(
+      "store/slice/User/UserSelector"
+    )
+
+    const mockState: Pick<RootState, "user"> = {
+      user: {
+        currentUser: undefined,
+        listUserSearch: undefined,
+        listUser: undefined,
+        loading: false,
+        logoutGeneration: 42,
+      },
+    }
+
+    const result = selectLogoutGeneration(mockState as RootState)
+    expect(result).toBe(42)
   })
 })

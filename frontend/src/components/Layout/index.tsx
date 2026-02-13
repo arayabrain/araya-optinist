@@ -1,4 +1,4 @@
-import { FC, ReactNode, useEffect, useState } from "react"
+import { FC, ReactNode, useEffect, useState, useCallback, useRef } from "react"
 import { useSelector, useDispatch } from "react-redux"
 import { useLocation, useNavigate } from "react-router-dom"
 
@@ -25,20 +25,63 @@ import { selectCurrentUser } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 import { getToken, requiresAuth } from "utils/auth/AuthUtils"
 
+const STORAGE_REFRESH_TIMEOUT_MS = 10000
+const STORAGE_REFRESH_MAX_RETRIES = 2
+
 const Layout = ({ children }: { children?: ReactNode }) => {
   const user = useSelector(selectCurrentUser)
   const location = useLocation()
   const navigate = useNavigate()
   const dispatch = useDispatch<AppDispatch>()
   const isStandalone = useSelector(selectModeStandalone)
+  const storageRefreshAttemptRef = useRef(0)
 
   const [loading, setLoading] = useState(
     !isStandalone && requiresAuth(location.pathname),
   )
   const [storageRefreshedOnLogin, setStorageRefreshedOnLogin] = useState(() => {
-    // Check if storage was already refreshed in this session
     return sessionStorage.getItem("storage-refreshed-on-login") === "true"
   })
+
+  /**
+   * Cases 40-42 fix: Storage refresh with timeout and retry
+   * Returns true if refresh succeeded, false otherwise.
+   * Does NOT mark as refreshed on failure - allows retry on next login attempt.
+   */
+  const refreshStorageWithTimeout = useCallback(async (): Promise<boolean> => {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      STORAGE_REFRESH_TIMEOUT_MS,
+    )
+
+    try {
+      const { refreshAllWorkspacesStorageApi } = await import("api/workspace")
+
+      for (let attempt = 0; attempt < STORAGE_REFRESH_MAX_RETRIES; attempt++) {
+        try {
+          await refreshAllWorkspacesStorageApi({ signal: controller.signal })
+          clearTimeout(timeoutId)
+          return true
+        } catch (error) {
+          if (controller.signal.aborted) {
+            // eslint-disable-next-line no-console
+            console.warn("Storage refresh timed out")
+            return false
+          }
+          if (attempt < STORAGE_REFRESH_MAX_RETRIES - 1) {
+            await new Promise((resolve) => setTimeout(resolve, 1000))
+          }
+        }
+      }
+      return false
+    } catch (error) {
+      clearTimeout(timeoutId)
+      // eslint-disable-next-line no-console
+      console.warn("Storage refresh failed:", error)
+      return false
+    }
+  }, [])
 
   useEffect(() => {
     if (!isStandalone) {
@@ -137,33 +180,26 @@ const Layout = ({ children }: { children?: ReactNode }) => {
       }
 
       // Refresh workspace storage only once per session to ensure accurate limit warnings
+      // Cases 40-42 fix: Use timeout and don't mark as refreshed on failure
       if (!storageRefreshedOnLogin) {
-        try {
-          const { refreshAllWorkspacesStorageApi } = await import(
-            "api/workspace"
-          )
-          await refreshAllWorkspacesStorageApi()
+        storageRefreshAttemptRef.current += 1
+        const success = await refreshStorageWithTimeout()
 
-          // Revalidate token after storage refresh - logout may have occurred
-          currentToken = getToken()
-          if (!currentToken) {
-            navigate(AUTH_PATHS.LOGIN, { replace: true })
-            if (loading) setLoading(false)
-            return
-          }
+        // Revalidate token after storage refresh - logout may have occurred
+        currentToken = getToken()
+        if (!currentToken) {
+          navigate(AUTH_PATHS.LOGIN, { replace: true })
+          if (loading) setLoading(false)
+          return
+        }
 
-          // Mark as refreshed in session storage
+        if (success) {
           sessionStorage.setItem("storage-refreshed-on-login", "true")
           setStorageRefreshedOnLogin(true)
-        } catch (storageError) {
-          // Don't fail login if storage refresh fails
-          // eslint-disable-next-line no-console
-          console.warn(
-            "Failed to refresh workspace storage usage on login:",
-            storageError,
-          )
-
-          // Still mark as attempted so we don't keep retrying
+        }
+        // On failure, don't mark as refreshed - allow retry on next auth check
+        // But limit retries to prevent infinite loops in this session
+        else if (storageRefreshAttemptRef.current >= 3) {
           sessionStorage.setItem("storage-refreshed-on-login", "true")
           setStorageRefreshedOnLogin(true)
         }

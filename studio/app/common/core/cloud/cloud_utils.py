@@ -462,7 +462,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
                     pass
 
             # All other cases: No warning needed
-            logger.info(f"User {user_id}: No warning needed (other cases)")
+            logger.info(f"User {user_id}: No warning needed")
             return None
 
     except Exception as e:
