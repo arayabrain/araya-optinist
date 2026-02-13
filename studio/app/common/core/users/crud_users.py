@@ -3,7 +3,7 @@ from datetime import timezone
 from fastapi import HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
 from firebase_admin import auth as firebase_auth
-from firebase_admin.auth import UserRecord
+from firebase_admin.auth import UserNotFoundError, UserRecord
 from firebase_admin.exceptions import FirebaseError
 from sqlalchemy import func
 from sqlmodel import Session, select
@@ -592,7 +592,7 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
             deletion_record.step = DeletionStep.FIREBASE_DELETED.value
             db.commit()
 
-        except firebase_auth.UserNotFoundError:
+        except UserNotFoundError:
             logger.info(
                 f"Firebase user {user_db.uid} already deleted, "
                 f"continuing cleanup for user {user_id}"
@@ -698,7 +698,7 @@ async def check_firebase_account_exists(uid: str) -> bool:
     try:
         firebase_auth.get_user(uid)
         return True
-    except firebase_auth.UserNotFoundError:
+    except UserNotFoundError:
         return False
     except Exception as e:
         logger.error(f"Error checking Firebase account {uid}: {e}")
