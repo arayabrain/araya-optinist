@@ -327,6 +327,8 @@ export const PremiumAssignmentProvider: React.FC<{
 
     try {
       const result = await releasePremiumInstance()
+      // Clear beacon token so beforeunload doesn't fire a duplicate release
+      beaconTokenRef.current = null
       setState((prev) => ({
         ...prev,
         isReleasing: false,
