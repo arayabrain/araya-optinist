@@ -95,6 +95,23 @@ async def lifespan(app: FastAPI):
     # (e.g., when using cron)
     disable_scheduler = os.environ.get("DISABLE_BACKGROUND_SCHEDULER", "0") == "1"
 
+    # Startup sync runs on ALL containers (including API workers
+    # with disabled scheduler) to ensure published experiments are
+    # available locally
+    if not MODE.IS_STANDALONE:
+        import asyncio
+
+        async def _startup_sync():
+            try:
+                await asyncio.sleep(5)
+                await PublishedExperimentSyncJob.run_startup_sync()
+            except Exception as e:
+                logger.error(f"Startup sync error: {e}", exc_info=True)
+
+        # Store on app.state to prevent GC mid-execution
+        app.state.startup_sync_task = asyncio.create_task(_startup_sync())
+        logger.info("Startup sync task scheduled (runs in background)")
+
     if not MODE.IS_STANDALONE and not disable_scheduler:
         logger.info("Initializing background job scheduler")
         BackgroundScheduler.initialize()

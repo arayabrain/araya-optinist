@@ -500,8 +500,20 @@ class DataCleanupJob:
                         response = ec2.describe_instances(
                             InstanceIds=[assignment.instance_id]
                         )
-                        instances = response["Reservations"][0]["Instances"]
-                        instance_state = instances[0]["State"]["Name"]
+                        reservations = response.get("Reservations", [])
+                        if not reservations or not reservations[0].get("Instances"):
+                            logger.warning(
+                                f"Instance "
+                                f"{assignment.instance_id} has "
+                                f"no reservation data, "
+                                f"treating as terminated"
+                            )
+                            cls._cleanup_orphaned_assignment(db, assignment)
+                            continue
+
+                        instance_state = reservations[0]["Instances"][0]["State"][
+                            "Name"
+                        ]
 
                         # If instance is terminated, clean up user data
                         if instance_state in ["terminated", "terminating"]:
