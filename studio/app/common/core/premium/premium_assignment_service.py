@@ -358,13 +358,21 @@ class PremiumAssignmentService:
                 error = body.get("error")
 
                 if lambda_success:
-                    logger.info(
-                        f"Successfully released premium user {user_id} from "
-                        f"instance {body.get('released_instance')}"
-                    )
+                    released = body.get("released_instance")
+                    if released:
+                        logger.info(
+                            f"Released premium user {user_id} "
+                            f"from instance {released}"
+                        )
+                    else:
+                        logger.info(
+                            f"Release for premium user {user_id}: "
+                            f"no assignment found (already released)"
+                        )
                     if warnings:
                         logger.warning(
-                            f"Release completed with {len(warnings)} warnings: "
+                            f"Release completed with "
+                            f"{len(warnings)} warnings: "
                             f"{warnings}"
                         )
                 else:
