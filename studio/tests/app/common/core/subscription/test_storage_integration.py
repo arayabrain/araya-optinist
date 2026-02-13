@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from studio.app.common.core.cloud.cloud_utils import (
+from studio.app.common.core.cloud.storage_tracking import (
     _perform_full_scan_and_reset_delta,
     increment_user_storage,
 )
@@ -20,10 +20,11 @@ async def test_full_storage_tracking_workflow():
     file_size = 100 * 1024 * 1024  # 100 MB
 
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.session_scope"
+        "studio.app.common.core.cloud.storage_tracking.session_scope"
     ) as mock_session:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils._calculate_live_storage_usage",
+            "studio.app.common.core.cloud.storage_tracking."
+            "_calculate_live_storage_usage",
             new_callable=AsyncMock,
         ) as mock_calc:
             mock_db = Mock()

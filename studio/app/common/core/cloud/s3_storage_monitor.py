@@ -12,7 +12,7 @@ import boto3
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
 
-from studio.app.common.core.cloud.cloud_utils import (
+from studio.app.common.core.cloud.storage_tracking import (
     get_user_storage_usage,
     update_user_storage_usage,
 )

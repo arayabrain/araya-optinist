@@ -705,7 +705,7 @@ class RemoteStorageController(BaseRemoteStorageController):
                 workspace_id, unique_id, target_files
             )
 
-            # update sync status file
+            # update sync status file based on result
             if result:
                 RemoteSyncStatusFileUtil.create_sync_status_file_for_success(
                     **sync_status_params
@@ -738,6 +738,7 @@ class RemoteStorageController(BaseRemoteStorageController):
 
             result = await self.__controller.delete_experiment(workspace_id, unique_id)
 
+            # update sync status file based on result
             if result:
                 RemoteSyncStatusFileUtil.create_sync_status_file_for_success(
                     **sync_status_params

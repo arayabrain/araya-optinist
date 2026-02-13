@@ -68,10 +68,10 @@ def mock_storage_monitor():
 async def test_get_me_no_alert(mock_current_user):
     """Test /me endpoint when user has no storage alert"""
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking.get_current_user_storage_usage"
     ) as mock_get_usage:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.get_user_storage_usage"
         ) as mock_storage_info:
             with patch(
                 "studio.app.common.routers.storage_limit_alerts._get_storage_utilities"
@@ -105,10 +105,10 @@ async def test_get_me_no_alert(mock_current_user):
 async def test_get_me_critical_alert(mock_current_user):
     """Test /me endpoint when user has critical storage alert (90%)"""
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking.get_current_user_storage_usage"
     ) as mock_get_usage:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.get_user_storage_usage"
         ) as mock_storage_info:
             with patch(
                 "studio.app.common.routers.storage_limit_alerts._get_storage_utilities"
@@ -145,10 +145,10 @@ async def test_get_me_critical_alert(mock_current_user):
 async def test_get_me_danger_alert(mock_current_user):
     """Test /me endpoint when user has danger alert (100%+)"""
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking.get_current_user_storage_usage"
     ) as mock_get_usage:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.get_user_storage_usage"
         ) as mock_storage_info:
             with patch(
                 "studio.app.common.routers.storage_limit_alerts._get_storage_utilities"
@@ -182,10 +182,10 @@ async def test_get_me_danger_alert(mock_current_user):
 async def test_get_me_no_storage_info(mock_current_user):
     """Test /me endpoint when user has no storage info in database"""
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking.get_current_user_storage_usage"
     ) as mock_get_usage:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.get_user_storage_usage"
         ) as mock_storage_info:
             with patch(
                 "studio.app.common.routers.storage_limit_alerts._get_storage_utilities"
@@ -216,10 +216,10 @@ async def test_get_me_no_storage_info(mock_current_user):
 async def test_get_usage_with_quota(mock_current_user):
     """Test /usage endpoint with valid storage quota"""
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking.get_current_user_storage_usage"
     ) as mock_get_usage:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.get_user_storage_usage"
         ) as mock_storage_info:
             with patch(
                 "studio.app.common.routers.storage_limit_alerts._get_storage_utilities"
@@ -255,10 +255,10 @@ async def test_get_usage_with_quota(mock_current_user):
 async def test_get_usage_no_storage_info(mock_current_user):
     """Test /usage endpoint when user has no storage info"""
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking.get_current_user_storage_usage"
     ) as mock_get_usage:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.get_user_storage_usage"
         ) as mock_storage_info:
             with patch(
                 "studio.app.common.routers.storage_limit_alerts._get_storage_utilities"
@@ -288,10 +288,10 @@ async def test_get_usage_no_storage_info(mock_current_user):
 async def test_get_usage_zero_quota(mock_current_user):
     """Test /usage endpoint when quota is zero (edge case)"""
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking.get_current_user_storage_usage"
     ) as mock_get_usage:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.get_user_storage_usage"
         ) as mock_storage_info:
             with patch(
                 "studio.app.common.routers.storage_limit_alerts._get_storage_utilities"
@@ -429,7 +429,7 @@ async def test_refresh_storage_success(mock_current_user):
         "studio.app.common.routers.storage_limit_alerts.S3StorageMonitor"
     ) as mock_monitor_class:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.update_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.update_user_storage_usage"
         ) as mock_update:
             mock_monitor = Mock()
             mock_monitor.get_user_s3_storage_size = AsyncMock(
@@ -481,7 +481,7 @@ async def test_refresh_storage_database_update_fails(mock_current_user):
         "studio.app.common.routers.storage_limit_alerts.S3StorageMonitor"
     ) as mock_monitor_class:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.update_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.update_user_storage_usage"
         ) as mock_update:
             mock_monitor = Mock()
             mock_monitor.get_user_s3_storage_size = AsyncMock(
