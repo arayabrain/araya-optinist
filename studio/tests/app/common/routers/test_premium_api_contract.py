@@ -637,7 +637,7 @@ async def test_contract_beacon_release_success():
         with patch("studio.app.common.routers.users_me.invalidate_activity_cache"):
             with patch("studio.app.common.routers.users_me.mark_user_logged_out"):
                 with patch(
-                    "studio.app.common.routers.users_me" ".validate_beacon_token",
+                    "studio.app.common.core.auth.security" ".validate_beacon_token",
                     return_value="test-user-123",
                 ):
                     mock_service.release_premium_user = AsyncMock(
