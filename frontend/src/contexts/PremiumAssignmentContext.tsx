@@ -441,6 +441,7 @@ export const PremiumAssignmentProvider: React.FC<{
     } catch (error) {
       // eslint-disable-next-line no-console
       console.warn("Auto-assignment failed:", error)
+      routingService.clearRoutingInfo()
     }
   }, [isPremiumUser, hasAttemptedAutoAssignment])
 
@@ -667,6 +668,7 @@ export const PremiumAssignmentProvider: React.FC<{
 
     const handleBeforeUnload = () => {
       if (state.assignmentResult?.instance_id && beaconTokenRef.current) {
+        routingService.clearRoutingInfo()
         const beaconData = JSON.stringify({
           token: beaconTokenRef.current,
         })
