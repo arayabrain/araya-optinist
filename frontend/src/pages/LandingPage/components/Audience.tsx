@@ -29,7 +29,7 @@ const audiences: AudienceCard[] = [
     features: [
       "Multi-format image support",
       "Batch processing",
-      "Spatial filtering tools",
+      "LCCD cell detection algorithm",
     ],
     color: "cyan",
   },
