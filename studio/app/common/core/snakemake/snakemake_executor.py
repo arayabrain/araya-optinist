@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -43,6 +44,33 @@ from studio.app.common.core.workspace.workspace_data_capacity_services import (
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
+
+LOCK_WAIT_MAX_SECONDS = 300
+LOCK_WAIT_POLL_INTERVAL = 2
+
+
+def _wait_for_lock_release(workspace_id: str, unique_id: str) -> bool:
+    """Wait for post_process upload lock to release."""
+    if not RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, unique_id):
+        return True
+
+    experiment = f"{workspace_id}/{unique_id}"
+    logger.info(f"Waiting for remote storage lock on [{experiment}]")
+    start = time.monotonic()
+
+    while time.monotonic() - start < LOCK_WAIT_MAX_SECONDS:
+        time.sleep(LOCK_WAIT_POLL_INTERVAL)
+        if not RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, unique_id):
+            elapsed = time.monotonic() - start
+            logger.info(f"Lock released on [{experiment}] " f"after {elapsed:.1f}s")
+            return True
+
+    elapsed = time.monotonic() - start
+    logger.warning(
+        f"Lock wait timeout on [{experiment}] "
+        f"after {elapsed:.1f}s, proceeding anyway"
+    )
+    return False
 
 
 def snakemake_execute(
@@ -185,6 +213,10 @@ def _snakemake_execute_process(
     # so that WorkflowResult.observe_overall() can access remote storage
     if not snakemake_result and RemoteStorageController.is_available():
         RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
+
+    # Wait for post_process upload to release the lock
+    if snakemake_result and RemoteStorageController.is_available():
+        _wait_for_lock_release(workspace_id, unique_id)
 
     try:
         # Update workflow processing results
