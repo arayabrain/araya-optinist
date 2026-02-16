@@ -82,7 +82,6 @@ const PremiumNotificationManager: FC = () => {
       isPremiumUser &&
       assignmentResult?.assigned &&
       assignmentResult.is_shared === true &&
-      assignmentResult.assignment_source === "autoscaling_temp" &&
       !hasShownTempAssignmentWarning
     ) {
       const key = enqueueSnackbar(
@@ -160,10 +159,7 @@ const PremiumNotificationManager: FC = () => {
 
   // Reset temp assignment warning when user is no longer on temporary instance
   useEffect(() => {
-    if (
-      !assignmentResult?.assigned ||
-      assignmentResult.assignment_source !== "autoscaling_temp"
-    ) {
+    if (!assignmentResult?.assigned || !assignmentResult.is_shared) {
       setHasShownTempAssignmentWarning(false)
       // Clear the notification key reference
       if (tempAssignmentKeyRef.current) {
