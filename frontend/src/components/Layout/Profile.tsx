@@ -20,6 +20,7 @@ import {
 } from "@mui/material"
 import IconButton from "@mui/material/IconButton"
 
+import Loading from "components/common/Loading"
 import { useLogout } from "hooks/useLogout"
 import { selectPipelineIsStartedSuccess } from "store/slice/Pipeline/PipelineSelectors"
 import { tabSync } from "utils/crossTabSync"
@@ -27,6 +28,7 @@ import { tabSync } from "utils/crossTabSync"
 const Profile: FC = () => {
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null)
   const [showJobWarning, setShowJobWarning] = useState(false)
+  const [isSigningOut, setIsSigningOut] = useState(false)
   const navigate = useNavigate()
   const hasRunningJob = useSelector(selectPipelineIsStartedSuccess)
   const { performLogout } = useLogout()
@@ -54,6 +56,7 @@ const Profile: FC = () => {
       return
     }
 
+    setIsSigningOut(true)
     await performLogout()
   }
 
@@ -63,6 +66,7 @@ const Profile: FC = () => {
 
   const handleProceedLogout = async () => {
     setShowJobWarning(false)
+    setIsSigningOut(true)
     await performLogout()
   }
 
@@ -124,11 +128,16 @@ const Profile: FC = () => {
           <Button variant="outlined" onClick={handleCloseJobWarning}>
             Cancel
           </Button>
-          <Button variant="contained" onClick={handleProceedLogout}>
+          <Button
+            variant="contained"
+            onClick={handleProceedLogout}
+            disabled={isSigningOut}
+          >
             Sign Out Anyway
           </Button>
         </DialogActions>
       </Dialog>
+      <Loading loading={isSigningOut} />
     </>
   )
 }

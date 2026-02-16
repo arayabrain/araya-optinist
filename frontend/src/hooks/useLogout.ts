@@ -14,8 +14,9 @@ export const useLogout = () => {
 
   const performLogout = useCallback(
     async (broadcast = true) => {
-      // Fire-and-forget: don't block logout on Lambda release
-      if (isPremiumUser) {
+      // Fire-and-forget: don't block logout on Lambda release.
+      // Only the originating tab releases; cross-tab receivers skip it.
+      if (isPremiumUser && broadcast) {
         autoReleaseOnLogout().catch((error) => {
           // eslint-disable-next-line no-console
           console.warn("Failed to release premium instance:", error)
