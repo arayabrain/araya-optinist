@@ -10,22 +10,42 @@ import pytest
 # conftest is at studio/tests/infrastructure/conftest.py
 # project root is 3 levels up
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+
+# Support both local dev and Docker layouts:
+#   Local: PROJECT_ROOT/infrastructure/terraform/<package>
+#   Docker: PROJECT_ROOT/terraform/<package>
 TERRAFORM_DIR = PROJECT_ROOT / "infrastructure" / "terraform"
+if not TERRAFORM_DIR.exists():
+    TERRAFORM_DIR = PROJECT_ROOT / "terraform"
+
+_PACKAGE_NAMES = [
+    "premium_manager_package",
+    "premium_cleanup_package",
+    "free_manager_package",
+    "free_cleanup_package",
+    "common_user_manager_package",
+]
 
 # Add Lambda package directories to sys.path so imports work
-_LAMBDA_PATHS = [
-    TERRAFORM_DIR / "premium_manager_package",
-    TERRAFORM_DIR / "premium_cleanup_package",
-    TERRAFORM_DIR / "free_manager_package",
-    TERRAFORM_DIR / "free_cleanup_package",
-    TERRAFORM_DIR / "common_user_manager_package",
-    TERRAFORM_DIR / "aws_constants_layer" / "python",
-]
+_LAMBDA_PATHS = [TERRAFORM_DIR / name for name in _PACKAGE_NAMES]
+
+# aws_constants: layer subdir (local) or project root (Docker)
+_AWS_CONST_LAYER = TERRAFORM_DIR / "aws_constants_layer" / "python"
+if _AWS_CONST_LAYER.exists():
+    _LAMBDA_PATHS.append(_AWS_CONST_LAYER)
+else:
+    _LAMBDA_PATHS.append(PROJECT_ROOT)
 
 for p in _LAMBDA_PATHS:
     p_str = str(p)
     if p_str not in sys.path:
         sys.path.insert(0, p_str)
+
+# Ensure the real aws_constants module is loaded from the paths above.
+# Other test files may install a limited mock into sys.modules;
+# remove it first so we get the real module.
+sys.modules.pop("aws_constants", None)
+import aws_constants  # noqa: E402, F401
 
 
 class MockRow:

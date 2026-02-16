@@ -1,7 +1,12 @@
 """Tests for free_manager Lambda function."""
 
 import json
+import os
 from unittest.mock import MagicMock, patch
+
+# free_manager creates boto3 clients at module level;
+# AWS_DEFAULT_REGION must be set before import to avoid NoRegionError
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 
 
 class TestFreeManagerHandler:
