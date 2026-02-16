@@ -60,7 +60,15 @@ export const Features = () => {
     <FeaturesSection id="features">
       <Container>
         <FeaturesHeader>
-          <Label>Features</Label>
+          <SectionLabel>
+            <span
+              className="material-symbols-outlined"
+              style={{ fontSize: "1.25rem" }}
+            >
+              widgets
+            </span>
+            Features
+          </SectionLabel>
           <SectionTitleLeft>Everything You Need to Analyze</SectionTitleLeft>
           <SectionDescription>
             Powerful tools that make complex data analysis accessible to
@@ -111,12 +119,17 @@ const FeaturesHeader = styled(Box)({
   maxWidth: 700,
 })
 
-const Label = styled(Typography)({
+const SectionLabel = styled(Box)({
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "0.5rem",
+  backgroundColor: "rgba(37, 99, 235, 0.1)",
   color: "#2563eb",
   fontWeight: 700,
-  letterSpacing: "0.1em",
-  fontSize: "0.75rem",
-  textTransform: "uppercase",
+  fontSize: "0.875rem",
+  padding: "0.5rem 1rem",
+  borderRadius: 9999,
+  width: "fit-content",
 })
 
 const SectionTitleLeft = styled(Typography)({

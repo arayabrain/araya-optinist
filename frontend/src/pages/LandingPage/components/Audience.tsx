@@ -22,7 +22,7 @@ const audiences: AudienceCard[] = [
     color: "primary",
   },
   {
-    icon: "mic",
+    icon: "biotech",
     title: "Microscopy Researchers",
     description:
       "Build image processing pipelines for various microscopes without coding.",

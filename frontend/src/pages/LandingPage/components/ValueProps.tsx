@@ -16,24 +16,24 @@ const valueProps: ValueProp[] = [
     color: "magenta",
   },
   {
-    icon: "history",
-    title: "Reproducible Science",
+    icon: "neurology",
+    title: "NWB-Native",
     description:
-      "Every analysis is saved and can be reproduced exactly. Export workflows so reviewers can verify your methods.",
+      "First-class support for NWB (Neurodata Without Borders). Import, analyze, and export in the standard format for neurophysiology data.",
     color: "cyan",
   },
   {
-    icon: "share",
-    title: "Collaborate Seamlessly",
+    icon: "analytics",
+    title: "Complete Analysis Toolkit",
     description:
-      "Share workspaces with colleagues. Publish results publicly so other labs can compare using the same workflows.",
+      "From visual pipeline building to rich visualization and ROI analysis — everything you need to go from raw data to publishable results.",
     color: "green",
   },
   {
-    icon: "folder_open",
-    title: "Multi-Format Support",
+    icon: "public",
+    title: "Share & Collaborate",
     description:
-      "Native support for NWB (Neurodata Without Borders), HDF5, MATLAB, CSV, and image formats. Your data, your way.",
+      "Share workspaces, publish analysis results, and let other labs reproduce your exact methods. Grow a community around comparable science.",
     color: "yellow",
   },
 ]

@@ -14,6 +14,9 @@ export const Hero = () => {
             <HeroTitle>
               Build. Analyze. <GradientText>Collaborate.</GradientText>
             </HeroTitle>
+            <HeroSubtitle>
+              with <BrandText>OptiNiSt</BrandText>
+            </HeroSubtitle>
             <HeroDescription>
               The no-code platform for scientific data analysis.
               <br />
@@ -48,45 +51,7 @@ export const Hero = () => {
           </HeroBadges>
         </HeroContent>
         <HeroVisual>
-          <HeroGlow />
-          <HeroCard>
-            <HeroCardHeader>
-              <Dot style={{ backgroundColor: "#f87171" }} />
-              <Dot style={{ backgroundColor: "#fbbf24" }} />
-              <Dot style={{ backgroundColor: "#4ade80" }} />
-            </HeroCardHeader>
-            <WorkflowPreview>
-              <WorkflowNode
-                style={{
-                  backgroundColor: "rgba(13, 148, 136, 0.15)",
-                  border: "2px solid #0d9488",
-                  color: "#0d9488",
-                }}
-              >
-                <span>Image Input</span>
-              </WorkflowNode>
-              <WorkflowConnector />
-              <WorkflowNode
-                style={{
-                  backgroundColor: "rgba(37, 99, 235, 0.15)",
-                  border: "2px solid #2563eb",
-                  color: "#2563eb",
-                }}
-              >
-                <span>Algorithm</span>
-              </WorkflowNode>
-              <WorkflowConnector />
-              <WorkflowNode
-                style={{
-                  backgroundColor: "rgba(5, 150, 105, 0.15)",
-                  border: "2px solid #059669",
-                  color: "#059669",
-                }}
-              >
-                <span>Visualize</span>
-              </WorkflowNode>
-            </WorkflowPreview>
-          </HeroCard>
+          <HeroImage src="/static/optinist_logo.png" alt="OptiNiSt logo" />
         </HeroVisual>
       </HeroGrid>
     </HeroSection>
@@ -150,6 +115,28 @@ const GradientText = styled("span")({
   backgroundClip: "text",
 })
 
+const HeroSubtitle = styled("div")({
+  display: "flex",
+  alignItems: "center",
+  gap: "0.5rem",
+  fontSize: "1.5rem",
+  fontWeight: 500,
+  color: "#4b5563",
+  marginTop: "0.5rem",
+  "@media (min-width: 768px)": {
+    fontSize: "2rem",
+  },
+})
+
+const BrandText = styled("span")({
+  background: "linear-gradient(135deg, #0d9488 0%, #059669 100%)",
+  WebkitBackgroundClip: "text",
+  WebkitTextFillColor: "transparent",
+  backgroundClip: "text",
+  fontWeight: 800,
+  letterSpacing: "-0.02em",
+})
+
 const HeroDescription = styled(Typography)({
   fontSize: "1.125rem",
   color: "#6b7280",
@@ -198,72 +185,19 @@ const Badge = styled(Box)({
   color: "#6b7280",
 })
 
-const Attribution = styled(Typography)({
-  fontSize: "0.8rem",
-  color: "#9ca3af",
-  fontStyle: "italic",
-  marginTop: "0.5rem",
-})
-
 const HeroVisual = styled(Box)({
   position: "relative",
+  display: "flex",
+  justifyContent: "center",
+  alignItems: "center",
+  "@media (min-width: 1024px)": {
+    transform: "scale(1.15)",
+    transformOrigin: "center center",
+  },
 })
 
-const HeroGlow = styled(Box)({
-  position: "absolute",
-  inset: "-1rem",
-  background: "linear-gradient(to right, #0d9488, #2563eb, #e11d48)",
-  opacity: 0.1,
-  filter: "blur(40px)",
-  borderRadius: 20,
-  transition: "opacity 0.5s",
-})
-
-const HeroCard = styled(Box)({
-  position: "relative",
+const HeroImage = styled("img")({
   width: "100%",
-  aspectRatio: "16 / 9",
-  background: "linear-gradient(to bottom right, #f9fafb, #f3f4f6)",
-  border: "1px solid #e5e7eb",
-  borderRadius: 12,
-  overflow: "hidden",
-  boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.15)",
-  padding: "1.5rem",
-})
-
-const HeroCardHeader = styled(Box)({
-  display: "flex",
-  alignItems: "center",
-  gap: "0.5rem",
-  marginBottom: "1rem",
-})
-
-const Dot = styled(Box)({
-  width: 12,
-  height: 12,
-  borderRadius: "50%",
-})
-
-const WorkflowPreview = styled(Box)({
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  gap: "1rem",
-  height: "calc(100% - 2rem)",
-})
-
-const WorkflowNode = styled(Box)({
-  padding: "0.75rem 1.5rem",
-  borderRadius: 8,
-  fontSize: "0.75rem",
-  fontWeight: 700,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-})
-
-const WorkflowConnector = styled(Box)({
-  width: 32,
-  height: 2,
-  backgroundColor: "#d1d5db",
+  maxWidth: 600,
+  height: "auto",
 })
