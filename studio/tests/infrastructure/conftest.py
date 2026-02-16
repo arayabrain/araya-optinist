@@ -29,12 +29,8 @@ _PACKAGE_NAMES = [
 # Add Lambda package directories to sys.path so imports work
 _LAMBDA_PATHS = [TERRAFORM_DIR / name for name in _PACKAGE_NAMES]
 
-# aws_constants: layer subdir (local) or project root (Docker)
-_AWS_CONST_LAYER = TERRAFORM_DIR / "aws_constants_layer" / "python"
-if _AWS_CONST_LAYER.exists():
-    _LAMBDA_PATHS.append(_AWS_CONST_LAYER)
-else:
-    _LAMBDA_PATHS.append(PROJECT_ROOT)
+# aws_constants lives at infrastructure/aws_constants.py
+_LAMBDA_PATHS.append(PROJECT_ROOT / "infrastructure")
 
 for p in _LAMBDA_PATHS:
     p_str = str(p)
