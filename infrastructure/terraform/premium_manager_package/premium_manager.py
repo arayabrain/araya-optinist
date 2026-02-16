@@ -153,7 +153,7 @@ def get_db_connection(auto_commit=False):
                 f"- environment configuration error: {str(e)}"
             )
             raise
-        except Exception as e:
+        except pymysql.MySQLError as e:
             print(f" Database connection failed - connection error: {str(e)}")
             raise
         finally:
@@ -180,7 +180,7 @@ def with_transaction(func):
             except Exception as e:
                 conn.rollback()
                 print(f"Transaction rolled back due to error: {e}")
-                raise e
+                raise
 
     return wrapper
 
@@ -223,7 +223,7 @@ def _increment_assignment_attempts_transaction(connection, user_id: int) -> int:
         existing = cursor.fetchone()
 
         if existing:
-            current_attempts = existing[0] if existing[0] is not None else 1
+            current_attempts = existing.get("assignment_attempts") or 1
             new_attempts = current_attempts + 1
 
             cursor.execute(
@@ -302,7 +302,7 @@ def _store_user_assignment_transaction(
 
             if existing:
                 # User already has assignment - increment attempts counter
-                current_attempts = existing[1] if existing[1] is not None else 1
+                current_attempts = existing.get("assignment_attempts") or 1
                 new_attempts = current_attempts + 1
 
                 cursor.execute(
@@ -2012,7 +2012,10 @@ def cleanup_duplicate_rules_for_routing_id(listener_arn: str, routing_id: str) -
                             for action in rule.get("Actions", []):
                                 if action.get("Type") == "forward":
                                     tg_arn = action.get("TargetGroupArn")
-                                    if tg_arn:
+                                    autoscaling_tg = os.environ.get(
+                                        "AUTOSCALING_TARGET_GROUP_ARN"
+                                    )
+                                    if tg_arn and tg_arn != autoscaling_tg:
                                         try:
                                             elbv2.delete_target_group(
                                                 TargetGroupArn=tg_arn
@@ -2852,7 +2855,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as db_cleanup_error:
             print(f"Failed to cleanup DB assignment: {str(db_cleanup_error)}")
 
-        raise e
+        raise
 
 
 def invoke_migration_async():
@@ -4000,6 +4003,7 @@ def terminate_standby_instance(instance_id: str):
                     "WHERE instance_id = %s AND is_standby = 1",
                     (instance_id,),
                 )
+                connection.commit()
 
         print(f"Successfully terminated standby instance {instance_id}")
         return True
@@ -4041,6 +4045,7 @@ def cleanup_failed_standby_instances():
                         cleanup_count += 1
 
                 if cleanup_count > 0:
+                    connection.commit()
                     print(f"Cleaned up {cleanup_count} failed standby instance entries")
 
     except Exception as e:
@@ -4438,15 +4443,16 @@ def fix_incorrect_is_shared_flags(connection) -> Dict[str, Any]:
     with connection.cursor() as cursor:
         # Find users with is_shared=1 who are the only active user on their instance
         cursor.execute(
-            f"""
+            """
             SELECT pa.user_id, pa.instance_id
             FROM premium_user_assignments pa
             WHERE pa.is_shared = 1 AND pa.status = 'active' AND pa.is_standby = 0
-              AND pa.instance_id != '{PremiumAssignment.AUTOSCALING_POOL}'
+              AND pa.instance_id != %s
               AND (SELECT COUNT(*) FROM premium_user_assignments pa2
                    WHERE pa2.instance_id = pa.instance_id
                    AND pa2.status = 'active' AND pa2.is_standby = 0) = 1
-        """
+        """,
+            (PremiumAssignment.AUTOSCALING_POOL,),
         )
         users_to_fix = cursor.fetchall()
 
@@ -4546,6 +4552,7 @@ def update_user_activity(user_id: int) -> bool:
                     (user_id,),
                 )
 
+                connection.commit()
                 if cursor.rowcount > 0:
                     print(f" Updated activity timestamp for user {user_id}")
                     return True
