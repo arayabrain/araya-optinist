@@ -368,7 +368,8 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
         Effect = "Allow"
         Action = [
           "ecs:ListTasks",
-          "ecs:ListContainerInstances"
+          "ecs:ListContainerInstances",
+          "ecs:DeregisterContainerInstance"
         ]
         Resource = "*"
       },
