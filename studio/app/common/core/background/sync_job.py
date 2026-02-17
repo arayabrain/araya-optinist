@@ -110,11 +110,13 @@ class PublishedExperimentSyncJob:
         except Exception as e:
             logger.error(f"Startup sync error: {e}", exc_info=True)
 
-    @staticmethod
+    @classmethod
     def _get_s3_controller(
+        cls,
         bucket_name: str,
         controllers: dict[str, S3StorageController],
     ) -> S3StorageController:
+        """Cache S3 controllers per bucket to avoid duplicates."""
         if bucket_name not in controllers:
             controllers[bucket_name] = S3StorageController(bucket_name)
         return controllers[bucket_name]
@@ -142,6 +144,7 @@ class PublishedExperimentSyncJob:
 
         await asyncio.gather(
             *[dl_thumb(w, u, b) for w, u, _, b in experiments],
+            return_exceptions=True,
         )
 
     @classmethod
@@ -167,6 +170,7 @@ class PublishedExperimentSyncJob:
 
         await asyncio.gather(
             *[dl_meta(w, u, b) for w, u, _, b in experiments],
+            return_exceptions=True,
         )
 
     @classmethod
