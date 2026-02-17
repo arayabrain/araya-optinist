@@ -10,6 +10,25 @@ echo ECS_ENABLE_CONTAINER_METADATA=true >> /etc/ecs/ecs.config
 echo ECS_ENABLE_TASK_IAM_ROLE=true >> /etc/ecs/ecs.config
 echo ECS_INSTANCE_ATTRIBUTES='{"tier":"${tier}"}' >> /etc/ecs/ecs.config
 
+# Systemd service to clear stale ECS agent checkpoint on every boot.
+cat > /etc/systemd/system/ecs-clear-checkpoint.service << 'UNIT_EOF'
+[Unit]
+Description=Clear stale ECS agent checkpoint before startup
+Before=ecs.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/bin/rm -f /var/lib/ecs/data/agent.db
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+
+systemctl daemon-reload
+systemctl enable ecs-clear-checkpoint.service
+
 # Install packages
 yum update -y
 yum install -y amazon-ssm-agent mysql amazon-efs-utils nc mysql-client git docker amazon-cloudwatch-agent awscli

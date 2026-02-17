@@ -38,32 +38,23 @@ export const userSlice = createSlice({
   initialState,
   reducers: {
     logout: (state) => {
-      // Set logout flag to prevent token refresh during logout
-      // Note: Flag is NOT reset here - must call setLoggingOut(false)
-      // after navigation completes
+      // setLoggingOut(false) is intentionally NOT called here —
+      // the caller (useLogout) must call it after navigation
+      // to prevent stale API calls from attempting refresh
       setLoggingOut(true)
 
-      // Remove tokens synchronously first - this is the critical step
       removeToken()
       removeRefreshToken()
       removeExToken()
 
-      // Clear dismissed alerts so they can appear again for the next user
       localStorage.removeItem("dismissedAlerts")
       localStorage.removeItem("storageAlertDismissed")
-      // Clear session storage to prevent stale state on browser back
       sessionStorage.removeItem("storage-refreshed-on-login")
-      // Clear premium routing information
       routingService.clearRoutingInfo()
 
-      // NOTE: setLoggingOut(false) is intentionally NOT called here
-      // The caller (Profile.tsx) must call it after navigation completes
-      // to prevent stale API calls from attempting refresh
-
-      // Increment logoutGeneration to help components detect stale closures
       return {
         ...initialState,
-        logoutGeneration: state.logoutGeneration + 1,
+        logoutGeneration: state.logoutGeneration + 1, // detect stale closures
       }
     },
     resetUserSearch: (state) => {
