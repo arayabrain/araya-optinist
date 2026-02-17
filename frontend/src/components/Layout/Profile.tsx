@@ -1,5 +1,5 @@
-import { FC, useState, MouseEvent, useEffect, useCallback } from "react"
-import { useDispatch, useSelector } from "react-redux"
+import { FC, useState, MouseEvent, useEffect } from "react"
+import { useSelector } from "react-redux"
 import { useNavigate } from "react-router-dom"
 
 import AccountCircleIcon from "@mui/icons-material/AccountCircle"
@@ -21,10 +21,8 @@ import {
 import IconButton from "@mui/material/IconButton"
 
 import Loading from "components/common/Loading"
-import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
+import { useLogout } from "hooks/useLogout"
 import { selectPipelineIsStartedSuccess } from "store/slice/Pipeline/PipelineSelectors"
-import { logout } from "store/slice/User/UserSlice"
-import { setLoggingOut } from "utils/axios"
 import { tabSync } from "utils/crossTabSync"
 
 const Profile: FC = () => {
@@ -32,9 +30,15 @@ const Profile: FC = () => {
   const [showJobWarning, setShowJobWarning] = useState(false)
   const [isSigningOut, setIsSigningOut] = useState(false)
   const navigate = useNavigate()
-  const dispatch = useDispatch()
-  const { autoReleaseOnLogout, isPremiumUser } = usePremiumAssignment()
   const hasRunningJob = useSelector(selectPipelineIsStartedSuccess)
+  const { performLogout } = useLogout()
+
+  useEffect(() => {
+    const unsubscribe = tabSync.on("LOGOUT", () => {
+      performLogout(false)
+    })
+    return unsubscribe
+  }, [performLogout])
 
   const handleMenu = (event: MouseEvent<HTMLElement>) => {
     setAnchorEl(event.currentTarget)
@@ -43,37 +47,6 @@ const Profile: FC = () => {
   const handleCloseMenu = () => {
     setAnchorEl(null)
   }
-
-  const performLogout = useCallback(
-    async (broadcast: boolean = true) => {
-      // Only release premium from the originating tab;
-      // cross-tab receivers (broadcast=false) skip it.
-      if (isPremiumUser && broadcast) {
-        try {
-          await autoReleaseOnLogout()
-        } catch (error) {
-          // eslint-disable-next-line no-console
-          console.warn("Failed to release premium instance on logout:", error)
-        }
-      }
-
-      if (broadcast) {
-        tabSync.broadcastLogout()
-      }
-
-      dispatch(logout())
-      navigate("/login")
-      setLoggingOut(false)
-    },
-    [isPremiumUser, autoReleaseOnLogout, dispatch, navigate],
-  )
-
-  useEffect(() => {
-    const unsubscribe = tabSync.on("LOGOUT", () => {
-      performLogout(false)
-    })
-    return unsubscribe
-  }, [performLogout])
 
   const onClickLogout = async () => {
     setAnchorEl(null)

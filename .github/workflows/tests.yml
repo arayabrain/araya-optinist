@@ -24,6 +24,11 @@ jobs:
         run: |
           make test_run
 
+      - name: Run Lambda unit tests
+        shell: bash
+        run: |
+          make test_lambda
+
       - name: Run API contract tests
         shell: bash
         run: |

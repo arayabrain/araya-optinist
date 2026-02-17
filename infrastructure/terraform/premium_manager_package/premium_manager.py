@@ -153,7 +153,7 @@ def get_db_connection(auto_commit=False):
                 f"- environment configuration error: {str(e)}"
             )
             raise
-        except Exception as e:
+        except pymysql.MySQLError as e:
             print(f" Database connection failed - connection error: {str(e)}")
             raise
         finally:
@@ -180,7 +180,7 @@ def with_transaction(func):
             except Exception as e:
                 conn.rollback()
                 print(f"Transaction rolled back due to error: {e}")
-                raise e
+                raise
 
     return wrapper
 
@@ -223,7 +223,7 @@ def _increment_assignment_attempts_transaction(connection, user_id: int) -> int:
         existing = cursor.fetchone()
 
         if existing:
-            current_attempts = existing[0] if existing[0] is not None else 1
+            current_attempts = existing.get("assignment_attempts") or 1
             new_attempts = current_attempts + 1
 
             cursor.execute(
@@ -302,7 +302,7 @@ def _store_user_assignment_transaction(
 
             if existing:
                 # User already has assignment - increment attempts counter
-                current_attempts = existing[1] if existing[1] is not None else 1
+                current_attempts = existing.get("assignment_attempts") or 1
                 new_attempts = current_attempts + 1
 
                 cursor.execute(
@@ -1446,6 +1446,62 @@ def create_and_stop_standby_instance():
         return None
 
 
+ECS_CHECKPOINT_PATH = "/var/lib/ecs/data/agent.db"
+SSM_POLL_INTERVAL_SECONDS = 5
+SSM_POLL_MAX_WAIT_SECONDS = 30
+
+
+def clear_ecs_agent_checkpoint(instance_id: str) -> bool:
+    """Clear stale ECS agent checkpoint via SSM to allow re-registration.
+
+    Non-fatal: returns False on failure so the caller can proceed
+    (the readiness check will catch unregistered instances).
+    """
+    ssm = boto3.client("ssm")
+    command = f"rm -f {ECS_CHECKPOINT_PATH} && systemctl restart ecs"
+    try:
+        resp = ssm.send_command(
+            InstanceIds=[instance_id],
+            DocumentName="AWS-RunShellScript",
+            Parameters={"commands": [command]},
+            TimeoutSeconds=SSM_POLL_MAX_WAIT_SECONDS,
+        )
+        command_id = resp["Command"]["CommandId"]
+        print(
+            f"Sent SSM checkpoint cleanup to {instance_id}" f" (command={command_id})"
+        )
+
+        elapsed = 0
+        while elapsed < SSM_POLL_MAX_WAIT_SECONDS:
+            time.sleep(SSM_POLL_INTERVAL_SECONDS)
+            elapsed += SSM_POLL_INTERVAL_SECONDS
+            try:
+                result = ssm.get_command_invocation(
+                    CommandId=command_id,
+                    InstanceId=instance_id,
+                )
+            except ssm.exceptions.InvocationDoesNotExist:
+                continue
+
+            status = result["Status"]
+            if status == "Success":
+                print(f"ECS checkpoint cleared on {instance_id}")
+                return True
+            if status in ("Failed", "TimedOut", "Cancelled"):
+                print(
+                    f"SSM command {status} on {instance_id}: "
+                    f"{result.get('StandardErrorContent', '')}"
+                )
+                return False
+
+        print(f"SSM command timed out waiting for {instance_id}")
+        return False
+
+    except ClientError as e:
+        print(f"SSM checkpoint cleanup failed for " f"{instance_id}: {e}")
+        return False
+
+
 def start_standby_instance(instance_id: str):
     """Start a stopped standby instance and prepare for user assignment"""
     ec2: "EC2Client" = boto3.client("ec2")
@@ -1460,8 +1516,11 @@ def start_standby_instance(instance_id: str):
         waiter = ec2.get_waiter("instance_running")
         waiter.wait(
             InstanceIds=[instance_id],
-            WaiterConfig={"Delay": 5, "MaxAttempts": 24},  # 2 minutes max
+            WaiterConfig={"Delay": 5, "MaxAttempts": 24},
         )
+
+        # Clear stale ECS agent checkpoint so it re-registers
+        clear_ecs_agent_checkpoint(instance_id)
 
         # Update state in database (only for non-standby assignments)
         with get_db_connection() as connection:
@@ -2012,7 +2071,10 @@ def cleanup_duplicate_rules_for_routing_id(listener_arn: str, routing_id: str) -
                             for action in rule.get("Actions", []):
                                 if action.get("Type") == "forward":
                                     tg_arn = action.get("TargetGroupArn")
-                                    if tg_arn:
+                                    autoscaling_tg = os.environ.get(
+                                        "AUTOSCALING_TARGET_GROUP_ARN"
+                                    )
+                                    if tg_arn and tg_arn != autoscaling_tg:
                                         try:
                                             elbv2.delete_target_group(
                                                 TargetGroupArn=tg_arn
@@ -2852,7 +2914,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as db_cleanup_error:
             print(f"Failed to cleanup DB assignment: {str(db_cleanup_error)}")
 
-        raise e
+        raise
 
 
 def invoke_migration_async():
@@ -3000,6 +3062,22 @@ def scale_premium_instances_if_needed():
                     f" {instance_ids_to_start}"
                 )
                 ec2.start_instances(InstanceIds=instance_ids_to_start)
+
+                # Wait for instances to be running, then clear
+                # stale ECS agent checkpoints so they re-register
+                waiter = ec2.get_waiter("instance_running")
+                try:
+                    waiter.wait(
+                        InstanceIds=instance_ids_to_start,
+                        WaiterConfig={
+                            "Delay": 5,
+                            "MaxAttempts": 24,
+                        },
+                    )
+                    for iid in instance_ids_to_start:
+                        clear_ecs_agent_checkpoint(iid)
+                except Exception as e:
+                    print(f"Waiter/checkpoint cleanup error: {e}")
 
                 # Invoke this Lambda asynchronously to handle migration
                 # after instances are ready (avoids blocking the user's request)
@@ -4000,6 +4078,7 @@ def terminate_standby_instance(instance_id: str):
                     "WHERE instance_id = %s AND is_standby = 1",
                     (instance_id,),
                 )
+                connection.commit()
 
         print(f"Successfully terminated standby instance {instance_id}")
         return True
@@ -4041,6 +4120,7 @@ def cleanup_failed_standby_instances():
                         cleanup_count += 1
 
                 if cleanup_count > 0:
+                    connection.commit()
                     print(f"Cleaned up {cleanup_count} failed standby instance entries")
 
     except Exception as e:
@@ -4438,15 +4518,16 @@ def fix_incorrect_is_shared_flags(connection) -> Dict[str, Any]:
     with connection.cursor() as cursor:
         # Find users with is_shared=1 who are the only active user on their instance
         cursor.execute(
-            f"""
+            """
             SELECT pa.user_id, pa.instance_id
             FROM premium_user_assignments pa
             WHERE pa.is_shared = 1 AND pa.status = 'active' AND pa.is_standby = 0
-              AND pa.instance_id != '{PremiumAssignment.AUTOSCALING_POOL}'
+              AND pa.instance_id != %s
               AND (SELECT COUNT(*) FROM premium_user_assignments pa2
                    WHERE pa2.instance_id = pa.instance_id
                    AND pa2.status = 'active' AND pa2.is_standby = 0) = 1
-        """
+        """,
+            (PremiumAssignment.AUTOSCALING_POOL,),
         )
         users_to_fix = cursor.fetchall()
 
@@ -4546,6 +4627,7 @@ def update_user_activity(user_id: int) -> bool:
                     (user_id,),
                 )
 
+                connection.commit()
                 if cursor.rowcount > 0:
                     print(f" Updated activity timestamp for user {user_id}")
                     return True
