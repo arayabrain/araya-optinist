@@ -5,7 +5,7 @@
  * Warns that their instance will be released after another hour of inactivity.
  */
 
-import React, { useEffect, useState } from "react"
+import React, { useEffect, useRef, useState } from "react"
 
 import { AxiosError } from "axios"
 
@@ -13,11 +13,12 @@ import { Alert, Button, Snackbar } from "@mui/material"
 
 import { PremiumTiming } from "const/Subscription"
 import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
-import { logout } from "utils/auth/AuthUtils"
+import { useLogout } from "hooks/useLogout"
 
 const InactivityWarning: React.FC = () => {
   const { showInactivityWarning, dismissInactivityWarning, recordActivity } =
     usePremiumAssignment()
+  const { performLogout } = useLogout()
   const [countdown, setCountdown] = useState<number>(
     PremiumTiming.INACTIVITY_WARNING_DURATION_MINUTES,
   )
@@ -42,6 +43,16 @@ const InactivityWarning: React.FC = () => {
     return () => clearInterval(countdownInterval)
   }, [showInactivityWarning])
 
+  const logoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (logoutTimeoutRef.current) {
+        clearTimeout(logoutTimeoutRef.current)
+      }
+    }
+  }, [])
+
   const [sessionExpired, setSessionExpired] = useState(false)
 
   const handleStayActive = async () => {
@@ -52,10 +63,11 @@ const InactivityWarning: React.FC = () => {
       // Check if session has expired (401 error)
       if (error instanceof AxiosError && error.response?.status === 401) {
         setSessionExpired(true)
-        // Give user time to see the message, then logout
-        setTimeout(() => {
-          logout()
-        }, 2000)
+        if (!logoutTimeoutRef.current) {
+          logoutTimeoutRef.current = setTimeout(() => {
+            performLogout()
+          }, 2000)
+        }
       } else {
         // eslint-disable-next-line no-console
         console.warn("Failed to record activity:", error)
