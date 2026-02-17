@@ -14,13 +14,10 @@ export const useLogout = () => {
 
   const performLogout = useCallback(
     async (broadcast = true) => {
-      // Fire-and-forget: don't block logout on Lambda release.
-      // Only the originating tab releases; cross-tab receivers skip it.
+      // Release via sendBeacon (uses HMAC token, not auth header)
+      // so it's safe to call before dispatch(logout) clears creds.
       if (isPremiumUser && broadcast) {
-        autoReleaseOnLogout().catch((error) => {
-          // eslint-disable-next-line no-console
-          console.warn("Failed to release premium instance:", error)
-        })
+        autoReleaseOnLogout()
       }
 
       if (broadcast) {
