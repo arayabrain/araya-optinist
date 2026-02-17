@@ -725,6 +725,14 @@ class TestClearFreeUserLoggedOutAt:
 class TestHeartbeatFailureTracking:
     """Heartbeat failure tracking for grace period"""
 
+    def setup_method(self):
+        """Clear logged out state to avoid leaking from other tests"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _logged_out_users,
+        )
+
+        _logged_out_users.clear()
+
     def test_increment_heartbeat_failures(self):
         """increment_heartbeat_failures should increment counter"""
         from studio.app.common.core.middleware.user_activity_middleware import (

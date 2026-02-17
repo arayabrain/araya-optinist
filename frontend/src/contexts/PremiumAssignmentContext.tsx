@@ -285,6 +285,7 @@ export const PremiumAssignmentProvider: React.FC<{
         }))
 
         if (result.assigned) {
+          routingService.setPremiumAssigned(true)
           try {
             const tokenRes = await getBeaconTokenApi()
             beaconTokenRef.current = tokenRes.data.token
@@ -336,6 +337,7 @@ export const PremiumAssignmentProvider: React.FC<{
         statusResult: null,
       }))
 
+      routingService.setPremiumAssigned(false)
       // Notify other tabs about premium release
       tabSync.broadcastPremiumReleased()
 
@@ -410,6 +412,7 @@ export const PremiumAssignmentProvider: React.FC<{
           assignmentResult,
           error: null,
         }))
+        routingService.setPremiumAssigned(true)
         try {
           const tokenRes = await getBeaconTokenApi()
           beaconTokenRef.current = tokenRes.data.token
@@ -428,6 +431,7 @@ export const PremiumAssignmentProvider: React.FC<{
           assignmentResult: assignmentResponse,
           error: null,
         }))
+        routingService.setPremiumAssigned(true)
         try {
           const tokenRes = await getBeaconTokenApi()
           beaconTokenRef.current = tokenRes.data.token
