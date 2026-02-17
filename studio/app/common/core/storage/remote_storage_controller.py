@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import time
 from abc import ABCMeta, abstractmethod
 from datetime import timedelta
 from enum import Enum
@@ -254,6 +255,9 @@ class RemoteSyncLockFileUtil:
     REMOTE_SYNC_LOCK_FILE = "remote_sync.lock"
     LOCK_FILE_EXPIRE_MINUTES = 60  # Fixed at 60 minutes
 
+    LOCK_WAIT_MAX_SECONDS = 300
+    LOCK_WAIT_POLL_INTERVAL = 2
+
     @classmethod
     def __make_sync_lock_file_path(cls, workspace_id: str, unique_id: str) -> str:
         """
@@ -338,6 +342,30 @@ class RemoteSyncLockFileUtil:
 
         if os.path.isfile(remote_sync_lock_file_path):
             os.remove(remote_sync_lock_file_path)
+
+    @classmethod
+    def wait_for_lock_release(cls, workspace_id: str, unique_id: str) -> bool:
+        """Wait for post_process upload lock to release."""
+        if not cls.check_sync_lock_file(workspace_id, unique_id):
+            return True
+
+        experiment = f"{workspace_id}/{unique_id}"
+        logger.info(f"Waiting for remote storage lock on [{experiment}]")
+        start = time.monotonic()
+
+        while time.monotonic() - start < cls.LOCK_WAIT_MAX_SECONDS:
+            time.sleep(cls.LOCK_WAIT_POLL_INTERVAL)
+            if not cls.check_sync_lock_file(workspace_id, unique_id):
+                elapsed = time.monotonic() - start
+                logger.info(f"Lock released on [{experiment}] " f"after {elapsed:.1f}s")
+                return True
+
+        elapsed = time.monotonic() - start
+        logger.warning(
+            f"Lock wait timeout on [{experiment}] "
+            f"after {elapsed:.1f}s, proceeding anyway"
+        )
+        return False
 
 
 class BaseRemoteStorageController(metaclass=ABCMeta):
