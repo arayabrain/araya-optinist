@@ -20,6 +20,7 @@ import {
 } from "@mui/material"
 import IconButton from "@mui/material/IconButton"
 
+import Loading from "components/common/Loading"
 import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 import { selectPipelineIsStartedSuccess } from "store/slice/Pipeline/PipelineSelectors"
 import { logout } from "store/slice/User/UserSlice"
@@ -29,6 +30,7 @@ import { tabSync } from "utils/crossTabSync"
 const Profile: FC = () => {
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null)
   const [showJobWarning, setShowJobWarning] = useState(false)
+  const [isSigningOut, setIsSigningOut] = useState(false)
   const navigate = useNavigate()
   const dispatch = useDispatch()
   const { autoReleaseOnLogout, isPremiumUser } = usePremiumAssignment()
@@ -44,7 +46,9 @@ const Profile: FC = () => {
 
   const performLogout = useCallback(
     async (broadcast: boolean = true) => {
-      if (isPremiumUser) {
+      // Only release premium from the originating tab;
+      // cross-tab receivers (broadcast=false) skip it.
+      if (isPremiumUser && broadcast) {
         try {
           await autoReleaseOnLogout()
         } catch (error) {
@@ -79,6 +83,7 @@ const Profile: FC = () => {
       return
     }
 
+    setIsSigningOut(true)
     await performLogout()
   }
 
@@ -88,6 +93,7 @@ const Profile: FC = () => {
 
   const handleProceedLogout = async () => {
     setShowJobWarning(false)
+    setIsSigningOut(true)
     await performLogout()
   }
 
@@ -149,11 +155,16 @@ const Profile: FC = () => {
           <Button variant="outlined" onClick={handleCloseJobWarning}>
             Cancel
           </Button>
-          <Button variant="contained" onClick={handleProceedLogout}>
+          <Button
+            variant="contained"
+            onClick={handleProceedLogout}
+            disabled={isSigningOut}
+          >
             Sign Out Anyway
           </Button>
         </DialogActions>
       </Dialog>
+      <Loading loading={isSigningOut} />
     </>
   )
 }
