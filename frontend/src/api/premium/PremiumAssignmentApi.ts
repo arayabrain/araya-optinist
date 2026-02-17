@@ -100,3 +100,6 @@ export const sendPremiumHeartbeat =
     const response = await axios.post("/users/me/premium/heartbeat")
     return response.data
   }
+
+export const getBeaconTokenApi = () =>
+  axios.get<{ token: string }>("/users/me/premium/beacon-token")
