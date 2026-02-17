@@ -98,83 +98,80 @@ class PublishedExperimentSyncJob:
         logger.info("Starting one-time startup sync")
 
         try:
-            all_experiments = cls._get_all_published_experiments()
-            if not all_experiments:
-                logger.info("No published experiments to sync")
-                return
-
-            from studio.app.common.core.utils.filepath_creater import join_filepath
-
-            missing = []
-            for ws_id, uid, exp_id, bucket in all_experiments:
-                local_path = join_filepath([DIRPATH.OUTPUT_DIR, ws_id, uid])
-                exp_yaml = os.path.join(local_path, DIRPATH.EXPERIMENT_YML)
-                wf_yaml = os.path.join(local_path, DIRPATH.WORKFLOW_YML)
-                if not os.path.exists(exp_yaml) or not os.path.exists(wf_yaml):
-                    missing.append((ws_id, uid, exp_id, bucket))
-
+            missing = cls._get_missing_experiments()
             if not missing:
-                logger.info("All published experiments already present locally")
                 return
-
-            logger.info(
-                f"Startup sync: {len(missing)}/{len(all_experiments)}"
-                f" experiments missing locally"
-            )
 
             s3_controllers: dict[str, S3StorageController] = {}
+            await cls._sync_startup_thumbnails(missing, s3_controllers)
+            await cls._sync_startup_metadata(missing, s3_controllers)
 
-            def get_s3(bucket_name: str) -> S3StorageController:
-                if bucket_name not in s3_controllers:
-                    s3_controllers[bucket_name] = S3StorageController(bucket_name)
-                return s3_controllers[bucket_name]
-
-            # Phase 1: thumbnails (high concurrency)
-            thumb_sem = asyncio.Semaphore(cls.THUMBNAIL_CONCURRENCY)
-
-            async def dl_thumb(ws_id, uid, bucket):
-                async with thumb_sem:
-                    try:
-                        s3 = get_s3(bucket)
-                        await s3.download_experiment(
-                            ws_id,
-                            uid,
-                            sync_mode="thumbnails_only",
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"Startup thumb sync failed " f"{ws_id}/{uid}: {e}"
-                        )
-
-            await asyncio.gather(
-                *[dl_thumb(w, u, b) for w, u, _, b in missing],
-            )
-
-            # Phase 2: essential metadata (lower concurrency)
-            meta_sem = asyncio.Semaphore(cls.METADATA_CONCURRENCY)
-
-            async def dl_meta(ws_id, uid, bucket):
-                async with meta_sem:
-                    try:
-                        s3 = get_s3(bucket)
-                        await s3.download_experiment(
-                            ws_id,
-                            uid,
-                            sync_mode="essential_only",
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"Startup meta sync failed " f"{ws_id}/{uid}: {e}"
-                        )
-
-            await asyncio.gather(
-                *[dl_meta(w, u, b) for w, u, _, b in missing],
-            )
-
-            logger.info(f"Startup sync completed for {len(missing)} experiments")
-
+            logger.info(f"Startup sync completed for {len(missing)}" f" experiments")
         except Exception as e:
             logger.error(f"Startup sync error: {e}", exc_info=True)
+
+    @classmethod
+    def _get_s3_controller(
+        cls,
+        bucket_name: str,
+        controllers: dict[str, S3StorageController],
+    ) -> S3StorageController:
+        """Cache S3 controllers per bucket to avoid duplicates."""
+        if bucket_name not in controllers:
+            controllers[bucket_name] = S3StorageController(bucket_name)
+        return controllers[bucket_name]
+
+    @classmethod
+    async def _sync_startup_thumbnails(
+        cls,
+        experiments: List[Tuple[str, str, int, str]],
+        s3_controllers: dict[str, S3StorageController],
+    ):
+        """Phase 1: Download thumbnails (high concurrency)."""
+        sem = asyncio.Semaphore(cls.THUMBNAIL_CONCURRENCY)
+
+        async def dl_thumb(ws_id, uid, bucket):
+            async with sem:
+                try:
+                    s3 = cls._get_s3_controller(bucket, s3_controllers)
+                    await s3.download_experiment(
+                        ws_id,
+                        uid,
+                        sync_mode="thumbnails_only",
+                    )
+                except Exception as e:
+                    logger.warning(f"Startup thumb sync failed " f"{ws_id}/{uid}: {e}")
+
+        await asyncio.gather(
+            *[dl_thumb(w, u, b) for w, u, _, b in experiments],
+            return_exceptions=True,
+        )
+
+    @classmethod
+    async def _sync_startup_metadata(
+        cls,
+        experiments: List[Tuple[str, str, int, str]],
+        s3_controllers: dict[str, S3StorageController],
+    ):
+        """Phase 2: Download essential metadata (lower concurrency)."""
+        sem = asyncio.Semaphore(cls.METADATA_CONCURRENCY)
+
+        async def dl_meta(ws_id, uid, bucket):
+            async with sem:
+                try:
+                    s3 = cls._get_s3_controller(bucket, s3_controllers)
+                    await s3.download_experiment(
+                        ws_id,
+                        uid,
+                        sync_mode="essential_only",
+                    )
+                except Exception as e:
+                    logger.warning(f"Startup meta sync failed " f"{ws_id}/{uid}: {e}")
+
+        await asyncio.gather(
+            *[dl_meta(w, u, b) for w, u, _, b in experiments],
+            return_exceptions=True,
+        )
 
     @classmethod
     async def _sync_thumbnails(cls):
@@ -195,13 +192,7 @@ class PublishedExperimentSyncJob:
 
         logger.info(f"Phase 1: Syncing thumbnails for {len(pending)} experiments")
 
-        # Cache S3 controllers per bucket to avoid creating duplicates
         s3_controllers: dict[str, S3StorageController] = {}
-
-        def get_s3_controller(bucket_name: str) -> S3StorageController:
-            if bucket_name not in s3_controllers:
-                s3_controllers[bucket_name] = S3StorageController(bucket_name)
-            return s3_controllers[bucket_name]
 
         # Sync thumbnails with higher concurrency (they're small files)
         semaphore = asyncio.Semaphore(cls.THUMBNAIL_CONCURRENCY)
@@ -211,7 +202,7 @@ class PublishedExperimentSyncJob:
         ):
             async with semaphore:
                 try:
-                    s3_controller = get_s3_controller(bucket_name)
+                    s3_controller = cls._get_s3_controller(bucket_name, s3_controllers)
                     # Only download thumbnails
                     await s3_controller.download_experiment(
                         workspace_id, unique_id, sync_mode="thumbnails_only"
@@ -247,13 +238,7 @@ class PublishedExperimentSyncJob:
 
             logger.info(f"Found {len(pending_experiments)} experiments to sync")
 
-            # Cache S3 controllers per bucket to avoid creating duplicates
             s3_controllers: dict[str, S3StorageController] = {}
-
-            def get_s3_controller(bucket_name: str) -> S3StorageController:
-                if bucket_name not in s3_controllers:
-                    s3_controllers[bucket_name] = S3StorageController(bucket_name)
-                return s3_controllers[bucket_name]
 
             # Sync experiments in parallel with limited concurrency
             semaphore = asyncio.Semaphore(cls.METADATA_CONCURRENCY)
@@ -262,7 +247,9 @@ class PublishedExperimentSyncJob:
                 """Wrapper to limit concurrent downloads"""
                 async with semaphore:
                     try:
-                        s3_controller = get_s3_controller(bucket_name)
+                        s3_controller = cls._get_s3_controller(
+                            bucket_name, s3_controllers
+                        )
                         success = await cls._sync_experiment(
                             s3_controller, workspace_id, unique_id, exp_id
                         )
@@ -376,6 +363,41 @@ class PublishedExperimentSyncJob:
                 experiments.append((workspace_id, unique_id, exp_id, bucket_name))
 
             return experiments
+
+    @classmethod
+    def _get_missing_experiments(
+        cls,
+    ) -> List[Tuple[str, str, int, str]]:
+        """
+        Return published experiments missing locally.
+
+        Queries all published experiments and filters to those
+        lacking required YAML files on the local filesystem.
+        """
+        from studio.app.common.core.utils.filepath_creater import join_filepath
+
+        all_experiments = cls._get_all_published_experiments()
+        if not all_experiments:
+            logger.info("No published experiments to sync")
+            return []
+
+        missing = []
+        for ws_id, uid, exp_id, bucket in all_experiments:
+            local_path = join_filepath([DIRPATH.OUTPUT_DIR, ws_id, uid])
+            exp_yaml = os.path.join(local_path, DIRPATH.EXPERIMENT_YML)
+            wf_yaml = os.path.join(local_path, DIRPATH.WORKFLOW_YML)
+            if not os.path.exists(exp_yaml) or not os.path.exists(wf_yaml):
+                missing.append((ws_id, uid, exp_id, bucket))
+
+        if not missing:
+            logger.info("All published experiments already present locally")
+            return []
+
+        logger.info(
+            f"Startup sync: {len(missing)}/{len(all_experiments)}"
+            f" experiments missing locally"
+        )
+        return missing
 
     @classmethod
     def _get_all_published_experiments(

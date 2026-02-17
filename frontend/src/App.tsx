@@ -67,7 +67,10 @@ const App: FC = () => {
       >
         <BrowserRouter>
           <Routes>
+            {/* Landing page - outside Layout */}
             <Route path="/landing" element={<LandingPage />} />
+
+            {/* All other routes wrapped in Layout */}
             <Route
               path="*"
               element={
@@ -79,6 +82,7 @@ const App: FC = () => {
                     </Routes>
                   ) : (
                     <Routes>
+                      {/* Public routes */}
                       <Route
                         path="/"
                         element={<Navigate replace to="/public" />}
@@ -94,20 +98,25 @@ const App: FC = () => {
                         path="/reset-password"
                         element={<ResetPassword />}
                       />
+
+                      {/* Authenticated routes */}
                       <Route path="/dashboard" element={<Dashboard />} />
                       <Route path="/account" element={<Account />} />
                       <Route
                         path="/account-manager"
                         element={<AccountManager />}
                       />
+
                       <Route path="/dataview">
                         <Route path="" element={<Dataview />} />
                         <Route path=":workspaceId" element={<Dataview />} />
                       </Route>
+
                       <Route path="/workspaces">
                         <Route path="" element={<Workspaces />} />
                         <Route path=":workspaceId" element={<Workspace />} />
                       </Route>
+
                       <Route path="/subscription/thanks" element={<Thanks />} />
                       <Route path="/subscription/failed" element={<Failed />} />
                       <Route
@@ -118,6 +127,8 @@ const App: FC = () => {
                         path="/subscription/manage"
                         element={<InvoicesPage />}
                       />
+
+                      {/* Catch-all */}
                       <Route path="*" element={<Navigate replace to="/" />} />
                     </Routes>
                   )}
