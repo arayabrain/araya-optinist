@@ -18,14 +18,14 @@ const PublicHeader: FC = () => {
     <HeaderContainer>
       {isPublicPage ? (
         <HeaderContent>
-          <HeaderLogo src="/static/optinist_logo.png" alt="OptiNiSt" />
-          <HeaderTitle>OptiNiSt</HeaderTitle>
+          <HeaderLogo src="/static/optinist_logo.png" alt="Araya OptiNiSt" />
+          <HeaderTitle>Araya OptiNiSt</HeaderTitle>
         </HeaderContent>
       ) : (
         <HeaderLogoLink to="/public">
           <HeaderContent>
-            <HeaderLogo src="/static/optinist_logo.png" alt="OptiNiSt" />
-            <HeaderTitle>OptiNiSt</HeaderTitle>
+            <HeaderLogo src="/static/optinist_logo.png" alt="Araya OptiNiSt" />
+            <HeaderTitle>Araya OptiNiSt</HeaderTitle>
           </HeaderContent>
         </HeaderLogoLink>
       )}
