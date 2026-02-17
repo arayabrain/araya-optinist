@@ -49,7 +49,7 @@ export const Header = () => {
             Public Repository
           </MobileNavLink>
           <MobileNavLink
-            href="https://optinist.readthedocs.io/en/latest/index.html"
+            href="https://araya-optinist.readthedocs.io/en/latest/"
             target="_blank"
             rel="noopener noreferrer"
           >
