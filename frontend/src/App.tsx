@@ -16,6 +16,7 @@ import AccountManager from "pages/AccountManager"
 import Dashboard from "pages/Dashboard"
 import Dataview from "pages/Dataview"
 import InvoicesPage from "pages/Invoice"
+import LandingPage from "pages/LandingPage"
 import Login from "pages/Login"
 import PublicDataview from "pages/PublicDataview"
 import RegistrationForm from "pages/Register/MainRegistration"
@@ -62,47 +63,73 @@ const App: FC = () => {
       style={{ maxWidth: "600px" }}
     >
       <BrowserRouter>
-        <Layout>
-          {isStandalone ? (
-            <Routes>
-              <Route path="/" element={<Workspace />} />
-              <Route path="*" element={<Navigate replace to="/" />} />
-            </Routes>
-          ) : (
-            <Routes>
-              {/* Public routes */}
-              <Route path="/" element={<Navigate replace to="/public" />} />
-              <Route path="/public" element={<PublicDataview />} />
-              <Route path="/account-deleted" element={<AccountDelete />} />
-              <Route path="/login" element={<Login />} />
-              <Route path="/register" element={<RegistrationForm />} />
-              <Route path="/reset-password" element={<ResetPassword />} />
+        <Routes>
+          {/* Landing page - outside Layout */}
+          <Route path="/landing" element={<LandingPage />} />
 
-              {/* Authenticated routes */}
-              <Route path="/dashboard" element={<Dashboard />} />
-              <Route path="/account" element={<Account />} />
-              <Route path="/account-manager" element={<AccountManager />} />
+          {/* All other routes wrapped in Layout */}
+          <Route
+            path="*"
+            element={
+              <Layout>
+                {isStandalone ? (
+                  <Routes>
+                    <Route path="/" element={<Workspace />} />
+                    <Route path="*" element={<Navigate replace to="/" />} />
+                  </Routes>
+                ) : (
+                  <Routes>
+                    {/* Public routes */}
+                    <Route
+                      path="/"
+                      element={<Navigate replace to="/public" />}
+                    />
+                    <Route path="/public" element={<PublicDataview />} />
+                    <Route
+                      path="/account-deleted"
+                      element={<AccountDelete />}
+                    />
+                    <Route path="/login" element={<Login />} />
+                    <Route path="/register" element={<RegistrationForm />} />
+                    <Route path="/reset-password" element={<ResetPassword />} />
 
-              <Route path="/dataview">
-                <Route path="" element={<Dataview />} />
-                <Route path=":workspaceId" element={<Dataview />} />
-              </Route>
+                    {/* Authenticated routes */}
+                    <Route path="/dashboard" element={<Dashboard />} />
+                    <Route path="/account" element={<Account />} />
+                    <Route
+                      path="/account-manager"
+                      element={<AccountManager />}
+                    />
 
-              <Route path="/workspaces">
-                <Route path="" element={<Workspaces />} />
-                <Route path=":workspaceId" element={<Workspace />} />
-              </Route>
+                    <Route path="/dataview">
+                      <Route path="" element={<Dataview />} />
+                      <Route path=":workspaceId" element={<Dataview />} />
+                    </Route>
 
-              <Route path="/subscription/thanks" element={<Thanks />} />
-              <Route path="/subscription/failed" element={<Failed />} />
-              <Route path="/subscription" element={<SubscriptionPage />} />
-              <Route path="/subscription/manage" element={<InvoicesPage />} />
+                    <Route path="/workspaces">
+                      <Route path="" element={<Workspaces />} />
+                      <Route path=":workspaceId" element={<Workspace />} />
+                    </Route>
 
-              {/* Catch-all */}
-              <Route path="*" element={<Navigate replace to="/" />} />
-            </Routes>
-          )}
-        </Layout>
+                    <Route path="/subscription/thanks" element={<Thanks />} />
+                    <Route path="/subscription/failed" element={<Failed />} />
+                    <Route
+                      path="/subscription"
+                      element={<SubscriptionPage />}
+                    />
+                    <Route
+                      path="/subscription/manage"
+                      element={<InvoicesPage />}
+                    />
+
+                    {/* Catch-all */}
+                    <Route path="*" element={<Navigate replace to="/" />} />
+                  </Routes>
+                )}
+              </Layout>
+            }
+          />
+        </Routes>
       </BrowserRouter>
     </SnackbarProvider>
   )
