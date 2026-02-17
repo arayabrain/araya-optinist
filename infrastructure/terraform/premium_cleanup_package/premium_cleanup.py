@@ -137,15 +137,44 @@ def get_assigned_users_for_instance(instance_id: str) -> List[str]:
         return []
 
 
+def _get_ecs_container_instance_arn(
+    ec2_instance_id: str, cluster_name: str
+) -> str | None:
+    """Map EC2 instance ID to ECS container instance ARN."""
+    ecs: "ECSClient" = boto3.client("ecs")
+    try:
+        response = ecs.list_container_instances(cluster=cluster_name)
+        arns = response.get("containerInstanceArns", [])
+        if not arns:
+            return None
+
+        desc = ecs.describe_container_instances(
+            cluster=cluster_name, containerInstances=arns
+        )
+        for ci in desc.get("containerInstances", []):
+            if ci.get("ec2InstanceId") == ec2_instance_id:
+                return ci.get("containerInstanceArn")
+        return None
+    except Exception as e:
+        print(f"Error mapping EC2 to ECS container instance: " f"{str(e)}")
+        return None
+
+
 def check_instance_readiness(instance_id: str) -> bool:
     """Check if an instance has a running ECS task and is ready for user assignment"""
     ecs: "ECSClient" = boto3.client("ecs")
     cluster_name = get_required_env_var("CLUSTER_NAME")
 
     try:
-        # Get ECS tasks running on this instance
+        # Map EC2 instance ID to ECS container instance ARN
+        container_arn = _get_ecs_container_instance_arn(instance_id, cluster_name)
+        if not container_arn:
+            print(f"No ECS container instance found for " f"EC2 instance {instance_id}")
+            return False
+
         tasks_response = ecs.list_tasks(
-            cluster=cluster_name, containerInstance=instance_id
+            cluster=cluster_name,
+            containerInstance=container_arn,
         )
 
         if not tasks_response["taskArns"]:

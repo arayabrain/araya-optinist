@@ -391,9 +391,6 @@ export const PremiumAssignmentProvider: React.FC<{
           instance_id: statusResponse.assignment.instance_id,
           assigned: true,
           is_shared: statusResponse.assignment.is_shared,
-          assignment_source: statusResponse.assignment.is_shared
-            ? "shared"
-            : "dedicated",
         }
         setState((prev) => ({
           ...prev,
@@ -562,8 +559,7 @@ export const PremiumAssignmentProvider: React.FC<{
       isPremiumUser &&
       isTabLeader &&
       state.assignmentResult?.assigned &&
-      state.assignmentResult?.is_shared &&
-      state.assignmentResult?.assignment_source === "autoscaling_temp"
+      state.assignmentResult?.is_shared
 
     if (!shouldPoll) {
       return
@@ -631,7 +627,6 @@ export const PremiumAssignmentProvider: React.FC<{
     isTabLeader,
     state.assignmentResult?.assigned,
     state.assignmentResult?.is_shared,
-    state.assignmentResult?.assignment_source,
     pollInterval,
     pollAttempts,
   ])

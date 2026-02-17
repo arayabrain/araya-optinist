@@ -251,10 +251,10 @@ class TestGetPendingStorageOperations:
 class TestProcessStalePendingOperations:
     """Tests for process_stale_pending_operations function (Case 69)."""
 
-    @patch("studio.app.common.core.cloud.storage_operations.increment_user_storage")
     @patch("studio.app.common.core.cloud.storage_operations.session_scope")
-    def test_retries_stale_increment_operations(self, mock_session, mock_increment):
-        """Should retry stale pending increment operations."""
+    def test_marks_stale_increment_as_failed(self, mock_session):
+        """Stale pending ops are marked FAILED for reconciliation
+        instead of retried, to avoid double-counting."""
         from datetime import datetime, timedelta, timezone
 
         from studio.app.common.core.cloud.storage_operations import (
@@ -262,7 +262,6 @@ class TestProcessStalePendingOperations:
             process_stale_pending_operations,
         )
 
-        # Create mock stale operation
         mock_op = MagicMock()
         mock_op.idempotency_key = "test_key"
         mock_op.operation_type = "increment"
@@ -276,20 +275,18 @@ class TestProcessStalePendingOperations:
         mock_db = MagicMock()
         mock_session.return_value.__enter__.return_value = mock_db
         mock_db.execute.return_value.all.return_value = [(mock_op,)]
-        mock_increment.return_value = True
 
         result = process_stale_pending_operations()
 
         assert result["processed"] == 1
-        assert result["succeeded"] == 1
-        assert result["failed"] == 0
-        mock_increment.assert_called_once_with(1, 1000)
-        assert mock_op.status == "completed"
+        assert result["failed"] == 1
+        assert result["succeeded"] == 0
+        assert mock_op.status == "failed"
 
-    @patch("studio.app.common.core.cloud.storage_operations.decrement_user_storage")
     @patch("studio.app.common.core.cloud.storage_operations.session_scope")
-    def test_retries_stale_decrement_operations(self, mock_session, mock_decrement):
-        """Should retry stale pending decrement operations."""
+    def test_marks_stale_decrement_as_failed(self, mock_session):
+        """Stale pending decrements are also marked FAILED
+        for reconciliation."""
         from datetime import datetime, timedelta, timezone
 
         from studio.app.common.core.cloud.storage_operations import (
@@ -310,13 +307,12 @@ class TestProcessStalePendingOperations:
         mock_db = MagicMock()
         mock_session.return_value.__enter__.return_value = mock_db
         mock_db.execute.return_value.all.return_value = [(mock_op,)]
-        mock_decrement.return_value = True
 
         result = process_stale_pending_operations()
 
         assert result["processed"] == 1
-        assert result["succeeded"] == 1
-        mock_decrement.assert_called_once_with(1, 500)
+        assert result["failed"] == 1
+        assert mock_op.status == "failed"
 
     @patch("studio.app.common.core.cloud.storage_operations.increment_user_storage")
     @patch("studio.app.common.core.cloud.storage_operations.session_scope")
@@ -364,10 +360,9 @@ class TestProcessStalePendingOperations:
 
         assert result == {"processed": 0, "succeeded": 0, "failed": 0}
 
-    @patch("studio.app.common.core.cloud.storage_operations.increment_user_storage")
     @patch("studio.app.common.core.cloud.storage_operations.session_scope")
-    def test_handles_operation_failure_gracefully(self, mock_session, mock_increment):
-        """Should handle individual operation failures gracefully."""
+    def test_sets_deferred_error_message(self, mock_session):
+        """Stale ops should have reconciliation deferral message."""
         from datetime import datetime, timedelta, timezone
 
         from studio.app.common.core.cloud.storage_operations import (
@@ -388,10 +383,9 @@ class TestProcessStalePendingOperations:
         mock_db = MagicMock()
         mock_session.return_value.__enter__.return_value = mock_db
         mock_db.execute.return_value.all.return_value = [(mock_op,)]
-        mock_increment.side_effect = Exception("Operation failed")
 
         result = process_stale_pending_operations()
 
         assert result["processed"] == 1
         assert result["failed"] == 1
-        assert "Operation failed" in mock_op.error_message
+        assert "reconciliation" in mock_op.error_message
