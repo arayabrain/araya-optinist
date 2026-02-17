@@ -153,6 +153,10 @@ class RemoteSyncStatusFileUtil:
             workspace_id, unique_id
         )
 
+        os.makedirs(
+            os.path.dirname(remote_sync_status_file_path),
+            exist_ok=True,
+        )
         with open(remote_sync_status_file_path, "w") as f:
             sync_status_data = {
                 "remote_bucket_name": remote_bucket_name,
@@ -312,6 +316,10 @@ class RemoteSyncLockFileUtil:
             workspace_id, unique_id
         )
 
+        os.makedirs(
+            os.path.dirname(remote_sync_lock_file_path),
+            exist_ok=True,
+        )
         with open(remote_sync_lock_file_path, "w") as f:
             file_data = {
                 "workspace_id": workspace_id,
@@ -733,7 +741,7 @@ class RemoteStorageController(BaseRemoteStorageController):
                 workspace_id, unique_id, target_files
             )
 
-            # update sync status file
+            # update sync status file based on result
             if result:
                 RemoteSyncStatusFileUtil.create_sync_status_file_for_success(
                     **sync_status_params
@@ -766,6 +774,7 @@ class RemoteStorageController(BaseRemoteStorageController):
 
             result = await self.__controller.delete_experiment(workspace_id, unique_id)
 
+            # update sync status file based on result
             if result:
                 RemoteSyncStatusFileUtil.create_sync_status_file_for_success(
                     **sync_status_params

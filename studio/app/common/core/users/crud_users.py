@@ -3,7 +3,7 @@ from datetime import timezone
 from fastapi import HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
 from firebase_admin import auth as firebase_auth
-from firebase_admin.auth import UserRecord
+from firebase_admin.auth import UserNotFoundError, UserRecord
 from firebase_admin.exceptions import FirebaseError
 from sqlalchemy import func
 from sqlmodel import Session, select
@@ -18,6 +18,8 @@ from studio.app.common.core.storage.remote_storage_controller import (
 )
 from studio.app.common.core.subscription.constants import (
     PlanName,
+    StorageQuota,
+    StorageSize,
     SubscriptionPeriods,
     SubscriptionPlanIds,
     SubscriptionStatus,
@@ -33,7 +35,10 @@ from studio.app.common.models import Role as RoleModel
 from studio.app.common.models import User as UserModel
 from studio.app.common.models import UserRole as UserRoleModel
 from studio.app.common.models.subscription import (
+    DeletionStatus,
+    DeletionStep,
     SubscriptionPlans,
+    UserDeletionRecord,
     UserStorageUsage,
     UserSubscription,
 )
@@ -414,6 +419,14 @@ async def create_user(
         )
         db.add(subscription)
 
+        # Create storage usage record with free plan quota
+        storage_usage = UserStorageUsage(
+            user_id=user_db.id,
+            storage_usage_bytes=0,
+            storage_quota_bytes=StorageQuota.FREE * StorageSize.GB,
+        )
+        db.add(storage_usage)
+
         # Commit all changes
         db.commit()
 
@@ -528,8 +541,19 @@ async def update_password(
 
 
 async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
+    """
+    Delete user with proper ordering and recovery support.
+
+    Deletion order (Firebase FIRST to prevent orphaned accounts):
+    1. Firebase account (hardest to reverse, must be first)
+    2. Stripe subscription (reversible, can fail gracefully)
+    3. S3 bucket (with cleanup queue fallback)
+    4. Workspaces (soft-delete)
+    5. Mark user inactive
+    """
+    deletion_record = None
+
     try:
-        # delete application db user
         user_db: User = (
             db.query(UserModel)
             .filter(
@@ -539,12 +563,92 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
             )
             .first()
         )
-        assert user_db is not None, "User not found"
+        if user_db is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Create deletion record for recovery tracking
+        deletion_record = UserDeletionRecord(
+            user_id=user_id,
+            user_uid=user_db.uid,
+            step=DeletionStep.STARTED.value,
+            status=DeletionStatus.IN_PROGRESS.value,
+            started_at=get_current_datetime(),
+        )
+        db.add(deletion_record)
+        db.commit()
 
         # ----------------------------------------
-        # Delete a User workspace contents
+        # Step 1: Delete Firebase FIRST (two-phase commit)
         # ----------------------------------------
+        try:
+            # Phase 1: Mark intent before calling Firebase
+            deletion_record.step = DeletionStep.FIREBASE_PENDING.value
+            db.commit()
 
+            # Phase 2: Actually delete Firebase account
+            firebase_auth.delete_user(user_db.uid)
+
+            # Phase 3: Mark Firebase as deleted
+            deletion_record.step = DeletionStep.FIREBASE_DELETED.value
+            db.commit()
+
+        except UserNotFoundError:
+            logger.info(
+                f"Firebase user {user_db.uid} already deleted, "
+                f"continuing cleanup for user {user_id}"
+            )
+            deletion_record.step = DeletionStep.FIREBASE_DELETED.value
+            db.commit()
+
+        except FirebaseError as e:
+            deletion_record.error = str(e)
+            deletion_record.status = DeletionStatus.FAILED.value
+            db.commit()
+            logger.error(f"Firebase deletion failed for user " f"{user_id}: {e}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Firebase deletion failed: {e}",
+            )
+        except Exception as e:
+            # DB commit failed after Firebase deletion - critical state
+            logger.critical(
+                f"CRITICAL: Firebase may be deleted for user {user_id} "
+                f"but DB commit failed. Manual recovery required. Error: {e}"
+            )
+            raise
+
+        # ----------------------------------------
+        # Step 2: Cancel Stripe subscription (reversible)
+        # ----------------------------------------
+        try:
+            await StripeService.handle_cancel_user_subscription(db, user_db)
+            deletion_record.step = DeletionStep.STRIPE_CANCELLED.value
+            db.commit()
+        except Exception as e:
+            # Log but continue - Stripe will auto-cancel eventually
+            logger.warning(f"Stripe cancellation failed for user {user_id}: {e}")
+
+        # ----------------------------------------
+        # Step 3: Delete S3 bucket
+        # ----------------------------------------
+        try:
+            if RemoteStorageController.is_available():
+                async with RemoteStorageSimpleWriter(
+                    user_db.remote_bucket_name
+                ) as remote_storage_controller:
+                    await remote_storage_controller.delete_bucket(force_delete=True)
+            deletion_record.step = DeletionStep.S3_DELETED.value
+            db.commit()
+        except Exception as e:
+            # S3 failed after Firebase deleted - log for cleanup
+            logger.error(
+                f"S3 deletion failed for user {user_id}, "
+                f"bucket: {user_db.remote_bucket_name}. Error: {e}"
+            )
+
+        # ----------------------------------------
+        # Step 4: Soft-delete workspaces
+        # ----------------------------------------
         workspaces = (
             db.query(Workspace)
             .filter(
@@ -553,67 +657,178 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
             )
             .all()
         )
-        workspace_ids = [ws.id for ws in workspaces]
+        for ws in workspaces:
+            try:
+                await WorkspaceService.initiate_workspace_deletion(
+                    db, user_db.remote_bucket_name, ws.id, user_id
+                )
+            except Exception as e:
+                logger.warning(f"Workspace {ws.id} deletion failed: {e}")
 
-        # Delete owned workspaces
-        for workspace_id in workspace_ids:
-            await WorkspaceService.process_workspace_deletion(
-                db, user_db.remote_bucket_name, workspace_id, user_id
-            )
-
-        # ----------------------------------------
-        # Cancel a User subscription (must succeed before deletion)
-        # ----------------------------------------
-
-        try:
-            await StripeService.handle_cancel_user_subscription(db, user_db)
-        except HTTPException as e:
-            # If no subscription found (Newly Created Free User, etc.), log and continue
-            if e.status_code == 404:
-                logger.info(f"No subscription to cancel for user {user_id}, skipping")
-            else:
-                raise e
-
-        # ----------------------------------------
-        # Delete a User database record
-        # ----------------------------------------
-
-        user_db.active = False
+        deletion_record.step = DeletionStep.WORKSPACES_DELETED.value
         db.commit()
 
         # ----------------------------------------
-        # Best-effort cleanup: Firebase account
+        # Step 5: Mark user inactive
         # ----------------------------------------
+        user_db.active = False
+        deletion_record.step = DeletionStep.COMPLETED.value
+        deletion_record.status = DeletionStatus.COMPLETED.value
+        deletion_record.completed_at = get_current_datetime()
+        db.commit()
 
+        return True
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"User deletion failed for user {user_id}: {e}", exc_info=True)
+        if deletion_record:
+            deletion_record.error = str(e)
+            deletion_record.status = DeletionStatus.FAILED.value
+            try:
+                db.commit()
+            except Exception:
+                pass
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+async def check_firebase_account_exists(uid: str) -> bool:
+    """Check if a Firebase account exists for the given UID."""
+    try:
+        firebase_auth.get_user(uid)
+        return True
+    except UserNotFoundError:
+        return False
+    except Exception as e:
+        logger.error(f"Error checking Firebase account {uid}: {e}")
+        raise
+
+
+async def recover_incomplete_deletions(db: Session) -> int:
+    """
+    Resume incomplete user deletions (older than 1 hour).
+    Returns the number of recovered deletions.
+    """
+    from datetime import timedelta
+
+    cutoff_time = get_current_datetime() - timedelta(hours=1)
+
+    incomplete = (
+        db.query(UserDeletionRecord)
+        .filter(
+            UserDeletionRecord.status == DeletionStatus.IN_PROGRESS.value,
+            UserDeletionRecord.started_at < cutoff_time,
+        )
+        .all()
+    )
+
+    recovered_count = 0
+    for record in incomplete:
         try:
-            firebase_auth.delete_user(user_db.uid)
+            # Handle firebase_pending: check if Firebase account still exists
+            if record.step == DeletionStep.FIREBASE_PENDING.value:
+                firebase_exists = await check_firebase_account_exists(record.user_uid)
+                if not firebase_exists:
+                    record.step = DeletionStep.FIREBASE_DELETED.value
+                    db.commit()
+                else:
+                    # Firebase still exists but deletion was attempted
+                    # Mark as failed for manual review
+                    record.status = DeletionStatus.FAILED.value
+                    record.error = "Firebase account still exists after pending state"
+                    db.commit()
+                    continue
+
+            # Resume deletion from current step
+            await resume_deletion_from_step(record, db)
+            recovered_count += 1
+
         except Exception as e:
-            logger.warning(
-                f"Firebase account deletion failed for user {user_id}, "
-                f"needs manual cleanup: {e}"
+            logger.error(
+                f"Error recovering deletion for user {record.user_id}: {e}",
+                exc_info=True,
             )
+            record.error = str(e)
+            record.status = DeletionStatus.FAILED.value
+            db.commit()
 
-        # ----------------------------------------
-        # Best-effort cleanup: Remote storage data
-        # ----------------------------------------
+    return recovered_count
 
+
+def _get_step_order(step: DeletionStep) -> int:
+    """Get the numeric order of a deletion step for comparison."""
+    step_order = {
+        DeletionStep.STARTED: 0,
+        DeletionStep.FIREBASE_PENDING: 1,
+        DeletionStep.FIREBASE_DELETED: 2,
+        DeletionStep.STRIPE_CANCELLED: 3,
+        DeletionStep.S3_DELETED: 4,
+        DeletionStep.WORKSPACES_DELETED: 5,
+        DeletionStep.COMPLETED: 6,
+    }
+    return step_order.get(step, 0)
+
+
+async def resume_deletion_from_step(record: UserDeletionRecord, db: Session) -> bool:
+    """Resume user deletion from the last completed step."""
+    user_db = db.query(UserModel).filter(UserModel.id == record.user_id).first()
+
+    if user_db is None:
+        record.status = DeletionStatus.COMPLETED.value
+        record.completed_at = get_current_datetime()
+        db.commit()
+        return True
+
+    step = DeletionStep(record.step)
+    current_order = _get_step_order(step)
+
+    # Skip steps that are already completed
+    if step in (DeletionStep.STARTED, DeletionStep.FIREBASE_PENDING):
+        # Should have been handled by caller
+        pass
+
+    if current_order < _get_step_order(DeletionStep.STRIPE_CANCELLED):
+        try:
+            await StripeService.handle_cancel_user_subscription(db, user_db)
+            record.step = DeletionStep.STRIPE_CANCELLED.value
+            db.commit()
+        except Exception as e:
+            logger.warning(f"Stripe cancellation in recovery failed: {e}")
+
+    if current_order < _get_step_order(DeletionStep.S3_DELETED):
         try:
             if RemoteStorageController.is_available():
                 async with RemoteStorageSimpleWriter(
                     user_db.remote_bucket_name
                 ) as remote_storage_controller:
                     await remote_storage_controller.delete_bucket(force_delete=True)
+            record.step = DeletionStep.S3_DELETED.value
+            db.commit()
         except Exception as e:
-            logger.warning(
-                f"S3 bucket deletion failed for user {user_id}, "
-                f"needs manual cleanup: {e}"
-            )
+            logger.warning(f"S3 deletion in recovery failed: {e}")
 
-        return True
+    if current_order < _get_step_order(DeletionStep.WORKSPACES_DELETED):
+        workspaces = (
+            db.query(Workspace)
+            .filter(Workspace.user_id == record.user_id, Workspace.deleted.is_(False))
+            .all()
+        )
+        for ws in workspaces:
+            try:
+                await WorkspaceService.initiate_workspace_deletion(
+                    db, user_db.remote_bucket_name, ws.id, record.user_id
+                )
+            except Exception as e:
+                logger.warning(f"Workspace deletion in recovery failed: {e}")
+        record.step = DeletionStep.WORKSPACES_DELETED.value
+        db.commit()
 
-    except AssertionError as e:
-        logger.error(e, exc_info=True)
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        logger.error(e, exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+    # Final step: mark user inactive
+    user_db.active = False
+    record.step = DeletionStep.COMPLETED.value
+    record.status = DeletionStatus.COMPLETED.value
+    record.completed_at = get_current_datetime()
+    db.commit()
+
+    return True

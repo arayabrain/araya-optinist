@@ -186,10 +186,10 @@ async def test_contract_storage_alert_response_with_alert(
     Contract test: StorageAlertResponse with active alert matches frontend interface.
     """
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking.get_current_user_storage_usage"
     ) as mock_usage:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.get_user_storage_usage"
         ) as mock_storage_info:
             with patch(
                 "studio.app.common.routers.storage_limit_alerts._get_storage_utilities"
@@ -236,10 +236,10 @@ async def test_contract_storage_alert_response_no_alert(
     mock_storage_monitor.calculate_storage_alert_level.return_value = None
 
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking.get_current_user_storage_usage"
     ) as mock_usage:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.get_user_storage_usage"
         ) as mock_storage_info:
             with patch(
                 "studio.app.common.routers.storage_limit_alerts._get_storage_utilities"
@@ -279,10 +279,10 @@ async def test_contract_storage_usage_response(mock_current_user, mock_storage_m
     Contract test: StorageUsage response matches frontend interface.
     """
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking.get_current_user_storage_usage"
     ) as mock_usage:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.get_user_storage_usage"
         ) as mock_storage_info:
             with patch(
                 "studio.app.common.routers.storage_limit_alerts._get_storage_utilities"
@@ -325,10 +325,10 @@ async def test_contract_storage_usage_no_quota(mock_current_user, mock_storage_m
     Contract test: StorageUsage with no quota info matches frontend interface.
     """
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking.get_current_user_storage_usage"
     ) as mock_usage:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.get_user_storage_usage"
         ) as mock_storage_info:
             with patch(
                 "studio.app.common.routers.storage_limit_alerts._get_storage_utilities"
@@ -370,7 +370,7 @@ async def test_contract_refresh_storage_response(mock_current_user):
         "studio.app.common.routers.storage_limit_alerts.S3StorageMonitor"
     ) as MockMonitor:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.update_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.update_user_storage_usage"
         ) as mock_update:
             with patch(
                 "studio.app.common.routers.storage_limit_alerts"
@@ -418,10 +418,10 @@ async def test_contract_no_legacy_alert_fields(mock_current_user, mock_storage_m
     Ensure no legacy field names are used in storage alert responses.
     """
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking.get_current_user_storage_usage"
     ) as mock_usage:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.get_user_storage_usage"
         ) as mock_storage_info:
             with patch(
                 "studio.app.common.routers.storage_limit_alerts._get_storage_utilities"
@@ -457,10 +457,10 @@ async def test_contract_thresholds_field_names(mock_current_user, mock_storage_m
     Contract test: Thresholds object uses correct field names.
     """
     with patch(
-        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage"
+        "studio.app.common.core.cloud.storage_tracking.get_current_user_storage_usage"
     ) as mock_usage:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage"
+            "studio.app.common.core.cloud.storage_tracking.get_user_storage_usage"
         ) as mock_storage_info:
             with patch(
                 "studio.app.common.routers.storage_limit_alerts._get_storage_utilities"

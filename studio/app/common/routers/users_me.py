@@ -7,10 +7,11 @@ from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.cloud.cloud_utils import (
     CloudDebug,
     get_user_context_with_warnings,
-    get_user_storage_usage,
 )
+from studio.app.common.core.cloud.storage_tracking import get_user_storage_usage
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware.user_activity_middleware import (
+    increment_heartbeat_failures,
     invalidate_activity_cache,
     mark_user_logged_out,
 )
@@ -344,26 +345,36 @@ async def send_premium_heartbeat(current_user: User = Depends(get_current_user))
             current_user.id, current_user.uid
         )
 
-        return {
-            "message": "Activity updated successfully"
-            if result["success"]
-            else "No active assignment found",
-            "updated": result["success"],
-            "user_id": current_user.uid,
-            "user_tier": SubscriptionType.PREMIUM.value,
-            "assignment_active": result["success"],
-            "activity_update": result.get("timestamp"),
-        }
+        if result["success"]:
+            return {
+                "message": "Activity updated successfully",
+                "updated": True,
+                "user_id": current_user.uid,
+                "user_tier": SubscriptionType.PREMIUM.value,
+                "assignment_active": True,
+                "activity_update": result.get("timestamp"),
+            }
+        else:
+            failure_count = increment_heartbeat_failures(current_user.id)
+            return {
+                "message": "No active assignment found",
+                "updated": False,
+                "user_id": current_user.uid,
+                "user_tier": SubscriptionType.PREMIUM.value,
+                "assignment_active": False,
+                "heartbeat_failures": failure_count,
+            }
 
     except Exception as e:
-        logger.error(f"Error processing heartbeat for user {current_user.id}: {e}")
-        # Don't fail heartbeats - they should always succeed
+        logger.error(f"Error processing heartbeat for user " f"{current_user.id}: {e}")
+        failure_count = increment_heartbeat_failures(current_user.id)
         return {
             "message": f"Heartbeat processed with warnings: {str(e)}",
             "updated": False,
             "user_id": current_user.uid,
             "user_tier": SubscriptionType.PREMIUM.value,
             "assignment_active": False,
+            "heartbeat_failures": failure_count,
             "error": str(e),
         }
 

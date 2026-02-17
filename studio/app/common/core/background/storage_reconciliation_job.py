@@ -111,7 +111,7 @@ class StorageReconciliationJob:
 
                     try:
                         # Use the shared scan and reset function
-                        from studio.app.common.core.cloud.cloud_utils import (
+                        from studio.app.common.core.cloud.storage_tracking import (
                             _perform_full_scan_and_reset_delta,
                         )
 
@@ -207,7 +207,7 @@ class StorageReconciliationJob:
             True if reconciliation successful, False otherwise
         """
         try:
-            from studio.app.common.core.cloud.cloud_utils import (
+            from studio.app.common.core.cloud.storage_tracking import (
                 _calculate_live_storage_usage,
                 get_user_storage_usage,
                 update_user_storage_usage,

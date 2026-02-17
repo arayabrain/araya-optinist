@@ -304,7 +304,7 @@ async def delete_workspace(
     current_user: User = Depends(get_current_user),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
-    await WorkspaceService.process_workspace_deletion(
+    await WorkspaceService.initiate_workspace_deletion(
         db, remote_bucket_name, workspace_id, current_user.id
     )
 
@@ -527,7 +527,7 @@ async def refresh_all_workspaces_storage(
 
         # After refreshing individual workspaces, update the user's total storage usage
         try:
-            from studio.app.common.core.cloud.cloud_utils import (
+            from studio.app.common.core.cloud.storage_tracking import (
                 get_current_user_storage_usage,
             )
 

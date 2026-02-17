@@ -17,7 +17,7 @@ async def test_reconciliation_job_batch_processing():
     """Test that reconciliation job processes users in batches."""
     with patch("studio.app.common.db.database.session_scope") as mock_session:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils."
+            "studio.app.common.core.cloud.storage_tracking."
             "_perform_full_scan_and_reset_delta",
             new_callable=AsyncMock,
         ) as mock_scan:
@@ -93,7 +93,7 @@ async def test_reconciliation_detects_drift():
 
     with patch("studio.app.common.db.database.session_scope") as mock_session:
         with patch(
-            "studio.app.common.core.cloud.cloud_utils."
+            "studio.app.common.core.cloud.storage_tracking."
             "_perform_full_scan_and_reset_delta",
             new_callable=AsyncMock,
         ) as mock_scan:
