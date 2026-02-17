@@ -1,10 +1,12 @@
 export interface PaymentMethodDTO {
   id: string
-  last4: string
-  brand: string
-  exp_month: number
-  exp_year: number
+  type: "card" | "link"
+  last4?: string
+  brand?: string
+  exp_month?: number
+  exp_year?: number
   is_default: boolean
+  email?: string
 }
 
 export interface InvoiceDTO {
