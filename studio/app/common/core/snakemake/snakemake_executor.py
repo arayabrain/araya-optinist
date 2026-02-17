@@ -184,6 +184,10 @@ def _snakemake_execute_process(
     if not snakemake_result and RemoteStorageController.is_available():
         RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
 
+    # Wait for post_process upload to release the lock
+    if snakemake_result and RemoteStorageController.is_available():
+        RemoteSyncLockFileUtil.wait_for_lock_release(workspace_id, unique_id)
+
     try:
         # Update workflow processing results
         try:
