@@ -1081,14 +1081,17 @@ class TestStartStandbyInstance:
     """TC-23..24: start_standby_instance tests."""
 
     def test_success(self, mock_env_vars_premium):
-        """TC-23: EC2 start + waiter + DB update."""
+        """TC-23: EC2 start + waiter + checkpoint clear + DB update."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql, patch(
+            "premium_manager.clear_ecs_agent_checkpoint"
+        ) as mock_clear:
             mock_ec2 = MagicMock()
             mock_boto3.return_value = mock_ec2
             mock_waiter = MagicMock()
             mock_ec2.get_waiter.return_value = mock_waiter
+            mock_clear.return_value = True
 
             mock_connection = setup_db_mock()
             mock_pymysql.return_value = mock_connection
@@ -1100,6 +1103,7 @@ class TestStartStandbyInstance:
             assert result is True
             mock_ec2.start_instances.assert_called_once_with(InstanceIds=["i-standby1"])
             mock_waiter.wait.assert_called_once()
+            mock_clear.assert_called_once_with("i-standby1")
             mock_connection.commit.assert_called()
 
     def test_waiter_fails(self, mock_env_vars_premium):
@@ -1121,4 +1125,87 @@ class TestStartStandbyInstance:
             from premium_manager import start_standby_instance
 
             result = start_standby_instance("i-standby2")
+            assert result is False
+
+
+class TestClearEcsAgentCheckpoint:
+    """Tests for clear_ecs_agent_checkpoint SSM helper."""
+
+    def test_success(self, mock_env_vars_premium):
+        """SSM command succeeds on first poll."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch("premium_manager.time.sleep"):
+            mock_ssm = MagicMock()
+            mock_boto3.return_value = mock_ssm
+            mock_ssm.send_command.return_value = {"Command": {"CommandId": "cmd-123"}}
+            mock_ssm.get_command_invocation.return_value = {
+                "Status": "Success",
+            }
+
+            from premium_manager import clear_ecs_agent_checkpoint
+
+            result = clear_ecs_agent_checkpoint("i-test1")
+
+            assert result is True
+            mock_ssm.send_command.assert_called_once()
+            mock_ssm.get_command_invocation.assert_called_once_with(
+                CommandId="cmd-123", InstanceId="i-test1"
+            )
+
+    def test_command_fails(self, mock_env_vars_premium):
+        """SSM command returns Failed status."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch("premium_manager.time.sleep"):
+            mock_ssm = MagicMock()
+            mock_boto3.return_value = mock_ssm
+            mock_ssm.send_command.return_value = {"Command": {"CommandId": "cmd-456"}}
+            mock_ssm.get_command_invocation.return_value = {
+                "Status": "Failed",
+                "StandardErrorContent": "permission denied",
+            }
+
+            from premium_manager import clear_ecs_agent_checkpoint
+
+            result = clear_ecs_agent_checkpoint("i-test2")
+
+            assert result is False
+
+    def test_send_command_client_error(self, mock_env_vars_premium):
+        """SSM send_command raises ClientError."""
+        from botocore.exceptions import ClientError
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ssm = MagicMock()
+            mock_boto3.return_value = mock_ssm
+            mock_ssm.send_command.side_effect = ClientError(
+                {"Error": {"Code": "InvalidInstanceId"}},
+                "SendCommand",
+            )
+
+            from premium_manager import clear_ecs_agent_checkpoint
+
+            result = clear_ecs_agent_checkpoint("i-test3")
+
+            assert result is False
+
+    def test_timeout(self, mock_env_vars_premium):
+        """SSM polling exhausts max wait time."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch("premium_manager.time.sleep"):
+            mock_ssm = MagicMock()
+            mock_boto3.return_value = mock_ssm
+            mock_ssm.send_command.return_value = {"Command": {"CommandId": "cmd-789"}}
+            mock_ssm.get_command_invocation.return_value = {
+                "Status": "InProgress",
+            }
+
+            from premium_manager import clear_ecs_agent_checkpoint
+
+            result = clear_ecs_agent_checkpoint("i-test4")
+
             assert result is False
