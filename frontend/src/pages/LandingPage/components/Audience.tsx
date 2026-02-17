@@ -1,11 +1,22 @@
 import { Box, styled, Typography } from "@mui/material"
 
+import {
+  FONT_SIZE,
+  FONT_WEIGHT,
+  LINE_HEIGHT,
+  TEXT_COLOR,
+  ACCENT_COLOR,
+  BG_COLOR,
+  BORDER_COLOR,
+  ICON_BOX,
+} from "pages/LandingPage/constants"
+
 interface AudienceCard {
   icon: string
   title: string
   description: string
   features: string[]
-  color: "primary" | "cyan" | "green"
+  color: "PRIMARY" | "CYAN" | "GREEN"
 }
 
 const audiences: AudienceCard[] = [
@@ -13,51 +24,57 @@ const audiences: AudienceCard[] = [
     icon: "psychology",
     title: "Neuroscience Labs",
     description:
-      "Analyze calcium imaging, electrophysiology, and behavioral data with specialized tools.",
+      "Analyze calcium imaging, electrophysiology, and behavioral " +
+      "data with specialized tools.",
     features: [
       "Calcium imaging pipelines",
       "ROI extraction & analysis",
       "NWB (Neurodata Without Borders) export",
     ],
-    color: "primary",
+    color: "PRIMARY",
   },
   {
     icon: "biotech",
     title: "Microscopy Researchers",
     description:
-      "Build image processing pipelines for various microscopes without coding.",
+      "Build image processing pipelines for various microscopes " +
+      "without coding.",
     features: [
       "Multi-format image support",
       "Batch processing",
       "LCCD cell detection algorithm",
     ],
-    color: "cyan",
+    color: "CYAN",
   },
   {
     icon: "school",
     title: "Educators & Students",
     description:
-      "Teach data analysis concepts using our sample data and tools. No coding required for you or your students.",
+      "Teach data analysis concepts using our sample data and " +
+      "tools. No coding required for you or your students.",
     features: [
       "Visual learning interface",
       "Shareable workspaces",
       "Focus on science, not syntax",
     ],
-    color: "green",
+    color: "GREEN",
   },
 ]
-
-const audienceColors = {
-  primary: { bg: "rgba(19, 91, 236, 0.1)", color: "#2563eb" },
-  cyan: { bg: "rgba(13, 148, 136, 0.1)", color: "#0d9488" },
-  green: { bg: "rgba(5, 150, 105, 0.1)", color: "#059669" },
-}
 
 export const Audience = () => {
   return (
     <AudienceSection id="audience">
       <Container>
         <SectionHeaderCenter>
+          <SectionLabel>
+            <span
+              className="material-symbols-outlined"
+              style={{ fontSize: FONT_SIZE.CARD_TITLE }}
+            >
+              groups
+            </span>
+            Audience
+          </SectionLabel>
           <SectionTitle>Who It&apos;s For</SectionTitle>
           <SectionSubtitle>
             Empowering researchers and educators worldwide.
@@ -66,24 +83,28 @@ export const Audience = () => {
         <AudienceGrid>
           {audiences.map((audience, index) => (
             <AudienceCardWrapper key={index}>
-              <AudienceIcon
-                style={{
-                  backgroundColor: audienceColors[audience.color].bg,
-                  color: audienceColors[audience.color].color,
-                }}
-              >
-                <span className="material-symbols-outlined">
-                  {audience.icon}
-                </span>
-              </AudienceIcon>
-              <AudienceTitle>{audience.title}</AudienceTitle>
+              <AudienceHeader>
+                <AudienceIcon
+                  style={{
+                    backgroundColor: ACCENT_COLOR[audience.color].bg,
+                    color: ACCENT_COLOR[audience.color].color,
+                  }}
+                >
+                  <span className="material-symbols-outlined">
+                    {audience.icon}
+                  </span>
+                </AudienceIcon>
+                <AudienceTitle>{audience.title}</AudienceTitle>
+              </AudienceHeader>
               <AudienceDescription>{audience.description}</AudienceDescription>
               <AudienceFeatures>
                 {audience.features.map((feature, featureIndex) => (
                   <AudienceFeature key={featureIndex}>
                     <span
                       className="material-symbols-outlined"
-                      style={{ color: audienceColors[audience.color].color }}
+                      style={{
+                        color: ACCENT_COLOR[audience.color].color,
+                      }}
                     >
                       check_circle
                     </span>
@@ -100,7 +121,7 @@ export const Audience = () => {
 }
 
 const AudienceSection = styled("section")({
-  backgroundColor: "#f9fafb",
+  backgroundColor: BG_COLOR.PAGE,
   padding: "5rem 0",
 })
 
@@ -111,28 +132,37 @@ const Container = styled(Box)({
 })
 
 const SectionHeaderCenter = styled(Box)({
+  display: "flex",
+  flexDirection: "column",
   textAlign: "center",
   marginBottom: "4rem",
 })
 
-const Label = styled(Typography)({
-  color: "#2563eb",
-  fontWeight: 700,
-  letterSpacing: "0.1em",
-  fontSize: "0.75rem",
-  textTransform: "uppercase",
+const SectionLabel = styled(Box)({
+  display: "inline-flex",
+  alignSelf: "flex-start",
+  alignItems: "center",
+  gap: "0.5rem",
+  backgroundColor: ACCENT_COLOR.PRIMARY.bg,
+  color: TEXT_COLOR.ACCENT,
+  fontWeight: FONT_WEIGHT.BOLD,
+  fontSize: FONT_SIZE.SMALL,
+  padding: "0.5rem 1rem",
+  borderRadius: 9999,
+  width: "fit-content",
 })
 
 const SectionTitle = styled(Typography)({
-  fontSize: "1.875rem",
-  fontWeight: 700,
+  fontSize: FONT_SIZE.SECTION_TITLE,
+  fontWeight: FONT_WEIGHT.BOLD,
   margin: "1rem 0 1rem",
   textAlign: "center",
 })
 
 const SectionSubtitle = styled(Typography)({
   textAlign: "center",
-  color: "#6b7280",
+  color: TEXT_COLOR.SECONDARY,
+  fontSize: FONT_SIZE.SECTION_SUBTITLE,
   margin: 0,
   maxWidth: 600,
   marginLeft: "auto",
@@ -152,39 +182,31 @@ const AudienceCardWrapper = styled(Box)({
   display: "flex",
   flexDirection: "column",
   gap: "1.5rem",
-  backgroundColor: "white",
+  backgroundColor: BG_COLOR.WHITE,
   padding: "2.5rem",
   borderRadius: 16,
-  border: "1px solid #e5e7eb",
-  transition: "box-shadow 0.3s",
-  "&:hover": {
-    boxShadow: "0 20px 40px -12px rgba(0, 0, 0, 0.1)",
-  },
+  border: `1px solid ${BORDER_COLOR.DEFAULT}`,
 })
 
-const AudienceIcon = styled(Box)({
-  width: 56,
-  height: 56,
-  borderRadius: "50%",
+const AudienceHeader = styled(Box)({
   display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  "& .material-symbols-outlined": {
-    fontSize: "1.875rem",
-  },
+  alignItems: "flex-start",
+  gap: "0.75rem",
 })
+
+const AudienceIcon = styled(Box)({ ...ICON_BOX })
 
 const AudienceTitle = styled(Typography)({
-  fontSize: "1.5rem",
-  fontWeight: 700,
+  fontSize: FONT_SIZE.CARD_TITLE,
+  fontWeight: FONT_WEIGHT.BOLD,
   margin: 0,
 })
 
 const AudienceDescription = styled(Typography)({
-  fontSize: "0.875rem",
-  color: "#6b7280",
+  fontSize: FONT_SIZE.BODY,
+  color: TEXT_COLOR.SECONDARY,
   margin: 0,
-  lineHeight: 1.6,
+  lineHeight: LINE_HEIGHT.NORMAL,
 })
 
 const AudienceFeatures = styled("ul")({
@@ -200,8 +222,8 @@ const AudienceFeature = styled("li")({
   display: "flex",
   alignItems: "center",
   gap: "0.75rem",
-  fontSize: "0.875rem",
+  fontSize: FONT_SIZE.SMALL,
   "& .material-symbols-outlined": {
-    fontSize: "1.125rem",
+    fontSize: FONT_SIZE.BODY,
   },
 })
