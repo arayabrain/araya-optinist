@@ -1,4 +1,6 @@
-import { Box, styled, Typography } from "@mui/material"
+import { useNavigate } from "react-router-dom"
+
+import { Box, Button, styled, Typography } from "@mui/material"
 
 interface Benefit {
   icon: string
@@ -28,6 +30,8 @@ const benefits: Benefit[] = [
 ]
 
 export const PublicRepository = () => {
+  const navigate = useNavigate()
+
   return (
     <PublicRepoSection id="public-repository">
       <Container>
@@ -74,6 +78,14 @@ export const PublicRepository = () => {
                 </PublicRepoBenefit>
               ))}
             </PublicRepoBenefits>
+            <Box sx={{ marginTop: "1.5rem" }}>
+              <GoToRepoButton
+                variant="contained"
+                onClick={() => navigate("/public")}
+              >
+                Go to Repository
+              </GoToRepoButton>
+            </Box>
           </PublicRepoContent>
           <PublicRepoVisual>
             <PublicRepoGlow />
@@ -193,6 +205,19 @@ const BenefitDescription = styled(Typography)({
   color: "rgba(255, 255, 255, 0.8)",
   margin: 0,
   lineHeight: 1.5,
+})
+
+const GoToRepoButton = styled(Button)({
+  backgroundColor: "white",
+  color: "#1e3a5f",
+  fontWeight: 700,
+  padding: "0.75rem 2rem",
+  borderRadius: 8,
+  textTransform: "none",
+  fontSize: "1rem",
+  "&:hover": {
+    backgroundColor: "rgba(255, 255, 255, 0.9)",
+  },
 })
 
 const PublicRepoVisual = styled(Box)({

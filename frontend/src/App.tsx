@@ -68,6 +68,7 @@ const App: FC = () => {
         <BrowserRouter>
           <Routes>
             {/* Landing page - outside Layout */}
+            <Route path="/" element={<LandingPage />} />
             <Route path="/landing" element={<LandingPage />} />
 
             {/* All other routes wrapped in Layout */}
@@ -83,10 +84,6 @@ const App: FC = () => {
                   ) : (
                     <Routes>
                       {/* Public routes */}
-                      <Route
-                        path="/"
-                        element={<Navigate replace to="/public" />}
-                      />
                       <Route path="/public" element={<PublicDataview />} />
                       <Route
                         path="/account-deleted"
