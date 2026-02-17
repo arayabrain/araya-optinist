@@ -282,6 +282,10 @@ export const PremiumAssignmentProvider: React.FC<{
           error: result.assigned ? null : result.message,
         }))
 
+        if (result.assigned) {
+          routingService.setPremiumAssigned(true)
+        }
+
         return result
       } catch (error: unknown) {
         const errorMessage =
@@ -323,6 +327,7 @@ export const PremiumAssignmentProvider: React.FC<{
         statusResult: null,
       }))
 
+      routingService.setPremiumAssigned(false)
       // Notify other tabs about premium release
       tabSync.broadcastPremiumReleased()
 
@@ -397,6 +402,7 @@ export const PremiumAssignmentProvider: React.FC<{
           assignmentResult,
           error: null,
         }))
+        routingService.setPremiumAssigned(true)
         return
       }
 
@@ -409,6 +415,7 @@ export const PremiumAssignmentProvider: React.FC<{
           assignmentResult: assignmentResponse,
           error: null,
         }))
+        routingService.setPremiumAssigned(true)
       }
     } catch (error) {
       // eslint-disable-next-line no-console
