@@ -115,11 +115,13 @@ class CreateCheckoutSessionResponse(BaseModel):
 
 class PaymentMethodResponse(BaseModel):
     id: str
-    last4: str
-    brand: str  # visa, mastercard, amex, etc.
-    exp_month: int
-    exp_year: int
+    type: str = "card"  # "card" or "link"
+    last4: Optional[str] = None
+    brand: Optional[str] = None  # visa, mastercard, amex, etc.
+    exp_month: Optional[int] = None
+    exp_year: Optional[int] = None
     is_default: bool
+    email: Optional[str] = None  # Email associated with Link payment method
 
     class Config:
         from_attributes = True
@@ -133,6 +135,8 @@ class PaymentMethodResponse(BaseModel):
         Return a URL or identifier for the card brand logo
         You can customize this based on where you store your card logos
         """
+        if self.type == "link":
+            return "/static/images/cards/link.png"
         brand_logos = {
             "visa": "/static/images/cards/visa.png",
             "mastercard": "/static/images/cards/mastercard.png",
@@ -142,14 +146,18 @@ class PaymentMethodResponse(BaseModel):
             "diners": "/static/images/cards/diners.png",
             "unionpay": "/static/images/cards/union.png",
         }
-        return brand_logos.get(self.brand.lower(), "/static/images/cards/default.png")
+        return brand_logos.get(
+            (self.brand or "").lower(), "/static/images/cards/default.png"
+        )
 
     @property
     def display_name(self) -> str:
         """
         Return a user-friendly display name for the payment method
         """
-        brand_name = self.brand.title()
+        if self.type == "link":
+            return f"Link ({self.email})" if self.email else "Stripe Link"
+        brand_name = (self.brand or "Unknown").title()
         return f"{brand_name} ending in {self.last4}"
 
 

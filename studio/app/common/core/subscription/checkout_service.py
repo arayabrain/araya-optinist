@@ -243,17 +243,19 @@ class CheckoutService:
 
             # Alternative approach: Get the most recent payment method for the customer
             if not payment_method_id:
-                # Get payment methods attached to this customer
-                payment_methods = stripe.PaymentMethod.list(
-                    customer=customer_id, type="card", limit=1
-                )
-
-                if payment_methods.data:
-                    payment_method_id = payment_methods.data[0].id
-                    logger.info(
-                        f"Using most recent payment method {payment_method_id} "
-                        f"for customer {customer_id}"
+                # Get payment methods attached to this customer (try card first,
+                # then link)
+                for pm_type in [PAYMENT_METHOD_TYPE_CARD, PAYMENT_METHOD_TYPE_LINK]:
+                    payment_methods = stripe.PaymentMethod.list(
+                        customer=customer_id, type=pm_type, limit=1
                     )
+                    if payment_methods.data:
+                        payment_method_id = payment_methods.data[0].id
+                        logger.info(
+                            f"Using most recent {pm_type} payment method "
+                            f"{payment_method_id} for customer {customer_id}"
+                        )
+                        break
 
             if payment_method_id:
                 try:

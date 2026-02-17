@@ -24,6 +24,8 @@ const CardBrandIcon: React.FC<CardBrandIconProps> = ({ brand, size = 32 }) => {
         return "/images/card-brands/diners.png"
       case "unionpay":
         return "/images/card-brands/union.png"
+      case "link":
+        return "/images/card-brands/link.png"
       default:
         return "/images/card-brands/default.png"
     }
@@ -47,6 +49,8 @@ const CardBrandIcon: React.FC<CardBrandIconProps> = ({ brand, size = 32 }) => {
         return "Diners Club"
       case "unionpay":
         return "UnionPay"
+      case "link":
+        return "Stripe Link"
       default:
         return "Card"
     }
