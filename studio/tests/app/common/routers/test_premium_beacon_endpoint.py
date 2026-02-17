@@ -1,9 +1,4 @@
-"""
-Tests for Premium Release Beacon Endpoint
-
-Tests the /premium/release-beacon endpoint used for reliable cleanup
-when browser closes or page refreshes.
-"""
+"""Tests for Premium Release Beacon Endpoint"""
 
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,109 +9,90 @@ from studio.app.common.routers.users_me import release_premium_beacon
 
 
 class TestReleasePremiumBeacon:
-    """Test beacon endpoint for browser close cleanup"""
+    """Test beacon endpoint with token authentication"""
 
     @pytest.mark.asyncio
-    async def test_beacon_release_success(self):
-        """Test successful beacon release with valid user_uid"""
-        mock_request = MagicMock()
-        mock_request.json = AsyncMock(return_value={"user_uid": "test-user-123"})
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.first.return_value = None
-
-        with patch(
-            "studio.app.common.routers.users_me.premium_assignment_service"
-        ) as mock_service:
-            with patch("studio.app.common.routers.users_me.invalidate_activity_cache"):
-                with patch("studio.app.common.routers.users_me.mark_user_logged_out"):
-                    mock_service.release_premium_user = AsyncMock(
-                        return_value={
-                            "success": True,
-                            "message": "Released from instance i-123456",
-                        }
-                    )
-
-                    result = await release_premium_beacon(
-                        request=mock_request, db=mock_db
-                    )
-
-                    assert result["success"] is True
-                    mock_service.release_premium_user.assert_called_once_with(
-                        user_id=0, user_uid="test-user-123"
-                    )
-
-    @pytest.mark.asyncio
-    async def test_beacon_release_missing_user_uid(self):
-        """Test beacon release with missing user_uid returns failure"""
+    async def test_beacon_missing_token(self):
         mock_request = MagicMock()
         mock_request.json = AsyncMock(return_value={})
         mock_db = MagicMock()
 
         result = await release_premium_beacon(request=mock_request, db=mock_db)
-
         assert result["success"] is False
-        assert "Missing user_uid" in result["message"]
+        assert "Missing token" in result["message"]
 
     @pytest.mark.asyncio
-    async def test_beacon_release_null_user_uid(self):
-        """Test beacon release with null user_uid returns failure"""
+    async def test_beacon_invalid_token(self):
         mock_request = MagicMock()
-        mock_request.json = AsyncMock(return_value={"user_uid": None})
+        mock_request.json = AsyncMock(return_value={"token": "forged:123:abc"})
         mock_db = MagicMock()
 
-        result = await release_premium_beacon(request=mock_request, db=mock_db)
-
+        with patch(
+            "studio.app.common.core.auth.security" ".validate_beacon_token",
+            return_value=None,
+        ):
+            result = await release_premium_beacon(request=mock_request, db=mock_db)
         assert result["success"] is False
-        assert "Missing user_uid" in result["message"]
+        assert "Invalid token" in result["message"]
 
     @pytest.mark.asyncio
-    async def test_beacon_release_service_error(self):
-        """Test beacon release handles service errors gracefully"""
+    async def test_beacon_valid_token_user_not_found(self):
         mock_request = MagicMock()
-        mock_request.json = AsyncMock(return_value={"user_uid": "test-user-123"})
+        mock_request.json = AsyncMock(return_value={"token": "valid"})
         mock_db = MagicMock()
         mock_db.query.return_value.filter.return_value.first.return_value = None
 
         with patch(
-            "studio.app.common.routers.users_me.premium_assignment_service"
-        ) as mock_service:
-            with patch("studio.app.common.routers.users_me.invalidate_activity_cache"):
-                with patch("studio.app.common.routers.users_me.mark_user_logged_out"):
-                    mock_service.release_premium_user = AsyncMock(
-                        side_effect=Exception("Lambda timeout")
-                    )
-
-                    result = await release_premium_beacon(
-                        request=mock_request, db=mock_db
-                    )
-
-                    # Should not raise, just return failure
-                    assert result["success"] is False
-                    assert "Lambda timeout" in result["message"]
+            "studio.app.common.core.auth.security" ".validate_beacon_token",
+            return_value="uid-123",
+        ):
+            result = await release_premium_beacon(request=mock_request, db=mock_db)
+        assert result["success"] is False
+        assert "User not found" in result["message"]
 
     @pytest.mark.asyncio
-    async def test_beacon_release_invalid_json(self):
-        """Test beacon release handles invalid JSON gracefully"""
+    async def test_beacon_valid_token_success(self):
         mock_request = MagicMock()
-        mock_request.json = AsyncMock(
-            side_effect=json.JSONDecodeError("Invalid", "", 0)
+        mock_request.json = AsyncMock(return_value={"token": "valid"})
+        mock_user = MagicMock()
+        mock_user.id = 42
+        mock_user.uid = "uid-123"
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter.return_value.first.return_value = mock_user
+
+        with patch(
+            "studio.app.common.core.auth.security" ".validate_beacon_token",
+            return_value="uid-123",
+        ):
+            with patch(
+                "studio.app.common.routers.users_me" ".premium_assignment_service"
+            ) as mock_svc:
+                with patch(
+                    "studio.app.common.routers.users_me" ".invalidate_activity_cache"
+                ):
+                    with patch(
+                        "studio.app.common.routers.users_me" ".mark_user_logged_out"
+                    ):
+                        mock_svc.release_premium_user = AsyncMock(
+                            return_value={
+                                "success": True,
+                                "message": "Released",
+                            }
+                        )
+                        result = await release_premium_beacon(
+                            request=mock_request,
+                            db=mock_db,
+                        )
+        assert result["success"] is True
+        mock_svc.release_premium_user.assert_called_once_with(
+            user_id=42, user_uid="uid-123"
         )
+
+    @pytest.mark.asyncio
+    async def test_beacon_invalid_json(self):
+        mock_request = MagicMock()
+        mock_request.json = AsyncMock(side_effect=json.JSONDecodeError("Bad", "", 0))
         mock_db = MagicMock()
 
         result = await release_premium_beacon(request=mock_request, db=mock_db)
-
-        # Should not raise, just return failure
         assert result["success"] is False
-
-    @pytest.mark.asyncio
-    async def test_beacon_does_not_require_auth(self):
-        """Test beacon endpoint does not require authentication"""
-        # The endpoint signature should not have Depends(get_current_user)
-        import inspect
-
-        sig = inspect.signature(release_premium_beacon)
-        params = list(sig.parameters.keys())
-
-        # Should only have 'request' parameter, not 'current_user'
-        assert "request" in params
-        assert "current_user" not in params

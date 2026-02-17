@@ -58,6 +58,7 @@ COPY infrastructure/aws_constants.py /app/
 COPY infrastructure/terraform/premium_manager_package /app/terraform/premium_manager_package
 COPY infrastructure/terraform/premium_cleanup_package /app/terraform/premium_cleanup_package
 COPY infrastructure/terraform/free_manager_package /app/terraform/free_manager_package
+COPY infrastructure/terraform/free_cleanup_package /app/terraform/free_cleanup_package
 COPY infrastructure/terraform/common_user_manager_package /app/terraform/common_user_manager_package
 COPY main.py alembic.ini ./
 

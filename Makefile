@@ -52,6 +52,12 @@ test_frontend:
 	docker compose -f docker-compose.test.yml build test_studio_frontend
 	docker compose -f docker-compose.test.yml run test_studio_frontend
 
+.PHONY: test_lambda
+test_lambda:
+	docker compose -f docker-compose.test.yml build test_studio_backend
+	docker compose -f docker-compose.test.yml run test_studio_backend \
+		$(PYTEST) studio/tests/infrastructure/ -v
+
 .PHONY: contract-test
 contract-test:
 	# API contract tests - validates backend responses match frontend TypeScript interfaces

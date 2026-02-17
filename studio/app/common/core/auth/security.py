@@ -90,3 +90,22 @@ def validate_access_token(token: str) -> Tuple[Dict[str, Any], Optional[str]]:
 
 def validate_refresh_token(token: str) -> Tuple[Dict[str, Any], Optional[str]]:
     return _validate_token(token, "refresh_token")
+
+
+BEACON_TOKEN_TTL = timedelta(hours=24)
+
+
+def create_beacon_token(user_uid: str) -> str:
+    return _create_token(
+        subject=user_uid,
+        token_type="beacon_token",
+        expires_delta=BEACON_TOKEN_TTL,
+    )
+
+
+def validate_beacon_token(token: str) -> Optional[str]:
+    """Returns user_uid if valid, None otherwise."""
+    payload, err = _validate_token(token, "beacon_token")
+    if err or not payload:
+        return None
+    return payload.get("sub")

@@ -10,6 +10,7 @@ import type { RootState } from "store/store"
  * - logoutGeneration is initialized to 0
  * - logoutGeneration increments on logout
  * - logoutGeneration is preserved through logout (other state reset)
+ * - getMe.rejected does not clear tokens (prevents forced logout on transient errors)
  */
 
 // Mock dependencies - use mock prefix for hoisting compatibility
@@ -185,6 +186,36 @@ describe("UserSlice", () => {
       expect(sessionStorageMock.removeItem).toHaveBeenCalledWith(
         "storage-refreshed-on-login",
       )
+    })
+  })
+
+  describe("getMe.rejected", () => {
+    it("should clear currentUser but not clear tokens", () => {
+      const stateWithUser: User = {
+        currentUser: {
+          id: 1,
+          uid: "test",
+          email: "test@example.com",
+        } as User["currentUser"],
+        listUserSearch: undefined,
+        listUser: undefined,
+        loading: true,
+        logoutGeneration: 0,
+      }
+
+      const getMeRejectedAction = {
+        type: "user/getMe/rejected",
+        error: { message: "Network Error" },
+      }
+
+      const state = userSlice.reducer(stateWithUser, getMeRejectedAction)
+
+      expect(state.currentUser).toBeUndefined()
+      expect(state.loading).toBe(false)
+      expect(mockRemoveToken).not.toHaveBeenCalled()
+      expect(mockRemoveRefreshToken).not.toHaveBeenCalled()
+      expect(mockRemoveExToken).not.toHaveBeenCalled()
+      expect(mockClearRoutingInfo).not.toHaveBeenCalled()
     })
   })
 })

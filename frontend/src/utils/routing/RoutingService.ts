@@ -42,15 +42,18 @@ export class RoutingService {
   private routingInfo: RoutingInfo | null = null
   private routingToken: string | null = null
   private storedTier: UserTier | null = null
+  private premiumAssigned: boolean = false
   private lastFetch: number = 0
   private readonly CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
   private readonly STORAGE_KEY = "routing_id"
   private readonly TIER_STORAGE_KEY = "routing_tier"
+  private readonly PREMIUM_ASSIGNED_KEY = "premium_assigned"
 
   constructor() {
     // Load token and tier from localStorage on initialization
     this.loadTokenFromStorage()
     this.loadTierFromStorage()
+    this.loadPremiumAssignedFromStorage()
   }
 
   /**
@@ -58,7 +61,7 @@ export class RoutingService {
    * Returns the backend-issued non-reversible routing ID and user tier
    */
   getRoutingHeaders(): Record<string, string> {
-    if (!this.routingToken) {
+    if (!this.routingToken || !this.premiumAssigned) {
       return {}
     }
 
@@ -113,9 +116,27 @@ export class RoutingService {
     this.routingInfo = null
     this.routingToken = null
     this.storedTier = null
+    this.premiumAssigned = false
     this.lastFetch = 0
     this.clearTokenFromStorage()
     this.clearTierFromStorage()
+    this.clearPremiumAssignedFromStorage()
+  }
+
+  /**
+   * Set whether premium assignment has been confirmed
+   * Controls whether routing headers are actually sent
+   */
+  setPremiumAssigned(assigned: boolean): void {
+    this.premiumAssigned = assigned
+    this.savePremiumAssignedToStorage(assigned)
+  }
+
+  /**
+   * Check if premium assignment is confirmed
+   */
+  isPremiumAssigned(): boolean {
+    return this.premiumAssigned
   }
 
   /**
@@ -242,6 +263,40 @@ export class RoutingService {
    */
   private isValidUserTier(value: string): value is UserTier {
     return value === UserTier.PREMIUM || value === UserTier.FREE
+  }
+
+  /**
+   * Load premium assigned flag from localStorage
+   */
+  private loadPremiumAssignedFromStorage(): void {
+    try {
+      const value = localStorage.getItem(this.PREMIUM_ASSIGNED_KEY)
+      this.premiumAssigned = value === "true"
+    } catch (e) {
+      console.warn("Failed to load premium assigned from localStorage:", e)
+    }
+  }
+
+  /**
+   * Save premium assigned flag to localStorage
+   */
+  private savePremiumAssignedToStorage(assigned: boolean): void {
+    try {
+      localStorage.setItem(this.PREMIUM_ASSIGNED_KEY, String(assigned))
+    } catch (e) {
+      console.warn("Failed to save premium assigned to localStorage:", e)
+    }
+  }
+
+  /**
+   * Clear premium assigned flag from localStorage
+   */
+  private clearPremiumAssignedFromStorage(): void {
+    try {
+      localStorage.removeItem(this.PREMIUM_ASSIGNED_KEY)
+    } catch (e) {
+      console.warn("Failed to clear premium assigned from localStorage:", e)
+    }
   }
 }
 

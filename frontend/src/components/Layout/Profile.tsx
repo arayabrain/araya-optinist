@@ -1,5 +1,5 @@
-import { FC, useState, MouseEvent, useEffect, useCallback } from "react"
-import { useDispatch, useSelector } from "react-redux"
+import { FC, useState, MouseEvent, useEffect } from "react"
+import { useSelector } from "react-redux"
 import { useNavigate } from "react-router-dom"
 
 import AccountCircleIcon from "@mui/icons-material/AccountCircle"
@@ -20,19 +20,25 @@ import {
 } from "@mui/material"
 import IconButton from "@mui/material/IconButton"
 
-import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
+import Loading from "components/common/Loading"
+import { useLogout } from "hooks/useLogout"
 import { selectPipelineIsStartedSuccess } from "store/slice/Pipeline/PipelineSelectors"
-import { logout } from "store/slice/User/UserSlice"
-import { setLoggingOut } from "utils/axios"
 import { tabSync } from "utils/crossTabSync"
 
 const Profile: FC = () => {
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null)
   const [showJobWarning, setShowJobWarning] = useState(false)
+  const [isSigningOut, setIsSigningOut] = useState(false)
   const navigate = useNavigate()
-  const dispatch = useDispatch()
-  const { autoReleaseOnLogout, isPremiumUser } = usePremiumAssignment()
   const hasRunningJob = useSelector(selectPipelineIsStartedSuccess)
+  const { performLogout } = useLogout()
+
+  useEffect(() => {
+    const unsubscribe = tabSync.on("LOGOUT", () => {
+      performLogout(false)
+    })
+    return unsubscribe
+  }, [performLogout])
 
   const handleMenu = (event: MouseEvent<HTMLElement>) => {
     setAnchorEl(event.currentTarget)
@@ -42,35 +48,6 @@ const Profile: FC = () => {
     setAnchorEl(null)
   }
 
-  const performLogout = useCallback(
-    async (broadcast: boolean = true) => {
-      if (isPremiumUser) {
-        try {
-          await autoReleaseOnLogout()
-        } catch (error) {
-          // eslint-disable-next-line no-console
-          console.warn("Failed to release premium instance on logout:", error)
-        }
-      }
-
-      if (broadcast) {
-        tabSync.broadcastLogout()
-      }
-
-      dispatch(logout())
-      navigate("/login")
-      setLoggingOut(false)
-    },
-    [isPremiumUser, autoReleaseOnLogout, dispatch, navigate],
-  )
-
-  useEffect(() => {
-    const unsubscribe = tabSync.on("LOGOUT", () => {
-      performLogout(false)
-    })
-    return unsubscribe
-  }, [performLogout])
-
   const onClickLogout = async () => {
     setAnchorEl(null)
 
@@ -79,6 +56,7 @@ const Profile: FC = () => {
       return
     }
 
+    setIsSigningOut(true)
     await performLogout()
   }
 
@@ -88,6 +66,7 @@ const Profile: FC = () => {
 
   const handleProceedLogout = async () => {
     setShowJobWarning(false)
+    setIsSigningOut(true)
     await performLogout()
   }
 
@@ -149,11 +128,16 @@ const Profile: FC = () => {
           <Button variant="outlined" onClick={handleCloseJobWarning}>
             Cancel
           </Button>
-          <Button variant="contained" onClick={handleProceedLogout}>
+          <Button
+            variant="contained"
+            onClick={handleProceedLogout}
+            disabled={isSigningOut}
+          >
             Sign Out Anyway
           </Button>
         </DialogActions>
       </Dialog>
+      <Loading loading={isSigningOut} />
     </>
   )
 }
