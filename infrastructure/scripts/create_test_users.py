@@ -54,29 +54,24 @@ def get_test_users():
 
 def get_database_url():
     """Get database URL from environment variables."""
-    # Try common environment variable names
+    from studio.app.common.db.config import build_mysql_url
+
     db_url = (
         os.getenv("DATABASE_URL")
         or os.getenv("DB_URL")
         or os.getenv("SQLALCHEMY_DATABASE_URL")
     )
+    if db_url:
+        return db_url
 
-    if not db_url:
-        # Construct from individual components if available
-        host = os.getenv("DB_HOST", "localhost")
-        port = os.getenv("DB_PORT", "3306")
-        user = os.getenv("DB_USER", "root")
-        password = os.getenv("DB_PASSWORD", "")
-        database = os.getenv("DB_NAME", "optinist")
-
-        db_url = f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}"
-
-    ssl_mode = os.getenv("MYSQL_SSL_MODE", "")
-    if ssl_mode:
-        sep = "&" if "?" in db_url else "?"
-        db_url += f"{sep}ssl_mode={ssl_mode}"
-
-    return db_url
+    return build_mysql_url(
+        user=os.getenv("DB_USER", "root"),
+        password=os.getenv("DB_PASSWORD", ""),
+        host=os.getenv("DB_HOST", "localhost"),
+        database=os.getenv("DB_NAME", "optinist"),
+        port=int(os.getenv("DB_PORT", "3306")),
+        ssl_mode=os.getenv("MYSQL_SSL_MODE", ""),
+    )
 
 
 async def create_test_user_in_db(db, user_data, organization_id):

@@ -1,8 +1,37 @@
 from typing import Any, Dict, Optional
 
 from pydantic import BaseSettings, Field, validator
+from sqlalchemy.engine import URL
 
 from studio.app.dir_path import DIRPATH
+
+DEFAULT_CHARSET = "utf8mb4"
+
+
+def build_mysql_url(
+    user: str,
+    password: str,
+    host: str,
+    database: str,
+    port: Optional[int] = None,
+    ssl_mode: str = "",
+    charset: str = DEFAULT_CHARSET,
+) -> str:
+    query: Dict[str, str] = {}
+    if charset:
+        query["charset"] = charset
+    if ssl_mode:
+        query["ssl_mode"] = ssl_mode
+    url = URL.create(
+        "mysql+pymysql",
+        username=user,
+        password=password,
+        host=host,
+        database=database,
+        port=port,
+        query=query,
+    )
+    return str(url)
 
 
 class DatabaseConfig(BaseSettings):
@@ -22,18 +51,13 @@ class DatabaseConfig(BaseSettings):
     def assemble_db_connection(cls, v: Optional[str], values: Dict[str, Any]) -> Any:
         if isinstance(v, str):
             return v
-        user = values.get("MYSQL_USER")
-        password = values.get("MYSQL_PASSWORD")
-        server = values.get("MYSQL_SERVER")
-        database = values.get("MYSQL_DATABASE")
-
-        url = (
-            f"mysql+pymysql://{user}:{password}" f"@{server}/{database}?charset=utf8mb4"
+        return build_mysql_url(
+            user=values.get("MYSQL_USER"),
+            password=values.get("MYSQL_PASSWORD"),
+            host=values.get("MYSQL_SERVER"),
+            database=values.get("MYSQL_DATABASE"),
+            ssl_mode=values.get("MYSQL_SSL_MODE", ""),
         )
-        ssl_mode = values.get("MYSQL_SSL_MODE")
-        if ssl_mode:
-            url += f"&ssl_mode={ssl_mode}"
-        return url
 
     class Config:
         env_file = f"{DIRPATH.CONFIG_DIR}/.env"
