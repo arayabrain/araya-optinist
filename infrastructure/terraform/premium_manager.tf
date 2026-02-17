@@ -482,6 +482,15 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
         Effect   = "Allow"
         Action   = "lambda:InvokeFunction"
         Resource = aws_lambda_function.premium_manager.arn
+      },
+      # SSM for clearing stale ECS agent checkpoints on instance start
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:SendCommand",
+          "ssm:GetCommandInvocation"
+        ]
+        Resource = "*"
       }
     ]
   })
