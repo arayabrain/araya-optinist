@@ -15,7 +15,9 @@ from snakemake.api import (
     StorageSettings,
 )
 
-from studio.app.common.core.cloud.cloud_utils import update_user_storage_after_workflow
+from studio.app.common.core.cloud.storage_tracking import (
+    update_user_storage_after_workflow,
+)
 from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
 )

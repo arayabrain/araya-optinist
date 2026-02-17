@@ -1,12 +1,31 @@
 from datetime import datetime
+from enum import Enum
 from typing import Dict, Optional
 
-from sqlalchemy import Integer
+from sqlalchemy import Enum as SQLEnum
+from sqlalchemy import Integer, Text
 from sqlalchemy.dialects.mysql import BIGINT
 from sqlmodel import JSON, Column, DateTime, Field, ForeignKey, Relationship, String
 
 from studio.app.common.models.base import Base, TimestampMixin
 from studio.app.common.schemas.dataview import LocalSyncStatus, PublishStatus
+
+
+class BackgroundTaskStatus(str, Enum):
+    """Status of background task."""
+
+    QUEUED = "queued"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    RETRYING = "retrying"
+
+
+class BackgroundTaskType(str, Enum):
+    """Type of background task."""
+
+    EXPERIMENT = "experiment"
+    WORKSPACE = "workspace"
 
 
 class ExperimentRecord(Base, TimestampMixin, table=True):
@@ -62,6 +81,94 @@ class ExperimentRecord(Base, TimestampMixin, table=True):
         default=0,
     )
 
+    # Deletion error tracking
+    # When S3 deletion succeeds but DB deletion fails, we mark the record
+    # so the UI can show an appropriate message instead of a ghost experiment
+    deletion_error: Optional[str] = Field(
+        sa_column=Column(
+            String(255),
+            nullable=True,
+            default=None,
+            comment="Error if deletion partially failed (S3 ok, DB not)",
+        ),
+        default=None,
+    )
+
     workspace: Optional["Workspace"] = Relationship(  # noqa: F821
         back_populates="experiments"
+    )
+
+
+class BackgroundTask(Base, TimestampMixin, table=True):
+    """
+    Persistent background task queue.
+    Ensures tasks complete even if user logs out.
+    Tasks are processed by a background worker independently of user session.
+    """
+
+    __tablename__ = "background_tasks"
+
+    user_id: int = Field(
+        sa_column=Column(BIGINT(unsigned=True), nullable=False, index=True),
+        description="User who initiated the deletion",
+    )
+    task_type: str = Field(
+        sa_column=Column(
+            SQLEnum(
+                "experiment",
+                "workspace",
+                name="background_task_type_enum",
+            ),
+            nullable=False,
+        ),
+        description="Type of resource being processed",
+    )
+    resource_id: str = Field(
+        sa_column=Column(String(100), nullable=False, index=True),
+        description="ID of the resource (experiment UID or workspace ID)",
+    )
+    workspace_id: Optional[int] = Field(
+        sa_column=Column(BIGINT(unsigned=True), nullable=True),
+        default=None,
+        description="Workspace ID for experiment deletions",
+    )
+    status: str = Field(
+        sa_column=Column(
+            SQLEnum(
+                "queued",
+                "in_progress",
+                "completed",
+                "failed",
+                "retrying",
+                name="background_task_status_enum",
+            ),
+            nullable=False,
+            default="queued",
+        ),
+        default=BackgroundTaskStatus.QUEUED.value,
+    )
+    retry_count: int = Field(
+        sa_column=Column(Integer(), nullable=False, default=0),
+        default=0,
+        description="Number of retry attempts",
+    )
+    max_retries: int = Field(
+        sa_column=Column(Integer(), nullable=False, default=3),
+        default=3,
+        description="Maximum retry attempts before marking as failed",
+    )
+    error_message: Optional[str] = Field(
+        sa_column=Column(Text, nullable=True),
+        default=None,
+        description="Error message if deletion failed",
+    )
+    started_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        default=None,
+        description="When processing started",
+    )
+    completed_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        default=None,
+        description="When processing completed (success or final failure)",
     )

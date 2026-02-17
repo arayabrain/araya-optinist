@@ -113,7 +113,7 @@ async def delete_test_user_from_db(db, user_email):
         if workspace_ids:
             for workspace_id in workspace_ids:
                 try:
-                    await WorkspaceService.process_workspace_deletion(
+                    await WorkspaceService.initiate_workspace_deletion(
                         db, remote_bucket_name, workspace_id, user_id
                     )
                     workspace_count += 1
@@ -125,7 +125,7 @@ async def delete_test_user_from_db(db, user_email):
         # ----------------------------------------
         # Delete remaining database records
         # ----------------------------------------
-        # Note: WorkspaceService.process_workspace_deletion above should have handled
+        # Note: WorkspaceService.initiate_workspace_deletion above should have handled
         # most workspace-related cleanup, but we clean up any remaining records here
 
         # 1. Delete any remaining experiment records (references workspaces)

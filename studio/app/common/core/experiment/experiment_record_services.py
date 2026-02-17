@@ -168,3 +168,45 @@ class ExperimentRecordService:
                     detail="Failed to update ExperimentRecord"
                     f" [{workspace_id}/{unique_id}].",
                 )
+
+    @classmethod
+    def mark_as_orphaned(
+        cls,
+        db: Session,
+        workspace_id: str,
+        unique_id: str,
+        error_message: str,
+    ):
+        """
+        Mark an experiment as orphaned when S3 data was deleted but DB deletion failed.
+
+        This is called during deletion recovery to prevent ghost
+        experiments that appear in the UI but have no underlying data.
+
+        Args:
+            db: Database session
+            workspace_id: Workspace identifier
+            unique_id: Experiment unique identifier
+            error_message: Description of what went wrong
+        """
+        try:
+            exp = (
+                db.query(ExperimentRecord)
+                .filter(
+                    ExperimentRecord.workspace_id == workspace_id,
+                    ExperimentRecord.uid == unique_id,
+                )
+                .one()
+            )
+            exp.deletion_error = error_message
+            logger.warning(
+                f"Marked experiment [{workspace_id}/{unique_id}] as orphaned: "
+                f"{error_message}"
+            )
+
+        except NoResultFound:
+            # Experiment record doesn't exist, nothing to mark
+            logger.warning(
+                f"Cannot mark experiment as orphaned - record not found: "
+                f"[{workspace_id}/{unique_id}]"
+            )
