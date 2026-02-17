@@ -352,15 +352,12 @@ class TestActivityCacheInvalidation:
             invalidate_activity_cache,
         )
 
-        # Set up cache entry
         _free_activity_cache.clear()
         _update_cache_after_commit(TEST_USER_ID, TIER_FREE)
         assert TEST_USER_ID in _free_activity_cache
 
-        # Invalidate
         invalidate_activity_cache(TEST_USER_ID)
 
-        # Should be cleared
         assert TEST_USER_ID not in _free_activity_cache
 
     def test_invalidate_activity_cache_clears_premium_cache(self):
@@ -371,15 +368,12 @@ class TestActivityCacheInvalidation:
             invalidate_activity_cache,
         )
 
-        # Set up cache entry
         _premium_activity_cache.clear()
         _update_cache_after_commit(TEST_USER_ID, TIER_PREMIUM)
         assert TEST_USER_ID in _premium_activity_cache
 
-        # Invalidate
         invalidate_activity_cache(TEST_USER_ID)
 
-        # Should be cleared
         assert TEST_USER_ID not in _premium_activity_cache
 
     def test_invalidate_activity_cache_clears_both_caches(self):
@@ -391,7 +385,6 @@ class TestActivityCacheInvalidation:
             invalidate_activity_cache,
         )
 
-        # Set up cache entries in both caches
         _free_activity_cache.clear()
         _premium_activity_cache.clear()
         _update_cache_after_commit(TEST_USER_ID, TIER_FREE)
@@ -399,10 +392,8 @@ class TestActivityCacheInvalidation:
         assert TEST_USER_ID in _free_activity_cache
         assert TEST_USER_ID in _premium_activity_cache
 
-        # Invalidate
         invalidate_activity_cache(TEST_USER_ID)
 
-        # Both should be cleared
         assert TEST_USER_ID not in _free_activity_cache
         assert TEST_USER_ID not in _premium_activity_cache
 
@@ -414,11 +405,9 @@ class TestActivityCacheInvalidation:
             invalidate_activity_cache,
         )
 
-        # Clear caches
         _free_activity_cache.clear()
         _premium_activity_cache.clear()
 
-        # Should not raise
         invalidate_activity_cache(999999)
 
     def test_rapid_relogin_gets_fresh_activity(self):
@@ -430,22 +419,18 @@ class TestActivityCacheInvalidation:
             invalidate_activity_cache,
         )
 
-        # Simulate login and activity
         _free_activity_cache.clear()
         _update_cache_after_commit(TEST_USER_ID, TIER_FREE)
 
-        # Should be cached (would skip update)
         assert _should_update_activity(TEST_USER_ID, TIER_FREE) is False
 
-        # Simulate logout - invalidate cache
         invalidate_activity_cache(TEST_USER_ID)
 
-        # Simulate re-login - should now record activity
         assert _should_update_activity(TEST_USER_ID, TIER_FREE) is True
 
 
 class TestLoggedOutUserTracking:
-    """Test Case 11: Background activity updates for logged out users"""
+    """Test background activity updates for logged out users"""
 
     def setup_method(self):
         """Clear logged out users tracking before each test"""
@@ -466,7 +451,7 @@ class TestLoggedOutUserTracking:
         assert TEST_USER_ID in _logged_out_users
 
     def test_is_user_logged_out_returns_true_for_recent_logout(self):
-        """is_user_logged_out returns True for recently logged out user"""
+        """is_user_logged_out should return True for recently logged out user"""
         from studio.app.common.core.middleware.user_activity_middleware import (
             is_user_logged_out,
             mark_user_logged_out,
@@ -475,8 +460,8 @@ class TestLoggedOutUserTracking:
         mark_user_logged_out(TEST_USER_ID)
         assert is_user_logged_out(TEST_USER_ID) is True
 
-    def test_is_user_logged_out_returns_false_for_non_logged_out(self):
-        """is_user_logged_out returns False for user not logged out"""
+    def test_is_user_logged_out_returns_false_for_non_logged_out_user(self):
+        """is_user_logged_out should return False for user not logged out"""
         from studio.app.common.core.middleware.user_activity_middleware import (
             is_user_logged_out,
         )
@@ -492,14 +477,10 @@ class TestLoggedOutUserTracking:
             is_user_logged_out,
         )
 
-        # Set old logout timestamp
         with _logged_out_lock:
             _logged_out_users[TEST_USER_ID] = time.time() - _LOGGED_OUT_TTL_SECONDS - 1
 
-        # Should return False (expired)
         assert is_user_logged_out(TEST_USER_ID) is False
-
-        # Entry should also be cleaned up
         assert TEST_USER_ID not in _logged_out_users
 
     def test_clear_logged_out_status_removes_tracking(self):
@@ -516,91 +497,80 @@ class TestLoggedOutUserTracking:
         clear_logged_out_status(TEST_USER_ID)
         assert TEST_USER_ID not in _logged_out_users
 
-    def test_clear_logged_out_status_no_raise_for_nonexistent(self):
+    def test_clear_logged_out_status_does_not_raise_for_nonexistent_user(self):
         """clear_logged_out_status should not raise for non-existent user"""
         from studio.app.common.core.middleware.user_activity_middleware import (
             clear_logged_out_status,
         )
 
-        # Should not raise
         clear_logged_out_status(999999)
 
     @pytest.mark.asyncio
-    async def test_free_activity_update_skipped_for_logged_out(self):
-        """Background activity update skipped for logged out user"""
+    async def test_free_activity_update_skipped_for_logged_out_user(self):
+        """Background activity update should be skipped for logged out user"""
         from studio.app.common.core.middleware.user_activity_middleware import (
             _update_free_user_activity_async,
             mark_user_logged_out,
         )
 
-        # Mark user as logged out
         mark_user_logged_out(TEST_USER_ID)
 
-        # Mock the sync function to ensure it's not called
         with patch(
             "studio.app.common.core.middleware.user_activity_middleware."
             "_update_free_user_activity_sync"
         ) as mock_sync:
             await _update_free_user_activity_async(TEST_USER_ID)
 
-            # Should not be called because user is logged out
             mock_sync.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_premium_activity_skipped_for_logged_out(self):
-        """Background premium activity skipped for logged out user"""
+    async def test_premium_activity_update_skipped_for_logged_out_user(self):
+        """Background premium activity update should be skipped"""
         from studio.app.common.core.middleware.user_activity_middleware import (
             _update_premium_user_activity_async,
             mark_user_logged_out,
         )
 
-        # Mark user as logged out
         mark_user_logged_out(TEST_USER_ID)
 
-        # Mock the sync function to ensure it's not called
         with patch(
             "studio.app.common.core.middleware.user_activity_middleware."
             "_update_premium_user_activity_sync"
         ) as mock_sync:
             await _update_premium_user_activity_async(TEST_USER_ID)
 
-            # Should not be called because user is logged out
             mock_sync.assert_not_called()
 
     def test_free_activity_sync_skipped_for_logged_out_user(self):
-        """Sync DB update skipped for logged out user (second check)"""
+        """Sync DB update should be skipped for logged out user"""
         from studio.app.common.core.middleware.user_activity_middleware import (
             _update_free_user_activity_sync,
             mark_user_logged_out,
         )
 
-        # Mark user as logged out
         mark_user_logged_out(TEST_USER_ID)
 
-        # Should return False without attempting DB update
         result = _update_free_user_activity_sync(TEST_USER_ID)
         assert result is False
 
-    def test_premium_activity_sync_skipped_for_logged_out(self):
-        """Sync premium DB update skipped for logged out user"""
+    def test_premium_activity_sync_skipped_for_logged_out_user(self):
+        """Sync premium DB update should be skipped for logged out user"""
         from studio.app.common.core.middleware.user_activity_middleware import (
             _update_premium_user_activity_sync,
             mark_user_logged_out,
         )
 
-        # Mark user as logged out
         mark_user_logged_out(TEST_USER_ID)
 
-        # Should return False without attempting DB update
         result = _update_premium_user_activity_sync(TEST_USER_ID)
         assert result is False
 
 
 class TestClearFreeUserLoggedOutAt:
-    """Test Case 58/62: Clear logged_out_at on re-login"""
+    """Test clearing logged_out_at on re-login"""
 
     def test_clear_logged_out_at_clears_timestamp(self):
-        """clear_free_user_logged_out_at should clear logged_out_at"""
+        """clear_free_user_logged_out_at should clear logged_out_at field"""
         from datetime import datetime
         from unittest.mock import MagicMock, patch
 
@@ -608,7 +578,6 @@ class TestClearFreeUserLoggedOutAt:
             clear_free_user_logged_out_at,
         )
 
-        # Mock the session and assignment
         mock_assignment = MagicMock()
         mock_assignment.logged_out_at = datetime.now()
         mock_session = MagicMock()
@@ -659,7 +628,7 @@ class TestClearFreeUserLoggedOutAt:
 
                 assert mock_assignment.last_activity == datetime(2025, 1, 15, 12, 0, 0)
 
-    def test_clear_logged_out_at_true_if_no_assignment(self):
+    def test_clear_logged_out_at_returns_true_if_no_assignment(self):
         """Should return True if no assignment exists"""
         from unittest.mock import MagicMock, patch
 
@@ -681,7 +650,7 @@ class TestClearFreeUserLoggedOutAt:
             assert result is True
             mock_session.commit.assert_not_called()
 
-    def test_clear_logged_out_at_true_if_already_null(self):
+    def test_clear_logged_out_at_returns_true_if_already_null(self):
         """Should return True if already None"""
         from unittest.mock import MagicMock, patch
 
@@ -707,7 +676,7 @@ class TestClearFreeUserLoggedOutAt:
             assert result is True
             mock_session.commit.assert_not_called()
 
-    def test_clear_logged_out_at_false_on_exception(self):
+    def test_clear_logged_out_at_returns_false_on_exception(self):
         """Should return False on DB error"""
         from unittest.mock import patch
 
@@ -728,14 +697,13 @@ class TestClearFreeUserLoggedOutAt:
             assert result is False
 
     def test_clear_logged_out_at_prevents_cleanup_after_relogin(self):
-        """Clearing logged_out_at prevents cleanup job selecting user"""
+        """Clearing logged_out_at should prevent cleanup job"""
         from unittest.mock import MagicMock, patch
 
         from studio.app.common.core.middleware.user_activity_middleware import (
             clear_free_user_logged_out_at,
         )
 
-        # Mock assignment with logged_out_at set
         mock_assignment = MagicMock()
         mock_assignment.logged_out_at = MagicMock()
         mock_session = MagicMock()
@@ -751,14 +719,11 @@ class TestClearFreeUserLoggedOutAt:
 
             clear_free_user_logged_out_at(TEST_USER_ID)
 
-            # After clearing, logged_out_at should be None
-            # Cleanup query (WHERE logged_out_at IS NOT NULL)
-            # won't select this user
             assert mock_assignment.logged_out_at is None
 
 
 class TestHeartbeatFailureTracking:
-    """Case 71: Heartbeat failure tracking for grace period"""
+    """Heartbeat failure tracking for grace period"""
 
     def setup_method(self):
         """Clear logged out state to avoid leaking from other tests"""
@@ -838,8 +803,12 @@ class TestHeartbeatFailureTracking:
     def test_premium_sync_resets_heartbeat_failures(self):
         """Successful heartbeat should reset heartbeat_failures"""
         from studio.app.common.core.middleware.user_activity_middleware import (
+            _logged_out_users,
             _update_premium_user_activity_sync,
         )
+
+        # Clear logged-out state from earlier tests
+        _logged_out_users.pop(TEST_USER_ID, None)
 
         mock_result = MagicMock()
         mock_result.rowcount = 1
