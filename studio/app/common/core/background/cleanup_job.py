@@ -67,12 +67,25 @@ class DataCleanupJob:
 
             for user_id, workspace_ids in users_to_cleanup:
                 try:
+                    if cls._check_user_relogin(user_id):
+                        logger.info(
+                            f"Skipping cleanup for user {user_id}: "
+                            f"user logged back in"
+                        )
+                        continue
+
                     success = cls._cleanup_user_data(user_id, workspace_ids)
 
                     if success:
-                        # Re-check workflow count before marking as cleaned
-                        # Prevents race condition where workflow starts during cleanup
-                        if cls._verify_no_active_workflows(user_id):
+                        # Re-check workflow count and re-login before marking cleaned
+                        # Prevents race condition where workflow/login during cleanup
+                        if cls._check_user_relogin(user_id):
+                            logger.warning(
+                                f"Skipping cleanup completion for user {user_id}: "
+                                f"user logged back in during cleanup"
+                            )
+                            error_count += 1
+                        elif cls._verify_no_active_workflows(user_id):
                             cls._mark_cleaned(user_id)
                             cleaned_count += 1
                         else:
@@ -221,6 +234,7 @@ class DataCleanupJob:
         SAFETY CHECKS:
         1. Verifies data exists in S3 before deletion (for experiment outputs)
         2. Only deletes if no active workflows running (checked in query)
+        3. Checks if user logged back in before each workspace
 
         Args:
             user_id: User ID
@@ -236,6 +250,10 @@ class DataCleanupJob:
         total_experiments_kept = 0
 
         for workspace_id in workspace_ids:
+            # Check if user logged back in before processing workspace
+            if cls._check_user_relogin(user_id):
+                logger.info(f"Aborting cleanup for user {user_id}: user logged back in")
+                return False
             try:
                 # Clean input data (always safe to delete - user uploads are in S3)
                 input_dir = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
@@ -340,6 +358,35 @@ class DataCleanupJob:
                 return False
 
             return True
+
+    @classmethod
+    def _check_user_relogin(cls, user_id: str) -> bool:
+        """
+        Check if user has logged back in during cleanup.
+        If logged_out_at is NULL, user has logged back in.
+
+        Returns:
+            True if user has logged back in (abort cleanup), False if still logged out
+        """
+        with session_scope() as db:
+            statement = select(FreeUserAssignment).where(
+                FreeUserAssignment.user_id == user_id
+            )
+            result_row = db.execute(statement).first()
+            assignment = result_row[0] if result_row else None
+
+            if not assignment:
+                # Assignment removed, safe to proceed with cleanup
+                return False
+
+            if assignment.logged_out_at is None:
+                logger.warning(
+                    f"User {user_id} has logged back in during cleanup "
+                    f"(logged_out_at is NULL) - aborting cleanup"
+                )
+                return True
+
+            return False
 
     @classmethod
     def _mark_cleaned(cls, user_id: str):

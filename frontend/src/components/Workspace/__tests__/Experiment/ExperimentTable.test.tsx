@@ -221,6 +221,7 @@ describe("ExperimentTable", () => {
       },
       user: {
         loading: false,
+        logoutGeneration: 0,
       },
       logsModal: {
         open: false,

@@ -51,7 +51,8 @@ class TestVerifyS3Backup:
 class TestCleanupUserData:
     """Test user data cleanup"""
 
-    def test_cleanup_user_data_with_s3_verification(self):
+    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
+    def test_cleanup_user_data_with_s3_verification(self, mock_relogin):
         """Test cleanup only deletes data with S3 backup"""
         with patch.object(
             DataCleanupJob, "_verify_s3_backup_exists", return_value=True
@@ -67,7 +68,8 @@ class TestCleanupUserData:
         assert result is True
         assert mock_rmtree.call_count >= 1
 
-    def test_cleanup_user_data_keeps_unverified(self):
+    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
+    def test_cleanup_user_data_keeps_unverified(self, mock_relogin):
         """Test cleanup keeps data without S3 backup"""
         with patch.object(
             DataCleanupJob, "_verify_s3_backup_exists", return_value=False

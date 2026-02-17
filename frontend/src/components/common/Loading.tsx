@@ -1,5 +1,7 @@
 import { Box, keyframes, styled } from "@mui/material"
 
+import { Z_INDEX } from "const/Layout"
+
 type Props = {
   position?: "fixed" | "absolute"
   loading: boolean | undefined
@@ -24,7 +26,7 @@ const LoaderWrapper = styled(Box, {
   right: 0,
   position: position,
   backgroundColor: "rgba(255,255,255,0.6)",
-  zIndex: 100000,
+  zIndex: Z_INDEX.LOADING_OVERLAY,
 }))
 
 const rotate = keyframes`

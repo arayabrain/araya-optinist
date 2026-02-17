@@ -67,10 +67,14 @@ export enum LimitAlertType {
   OVERDUE = "overdue",
 }
 
-// Premium instance timing constants (in minutes)
+// Premium instance timing constants
 export const PremiumTiming = {
+  // Backend activity cache TTL (must match studio middleware _CACHE_TTL_SECONDS)
+  ACTIVITY_CACHE_TTL_SECONDS: 60, // 1 minute
   // Duration of inactivity warning countdown before instance is released
   INACTIVITY_WARNING_DURATION_MINUTES: 60,
+  // Buffer to account for cache staleness when calculating timeouts
+  INACTIVITY_BUFFER_MINUTES: 2,
   // Interval for updating the countdown display (in milliseconds)
   WARNING_UPDATE_INTERVAL_MS: 60 * 1000, // 1 minute
 } as const
