@@ -22,23 +22,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-
 # ---------------------------------------------------------------------------
 # Mock aws_constants for Lambda tests (aws_constants is only available in Lambda)
+# Only install if not already loaded (e.g., by infrastructure test conftest)
 # ---------------------------------------------------------------------------
-class MockDatabaseConfig:
-    DEFAULT_PORT = 3306
+if "aws_constants" not in sys.modules:
 
+    class MockDatabaseConfig:
+        DEFAULT_PORT = 3306
 
-class MockAwsConstants:
-    DatabaseConfig = MockDatabaseConfig
+    class MockAwsConstants:
+        DatabaseConfig = MockDatabaseConfig
 
-
-# Install mock before any Lambda package imports
-sys.modules["aws_constants"] = MockAwsConstants
+    sys.modules["aws_constants"] = MockAwsConstants
 
 # ---------------------------------------------------------------------------
-# Test Case 1: Internal API Security
+# Internal API Security
 # ---------------------------------------------------------------------------
 
 
@@ -148,7 +147,7 @@ class TestInternalAPISecurity:
 
 
 # ---------------------------------------------------------------------------
-# Test Case 2: Rate Limiting
+# Rate Limiting
 # ---------------------------------------------------------------------------
 
 
@@ -298,7 +297,7 @@ class TestRateLimiting:
 
 
 # ---------------------------------------------------------------------------
-# Test Case 3: Sync Endpoint Logic
+# Sync Endpoint Logic
 # ---------------------------------------------------------------------------
 
 
@@ -381,7 +380,7 @@ class TestSyncEndpointLogic:
 
 
 # ---------------------------------------------------------------------------
-# Test Case 4: Lazy Sync (ensure_synced_async)
+# Lazy Sync (ensure_synced_async)
 # ---------------------------------------------------------------------------
 
 
@@ -506,7 +505,7 @@ class TestLazySync:
 
 
 # ---------------------------------------------------------------------------
-# Test Case 5: Middleware Bypass
+# Middleware Bypass
 # ---------------------------------------------------------------------------
 
 
@@ -583,7 +582,7 @@ class TestMiddlewareBypass:
 
 
 # ---------------------------------------------------------------------------
-# Test Case 6: Lambda Integration
+# Lambda Integration
 # ---------------------------------------------------------------------------
 
 
@@ -724,7 +723,7 @@ class TestLambdaIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Test Case 7: Router Integration
+# Router Integration
 # ---------------------------------------------------------------------------
 
 
@@ -788,7 +787,7 @@ function: {}
 
 
 # ---------------------------------------------------------------------------
-# Test Case 8: Input Data Sync (Multi-Instance Migration)
+# Input Data Sync (Multi-Instance Migration)
 # ---------------------------------------------------------------------------
 
 

@@ -1,18 +1,25 @@
-import React, { useEffect, useState } from "react"
+import React, { useCallback, useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 
 import { useSnackbar } from "notistack"
 
-import { Close as CloseIcon, Upgrade as UpgradeIcon } from "@mui/icons-material"
+import {
+  Close as CloseIcon,
+  Upgrade as UpgradeIcon,
+  Warning as WarningIcon,
+} from "@mui/icons-material"
 import {
   Alert,
   AlertTitle,
   Box,
   Button,
+  Checkbox,
   CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
+  DialogTitle,
+  FormControlLabel,
   IconButton,
   LinearProgress,
   Typography,
@@ -24,6 +31,39 @@ import {
 } from "api/storage/StorageAlerts"
 import { SubscriptionPeriods, LimitAlertType } from "const/Subscription"
 import { getToken } from "utils/auth/AuthUtils"
+import { tabSync } from "utils/crossTabSync"
+
+/**
+ * Format time remaining with appropriate granularity.
+ * Shows hours when less than 1 day, otherwise shows days (rounded up at 12+ hours).
+ */
+const formatTimeRemaining = (
+  daysRemaining: number,
+  deletionDate?: string | null,
+): string => {
+  if (daysRemaining <= 0) return "0 days"
+
+  if (daysRemaining >= 1) {
+    return `${Math.floor(daysRemaining)} day${daysRemaining >= 2 ? "s" : ""}`
+  }
+
+  // Less than 1 day - calculate hours from deletion date if available
+  if (deletionDate) {
+    const now = new Date()
+    const endDate = new Date(deletionDate)
+    const diffMs = endDate.getTime() - now.getTime()
+
+    if (diffMs <= 0) return "0 hours"
+
+    const hours = Math.ceil(diffMs / (1000 * 60 * 60))
+    return `${hours} hour${hours !== 1 ? "s" : ""}`
+  }
+
+  // Fallback to hours estimate from fractional days
+  const hours = Math.ceil(daysRemaining * 24)
+  if (hours <= 0) return "Less than 1 hour"
+  return `${hours} hour${hours !== 1 ? "s" : ""}`
+}
 
 interface LimitAlertProps {
   showAsModal?: boolean
@@ -40,6 +80,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
   const navigate = useNavigate()
   const [alert, setAlert] = useState<LimitAlertData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [acknowledgedOverdue, setAcknowledgedOverdue] = useState(false)
   const [dismissed, setDismissed] = useState(() => {
     // Check if this alert was already dismissed in localStorage
     const dismissedAlerts = localStorage.getItem("dismissedAlerts")
@@ -54,7 +95,37 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
     return false
   })
 
-  const fetchLimitAlert = async () => {
+  // Cross-tab sync: listen for dismissal changes via localStorage events
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === "dismissedAlerts" && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue)
+          if (parsed.limitAlert === true) {
+            setDismissed(true)
+          }
+        } catch {
+          // Ignore parse errors
+        }
+      }
+    }
+
+    window.addEventListener("storage", handleStorageChange)
+    return () => window.removeEventListener("storage", handleStorageChange)
+  }, [])
+
+  // Cross-tab sync: listen for dismissal via BroadcastChannel (faster sync)
+  useEffect(() => {
+    const unsubscribe = tabSync.on("ALERT_DISMISSED", (message) => {
+      const payload = message.payload as { alertId?: string }
+      if (payload?.alertId === "limitAlert") {
+        setDismissed(true)
+      }
+    })
+    return unsubscribe
+  }, [])
+
+  const fetchLimitAlert = useCallback(async () => {
     try {
       setLoading(true)
       const alertResponse = await getMyLimitAlertApi()
@@ -64,9 +135,17 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  const handleDismiss = () => {
+  // Check if this is an OVERDUE alert that requires acknowledgment
+  const isOverdueAlert = alert?.alert_type === LimitAlertType.OVERDUE
+  const canDismissOverdue = !isOverdueAlert || acknowledgedOverdue
+
+  const handleDismiss = (forceAcknowledged = false) => {
+    if (isOverdueAlert && !acknowledgedOverdue && !forceAcknowledged) {
+      return
+    }
+
     // Persist dismissal in localStorage
     const dismissedAlerts = localStorage.getItem("dismissedAlerts")
     let parsed = {}
@@ -84,14 +163,16 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
       }),
     )
 
+    // Broadcast dismissal to other tabs for immediate sync
+    tabSync.broadcastAlertDismissed("limitAlert")
+
     setDismissed(true)
+    setAcknowledgedOverdue(false)
     onClose?.()
   }
 
   const handleUpgrade = () => {
-    // Dismiss the alert when user clicks upgrade
-    handleDismiss()
-    // Navigate to payment page
+    handleDismiss(true)
     navigate("/payment")
   }
 
@@ -104,7 +185,7 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
         setLoading(false)
       }
     }
-  }, [autoCheck])
+  }, [autoCheck, fetchLimitAlert])
 
   if (loading) {
     return showAsModal ? null : (
@@ -169,14 +250,15 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
     return "primary"
   }
 
+  // Clamp days to 0 minimum for display and calculations
+  const safeDaysRemaining = Math.max(0, alert.days_remaining ?? 0)
   const progressValue =
-    alert.days_remaining > 0
+    safeDaysRemaining > 0
       ? Math.max(
           SubscriptionPeriods.MIN_PROGRESS_PERCENT,
           Math.min(
             SubscriptionPeriods.MAX_PROGRESS_PERCENT,
-            (alert.days_remaining /
-              SubscriptionPeriods.PROGRESS_REFERENCE_DAYS) *
+            (safeDaysRemaining / SubscriptionPeriods.PROGRESS_REFERENCE_DAYS) *
               SubscriptionPeriods.MAX_PROGRESS_PERCENT,
           ),
         )
@@ -187,8 +269,10 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
       <Alert
         severity={getSeverity(alert.alert_type)}
         action={
-          !showAsModal && (
-            <IconButton size="small" onClick={handleDismiss}>
+          // Hide close button for OVERDUE alerts - they require acknowledgment
+          !showAsModal &&
+          !isOverdueAlert && (
+            <IconButton size="small" onClick={() => handleDismiss()}>
               <CloseIcon />
             </IconButton>
           )
@@ -201,15 +285,43 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
           {alert.message}
         </Typography>
 
-        {/* Days remaining progress bar */}
-        {alert.days_remaining > 0 && (
+        {/* OVERDUE warning - emphasize consequences */}
+        {isOverdueAlert && (
+          <Box
+            sx={{
+              bgcolor: "error.light",
+              color: "error.contrastText",
+              borderRadius: 1,
+              p: 2,
+              mb: 2,
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 1,
+            }}
+          >
+            <WarningIcon sx={{ mt: 0.5 }} />
+            <Box>
+              <Typography variant="subtitle2" fontWeight="bold">
+                Action Required
+              </Typography>
+              <Typography variant="body2">
+                Your data will be permanently deleted if you do not upgrade or
+                reduce your storage below the free plan limit. This action
+                cannot be undone.
+              </Typography>
+            </Box>
+          </Box>
+        )}
+
+        {/* Days remaining progress bar - show even at 0 to indicate urgency */}
+        {alert.days_remaining !== undefined && (
           <Box sx={{ mb: 2 }}>
             <Box display="flex" justifyContent="space-between" mb={1}>
               <Typography variant="caption" fontWeight="bold">
-                Days Remaining
+                Time Remaining
               </Typography>
               <Typography variant="caption" fontWeight="bold">
-                {alert.days_remaining} days
+                {formatTimeRemaining(safeDaysRemaining, alert.deletion_date)}
               </Typography>
             </Box>
             <LinearProgress
@@ -270,29 +382,65 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
           </Box>
         </Box>
 
+        {/* Acknowledgment checkbox for inline OVERDUE alerts */}
+        {!showAsModal && isOverdueAlert && (
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={acknowledgedOverdue}
+                onChange={(e) => setAcknowledgedOverdue(e.target.checked)}
+                color="error"
+                size="small"
+              />
+            }
+            label={
+              <Typography variant="caption" color="error.main">
+                I understand my data will be deleted if I don&apos;t take action
+              </Typography>
+            }
+            sx={{ mb: 1 }}
+          />
+        )}
+
         {/* Action buttons - only show when not in modal mode */}
         {!showAsModal && (
           <Box display="flex" gap={1} flexWrap="wrap">
-            <Button
-              variant="contained"
-              color="primary"
-              startIcon={<UpgradeIcon />}
-              onClick={handleUpgrade}
-              size="small"
-            >
-              Upgrade to Premium
-            </Button>
-            <Button
-              variant="contained"
-              color="primary"
-              onClick={() => {
-                handleDismiss()
-                window.location.href = "/workspace"
-              }}
-              size="small"
-            >
-              Manage Files
-            </Button>
+            {showUpgradeButton && (
+              <Button
+                variant="contained"
+                color={isOverdueAlert ? "error" : "primary"}
+                startIcon={<UpgradeIcon />}
+                onClick={handleUpgrade}
+                size="small"
+              >
+                Upgrade to Premium
+              </Button>
+            )}
+            {showManageFilesButton && (
+              <Button
+                variant="contained"
+                color="primary"
+                onClick={() => {
+                  handleDismiss(true)
+                  navigate("/workspaces")
+                }}
+                size="small"
+              >
+                Manage Files
+              </Button>
+            )}
+            {/* Dismiss button for OVERDUE - only enabled after acknowledgment */}
+            {isOverdueAlert && (
+              <Button
+                variant="outlined"
+                color="inherit"
+                onClick={() => handleDismiss()}
+                disabled={!acknowledgedOverdue}
+                size="small"
+              >
+                Dismiss
+              </Button>
+            )}
           </Box>
         )}
       </Alert>
@@ -303,38 +451,117 @@ const LimitAlert: React.FC<LimitAlertProps> = ({
     return (
       <Dialog
         open={Boolean(alert?.has_alert && !dismissed)}
-        onClose={handleDismiss}
+        onClose={isOverdueAlert ? undefined : () => handleDismiss()}
         maxWidth="md"
         fullWidth
+        disableEscapeKeyDown={isOverdueAlert}
       >
-        <DialogContent>{alertContent}</DialogContent>
-        <DialogActions>
-          <Button onClick={handleDismiss} color="inherit">
-            Handle later
-          </Button>
-          {showManageFilesButton && (
-            <Button
-              variant="contained"
-              color="primary"
-              onClick={() => {
-                handleDismiss()
-                navigate("/workspaces")
-              }}
-            >
-              Manage Files
-            </Button>
+        {isOverdueAlert && (
+          <DialogTitle
+            sx={{
+              bgcolor: "error.main",
+              color: "error.contrastText",
+              display: "flex",
+              alignItems: "center",
+              gap: 1,
+            }}
+          >
+            <WarningIcon />
+            Urgent: Data Deletion Imminent
+          </DialogTitle>
+        )}
+        <DialogContent sx={{ pt: isOverdueAlert ? 3 : undefined }}>
+          {alertContent}
+          {/* Acknowledgment checkbox for OVERDUE alerts */}
+          {isOverdueAlert && (
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={acknowledgedOverdue}
+                  onChange={(e) => setAcknowledgedOverdue(e.target.checked)}
+                  color="error"
+                />
+              }
+              label={
+                <Typography
+                  variant="body2"
+                  color="error.main"
+                  fontWeight="bold"
+                >
+                  I understand that my data will be permanently deleted if I do
+                  not take action
+                </Typography>
+              }
+              sx={{ mt: 2 }}
+            />
           )}
-          {showUpgradeButton && (
-            <Button
-              variant="contained"
-              onClick={() => {
-                handleDismiss()
-                navigate("/subscription")
-              }}
-              startIcon={<UpgradeIcon />}
-            >
-              Upgrade
-            </Button>
+        </DialogContent>
+        <DialogActions>
+          {isOverdueAlert ? (
+            <>
+              <Button
+                onClick={() => handleDismiss()}
+                color="inherit"
+                disabled={!acknowledgedOverdue}
+              >
+                I understand, remind me later
+              </Button>
+              {showManageFilesButton && (
+                <Button
+                  variant="contained"
+                  color="primary"
+                  onClick={() => {
+                    handleDismiss(true)
+                    navigate("/workspaces")
+                  }}
+                >
+                  Manage Files Now
+                </Button>
+              )}
+              {showUpgradeButton && (
+                <Button
+                  variant="contained"
+                  color="error"
+                  onClick={() => {
+                    handleDismiss(true)
+                    navigate("/subscription")
+                  }}
+                  startIcon={<UpgradeIcon />}
+                >
+                  Upgrade Now
+                </Button>
+              )}
+            </>
+          ) : (
+            <>
+              <Button onClick={() => handleDismiss()} color="inherit">
+                Handle later
+              </Button>
+              {showManageFilesButton && (
+                <Button
+                  variant="contained"
+                  color="primary"
+                  onClick={() => {
+                    handleDismiss()
+                    navigate("/workspaces")
+                  }}
+                >
+                  Manage Files
+                </Button>
+              )}
+              {showUpgradeButton && (
+                <Button
+                  variant="contained"
+                  onClick={() => {
+                    handleDismiss()
+                    navigate("/subscription")
+                  }}
+                  startIcon={<UpgradeIcon />}
+                >
+                  Upgrade
+                </Button>
+              )}
+            </>
           )}
         </DialogActions>
       </Dialog>

@@ -4,6 +4,7 @@ import { Link, useLocation } from "react-router-dom"
 
 import { Box, styled, Typography } from "@mui/material"
 
+import { Z_INDEX } from "const/Layout"
 import { selectCurrentUser } from "store/slice/User/UserSelector"
 
 const PublicHeader: FC = () => {
@@ -17,14 +18,14 @@ const PublicHeader: FC = () => {
     <HeaderContainer>
       {isPublicPage ? (
         <HeaderContent>
-          <HeaderLogo src="/static/optinist_logo.png" alt="OptiNiSt" />
-          <HeaderTitle>OptiNiSt</HeaderTitle>
+          <HeaderLogo src="/static/optinist_logo.png" alt="Araya OptiNiSt" />
+          <HeaderTitle>Araya OptiNiSt</HeaderTitle>
         </HeaderContent>
       ) : (
         <HeaderLogoLink to="/public">
           <HeaderContent>
-            <HeaderLogo src="/static/optinist_logo.png" alt="OptiNiSt" />
-            <HeaderTitle>OptiNiSt</HeaderTitle>
+            <HeaderLogo src="/static/optinist_logo.png" alt="Araya OptiNiSt" />
+            <HeaderTitle>Araya OptiNiSt</HeaderTitle>
           </HeaderContent>
         </HeaderLogoLink>
       )}
@@ -53,7 +54,7 @@ const HeaderContainer = styled(Box)({
   position: "fixed",
   top: 0,
   left: 0,
-  zIndex: 1000,
+  zIndex: Z_INDEX.HEADER,
 })
 
 const HeaderLogoLink = styled(Link)({

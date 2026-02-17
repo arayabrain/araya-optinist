@@ -10,6 +10,9 @@ Runs every 60 minutes to balance accuracy vs. cost/performance.
 
 import asyncio
 
+from sqlalchemy import func, or_
+from sqlmodel import select
+
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.subscription.constants import StorageReconciliation
@@ -55,6 +58,7 @@ class StorageReconciliationJob:
         try:
             # Get all users with storage records in batches
             from studio.app.common.db.database import session_scope
+            from studio.app.common.models import UserStorageUsage
 
             reconciled_count = 0
             drift_detected_count = 0
@@ -65,11 +69,14 @@ class StorageReconciliationJob:
             # First, get total count for logging
             with session_scope() as db:
                 count_result = db.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM user_storage_usage
-                    WHERE delta_since_last_scan > 0 OR last_full_scan IS NULL
-                    """
+                    select(func.count())
+                    .select_from(UserStorageUsage)
+                    .where(
+                        or_(
+                            UserStorageUsage.delta_since_last_scan > 0,
+                            UserStorageUsage.last_full_scan.is_(None),
+                        )
+                    )
                 )
                 total_users = count_result.scalar() or 0
 
@@ -84,15 +91,21 @@ class StorageReconciliationJob:
                 # Fetch next batch of users
                 with session_scope() as db:
                     batch_records = db.execute(
-                        """
-                        SELECT user_id, storage_usage_bytes,
-                        delta_since_last_scan, last_full_scan
-                        FROM user_storage_usage
-                        WHERE delta_since_last_scan > 0 OR last_full_scan IS NULL
-                        ORDER BY user_id
-                        LIMIT %s OFFSET %s
-                        """,
-                        (StorageReconciliation.BATCH_SIZE, offset),
+                        select(
+                            UserStorageUsage.user_id,
+                            UserStorageUsage.storage_usage_bytes,
+                            UserStorageUsage.delta_since_last_scan,
+                            UserStorageUsage.last_full_scan,
+                        )
+                        .where(
+                            or_(
+                                UserStorageUsage.delta_since_last_scan > 0,
+                                UserStorageUsage.last_full_scan.is_(None),
+                            )
+                        )
+                        .order_by(UserStorageUsage.user_id)
+                        .limit(StorageReconciliation.BATCH_SIZE)
+                        .offset(offset)
                     ).fetchall()
 
                 # Exit if no more users to process
@@ -111,7 +124,7 @@ class StorageReconciliationJob:
 
                     try:
                         # Use the shared scan and reset function
-                        from studio.app.common.core.cloud.cloud_utils import (
+                        from studio.app.common.core.cloud.storage_tracking import (
                             _perform_full_scan_and_reset_delta,
                         )
 
@@ -129,9 +142,9 @@ class StorageReconciliationJob:
                         # Get updated storage to log drift
                         with session_scope() as update_db:
                             query_result = update_db.execute(
-                                "SELECT storage_usage_bytes FROM user_storage_usage "
-                                "WHERE user_id = %s",
-                                (user_id,),
+                                select(UserStorageUsage.storage_usage_bytes).where(
+                                    UserStorageUsage.user_id == user_id
+                                )
                             )
                             result_row = query_result.first()
                             actual_storage = result_row[0] if result_row else db_storage
@@ -207,7 +220,7 @@ class StorageReconciliationJob:
             True if reconciliation successful, False otherwise
         """
         try:
-            from studio.app.common.core.cloud.cloud_utils import (
+            from studio.app.common.core.cloud.storage_tracking import (
                 _calculate_live_storage_usage,
                 get_user_storage_usage,
                 update_user_storage_usage,

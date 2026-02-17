@@ -368,6 +368,87 @@ class SubscriptionService:
         )
         return (None, user)
 
+    @staticmethod
+    def get_users_with_upcoming_quota_drop(db: Session) -> List[dict]:
+        """
+        Get users whose quota will drop soon due to grace period ending (Case 79).
+
+        This identifies users in grace period whose current storage usage exceeds
+        the FREE tier quota. These users should be warned about impending quota drop.
+
+        Args:
+            db: Database session
+
+        Returns:
+            List of dicts with user info and excess storage data
+        """
+        from datetime import timedelta
+
+        from studio.app.common.core.subscription.constants import (
+            StorageQuota,
+            StorageSize,
+            SubscriptionPeriods,
+            SubscriptionPlanIds,
+        )
+        from studio.app.common.models.subscription import UserStorageUsage
+
+        warning_days = SubscriptionPeriods.QUOTA_DROP_WARNING_DAYS
+        free_quota_bytes = StorageQuota.FREE * StorageSize.GB
+        current_time = SubscriptionService.get_current_datetime()
+
+        users_to_warn = []
+
+        try:
+            # Find expired premium subscriptions (in grace period)
+            grace_period_end = current_time - timedelta(
+                days=SubscriptionPeriods.GRACE_PERIOD_DAYS
+            )
+
+            # Get users with expired premium subscriptions within grace period
+            expired_subs = (
+                db.query(UserSubscription, User, UserStorageUsage)
+                .join(User, UserSubscription.user_id == User.id)
+                .join(UserStorageUsage, UserStorageUsage.user_id == User.id)
+                .filter(
+                    UserSubscription.plan_id == SubscriptionPlanIds.PREMIUM,
+                    UserSubscription.expiration < current_time,
+                    UserSubscription.expiration > grace_period_end,
+                    # Storage exceeds free tier
+                    UserStorageUsage.storage_usage_bytes > free_quota_bytes,
+                )
+                .all()
+            )
+
+            for sub, user, storage in expired_subs:
+                # Calculate days until grace period ends
+                grace_end = sub.expiration + timedelta(
+                    days=SubscriptionPeriods.GRACE_PERIOD_DAYS
+                )
+                days_until_drop = (grace_end - current_time).days
+
+                # Only warn if within warning window
+                if days_until_drop <= warning_days:
+                    excess_bytes = storage.storage_usage_bytes - free_quota_bytes
+                    users_to_warn.append(
+                        {
+                            "user_id": user.id,
+                            "user_uid": user.uid,
+                            "email": user.email,
+                            "current_storage_bytes": storage.storage_usage_bytes,
+                            "future_quota_bytes": free_quota_bytes,
+                            "excess_bytes": excess_bytes,
+                            "days_until_quota_drop": days_until_drop,
+                            "grace_period_end": grace_end,
+                        }
+                    )
+
+            logger.info(f"Found {len(users_to_warn)} users with upcoming quota drops")
+            return users_to_warn
+
+        except Exception as e:
+            logger.error(f"Error getting users with upcoming quota drop: {e}")
+            return []
+
 
 class SyncService:
     """Service class for handling subscription synchronization"""

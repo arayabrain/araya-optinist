@@ -30,33 +30,32 @@ const initialState: User = {
   listUserSearch: undefined,
   listUser: undefined,
   loading: false,
+  logoutGeneration: 0,
 }
 
 export const userSlice = createSlice({
   name: USER_SLICE_NAME,
   initialState,
   reducers: {
-    logout: () => {
-      // Set logout flag to prevent token refresh during logout
+    logout: (state) => {
+      // setLoggingOut(false) is intentionally NOT called here —
+      // the caller (useLogout) must call it after navigation
+      // to prevent stale API calls from attempting refresh
       setLoggingOut(true)
 
-      // Remove tokens synchronously first - this is the critical step
       removeToken()
       removeRefreshToken()
       removeExToken()
 
-      // Clear dismissed alerts so they can appear again for the next user
       localStorage.removeItem("dismissedAlerts")
-      // Clear session storage to prevent stale state on browser back
+      localStorage.removeItem("storageAlertDismissed")
       sessionStorage.removeItem("storage-refreshed-on-login")
-      // Clear premium routing information
       routingService.clearRoutingInfo()
 
-      // Reset logout flag immediately after cleanup
-      // This ensures any pending checks see the cleared state
-      setLoggingOut(false)
-
-      return initialState
+      return {
+        ...initialState,
+        logoutGeneration: state.logoutGeneration + 1, // detect stale closures
+      }
     },
     resetUserSearch: (state) => {
       state.listUserSearch = []
@@ -77,6 +76,10 @@ export const userSlice = createSlice({
       })
       .addCase(getListUserSearch.fulfilled, (state, action) => {
         state.listUserSearch = action.payload
+        state.loading = false
+      })
+      .addCase(getMe.rejected, (state) => {
+        state.currentUser = undefined
         state.loading = false
       })
       .addMatcher(
@@ -122,17 +125,14 @@ export const userSlice = createSlice({
           state.loading = true
         },
       )
-      .addMatcher(
-        isAnyOf(login.rejected, getMe.rejected, deleteMe.fulfilled),
-        () => {
-          removeToken()
-          removeRefreshToken()
-          removeExToken()
-          // Clear premium routing information on auth failure
-          routingService.clearRoutingInfo()
-          return initialState
-        },
-      )
+      .addMatcher(isAnyOf(login.rejected, deleteMe.fulfilled), () => {
+        removeToken()
+        removeRefreshToken()
+        removeExToken()
+        // Clear premium routing information on auth failure
+        routingService.clearRoutingInfo()
+        return initialState
+      })
   },
 })
 

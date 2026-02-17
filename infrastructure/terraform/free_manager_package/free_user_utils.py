@@ -244,7 +244,9 @@ def trigger_experiment_sync(user_id: int) -> bool:
     }
 
     try:
-        response = requests.post(url, headers=headers, timeout=10.0, verify=True)
+        # Skip SSL verification for internal VPC traffic;
+        # ALB cert doesn't match AWS-generated hostname
+        response = requests.post(url, headers=headers, timeout=10.0, verify=False)
         if response.status_code == 200:
             print(f"Experiment sync initiated for user {user_id}")
             return True

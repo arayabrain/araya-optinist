@@ -178,8 +178,6 @@ const subscriptionSlice = createSlice({
           action,
           "Payment validation failed",
         )
-        // Show alert for payment failure
-        alert("Payment failed. Please try again or contact support.")
       })
       .addCase(reactivateSubscription.pending, (state) => {
         state.loading = true

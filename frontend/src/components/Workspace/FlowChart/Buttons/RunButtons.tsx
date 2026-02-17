@@ -1,13 +1,20 @@
-import { ChangeEvent, memo, MouseEvent, useState, useRef } from "react"
+import {
+  ChangeEvent,
+  memo,
+  MouseEvent,
+  useState,
+  useRef,
+  useCallback,
+} from "react"
 import { useSelector, useDispatch } from "react-redux"
 
 import { useSnackbar } from "notistack"
 
-import { PlayArrow } from "@mui/icons-material"
+import { PlayArrow, Warning as WarningIcon } from "@mui/icons-material"
 import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown"
 import BlockIcon from "@mui/icons-material/Block"
 import ReplayIcon from "@mui/icons-material/Replay"
-import { IconButton, Tooltip } from "@mui/material"
+import { IconButton, Tooltip, DialogContentText } from "@mui/material"
 import Button from "@mui/material/Button"
 import ButtonGroup from "@mui/material/ButtonGroup"
 import ClickAwayListener from "@mui/material/ClickAwayListener"
@@ -35,6 +42,15 @@ import {
   RUN_BTN_TYPE,
 } from "store/slice/Pipeline/PipelineType"
 
+// Storage check result values
+export enum StorageCheckResult {
+  PROCEED = "proceed",
+  BLOCKED = "blocked",
+  CONFIRM_NEEDED = "confirm_needed",
+}
+
+const RUN_REQUEST_DEBOUNCE_MS = 3000
+
 export const RunButtons = memo(function RunButtons(
   props: UseRunPipelineReturnType,
 ) {
@@ -57,44 +73,71 @@ export const RunButtons = memo(function RunButtons(
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [storageChecking, setStorageChecking] = useState(false)
+  const [storageCheckFailedDialogOpen, setStorageCheckFailedDialogOpen] =
+    useState(false)
+  const pendingRunActionRef = useRef<(() => void) | null>(null)
   const { enqueueSnackbar } = useSnackbar()
 
-  const checkStorageBeforeRun = async () => {
-    try {
-      setStorageChecking(true)
-      const storageResponse = await getMyStorageAlertApi()
+  const checkStorageBeforeRun =
+    useCallback(async (): Promise<StorageCheckResult> => {
+      try {
+        setStorageChecking(true)
+        const storageResponse = await getMyStorageAlertApi()
 
-      if (storageResponse.has_alert && storageResponse.alert) {
-        const alert = storageResponse.alert
-        switch (alert.alert_level) {
-          case "danger":
-            // Block job submission if quota is exceeded
-            enqueueSnackbar(
-              `Cannot run job: Storage quota exceeded (${alert.storage_usage_percent.toFixed(1)}% used). Please free up space before running jobs.`,
-              { variant: "error", autoHideDuration: 10000 },
-            )
-            return false
-          case "critical":
-            // Show warning but allow job to proceed
-            enqueueSnackbar(
-              `Warning: Storage usage is high (${alert.storage_usage_percent.toFixed(1)}% used). Consider freeing up space.`,
-              { variant: "warning", autoHideDuration: 8000 },
-            )
-            return true
-          default:
-            return true
+        if (storageResponse.has_alert && storageResponse.alert) {
+          const alert = storageResponse.alert
+          switch (alert.alert_level) {
+            case "danger":
+              enqueueSnackbar(
+                "Cannot run job: Storage quota exceeded " +
+                  `(${alert.storage_usage_percent.toFixed(1)}% used). ` +
+                  "Please free up space before running jobs.",
+                { variant: "error", autoHideDuration: 10000 },
+              )
+              return StorageCheckResult.BLOCKED
+            case "critical":
+              enqueueSnackbar(
+                "Warning: Storage usage is high " +
+                  `(${alert.storage_usage_percent.toFixed(1)}% used). ` +
+                  "Consider freeing up space.",
+                { variant: "warning", autoHideDuration: 8000 },
+              )
+              return StorageCheckResult.PROCEED
+            default:
+              return StorageCheckResult.PROCEED
+          }
         }
+        return StorageCheckResult.PROCEED
+      } catch (error) {
+        // eslint-disable-next-line no-console
+        console.error("Failed to check storage:", error)
+        return StorageCheckResult.CONFIRM_NEEDED
+      } finally {
+        setStorageChecking(false)
       }
-      return true
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error("Failed to check storage:", error)
-      // Allow job to proceed if storage check fails
-      return true
-    } finally {
-      setStorageChecking(false)
+    }, [enqueueSnackbar])
+
+  const handleStorageCheckFailedProceed = useCallback(() => {
+    setStorageCheckFailedDialogOpen(false)
+    if (pendingRunActionRef.current) {
+      pendingRunActionRef.current()
+      pendingRunActionRef.current = null
     }
-  }
+  }, [])
+
+  const handleStorageCheckFailedCancel = useCallback(() => {
+    setStorageCheckFailedDialogOpen(false)
+    pendingRunActionRef.current = null
+  }, [])
+
+  const executeRunByUid = useCallback(() => {
+    if (sendingRunRequest.current) return
+    sendingRunRequest.current = true
+    handleRunPipelineByUid()
+    setTimeout(() => {
+      sendingRunRequest.current = false
+    }, RUN_REQUEST_DEBOUNCE_MS)
+  }, [handleRunPipelineByUid])
 
   const handleClick = async () => {
     let errorMessage: string | null = null
@@ -111,30 +154,49 @@ export const RunButtons = memo(function RunButtons(
       return
     }
 
-    // Check storage before proceeding
-    const canProceed = await checkStorageBeforeRun()
-    if (!canProceed) {
-      return // Storage check failed, don't proceed with job
+    const checkResult = await checkStorageBeforeRun()
+
+    if (checkResult === StorageCheckResult.BLOCKED) {
+      return
+    }
+
+    if (checkResult === StorageCheckResult.CONFIRM_NEEDED) {
+      if (runBtnOption === RUN_BTN_OPTIONS.RUN_NEW) {
+        pendingRunActionRef.current = () => setDialogOpen(true)
+      } else {
+        pendingRunActionRef.current = executeRunByUid
+      }
+      setStorageCheckFailedDialogOpen(true)
+      return
     }
 
     if (runBtnOption === RUN_BTN_OPTIONS.RUN_NEW) {
       setDialogOpen(true)
     } else {
-      if (sendingRunRequest.current) return
-      sendingRunRequest.current = true
-      handleRunPipelineByUid()
-      setTimeout(() => {
-        sendingRunRequest.current = false
-      }, 3000)
+      executeRunByUid()
     }
   }
+
   const onClickDialogRun = async (name: string) => {
     if (sendingRunRequest.current) return
 
-    // Check storage before proceeding
-    const canProceed = await checkStorageBeforeRun()
-    if (!canProceed) {
+    const checkResult = await checkStorageBeforeRun()
+
+    if (checkResult === StorageCheckResult.BLOCKED) {
       setDialogOpen(false)
+      return
+    }
+
+    if (checkResult === StorageCheckResult.CONFIRM_NEEDED) {
+      pendingRunActionRef.current = () => {
+        sendingRunRequest.current = true
+        handleRunPipeline(name)
+        setTimeout(() => {
+          sendingRunRequest.current = false
+        }, RUN_REQUEST_DEBOUNCE_MS)
+        setDialogOpen(false)
+      }
+      setStorageCheckFailedDialogOpen(true)
       return
     }
 
@@ -142,7 +204,7 @@ export const RunButtons = memo(function RunButtons(
     handleRunPipeline(name)
     setTimeout(() => {
       sendingRunRequest.current = false
-    }, 3000)
+    }, RUN_REQUEST_DEBOUNCE_MS)
     setDialogOpen(false)
   }
   const onClickCancel = () => {
@@ -248,6 +310,12 @@ export const RunButtons = memo(function RunButtons(
         handleRun={onClickDialogRun}
         handleClose={() => setDialogOpen(false)}
       />
+      {/* Case 39 fix: Confirmation dialog when storage check fails */}
+      <StorageCheckFailedDialog
+        open={storageCheckFailedDialogOpen}
+        onProceed={handleStorageCheckFailedProceed}
+        onCancel={handleStorageCheckFailedCancel}
+      />
     </>
   )
 })
@@ -300,6 +368,41 @@ const RunDialog = memo(function RunDialog({
         </Button>
         <Button onClick={onClickRun} variant="contained">
           Run
+        </Button>
+      </DialogActions>
+    </Dialog>
+  )
+})
+
+interface StorageCheckFailedDialogProps {
+  open: boolean
+  onProceed: () => void
+  onCancel: () => void
+}
+
+const StorageCheckFailedDialog = memo(function StorageCheckFailedDialog({
+  open,
+  onProceed,
+  onCancel,
+}: StorageCheckFailedDialogProps) {
+  return (
+    <Dialog open={open} onClose={onCancel} maxWidth="sm" fullWidth>
+      <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+        <WarningIcon color="warning" />
+        Storage Check Failed
+      </DialogTitle>
+      <DialogContent>
+        <DialogContentText>
+          Unable to verify your storage quota. The workflow may fail if you have
+          exceeded your storage limit. Do you want to proceed anyway?
+        </DialogContentText>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onCancel} variant="outlined">
+          Cancel
+        </Button>
+        <Button onClick={onProceed} variant="contained" color="warning">
+          Proceed Anyway
         </Button>
       </DialogActions>
     </Dialog>
