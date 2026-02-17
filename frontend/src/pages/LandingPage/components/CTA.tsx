@@ -13,7 +13,7 @@ export const CTA = () => {
           <CTAGlow2 />
           <CTATitle>Ready to Transform Your Research?</CTATitle>
           <CTADescription>
-            Join researchers worldwide using Araya OptiNiSt to accelerate their
+            Join researchers worldwide using OptiNiSt to accelerate their
             scientific discoveries.
           </CTADescription>
           <CTAButtons>
@@ -21,7 +21,7 @@ export const CTA = () => {
               Get Started
             </CTAPrimaryButton>
             <CTASecondaryLink
-              href="https://optinist.readthedocs.io/en/latest/index.html"
+              href="https://araya-optinist.readthedocs.io/en/latest/"
               target="_blank"
               rel="noopener noreferrer"
             >

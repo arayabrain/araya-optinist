@@ -16,8 +16,8 @@ export const Footer = () => {
             <LogoText>Araya OptiNiSt</LogoText>
           </Logo>
           <FooterDescription>
-            Araya OptiNiSt is the no-code platform for scientific data analysis.
-            Build pipelines visually, ensure reproducibility, and collaborate
+            OptiNiSt is the no-code platform for scientific data analysis. Build
+            pipelines visually, ensure reproducibility, and collaborate
             seamlessly.
           </FooterDescription>
           <FooterSocial>

@@ -49,7 +49,7 @@ export const ValueProps = () => {
   return (
     <ValuePropsSection>
       <Container>
-        <SectionTitle>Why Choose Araya OptiNiSt</SectionTitle>
+        <SectionTitle>Why Choose OptiNiSt</SectionTitle>
         <SectionSubtitle>
           Everything you need to go from raw data to publishable insights,
           without writing a single line of code.

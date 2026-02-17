@@ -25,7 +25,7 @@ export const Header = () => {
           <NavLink href="#audience">Who It&apos;s For</NavLink>
           <NavLink href="#public-repository">Public Repository</NavLink>
           <NavLink
-            href="https://optinist.readthedocs.io/en/latest/index.html"
+            href="https://araya-optinist.readthedocs.io/en/latest/"
             target="_blank"
             rel="noopener noreferrer"
           >
