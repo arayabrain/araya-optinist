@@ -340,19 +340,19 @@ class TestPremiumManagerEvents:
 
         from premium_manager import store_user_assignment, update_instance_state
 
-        for enum_state, description in enum_states:
+        for i, (enum_state, description) in enumerate(enum_states):
             print(f"Testing enum state: '{enum_state}' " f"({description})")
 
             with patch.dict("os.environ", mock_env_vars_premium), patch(
                 "pymysql.connect"
             ) as mock_pymysql:
-                test_user = f"{TEST_USER_ID}_{enum_state}"
+                test_user_id = 1000 + i
 
                 mock_connection = setup_db_mock()
                 mock_pymysql.return_value = mock_connection
 
                 store_user_assignment(
-                    user_id=test_user,
+                    user_id=test_user_id,
                     instance_id=TEST_INSTANCE_ID,
                     target_group_arn="arn:test",
                     rule_arn="arn:test2",
@@ -361,7 +361,7 @@ class TestPremiumManagerEvents:
                 )
                 print(f"store_user_assignment with " f"'{enum_state}' - SUCCESS")
 
-                update_instance_state(test_user, enum_state)
+                update_instance_state(test_user_id, enum_state)
                 print(f"update_instance_state to " f"'{enum_state}' - SUCCESS")
 
     def test_error_handling(self, mock_env_vars_premium):
