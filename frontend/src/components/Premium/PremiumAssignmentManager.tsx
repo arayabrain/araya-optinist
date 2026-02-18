@@ -5,27 +5,12 @@
  * Assignment logic is handled by PremiumAssignmentContext.
  */
 
-import { FC, useEffect, useRef } from "react"
+import { FC, useEffect } from "react"
 
 import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 
 const PremiumAssignmentManager: FC = () => {
-  const { isPremiumUser, release, assignmentResult, error } =
-    usePremiumAssignment()
-
-  // Use ref to store the release function to avoid dependency issues
-  const releaseRef = useRef(release)
-  releaseRef.current = release
-
-  // Handle cleanup on component unmount (app close/logout)
-  useEffect(() => {
-    return () => {
-      if (isPremiumUser) {
-        // Don't await this - just fire and forget on unmount
-        releaseRef.current()
-      }
-    }
-  }, [isPremiumUser]) // Only depend on isPremiumUser, not the release function
+  const { assignmentResult, error } = usePremiumAssignment()
 
   // Log assignment status for debugging
   useEffect(() => {

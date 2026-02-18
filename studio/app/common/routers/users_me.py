@@ -30,6 +30,8 @@ from studio.app.common.models import FreeUserAssignment
 from studio.app.common.schemas.users import SelfUserUpdate, User, UserPasswordUpdate
 
 router = APIRouter(prefix="/users/me", tags=["users/me"])
+
+beacon_router = APIRouter(prefix="/users/me", tags=["users/me"])
 logger = AppLogger.get_logger()
 
 
@@ -184,7 +186,7 @@ async def get_beacon_token(
     return {"token": token}
 
 
-@router.post("/premium/release-beacon", response_model=Dict)
+@beacon_router.post("/premium/release-beacon", response_model=Dict)
 async def release_premium_beacon(request: Request, db: Session = Depends(get_db)):
     """
     Beacon endpoint for reliable cleanup on browser close.
