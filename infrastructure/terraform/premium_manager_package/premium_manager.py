@@ -73,6 +73,9 @@ CREATE_RUNNING_LOCK = "create_running_lock"
 MIGRATE_USERS_LOCK = "migrate_users_lock"
 LOCK_TIMEOUT_SECONDS = 60
 
+# Wait before first migration attempt to let instances boot
+MIGRATION_INITIAL_DELAY_SECONDS = 60
+
 
 def generate_routing_id(uid: str, secret_key: str) -> str:
     """Generate non-reversible routing ID from UID using HMAC-SHA256
@@ -1815,6 +1818,13 @@ def _handle_migrate_shared_users(event):
         elapsed = 0
         migration_result: Dict[str, Any] = {}
 
+        # Let instances boot before first attempt
+        print(
+            f"Waiting {MIGRATION_INITIAL_DELAY_SECONDS}s " f"for instances to boot..."
+        )
+        time.sleep(MIGRATION_INITIAL_DELAY_SECONDS)
+        elapsed += MIGRATION_INITIAL_DELAY_SECONDS
+
         while elapsed < max_wait_seconds:
             update_premium_service_desired_count()
 
@@ -2194,7 +2204,9 @@ def get_next_available_priority(listener_arn: str, start_priority: int = 100) ->
 
 
 def assign_premium_user(
-    user_id: int, event: Dict[str, Any], user_uid: str = ""
+    user_id: int,
+    event: Dict[str, Any],
+    user_uid: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Enhanced assignment with standby pool support -
     prefer stopped instances for fast startup"""
@@ -2717,6 +2729,10 @@ def assign_premium_user(
             )
 
         # Create ALB listener rule for user routing
+        if not user_uid:
+            raise ValueError(
+                "user_uid is required to generate routing ID"
+            )
         routing_secret_key = get_required_env_var("ROUTING_SECRET_KEY")
         routing_id = generate_routing_id(user_uid, routing_secret_key)
         print(
@@ -2947,8 +2963,6 @@ def scale_premium_instances_if_needed():
         running_creating = is_creation_lock_held(CREATE_RUNNING_LOCK)
 
         effective_capacity = running_count + launching_count
-        if running_creating:
-            effective_capacity += 1
 
         print("Enhanced premium instance analysis:")
         print(f"- Running instances: {running_count}")
@@ -2962,17 +2976,20 @@ def scale_premium_instances_if_needed():
         print(f"- Premium subscribers: {total_subscribers}")
 
         if launching_count > 0:
-            print(f"Scaling blocked: {launching_count} " f"instances already launching")
+            print(
+                f"Scaling blocked: {launching_count} "
+                f"instances already launching"
+            )
             return False
 
+        # Block scaling while another Lambda is creating instances;
+        # we can't know the exact count, so let it finish first.
         if running_creating:
-            print("Running instance creation already in progress")
-            if effective_capacity >= active_users:
-                print(
-                    f"No scaling needed: effective capacity "
-                    f"{effective_capacity} >= {active_users}"
-                )
-                return False
+            print(
+                "Scaling blocked: running instance "
+                "creation already in progress"
+            )
+            return False
 
         # Key decision: Scale based on ACTIVE ASSIGNMENTS, not subscribers
         # This represents current demand (logged-in users) vs available capacity
