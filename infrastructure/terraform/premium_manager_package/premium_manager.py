@@ -209,6 +209,24 @@ def get_user_id_from_uid(connection, user_uid: str) -> int:
         return result["id"]
 
 
+def get_user_uid_from_id(connection, user_id: int) -> str:
+    """Reverse lookup: get Firebase UID from numeric DB user_id.
+
+    Needed when only numeric ID is available (e.g. migration).
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT uid FROM users WHERE id = %s""",
+            (user_id,),
+        )
+        result = cursor.fetchone()
+
+        if not result:
+            raise ValueError(f"User not found with ID: {user_id}")
+
+        return result["uid"]
+
+
 @with_transaction
 def _increment_assignment_attempts_transaction(connection, user_id: int) -> int:
     """Internal function: Increment assignment attempts for
@@ -1803,6 +1821,9 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
             # (deregister container instances where EC2 is stopped/terminated)
             cleanup_ghost_ecs_registrations()
 
+            # 9. Stop orphaned EC2 instances not in ECS cluster
+            cleanup_orphaned_ec2_instances()
+
             return {
                 "statusCode": 200,
                 "body": json.dumps(
@@ -2004,7 +2025,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 }
 
             if action == "assign":
-                return assign_premium_user(user_id, body_data)
+                return assign_premium_user(user_id, body_data, user_uid)
             elif action == "release":
                 return release_premium_user(user_id)
             elif action == "update_activity":
@@ -2243,7 +2264,9 @@ def get_next_available_priority(listener_arn: str, start_priority: int = 100) ->
         raise
 
 
-def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
+def assign_premium_user(
+    user_id: int, event: Dict[str, Any], user_uid: str = ""
+) -> Dict[str, Any]:
     """Enhanced assignment with standby pool support -
     prefer stopped instances for fast startup"""
 
@@ -2766,7 +2789,7 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
 
         # Create ALB listener rule for user routing
         routing_secret_key = get_required_env_var("ROUTING_SECRET_KEY")
-        routing_id = generate_routing_id(str(user_id), routing_secret_key)
+        routing_id = generate_routing_id(user_uid, routing_secret_key)
         print(
             f"Generated routing_id for user: {routing_id[:8]}... "
             f"(truncated for security)"
@@ -3401,7 +3424,6 @@ def update_premium_service_desired_count():
         service_name = get_required_env_var("PREMIUM_SERVICE_NAME")
 
         ecs: "ECSClient" = boto3.client("ecs")
-        ec2: "EC2Client" = boto3.client("ec2")
 
         # Get current service status
         service_response = ecs.describe_services(
@@ -3409,29 +3431,31 @@ def update_premium_service_desired_count():
         )
 
         if not service_response.get("services"):
-            print(f"Premium service {service_name} not found in cluster {cluster_name}")
+            print(
+                f"Premium service {service_name} not found "
+                f"in cluster {cluster_name}"
+            )
             return
 
         current_desired_count = service_response["services"][0]["desiredCount"]
         current_running_count = service_response["services"][0]["runningCount"]
 
-        # Count running premium instances
-        response = ec2.describe_instances(
-            Filters=[
-                {"Name": "instance-state-name", "Values": [InstanceState.RUNNING]},
-                {"Name": "tag:Tier", "Values": ["premium", "Premium"]},
-            ]
+        # Count ACTIVE ECS container instances (not EC2 instances,
+        # which may include orphans that never joined the cluster)
+        ci_response = ecs.list_container_instances(
+            cluster=cluster_name,
+            filter="attribute:tier == premium",
+            status="ACTIVE",
         )
-
-        running_premium_count = sum(
-            len(reservation["Instances"]) for reservation in response["Reservations"]
-        )
+        ci_arns = ci_response.get("containerInstanceArns", [])
+        running_premium_count = len(ci_arns)
 
         print(
-            f"ECS Service Status: desired={current_desired_count}, "
+            f"ECS Service Status: "
+            f"desired={current_desired_count}, "
             f"running={current_running_count}"
         )
-        print(f"Premium EC2 Instances: {running_premium_count} running")
+        print(f"Premium ECS container instances: " f"{running_premium_count} active")
 
         # Update service desired count if different from instance count
         if running_premium_count != current_desired_count:
@@ -3625,9 +3649,8 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                         # Create new ALB rule for this user
                         alb_listener_arn = get_required_env_var("ALB_LISTENER_ARN")
                         routing_secret_key = get_required_env_var("ROUTING_SECRET_KEY")
-                        routing_id = generate_routing_id(
-                            str(user_id), routing_secret_key
-                        )
+                        user_uid = get_user_uid_from_id(connection, user_id)
+                        routing_id = generate_routing_id(user_uid, routing_secret_key)
 
                         # Get next available priority
                         priority = get_next_available_priority(
@@ -4245,6 +4268,83 @@ def cleanup_ghost_ecs_registrations():
 
     except Exception as e:
         print(f"Error cleaning up ghost ECS registrations: {str(e)}")
+
+
+ORPHAN_GRACE_PERIOD_MINUTES = 15
+
+
+def cleanup_orphaned_ec2_instances():
+    """Stop EC2 instances tagged Tier=premium that are running
+    but not registered as ECS container instances.
+
+    Orphaned instances inflate desiredCount and waste resources.
+    A 15-minute grace period avoids stopping instances that are
+    still booting and haven't joined ECS yet.
+    """
+    try:
+        cluster_name = get_required_env_var("CLUSTER_NAME")
+        ecs: "ECSClient" = boto3.client("ecs")
+        ec2: "EC2Client" = boto3.client("ec2")
+
+        # Collect EC2 IDs of all ACTIVE ECS container instances
+        ci_response = ecs.list_container_instances(
+            cluster=cluster_name, status="ACTIVE"
+        )
+        ci_arns = ci_response.get("containerInstanceArns", [])
+
+        ecs_ec2_ids: set = set()
+        if ci_arns:
+            desc = ecs.describe_container_instances(
+                cluster=cluster_name,
+                containerInstances=ci_arns,
+            )
+            for ci in desc.get("containerInstances", []):
+                ecs_ec2_ids.add(ci["ec2InstanceId"])
+
+        # List all running premium-tagged EC2 instances
+        ec2_response = ec2.describe_instances(
+            Filters=[
+                {
+                    "Name": "instance-state-name",
+                    "Values": [InstanceState.RUNNING],
+                },
+                {
+                    "Name": "tag:Tier",
+                    "Values": ["premium", "Premium"],
+                },
+            ]
+        )
+
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        stopped_count = 0
+
+        for reservation in ec2_response["Reservations"]:
+            for instance in reservation["Instances"]:
+                iid = instance["InstanceId"]
+                if iid in ecs_ec2_ids:
+                    continue
+
+                launch_time = instance.get("LaunchTime")
+                if launch_time:
+                    age_minutes = (now - launch_time).total_seconds() / 60
+                    if age_minutes < ORPHAN_GRACE_PERIOD_MINUTES:
+                        print(
+                            f"Orphan {iid} running "
+                            f"{age_minutes:.0f}m, "
+                            f"within grace period"
+                        )
+                        continue
+
+                print(f"Stopping orphaned EC2 instance {iid}")
+                ec2.stop_instances(InstanceIds=[iid])
+                stopped_count += 1
+
+        print(f"Orphan cleanup: stopped {stopped_count} " f"instance(s)")
+
+    except Exception as e:
+        print(f"Error cleaning up orphaned EC2 instances: " f"{str(e)}")
 
 
 def get_premium_system_status() -> Dict[str, Any]:

@@ -1,8 +1,10 @@
 """Tests for premium_manager Lambda function."""
 
 import json
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
+import pytest
 from aws_constants import ECSTaskStatus
 from conftest import MockRow, setup_db_mock
 
@@ -47,6 +49,7 @@ class TestPremiumManagerEvents:
         ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
             mock_connection = setup_db_mock(
                 fetchone_values=[
+                    MockRow({"id": 123}),
                     None,
                     MockRow({"count": 1}),
                     MockRow({"count": 0}),
@@ -422,7 +425,9 @@ class TestEarlyCheckAndCleanup:
 
             from premium_manager import assign_premium_user
 
-            result = assign_premium_user(test_user_id, {"tier": "premium"})
+            result = assign_premium_user(
+                test_user_id, {"tier": "premium"}, "firebase_uid_123"
+            )
 
             status_code = result["statusCode"]
             response_body = json.loads(result["body"])
@@ -690,7 +695,9 @@ class TestEarlyCheckAndCleanup:
                 mock_boto3.side_effect = boto3_client_side_effect
 
                 result = premium_manager.assign_premium_user(
-                    test_user_id, {"tier": "premium"}
+                    test_user_id,
+                    {"tier": "premium"},
+                    "firebase_uid_456",
                 )
 
                 status_code = result["statusCode"]
@@ -1209,3 +1216,509 @@ class TestClearEcsAgentCheckpoint:
             result = clear_ecs_agent_checkpoint("i-test4")
 
             assert result is False
+
+
+class TestDesiredCountUsesECS:
+    """RC4: update_premium_service_desired_count uses ECS
+    container instance count, not EC2 instance count."""
+
+    def test_updates_from_ecs_count(self, mock_env_vars_premium):
+        """desiredCount is set from ECS container instances."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "ecs":
+                    return mock_ecs
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            mock_ecs.describe_services.return_value = {
+                "services": [{"desiredCount": 4, "runningCount": 1}]
+            }
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": ["arn:aws:ecs:us-east-1:123:ci/a"]
+            }
+
+            from premium_manager import update_premium_service_desired_count
+
+            update_premium_service_desired_count()
+
+            mock_ecs.update_service.assert_called_once()
+            call_kwargs = mock_ecs.update_service.call_args[1]
+            assert call_kwargs["desiredCount"] == 1
+
+    def test_no_update_when_counts_match(self, mock_env_vars_premium):
+        """No update when desired already matches ECS count."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "ecs":
+                    return mock_ecs
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            mock_ecs.describe_services.return_value = {
+                "services": [{"desiredCount": 2, "runningCount": 2}]
+            }
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [
+                    "arn:aws:ecs:us-east-1:123:ci/a",
+                    "arn:aws:ecs:us-east-1:123:ci/b",
+                ]
+            }
+
+            from premium_manager import update_premium_service_desired_count
+
+            update_premium_service_desired_count()
+
+            mock_ecs.update_service.assert_not_called()
+
+    def test_does_not_use_ec2_describe_instances(self, mock_env_vars_premium):
+        """RC4: update_premium_service_desired_count must not
+        call ec2.describe_instances (old counting method)."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs = MagicMock()
+            mock_ec2 = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "ecs":
+                    return mock_ecs
+                if service == "ec2":
+                    return mock_ec2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            mock_ecs.describe_services.return_value = {
+                "services": [{"desiredCount": 2, "runningCount": 2}]
+            }
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [
+                    "arn:aws:ecs:us-east-1:123:ci/a",
+                    "arn:aws:ecs:us-east-1:123:ci/b",
+                ]
+            }
+
+            from premium_manager import update_premium_service_desired_count
+
+            update_premium_service_desired_count()
+
+            mock_ec2.describe_instances.assert_not_called()
+
+
+class TestRoutingIdContract:
+    """RC2: Lambda and middleware must produce identical
+    routing IDs for the same Firebase UID + secret."""
+
+    def test_handler_passes_firebase_uid_to_assign(self, mock_env_vars_premium):
+        """handler() must pass the original Firebase UID
+        string (not the numeric DB ID) as user_uid to
+        assign_premium_user."""
+        event = {
+            "httpMethod": "POST",
+            "path": "/premium/assign",
+            "body": json.dumps(
+                {
+                    "action": "assign",
+                    "user_id": "firebase_xyz_999",
+                    "tier": "premium",
+                }
+            ),
+            "requestContext": {"requestId": "req-1"},
+        }
+        mock_context = MagicMock()
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch(
+            "premium_manager.assign_premium_user",
+            return_value={
+                "statusCode": 200,
+                "body": "{}",
+            },
+        ) as mock_assign:
+            mock_connection = setup_db_mock(
+                fetchone_values=[{"id": 42}],
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_manager import handler
+
+            handler(event, mock_context)
+
+            mock_assign.assert_called_once()
+            _, _, user_uid_arg = mock_assign.call_args[0]
+            assert user_uid_arg == "firebase_xyz_999"
+
+    def test_migration_uses_firebase_uid_for_routing(self, mock_env_vars_premium):
+        """migrate_user_to_dedicated_instance must call
+        get_user_uid_from_id and pass the result to
+        generate_routing_id (not str(user_id))."""
+        import sys
+
+        # premium_user_utils is deployed in a Lambda Layer
+        mock_utils = MagicMock()
+        mock_utils.can_migrate_user = MagicMock(return_value=True)
+        sys.modules["premium_user_utils"] = mock_utils
+
+        try:
+            with patch.dict("os.environ", mock_env_vars_premium), patch(
+                "boto3.client"
+            ) as mock_boto3, patch("pymysql.connect") as mock_pymysql, patch(
+                "premium_manager." "try_reserve_instance_for_migration",
+                return_value=True,
+            ), patch(
+                "premium_manager.get_user_uid_from_id",
+                return_value="firebase_migrated_uid",
+            ) as mock_uid_lookup, patch(
+                "premium_manager.generate_routing_id",
+                return_value="abcd1234abcd1234",
+            ) as mock_gen, patch(
+                "premium_manager." "create_or_get_target_group",
+                return_value="arn:aws:tg/migrated",
+            ), patch(
+                "premium_manager." "get_next_available_priority",
+                return_value=200,
+            ), patch(
+                "premium_manager." "trigger_experiment_sync"
+            ):
+                mock_connection = setup_db_mock(
+                    fetchone_values=[
+                        {
+                            "instance_id": ("autoscaling-pool"),
+                            "target_group_arn": "",
+                            "alb_rule_arn": "",
+                            "active_workflow_count": 0,
+                        },
+                    ],
+                )
+                mock_pymysql.return_value = mock_connection
+
+                mock_elbv2 = MagicMock()
+                mock_elbv2.create_rule.return_value = {
+                    "Rules": [{"RuleArn": ("arn:aws:rule/migrated")}]
+                }
+
+                def boto3_client_side_effect(service):
+                    if service == "elbv2":
+                        return mock_elbv2
+                    return MagicMock()
+
+                mock_boto3.side_effect = boto3_client_side_effect
+
+                from premium_manager import migrate_user_to_dedicated_instance
+
+                migrate_user_to_dedicated_instance(42, "i-dedicated1")
+
+                mock_uid_lookup.assert_called_once()
+                mock_gen.assert_called_once_with(
+                    "firebase_migrated_uid",
+                    mock_env_vars_premium["ROUTING_SECRET_KEY"],
+                )
+        finally:
+            sys.modules.pop("premium_user_utils", None)
+
+    def test_same_routing_id_for_firebase_uid(self):
+        """Both implementations produce identical output
+        for the same Firebase UID + secret."""
+        from premium_manager import generate_routing_id as lambda_gen
+
+        from studio.app.common.core.middleware.secure_routing_middleware import (  # noqa: E501
+            generate_routing_id as middleware_gen,
+        )
+
+        uid = "firebase_user_abc123"
+        secret = "shared-secret-key"
+
+        assert lambda_gen(uid, secret) == middleware_gen(uid, secret)
+
+    def test_numeric_id_differs_from_firebase_uid(self):
+        """Numeric DB ID and Firebase UID produce different
+        routing IDs -- the root cause of RC2."""
+        from premium_manager import generate_routing_id
+
+        secret = "test-secret"
+        numeric_id = generate_routing_id("123", secret)
+        firebase_uid = generate_routing_id("firebaseXYZ", secret)
+
+        assert numeric_id != firebase_uid
+
+    def test_assign_uses_firebase_uid_for_routing(self, mock_env_vars_premium):
+        """assign_premium_user passes the Firebase UID (not
+        the numeric user_id) to generate_routing_id."""
+        patches = {
+            "premium_manager.get_existing_user_assignment": None,
+            "premium_manager." "register_orphaned_stopped_instances": None,
+            "premium_manager."
+            "get_all_premium_instances_with_states": [
+                {
+                    "instance_id": "i-test1",
+                    "state": "running",
+                }
+            ],
+            "premium_manager.count_active_premium_users": 0,
+            "premium_manager." "get_available_standby_instances": [],
+            "premium_manager." "check_instance_readiness_with_retry": True,
+            "premium_manager.try_reserve_instance": True,
+            "premium_manager." "cleanup_duplicate_rules_for_routing_id": 0,
+            "premium_manager." "get_next_available_priority": 100,
+        }
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql, patch(
+            "premium_manager.generate_routing_id",
+            return_value="abcd1234abcd1234",
+        ) as mock_gen:
+            for target, rv in patches.items():
+                patcher = patch(target, return_value=rv)
+                patcher.start()
+                self._patchers = getattr(self, "_patchers", [])
+                self._patchers.append(patcher)
+
+            try:
+                mock_connection = setup_db_mock(
+                    fetchone_values=[
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    ],
+                    fetchall_values=[[], [], []],
+                )
+                mock_pymysql.return_value = mock_connection
+
+                mock_elbv2 = MagicMock()
+                mock_elbv2.create_target_group.return_value = {
+                    "TargetGroups": [{"TargetGroupArn": ("arn:aws:tg/new")}]
+                }
+                mock_elbv2.create_rule.return_value = {
+                    "Rules": [{"RuleArn": "arn:aws:rule/new"}]
+                }
+
+                def boto3_client_side_effect(service):
+                    if service == "elbv2":
+                        return mock_elbv2
+                    return MagicMock()
+
+                mock_boto3.side_effect = boto3_client_side_effect
+
+                from premium_manager import assign_premium_user
+
+                assign_premium_user(42, {"tier": "premium"}, "firebase_abc")
+
+                mock_gen.assert_called_once_with(
+                    "firebase_abc",
+                    mock_env_vars_premium["ROUTING_SECRET_KEY"],
+                )
+            finally:
+                for p in getattr(self, "_patchers", []):
+                    p.stop()
+                self._patchers = []
+
+
+class TestCleanupOrphanedEC2Instances:
+    """RC4: cleanup_orphaned_ec2_instances stops unregistered
+    instances past the grace period and skips the rest."""
+
+    def test_stops_orphaned_past_grace_period(self, mock_env_vars_premium):
+        """EC2 instance running 20 min and NOT in ECS
+        container instances gets stopped."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs = MagicMock()
+            mock_ec2 = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "ecs":
+                    return mock_ecs
+                if service == "ec2":
+                    return mock_ec2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": []
+            }
+
+            # 20 minutes ago -- past grace period
+            launch_time = datetime.now(timezone.utc) - timedelta(minutes=20)
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-orphan1",
+                                "State": {"Name": "running"},
+                                "LaunchTime": launch_time,
+                                "Tags": [
+                                    {
+                                        "Key": "Tier",
+                                        "Value": "premium",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_orphaned_ec2_instances
+
+            cleanup_orphaned_ec2_instances()
+
+            mock_ec2.stop_instances.assert_called_once_with(InstanceIds=["i-orphan1"])
+
+    def test_skips_instance_within_grace_period(self, mock_env_vars_premium):
+        """EC2 instance running 5 min is within grace period
+        and must NOT be stopped."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs = MagicMock()
+            mock_ec2 = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "ecs":
+                    return mock_ecs
+                if service == "ec2":
+                    return mock_ec2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": []
+            }
+
+            # 5 minutes ago -- within grace period
+            launch_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-young1",
+                                "State": {"Name": "running"},
+                                "LaunchTime": launch_time,
+                                "Tags": [
+                                    {
+                                        "Key": "Tier",
+                                        "Value": "premium",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_orphaned_ec2_instances
+
+            cleanup_orphaned_ec2_instances()
+
+            mock_ec2.stop_instances.assert_not_called()
+
+    def test_skips_instance_registered_in_ecs(self, mock_env_vars_premium):
+        """EC2 instance registered as ECS container instance
+        must NOT be stopped even if old."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs = MagicMock()
+            mock_ec2 = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "ecs":
+                    return mock_ecs
+                if service == "ec2":
+                    return mock_ec2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": ["arn:aws:ecs:r:a:ci/registered"]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ("arn:aws:ecs:r:a:ci/registered"),
+                        "ec2InstanceId": "i-healthy1",
+                    }
+                ]
+            }
+
+            # 60 minutes ago -- old but healthy
+            launch_time = datetime.now(timezone.utc) - timedelta(minutes=60)
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-healthy1",
+                                "State": {"Name": "running"},
+                                "LaunchTime": launch_time,
+                                "Tags": [
+                                    {
+                                        "Key": "Tier",
+                                        "Value": "premium",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_orphaned_ec2_instances
+
+            cleanup_orphaned_ec2_instances()
+
+            mock_ec2.stop_instances.assert_not_called()
+
+
+class TestGetUserUidFromId:
+    """RC4: Reverse UID lookup from numeric DB ID."""
+
+    def test_returns_firebase_uid(self, mock_env_vars_premium):
+        """Returns the Firebase UID for a known user_id."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql:
+            mock_connection = setup_db_mock(
+                fetchone_values=[{"uid": "firebase_abc"}],
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_manager import get_user_uid_from_id
+
+            result = get_user_uid_from_id(mock_connection, 42)
+            assert result == "firebase_abc"
+
+    def test_raises_for_unknown_id(self, mock_env_vars_premium):
+        """Raises ValueError when user_id is not found."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql:
+            mock_connection = setup_db_mock(
+                fetchone_values=[None],
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_manager import get_user_uid_from_id
+
+            with pytest.raises(ValueError, match="not found"):
+                get_user_uid_from_id(mock_connection, 9999)

@@ -985,7 +985,7 @@ resource "aws_ecs_task_definition" "premium" {
       mountPoints = [
         {
           sourceVolume  = "subscr-premium-optinist-cloud-snmk-volume"
-          containerPath = "/efs"
+          containerPath = "/app/.snakemake"
           readOnly      = false
         }
       ]

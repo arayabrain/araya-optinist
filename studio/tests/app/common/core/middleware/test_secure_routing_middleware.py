@@ -30,6 +30,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from starlette.middleware.cors import CORSMiddleware
 
 # Test data
 TEST_UID = "test_user_12345"
@@ -668,6 +669,57 @@ class TestMiddlewareIntegration:
             # Should not verify JWT for websocket
             mock_extract.assert_not_called()
             mock_app.assert_called_once()
+
+
+class TestCORSConfiguration:
+    """RC1: CORS must expose routing headers so the browser
+    can read them, and SecureRoutingMiddleware must run before
+    CORS in the response path (LIFO order means it is added
+    after CORS in the source)."""
+
+    def test_cors_exposes_routing_headers(self):
+        """CORSMiddleware must list x-user-tier and
+        x-routing-id in expose_headers."""
+        from studio.__main_unit__ import app
+
+        cors_mw = None
+        for mw in app.user_middleware:
+            if mw.cls is CORSMiddleware:
+                cors_mw = mw
+                break
+
+        assert cors_mw is not None, "CORSMiddleware not found in app middleware"
+        exposed = cors_mw.options.get("expose_headers", [])
+        assert "x-user-tier" in exposed
+        assert "x-routing-id" in exposed
+
+    def test_secure_routing_added_before_cors(self):
+        """SecureRoutingMiddleware must be inner relative to
+        CORS so it adds headers on the response path before
+        CORS exposes them. Starlette inserts at index 0, so
+        the middleware added first has the highest index
+        (innermost) and processes responses first."""
+        from starlette.middleware.cors import CORSMiddleware
+
+        from studio.__main_unit__ import app
+        from studio.app.common.core.middleware import SecureRoutingMiddleware
+
+        classes = [mw.cls for mw in app.user_middleware]
+
+        assert (
+            SecureRoutingMiddleware in classes
+        ), "SecureRoutingMiddleware not in middleware stack"
+        assert CORSMiddleware in classes, "CORSMiddleware not in middleware stack"
+
+        sr_idx = classes.index(SecureRoutingMiddleware)
+        cors_idx = classes.index(CORSMiddleware)
+        # Higher index = innermost = processes response first
+        assert sr_idx > cors_idx, (
+            "SecureRoutingMiddleware must be innermost "
+            "relative to CORS (higher index in "
+            "user_middleware) so it adds headers before "
+            "CORS exposes them"
+        )
 
 
 if __name__ == "__main__":
