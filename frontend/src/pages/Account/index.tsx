@@ -113,13 +113,18 @@ const Account = () => {
 
   const onConfirmDelete = async () => {
     if (!user) return
-    const data = await dispatch(deleteMe())
-    if (isRejectedWithValue(data)) {
+    try {
+      const data = await dispatch(deleteMe())
+      if (isRejectedWithValue(data)) {
+        handleClickVariant("error", "Account deleted failed!")
+      } else {
+        navigate("/login")
+      }
+    } catch {
       handleClickVariant("error", "Account deleted failed!")
-    } else {
-      navigate("/login")
+    } finally {
+      handleCloseDeleteComfirmModal()
     }
-    handleCloseDeleteComfirmModal()
   }
 
   const handleCloseChangePw = () => {
@@ -318,6 +323,7 @@ const Account = () => {
         description={getDeleteAccountDescription()}
         warningItems={getDeleteAccountWarnings()}
         iconType="warning"
+        loading={loading}
       />
       <ChangePasswordModal
         onSubmit={onConfirmChangePw}
