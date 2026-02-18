@@ -398,6 +398,255 @@ plans = {
 
 ---
 
+## Premium Lifecycle: Free to Premium to Cancellation to Data Deletion
+
+This section describes the complete user lifecycle from free signup through
+premium subscription, cancellation, grace periods, and eventual data cleanup.
+
+### End-to-End Lifecycle Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        SUBSCRIPTION LIFECYCLE                                   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+  ┌──────────┐     Checkout      ┌───────────┐
+  │          │    completed      │           │
+  │   FREE   │ ────────────────> │  PREMIUM  │
+  │  (5 GB)  │                   │ (200 GB)  │
+  │          │ <──────────────── │           │
+  └──────────┘   Subscription    └─────┬─────┘
+       ^         cancelled             │
+       │                               │ Subscription expires
+       │                               │ (cancel_at_period_end or payment failure)
+       │                               ▼
+       │                         ┌───────────┐
+       │   Storage <= 5 GB       │   GRACE   │  Days 0-30 after expiration
+       │   (no warning needed)   │  PERIOD   │  Quota drops to 5 GB (free limit)
+       │ <────────────────────── │           │  Storage > 5 GB? → GRACE alert
+       │                         └─────┬─────┘
+       │                               │
+       │                               │ Grace period ends (day 30)
+       │                               ▼
+       │                         ┌───────────┐
+       │   Storage <= 5 GB       │  WARNING  │  Days 30-60 after expiration
+       │   (no warning needed)   │  PERIOD   │  "Data will be deleted in X days"
+       │ <────────────────────── │           │
+       │                         └─────┬─────┘
+       │                               │
+       │                               │ Warning period ends (day 60)
+       │                               ▼
+       │                         ┌───────────┐
+       │   Storage <= 5 GB       │  OVERDUE  │  Day 60+ after expiration
+       │   (no warning needed)   │           │  "Data scheduled for deletion"
+       │ <────────────────────── │           │
+       │                         └───────────┘
+       │
+       │         User can re-subscribe at ANY point to return to PREMIUM
+       └─────────────────────────────────────────────────────────────────
+```
+
+**Key principle:** Warnings only appear when the user's storage exceeds the
+free tier limit (5 GB). Users whose data fits within 5 GB transition silently
+back to free with no alerts, regardless of lifecycle stage.
+
+### Timeline After Subscription Expiration
+
+```
+Subscription    Grace Period     Warning Period     Overdue
+  Expires          Ends              Ends          (ongoing)
+    │                │                 │               │
+    T             T + 30d          T + 60d            ...
+    │                │                 │               │
+    ├────────────────┼─────────────────┼───────────────┤
+    │  GRACE (30d)   │  WARNING (30d)  │   OVERDUE     │
+    │                │                 │               │
+    │  Alert: GRACE  │  Alert: GRACE   │ Alert: OVERDUE│
+    │  "X days of    │  "Data deleted  │ "Scheduled    │
+    │   premium      │   in X days"   │  for deletion"│
+    │   remaining"   │                 │               │
+    └────────────────┴─────────────────┴───────────────┘
+
+  Key dates computed by calculate_limit_warning():
+    subscription_end  = UserSubscription.expiration
+    grace_end         = subscription_end + 30 days (GRACE_PERIOD_DAYS)
+    deletion_date     = grace_end + 30 days (WARNING_PERIOD_DAYS)
+```
+
+### Subscription Lifecycle States
+
+| Status | Duration | Storage Quota | Alert Type | User Experience |
+|--------|----------|---------------|------------|-----------------|
+| `FREE` | Indefinite | 5 GB | `storage` (if over) | Full free features |
+| `ACTIVE` | Billing period | 200 GB | `storage` (if over) | Full premium features |
+| `GRACE` | Days 0-30 | Measured against 5 GB | `grace` | Premium features, countdown warning |
+| `WARNING` | Days 30-60 | Measured against 5 GB | `grace` | "Data will be deleted in X days" |
+| `OVERDUE` | Day 60+ | Measured against 5 GB | `overdue` | "Data scheduled for deletion" |
+
+### Limit Warning Decision Tree
+
+`calculate_limit_warning()` evaluates 5 cases to determine the alert:
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                     calculate_limit_warning(user_id)                      │
+└──────────────────────────────────────────────────────────────────────────┘
+                                   │
+                    ┌──────────────┴──────────────┐
+                    │  Get subscription status    │
+                    │  Get storage usage           │
+                    └──────────────┬──────────────┘
+                                   │
+              ┌────────────────────┼────────────────────┐
+              ▼                    ▼                    ▼
+        ┌──────────┐        ┌──────────┐        ┌──────────────────┐
+        │   FREE   │        │  ACTIVE  │        │ GRACE / WARNING  │
+        │  (no     │        │ (premium │        │   / OVERDUE      │
+        │  premium │        │  active) │        │ (premium expired)│
+        │  history)│        │          │        │                  │
+        └────┬─────┘        └────┬─────┘        └────────┬─────────┘
+             │                   │                       │
+        ┌────┴────┐         ┌────┴────┐            ┌─────┴─────┐
+        │ > 5 GB? │         │> 200 GB?│            │  > 5 GB?  │
+        └────┬────┘         └────┬────┘            └─────┬─────┘
+          Y     N            Y     N                 Y       N
+          │     │            │     │                 │       │
+          ▼     ▼            ▼     ▼                 ▼       ▼
+      Case 2  Case 1    Case 3  No alert        Cases 4/5  No alert
+      STORAGE  None     STORAGE                  GRACE or
+      alert             alert                    OVERDUE alert
+```
+
+| Case | Subscription | Storage | Alert Type | `days_remaining` |
+|------|-------------|---------|------------|------------------|
+| 1 | Free, never premium | Under 5 GB | None | -- |
+| 2 | Free, never premium | Over 5 GB | `storage` | 30 (fixed) |
+| 3 | Premium active | Over 200 GB | `storage` | 30 (fixed) |
+| 4 | Grace/Warning period | Over 5 GB | `grace` | Countdown to grace_end or deletion_date |
+| 5 | Overdue (60+ days) | Over 5 GB | `overdue` | 0 |
+
+### LimitWarning Response Schema
+
+**File:** `studio/app/common/schemas/storage.py`
+
+```python
+class LimitWarning(BaseModel):
+    has_alert: bool               # Always True when returned
+    alert_type: str               # "storage", "grace", or "overdue"
+    days_remaining: int           # Days before action required (0 = overdue)
+    excess_data_bytes: int        # Bytes over effective quota
+    excess_data_gb: float         # GB over effective quota
+    storage_usage_bytes: int      # Current total storage usage
+    storage_usage_gb: float
+    storage_quota_bytes: int      # Effective quota (5 GB if grace/overdue)
+    storage_quota_gb: float
+    message: str                  # Human-readable warning
+
+    # Subscription-related (only set for grace/warning/overdue alerts)
+    subscription_end_date: str    # ISO date when premium expired
+    grace_end_date: str           # ISO date when grace period ends (T+30d)
+    deletion_date: str            # ISO date when data deletion begins (T+60d)
+```
+
+### Warning Messages by Status
+
+| Status | Storage Exceeded | Example Message |
+|--------|-----------------|-----------------|
+| `GRACE` | Yes | "Your premium subscription expired on Jan 15, 2025. Your storage (12.0 GB) exceeds the free plan limit (5 GB). You have 22 days to upgrade or remove 7.0 GB of data." |
+| `WARNING` | Yes | "Your premium subscription expired on Jan 15, 2025. Your storage (12.0 GB) exceeds the free plan limit (5 GB). Remove 7.0 GB of data within 14 days or your data will be deleted." |
+| `OVERDUE` | Yes | "Your premium subscription expired on Jan 15, 2025. Your storage (12.0 GB) exceeds the free plan limit (5 GB). Your data is scheduled for deletion. Please upgrade or remove 7.0 GB." |
+| `FREE` | Yes | "Your data usage (7.0 GB) exceeds the free plan limit (5.0 GB). Please upgrade or remove 2.0 GB of data within 30 days." |
+| `ACTIVE` | Yes | "Your storage usage (210.0 GB) is over the limit for your plan. You will be unable to run workflows. Consider cleaning up unused data." |
+
+### Constants Reference
+
+**File:** `studio/app/common/core/subscription/constants.py`
+
+```python
+# Storage quotas
+StorageQuota.FREE = 5                            # 5 GB
+StorageQuota.PREMIUM = 200                       # 200 GB
+
+# Lifecycle periods
+SubscriptionPeriods.GRACE_PERIOD_DAYS = 30       # Grace period after expiry
+SubscriptionPeriods.WARNING_PERIOD_DAYS = 30     # Warning period after grace
+SubscriptionPeriods.STORAGE_WARNING_DAYS = 30    # Days for free users to reduce
+SubscriptionPeriods.QUOTA_DROP_WARNING_DAYS = 3  # Warn before quota drops
+
+# Frontend severity thresholds (days remaining)
+SubscriptionPeriods.CRITICAL_THRESHOLD_DAYS = 0  # Red/error
+SubscriptionPeriods.URGENT_THRESHOLD_DAYS = 7    # Red/error
+SubscriptionPeriods.WARNING_THRESHOLD_DAYS = 14  # Yellow/warning
+```
+
+### Enums Reference
+
+**File:** `studio/app/common/core/subscription/constants.py`
+
+```python
+class SubscriptionLifecycleStatus(StrEnum):
+    ACTIVE = "active"      # Premium not yet expired
+    GRACE = "grace"        # Days 0-30 after expiration
+    WARNING = "warning"    # Days 30-60 after expiration
+    OVERDUE = "overdue"    # Day 60+ after expiration
+    FREE = "free"          # Never had premium
+
+class AlertType(StrEnum):
+    STORAGE = "storage"    # Storage quota exceeded (any plan)
+    GRACE = "grace"        # Grace or warning period (maps from GRACE + WARNING)
+    OVERDUE = "overdue"    # Past all grace periods, deletion imminent
+
+class SubscriptionStatus(StrEnum):
+    FREE = "Free"
+    PREMIUM = "Premium"
+    LIMIT_GRACE = "Limit Grace"
+    EXPIRED = "Expired"
+```
+
+### Limit Warning API Endpoints
+
+**File:** `studio/app/common/routers/storage_limit_alerts.py`
+
+| Endpoint | Method | Purpose | Response |
+|----------|--------|---------|----------|
+| `/storage-limit-alerts/me` | GET | Storage alert for current user | `{ has_alert, alert }` |
+| `/storage-limit-alerts/usage` | GET | Detailed storage usage stats | `{ usage, quota, percent }` |
+| `/storage-limit-alerts/all` | GET | All user alerts (admin only) | `[{ alert }]` |
+| `/storage-limit-alerts/refresh` | POST | Recalculate storage from S3 | `{ updated_usage }` |
+| `/storage-limit-alerts/limit-warning` | GET | Full limit warning details | `LimitWarning` or `null` |
+| `/storage-limit-alerts/limit-warning/check` | GET | Quick warning status check | `LimitWarningStatus` |
+
+### Frontend Alert Component
+
+**File:** `frontend/src/components/common/LimitAlert.tsx`
+
+| Alert Type | Severity | Title | Behavior |
+|------------|----------|-------|----------|
+| `overdue` | error (red) | "Data Cleanup Overdue" | Requires acknowledgment, no auto-dismiss |
+| `storage` | warning (yellow) | "Storage Limit Exceeded" | Dismissible |
+| `grace` | warning (yellow) | "Premium Subscription Expired" | Dismissible, shows countdown |
+
+Features:
+- Progress bar showing time remaining (hours or days granularity)
+- Storage usage details (X GB used / Y GB limit, Z GB excess)
+- Action buttons: "Upgrade to Premium" and "Manage Files"
+- Cross-tab synchronization via localStorage and BroadcastChannel
+- OVERDUE alerts require explicit acknowledgment before dismissal
+
+### Key Functions Reference
+
+| Function | File | Purpose |
+|----------|------|---------|
+| `calculate_limit_warning()` | `studio/app/common/core/cloud/cloud_utils.py` | Core 5-case decision tree for limit warnings |
+| `_generate_subscription_warning_message()` | `studio/app/common/core/cloud/cloud_utils.py` | Context-aware message generation per status |
+| `get_user_storage_usage()` | `studio/app/common/core/cloud/storage_tracking.py` | Get cached storage usage from database |
+| `get_current_user_storage_usage()` | `studio/app/common/core/cloud/storage_tracking.py` | Get fresh storage usage (async, S3 scan) |
+| `handle_checkout_completed()` | `studio/app/common/core/subscription/webhook_service.py` | Stripe webhook: create subscription record |
+| `handle_subscription_cancelled()` | `studio/app/common/core/subscription/webhook_service.py` | Stripe webhook: clean up subscription |
+| `handle_payment_failed()` | `studio/app/common/core/subscription/webhook_service.py` | Stripe webhook: mark subscription past_due |
+
+---
+
 ## Error Handling
 
 ### Stripe API Errors
