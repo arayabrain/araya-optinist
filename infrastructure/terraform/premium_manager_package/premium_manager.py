@@ -272,7 +272,11 @@ def get_user_id_from_uid(connection, user_uid: str) -> int:
         ValueError: If user not found
     """
     with connection.cursor() as cursor:
-        cursor.execute("""SELECT id FROM users WHERE uid = %s""", (user_uid,))
+        cursor.execute(
+            """SELECT id FROM users
+               WHERE uid = %s AND active = 1""",
+            (user_uid,),
+        )
         result = cursor.fetchone()
 
         if not result:
@@ -288,7 +292,8 @@ def get_user_uid_from_id(connection, user_id: int) -> str:
     """
     with connection.cursor() as cursor:
         cursor.execute(
-            """SELECT uid FROM users WHERE id = %s""",
+            """SELECT uid FROM users
+               WHERE id = %s AND active = 1""",
             (user_id,),
         )
         result = cursor.fetchone()
