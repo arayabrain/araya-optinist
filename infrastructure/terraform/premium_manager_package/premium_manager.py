@@ -70,6 +70,7 @@ DEFAULT_IDLE_TIMEOUT_HOURS = 3  # Hours before idle instances become standby
 # MySQL GET_LOCK names for preventing concurrent instance creation
 CREATE_STANDBY_LOCK = "create_standby_lock"
 CREATE_RUNNING_LOCK = "create_running_lock"
+MIGRATE_USERS_LOCK = "migrate_users_lock"
 LOCK_TIMEOUT_SECONDS = 60
 
 
@@ -1225,7 +1226,7 @@ def try_reserve_instance_for_migration_transaction(
             (instance_id,),
         )
 
-        print(f"Reserved instance {instance_id} for migration of user {user_id}")
+        print(f"Reserved instance {instance_id} " f"for migration of user {user_id}")
         return True
 
 
@@ -1786,22 +1787,86 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
         }
 
 
+def _handle_migrate_shared_users(event):
+    """Run migration loop under a distributed lock."""
+    with distributed_lock(MIGRATE_USERS_LOCK) as acquired:
+        if not acquired:
+            print("Another Lambda is already running " "migrations, skipping")
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"message": "Migration skipped - lock held"}),
+            }
+
+        max_wait_seconds = event.get("max_wait_seconds", 60)
+        retry_interval = event.get("retry_interval", 10)
+
+        print(
+            f"Async migration triggered, will retry "
+            f"every {retry_interval}s "
+            f"for up to {max_wait_seconds}s..."
+        )
+
+        migrations_performed = 0
+        elapsed = 0
+        migration_result: Dict[str, Any] = {}
+
+        while elapsed < max_wait_seconds:
+            update_premium_service_desired_count()
+
+            migration_result = process_shared_instance_optimization()
+            migrations_performed = migration_result.get("migrations_performed", 0)
+
+            print(
+                f"Migration attempt at {elapsed}s: "
+                f"{migrations_performed} migrations"
+            )
+
+            autoscaling_users = get_assigned_users_for_instance(
+                PremiumAssignment.AUTOSCALING_POOL
+            )
+            remaining_users = len(autoscaling_users)
+
+            if migrations_performed > 0:
+                print(
+                    f"Migrated {migrations_performed} users, "
+                    f"{remaining_users} still on "
+                    f"autoscaling pool"
+                )
+
+            if remaining_users == 0:
+                print(
+                    f"Migration completed after {elapsed}s"
+                    f" - all users migrated from "
+                    f"autoscaling pool"
+                )
+                return {
+                    "statusCode": 200,
+                    "body": json.dumps(
+                        {
+                            "message": (f"Migration completed " f"after {elapsed}s"),
+                            "result": migration_result,
+                        }
+                    ),
+                }
+
+            time.sleep(retry_interval)
+            elapsed += retry_interval
+
+        print(f"Migration timeout after {elapsed}s, " f"no instances ready")
+        return {
+            "statusCode": 200,
+            "body": json.dumps(
+                {
+                    "message": ("Migration timeout - " "instances not ready yet"),
+                    "result": migration_result,
+                }
+            ),
+        }
+
+
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Handle premium user assignment lifecycle events and scheduled cleanup
-
-    Event structure for API calls:
-    {
-        "httpMethod": "GET" | "POST",
-        "body": '{"action": "assign" | "release", "user_id": "123", "tier": "premium"}'
-    }
-
-    Event structure for scheduled cleanup:
-    {
-        "source": "aws.events",
-        "detail-type": "Scheduled Event",
-        "detail": {"action": "cleanup"}
-    }
     """
 
     print(f"Premium manager received event: {json.dumps(event)}")
@@ -1810,73 +1875,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     try:
         # Handle async migration invocation
         if event.get("action") == "migrate_shared_users":
-            max_wait_seconds = event.get("max_wait_seconds", 60)
-            retry_interval = event.get("retry_interval", 10)
-
-            print(
-                f"Async migration triggered, will retry every {retry_interval}s "
-                f"for up to {max_wait_seconds}s..."
-            )
-
-            migrations_performed = 0
-            elapsed = 0
-
-            # Retry migration until successful or timeout
-            while elapsed < max_wait_seconds:
-                time.sleep(retry_interval)
-                elapsed += retry_interval
-
-                # Update ECS service desired count before checking for migrations
-                # This ensures tasks are being placed on new instances
-                update_premium_service_desired_count()
-
-                migration_result = process_shared_instance_optimization()
-                migrations_performed = migration_result.get("migrations_performed", 0)
-
-                print(
-                    f"Migration attempt at {elapsed}s: "
-                    f"{migrations_performed} migrations"
-                )
-
-                # Check if there are still users on autoscaling pool needing migration
-                autoscaling_users = get_assigned_users_for_instance(
-                    PremiumAssignment.AUTOSCALING_POOL
-                )
-                remaining_users = len(autoscaling_users)
-
-                if migrations_performed > 0:
-                    print(
-                        f"Migrated {migrations_performed} users, "
-                        f"{remaining_users} still on autoscaling pool"
-                    )
-
-                # Only exit if all autoscaling pool users have been migrated
-                if remaining_users == 0:
-                    print(
-                        f"Migration completed after {elapsed}s "
-                        f"- all users migrated from autoscaling pool"
-                    )
-                    return {
-                        "statusCode": 200,
-                        "body": json.dumps(
-                            {
-                                "message": f"Migration completed after {elapsed}s",
-                                "result": migration_result,
-                            }
-                        ),
-                    }
-
-            # Timeout - no migrations performed
-            print(f"Migration timeout after {elapsed}s, no instances ready")
-            return {
-                "statusCode": 200,
-                "body": json.dumps(
-                    {
-                        "message": "Migration timeout - instances not ready yet",
-                        "result": migration_result,
-                    }
-                ),
-            }
+            return _handle_migrate_shared_users(event)
 
         # Handle fix_shared_flags action (one-time data cleanup)
         if event.get("action") == "fix_shared_flags":
@@ -2867,10 +2866,13 @@ def assign_premium_user(
 
 def invoke_migration_async():
     """
-    Invoke this same Lambda function asynchronously to handle migration.
-    Uses Event InvocationType to avoid blocking the current request.
-    Lambda will retry for 180 seconds until instances are ready, then migrate users.
+    Invoke this Lambda asynchronously for migration.
+    Skips invocation if a migration Lambda already holds the lock.
     """
+    if is_creation_lock_held(MIGRATE_USERS_LOCK):
+        print("Migration Lambda already running, skipping")
+        return
+
     try:
         lambda_client: "LambdaClient" = boto3.client("lambda")
         function_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
@@ -3464,21 +3466,23 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                 cursor.execute(
                     """SELECT instance_id, target_group_arn,
                        alb_rule_arn, active_workflow_count
-                       FROM premium_user_assignments WHERE user_id = %s""",
+                       FROM premium_user_assignments
+                       WHERE user_id = %s""",
                     (user_id,),
                 )
                 assignment = cursor.fetchone()
 
                 if not assignment:
-                    print(f"No assignment found for user {user_id}")
+                    print(f"No assignment found for " f"user {user_id}")
                     return False
 
                 # Double-check workflow count (defense in depth)
                 active_workflows = assignment.get("active_workflow_count", 0) or 0
                 if active_workflows > 0:
                     print(
-                        f"Cannot migrate user {user_id}: {active_workflows} "
-                        f"active workflows detected in assignment record"
+                        f"Cannot migrate user {user_id}: "
+                        f"{active_workflows} active workflows"
+                        f" detected in assignment record"
                     )
                     return False
 
@@ -3576,14 +3580,21 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                         new_rule_arn = rule_response["Rules"][0]["RuleArn"]
                         print(f"Created new ALB rule: {new_rule_arn}")
 
-                    # Update assignment with new target group and rule ARN
+                    # Update assignment with new target group
                     cursor.execute(
                         """UPDATE premium_user_assignments
-                           SET instance_id = %s, target_group_arn = %s,
+                           SET instance_id = %s,
+                               target_group_arn = %s,
                                alb_rule_arn = %s,
-                               is_shared = 0, last_state_check = NOW()
+                               is_shared = 0,
+                               last_state_check = NOW()
                            WHERE user_id = %s""",
-                        (new_instance_id, new_target_group_arn, new_rule_arn, user_id),
+                        (
+                            new_instance_id,
+                            new_target_group_arn,
+                            new_rule_arn,
+                            user_id,
+                        ),
                     )
                 else:
                     # Normal migration: deregister from old, register to new
@@ -3609,22 +3620,28 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                         Targets=[{"Id": new_instance_id, "Port": 8000}],
                     )
 
-                    # Update RDS assignment (include target_group_arn in case recreated)
+                    # Update RDS assignment
                     cursor.execute(
                         """UPDATE premium_user_assignments
-                           SET instance_id = %s, target_group_arn = %s,
-                               is_shared = 0, last_state_check = NOW()
+                           SET instance_id = %s,
+                               target_group_arn = %s,
+                               is_shared = 0,
+                               last_state_check = NOW()
                            WHERE user_id = %s""",
-                        (new_instance_id, old_target_group_arn, user_id),
+                        (
+                            new_instance_id,
+                            old_target_group_arn,
+                            user_id,
+                        ),
                     )
 
-                connection.commit()  # Commit the migration
+                connection.commit()
 
                 print(
-                    f"Migrated user {user_id} from {old_instance_id} to "
-                    f"{new_instance_id}"
+                    f"Migrated user {user_id} from "
+                    f"{old_instance_id} to {new_instance_id}"
                 )
-                # Trigger experiment sync on new instance (fire-and-forget)
+                # Trigger experiment sync (fire-and-forget)
                 trigger_experiment_sync(user_id)
                 return True
 
