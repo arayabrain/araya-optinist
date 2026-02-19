@@ -1,12 +1,23 @@
 import { Box, styled, Typography } from "@mui/material"
 
+import {
+  FONT_SIZE,
+  FONT_WEIGHT,
+  LINE_HEIGHT,
+  TEXT_COLOR,
+  ACCENT_COLOR,
+  BG_COLOR,
+  BORDER_COLOR,
+  ICON_BOX,
+} from "pages/LandingPage/constants"
+
 interface Feature {
   icon: string
   title: string
   description: string
   image: string
   imageAlt: string
-  iconColor: "primary" | "magenta" | "green" | "yellow"
+  iconColor: "PRIMARY" | "MAGENTA" | "GREEN" | "YELLOW"
 }
 
 const features: Feature[] = [
@@ -14,46 +25,49 @@ const features: Feature[] = [
     icon: "account_tree",
     title: "Visual Workflow Builder",
     description:
-      "Drag algorithm nodes onto a blank workflow, connect them visually, and configure parameters via a sidebar panel with text fields, dropdowns, and toggles. Run pipelines with one click.",
+      "Drag algorithm nodes onto a blank workflow, connect them " +
+      "visually, and configure parameters via a sidebar panel " +
+      "with text fields, dropdowns, and toggles. Run pipelines " +
+      "with one click.",
     image: "/images/landing-page/visualize_workflow_builder.png",
     imageAlt: "Visual Workflow Builder",
-    iconColor: "primary",
+    iconColor: "PRIMARY",
   },
   {
     icon: "analytics",
     title: "Rich Visualization",
     description:
-      "Heatmaps, time series, scatter plots, bar charts, histograms, and more. Customize colors, export publication-ready figures.",
+      "Heatmaps, time series, scatter plots, bar charts, " +
+      "histograms, and more. Customize colors, export " +
+      "publication-ready figures.",
     image: "/images/landing-page/rich_visualization.png",
     imageAlt: "Rich Visualization",
-    iconColor: "magenta",
+    iconColor: "MAGENTA",
   },
   {
     icon: "frame_inspect",
     title: "Cell ROI Analysis Tools",
     description:
-      "View, select, and analyze cell ROI overlaid on images. Perfect for calcium imaging and spatial analysis workflows.",
+      "View, select, and analyze cell ROI overlaid on images. " +
+      "Perfect for calcium imaging and spatial analysis " +
+      "workflows.",
     image: "/images/landing-page/roi_analysis_tools.png",
     imageAlt: "Cell ROI Analysis Tools",
-    iconColor: "green",
+    iconColor: "GREEN",
   },
   {
     icon: "science",
     title: "Experiment Management",
     description:
-      "Track all analysis workflows and results. Compare approaches. Re-run past analyses instantly. Export data to NWB (Neurodata Without Borders) or download workflow configs.",
+      "Track all analysis workflows and results. Compare " +
+      "approaches. Re-run past analyses instantly. Export data " +
+      "to NWB (Neurodata Without Borders) or download " +
+      "workflow configs.",
     image: "/images/landing-page/experiment_management.png",
     imageAlt: "Experiment Management",
-    iconColor: "yellow",
+    iconColor: "YELLOW",
   },
 ]
-
-const iconColors = {
-  primary: "#2563eb",
-  magenta: "#e11d48",
-  green: "#059669",
-  yellow: "#d97706",
-}
 
 export const Features = () => {
   return (
@@ -63,13 +77,15 @@ export const Features = () => {
           <SectionLabel>
             <span
               className="material-symbols-outlined"
-              style={{ fontSize: "1.25rem" }}
+              style={{ fontSize: FONT_SIZE.CARD_TITLE }}
             >
               widgets
             </span>
             Features
           </SectionLabel>
-          <SectionTitleLeft>Everything You Need to Analyze</SectionTitleLeft>
+          <SectionTitleCenter>
+            Everything You Need to Analyze
+          </SectionTitleCenter>
           <SectionDescription>
             Powerful tools that make complex data analysis accessible to
             everyone.
@@ -80,12 +96,16 @@ export const Features = () => {
             <FeatureCard key={index}>
               <FeatureContent>
                 <FeatureHeader>
-                  <span
-                    className="material-symbols-outlined"
-                    style={{ color: iconColors[feature.iconColor] }}
+                  <FeatureIcon
+                    style={{
+                      backgroundColor: ACCENT_COLOR[feature.iconColor].bg,
+                      color: ACCENT_COLOR[feature.iconColor].color,
+                    }}
                   >
-                    {feature.icon}
-                  </span>
+                    <span className="material-symbols-outlined">
+                      {feature.icon}
+                    </span>
+                  </FeatureIcon>
                   <FeatureTitle>{feature.title}</FeatureTitle>
                 </FeatureHeader>
                 <FeatureDescription>{feature.description}</FeatureDescription>
@@ -116,31 +136,38 @@ const FeaturesHeader = styled(Box)({
   flexDirection: "column",
   gap: "1rem",
   marginBottom: "4rem",
-  maxWidth: 700,
+  textAlign: "center",
 })
 
 const SectionLabel = styled(Box)({
   display: "inline-flex",
+  alignSelf: "flex-start",
   alignItems: "center",
   gap: "0.5rem",
-  backgroundColor: "rgba(37, 99, 235, 0.1)",
-  color: "#2563eb",
-  fontWeight: 700,
-  fontSize: "0.875rem",
+  backgroundColor: ACCENT_COLOR.PRIMARY.bg,
+  color: TEXT_COLOR.ACCENT,
+  fontWeight: FONT_WEIGHT.BOLD,
+  fontSize: FONT_SIZE.SMALL,
   padding: "0.5rem 1rem",
   borderRadius: 9999,
   width: "fit-content",
 })
 
-const SectionTitleLeft = styled(Typography)({
-  fontSize: "2.5rem",
-  fontWeight: 900,
+const SectionTitleCenter = styled(Typography)({
+  fontSize: FONT_SIZE.SECTION_TITLE,
+  fontWeight: FONT_WEIGHT.BOLD,
   margin: 0,
+  textAlign: "center",
 })
 
 const SectionDescription = styled(Typography)({
-  color: "#6b7280",
+  color: TEXT_COLOR.SECONDARY,
   margin: 0,
+  fontSize: FONT_SIZE.SECTION_SUBTITLE,
+  textAlign: "center",
+  maxWidth: 600,
+  marginLeft: "auto",
+  marginRight: "auto",
 })
 
 const FeaturesGrid = styled(Box)({
@@ -153,16 +180,12 @@ const FeaturesGrid = styled(Box)({
 })
 
 const FeatureCard = styled(Box)({
-  backgroundColor: "white",
-  border: "1px solid #e5e7eb",
+  backgroundColor: BG_COLOR.WHITE,
+  border: `1px solid ${BORDER_COLOR.DEFAULT}`,
   borderRadius: 12,
   overflow: "hidden",
   display: "flex",
   flexDirection: "column",
-  transition: "box-shadow 0.3s",
-  "&:hover": {
-    boxShadow: "0 20px 40px -12px rgba(0, 0, 0, 0.1)",
-  },
 })
 
 const FeatureContent = styled(Box)({
@@ -172,32 +195,34 @@ const FeatureContent = styled(Box)({
   gap: "0.5rem",
 })
 
+const FeatureIcon = styled(Box)({ ...ICON_BOX })
+
 const FeatureHeader = styled(Box)({
   display: "flex",
-  alignItems: "center",
+  alignItems: "flex-start",
   gap: "0.75rem",
   marginBottom: "0.5rem",
 })
 
 const FeatureTitle = styled(Typography)({
-  fontSize: "1.25rem",
-  fontWeight: 700,
+  fontSize: FONT_SIZE.CARD_TITLE,
+  fontWeight: FONT_WEIGHT.BOLD,
   margin: 0,
 })
 
 const FeatureDescription = styled(Typography)({
-  fontSize: "0.875rem",
-  color: "#6b7280",
-  lineHeight: 1.6,
+  fontSize: FONT_SIZE.BODY,
+  color: TEXT_COLOR.SECONDARY,
+  lineHeight: LINE_HEIGHT.NORMAL,
   margin: 0,
 })
 
 const FeatureVisual = styled(Box)({
-  backgroundColor: "#f9fafb",
+  backgroundColor: BG_COLOR.CARD,
   height: 256,
   margin: "0 1.5rem 1.5rem",
   borderRadius: 8,
-  border: "1px solid #e5e7eb",
+  border: `1px solid ${BORDER_COLOR.DEFAULT}`,
   display: "flex",
   alignItems: "center",
   justifyContent: "center",

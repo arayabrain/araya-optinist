@@ -2,6 +2,16 @@ import { useNavigate } from "react-router-dom"
 
 import { Box, styled, Typography } from "@mui/material"
 
+import {
+  FONT_SIZE,
+  FONT_WEIGHT,
+  TEXT_COLOR,
+  BG_COLOR,
+  BORDER_COLOR,
+  ACCENT_COLOR,
+  BUTTON_BASE,
+} from "pages/LandingPage/constants"
+
 export const CTA = () => {
   const navigate = useNavigate()
 
@@ -45,11 +55,11 @@ const Container = styled(Box)({
 })
 
 const CTAWrapper = styled(Box)({
-  backgroundColor: "#2563eb",
+  backgroundColor: ACCENT_COLOR.PRIMARY.bg,
   borderRadius: 24,
   padding: "3rem",
   textAlign: "center",
-  color: "white",
+  color: TEXT_COLOR.PRIMARY,
   position: "relative",
   overflow: "hidden",
 })
@@ -62,7 +72,7 @@ const CTAGlow1 = styled(Box)({
   filter: "blur(60px)",
   top: 0,
   right: 0,
-  backgroundColor: "rgba(255, 255, 255, 0.1)",
+  backgroundColor: "rgba(37, 99, 235, 0.08)",
   transform: "translate(30%, -30%)",
 })
 
@@ -74,23 +84,23 @@ const CTAGlow2 = styled(Box)({
   filter: "blur(60px)",
   bottom: 0,
   left: 0,
-  backgroundColor: "rgba(13, 148, 136, 0.2)",
+  backgroundColor: ACCENT_COLOR.CYAN.bg,
   transform: "translate(-30%, 30%)",
 })
 
 const CTATitle = styled(Typography)({
-  fontSize: "2.5rem",
-  fontWeight: 900,
+  fontSize: FONT_SIZE.SECTION_TITLE,
+  fontWeight: FONT_WEIGHT.BOLD,
   margin: "0 0 1.5rem",
   position: "relative",
   zIndex: 10,
 })
 
 const CTADescription = styled(Typography)({
-  color: "rgba(255, 255, 255, 0.8)",
+  color: TEXT_COLOR.SECONDARY,
   maxWidth: 600,
   margin: "0 auto 2.5rem",
-  fontSize: "1.125rem",
+  fontSize: FONT_SIZE.SECTION_SUBTITLE,
   position: "relative",
   zIndex: 10,
 })
@@ -107,37 +117,27 @@ const CTAButtons = styled(Box)({
   },
 })
 
-const CTAPrimaryButton = styled("button")({
-  backgroundColor: "white",
-  color: "#2563eb",
-  fontWeight: 900,
+const ctaButtonBase = {
+  ...BUTTON_BASE,
   height: 56,
   padding: "0 2.5rem",
   borderRadius: 12,
-  border: "none",
-  cursor: "pointer",
-  transition: "background-color 0.2s",
-  "&:hover": {
-    backgroundColor: "#f3f4f6",
-  },
-})
-
-const CTASecondaryLink = styled("a")({
-  backgroundColor: "rgba(19, 91, 236, 0.5)",
-  backdropFilter: "blur(8px)",
-  border: "1px solid rgba(255, 255, 255, 0.3)",
-  color: "white",
-  fontWeight: 900,
-  height: 56,
-  padding: "0 2.5rem",
-  borderRadius: 12,
-  cursor: "pointer",
-  transition: "background-color 0.2s",
   textDecoration: "none",
   display: "inline-flex",
   alignItems: "center",
   justifyContent: "center",
+} as const
+
+const CTAPrimaryButton = styled("button")({
+  ...ctaButtonBase,
+})
+
+const CTASecondaryLink = styled("a")({
+  ...ctaButtonBase,
+  backgroundColor: BG_COLOR.WHITE,
+  color: TEXT_COLOR.ACCENT,
+  border: `1px solid ${BORDER_COLOR.DEFAULT}`,
   "&:hover": {
-    backgroundColor: "rgba(19, 91, 236, 0.6)",
+    backgroundColor: "#f3f4f6",
   },
 })

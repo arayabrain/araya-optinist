@@ -68,7 +68,7 @@ interface PremiumAssignmentContextType extends PremiumAssignmentState {
   release: () => Promise<unknown>
   getStatus: () => Promise<PremiumStatusResult | null>
   updateRoutingInfo: () => Promise<RoutingInfo | null>
-  autoReleaseOnLogout: () => Promise<unknown>
+  autoReleaseOnLogout: () => void
   dismissInactivityWarning: () => void
   recordActivity: () => Promise<void>
 }
@@ -447,18 +447,27 @@ export const PremiumAssignmentProvider: React.FC<{
   }, [isPremiumUser, hasAttemptedAutoAssignment])
 
   /**
-   * Auto-release on logout
+   * Auto-release on logout via sendBeacon.
+   * Uses the HMAC-signed beacon token (no auth header needed),
+   * so it's safe to call right before dispatch(logout) clears
+   * the auth token from localStorage.
    */
-  const autoReleaseOnLogout = useCallback(async (): Promise<unknown> => {
-    // Always attempt release regardless of local state.
-    try {
-      return await release()
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.warn("Failed to release premium instance on logout:", error)
-      return null
+  const autoReleaseOnLogout = useCallback((): void => {
+    if (beaconTokenRef.current) {
+      const blob = new Blob(
+        [JSON.stringify({ token: beaconTokenRef.current })],
+        { type: "application/json" },
+      )
+      navigator.sendBeacon("/api/users/me/premium/release-beacon", blob)
+      beaconTokenRef.current = null
     }
-  }, [release])
+    setState((prev) => ({
+      ...prev,
+      assignmentResult: null,
+      statusResult: null,
+    }))
+    routingService.setPremiumAssigned(false)
+  }, [])
 
   // Inactivity monitoring for premium users
   // Uses refs for lastActivityTime/showInactivityWarning to avoid interval churn
@@ -493,10 +502,7 @@ export const PremiumAssignmentProvider: React.FC<{
           "2 hours of inactivity detected - auto-releasing premium instance",
         )
         setState((prev) => ({ ...prev, showInactivityWarning: false }))
-        autoReleaseOnLogout().catch((error) => {
-          // eslint-disable-next-line no-console
-          console.error("Failed to auto-release after inactivity:", error)
-        })
+        autoReleaseOnLogout()
       } else if (
         timeSinceLastActivity >= oneHourMs &&
         !showInactivityWarningRef.current
@@ -667,11 +673,11 @@ export const PremiumAssignmentProvider: React.FC<{
 
     const handleBeforeUnload = () => {
       if (state.assignmentResult?.instance_id && beaconTokenRef.current) {
-        routingService.clearRoutingInfo()
-        const beaconData = JSON.stringify({
-          token: beaconTokenRef.current,
-        })
-        navigator.sendBeacon("/api/users/me/premium/release-beacon", beaconData)
+        const blob = new Blob(
+          [JSON.stringify({ token: beaconTokenRef.current })],
+          { type: "application/json" },
+        )
+        navigator.sendBeacon("/api/users/me/premium/release-beacon", blob)
       }
     }
 
