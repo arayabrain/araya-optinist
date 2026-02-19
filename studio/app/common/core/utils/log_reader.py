@@ -53,6 +53,7 @@ class LogRecordReader(ContentUnitReader):
             rb"(?:\x1b\[\d+m)?(?P<levelprefix>\w+)(?:\x1b\[0m)?:?\s+"
             rb"\[(?P<name>[^\]]+)\] "
             rb"\(pid:(?P<process>\w+)\) "
+            rb"\(task:(?P<ecs_task_id>[^\)]*)\) "
             rb"\(client:(?P<client_id>[^\)]*)\) "
             rb"(?P<funcName>\w+)\(\):(?P<lineno>\d+) - "
             rb"(?P<message>.*)",
