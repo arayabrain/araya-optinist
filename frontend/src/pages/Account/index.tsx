@@ -108,7 +108,10 @@ const Account = () => {
         "This action cannot be undone",
       ]
     }
-    return undefined
+    return [
+      "All your data (workspaces, experiments, files) will be permanently deleted",
+      "This action cannot be undone",
+    ]
   }
 
   const onConfirmDelete = async () => {
