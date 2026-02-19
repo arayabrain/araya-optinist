@@ -2,6 +2,16 @@ import { useNavigate } from "react-router-dom"
 
 import { Box, styled, Typography } from "@mui/material"
 
+import {
+  FONT_SIZE,
+  FONT_WEIGHT,
+  LETTER_SPACING,
+  LINE_HEIGHT,
+  TEXT_COLOR,
+  ACCENT_COLOR,
+  BUTTON_BASE,
+} from "pages/LandingPage/constants"
+
 export const Hero = () => {
   const navigate = useNavigate()
 
@@ -33,7 +43,7 @@ export const Hero = () => {
             <Badge>
               <span
                 className="material-symbols-outlined"
-                style={{ color: "#059669" }}
+                style={{ color: ACCENT_COLOR.GREEN.color }}
               >
                 check_circle
               </span>
@@ -42,7 +52,7 @@ export const Hero = () => {
             <Badge>
               <span
                 className="material-symbols-outlined"
-                style={{ color: "#059669" }}
+                style={{ color: ACCENT_COLOR.GREEN.color }}
               >
                 check_circle
               </span>
@@ -90,26 +100,29 @@ const HeroText = styled(Box)({
 })
 
 const Label = styled(Typography)({
-  color: "#2563eb",
-  fontWeight: 700,
-  letterSpacing: "0.1em",
-  fontSize: "0.75rem",
+  color: TEXT_COLOR.ACCENT,
+  fontWeight: FONT_WEIGHT.BOLD,
+  letterSpacing: LETTER_SPACING.WIDE,
+  fontSize: FONT_SIZE.SMALL,
   textTransform: "uppercase",
 })
 
 const HeroTitle = styled("h1")({
-  fontSize: "3rem",
-  fontWeight: 900,
-  lineHeight: 1.1,
-  letterSpacing: "-0.03em",
+  fontSize: FONT_SIZE.HERO_TITLE,
+  fontWeight: FONT_WEIGHT.BLACK,
+  lineHeight: LINE_HEIGHT.TIGHT,
+  letterSpacing: LETTER_SPACING.TIGHT,
   margin: 0,
   "@media (min-width: 768px)": {
-    fontSize: "3.75rem",
+    fontSize: FONT_SIZE.HERO_TITLE_MD,
   },
 })
 
 const GradientText = styled("span")({
-  background: "linear-gradient(135deg, #2563eb 0%, #0d9488 50%, #059669 100%)",
+  background:
+    `linear-gradient(135deg, ${ACCENT_COLOR.PRIMARY.color} 0%, ` +
+    `${ACCENT_COLOR.CYAN.color} 50%, ` +
+    `${ACCENT_COLOR.GREEN.color} 100%)`,
   WebkitBackgroundClip: "text",
   WebkitTextFillColor: "transparent",
   backgroundClip: "text",
@@ -119,30 +132,32 @@ const HeroSubtitle = styled("div")({
   display: "flex",
   alignItems: "center",
   gap: "0.5rem",
-  fontSize: "1.5rem",
-  fontWeight: 500,
-  color: "#4b5563",
+  fontSize: FONT_SIZE.DISPLAY_SM,
+  fontWeight: FONT_WEIGHT.REGULAR,
+  color: TEXT_COLOR.MUTED,
   marginTop: "0.5rem",
   "@media (min-width: 768px)": {
-    fontSize: "2rem",
+    fontSize: FONT_SIZE.HERO_SUBTITLE_MD,
   },
 })
 
 const BrandText = styled("span")({
-  background: "linear-gradient(135deg, #0d9488 0%, #059669 100%)",
+  background:
+    `linear-gradient(135deg, ${ACCENT_COLOR.CYAN.color} 0%, ` +
+    `${ACCENT_COLOR.GREEN.color} 100%)`,
   WebkitBackgroundClip: "text",
   WebkitTextFillColor: "transparent",
   backgroundClip: "text",
-  fontWeight: 800,
-  letterSpacing: "-0.02em",
+  fontWeight: FONT_WEIGHT.BOLD,
+  letterSpacing: LETTER_SPACING.TIGHT,
 })
 
 const HeroDescription = styled(Typography)({
-  fontSize: "1.125rem",
-  color: "#6b7280",
+  fontSize: FONT_SIZE.SECTION_SUBTITLE,
+  color: TEXT_COLOR.SECONDARY,
   maxWidth: 500,
   margin: 0,
-  lineHeight: 1.6,
+  lineHeight: LINE_HEIGHT.NORMAL,
 })
 
 const HeroButtons = styled(Box)({
@@ -155,19 +170,9 @@ const HeroButtons = styled(Box)({
 })
 
 const PrimaryButtonLg = styled("button")({
-  backgroundColor: "#2563eb",
-  color: "white",
-  fontWeight: 700,
+  ...BUTTON_BASE,
   height: 48,
   padding: "0 2rem",
-  fontSize: "1rem",
-  borderRadius: 8,
-  border: "none",
-  cursor: "pointer",
-  transition: "background-color 0.2s",
-  "&:hover": {
-    backgroundColor: "#1d4ed8",
-  },
 })
 
 const HeroBadges = styled(Box)({
@@ -181,8 +186,8 @@ const Badge = styled(Box)({
   display: "flex",
   alignItems: "center",
   gap: "0.5rem",
-  fontSize: "0.875rem",
-  color: "#6b7280",
+  fontSize: FONT_SIZE.SMALL,
+  color: TEXT_COLOR.SECONDARY,
 })
 
 const HeroVisual = styled(Box)({

@@ -1,10 +1,21 @@
 import { Box, styled, Typography } from "@mui/material"
 
+import {
+  FONT_SIZE,
+  FONT_WEIGHT,
+  LINE_HEIGHT,
+  TEXT_COLOR,
+  ACCENT_COLOR,
+  BG_COLOR,
+  BORDER_COLOR,
+  ICON_BOX,
+} from "pages/LandingPage/constants"
+
 interface ValueProp {
   icon: string
   title: string
   description: string
-  color: "magenta" | "cyan" | "green" | "yellow"
+  color: "MAGENTA" | "CYAN" | "GREEN" | "YELLOW"
 }
 
 const valueProps: ValueProp[] = [
@@ -12,38 +23,38 @@ const valueProps: ValueProp[] = [
     icon: "drag_pan",
     title: "No Coding Required",
     description:
-      "Build complex analysis pipelines by dragging and dropping. Focus on science, not syntax.",
-    color: "magenta",
+      "Build complex analysis pipelines by dragging and dropping. " +
+      "Focus on science, not syntax.",
+    color: "MAGENTA",
   },
   {
     icon: "neurology",
     title: "NWB-Native",
     description:
-      "First-class support for NWB (Neurodata Without Borders). Import, analyze, and export in the standard format for neurophysiology data.",
-    color: "cyan",
+      "First-class support for NWB (Neurodata Without Borders). " +
+      "Import, analyze, and export in the standard format " +
+      "for neurophysiology data.",
+    color: "CYAN",
   },
   {
     icon: "analytics",
     title: "Complete Analysis Toolkit",
     description:
-      "From visual pipeline building to rich visualization and ROI analysis — everything you need to go from raw data to publishable results.",
-    color: "green",
+      "From visual pipeline building to rich visualization and " +
+      "ROI analysis \u2014 everything you need to go from raw " +
+      "data to publishable results.",
+    color: "GREEN",
   },
   {
     icon: "public",
     title: "Share & Collaborate",
     description:
-      "Share workspaces, publish analysis results, and let other labs reproduce your exact methods. Grow a community around comparable science.",
-    color: "yellow",
+      "Share workspaces, publish analysis results, and let other " +
+      "labs reproduce your exact methods. Grow a community " +
+      "around comparable science.",
+    color: "YELLOW",
   },
 ]
-
-const iconColors = {
-  magenta: { bg: "rgba(225, 29, 72, 0.1)", color: "#e11d48" },
-  cyan: { bg: "rgba(13, 148, 136, 0.1)", color: "#0d9488" },
-  green: { bg: "rgba(5, 150, 105, 0.1)", color: "#059669" },
-  yellow: { bg: "rgba(217, 119, 6, 0.1)", color: "#d97706" },
-}
 
 export const ValueProps = () => {
   return (
@@ -57,15 +68,17 @@ export const ValueProps = () => {
         <ValueGrid>
           {valueProps.map((prop, index) => (
             <ValueCard key={index}>
-              <ValueIcon
-                style={{
-                  backgroundColor: iconColors[prop.color].bg,
-                  color: iconColors[prop.color].color,
-                }}
-              >
-                <span className="material-symbols-outlined">{prop.icon}</span>
-              </ValueIcon>
-              <ValueTitle>{prop.title}</ValueTitle>
+              <ValueHeader>
+                <ValueIcon
+                  style={{
+                    backgroundColor: ACCENT_COLOR[prop.color].bg,
+                    color: ACCENT_COLOR[prop.color].color,
+                  }}
+                >
+                  <span className="material-symbols-outlined">{prop.icon}</span>
+                </ValueIcon>
+                <ValueTitle>{prop.title}</ValueTitle>
+              </ValueHeader>
               <ValueDescription>{prop.description}</ValueDescription>
             </ValueCard>
           ))}
@@ -76,7 +89,7 @@ export const ValueProps = () => {
 }
 
 const ValuePropsSection = styled("section")({
-  backgroundColor: "white",
+  backgroundColor: BG_COLOR.WHITE,
   padding: "5rem 0",
 })
 
@@ -87,15 +100,16 @@ const Container = styled(Box)({
 })
 
 const SectionTitle = styled(Typography)({
-  fontSize: "1.875rem",
-  fontWeight: 700,
+  fontSize: FONT_SIZE.SECTION_TITLE,
+  fontWeight: FONT_WEIGHT.BOLD,
   margin: "0 0 1rem",
   textAlign: "center",
 })
 
 const SectionSubtitle = styled(Typography)({
   textAlign: "center",
-  color: "#6b7280",
+  color: TEXT_COLOR.SECONDARY,
+  fontSize: FONT_SIZE.SECTION_SUBTITLE,
   margin: "0 0 3rem",
   maxWidth: 600,
   marginLeft: "auto",
@@ -117,37 +131,28 @@ const ValueGrid = styled(Box)({
 const ValueCard = styled(Box)({
   padding: "2rem",
   borderRadius: 12,
-  border: "1px solid #e5e7eb",
-  backgroundColor: "#f9fafb",
-  transition: "box-shadow 0.3s",
-  "&:hover": {
-    boxShadow: "0 20px 40px -12px rgba(0, 0, 0, 0.1)",
-  },
+  border: `1px solid ${BORDER_COLOR.DEFAULT}`,
+  backgroundColor: BG_COLOR.CARD,
 })
 
-const ValueIcon = styled(Box)({
-  width: 48,
-  height: 48,
-  borderRadius: 8,
+const ValueHeader = styled(Box)({
   display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  marginBottom: "1.5rem",
-  transition: "transform 0.3s",
-  "& .material-symbols-outlined": {
-    fontSize: "1.875rem",
-  },
+  alignItems: "flex-start",
+  gap: "0.75rem",
+  marginBottom: "0.75rem",
 })
+
+const ValueIcon = styled(Box)({ ...ICON_BOX })
 
 const ValueTitle = styled(Typography)({
-  fontSize: "1.25rem",
-  fontWeight: 700,
+  fontSize: FONT_SIZE.CARD_TITLE,
+  fontWeight: FONT_WEIGHT.BOLD,
   margin: "0 0 0.75rem",
 })
 
 const ValueDescription = styled(Typography)({
-  fontSize: "0.875rem",
-  color: "#6b7280",
-  lineHeight: 1.6,
+  fontSize: FONT_SIZE.BODY,
+  color: TEXT_COLOR.SECONDARY,
+  lineHeight: LINE_HEIGHT.NORMAL,
   margin: 0,
 })
