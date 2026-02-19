@@ -303,6 +303,14 @@ async def get_premium_assignment_status(current_user: User = Depends(get_current
             current_user.id, current_user.uid
         )
 
+        logger.debug(
+            "Premium status for user %s: " "assigned=%s, is_shared=%s, instance=%s",
+            current_user.id,
+            status_info is not None,
+            status_info.get("is_shared") if status_info else None,
+            status_info.get("instance_id") if status_info else None,
+        )
+
         return {
             "user_id": current_user.uid,
             "subscription_type": current_user.subscription_type,

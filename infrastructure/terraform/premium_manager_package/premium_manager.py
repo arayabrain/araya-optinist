@@ -1119,10 +1119,12 @@ def _create_running_instances_locked(count: int) -> bool:
                     print(f"Created running instance " f"{instance_id}")
                     created_any = True
                 else:
+                    # No standby fallback here (nested lock)
                     print(
-                        "Failed to create running instance" ", falling back to standby"
+                        "Failed to create running instance, "
+                        "standby replenishment deferred to "
+                        "scheduled monitoring"
                     )
-                    create_and_stop_standby_instance()
             return created_any
         except Exception as e:
             print(f"Error in locked running creation: {e}")
@@ -1758,6 +1760,26 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
             # 9. Stop orphaned EC2 instances not in ECS cluster
             cleanup_orphaned_ec2_instances()
 
+            # 10. Optimize shared instances (safety net)
+            try:
+                shared_result = process_shared_instance_optimization()
+                shared_migrations = shared_result.get("migrations_performed", 0)
+                shared_found = shared_result.get("shared_instances_found", 0)
+                if shared_found > 0 or shared_migrations > 0:
+                    print(
+                        f"Shared optimization: "
+                        f"{shared_migrations} migrations, "
+                        f"{shared_found} shared instances"
+                    )
+                if shared_found > 0 and shared_migrations == 0:
+                    print(
+                        "Shared users found but no instances "
+                        "ready, triggering async migration..."
+                    )
+                    invoke_migration_async()
+            except Exception as shared_error:
+                print(f"Shared optimization error: " f"{str(shared_error)}")
+
             return {
                 "statusCode": 200,
                 "body": json.dumps(
@@ -1805,7 +1827,7 @@ def _handle_migrate_shared_users(event):
                 "body": json.dumps({"message": "Migration skipped - lock held"}),
             }
 
-        max_wait_seconds = event.get("max_wait_seconds", 60)
+        max_wait_seconds = event.get("max_wait_seconds", 600)
         retry_interval = event.get("retry_interval", 10)
 
         print(
@@ -1839,21 +1861,19 @@ def _handle_migrate_shared_users(event):
             autoscaling_users = get_assigned_users_for_instance(
                 PremiumAssignment.AUTOSCALING_POOL
             )
-            remaining_users = len(autoscaling_users)
+            remaining_autoscaling = len(autoscaling_users)
+            remaining_shared = migration_result.get("shared_instances_found", 0)
 
             if migrations_performed > 0:
                 print(
                     f"Migrated {migrations_performed} users, "
-                    f"{remaining_users} still on "
-                    f"autoscaling pool"
+                    f"{remaining_autoscaling} on autoscaling "
+                    f"pool, {remaining_shared} shared "
+                    f"instances remaining"
                 )
 
-            if remaining_users == 0:
-                print(
-                    f"Migration completed after {elapsed}s"
-                    f" - all users migrated from "
-                    f"autoscaling pool"
-                )
+            if remaining_autoscaling == 0 and remaining_shared == 0:
+                print(f"Migration completed after {elapsed}s" f" - all users migrated")
                 return {
                     "statusCode": 200,
                     "body": json.dumps(
@@ -2236,11 +2256,16 @@ def assign_premium_user(
                 f"instance {existing_instance_id}"
             )
 
-            # Trigger migration if user is stuck on autoscaling-pool
-            if existing_instance_id == PremiumAssignment.AUTOSCALING_POOL:
+            # Trigger migration for autoscaling-pool or shared
+            if (
+                existing_instance_id == PremiumAssignment.AUTOSCALING_POOL
+                or existing_assignment.get("is_shared")
+            ):
                 print(
-                    f"User {user_id} is on autoscaling-pool, "
-                    f"triggering migration check..."
+                    f"User {user_id} needs migration "
+                    f"(instance={existing_instance_id}, "
+                    f"shared={existing_assignment.get('is_shared')})"
+                    f", triggering migration check..."
                 )
                 invoke_migration_async()
 
@@ -2730,9 +2755,7 @@ def assign_premium_user(
 
         # Create ALB listener rule for user routing
         if not user_uid:
-            raise ValueError(
-                "user_uid is required to generate routing ID"
-            )
+            raise ValueError("user_uid is required to generate routing ID")
         routing_secret_key = get_required_env_var("ROUTING_SECRET_KEY")
         routing_id = generate_routing_id(user_uid, routing_secret_key)
         print(
@@ -2976,19 +2999,13 @@ def scale_premium_instances_if_needed():
         print(f"- Premium subscribers: {total_subscribers}")
 
         if launching_count > 0:
-            print(
-                f"Scaling blocked: {launching_count} "
-                f"instances already launching"
-            )
+            print(f"Scaling blocked: {launching_count} " f"instances already launching")
             return False
 
         # Block scaling while another Lambda is creating instances;
         # we can't know the exact count, so let it finish first.
         if running_creating:
-            print(
-                "Scaling blocked: running instance "
-                "creation already in progress"
-            )
+            print("Scaling blocked: running instance " "creation already in progress")
             return False
 
         # Key decision: Scale based on ACTIVE ASSIGNMENTS, not subscribers
