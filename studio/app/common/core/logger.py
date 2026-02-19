@@ -1,9 +1,11 @@
 import hashlib
+import json
 import logging
 import logging.config
 import os
 import platform
 import traceback
+import urllib.request
 from contextvars import ContextVar
 from typing import Optional
 
@@ -19,6 +21,29 @@ LOGGING_CLIENT_ID_KEY = "client_id"
 _client_id_context: ContextVar[Optional[str]] = ContextVar(
     LOGGING_CLIENT_ID_KEY, default=None
 )
+
+NO_ECS_TASK_DEFAULT = "local"
+_ECS_METADATA_TIMEOUT = 2
+
+
+def _get_ecs_task_id() -> str:
+    """Fetch the short ECS task ID from the container metadata
+    endpoint (v4). Returns a default value outside ECS."""
+    meta_uri = os.environ.get("ECS_CONTAINER_METADATA_URI_V4")
+    if not meta_uri:
+        return NO_ECS_TASK_DEFAULT
+    try:
+        req = urllib.request.Request(f"{meta_uri}/task")
+        with urllib.request.urlopen(req, timeout=_ECS_METADATA_TIMEOUT) as resp:
+            data = json.loads(resp.read())
+        # TaskARN: arn:aws:ecs:region:account:task/cluster/id
+        task_arn = data.get("TaskARN", "")
+        return task_arn.rsplit("/", 1)[-1] if "/" in task_arn else NO_ECS_TASK_DEFAULT
+    except Exception:
+        return NO_ECS_TASK_DEFAULT
+
+
+ECS_TASK_ID: str = _get_ecs_task_id()
 
 
 class LoggingConfigHelper:
@@ -180,7 +205,8 @@ class AppLogger:
 
     class ClientIdFilter(logging.Filter):
         """
-        Logging filter to inject client_id from context into log records
+        Logging filter to inject client_id and ecs_task_id
+        from context into log records.
         """
 
         # Alternate text to log if client_id is not obtained
@@ -194,6 +220,7 @@ class AppLogger:
                 if client_id is not None
                 else __class__.NO_CLIENT_ID_DEFAULT_VALUE
             )
+            record.ecs_task_id = ECS_TASK_ID
             return True
 
     @classmethod
