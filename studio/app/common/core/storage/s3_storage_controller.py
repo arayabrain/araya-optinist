@@ -243,6 +243,9 @@ class S3StorageController(BaseRemoteStorageController):
                 )
                 return False
 
+            # Sort by directory depth (shallower files first)
+            all_s3_objects.sort(key=lambda obj: obj["Key"].count("/"))
+
             # do download data from remote storage
             target_files_count = len(all_s3_objects)
             for index, s3_object in enumerate(all_s3_objects):
@@ -824,6 +827,9 @@ class S3StorageController(BaseRemoteStorageController):
                     experiment_remote_path,
                 )
                 return False
+
+            # Sort by directory depth (shallower files first)
+            all_s3_objects.sort(key=lambda obj: obj["Key"].count("/"))
 
             logger.info(
                 f"Listed {len(all_s3_objects)} objects from S3 "
