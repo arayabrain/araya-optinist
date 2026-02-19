@@ -47,6 +47,8 @@ class ExperimentRecord(Base, TimestampMixin, table=True):
         default=0,
     )
 
+    input_paths: Optional[Dict] = Field(default={}, sa_column=Column(JSON))
+
     thumbnails: Optional[Dict] = Field(default={}, sa_column=Column(JSON))
 
     success: bool = Field(nullable=False, default=False)
