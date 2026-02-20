@@ -80,7 +80,7 @@ The StripeService handles direct interactions with the Stripe API for payment op
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 2. Frontend calls: POST /subscription/payments/setup-intent             │
+│ 2. Frontend calls: POST /api/subsc/payment-methods/setup-intent          │
 │    → Backend creates Stripe SetupIntent                                 │
 │    → Returns client_secret for Stripe Elements                          │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -94,7 +94,7 @@ The StripeService handles direct interactions with the Stripe API for payment op
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 4. Frontend calls: POST /subscription/payments/default                  │
+│ 4. Frontend calls: PUT /api/subsc/payment-methods                        │
 │    → Backend attaches PaymentMethod to Customer                         │
 │    → Sets as default for subscription                                   │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -230,7 +230,7 @@ The WebhookService processes Stripe webhook events for real-time subscription up
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ Stripe Webhook Delivery                                                  │
-│ POST /webhooks/stripe                                                    │
+│ POST /api/subsc/webhooks/stripe                                          │
 └─────────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -355,28 +355,27 @@ def handle_payment_failed(event_data: dict, db: Session):
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/subscription/plans` | GET | List available plans |
-| `/subscription/me` | GET | Get current user's subscription |
-| `/subscription/checkout` | POST | Create checkout session |
-| `/subscription/portal` | POST | Create customer portal session |
-| `/subscription/cancel` | POST | Cancel subscription |
-| `/subscription/update` | POST | Change subscription plan |
+| `/api/subsc/mgmts/plans` | GET | List available plans |
+| `/api/subsc/mgmts` | GET | Get current user's subscription |
+| `/api/subsc/mgmts` | PUT | Update subscription plan |
+| `/api/subsc/mgmts/cancel` | DELETE | Cancel subscription |
+| `/api/subsc/checkout/create-checkout-session` | POST | Create checkout session |
 
 ### Payment Endpoints
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/subscription/payments` | GET | List payment methods |
-| `/subscription/payments/default` | GET | Get default payment method |
-| `/subscription/payments/default` | POST | Set default payment method |
-| `/subscription/payments/{id}` | DELETE | Remove payment method |
-| `/subscription/payments/setup-intent` | POST | Create SetupIntent |
+| `/api/subsc/payment-methods` | GET | List payment methods |
+| `/api/subsc/payment-methods/default` | GET | Get default payment method |
+| `/api/subsc/payment-methods` | PUT | Set default payment method |
+| `/api/subsc/payment-methods/{id}` | DELETE | Remove payment method |
+| `/api/subsc/payment-methods/setup-intent` | POST | Create SetupIntent |
 
 ### Webhook Endpoint
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/webhooks/stripe` | POST | Receive Stripe webhooks |
+| `/api/subsc/webhooks/stripe` | POST | Receive Stripe webhooks |
 
 ---
 
@@ -404,7 +403,7 @@ plans = {
     },
     "premium": {
         "price_id": "price_premium_monthly",
-        "storage_gb": 100,
+        "storage_gb": 200,
         "features": ["Dedicated compute", "Priority support", "Advanced analytics"],
     },
 }
@@ -436,8 +435,8 @@ premium subscription, cancellation, grace periods, and eventual data cleanup.
        │                               ▼
        │                         ┌───────────┐
        │   Storage <= 5 GB       │   GRACE   │  Days 0-30 after expiration
-       │   (no warning needed)   │  PERIOD   │  Quota drops to 5 GB (free limit)
-       │ <────────────────────── │           │  Storage > 5 GB? → GRACE alert
+       │   (no warning needed)   │  PERIOD   │  Premium access retained (200 GB)
+       │ <────────────────────── │           │  Alerts measure against 5 GB free limit
        │                         └─────┬─────┘
        │                               │
        │                               │ Grace period ends (day 30)
@@ -476,9 +475,9 @@ Subscription    Grace Period     Warning Period     Overdue
     │  GRACE (30d)   │  WARNING (30d)  │   OVERDUE     │
     │                │                 │               │
     │  Alert: GRACE  │  Alert: GRACE   │ Alert: OVERDUE│
-    │  "X days of    │  "Data deleted  │ "Scheduled    │
-    │   premium      │   in X days"   │  for deletion"│
-    │   remaining"   │                 │               │
+    │  "Subscription │  "Data deleted  │ "Scheduled    │
+    │   expired,     │   in X days"   │  for deletion"│
+    │   X days left" │                 │               │
     └────────────────┴─────────────────┴───────────────┘
 
   Key dates computed by calculate_limit_warning():
@@ -489,13 +488,13 @@ Subscription    Grace Period     Warning Period     Overdue
 
 ### Subscription Lifecycle States
 
-| Status | Duration | Storage Quota | Alert Type | User Experience |
-|--------|----------|---------------|------------|-----------------|
-| `FREE` | Indefinite | 5 GB | `storage` (if over) | Full free features |
-| `ACTIVE` | Billing period | 200 GB | `storage` (if over) | Full premium features |
-| `GRACE` | Days 0-30 | Measured against 5 GB | `grace` | Premium features, countdown warning |
-| `WARNING` | Days 30-60 | Measured against 5 GB | `grace` | "Data will be deleted in X days" |
-| `OVERDUE` | Day 60+ | Measured against 5 GB | `overdue` | "Data scheduled for deletion" |
+| Status | Duration | Storage Quota | Alert Threshold | Alert Type | User Experience |
+|--------|----------|---------------|-----------------|------------|-----------------|
+| `FREE` | Indefinite | 5 GB | 5 GB | `storage` (if over) | Full free features |
+| `ACTIVE` | Billing period | 200 GB | 200 GB | `storage` (if over) | Full premium features |
+| `GRACE` | Days 0-30 | 200 GB (retained) | 5 GB | `grace` | Full premium access, countdown warning |
+| `WARNING` | Days 30-60 | 5 GB | 5 GB | `grace` | "Data will be deleted in X days" |
+| `OVERDUE` | Day 60+ | 5 GB | 5 GB | `overdue` | "Data scheduled for deletion" |
 
 ### Limit Warning Decision Tree
 
@@ -736,22 +735,22 @@ def handle_webhook(event: stripe.Event):
 | `studio/app/common/core/subscription/stripe_service.py` | Stripe API integration |
 | `studio/app/common/core/subscription/subscription_service.py` | Business logic |
 | `studio/app/common/core/subscription/webhook_service.py` | Webhook handlers |
-| `studio/app/common/routers/subscription.py` | API endpoints |
-| `studio/app/common/routers/webhooks.py` | Webhook receiver |
+| `studio/app/common/routers/subscriptions.py` | API and webhook endpoints |
 
 ### Frontend
 
 | File | Purpose |
 |------|---------|
-| `frontend/src/api/subscription/*.ts` | Subscription API calls |
-| `frontend/src/components/Subscription/*.tsx` | Plan selection, billing UI |
-| `frontend/src/components/Payment/*.tsx` | Payment method management |
+| `frontend/src/api/subscriptions/Subscriptions.ts` | Subscription API calls |
+| `frontend/src/api/paymentMethod/PaymentMethod.ts` | Payment method API calls |
+| `frontend/src/pages/Subscription/*.tsx` | Plan selection, billing UI |
+| `frontend/src/components/common/LimitAlert.tsx` | Storage/grace period alerts |
 
 ### Infrastructure
 
 | File | Purpose |
 |------|---------|
-| `infrastructure/terraform/secrets.tf` | Stripe secrets configuration |
+| `infrastructure/terraform/security.tf` | Stripe secrets (AWS Secrets Manager) |
 
 ---
 
