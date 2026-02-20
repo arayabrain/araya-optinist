@@ -34,7 +34,7 @@ Every architecture document should follow this structure:
 | Executive Summary | Quick orientation (what, why, key benefits) | 4-6 bullet points |
 | Key Architectural Principles | Design decisions and constraints | 3-5 numbered items |
 | Architecture Overview | Visual diagram + responsibility matrix | 1 diagram + 1 table |
-| Implementation Details | How it works (pseudocode, not line numbers) | As needed |
+| Implementation Details | How it works (function signatures + flow diagrams) | As needed |
 | Edge Case Handling | Common failure scenarios and solutions | 3-5 cases |
 | Monitoring and Metrics | CloudWatch metrics, logs, dashboards | 1-2 tables |
 | Configuration | Environment variables, triggers, schemas | Tables preferred |
@@ -218,9 +218,9 @@ Use for showing ownership between components:
 ```markdown
 | Responsibility          | Component A           | Component B           |
 |-------------------------|-----------------------|-----------------------|
-| Action 1                | Yes - Exclusive        | No                     |
-| Action 2                | No                     | Yes - Exclusive        |
-| Shared action           | Yes - Primary          | Yes - Secondary        |
+| Action 1                | Yes - Exclusive        | No                   |
+| Action 2                | No                     | Yes - Exclusive      |
+| Shared action           | Yes - Primary          | Yes - Secondary      |
 ```
 
 ### Configuration Tables
@@ -257,67 +257,62 @@ Use for quick lookup of key functions:
 
 ---
 
-## Code Examples
+## Function Documentation
 
-### Pseudocode Preference
+### Docstring-Style Format
 
-Focus on logic, not exact implementation. Use pseudocode that explains the algorithm:
+Document functions using abstract descriptions, not implementation
+pseudocode. Pseudocode drifts from implementation and creates false
+confidence. Function names and contracts are more stable than logic
+details, and developers should read actual code for specifics.
 
-**Good (pseudocode):**
-```python
-def assign_user_to_instance(user_id):
-    """
-    Assign user following priority order:
-    1. Dedicated running instance (0 users)
-    2. Shared instance (least loaded)
-    3. Start standby instance
-    4. Create new instance (last resort)
-    """
-    # Try dedicated instance first
-    for instance in running_instances:
-        if instance.user_count == 0:
-            reserve(instance, user_id)
-            return instance
+**Format:**
 
-    # Fall back to shared instance
-    if least_loaded_instance:
-        assign_shared(least_loaded_instance, user_id)
-        trigger_scaling()  # Background
-        return least_loaded_instance
+```markdown
+### function_name()
 
-    # Start standby if available
-    if standby_pool:
-        instance = start_standby()
-        replenish_standby_pool()  # Background
-        return instance
-
-    # Last resort: create new
-    return create_new_instance()
+**File:** `path/to/file.py`
+**Purpose:** What it does and why
+**Input:** Parameters and their meaning
+**Output:** Return value and side effects
+**Calls:** other_function() -> another_function()
 ```
 
-**Avoid (implementation details):**
-```python
-# Avoid exact line numbers and implementation details like:
-# Lines 1748-2100 in premium_manager.py
-for instance in running_instances:
-    assigned_users = get_assigned_users_for_instance(instance_id)
-    if len(assigned_users) == 0:
-        if try_reserve_instance(instance_id, user_id):
-            assignment_source = "dedicated"
-            break
+**Example:**
+
+```markdown
+### assign_premium_user()
+
+**File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
+**Purpose:** Assign a premium instance using 5-tier priority fallback
+**Input:** user_id (from JWT), event context (API Gateway)
+**Output:** Assignment result with instance_id and routing headers, or 202 retry
+**Calls:** try_reserve_instance() -> create_target_group() -> create_alb_rule() -> store_user_assignment()
 ```
 
-### SQL Examples
+Use these blocks in the **Implementation Details** section for key
+functions. The **Key Functions Reference** table provides a quick
+lookup; docstring blocks add depth for the most important functions.
 
-For database operations, show the logical query:
+### When to Use Each Level of Detail
+
+| Level | Where | Content |
+|-------|-------|---------|
+| One-line | Key Functions Reference table | `function_name()` + brief purpose |
+| Docstring block | Implementation Details section | File, purpose, input/output, call chain |
+| Flow diagram | Architecture Overview / Flow Diagrams | How functions connect across components |
+
+### SQL Constraints
+
+Use SQL only to document key constraints and safety mechanisms:
 
 ```sql
--- Migrate only idle users (atomic protection)
-UPDATE free_user_assignments
-SET instance_id = :new_instance
-WHERE user_id = :user_id
-  AND active_workflow_count = 0  -- Key constraint
+-- Key constraint: only migrate idle users
+WHERE active_workflow_count = 0
 ```
+
+Avoid full queries -- they go stale. Document the constraint, not
+the full statement.
 
 ### Bash/CLI Examples
 
@@ -347,8 +342,6 @@ Document common failure scenarios using Problem/Solution format:
 **Solution:** How the system handles it:
 - Protection mechanism 1
 - Protection mechanism 2
-
-**Guarantee:** What the user/system can rely on.
 ```
 
 **Example:**
@@ -361,8 +354,6 @@ Document common failure scenarios using Problem/Solution format:
 - Runs hourly to find stale assignments (>2 hours inactive)
 - Deletes stale assignments and ALB rules
 - Manager's next monitoring run stops idle instances
-
-**Guarantee:** Maximum cleanup delay = 75 minutes (1 hour + 15 min).
 ```
 
 Focus on common cases. For exhaustive edge case coverage, reference the source code.
@@ -457,13 +448,15 @@ Use bullet points for non-sequential items:
 ### File Naming Convention
 
 ```
-{COMPONENT}_{TOPIC}_SUMMARY.md
+{COMPONENT}_{TOPIC}_ARCHITECTURE.md
 ```
 
 **Examples:**
-- `PREMIUM_MANAGER_PROVISIONING_SUMMARY.md`
-- `FREE_MANAGER_SUMMARY.md`
-- `ALB_SECURITY_ROUTING_SUMMARY.md`
+- `PREMIUM_MANAGER_ARCHITECTURE.md`
+- `FREE_MANAGER_ARCHITECTURE.md`
+- `PREMIUM_USER_TEST_RESULTS.md`
+  - Note names other than _ARCHITECTURE.md are acceptable in certain circumstances
+  but are not expected to be kept in the codebase indefinitely.
 
 ### Title Convention
 
@@ -485,7 +478,7 @@ Before committing documentation, verify:
 - [ ] Key Architectural Principles are numbered (3-5 items)
 - [ ] At least one diagram (ASCII or Mermaid) in Architecture Overview
 - [ ] Tables use consistent column alignment
-- [ ] Code examples are pseudocode (no line numbers)
+- [ ] Functions use docstring-style format (purpose, input/output, call chain)
 - [ ] File paths are relative to repository root
 - [ ] Edge cases use Problem/Solution format
 - [ ] Environment variables are documented
@@ -499,9 +492,9 @@ Reference these documents as examples:
 
 | Document | Notable For |
 |----------|-------------|
-| `FREE_MANAGER_SUMMARY.md` | Excellent Mermaid diagrams, clear algorithm explanation |
-| `ALB_SECURITY_ROUTING_SUMMARY.md` | Clear before/after comparison, security analysis |
-| `PREMIUM_MANAGER_PROVISIONING_SUMMARY.md` | Comprehensive priority matrix, sequence diagrams |
+| `FREE_MANAGER_ARCHITECTURE.md` | Excellent Mermaid diagrams, clear algorithm explanation |
+| `ALB_ROUTING_ARCHITECTURE.md` | Clear following of style guide |
+| `PREMIUM_USER_ASSIGNMENT.md` | Comprehensive priority matrix, sequence diagrams |
 | `BACKGROUND_JOB_ARCHITECTURE.md` | Concise ASCII diagram, clean structure |
 
 ---
@@ -521,5 +514,5 @@ When reviewing documentation PRs:
 
 1. Can a new team member understand the component from this doc?
 2. Are diagrams clear without reading the text?
-3. Do code examples explain the "why" not just the "what"?
+3. Do function descriptions capture purpose and contracts, not implementation details?
 4. Are configuration options complete?

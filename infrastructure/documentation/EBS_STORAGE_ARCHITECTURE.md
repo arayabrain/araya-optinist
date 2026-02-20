@@ -3,7 +3,7 @@
 ## Executive Summary
 
 - **EBS provides fast local storage** for Snakemake workflow execution with S3 as durable backup
-- **Background sync job** downloads published experiments to all instances every 5 minutes
+- **Two-phase background sync job** downloads published experiments to all instances every 5 minutes (thumbnails first, then metadata)
 - **Data cleanup job** removes local data for logged-out users (1-hour grace period)
 - **Workflow protection** ensures cleanup only happens when `active_workflow_count = 0`
 - **S3 verification** guarantees backup exists before any local deletion
@@ -57,8 +57,8 @@ These are the fundamental constraints that the EBS implementation satisfies:
 └─────────────────┘
          ↓
 ┌─────────────────┐
-│ Background Sync │ → Download to all instances → DB: local_sync_status='synced'
-│ (every 5 min)   │
+│ Background Sync │ → Phase 1: Thumbnails (50/run) → Phase 2: Metadata (10/run)
+│ (every 5 min)   │ → DB: local_sync_status='synced'
 └─────────────────┘
          ↓
 ┌─────────────────┐
@@ -84,6 +84,7 @@ These are the fundamental constraints that the EBS implementation satisfies:
 | No user disruption       | 1-hour grace period after logout                 |
 | Eventual consistency     | Published experiments available within 5 minutes |
 | Graceful degradation     | Frontend handles 202/503 responses               |
+| Re-login detection       | Cleanup aborts if user logs back in during run    |
 
 ---
 
@@ -91,14 +92,24 @@ These are the fundamental constraints that the EBS implementation satisfies:
 
 ### 1. Workflow Tracking
 
-**Files:** `workflow_tracking.py`, `workflow_runner.py`, `snakemake_executor.py`
+**Files:** `studio/app/common/core/workflow/workflow_tracking.py`, `studio/app/common/core/workflow/workflow_runner.py`, `studio/app/common/core/snakemake/snakemake_executor.py`
 
 **Functionality:**
 - Increments `active_workflow_count` on workflow start
 - Decrements on completion/failure
 - Prevents cleanup during active workflows
 
-### 2. Logout Integration
+### 2. Background Sync (Two-Phase)
+
+**File:** `studio/app/common/core/background/sync_job.py`
+
+**Functionality:**
+- **Phase 1 - Thumbnails:** Downloads thumbnail PNGs (50 per run, 10 concurrency). Thumbnails are small (~50-100KB), enabling fast DataView loading
+- **Phase 2 - Metadata:** Downloads YAML files (10 per run, 3 concurrency). Includes experiment.yaml, workflow.yaml, snakemake_config.yaml
+- **Startup sync:** One-time full sync runs at container startup via `run_startup_sync()`
+- Uses FileLock to prevent concurrent runs on the same instance
+
+### 3. Logout Integration
 
 **Backend:**
 - `studio/app/common/routers/users_me.py` - `/api/users/me/free/logout` endpoint
@@ -113,7 +124,7 @@ These are the fundamental constraints that the EBS implementation satisfies:
 - Updates `logged_out_at` timestamp in DB
 - Proceeds even if API call fails (non-blocking)
 
-### 3. Frontend 202/503 Response Handling
+### 4. Frontend 202/503 Response Handling
 
 **File Modified:** `frontend/src/components/Dataview/WorkflowDetailsView.tsx`
 
@@ -131,11 +142,12 @@ These are the fundamental constraints that the EBS implementation satisfies:
 
 ### 1. S3 Download Failures
 
-**Implementation:** Exponential backoff retry (3 attempts: 1s, 2s, 4s delays)
+**Implementation:** Exponential backoff retry (3 attempts with 1s, 2s delays between them)
 
 **Monitoring:**
 - CloudWatch metrics: `ExperimentsSynced`, `SyncErrors`, `SyncErrorRate`
 - Operator alerts when error rate > 50%
+
 
 ### 2. Instance Termination During Cleanup
 
@@ -146,7 +158,18 @@ These are the fundamental constraints that the EBS implementation satisfies:
 - Automatically cleans data from terminated instances
 - Only when `active_workflow_count = 0`
 
-### 3. Concurrent Publish/Unpublish
+
+### 3. Re-login During Cleanup
+
+**Implementation:** Re-login check before each user's data deletion
+
+**Behavior:**
+- Cleanup job calls `_check_user_relogin()` before deleting data
+- If user logged back in since cleanup started, skip that user
+- Prevents race condition where cleanup deletes data for an active user
+
+
+### 4. Concurrent Publish/Unpublish
 
 **Implementation:** Optimistic locking with version field
 
@@ -154,6 +177,19 @@ These are the fundamental constraints that the EBS implementation satisfies:
 - Automatic retry on concurrent modification (max 3 attempts)
 - Returns 409 Conflict if retries exhausted
 - Prevents lost updates and race conditions
+
+
+---
+
+## Monitoring and Metrics
+
+---
+
+## Configuration
+
+---
+
+## Key Functions Reference
 
 ---
 
@@ -163,12 +199,14 @@ These are the fundamental constraints that the EBS implementation satisfies:
 
 | Component | Tests | File |
 |-----------|-------|------|
-| Workflow Tracking | 11 | `test_workflow_tracking.py` |
-| Sync Job | 3 | `test_sync_job.py` |
-| Cleanup Job | 10 | `test_cleanup_job.py` |
-| Dataview Publish | 9 | `test_dataview_publish.py` |
+| Workflow Tracking | 13 | `test_workflow_tracking.py` |
+| Sync Job | 8 | `test_sync_job.py` |
+| Cleanup Job | 11 | `test_cleanup_job.py` |
+| Cleanup Re-login | 8 | `test_cleanup_job_relogin.py` |
+| Dataview Publish | 10 | `test_dataview_publish.py` |
 | Logout Endpoint | 5 | `test_users_me_logout.py` |
-| **Total** | **38** | **5 files** |
+| CLI Scripts | 18 | `test_cli_scripts.py` |
+| **Total** | **73** | **7 files** |
 
 ### Key Test Scenarios
 
@@ -178,6 +216,7 @@ These are the fundamental constraints that the EBS implementation satisfies:
 -  S3 backup verification before cleanup
 -  Orphaned data cleanup from terminated instances
 -  Optimistic locking on concurrent publish/unpublish
+-  Re-login detection during cleanup
 -  202/503 responses based on sync status
 
 **Frontend:**
@@ -215,10 +254,13 @@ sequenceDiagram
     Inst1->>DB: SET publish_status=1,<br/>local_sync_status='pending'
     Inst1-->>User: Success
 
-    Note over Inst2,S3: 2. Background Sync (every 5 min)
+    Note over Inst2,S3: 2. Background Sync (every 5 min, two-phase)
     Inst2->>DB: Query WHERE local_sync_status='pending'
     DB-->>Inst2: [exp123, exp456]
-    Inst2->>S3: Download exp123 to local EBS
+    Note over Inst2,S3: Phase 1: Thumbnails (50/run, 10 concurrency)
+    Inst2->>S3: Download thumbnail PNGs to local EBS
+    Note over Inst2,S3: Phase 2: Metadata (10/run, 3 concurrency)
+    Inst2->>S3: Download YAML metadata to local EBS
     Inst2->>DB: SET local_sync_status='synced'
 
     Note over Visitor,Inst2: 3. Visitor Access (routed to any instance)
@@ -264,8 +306,11 @@ sequenceDiagram
     CleanupJob->>DB: Query users WHERE<br/>logged_out_at < NOW() - 1 hour<br/>AND active_workflow_count = 0
     DB-->>CleanupJob: [user123]
 
+    CleanupJob->>DB: Check user123 hasn't re-logged in
+    DB-->>CleanupJob: Still logged out
+
     CleanupJob->>S3: Verify backup exists for user123's experiments
-    S3-->>CleanupJob:  All experiments backed up
+    S3-->>CleanupJob: All experiments backed up
 
     CleanupJob->>EBS: Delete /app/studio_data/output/{workspace_id}/
     EBS-->>CleanupJob: Deleted
@@ -273,7 +318,7 @@ sequenceDiagram
     CleanupJob->>DB: Log cleanup event
     DB-->>CleanupJob: Success
 
-    Note over CleanupJob,EBS:  Safety: Only deletes if<br/>1. Logged out >1 hour<br/>2. No active workflows<br/>3. S3 backup verified
+    Note over CleanupJob,EBS: Safety: Only deletes if<br/>1. Logged out >1 hour<br/>2. No active workflows<br/>3. User hasn't re-logged in<br/>4. S3 backup verified
 ```
 
 ---
@@ -295,9 +340,11 @@ sequenceDiagram
 - `frontend/src/components/Dataview/WorkflowDetailsView.tsx`
 
 ### Testing
-- `studio/tests/app/common/core/workflow/test_workflow_tracking.py` (11 tests)
-- `studio/tests/app/common/core/background/test_sync_job.py` (3 tests)
-- `studio/tests/app/common/core/background/test_cleanup_job.py` (10 tests)
-- `studio/tests/app/common/routers/test_dataview_publish.py` (9 tests)
+- `studio/tests/app/common/core/workflow/test_workflow_tracking.py` (13 tests)
+- `studio/tests/app/common/core/background/test_sync_job.py` (8 tests)
+- `studio/tests/app/common/core/background/test_cleanup_job.py` (11 tests)
+- `studio/tests/app/common/core/background/test_cleanup_job_relogin.py` (8 tests)
+- `studio/tests/app/common/core/background/test_cli_scripts.py` (18 tests)
+- `studio/tests/app/common/routers/test_dataview_publish.py` (10 tests)
 - `studio/tests/app/common/routers/test_users_me_logout.py` (5 tests)
 - `.github/workflows/tests.yml` - CI/CD integration

@@ -3,8 +3,9 @@
 ## Executive Summary
 - **Premium Manager** handles all instance provisioning and user assignment
 - **5-tier prioritization** system optimizes user experience and cost
-- **Standby pool** ensures sub-15-second cold starts
+- **Standby pool** ensures fast cold starts via stopped instances
 - **Automatic migration** moves users from shared to dedicated instances
+- **Workflow safety** prevents migration of users with active workflows
 
 ## Key Architectural Principles
 
@@ -23,15 +24,17 @@
 
 3. **Standby Pool Management**
    - Maintains pool of stopped instances for fast startup
-   - Distributed locking prevents duplicate creations
+   - Tracked via `is_standby = 1` flag in `premium_user_assignments` table
+   - Distributed locking (MySQL `GET_LOCK`) prevents duplicate creations
    - Automatic replenishment when standby consumed
    - Orphaned stopped instances auto-registered as standby
 
 4. **Intelligent Scaling**
    - Conservative algorithm: keeps `active_users + 1` instances
    - Shared assignments trigger background scaling
-   - Monitors pending instance creations to avoid duplicate scaling
+   - Checks distributed locks to avoid duplicate scaling
    - Auto-migration when new instances become ready
+   - Workflow-safe: skips users with active workflows
 
 ## Architecture Overview
 
@@ -97,31 +100,36 @@ sequenceDiagram
     participant ALB
 
     User->>PM: Request Premium Assignment
-    PM->>DB: Query Running Instances
+    PM->>PM: register_orphaned_stopped_instances()
+    PM->>DB: Query Running Instances + Standby Pool
 
     alt Tier 1: Dedicated Running Instance
         DB-->>PM: Found instance with 0 users
-        PM->>DB: Reserve instance (transaction lock)
+        PM->>PM: check_instance_readiness_with_retry()
+        PM->>DB: try_reserve_instance() (SELECT FOR UPDATE)
         PM->>ALB: Create Target Group + Rule
         PM-->>User: Assigned (0s wait)
     else Tier 2: Share Least Loaded
-        DB-->>PM: No dedicated, found instance with 1 user
+        DB-->>PM: No dedicated, found instance with fewest users
         PM->>ALB: Create Target Group + Rule
-        PM->>PM: Trigger background scaling
+        PM->>PM: scale_premium_instances_if_needed()
+        PM->>PM: invoke_migration_async()
         PM-->>User: Assigned to shared (0s wait)
         Note over PM: Will migrate when new instance ready
     else Tier 2.5: Autoscaling Pool Fallback
         DB-->>PM: No premium instances ready
         PM->>DB: Assign to "autoscaling-pool"
-        PM->>PM: Trigger scaling + migration
+        PM->>PM: scale_premium_instances_if_needed()
+        PM->>PM: invoke_migration_async()
         PM-->>User: Assigned to temp pool (0s wait)
         Note over PM: User logs in immediately, migrates later
     else Tier 3: Start Standby
-        DB-->>PM: Found standby instance
+        DB-->>PM: Found standby instance (is_standby=1)
         PM->>EC2: Start Instance
+        PM->>PM: clear_ecs_agent_checkpoint()
         EC2-->>PM: Instance running (5-15s)
         PM->>ALB: Create Target Group + Rule
-        PM->>PM: Create replacement standby
+        PM->>PM: create_and_stop_standby_instance() (replenish)
         PM-->>User: Assigned (5-15s wait)
     end
 ```
@@ -134,69 +142,65 @@ sequenceDiagram
     participant PM as Premium Manager
     participant DB as Database
     participant EC2
-    participant ASG as Auto Scaling Group
 
     User->>PM: Request Premium Assignment
     PM->>DB: Query All Instances
 
     alt Tier 4: AWS Stopped Instance
-        DB-->>PM: Found stopped instance (not in standby)
+        DB-->>PM: Found stopped instance (not standby)
         PM->>EC2: Start Instance
         EC2-->>PM: Instance running (60-90s)
         PM->>PM: Create Target Group + Rule
         PM-->>User: Assigned (60-90s wait)
-    else Tier 5: Create New Instance
+    else Tier 5: Scale New Instance
         DB-->>PM: No instances available
-        PM->>DB: Check pending creations
+        PM->>PM: Check launching instances + creation locks
 
-        alt No pending creations
-            PM->>PM: Create new standby instance
-            PM->>EC2: Launch instance via template
-            EC2->>ASG: Instance launching
-            ASG->>PM: Lifecycle hook event
-            PM->>EC2: Stop instance when ready
-            PM->>DB: Register as standby
-            PM-->>User: Retry in 2-3 minutes
-        else Already scaling
-            PM-->>User: Scaling in progress, retry
+        alt Already scaling
+            PM-->>User: 202 - Scaling in progress, retry in 2-3 min
+        else No pending scaling
+            PM->>PM: scale_premium_instances_if_needed()
+            PM-->>User: 202 - Scaling initiated, retry in 2-3 min
         end
     end
 ```
 
-### Autoscaling Pool Migration Flow
+### Background Migration Flow
 
 ```mermaid
 graph TB
-    subgraph "Background Migration Process"
-        A[User Assigned to autoscaling-pool] --> B{Premium Instance Ready?}
+    subgraph "Background Migration (invoke_migration_async)"
+        A[User on autoscaling-pool or shared] --> AA{Migration lock held?}
+        AA -->|Yes| AB[Skip - another Lambda migrating]
+        AA -->|No| B{Available dedicated instance?}
 
-        B -->|Not Ready| C[Wait 10s]
-        C --> B
+        B -->|Yes| C[check_instance_readiness_with_retry]
+        B -->|No| D[scale_premium_instances_if_needed]
 
-        B -->|Ready| D[Check Available Instances]
-        D --> E{Instance with 0 users?}
+        C -->|Ready| E{User has active workflows?}
+        C -->|Not Ready| D
 
-        E -->|Yes| F[Reserve Instance]
-        E -->|No| G[Check Standby Pool]
+        E -->|Yes| F[Skip - retry on next attempt]
+        E -->|No| G[try_reserve_instance_for_migration]
 
-        G -->|Has Standby| H[Start Standby]
-        G -->|No Standby| I[Wait for Scaling]
+        G -->|Reserved| H[migrate_user_to_dedicated_instance]
+        G -->|Failed| I[Try next available instance]
 
-        F --> J[Create New Target Group]
-        H --> J
-        I --> C
-
-        J --> K[Update ALB Rule]
-        K --> L[Update DB Assignment]
-        L --> M[Delete Old ALB Rule]
+        H --> J[Create/update target group]
+        J --> K[Update ALB rule]
+        K --> L[Update DB assignment]
+        L --> M[trigger_experiment_sync]
         M --> N[Migration Complete]
 
-        N --> O[User on Dedicated Instance]
+        D --> O[Wait for instances to start]
+        O --> B
+
+        N --> P[User on Dedicated Instance]
     end
 
     style A fill:#FFA500
-    style O fill:#90EE90
-    style F fill:#87CEEB
+    style P fill:#90EE90
+    style G fill:#87CEEB
     style J fill:#DDA0DD
 ```
 
@@ -206,302 +210,177 @@ graph TB
 
 ### 1. User Assignment Handler
 
+### assign_premium_user()
+
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
+**Purpose:** Assign a premium instance using 5-tier priority fallback
+**Input:** user_id (int), event (API Gateway dict), optional user_uid (str)
+**Output:** Dict with statusCode, instance_id, routing headers; or 202 retry
+**Calls:** register_orphaned_stopped_instances() -> check_instance_readiness_with_retry() -> try_reserve_instance() -> create_or_get_target_group() -> store_user_assignment()
 
-**Function:** `assign_premium_user()` - Main assignment handler with 5-tier priority
+**Pre-assignment Steps:**
+1. Check for existing assignment (return it if found; trigger migration if shared/autoscaling)
+2. Register orphaned stopped instances as standby
+3. Get comprehensive instance state (running, launching, stopped, standby)
 
-**Priority Evaluation Logic:**
+**Priority Evaluation:**
 
-```python
-# PRIORITY 1: Dedicated running instances
-for instance in running_instances:
-    assigned_users = get_assigned_users_for_instance(instance_id)
-    if len(assigned_users) == 0:
-        if try_reserve_instance(instance_id, user_id):
-            # Use this dedicated instance
-            assignment_source = "dedicated"
-            break
+- **Tier 1 (Dedicated):** Loop running instances, check ECS readiness,
+  reserve first instance with 0 users via `SELECT FOR UPDATE`
+- **Tier 2 (Shared):** Use least-loaded running instance, trigger
+  scaling if `launching == 0 and running < active_users + 1`
+- **Tier 2.5 (Autoscaling Pool):** Assign to `"autoscaling-pool"` as
+  temporary fallback, always trigger scaling
+- **Tier 3 (Standby):** Start a stopped standby instance
+  (`is_standby=1`), replenish pool immediately
+- **Tier 4 (AWS Stopped):** Start non-standby stopped instance,
+  wait up to 6 minutes for running state
+- **Tier 5 (Scale New):** If launching instances exist, return 202;
+  otherwise call `scale_premium_instances_if_needed()` and return 202
 
-# PRIORITY 2: Share least loaded instance
-if not instance_to_use and least_loaded_instance:
-    instance_to_use = least_loaded_instance
-    is_shared = True
-    assignment_source = "shared"
+**Post-assignment Steps:**
+1. Create target group (or use autoscaling target group for pool)
+2. Generate routing ID via HMAC-SHA256
+3. Clean up duplicate ALB rules for this routing ID
+4. Create ALB listener rule with routing headers
+5. Clean up standby/reservation placeholders from DB
+6. If `needs_scaling`: call `scale_premium_instances_if_needed()` + `invoke_migration_async()`
+7. Store assignment via `store_user_assignment()`
+8. Initialize activity tracking
 
-    # Trigger background scaling if under-provisioned
-    if len(running_instances) < active_users + 1:
-        needs_scaling = True
-
-# PRIORITY 2.5: Autoscaling pool temporary assignment
-no_premium_available = len(running_instances) == 0 or not available_dedicated
-if not instance_to_use and no_premium_available:
-    instance_to_use = {"instance_id": "autoscaling-pool"}
-    is_shared = True
-    assignment_source = "autoscaling_temp"
-    needs_scaling = True  # Always scale premium instances
-
-# PRIORITY 3: Start standby instance
-if not instance_to_use and standby_instances:
-    standby_instance_id = standby_instances[0]["instance_id"]
-    if start_standby_instance(standby_instance_id):
-        instance_to_use = {"instance_id": standby_instance_id}
-        assignment_source = "standby"
-        create_and_stop_standby_instance()  # Replenish
-
-# PRIORITY 4: AWS stopped instances
-if not instance_to_use and aws_only_stopped:
-    fallback_instance_id = aws_only_stopped[0]["instance_id"]
-    ec2.start_instances(InstanceIds=[fallback_instance_id])
-    # Wait for running state...
-    assignment_source = "aws_fallback"
-
-# PRIORITY 5: Create new instance
-if not instance_to_use:
-    if len(launching_instances) > 0:
-        return 202  # Retry in 2-3 minutes
-    else:
-        scale_premium_instances_if_needed()
-        return 202  # Retry in 2-3 minutes
-```
+**Error Recovery:**
+On any failure after partial resource creation, the handler cleans up:
+- ALB rule (if created)
+- Target group (if created)
+- Instance reservation (if held)
+- DB assignment (if stored)
 
 ### 2. Standby Pool Management
 
-**Function:** `create_and_stop_standby_instance()` - Create instance, stop immediately for pool
+**Storage:** Standby instances are tracked in the `premium_user_assignments` table with:
+- `is_standby = 1`
+- `user_id = NULL` (no real user)
+- `target_group_arn = 'standby'`
+- `alb_rule_arn = 'standby'`
 
-**Key Features:**
+### create_and_stop_standby_instance()
 
-1. **Distributed Locking:**
-   ```python
-   # MySQL GET_LOCK prevents concurrent Lambda executions
-   cursor.execute("SELECT GET_LOCK(%s, %s)", (lock_name, lock_timeout))
-   lock_result = cursor.fetchone()["lock_result"]
+**File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
+**Purpose:** Create a new EC2 instance and stop it for standby pool
+**Input:** None (reads env vars for launch template, subnets, pool size)
+**Output:** instance_id (str) or None if pool full / lock not acquired
+**Calls:** distributed_lock() -> get_standby_count() -> ec2.run_instances() -> store_user_assignment()
 
-   if lock_result != 1:
-       # Another Lambda is creating standby, skip
-       return None
-   ```
+**Key behaviors:**
+- Acquires `CREATE_STANDBY_LOCK` via MySQL `GET_LOCK`
+- Double-checks pool size after lock acquisition
+- Tries each subnet (multi-AZ) until one succeeds
+- On `InsufficientInstanceCapacity`, tries next AZ
+- Waits for running, then stops, then waits for stopped
+- Registers with `is_standby=1` in DB
 
-2. **Double-Check After Lock:**
-   ```python
-   # Re-check standby count after acquiring lock
-   standby_count = get_standby_count()
-   if standby_count >= standby_pool_size:
-       # Another Lambda already created one
-       return None
-   ```
+### start_standby_instance()
 
-3. **Multi-AZ Instance Creation:**
-   ```python
-   # Try each subnet (different AZ) until one succeeds
-   for subnet_id in subnet_ids:
-       try:
-           response = ec2.run_instances(
-               LaunchTemplate={'LaunchTemplateId': launch_template_id},
-               SubnetId=subnet_id,
-               MinCount=1, MaxCount=1
-           )
-           instance_id = response['Instances'][0]['InstanceId']
-           break
-       except ClientError as e:
-           if 'InsufficientInstanceCapacity' in str(e):
-               continue  # Try next AZ
-   ```
+**File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
+**Purpose:** Start a stopped standby instance and prepare for user assignment
+**Input:** instance_id (str)
+**Output:** True on success, False on failure
+**Calls:** ec2.start_instances() -> clear_ecs_agent_checkpoint()
 
-4. **Register and Stop:**
-   ```python
-   # Wait for running state
-   waiter = ec2.get_waiter('instance_running')
-   waiter.wait(InstanceIds=[instance_id])
+**Key behaviors:**
+- Waits for running state (delay=5s, max 24 attempts)
+- Clears stale ECS agent checkpoint so it re-registers
+- Updates `instance_state` to `'running'` for non-standby assignments
 
-   # Stop immediately for standby
-   ec2.stop_instances(InstanceIds=[instance_id])
-
-   # Register in database
-   register_standby_instance(instance_id)
-   ```
-
-**Function:** `start_standby_instance()` - Start standby, remove from pool
-
-```python
-def start_standby_instance(instance_id: str):
-    """
-    Start a standby instance and remove it from standby pool.
-    Returns True on success, False on failure.
-    """
-    ec2 = boto3.client('ec2')
-
-    # Start the instance
-    ec2.start_instances(InstanceIds=[instance_id])
-
-    # Remove from standby pool in database
-    with get_db_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "DELETE FROM premium_standby_pool WHERE instance_id = %s",
-                (instance_id,)
-            )
-            connection.commit()
-
-    # Wait for running state (5-15 seconds typically)
-    waiter = ec2.get_waiter('instance_running')
-    waiter.wait(InstanceIds=[instance_id])
-
-    return True
+```sql
+-- Key constraint: only update non-standby assignments
+WHERE instance_id = %s AND is_standby = 0
 ```
 
 ### 3. Orphaned Instance Registration
 
-**Function:** `register_orphaned_stopped_instances()` - Auto-register AWS stopped instances
+### register_orphaned_stopped_instances()
 
-**Purpose:** Auto-register stopped instances that exist in AWS but not in standby database
+**File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
+**Purpose:** Find stopped EC2 instances not tracked in DB and register as standby
+**Input:** None
+**Output:** Count of newly registered instances (int)
+**Calls:** get_all_premium_instances_with_states() -> get_available_standby_instances() -> get_assigned_users_for_instance() -> store_user_assignment()
 
-```python
-def register_orphaned_stopped_instances():
-    """
-    Find stopped premium instances in AWS that are not in standby pool
-    and register them as standby instances.
-
-    This handles:
-    - Instances that were stopped manually
-    - Instances created outside normal standby flow
-    - Recovery from database inconsistencies
-    """
-    all_instances = get_all_premium_instances_with_states()
-    stopped_instances = [i for i in all_instances if i['state'] == 'stopped']
-
-    standby_instances = get_available_standby_instances()
-    standby_ids = {s['instance_id'] for s in standby_instances}
-
-    orphaned = [i for i in stopped_instances
-                if i['instance_id'] not in standby_ids]
-
-    for instance in orphaned:
-        instance_id = instance['instance_id']
-        register_standby_instance(instance_id)
-        print(f"Registered orphaned stopped instance as standby: {instance_id}")
-```
+Called at the start of every `assign_premium_user()` invocation to
+ensure maximum standby availability. Only registers instances that
+are both untracked in the standby pool and unassigned to any user.
 
 ### 4. Background Migration System
 
-**Function:** `process_shared_instance_optimization()` - Migrate users to dedicated instances
+### process_shared_instance_optimization()
 
-**Trigger:** Called after user assignment completes when `needs_scaling=True`
+**File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
+**Purpose:** Find users on shared/autoscaling instances and migrate to dedicated
+**Input:** None
+**Output:** Dict with migration stats (migrated count, errors)
+**Calls:** get_assigned_users_for_instance() -> check_instance_readiness_with_retry() -> migrate_user_to_dedicated_instance() -> scale_premium_instances_if_needed()
+
+**Trigger:** Called by `handle_scheduled_monitoring()` every 15 minutes,
+and via `invoke_migration_async()` after shared/autoscaling assignments.
 
 **Flow:**
 
-1. **Identify Users Needing Migration:**
-   ```python
-   # Get users on autoscaling pool
-   autoscaling_users = get_assigned_users_for_instance("autoscaling-pool")
+1. **Identify users needing migration:** Users on autoscaling pool
+   (all migrate) and users on shared instances (those with
+   `is_shared=1` flag, or all-but-first if no flag set)
+2. **Find available instances:** Running instances with 0 real users
+   that pass `check_instance_readiness_with_retry()`
+3. **Ensure capacity:** If available < needed, call
+   `scale_premium_instances_if_needed()`
+4. **Perform migration:** Try each available instance until one
+   succeeds per user; workflow-safe via `can_migrate_user()`
 
-   # Get users on shared premium instances (>1 user per instance)
-   shared_instances = []
-   for instance in all_instances:
-       assigned_users = get_assigned_users_for_instance(instance_id)
-       if len(assigned_users) > 1:
-           shared_instances.append((instance_id, assigned_users))
-   ```
-
-2. **Find Available Instances:**
-   ```python
-   # Running instances with 0 users
-   for instance in all_instances:
-       if instance['state'] == 'running':
-           if is_instance_ready(instance_id):
-               assigned_users = get_assigned_users_for_instance(instance_id)
-               if len(assigned_users) == 0:
-                   available_instances.append(instance_id)
-   ```
-
-3. **Ensure Capacity:**
-   ```python
-   total_users_needing_migration = sum(len(users) for _, users in shared_instances)
-
-   if len(available_instances) < total_users_needing_migration:
-       # Start standby instances to fill gap
-       standby_needed = total_users_needing_migration - len(available_instances)
-       for standby in standby_instances[:standby_needed]:
-           start_standby_instance(standby['instance_id'])
-           available_instances.append(standby['instance_id'])
-   ```
-
-4. **Perform Migration:**
-   ```python
-   for instance_id, users in shared_instances:
-       if instance_id == "autoscaling-pool":
-           # Migrate ALL users from autoscaling pool
-           users_to_migrate = users
-       else:
-           # Keep first user on premium instance, migrate rest
-           users_to_migrate = users[1:]
-
-       for user in users_to_migrate:
-           target_instance = available_instances.pop(0)
-           migrate_user_to_instance(user, target_instance)
-   ```
-
-**Migration Details** (`migrate_user_to_dedicated_instance()`):
-
-```python
-def migrate_user_to_dedicated_instance(user_id: str, target_instance_id: str):
-    """
-    Migrate user from current instance to target instance.
-
-    Steps:
-    1. Get current assignment (instance_id, target_group, rule)
-    2. Create new target group for target instance
-    3. Register target instance in new target group
-    4. Update ALB rule to point to new target group
-    5. Update database assignment
-    6. Delete old ALB rule and target group (if dedicated)
-    """
-    elbv2 = boto3.client('elbv2')
-
-    # Get current assignment
-    assignment = get_user_assignment(user_id)
-    old_instance_id = assignment['instance_id']
-    old_target_group = assignment['target_group_arn']
-    old_rule_arn = assignment['alb_rule_arn']
-
-    # Create new target group (if migrating from autoscaling pool)
-    if old_instance_id == "autoscaling-pool":
-        vpc_id = os.environ.get("VPC_ID")
-        target_group = elbv2.create_target_group(
-            Name=f"premium-{user_id[:8]}-{int(time.time())}",
-            Protocol='HTTP',
-            Port=8000,
-            VpcId=vpc_id,
-            TargetType='instance'
-        )
-        new_target_group_arn = target_group['TargetGroups'][0]['TargetGroupArn']
-
-        # Register target instance
-        elbv2.register_targets(
-            TargetGroupArn=new_target_group_arn,
-            Targets=[{'Id': target_instance_id}]
-        )
-
-    # Update ALB rule to point to new target group
-    elbv2.modify_rule(
-        RuleArn=old_rule_arn,
-        Actions=[{
-            'Type': 'forward',
-            'TargetGroupArn': new_target_group_arn
-        }]
-    )
-
-    # Update database
-    update_user_assignment(
-        user_id=user_id,
-        instance_id=target_instance_id,
-        target_group_arn=new_target_group_arn
-    )
-
-    # Cleanup: Delete old rule/target group (if autoscaling pool, skip)
-    if old_instance_id != "autoscaling-pool":
-        # Will be cleaned up by normal release flow
-        pass
+```sql
+-- Key constraint: only migrate idle users
+WHERE active_workflow_count = 0
 ```
+
+### migrate_user_to_dedicated_instance()
+
+**File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
+**Purpose:** Migrate one user from shared/autoscaling to a dedicated instance
+**Input:** user_id (int), new_instance_id (str)
+**Output:** True on success, False if blocked or failed
+**Calls:** can_migrate_user() -> try_reserve_instance_for_migration() -> create_or_get_target_group() -> trigger_experiment_sync()
+
+**Key behaviors:**
+- Checks `can_migrate_user()` from `premium_user_utils` first
+- Reserves target with `SELECT FOR UPDATE`
+- Double-checks `active_workflow_count` from DB
+- Autoscaling-pool migration: creates new target group, modifies
+  or creates ALB rule, updates DB
+- Normal migration: swaps instance registration in existing
+  target group, updates DB with `is_shared=0`
+- Triggers experiment metadata sync on new instance
+
+### 5. Scaling System
+
+### scale_premium_instances_if_needed()
+
+**File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
+**Purpose:** Scale up premium instances based on active assignment demand
+**Input:** None
+**Output:** True if scaling initiated, False if blocked or unnecessary
+**Calls:** get_dynamic_max_capacity() -> count_active_premium_users() -> is_creation_lock_held() -> _create_running_instances_locked() -> invoke_migration_async() -> update_premium_service_desired_count()
+
+Scales based on **active assignments** (logged-in users), not total
+subscribers.
+
+**Key behaviors:**
+- Blocked if launching instances exist or `CREATE_RUNNING_LOCK` held
+- No-op if `running_count >= active_users` (sufficient capacity)
+- Prefers starting stopped instances (fastest) over creating new
+- Clears ECS agent checkpoints after starting stopped instances
+- Falls back to `_create_running_instances_locked()` under
+  distributed lock
+- Always calls `invoke_migration_async()` and
+  `update_premium_service_desired_count()` after scaling
 
 ---
 
@@ -509,135 +388,125 @@ def migrate_user_to_dedicated_instance(user_id: str, target_instance_id: str):
 
 ### 1. Race Condition: Multiple Users Requesting Simultaneously
 
-**Problem:** Two users request premium assignment at the same time, both see same available instance.
+**Problem:** Two users request premium assignment at the same time,
+both see same available instance.
 
-**Solution:** Transaction-based reservation system:
+**Solution:** Database-level locking with `SELECT FOR UPDATE`:
 
-```python
-def try_reserve_instance_transaction(instance_id: str, user_id: str) -> bool:
-    """
-    Try to atomically reserve an instance for a user.
-    Uses database transaction to prevent race conditions.
+### try_reserve_instance_transaction()
 
-    Returns True if successfully reserved, False if another user claimed it.
-    """
-    with get_db_connection() as connection:
-        with connection.cursor() as cursor:
-            # Check current assignments
-            cursor.execute(
-                "SELECT user_id FROM premium_user_assignments WHERE instance_id = %s",
-                (instance_id,)
-            )
-            existing = cursor.fetchall()
+**File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
+**Purpose:** Atomically reserve an instance using row-level locking
+**Input:** connection, instance_id (str), user_id (int)
+**Output:** True if reserved, False if already claimed
+**Calls:** Uses `@with_transaction` decorator for auto-commit/rollback
 
-            if len(existing) > 0:
-                # Someone else claimed it
-                return False
-
-            # Claim it with placeholder
-            cursor.execute(
-                """INSERT INTO premium_user_assignments
-                   (instance_id, user_id, target_group_arn, alb_rule_arn)
-                   VALUES (%s, %s, 'reserving', NULL)""",
-                (instance_id, f"reserving-{user_id}")
-            )
-            connection.commit()
-            return True
-```
+Locks the instance row with `SELECT ... FOR UPDATE`, checks for
+existing assignment, and inserts a reservation with marker values
+(`PremiumAssignment.RESERVING`) if unclaimed.
 
 ### 2. Standby Pool Exhaustion
 
 **Problem:** Multiple users arrive, consume all standby instances.
 
 **Solution:** Automatic replenishment + fallback chain:
-
-```python
-# When consuming standby
-if start_standby_instance(standby_instance_id):
-    # Immediately trigger replacement
-    create_and_stop_standby_instance()
-
-# If standby pool empty, fall back to AWS stopped instances
-if not standby_instances and aws_stopped_instances:
-    # Use AWS stopped as fallback
-    start_aws_instance(aws_stopped_instances[0])
-
-# If no stopped instances, create new
-if not standby_instances and not aws_stopped_instances:
-    scale_premium_instances_if_needed()
-```
+- On standby consumption: immediately call
+  `create_and_stop_standby_instance()` to replenish
+- If standby pool empty: fall back to Tier 4
+  (start non-standby stopped instances)
+- If nothing stopped: fall back to Tier 5
+  (`scale_premium_instances_if_needed()`, return 202)
 
 ### 3. Instance Fails to Start
 
 **Problem:** Standby instance fails health checks after starting.
 
-**Solution:** Timeout + cleanup + retry:
-
-```python
-# Wait for instance readiness with timeout
-is_ready = check_instance_readiness_with_retry(
-    instance_id,
-    max_wait_seconds=120,
-    retry_interval=15
-)
-
-if not is_ready:
-    # Release reservation
-    release_instance_reservation(instance_id, user_id)
-
-    # Mark instance as failed
-    mark_instance_failed(instance_id)
-
-    # Cleanup will reconcile and potentially terminate it
-    # Fall back to next priority tier
-```
+**Solution:** Timeout with cleanup and fallback:
+- `check_instance_readiness_with_retry()` uses short timeout
+  (30s during assignment, 10s retry interval)
+- On failure: skip instance, try next priority tier
+- `release_instance_reservation()` cleans up the DB
+- `cleanup_failed_standby_instances()` handles DB orphans
+  (runs every 15 min via scheduled monitoring)
 
 ### 4. Migration Loop Prevention
 
 **Problem:** User keeps getting migrated back and forth.
 
-**Solution:** Migration only from autoscaling pool or shared → dedicated:
-
-```python
-# Only migrate users in these scenarios:
-# 1. From autoscaling pool to ANY premium instance
-# 2. From shared premium (>1 user) to dedicated (0 users)
-# Never migrate from dedicated to anything
-
-if instance_id == "autoscaling-pool":
-    # Always migrate
-    users_to_migrate = users
-elif instance_id.startswith("i-") and len(users) > 1:
-    # Keep first user, migrate others
-    users_to_migrate = users[1:]
-else:
-    # Single user on premium instance - do not migrate
-    users_to_migrate = []
-```
+**Solution:** Strict migration direction rules:
+- `autoscaling-pool` -> dedicated (always migrate all)
+- shared (>1 user or `is_shared=1`) -> dedicated (0 users)
+- Single user with incorrect `is_shared` flag -> fix flag
+- Never migrate from dedicated to anything
 
 ### 5. Scaling Stampede Prevention
 
 **Problem:** Multiple Lambda invocations try to scale simultaneously.
 
-**Solution:** Pending creation tracking:
+**Solution:** Distributed locks + launch state checks:
+- `distributed_lock(CREATE_STANDBY_LOCK)` prevents concurrent
+  standby creation
+- `is_creation_lock_held(CREATE_RUNNING_LOCK)` checks without
+  blocking to detect running creation in progress
+- `launching_count > 0` check blocks redundant scaling
 
-```python
-def count_pending_standby_creations() -> int:
-    """Count how many standbys are being created right now"""
-    with get_db_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """SELECT COUNT(*) as count
-                   FROM premium_standby_creations
-                   WHERE created_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)"""
-            )
-            return cursor.fetchone()['count']
+### 6. Workflow Safety During Migration
 
-# Before creating standby
-if count_pending_standby_creations() >= 2:
-    print("Already creating 2 standbys, skipping")
-    return None
+**Problem:** Migrating a user while they have active workflows
+could cause data loss.
+
+**Solution:** Two-layer check via `can_migrate_user()` from
+`premium_user_utils` plus a DB-level double-check:
+
+```sql
+-- Key constraint: only migrate idle users
+WHERE active_workflow_count = 0
 ```
+
+If the user has active workflows, migration is skipped and
+retried on the next attempt.
+
+---
+
+## Database Schema
+
+### `premium_user_assignments` Table
+
+The single table that tracks all premium instance assignments,
+including standby pool entries.
+
+**Source:** `studio/alembic/versions/e701e7250019_create_premium_management_system.py`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | BIGINT UNSIGNED | Primary key (auto-increment) |
+| `user_id` | BIGINT UNSIGNED | FK to users.id (NULL for standby entries) |
+| `instance_id` | VARCHAR(20) | EC2 instance ID or "autoscaling-pool" |
+| `target_group_arn` | VARCHAR(512) | ALB target group ARN or "standby"/"reserving" |
+| `alb_rule_arn` | VARCHAR(512) | ALB rule ARN or "standby"/"reserving" |
+| `assigned_at` | TIMESTAMP | Assignment creation time |
+| `status` | ENUM | 'active', 'migrating', 'terminating' |
+| `last_activity` | TIMESTAMP | Last user activity (auto-updates) |
+| `instance_state` | ENUM | 'launching', 'running', 'stopping', 'stopped', 'terminating' |
+| `is_shared` | BOOLEAN | Whether instance is shared with other users |
+| `assignment_attempts` | INTEGER | Number of assignment retry attempts |
+| `last_state_check` | TIMESTAMP | Last instance state verification |
+| `is_standby` | BOOLEAN | Standby pool entry (user_id=NULL) |
+| `standby_created_at` | TIMESTAMP | When standby entry was created |
+| `active_workflow_count` | INTEGER | Active workflows (migration safety) |
+| `last_workflow_start` | TIMESTAMP | Last workflow start time |
+| `last_workflow_end` | TIMESTAMP | Last workflow completion time |
+
+**Key Indexes:**
+- `uq_premium_user_id` (UNIQUE on user_id)
+- `idx_instance_id`, `idx_status`, `idx_last_activity`
+- `idx_instance_state`, `idx_is_shared`, `idx_is_standby`
+- `idx_workflow_recovery` (active_workflow_count, last_workflow_start)
+
+**Marker Values:**
+- `instance_id = "autoscaling-pool"` -- user on shared autoscaling pool
+- `target_group_arn = "standby"` / `alb_rule_arn = "standby"` -- standby pool entry
+- `target_group_arn = "reserving"` / `alb_rule_arn = "reserving"` -- in-progress reservation
 
 ---
 
@@ -645,19 +514,17 @@ if count_pending_standby_creations() >= 2:
 
 ### CloudWatch Metrics Published
 
-**By Premium Manager** (every 15 minutes + on-demand):
+**By Premium Manager** (every 15 minutes via `publish_premium_metrics()`):
 
-| Metric Name | Description | Unit | Trigger |
-|-------------|-------------|------|---------|
-| `ActivePremiumUsers` | Users with active assignments | Count | Scheduled + Assignment |
-| `IdlePremiumUsers` | Premium users without assignments | Count | Scheduled |
-| `RunningInstances` | EC2 instances in "running" state | Count | Scheduled + Assignment |
-| `IdleInstances` | Running instances with 0 users | Count | Scheduled |
-| `StandbyPoolSize` | Stopped instances in standby pool | Count | Assignment + Standby ops |
-| `PendingInstanceCreations` | Instances being created now | Count | Scaling operations |
-| `MigrationsPending` | Users on autoscaling pool | Count | Migration checks |
+| Metric Name | Description | Unit |
+|-------------|-------------|------|
+| `ActivePremiumUsers` | Users with active assignments | Count |
+| `IdlePremiumUsers` | Premium users without assignments | Count |
+| `RunningInstances` | EC2 instances in "running" state | Count |
+| `IdleInstances` | Running instances with 0 users | Count |
+| `ScalingInProgress` | Lock to prevent concurrent operations | None (0 or 1) |
 
-**Dashboard:** `subscr-premium-tier-monitoring`
+**Namespace:** `OptiNiSt/PremiumManager`
 
 ### Key Log Events
 
@@ -665,27 +532,26 @@ if count_pending_standby_creations() >= 2:
 
 ```
 === PREMIUM USER ASSIGNMENT START ===
-Target user: user-123
-Assignment context:
+Target user: 42
+ Assignment context:
 - Running instances: 2
 - Launching instances: 0
 - Active users: 3
 - Standby available: 1
 - Total instances: 3
 
-PRIORITY 1: Evaluating 2 running instances
+PRIORITY 1: Evaluating 2 running instances for immediate assignment
 [1/2] Evaluating instance i-abc123
+Checking readiness for instance i-abc123...
+Readiness result: True
 Found 0 assigned users
 Reserved dedicated instance: i-abc123
-PRIORITY 1 SUCCESS: Using dedicated running instance
+PRIORITY 1 SUCCESS: Using dedicated running instance i-abc123
 
-Creating target group: premium-user123-1234567890
-Registering target: i-abc123
-Creating ALB rule with priority 1234
-=== ASSIGNMENT COMPLETE ===
-Instance: i-abc123
-Assignment type: dedicated
-Wait time: 0s
+=== ASSIGNMENT SUCCESS ===
+- Instance ID: i-abc123
+- Assignment source: dedicated
+- Is shared: False
 ```
 
 **Standby Creation Logs:**
@@ -693,27 +559,24 @@ Wait time: 0s
 ```
 Acquired distributed lock for standby creation
 Standby pool has capacity (0/1), proceeding with creation
-Creating instance from launch template: lt-xyz789
-Instance created: i-def456
+Attempting to launch standby instance in subnet-abc (attempt 1/2)
+Successfully created standby instance i-def456
 Waiting for instance to start...
 Instance running, stopping for standby...
 Instance stopped successfully
 Registered instance i-def456 as standby
-Released lock
 ```
 
 **Migration Logs:**
 
 ```
-Background migration check triggered
+Checking for shared instance optimization opportunities
 Found 1 users on autoscaling pool needing migration
-Found 2 available instances with 0 users
-Migrating user user-123 from autoscaling-pool to i-ghi789
-Created new target group: premium-user123-1234567891
-Updated ALB rule arn:aws:... to point to new target group
-Updated database assignment
-Migration completed for user-123
-1 migrations performed, 0 users remaining on autoscaling pool
+Instance i-ghi789 is available for migration
+Migrating ALL 1 users from autoscaling pool
+Migrated user 42 from autoscaling-pool to i-ghi789
+trigger_experiment_sync called for user 42
+Shared instance optimization complete: 1 users migrated
 ```
 
 ---
@@ -725,7 +588,7 @@ Migration completed for user-123
 **Premium Manager:**
 ```bash
 # Database
-RDS_HOST                        # Database endpoint (via RDS Proxy)
+RDS_HOST                        # Database endpoint (via RDS Proxy, format: host:port)
 RDS_USER                        # Database username
 RDS_PASSWORD                    # Database password
 RDS_DATABASE                    # Database name
@@ -737,234 +600,31 @@ PREMIUM_SERVICE_NAME            # ECS service name for premium tier
 # Networking
 VPC_ID                          # VPC ID for target groups
 SUBNET_IDS                      # Comma-separated subnet IDs (for multi-AZ)
-ALB_LISTENER_ARN                # ALB listener for routing rules
+ALB_ARN                         # Application Load Balancer ARN
+ALB_LISTENER_ARN                # ALB HTTPS listener for routing rules
+ALB_DNS_NAME                    # ALB DNS name
 AUTOSCALING_TARGET_GROUP_ARN    # Shared pool target group
+SECURITY_GROUP_ID               # ECS security group
 
 # Instance Management
 PREMIUM_LAUNCH_TEMPLATE_ID      # EC2 launch template for premium instances
+PREMIUM_INSTANCE_IDS            # Comma-separated base EC2 instance IDs
 PREMIUM_STANDBY_POOL_SIZE       # Desired standby pool size (default: 1)
-PREMIUM_INSTANCE_IDS            # Legacy: comma-separated instance IDs
+PREMIUM_SAFETY_BUFFER           # Extra capacity buffer (default: 1)
+PREMIUM_IDLE_TIMEOUT_HOURS      # Hours before idle timeout (default: 3)
+
+# Security
+ROUTING_SECRET_KEY              # HMAC secret for generating routing IDs
+INTERNAL_API_SECRET             # Secret for internal API authentication
 ```
 
 ### Triggers
 
-| Lambda          | Trigger                | Frequency         | EventBridge Rule                    |
-|-----------------|------------------------|-------------------|-------------------------------------|
-| Premium Manager | User assign/release    | On-demand (API)   | N/A                                 |
-| Premium Manager | Scheduled monitoring   | Every 15 minutes  | `subscr-premium-manager-schedule`   |
-| Premium Manager | ASG lifecycle events   | On EC2 events     | `subscr-premium-manager-asg-events` |
-| Premium Manager | Migration check        | After assignment  | N/A (inline)                        |
-
----
-
-## Testing
-
-### Test Suite
-
-**File:** `studio/scripts/test_premium_instance_provisioning.py`
-
-**What it Tests:**
-
-1. **Clean State Setup (Step 0):**
-   - Unassigns all test users
-   - Stops all premium instances
-   - Ensures starting from 0 running instances
-
-2. **User 1 Assignment (Step 1):**
-   - Assigns first premium user
-   - Verifies instance provisioning (from stopped or new)
-   - Confirms instance reaches running state
-   - Validates ECS task starts on instance
-   - **Expected:** User gets dedicated instance (Tier 1 or Tier 3)
-
-3. **User 2 Assignment (Step 2):**
-   - Assigns second premium user while User 1 active
-   - May be assigned to:
-     - Same instance as User 1 (shared)
-     - Autoscaling pool (temporary)
-     - New premium instance (if ready)
-   - **Expected:** User gets immediate login
-
-4. **Background Scaling Verification (Step 3):**
-   - Waits for system to provision premium instances
-   - Monitors for up to 10 minutes
-   - Verifies at least 2 premium instances exist
-   - **Expected:** System scales to `active_users + 1` instances
-
-5. **Migration Verification (Step 4):**
-   - Polls user assignments every 10 seconds
-   - Waits up to 10 minutes for migration completion
-   - Verifies both users on separate dedicated instances
-   - **Expected:** Both users migrated from autoscaling pool or shared
-
-6. **Final State Verification (Step 5):**
-   - Confirms at least 2 running instances
-   - Validates User 1 on correct instance
-   - Validates User 2 on correct instance
-   - Ensures no users remain on autoscaling pool
-   - **Expected:** Clean steady state
-
-**Key Test Functions:**
-
-```python
-def assign_premium_user(self, id_token: str) -> Optional[Dict]:
-    """Call backend API to assign user to premium instance"""
-    assign_url = f"{self.api_url}/users/me/premium/assign"
-    headers = {"Authorization": f"Bearer {id_token}"}
-    response = requests.post(assign_url, headers=headers, timeout=180)
-    return response.json()
-
-def wait_for_instance_running(self, instance_id: str, timeout: int = 300) -> bool:
-    """Poll EC2 until instance reaches running state"""
-    while time.time() - start_time < timeout:
-        response = self.ec2.describe_instances(InstanceIds=[instance_id])
-        state = response['Reservations'][0]['Instances'][0]['State']['Name']
-        if state == "running":
-            return True
-        time.sleep(10)
-    return False
-
-def wait_for_ecs_task(self, instance_id: str, timeout: int = 600) -> bool:
-    """Poll ECS until task is running on instance"""
-    while time.time() - start_time < timeout:
-        tasks = self.get_premium_ecs_tasks()
-        for task in tasks:
-            if task['ec2_instance_id'] == instance_id:
-                if task['last_status'] == 'RUNNING':
-                    return True
-        time.sleep(20)
-    return False
-
-def get_user_assignment_status(self, id_token: str) -> Optional[Dict]:
-    """Get current assignment status for user"""
-    status_url = f"{self.api_url}/users/me/premium/status"
-    headers = {"Authorization": f"Bearer {id_token}"}
-    response = requests.get(status_url, headers=headers, timeout=30)
-    return response.json()
-```
-
-**Running the Test:**
-
-```bash
-cd studio/scripts
-
-# With token generation
-python test_premium_instance_provisioning.py
-
-# Using existing tokens
-python test_premium_instance_provisioning.py --skip-token-gen
-
-# Custom terraform directory
-python test_premium_instance_provisioning.py --terraform-dir /path/to/terraform
-```
-
-**Expected Output:**
-
-```
-==================================================
-STEP 0: CLEANUP AND RESET
-==================================================
-Unassigning user: optinist_test_user_premium@example.com
-Forcing database cleanup for test users
-Stopping all premium instances...
-Successfully stopped instances.
-
-==================================================
-STEP 1: Assigning User 1
-==================================================
-User 1 assigned to instance i-abc123. Verifying startup...
-Instance state: pending
-Instance state: running
-Instance i-abc123 is now running!
-Found ECS task xyz123... on instance i-abc123 with status: PENDING
-Found ECS task xyz123... on instance i-abc123 with status: RUNNING
-STEP 1 PASSED: User 1 is running on a dedicated instance.
-
-==================================================
-STEP 2: Assigning User 2
-==================================================
-User 2 assigned to autoscaling-pool (will be migrated)
-STEP 2 PASSED: User 2 successfully assigned.
-
-==================================================
-STEP 3: Verifying Background Scaling
-==================================================
-[0s] Found 1 premium instances (need 2): {'i-abc123'}
-[60s] Found 1 premium instances (need 2): {'i-abc123'}
-[120s] Found 2 premium instances (need 2): {'i-abc123', 'i-def456'}
-Found 2 premium instances after 120s: {'i-abc123', 'i-def456'}
-STEP 3 PASSED: Background scaling verified.
-
-==================================================
-STEP 4: Verifying Migration
-==================================================
-[0s] User 1: i-abc123, User 2: autoscaling-pool
-[10s] User 1: i-abc123, User 2: autoscaling-pool
-[20s] User 1: i-abc123, User 2: i-def456
-Both users successfully migrated after 20s
-STEP 4 PASSED: Both users on separate dedicated premium instances.
-
-==================================================
-STEP 5: Final State Verification
-==================================================
-Found 2 running premium instance(s)
-Final state check complete. All users are on their correct dedicated instances.
-STEP 5 PASSED: Final state verified.
-
-============================================================
-FULL PREMIUM LIFECYCLE TEST PASSED!
-============================================================
-```
-
-### Manual Testing
-
-**Test Scenario 1: Cold Start (No Running Instances)**
-
-```bash
-# 1. Stop all premium instances
-aws ec2 stop-instances --instance-ids $(terraform output -json premium_instance_ids | jq -r '.value[]')
-
-# 2. Assign premium user
-curl -X POST https://araya-optinist.com/users/me/premium/assign \
-  -H "Authorization: Bearer $ID_TOKEN"
-
-# Expected: User assigned to autoscaling-pool, instance starts in background
-
-# 3. Check assignment status (retry every 10s)
-curl https://araya-optinist.com/users/me/premium/status \
-  -H "Authorization: Bearer $ID_TOKEN"
-
-# Expected: After 2-3 minutes, user migrated to dedicated instance
-```
-
-**Test Scenario 2: Standby Pool Usage**
-
-```bash
-# 1. Ensure standby pool has 1 instance
-aws lambda invoke --function-name subscr-premium-manager \
-  --payload '{"action": "ensure_standby_pool"}' /dev/null
-
-# 2. Check standby pool
-aws ec2 describe-instances --filters \
-  "Name=tag:Tier,Values=premium" \
-  "Name=instance-state-name,Values=stopped"
-
-# Expected: 1 stopped instance
-
-# 3. Assign user (should consume standby)
-curl -X POST https://araya-optinist.com/users/me/premium/assign \
-  -H "Authorization: Bearer $ID_TOKEN"
-
-# Expected: Instance starts in 5-15 seconds, new standby created
-
-# 4. Verify standby replenished
-# Wait 2-3 minutes, then check again
-aws ec2 describe-instances --filters \
-  "Name=tag:Tier,Values=premium" \
-  "Name=instance-state-name,Values=stopped"
-
-# Expected: 1 stopped instance (replacement created)
-```
+| Lambda          | Trigger              | Frequency        | EventBridge Rule                  |
+|-----------------|----------------------|------------------|-----------------------------------|
+| Premium Manager | User assign/release  | On-demand (API)  | N/A                               |
+| Premium Manager | Scheduled monitoring | Every 15 minutes | `subscr-premium-manager-schedule` |
+| Premium Manager | Migration check      | After assignment | N/A (async self-invocation)       |
 
 ---
 
@@ -974,38 +634,50 @@ aws ec2 describe-instances --filters \
 
 | Function | Purpose |
 |----------|---------|
-| `assign_premium_user()` | Main assignment handler with 5-tier priority |
-| `try_reserve_instance()` | Atomic instance reservation (prevents races) |
-| `check_instance_readiness_with_retry()` | Verify instance + ECS task ready |
+| `assign_premium_user()` | Main 5-tier assignment handler |
+| `try_reserve_instance()` | Atomic instance reservation (SELECT FOR UPDATE) |
+| `try_reserve_instance_for_migration()` | Reserve instance for migration (WITH TRANSACTION) |
+| `check_instance_readiness()` | Check if instance has running ECS task |
+| `check_instance_readiness_with_retry()` | Readiness check with configurable retry |
 | `get_assigned_users_for_instance()` | Query users assigned to instance |
+| `get_existing_user_assignment()` | Get user's current assignment |
+| `store_user_assignment()` | Store assignment in DB |
+| `release_instance_reservation()` | Clean up failed reservation |
 
 ### Standby Pool Management
 
 | Function | Purpose |
 |----------|---------|
-| `create_and_stop_standby_instance()` | Create instance, stop immediately for pool |
-| `start_standby_instance()` | Start standby, remove from pool |
-| `get_available_standby_instances()` | Query standby pool from database |
+| `create_and_stop_standby_instance()` | Create instance, stop for pool (distributed lock) |
+| `start_standby_instance()` | Start standby + clear ECS checkpoint |
+| `get_available_standby_instances()` | Query standby pool (is_standby=1) |
 | `register_orphaned_stopped_instances()` | Auto-register stopped instances as standby |
 | `get_standby_count()` | Count current standby pool size |
+| `get_standby_pool_count()` | Count standby instances by state |
 
 ### Migration & Scaling
 
 | Function | Purpose |
 |----------|---------|
-| `process_shared_instance_optimization()` | Migrate users from autoscaling pool or shared instances |
-| `migrate_user_to_dedicated_instance()` | Migrate single user to target instance |
-| `scale_premium_instances_if_needed()` | Trigger scaling if under-capacity |
-| `update_premium_service_desired_count()` | Sync ECS desired count to running instances |
+| `process_shared_instance_optimization()` | Find and migrate shared/autoscaling users |
+| `migrate_user_to_dedicated_instance()` | Migrate single user (workflow-safe) |
+| `invoke_migration_async()` | Trigger async migration Lambda invocation |
+| `_handle_migrate_shared_users()` | Migration loop under distributed lock |
+| `scale_premium_instances_if_needed()` | Start stopped or create new instances |
+| `_create_running_instances_locked()` | Create running instances under lock |
+| `create_running_instance()` | Create and leave running for assignment |
+| `update_premium_service_desired_count()` | Sync ECS desired count |
+| `trigger_experiment_sync()` | Sync experiment metadata after migration |
 
 ### Locking & Concurrency
 
 | Function | Purpose |
 |----------|---------|
-| `try_reserve_instance_transaction()` | Database transaction lock for reservation |
-| `register_pending_standby_creation()` | Register intent to create standby (prevents dupes) |
-| `count_pending_standby_creations()` | Count in-progress standby creations |
+| `distributed_lock()` | MySQL GET_LOCK context manager |
+| `try_reserve_instance_transaction()` | DB transaction lock for reservation |
+| `is_creation_lock_held()` | Check if another Lambda holds a lock |
 | `is_premium_scaling_in_progress()` | Check CloudWatch metric lock |
+| `set_premium_scaling_lock()` | Set/clear CloudWatch scaling lock |
 
 ### Monitoring & Cleanup
 
@@ -1013,19 +685,17 @@ aws ec2 describe-instances --filters \
 |----------|---------|
 | `publish_premium_metrics()` | Publish CloudWatch metrics |
 | `cleanup_failed_standby_instances()` | Remove DB entries for terminated instances |
-| `handle_scheduled_monitoring()` | 15-minute monitoring loop |
+| `cleanup_ghost_ecs_registrations()` | Deregister orphaned ECS container instances |
+| `cleanup_orphaned_ec2_instances()` | Stop premium EC2 not in ECS cluster |
+| `handle_scheduled_monitoring()` | 15-minute monitoring loop (10 operations) |
 
 ---
 
 ## AWS Resources
 
-- **Premium Manager Lambda:** `subscr-premium-manager`
+- **Premium Manager Lambda:** `subscr-premium-manager` (timeout: 600s)
 - **EventBridge Rules:**
   - `subscr-premium-manager-schedule` (15 min monitoring)
-  - `subscr-premium-manager-asg-events` (EC2 lifecycle)
-- **CloudWatch Dashboard:** `subscr-premium-tier-monitoring`
+- **CloudWatch Log Group:** `/aws/lambda/subscr-premium-manager` (14 day retention)
 - **Launch Template:** Defined by `PREMIUM_LAUNCH_TEMPLATE_ID`
-- **RDS Tables:**
-  - `premium_user_assignments` - Active user→instance mappings
-  - `premium_standby_pool` - Stopped instances ready for startup
-  - `premium_standby_creations` - Pending standby creations (dedup)
+- **RDS Table:** `premium_user_assignments` (assignments + standby pool)

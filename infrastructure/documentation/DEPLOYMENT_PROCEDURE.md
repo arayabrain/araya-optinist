@@ -74,28 +74,25 @@ This script will:
 2. Build the frontend with the correct environment variables
 3. Build and tag the Docker image
 4. Push the image to ECR
-5. ECS will automatically deploy the new image
 
-**Note:** ECS service is configured to automatically pull the `:latest` tag, so the deployment happens automatically after the push.
+**Note:** Pushing to ECR alone does NOT trigger ECS redeployment. To deploy the new image, run `terraform apply` (which calls `aws ecs update-service --force-new-deployment`) or manually force a new deployment via the AWS console/CLI.
 
 ### 1.2 Deployment with Infrastructure Changes
 
 Use this when you need to update AWS infrastructure (VPC, ALB, RDS, etc.) in addition to the application.
 
 ```bash
+# From the repository root:
 cd infrastructure/terraform
 
 # Review planned changes
 terraform plan
 
-# Apply infrastructure changes
+# Apply infrastructure changes (automatically builds and pushes image)
 terraform apply
-
-# The deployment script runs automatically via terraform provisioners
-# But you can manually trigger image build and deployment if needed:
-cd ../scripts
-./ecr_build_push.sh
 ```
+
+**Note:** `terraform apply` automatically runs `ecr_build_push.sh` via the `null_resource.build_and_deploy` provisioner. There is no need to run it manually first.
 
 **What gets updated:**
 - VPC, subnets, security groups (if modified)
@@ -143,16 +140,12 @@ cd infrastructure/scripts
 ```
 
 **Script automatically:**
-1. - Gets infrastructure configuration (tries Terraform outputs first, then prompts if unavailable)
-2. - Builds frontend with correct environment variables
-3. - Builds and tags Docker image
-4. - Pushes to ECR
-5. - ECS automatically deploys the new image
+1. Gets infrastructure configuration from Terraform outputs
+2. Builds frontend with correct environment variables
+3. Builds and tags Docker image
+4. Pushes to ECR
 
-**If Terraform outputs aren't available, you'll be prompted for:**
-- Frontend Host: `araya-optinist.com` (or ALB DNS)
-- Frontend Protocol: `https`
-- Frontend Port: `443`
+**Note:** If Terraform outputs are unavailable, the script exits with an error (it does not prompt for values). Ensure you have run `terraform apply` at least once first.
 
 ### 2.2 Finding AWS Resource Values (If Needed)
 
@@ -395,7 +388,7 @@ Before and after releases, monitor the CloudWatch Dashboard for issues:
 aws cloudwatch get-metric-statistics \
   --namespace AWS/ECS \
   --metric-name CPUUtilization \
-  --dimensions Name=ClusterName,Value=subscr-optinist-cluster \
+  --dimensions Name=ClusterName,Value=subscr-optinist-cloud-cluster \
   --start-time $(date -u -v-1H +%Y-%m-%dT%H:%M:%SZ) \
   --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
   --period 300 \
@@ -501,7 +494,7 @@ The project wiki contains additional documentation including:
 - Troubleshooting guides
 - FAQ
 
-*Note: Update wiki documentation as needed when making significant changes.*
+**Note:** Update wiki documentation as needed when making significant changes.
 
 ---
 
@@ -585,6 +578,18 @@ git push origin develop-main
 ```
 
 Or create a PR: `main → develop-main` with title "Sync hotfix vX.Y.Z to develop-main"
+
+---
+
+## Edge Case Handling
+
+---
+
+## Monitoring and Metrics
+
+---
+
+## Key Functions Reference
 
 ---
 

@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This document describes the features being added to `develop-subscription` from the `feature/auth-sync-routing-frontend` branch. These enhancements add robustness and functionality to three critical areas:
+This document describes the features added to `develop-subscription` from the `feature/auth-sync-routing-frontend` branch (merged). These enhancements add robustness and functionality to three critical areas:
 - **Frontend Authentication** - Enhanced token refresh queue and logout coordination
 - **Backend Authentication** - Added subscription/storage data to auth flow
 - **SPA Routing** - Added custom middleware for better frontend routing support
@@ -41,7 +41,7 @@ This document describes the features being added to `develop-subscription` from 
 **After:** Custom ASGI middleware intercepts Accept: text/html requests
 
 **Benefits:**
-- Adds 114 lines of custom middleware to handle SPA routing edge cases
+- Custom ASGI middleware handles SPA routing edge cases
 - Backend can serve index.html for SPA routes
 - Better handling of deep-linking and browser refresh
 
@@ -259,13 +259,21 @@ export const logout = () => {
 - Token refresh could happen after logout starts
 - No cleanup of session storage
 
-#### After: Coordinated Async Logout (29 lines)
+#### After: Coordinated Async Logout
 
 ```typescript
 export const logout = async () => {
   // Dynamic import to avoid circular dependency
   const setLoggingOut = await getSetLoggingOut()
   setLoggingOut(true)  // Signal axios interceptor
+
+  // Backend logout for free tier (fire and forget)
+  try {
+    const { logoutFreeUserApi } = await import("api/users/UsersMe")
+    await logoutFreeUserApi()
+  } catch (e) {
+    // Ignore errors
+  }
 
   removeRefreshToken()
   removeToken()
@@ -275,24 +283,37 @@ export const logout = async () => {
   localStorage.removeItem("dismissedAlerts")
   sessionStorage.removeItem("storage-refreshed-on-login")
 
+  // Clear routing info
+  try {
+    routingService.clearRoutingInfo()
+  } catch (e) {
+    // Ignore if routing service isn't available
+  }
+
   // Reset flag immediately after token removal
   setLoggingOut(false)
 
   window.location.href = "/login"
 }
 
-// Helper to avoid circular dependency
+// Helper to avoid circular dependency (cached after first import)
+let setLoggingOutFn: ((value: boolean) => void) | null = null
+
 const getSetLoggingOut = async () => {
-  const axiosModule = await import("@/utils/axios")
-  return axiosModule.setLoggingOut
+  if (!setLoggingOutFn) {
+    const axiosModule = await import("utils/axios")
+    setLoggingOutFn = axiosModule.setLoggingOut
+  }
+  return setLoggingOutFn
 }
 ```
 
 **Benefits:**
 - Coordinates with axios interceptor via setLoggingOut flag
-- Clears session storage and warnings
+- Notifies backend of free-tier logout (fire-and-forget)
+- Clears session storage, warnings, and routing info
 - Prevents token refresh during logout
-- Handles circular dependency with dynamic import
+- Handles circular dependency with cached dynamic import
 
 ---
 
@@ -334,7 +355,7 @@ const checkAuth = async () => {
 - Token could be removed while getMe() or storage refresh is running
 - No revalidation of token after async operations
 
-#### After: Multiple Token Revalidations (135 lines)
+#### After: Multiple Token Revalidations
 
 ```typescript
 const checkAuth = async () => {
@@ -351,23 +372,20 @@ const checkAuth = async () => {
   // 2. Revalidate after fetching user
   let currentToken = getToken()
   if (!currentToken) {
-    console.warn("Token removed during getMe - logout in progress")
     return  // Exit - logout will handle navigation
   }
 
-  await refreshAllWorkspacesStorageApi()
+  await refreshStorageWithTimeout()
 
   // 3. Revalidate after storage refresh
   currentToken = getToken()
   if (!currentToken) {
-    console.warn("Token removed during storage refresh - logout in progress")
     return  // Exit - logout will handle navigation
   }
 
   // 4. Revalidate before navigation
   currentToken = getToken()
   if (!currentToken) {
-    console.warn("Token removed before navigation - logout in progress")
     return
   }
 
@@ -377,6 +395,10 @@ const checkAuth = async () => {
   }
 }
 ```
+
+`refreshStorageWithTimeout()` is a wrapper around
+`refreshAllWorkspacesStorageApi()` that adds timeout protection
+and retry logic with configurable constants.
 
 **Benefits:**
 - Detects logout during async operations
@@ -454,7 +476,7 @@ def __get_current_user_record(db: Session, uid: str):
             if days_remaining > 0:
                 authed_user.subscription_status = "Premium"
             elif days_remaining >= -30:  # Grace period
-                authed_user.subscription_status = "LimitGrace"
+                authed_user.subscription_status = "Limit Grace"
                 authed_user.subscription_days_remaining = 30 + days_remaining
             else:
                 authed_user.subscription_status = "Expired"
@@ -512,33 +534,41 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
 async def login(user_data: UserAuth, db: Session = Depends(get_db)):
     # ... authentication ...
 
-    # Calculate bucket name with fallback
-    remote_bucket_name = _get_user_remote_bucket_name(user)
+    # Clear free user logout tracking
+    clear_logged_out_status(user.id)
+    clear_free_user_logged_out_at(user.id)
 
-    # Download experiments metadata
-    await remote_storage_controller.download_all_experiments_metas()
+    # Ensure user's S3 bucket exists (recovery on login)
+    ensure_user_bucket_exists(user.id)
 
     # Check for limit warnings (storage, subscription)
     try:
         limit_warning = await calculate_limit_warning(user.id)
         if limit_warning:
-            logger.warning(f"User has {limit_warning['alert_type']} warning")
-            # Warning included in login response for frontend display
+            logger.warning(
+                f"User has {limit_warning.alert_type} warning"
+            )
     except Exception as e:
         logger.warning(f"Failed to check limit warning: {e}")
+
+    return token
 ```
+
+**Note:** Experiment metadata download is handled **lazily**:
+- Workspace-level sync when user views experiments list
+- Single experiment sync on-demand via `ensure_synced_async`
 
 **Benefits:**
 - Proactive limit warnings at login
-- Bucket name fallback logic handles edge cases
+- S3 bucket existence verified on login (recovery)
 - Frontend can display warnings immediately
-- Better logging of user limit status
+- Faster login (no metadata download blocking)
 
 ---
 
 ### 6. Backend: SPA Routing Middleware Added
 
-**File:** `studio/app/common/core/middleware/spa_routing_middleware.py` (NEW - 114 lines)
+**File:** `studio/app/common/core/middleware/spa_routing_middleware.py`
 
 #### What Was Added
 
@@ -555,16 +585,16 @@ class SPARoutingMiddleware:
     """
 
     def _should_serve_spa(self, scope: Scope) -> bool:
-        # Check if request accepts text/html (browser navigation)
-        # Don't intercept /static/, /images/, /docs, /health
         path = scope.get("path", "")
 
         # Skip API routes
         if path.startswith("/api/"):
             return False
 
-        # Skip static assets
-        if any(path.startswith(prefix) for prefix in ["/static/", "/images/", "/docs"]):
+        # Skip static assets and docs
+        if path.startswith((
+            "/static/", "/images/", "/docs", "/openapi", "/health"
+        )):
             return False
 
         # Check Accept header for text/html
@@ -573,9 +603,16 @@ class SPARoutingMiddleware:
         return "text/html" in accept
 
     async def _serve_index_html(self, scope: Scope) -> Response:
-        # Serve index.html from build directory
-        index_path = Path(settings.STATIC_DIR) / "index.html"
-        return FileResponse(index_path)
+        # Serve index.html using Jinja2 templates
+        # Falls back to no-built-pages.html if build doesn't exist
+        request = Request(scope)
+        if os.path.exists(f"{DIRPATH.FRONTEND_DIRS.BUILD}/index.html"):
+            return self.build_templates.TemplateResponse(
+                "index.html", {"request": request}
+            )
+        return self.public_templates.TemplateResponse(
+            "no-built-pages.html", {"request": request}
+        )
 ```
 
 **Why It Was Added:**
@@ -601,21 +638,21 @@ class SPARoutingMiddleware:
 
 #### Files Added:
 
-1. **`studio/app/common/core/background/sync_job.py`** (391 lines)
+1. **`studio/app/common/core/background/sync_job.py`**
    - S3 sync job with file locking
-   - Parallel downloads with semaphore (max 3 concurrent)
+   - Two-phase sync: thumbnails first (10 concurrent), then metadata (3 concurrent)
    - Retry logic with exponential backoff
-   - CloudWatch metrics publishing
+   - CloudWatch metrics publishing (ExperimentsSynced, SyncErrors, SyncErrorRate)
 
-2. **`studio/app/common/core/background/scheduler.py`** (157 lines)
+2. **`studio/app/common/core/background/scheduler.py`**
    - APScheduler wrapper for job management
-   - S3 configuration validation
-   - Job lifecycle (add/start/shutdown)
+   - S3 configuration validation (boto3, AWS credentials)
+   - Job lifecycle (initialize/start/shutdown)
 
 3. **`studio/app/common/core/background/__init__.py`**
-   - Exports for background job system
+   - Module docstring for background job system
 
-4. **`studio/alembic/versions/a5b9c8d7e6f5_add_sync_logout_and_versioning.py`** (106 lines)
+4. **`studio/alembic/versions/a5b9c8d7e6f5_add_sync_logout_and_versioning.py`**
    - Migration adding `local_sync_status` to experiments (VARCHAR(20): pending, synced, error)
    - Migration adding `version` for optimistic locking (INTEGER)
    - Note: `logged_out_at` for free user assignments was added in earlier migration f801f8250020
@@ -625,33 +662,44 @@ class SPARoutingMiddleware:
 ```python
 class PublishedExperimentSyncJob:
     """
-    Runs every 5 minutes to sync published experiments from S3 to local storage.
+    Runs every 5 minutes to sync published experiments
+    from S3 to local storage.
 
     Operations:
     1. Acquire file lock to prevent concurrent runs
     2. Query published experiments with local_sync_status='pending'
-    3. Download from S3 to local storage (parallel, max 3 concurrent)
-    4. Update sync status in database (pending → synced/error)
+    3. Two-phase download from S3:
+       - Phase 1: Thumbnails (10 concurrent)
+       - Phase 2: Metadata (3 concurrent)
+    4. Update sync status in database (pending -> synced/error)
     5. Retry failed syncs with exponential backoff
     6. Publish CloudWatch metrics
     """
 
     def run(self):
-        # Acquire file lock
-        with FileLock(SYNC_LOCK_FILE):
+        # Acquire non-blocking file lock
+        lock = FileLock(
+            SyncStatusConstants.LOCK_FILE, timeout=0
+        )
+        with lock:
             # Get pending experiments
             pending = db.query(ExperimentRecord).filter(
                 ExperimentRecord.publish_status == 'on',
-                ExperimentRecord.local_sync_status.in_(['pending', 'error'])
+                ExperimentRecord.local_sync_status.in_(
+                    ['pending', 'error']
+                )
             ).limit(10).all()
 
-            # Sync in parallel (max 3 concurrent)
-            with Semaphore(3):
-                for exp in pending:
-                    self._sync_experiment(exp)
+            # Phase 1: Sync thumbnails (10 concurrent)
+            async with Semaphore(THUMBNAIL_CONCURRENCY):
+                ...
 
-            # Publish metrics
-            self._publish_cloudwatch_metrics()
+            # Phase 2: Sync metadata (3 concurrent)
+            async with Semaphore(METADATA_CONCURRENCY):
+                ...
+
+            # Publish CloudWatch metrics
+            self._publish_metrics()
 ```
 
 **Database Schema Added:**
@@ -677,7 +725,7 @@ CREATE INDEX idx_logged_out_at ON free_user_assignments(logged_out_at);
 1. **Automated Sync** - Background job automatically syncs S3 to local
 2. **Reliability** - File locking prevents race conditions, retry logic handles transient failures
 3. **Visibility** - Database tracking shows sync status, CloudWatch metrics for monitoring
-4. **Performance** - Parallel downloads (max 3) balance speed vs resource usage
+4. **Performance** - Two-phase parallel downloads (thumbnails: 10, metadata: 3) balance speed vs resource usage
 5. **Optimistic Locking** - Version field prevents concurrent update conflicts
 
 ---
@@ -696,7 +744,7 @@ CREATE INDEX idx_logged_out_at ON free_user_assignments(logged_out_at);
 ┌─────────────────────────────────────────────────────────────┐
 │ 2. POST /auth/login                                         │
 │    → Validate credentials                                   │
-│    → Query user + role + data_usage (2 table joins)         │
+│    → Query user + role + data_usage                         │
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -721,38 +769,46 @@ CREATE INDEX idx_logged_out_at ON free_user_assignments(logged_out_at);
 ┌─────────────────────────────────────────────────────────────┐
 │ 2. POST /auth/login                                         │
 │    → Validate credentials                                   │
-│    → Query user + subscription + storage (6 table joins)    │
+│    → Query user + subscription + storage (4 outer joins)    │
 │    → Calculate subscription status, grace period, etc.      │
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ 3. Get User Remote Bucket (with fallback logic)            │
-│    → _get_user_remote_bucket_name(user)                     │
+│ 3. Clear Free User Logout Tracking                         │
+│    → clear_logged_out_status(user.id)                       │
+│    → clear_free_user_logged_out_at(user.id)                 │
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ 4. Calculate Limit Warnings                                 │
+│ 4. Ensure S3 Bucket Exists (recovery on login)             │
+│    → ensure_user_bucket_exists(user.id)                     │
+└─────────────────────────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 5. Calculate Limit Warnings                                 │
 │    → calculate_limit_warning(user.id)                       │
 │    → Check storage quota, subscription expiration           │
 │    → Include warnings in response                           │
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ 5. Return JWT Token + User Context                          │
+│ 6. Return JWT Token + User Context                          │
 │    → Frontend stores in localStorage                        │
 │    → User context includes subscription + storage           │
 │    → Experiment metadata sync handled lazily (not at login) │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Note:** Experiment metadata download is now handled **lazily**:
+**Note:** Experiment metadata download is handled **lazily**:
 - Workspace-level sync when user views experiments list (get_experiments)
 - Single experiment sync on-demand (ensure_synced_async)
 
 **Additions:**
-- 3 additional table joins (subscription, plans, storage)
+- 4 outer joins total (role, subscription, plans, storage)
 - Subscription status calculation
 - Limit warning calculation
+- Free user logout tracking
+- S3 bucket existence verification
 - Richer user context in response
 
 ---
@@ -857,26 +913,32 @@ CREATE INDEX idx_logged_out_at ON free_user_assignments(logged_out_at);
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ 2. logout() Function (async)                                │
-│    → Dynamic import: getSetLoggingOut()                     │
+│    → Dynamic import: getSetLoggingOut() (cached)            │
 │    → setLoggingOut(true) [Signal to axios interceptor]      │
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ 3. Clear Tokens and Session Data                            │
-│    → removeRefreshToken()                                   │
-│    → removeToken()                                          │
-│    → removeExToken()                                        │
-│    → localStorage.removeItem("dismissedAlerts")           │
-│    → sessionStorage.removeItem("storage-refreshed-on-login")│
+│ 3. Backend Logout (fire and forget)                         │
+│    → logoutFreeUserApi() [notify backend of free-tier exit] │
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ 4. Reset Logout Flag                                        │
+│ 4. Clear Tokens, Session Data, and Routing Info             │
+│    → removeRefreshToken()                                   │
+│    → removeToken()                                          │
+│    → removeExToken()                                        │
+│    → localStorage.removeItem("dismissedAlerts")             │
+│    → sessionStorage.removeItem("storage-refreshed-on-login")│
+│    → routingService.clearRoutingInfo()                      │
+└─────────────────────────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 5. Reset Logout Flag                                        │
 │    → setLoggingOut(false)                                   │
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ 5. Redirect to Login                                        │
+│ 6. Redirect to Login                                        │
 │    → window.location.href = "/login"                        │
 └─────────────────────────────────────────────────────────────┘
                          ↓
@@ -890,9 +952,10 @@ CREATE INDEX idx_logged_out_at ON free_user_assignments(logged_out_at);
 
 **Benefits:**
 - Coordinates with axios interceptor
+- Notifies backend of free-tier logout
 - Prevents token refresh during logout
-- Cleans up session storage
-- Clear request queue during logout
+- Cleans up session storage and routing info
+- Clears request queue during logout
 
 ---
 
@@ -906,9 +969,8 @@ This entire flow is added:
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ 1. Acquire File Lock (fcntl.flock)                          │
-│    → Check for stale locks (>1 hour)                        │
-│    → Write PID to lock file                                 │
+│ 1. Acquire File Lock (filelock.FileLock, non-blocking)      │
+│    → Lock path: SyncStatusConstants.LOCK_FILE               │
 │    → Exit if another instance running                       │
 └─────────────────────────────────────────────────────────────┘
                          ↓
@@ -921,7 +983,9 @@ This entire flow is added:
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ 3. Sync Experiments (Parallel, Max 3 Concurrent)            │
+│ 3. Two-Phase Sync                                           │
+│    → Phase 1: Thumbnails (10 concurrent)                    │
+│    → Phase 2: Metadata (3 concurrent)                       │
 │    → Download from S3 with exponential backoff retry        │
 │    → Update local_sync_status = 'synced' or 'error'         │
 │    → Increment retry count on failure                       │
@@ -936,17 +1000,20 @@ This entire flow is added:
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ 5. Release Lock and Cleanup                                 │
-│    → fcntl.flock(UNLOCK)                                    │
-│    → Delete lock file                                       │
+│    → FileLock released (context manager exit)               │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 **Added Infrastructure:**
-- APScheduler dependency
-- File locking system (prevents concurrent runs)
+- APScheduler dependency (`apscheduler.schedulers.asyncio`)
+- `filelock` dependency (cross-platform file locking)
 - CloudWatch metrics integration
 - Database fields (local_sync_status, version, logged_out_at)
 - 3 new database indexes
+
+---
+
+## Monitoring and Metrics
 
 ---
 
@@ -961,6 +1028,7 @@ This entire flow is added:
 - Subsequent 401s added to failedQueue
 - After successful refresh, all queued requests retried
 - Single token refresh serves all concurrent requests
+
 
 ### 2. Logout During Token Refresh
 
@@ -982,6 +1050,7 @@ export const setLoggingOut = (value: boolean) => {
 - Logout clears failedQueue
 - Prevents refresh from completing after logout starts
 
+
 ### 3. Token Removal During Async Operations
 
 **Problem:** Token could be removed while Layout component fetches user/storage data.
@@ -993,20 +1062,22 @@ export const setLoggingOut = (value: boolean) => {
 - Check token before navigation
 - Exit gracefully if token removed (logout in progress)
 
+
 ### 4. Concurrent Background Sync Jobs
 
 **Problem:** Multiple instances could try to sync simultaneously.
 
 **Solution Added:** File-based locking:
 ```python
-with FileLock(SYNC_LOCK_FILE, timeout=10):
+lock = FileLock(SyncStatusConstants.LOCK_FILE, timeout=0)
+with lock:
     # Sync logic here
     # Only one instance can acquire lock
 ```
 
-- fcntl.flock provides OS-level lock
-- Stale locks cleaned up (>1 hour old)
-- PID written to lock file for debugging
+- `filelock.FileLock` provides cross-platform file locking
+- Non-blocking (`timeout=0`): skips run if lock held
+
 
 ### 5. Subscription Expiration Edge Cases
 
@@ -1024,16 +1095,29 @@ else:
 ```
 
 - 30-day grace period after expiration
-- Status transitions: Premium → LimitGrace → Expired
+- Status transitions: Premium → Limit Grace → Expired
 - Days remaining tracks grace period countdown
+
 
 ---
 
 ## Configuration
 
-### Environment Variables
+**Sync Job Constants:**
 
-**Backend (Auth + Sync):**
+| Constant | Value | Location | Description |
+|----------|-------|----------|-------------|
+| `SYNC_INTERVAL_MINUTES` | `5` | `SyncStatusConstants` | Sync job run interval |
+| `THUMBNAIL_CONCURRENCY` | `10` | `PublishedExperimentSyncJob` | Max concurrent thumbnail downloads |
+| `METADATA_CONCURRENCY` | `3` | `PublishedExperimentSyncJob` | Max concurrent metadata downloads |
+| `LOCK_FILE` | `<tempdir>/optinist_sync_job.lock` | `SyncStatusConstants` | File lock path |
+
+**Scheduler Control:**
+- Scheduler is enabled/disabled via `MODE.IS_STANDALONE` flag
+  and the `DISABLE_BACKGROUND_SCHEDULER` environment variable
+- API services disable their schedulers via `DISABLE_BACKGROUND_SCHEDULER=1`
+
+**Backend Environment Variables (Auth):**
 ```bash
 # Database
 RDS_HOST                    # Database endpoint (via RDS Proxy)
@@ -1042,15 +1126,12 @@ RDS_PASSWORD                # Database password
 RDS_DATABASE                # Database name
 
 # S3 Storage
-S3_BUCKET_NAME              # S3 bucket for experiment data
-S3_REGION                   # AWS region for S3
-
-# Sync Job Configuration
-SYNC_JOB_ENABLED            # Enable/disable background sync (default: true)
-SYNC_JOB_INTERVAL           # Sync interval in minutes (default: 5)
-SYNC_CONCURRENCY            # Max concurrent downloads (default: 3)
-SYNC_LOCK_FILE              # Path to lock file (default: /tmp/sync.lock)
+S3_DEFAULT_BUCKET_NAME      # S3 bucket for experiment data
 ```
+
+## Key Functions Reference
+
+---
 
 ### Database Schema Additions
 
