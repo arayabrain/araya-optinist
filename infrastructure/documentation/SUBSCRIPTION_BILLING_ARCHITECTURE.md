@@ -160,9 +160,23 @@ The SubscriptionService handles business logic and database operations for subsc
 | `PREMIUM` | Premium tier subscription active | Premium compute |
 | `TRIALING` | Trial period active | Full plan features |
 | `PAST_DUE` | Payment failed, retry in progress | Full access (temporary) |
-| `LIMIT_GRACE` | Over storage limit, grace period | Read-only (30 days) |
+| `LIMIT_GRACE` | Premium expired, 30-day grace period | Full premium access (see below) |
 | `CANCELLED` | Scheduled for cancellation | Full until period end |
 | `UNPAID` | Payment failed, all retries exhausted | Restricted access |
+
+**LIMIT_GRACE details:** When a premium subscription expires, the user
+enters a 30-day grace period. During this period:
+
+- **Access is functionally identical to Premium** — the user retains
+  premium compute routing, 200 GB storage quota, and
+  `has_active_subscription` returns `True`
+  (see `users.py:has_active_subscription`, `RoutingService.ts`)
+- **Workflow execution** is allowed as long as storage stays under quota
+  (the same quota check that applies to all statuses)
+- **Alerts** warn the user that their subscription has expired and
+  show a countdown of grace days remaining
+- After the 30-day grace period, the status transitions to `EXPIRED`
+  and access drops to Free tier (5 GB quota, no premium compute)
 
 #### Grace Period Logic
 
