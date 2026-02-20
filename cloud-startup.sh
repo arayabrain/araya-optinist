@@ -21,7 +21,22 @@ echo "DB_NAME: ${MYSQL_DATABASE}"
 # Tries 30 times with 2 second intervals (total 60 seconds timeout)
 max_tries=30
 counter=0
-until mysql --skip-ssl -h "${MYSQL_SERVER}" -u "${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e 'SELECT 1;'
+
+# Build SSL options based on MYSQL_SSL_MODE
+if [ -n "${MYSQL_SSL_MODE}" ]; then
+    case "${MYSQL_SSL_MODE}" in
+        DISABLED)
+            ssl_opts="--skip-ssl"
+            ;;
+        *)
+            ssl_opts="--ssl-mode=${MYSQL_SSL_MODE}"
+            ;;
+    esac
+else
+    ssl_opts=""
+fi
+
+until mysql ${ssl_opts} -h "${MYSQL_SERVER}" -u "${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e 'SELECT 1;'
 do
     sleep 2
     [[ counter -eq $max_tries ]] && echo "Failed to connect to Database" && exit 1
