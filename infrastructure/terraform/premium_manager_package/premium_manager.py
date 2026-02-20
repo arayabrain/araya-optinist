@@ -67,6 +67,15 @@ if TYPE_CHECKING:
 DEFAULT_DEVELOPMENT_CAPACITY = 3  # Fallback capacity for dev/testing
 DEFAULT_IDLE_TIMEOUT_HOURS = 3  # Hours before idle instances become standby
 
+# MySQL GET_LOCK names for preventing concurrent instance creation
+CREATE_STANDBY_LOCK = "create_standby_lock"
+CREATE_RUNNING_LOCK = "create_running_lock"
+MIGRATE_USERS_LOCK = "migrate_users_lock"
+LOCK_TIMEOUT_SECONDS = 60
+
+# Wait before first migration attempt to let instances boot
+MIGRATION_INITIAL_DELAY_SECONDS = 60
+
 
 def generate_routing_id(uid: str, secret_key: str) -> str:
     """Generate non-reversible routing ID from UID using HMAC-SHA256
@@ -169,6 +178,72 @@ def get_db_connection(auto_commit=False):
     return connection_context()
 
 
+def distributed_lock(lock_name, timeout=LOCK_TIMEOUT_SECONDS):
+    """Acquire a MySQL GET_LOCK held for the block's lifetime.
+
+    GET_LOCK is session-scoped: the connection that acquired it
+    must stay open or the lock is silently released.  This context
+    manager keeps a dedicated connection alive until the caller
+    exits the ``with`` block.
+
+    Yields ``True`` if the lock was acquired, ``False`` otherwise.
+    The caller should check the value and skip work when False.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _lock_context():
+        conn = None
+        acquired = False
+        try:
+            rds_host = get_required_env_var("RDS_HOST")
+            host = rds_host.split(":")[0] if ":" in rds_host else rds_host
+            conn = pymysql.connect(
+                host=host,
+                port=DatabaseConfig.DEFAULT_PORT,
+                user=get_required_env_var("RDS_USER"),
+                password=get_required_env_var("RDS_PASSWORD"),
+                database=get_required_env_var("RDS_DATABASE"),
+                charset="utf8mb4",
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=True,
+            )
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT GET_LOCK(%s, %s) as lock_result",
+                    (lock_name, timeout),
+                )
+                result = cursor.fetchone()
+                acquired = result["lock_result"] == 1
+
+            if acquired:
+                print(f"Acquired distributed lock '{lock_name}'")
+            else:
+                print(
+                    f"Failed to acquire lock '{lock_name}' "
+                    f"(held by another session)"
+                )
+            yield acquired
+        finally:
+            if acquired and conn:
+                try:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT RELEASE_LOCK(%s)",
+                            (lock_name,),
+                        )
+                    print(f"Released lock '{lock_name}'")
+                except Exception as e:
+                    print(f"Failed to release lock " f"'{lock_name}': {e}")
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    return _lock_context()
+
+
 def with_transaction(func):
     """Decorator to wrap database operations in transactions"""
 
@@ -201,13 +276,36 @@ def get_user_id_from_uid(connection, user_uid: str) -> int:
         ValueError: If user not found
     """
     with connection.cursor() as cursor:
-        cursor.execute("""SELECT id FROM users WHERE uid = %s""", (user_uid,))
+        cursor.execute(
+            """SELECT id FROM users
+               WHERE uid = %s AND active = 1""",
+            (user_uid,),
+        )
         result = cursor.fetchone()
 
         if not result:
             raise ValueError(f"User not found with UID: {user_uid}")
 
         return result["id"]
+
+
+def get_user_uid_from_id(connection, user_id: int) -> str:
+    """Reverse lookup: get Firebase UID from numeric DB user_id.
+
+    Needed when only numeric ID is available (e.g. migration).
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT uid FROM users
+               WHERE id = %s AND active = 1""",
+            (user_id,),
+        )
+        result = cursor.fetchone()
+
+        if not result:
+            raise ValueError(f"User not found with ID: {user_id}")
+
+        return result["uid"]
 
 
 @with_transaction
@@ -386,7 +484,7 @@ def _store_user_assignment_transaction(
 
 
 def store_user_assignment(
-    user_id: int | str,
+    user_id: Optional[int],
     instance_id: str,
     target_group_arn: str,
     rule_arn: str,
@@ -791,158 +889,29 @@ def get_standby_count():
         return 0
 
 
-def count_pending_standby_creations():
-    """Count standby instances currently being created (pending state)"""
+def is_creation_lock_held(lock_name: str) -> bool:
+    """Check if a creation lock is currently held by another session.
+
+    Fail-closed: returns True on error so callers assume a lock
+    is held rather than risk duplicate creation.
+    """
     try:
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
-                # Count assignments with user_id starting with 'creating-standby-'
-                # These are placeholders for standbys being created
                 cursor.execute(
-                    """SELECT COUNT(*) as count FROM premium_user_assignments
-                       WHERE user_id LIKE 'creating-standby-%'
-                       AND is_standby = 1
-                       AND status = 'active'"""
+                    "SELECT IS_FREE_LOCK(%s) as is_free",
+                    (lock_name,),
                 )
                 result = cursor.fetchone()
-                pending_count = result["count"] if result else 0
-
-                if pending_count > 0:
-                    print(f"Found {pending_count} pending standby creation(s)")
-
-                return pending_count
+                # IS_FREE_LOCK returns 1=free, 0=held, NULL=error
+                # Treat NULL as held (fail-closed)
+                is_held = result["is_free"] != 1
+                if is_held:
+                    print(f"Lock '{lock_name}' is held")
+                return is_held
     except Exception as e:
-        print(f"Error counting pending standby creations: {str(e)}")
-        return 0
-
-
-def count_pending_running_creations():
-    """Count running instances currently being created (pending state)"""
-    try:
-        with get_db_connection() as connection:
-            with connection.cursor() as cursor:
-                # Count assignments with user_id starting with 'creating-running-'
-                # These are placeholders for running instances being created
-                cursor.execute(
-                    """SELECT COUNT(*) as count FROM premium_user_assignments
-                       WHERE user_id LIKE 'creating-running-%'
-                       AND is_standby = 0
-                       AND status = 'active'"""
-                )
-                result = cursor.fetchone()
-                pending_count = result["count"] if result else 0
-
-                if pending_count > 0:
-                    print(f"Found {pending_count} pending running instance creation(s)")
-
-                return pending_count
-    except Exception as e:
-        print(f"Error counting pending running creations: {str(e)}")
-        return 0
-
-
-def register_pending_standby_creation():
-    """
-    Register that a standby creation is in progress.
-    Returns a unique ID for this creation attempt.
-    """
-    import uuid
-
-    creation_id = str(uuid.uuid4())[:8]
-
-    try:
-        with get_db_connection() as connection:
-            with connection.cursor() as cursor:
-                # Insert placeholder for standby being created
-                cursor.execute(
-                    """INSERT INTO premium_user_assignments
-                       (user_id, instance_id, target_group_arn, alb_rule_arn,
-                        status, instance_state, is_shared, is_standby,
-                        assignment_attempts, last_state_check, standby_created_at)
-                       VALUES (%s, %s, %s, %s, 'active', 'pending', 0, 1, 1,
-                       NOW(), NOW())
-                    """,
-                    (
-                        f"creating-standby-{creation_id}",
-                        f"pending-{creation_id}",
-                        InstanceState.PENDING,
-                        InstanceState.PENDING,
-                    ),
-                )
-                connection.commit()
-                print(f"Registered pending standby creation: {creation_id}")
-                return creation_id
-    except Exception as e:
-        print(f"Error registering pending standby creation: {str(e)}")
-        return None
-
-
-def unregister_pending_standby_creation(creation_id: str):
-    """Remove the pending standby creation placeholder"""
-    try:
-        with get_db_connection() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """DELETE FROM premium_user_assignments
-                       WHERE user_id = %s""",
-                    (f"creating-standby-{creation_id}",),
-                )
-                connection.commit()
-                print(f"Unregistered pending standby creation: {creation_id}")
-    except Exception as e:
-        print(f"Error unregistering pending standby creation: {str(e)}")
-
-
-def register_pending_running_creation():
-    """
-    Register that a running instance creation is in progress.
-    Returns a unique ID for this creation attempt.
-    """
-    import uuid
-
-    creation_id = str(uuid.uuid4())[:8]
-
-    try:
-        with get_db_connection() as connection:
-            with connection.cursor() as cursor:
-                # Insert placeholder for running instance being created
-                cursor.execute(
-                    """INSERT INTO premium_user_assignments
-                       (user_id, instance_id, target_group_arn, alb_rule_arn,
-                        status, instance_state, is_shared, is_standby,
-                        assignment_attempts, last_state_check, standby_created_at)
-                       VALUES (%s, %s, %s, %s, 'active', 'pending', 0, 0, 1,
-                       NOW(), NOW())
-                    """,
-                    (
-                        f"creating-running-{creation_id}",
-                        f"pending-{creation_id}",
-                        InstanceState.PENDING,
-                        InstanceState.PENDING,
-                    ),
-                )
-                connection.commit()
-                print(f"Registered pending running instance creation: {creation_id}")
-                return creation_id
-    except Exception as e:
-        print(f"Error registering pending running creation: {str(e)}")
-        return None
-
-
-def unregister_pending_running_creation(creation_id: str):
-    """Remove the pending running instance creation placeholder"""
-    try:
-        with get_db_connection() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """DELETE FROM premium_user_assignments
-                       WHERE user_id = %s""",
-                    (f"creating-running-{creation_id}",),
-                )
-                connection.commit()
-                print(f"Unregistered pending running instance creation: {creation_id}")
-    except Exception as e:
-        print(f"Error unregistering pending running creation: {str(e)}")
+        print(f"Error checking lock '{lock_name}': {e}")
+        return True
 
 
 def get_available_standby_instances():
@@ -1136,6 +1105,33 @@ def create_running_instance():
         return None
 
 
+def _create_running_instances_locked(count: int) -> bool:
+    """Create running instances under a distributed lock."""
+    with distributed_lock(CREATE_RUNNING_LOCK) as acquired:
+        if not acquired:
+            print("Another Lambda is already creating " "running instances, skipping")
+            return False
+
+        try:
+            created_any = False
+            for i in range(count):
+                instance_id = create_running_instance()
+                if instance_id:
+                    print(f"Created running instance " f"{instance_id}")
+                    created_any = True
+                else:
+                    # No standby fallback here (nested lock)
+                    print(
+                        "Failed to create running instance, "
+                        "standby replenishment deferred to "
+                        "scheduled monitoring"
+                    )
+            return created_any
+        except Exception as e:
+            print(f"Error in locked running creation: {e}")
+            return False
+
+
 @with_transaction
 def try_reserve_instance_transaction(
     connection, instance_id: str, user_id: int
@@ -1172,7 +1168,7 @@ def try_reserve_instance_transaction(
                 PremiumAssignment.RESERVING,
                 PremiumAssignment.RESERVING,
                 PremiumAssignment.ACTIVE,
-                PremiumAssignment.RESERVING,
+                InstanceState.LAUNCHING,
             ),
         )
         print(f"Reserved instance {instance_id} for user {user_id}")
@@ -1241,7 +1237,7 @@ def try_reserve_instance_for_migration_transaction(
             (instance_id,),
         )
 
-        print(f"Reserved instance {instance_id} for migration of user {user_id}")
+        print(f"Reserved instance {instance_id} " f"for migration of user {user_id}")
         return True
 
 
@@ -1257,194 +1253,152 @@ def try_reserve_instance_for_migration(instance_id: str, user_id: int) -> bool:
 def create_and_stop_standby_instance():
     """
     Create instance and immediately stop it for standby use.
-    Uses database-level locking to prevent concurrent Lambda executions
-    from creating duplicate standbys.
+    Uses database-level locking to prevent concurrent Lambda
+    executions from creating duplicate standbys.
     """
     ec2: "EC2Client" = boto3.client("ec2")
-    lock_acquired = False
-    lock_name = "create_standby_lock"
-    lock_timeout = 60  # seconds
-    creation_id = None
 
-    try:
-        # DISTRIBUTED LOCK: Use MySQL GET_LOCK to prevent race conditions
-        # Must acquire lock BEFORE registering pending creation to prevent
-        # multiple Lambdas from registering and then each creating an instance
-        with get_db_connection() as connection:
-            with connection.cursor() as cursor:
-                # Try to acquire lock (returns 1 if successful,
-                # 0 if already locked)
-                cursor.execute(
-                    "SELECT GET_LOCK(%s, %s) as lock_result", (lock_name, lock_timeout)
-                )
-                lock_result = cursor.fetchone()
-                lock_acquired = lock_result["lock_result"] == 1
+    with distributed_lock(CREATE_STANDBY_LOCK) as acquired:
+        if not acquired:
+            print("Another Lambda is already creating a " "standby instance, skipping")
+            return None
 
-                if not lock_acquired:
-                    print(
-                        "Another Lambda is already creating a standby instance, "
-                        "skipping"
-                    )
-                    return None
+        try:
+            standby_count = get_standby_count()
+            standby_pool_size = int(os.environ.get("PREMIUM_STANDBY_POOL_SIZE", "1"))
 
-                print("Acquired distributed lock for standby creation")
-
-                # Register pending creation AFTER acquiring lock
-                # This ensures only one Lambda registers at a time
-                creation_id = register_pending_standby_creation()
-                if not creation_id:
-                    print("Failed to register pending standby creation")
-                    cursor.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
-                    return None
-
-                # STANDBY COUNT CHECK: Re-check after acquiring lock
-                standby_count = get_standby_count()
-                standby_pool_size = int(
-                    os.environ.get("PREMIUM_STANDBY_POOL_SIZE", "1")
-                )
-
-                if standby_count >= standby_pool_size:
-                    print(
-                        f"Standby pool already full "
-                        f"({standby_count}/{standby_pool_size}), "
-                        f"another Lambda already created one"
-                    )
-                    # Release lock before returning
-                    cursor.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
-                    # Clean up pending registration
-                    if creation_id:
-                        unregister_pending_standby_creation(creation_id)
-                    return None
-
+            if standby_count >= standby_pool_size:
                 print(
-                    f"Standby pool has capacity "
-                    f"({standby_count}/{standby_pool_size}), "
-                    f"proceeding with creation"
+                    f"Standby pool already full "
+                    f"({standby_count}/{standby_pool_size})"
+                    f", another Lambda already created one"
                 )
+                return None
 
-        # Get launch template ID from environment
-        launch_template_id = get_required_env_var("PREMIUM_LAUNCH_TEMPLATE_ID")
-
-        # Get subnet IDs from environment
-        subnet_ids = get_required_env_var("SUBNET_IDS").split(",")
-
-        # Try each subnet (different AZ) until one succeeds
-        instance_id = None
-        for i, subnet_id in enumerate(subnet_ids):
-            try:
-                print(
-                    f"Attempting to launch standby instance in subnet {subnet_id} "
-                    f"(attempt {i + 1}/{len(subnet_ids)})"
-                )
-
-                # Launch instance using the premium launch template
-                response = ec2.run_instances(
-                    LaunchTemplate={
-                        "LaunchTemplateId": launch_template_id,
-                        "Version": "$Latest",
-                    },
-                    InstanceType="t3.large",
-                    SubnetId=subnet_id,
-                    MinCount=1,
-                    MaxCount=1,
-                    TagSpecifications=[
-                        {
-                            "ResourceType": "instance",
-                            "Tags": [
-                                {"Key": "Name", "Value": "subscr-premium-standby"},
-                                {"Key": "Type", "Value": "Premium-Instance"},
-                                {"Key": "Tier", "Value": "premium"},
-                                {"Key": "Service", "Value": "premium-tier"},
-                            ],
-                        }
-                    ],
-                )
-
-                instance_id = response["Instances"][0]["InstanceId"]
-                print(
-                    f"Successfully created standby instance {instance_id} in "
-                    f"subnet {subnet_id}, waiting to stop..."
-                )
-                break  # Success, exit retry loop
-
-            except ClientError as e:
-                error_code = e.response["Error"]["Code"]
-                if error_code == "InsufficientInstanceCapacity":
-                    print(
-                        f"InsufficientInstanceCapacity in subnet {subnet_id}, "
-                        f"trying next subnet..."
-                    )
-                    continue
-                else:
-                    # For other errors, don't retry - fail immediately
-                    print(f"Non-capacity error ({error_code}), not retrying: {str(e)}")
-                    raise
-
-        # Check if instance was created
-        if not instance_id:
-            raise Exception(
-                f"Failed to launch standby instance in all {len(subnet_ids)} "
-                f"available subnets due to insufficient capacity"
+            print(
+                f"Standby pool has capacity "
+                f"({standby_count}/{standby_pool_size}), "
+                f"proceeding with creation"
             )
 
-        # Wait for running then stop
-        waiter = ec2.get_waiter("instance_running")
-        waiter.wait(
-            InstanceIds=[instance_id], WaiterConfig={"Delay": 15, "MaxAttempts": 40}
-        )
+            launch_template_id = get_required_env_var("PREMIUM_LAUNCH_TEMPLATE_ID")
+            subnet_ids = get_required_env_var("SUBNET_IDS").split(",")
 
-        ec2.stop_instances(InstanceIds=[instance_id])
+            instance_id = None
+            for i, subnet_id in enumerate(subnet_ids):
+                try:
+                    print(
+                        f"Attempting to launch standby "
+                        f"instance in subnet {subnet_id} "
+                        f"(attempt {i + 1}"
+                        f"/{len(subnet_ids)})"
+                    )
 
-        waiter = ec2.get_waiter("instance_stopped")
-        waiter.wait(
-            InstanceIds=[instance_id], WaiterConfig={"Delay": 15, "MaxAttempts": 20}
-        )
+                    response = ec2.run_instances(
+                        LaunchTemplate={
+                            "LaunchTemplateId": (launch_template_id),
+                            "Version": "$Latest",
+                        },
+                        InstanceType="t3.large",
+                        SubnetId=subnet_id,
+                        MinCount=1,
+                        MaxCount=1,
+                        TagSpecifications=[
+                            {
+                                "ResourceType": "instance",
+                                "Tags": [
+                                    {
+                                        "Key": "Name",
+                                        "Value": ("subscr-premium" "-standby"),
+                                    },
+                                    {
+                                        "Key": "Type",
+                                        "Value": ("Premium-Instance"),
+                                    },
+                                    {
+                                        "Key": "Tier",
+                                        "Value": "premium",
+                                    },
+                                    {
+                                        "Key": "Service",
+                                        "Value": ("premium-tier"),
+                                    },
+                                ],
+                            }
+                        ],
+                    )
 
-        # Store in assignments table as standby with is_standby flag
-        # Use NULL for standby instances (no real user assigned)
-        store_user_assignment(
-            user_id=None,
-            instance_id=instance_id,
-            target_group_arn=PremiumAssignment.STANDBY,
-            rule_arn=PremiumAssignment.STANDBY,
-            instance_state=InstanceState.STOPPED,
-            is_shared=False,
-            is_standby=True,
-        )
+                    instance_id = response["Instances"][0]["InstanceId"]
+                    print(
+                        f"Successfully created standby "
+                        f"instance {instance_id} in "
+                        f"subnet {subnet_id}, "
+                        f"waiting to stop..."
+                    )
+                    break
 
-        # Release lock before returning success
-        if lock_acquired:
-            with get_db_connection() as connection:
-                with connection.cursor() as cursor:
-                    cursor.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
-                    print("Released distributed lock for standby creation")
+                except ClientError as e:
+                    error_code = e.response["Error"]["Code"]
+                    if error_code == ("InsufficientInstanceCapacity"):
+                        print(
+                            f"InsufficientInstanceCapacity"
+                            f" in subnet {subnet_id}, "
+                            f"trying next subnet..."
+                        )
+                        continue
+                    else:
+                        print(
+                            f"Non-capacity error "
+                            f"({error_code}), "
+                            f"not retrying: {e}"
+                        )
+                        raise
 
-        # Clean up pending registration - actual standby is now registered
-        if creation_id:
-            unregister_pending_standby_creation(creation_id)
+            if not instance_id:
+                raise Exception(
+                    f"Failed to launch standby instance "
+                    f"in all {len(subnet_ids)} available "
+                    f"subnets due to insufficient capacity"
+                )
 
-        print(f"Successfully created and stopped standby instance {instance_id}")
-        return instance_id
+            waiter = ec2.get_waiter("instance_running")
+            waiter.wait(
+                InstanceIds=[instance_id],
+                WaiterConfig={
+                    "Delay": 15,
+                    "MaxAttempts": 40,
+                },
+            )
 
-    except Exception as e:
-        print(f"Error creating standby instance: {str(e)}")
-        # Clean up pending registration on error
-        if creation_id:
-            try:
-                unregister_pending_standby_creation(creation_id)
-            except Exception as cleanup_error:
-                print(f"Failed to cleanup pending registration: {cleanup_error}")
+            ec2.stop_instances(InstanceIds=[instance_id])
 
-        # Release lock on error
-        if lock_acquired:
-            try:
-                with get_db_connection() as connection:
-                    with connection.cursor() as cursor:
-                        cursor.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
-                        print("Released distributed lock after error")
-            except Exception as lock_error:
-                print(f"Failed to release lock after error: {lock_error}")
-        return None
+            waiter = ec2.get_waiter("instance_stopped")
+            waiter.wait(
+                InstanceIds=[instance_id],
+                WaiterConfig={
+                    "Delay": 15,
+                    "MaxAttempts": 20,
+                },
+            )
+
+            store_user_assignment(
+                user_id=None,
+                instance_id=instance_id,
+                target_group_arn=PremiumAssignment.STANDBY,
+                rule_arn=PremiumAssignment.STANDBY,
+                instance_state=InstanceState.STOPPED,
+                is_shared=False,
+                is_standby=True,
+            )
+
+            print(
+                f"Successfully created and stopped " f"standby instance {instance_id}"
+            )
+            return instance_id
+
+        except Exception as e:
+            print(f"Error creating standby instance: " f"{str(e)}")
+            return None
 
 
 ECS_CHECKPOINT_PATH = "/var/lib/ecs/data/agent.db"
@@ -1804,6 +1758,29 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
             # (deregister container instances where EC2 is stopped/terminated)
             cleanup_ghost_ecs_registrations()
 
+            # 9. Stop orphaned EC2 instances not in ECS cluster
+            cleanup_orphaned_ec2_instances()
+
+            # 10. Optimize shared instances (safety net)
+            try:
+                shared_result = process_shared_instance_optimization()
+                shared_migrations = shared_result.get("migrations_performed", 0)
+                shared_found = shared_result.get("shared_instances_found", 0)
+                if shared_found > 0 or shared_migrations > 0:
+                    print(
+                        f"Shared optimization: "
+                        f"{shared_migrations} migrations, "
+                        f"{shared_found} shared instances"
+                    )
+                if shared_found > 0 and shared_migrations == 0:
+                    print(
+                        "Shared users found but no instances "
+                        "ready, triggering async migration..."
+                    )
+                    invoke_migration_async()
+            except Exception as shared_error:
+                print(f"Shared optimization error: " f"{str(shared_error)}")
+
             return {
                 "statusCode": 200,
                 "body": json.dumps(
@@ -1841,22 +1818,91 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
         }
 
 
+def _handle_migrate_shared_users(event):
+    """Run migration loop under a distributed lock."""
+    with distributed_lock(MIGRATE_USERS_LOCK) as acquired:
+        if not acquired:
+            print("Another Lambda is already running " "migrations, skipping")
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"message": "Migration skipped - lock held"}),
+            }
+
+        max_wait_seconds = event.get("max_wait_seconds", 600)
+        retry_interval = event.get("retry_interval", 10)
+
+        print(
+            f"Async migration triggered, will retry "
+            f"every {retry_interval}s "
+            f"for up to {max_wait_seconds}s..."
+        )
+
+        migrations_performed = 0
+        elapsed = 0
+        migration_result: Dict[str, Any] = {}
+
+        # Let instances boot before first attempt
+        print(
+            f"Waiting {MIGRATION_INITIAL_DELAY_SECONDS}s " f"for instances to boot..."
+        )
+        time.sleep(MIGRATION_INITIAL_DELAY_SECONDS)
+        elapsed += MIGRATION_INITIAL_DELAY_SECONDS
+
+        while elapsed < max_wait_seconds:
+            update_premium_service_desired_count()
+
+            migration_result = process_shared_instance_optimization()
+            migrations_performed = migration_result.get("migrations_performed", 0)
+
+            print(
+                f"Migration attempt at {elapsed}s: "
+                f"{migrations_performed} migrations"
+            )
+
+            autoscaling_users = get_assigned_users_for_instance(
+                PremiumAssignment.AUTOSCALING_POOL
+            )
+            remaining_autoscaling = len(autoscaling_users)
+            remaining_shared = migration_result.get("shared_instances_found", 0)
+
+            if migrations_performed > 0:
+                print(
+                    f"Migrated {migrations_performed} users, "
+                    f"{remaining_autoscaling} on autoscaling "
+                    f"pool, {remaining_shared} shared "
+                    f"instances remaining"
+                )
+
+            if remaining_autoscaling == 0 and remaining_shared == 0:
+                print(f"Migration completed after {elapsed}s" f" - all users migrated")
+                return {
+                    "statusCode": 200,
+                    "body": json.dumps(
+                        {
+                            "message": (f"Migration completed " f"after {elapsed}s"),
+                            "result": migration_result,
+                        }
+                    ),
+                }
+
+            time.sleep(retry_interval)
+            elapsed += retry_interval
+
+        print(f"Migration timeout after {elapsed}s, " f"no instances ready")
+        return {
+            "statusCode": 200,
+            "body": json.dumps(
+                {
+                    "message": ("Migration timeout - " "instances not ready yet"),
+                    "result": migration_result,
+                }
+            ),
+        }
+
+
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Handle premium user assignment lifecycle events and scheduled cleanup
-
-    Event structure for API calls:
-    {
-        "httpMethod": "GET" | "POST",
-        "body": '{"action": "assign" | "release", "user_id": "123", "tier": "premium"}'
-    }
-
-    Event structure for scheduled cleanup:
-    {
-        "source": "aws.events",
-        "detail-type": "Scheduled Event",
-        "detail": {"action": "cleanup"}
-    }
     """
 
     print(f"Premium manager received event: {json.dumps(event)}")
@@ -1865,73 +1911,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     try:
         # Handle async migration invocation
         if event.get("action") == "migrate_shared_users":
-            max_wait_seconds = event.get("max_wait_seconds", 60)
-            retry_interval = event.get("retry_interval", 10)
-
-            print(
-                f"Async migration triggered, will retry every {retry_interval}s "
-                f"for up to {max_wait_seconds}s..."
-            )
-
-            migrations_performed = 0
-            elapsed = 0
-
-            # Retry migration until successful or timeout
-            while elapsed < max_wait_seconds:
-                time.sleep(retry_interval)
-                elapsed += retry_interval
-
-                # Update ECS service desired count before checking for migrations
-                # This ensures tasks are being placed on new instances
-                update_premium_service_desired_count()
-
-                migration_result = process_shared_instance_optimization()
-                migrations_performed = migration_result.get("migrations_performed", 0)
-
-                print(
-                    f"Migration attempt at {elapsed}s: "
-                    f"{migrations_performed} migrations"
-                )
-
-                # Check if there are still users on autoscaling pool needing migration
-                autoscaling_users = get_assigned_users_for_instance(
-                    PremiumAssignment.AUTOSCALING_POOL
-                )
-                remaining_users = len(autoscaling_users)
-
-                if migrations_performed > 0:
-                    print(
-                        f"Migrated {migrations_performed} users, "
-                        f"{remaining_users} still on autoscaling pool"
-                    )
-
-                # Only exit if all autoscaling pool users have been migrated
-                if remaining_users == 0:
-                    print(
-                        f"Migration completed after {elapsed}s "
-                        f"- all users migrated from autoscaling pool"
-                    )
-                    return {
-                        "statusCode": 200,
-                        "body": json.dumps(
-                            {
-                                "message": f"Migration completed after {elapsed}s",
-                                "result": migration_result,
-                            }
-                        ),
-                    }
-
-            # Timeout - no migrations performed
-            print(f"Migration timeout after {elapsed}s, no instances ready")
-            return {
-                "statusCode": 200,
-                "body": json.dumps(
-                    {
-                        "message": "Migration timeout - instances not ready yet",
-                        "result": migration_result,
-                    }
-                ),
-            }
+            return _handle_migrate_shared_users(event)
 
         # Handle fix_shared_flags action (one-time data cleanup)
         if event.get("action") == "fix_shared_flags":
@@ -2005,7 +1985,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 }
 
             if action == "assign":
-                return assign_premium_user(user_id, body_data)
+                return assign_premium_user(user_id, body_data, user_uid)
             elif action == "release":
                 return release_premium_user(user_id)
             elif action == "update_activity":
@@ -2244,7 +2224,11 @@ def get_next_available_priority(listener_arn: str, start_priority: int = 100) ->
         raise
 
 
-def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
+def assign_premium_user(
+    user_id: int,
+    event: Dict[str, Any],
+    user_uid: Optional[str] = None,
+) -> Dict[str, Any]:
     """Enhanced assignment with standby pool support -
     prefer stopped instances for fast startup"""
 
@@ -2273,11 +2257,16 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
                 f"instance {existing_instance_id}"
             )
 
-            # Trigger migration if user is stuck on autoscaling-pool
-            if existing_instance_id == PremiumAssignment.AUTOSCALING_POOL:
+            # Trigger migration for autoscaling-pool or shared
+            if (
+                existing_instance_id == PremiumAssignment.AUTOSCALING_POOL
+                or existing_assignment.get("is_shared")
+            ):
                 print(
-                    f"User {user_id} is on autoscaling-pool, "
-                    f"triggering migration check..."
+                    f"User {user_id} needs migration "
+                    f"(instance={existing_instance_id}, "
+                    f"shared={existing_assignment.get('is_shared')})"
+                    f", triggering migration check..."
                 )
                 invoke_migration_async()
 
@@ -2766,8 +2755,10 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
             )
 
         # Create ALB listener rule for user routing
+        if not user_uid:
+            raise ValueError("user_uid is required to generate routing ID")
         routing_secret_key = get_required_env_var("ROUTING_SECRET_KEY")
-        routing_id = generate_routing_id(str(user_id), routing_secret_key)
+        routing_id = generate_routing_id(user_uid, routing_secret_key)
         print(
             f"Generated routing_id for user: {routing_id[:8]}... "
             f"(truncated for security)"
@@ -2920,10 +2911,13 @@ def assign_premium_user(user_id: int, event: Dict[str, Any]) -> Dict[str, Any]:
 
 def invoke_migration_async():
     """
-    Invoke this same Lambda function asynchronously to handle migration.
-    Uses Event InvocationType to avoid blocking the current request.
-    Lambda will retry for 180 seconds until instances are ready, then migrate users.
+    Invoke this Lambda asynchronously for migration.
+    Skips invocation if a migration Lambda already holds the lock.
     """
+    if is_creation_lock_held(MIGRATE_USERS_LOCK):
+        print("Migration Lambda already running, skipping")
+        return
+
     try:
         lambda_client: "LambdaClient" = boto3.client("lambda")
         function_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
@@ -2988,45 +2982,32 @@ def scale_premium_instances_if_needed():
         # Get subscriber count for comparison
         total_subscribers = count_total_premium_users()
 
-        # Count pending instance creations to prevent over-provisioning
-        pending_standby_count = count_pending_standby_creations()
-        pending_running_count = count_pending_running_creations()
+        # Check if creation locks are held (another Lambda creating)
+        standby_creating = is_creation_lock_held(CREATE_STANDBY_LOCK)
+        running_creating = is_creation_lock_held(CREATE_RUNNING_LOCK)
 
-        # Calculate effective capacity:
-        # Running + launching + pending RUNNING instances
-        # (Standbys will be stopped, so don't count for active capacity)
-        effective_capacity = running_count + launching_count + pending_running_count
+        effective_capacity = running_count + launching_count
 
         print("Enhanced premium instance analysis:")
         print(f"- Running instances: {running_count}")
         print(f"- Launching instances: {launching_count}")
-        print(f"- Pending standby creations: {pending_standby_count}")
-        print(f"- Pending running creations: {pending_running_count}")
+        print(f"- Standby creation in progress: {standby_creating}")
+        print(f"- Running creation in progress: {running_creating}")
         print(f"- Effective capacity: {effective_capacity}")
         print(f"- Total instances: {total_instances}")
         print(f"- Maximum capacity: {max_capacity}")
-        print(f"- Active assignments (logged-in users): {active_users}")
-        print(f"- Premium subscribers (capacity planning): {total_subscribers}")
+        print(f"- Active assignments: {active_users}")
+        print(f"- Premium subscribers: {total_subscribers}")
 
-        # NO SCALING CONDITIONS:
         if launching_count > 0:
-            print(f"Scaling blocked: {launching_count} instances already launching")
+            print(f"Scaling blocked: {launching_count} " f"instances already launching")
             return False
 
-        # Check if pending running instances will satisfy demand
-        if pending_running_count > 0:
-            print(
-                f"Running instance creation in progress: {pending_running_count} "
-                f"instance(s) being created"
-            )
-            # If pending running instances will satisfy demand, don't create more
-            if effective_capacity >= active_users:
-                print(
-                    f"No scaling needed: effective capacity "
-                    f"{effective_capacity} >= {active_users} active users "
-                    f"(including {pending_running_count} pending running)"
-                )
-                return False
+        # Block scaling while another Lambda is creating instances;
+        # we can't know the exact count, so let it finish first.
+        if running_creating:
+            print("Scaling blocked: running instance " "creation already in progress")
+            return False
 
         # Key decision: Scale based on ACTIVE ASSIGNMENTS, not subscribers
         # This represents current demand (logged-in users) vs available capacity
@@ -3089,52 +3070,23 @@ def scale_premium_instances_if_needed():
 
                 return True
             else:
-                # No stopped instances available, check if we can create new ones
-                if total_instances + needed_capacity <= max_capacity:
-                    print(
-                        f"No stopped instances available, need to create "
-                        f"{needed_capacity} new running instances"
-                    )
-                    for _ in range(needed_capacity):
-                        # Register pending instance creation to prevent duplicates
-                        creation_id = register_pending_running_creation()
-
-                        # Create and start instances for immediate use
-                        # when scaling up for active users
-                        instance_id = create_running_instance()
-
-                        if instance_id:
-                            print(
-                                f"Successfully created and started "
-                                f"instance {instance_id}"
-                            )
-                            # Clean up pending registration
-                            if creation_id:
-                                unregister_pending_running_creation(creation_id)
-                        else:
-                            print(
-                                "Failed to create running instance, "
-                                "falling back to standby creation"
-                            )
-                            # Clean up pending registration before creating standby
-                            if creation_id:
-                                unregister_pending_running_creation(creation_id)
-                            create_and_stop_standby_instance()
-
-                    # Invoke this Lambda asynchronously to handle migration
-                    # after instances are ready (avoids blocking the user's request)
-                    invoke_migration_async()
-
-                    # Update ECS service desired count to match instance count
-                    update_premium_service_desired_count()
-
-                    return True
-                else:
+                if total_instances + needed_capacity > max_capacity:
                     print(
                         f"Cannot scale: would exceed max capacity "
-                        f"({total_instances + needed_capacity} > {max_capacity})"
+                        f"({total_instances + needed_capacity} "
+                        f"> {max_capacity})"
                     )
                     return False
+
+                print(
+                    f"No stopped instances available, creating "
+                    f"{needed_capacity} new running instance(s)"
+                )
+                created = _create_running_instances_locked(needed_capacity)
+                if created:
+                    invoke_migration_async()
+                    update_premium_service_desired_count()
+                return created
 
         elif total_instances >= max_capacity:
             print(
@@ -3402,7 +3354,6 @@ def update_premium_service_desired_count():
         service_name = get_required_env_var("PREMIUM_SERVICE_NAME")
 
         ecs: "ECSClient" = boto3.client("ecs")
-        ec2: "EC2Client" = boto3.client("ec2")
 
         # Get current service status
         service_response = ecs.describe_services(
@@ -3410,29 +3361,31 @@ def update_premium_service_desired_count():
         )
 
         if not service_response.get("services"):
-            print(f"Premium service {service_name} not found in cluster {cluster_name}")
+            print(
+                f"Premium service {service_name} not found "
+                f"in cluster {cluster_name}"
+            )
             return
 
         current_desired_count = service_response["services"][0]["desiredCount"]
         current_running_count = service_response["services"][0]["runningCount"]
 
-        # Count running premium instances
-        response = ec2.describe_instances(
-            Filters=[
-                {"Name": "instance-state-name", "Values": [InstanceState.RUNNING]},
-                {"Name": "tag:Tier", "Values": ["premium", "Premium"]},
-            ]
+        # Count ACTIVE ECS container instances (not EC2 instances,
+        # which may include orphans that never joined the cluster)
+        ci_response = ecs.list_container_instances(
+            cluster=cluster_name,
+            filter="attribute:tier == premium",
+            status="ACTIVE",
         )
-
-        running_premium_count = sum(
-            len(reservation["Instances"]) for reservation in response["Reservations"]
-        )
+        ci_arns = ci_response.get("containerInstanceArns", [])
+        running_premium_count = len(ci_arns)
 
         print(
-            f"ECS Service Status: desired={current_desired_count}, "
+            f"ECS Service Status: "
+            f"desired={current_desired_count}, "
             f"running={current_running_count}"
         )
-        print(f"Premium EC2 Instances: {running_premium_count} running")
+        print(f"Premium ECS container instances: " f"{running_premium_count} active")
 
         # Update service desired count if different from instance count
         if running_premium_count != current_desired_count:
@@ -3553,21 +3506,23 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                 cursor.execute(
                     """SELECT instance_id, target_group_arn,
                        alb_rule_arn, active_workflow_count
-                       FROM premium_user_assignments WHERE user_id = %s""",
+                       FROM premium_user_assignments
+                       WHERE user_id = %s""",
                     (user_id,),
                 )
                 assignment = cursor.fetchone()
 
                 if not assignment:
-                    print(f"No assignment found for user {user_id}")
+                    print(f"No assignment found for " f"user {user_id}")
                     return False
 
                 # Double-check workflow count (defense in depth)
                 active_workflows = assignment.get("active_workflow_count", 0) or 0
                 if active_workflows > 0:
                     print(
-                        f"Cannot migrate user {user_id}: {active_workflows} "
-                        f"active workflows detected in assignment record"
+                        f"Cannot migrate user {user_id}: "
+                        f"{active_workflows} active workflows"
+                        f" detected in assignment record"
                     )
                     return False
 
@@ -3626,9 +3581,8 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                         # Create new ALB rule for this user
                         alb_listener_arn = get_required_env_var("ALB_LISTENER_ARN")
                         routing_secret_key = get_required_env_var("ROUTING_SECRET_KEY")
-                        routing_id = generate_routing_id(
-                            str(user_id), routing_secret_key
-                        )
+                        user_uid = get_user_uid_from_id(connection, user_id)
+                        routing_id = generate_routing_id(user_uid, routing_secret_key)
 
                         # Get next available priority
                         priority = get_next_available_priority(
@@ -3666,14 +3620,21 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                         new_rule_arn = rule_response["Rules"][0]["RuleArn"]
                         print(f"Created new ALB rule: {new_rule_arn}")
 
-                    # Update assignment with new target group and rule ARN
+                    # Update assignment with new target group
                     cursor.execute(
                         """UPDATE premium_user_assignments
-                           SET instance_id = %s, target_group_arn = %s,
+                           SET instance_id = %s,
+                               target_group_arn = %s,
                                alb_rule_arn = %s,
-                               is_shared = 0, last_state_check = NOW()
+                               is_shared = 0,
+                               last_state_check = NOW()
                            WHERE user_id = %s""",
-                        (new_instance_id, new_target_group_arn, new_rule_arn, user_id),
+                        (
+                            new_instance_id,
+                            new_target_group_arn,
+                            new_rule_arn,
+                            user_id,
+                        ),
                     )
                 else:
                     # Normal migration: deregister from old, register to new
@@ -3699,22 +3660,28 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                         Targets=[{"Id": new_instance_id, "Port": 8000}],
                     )
 
-                    # Update RDS assignment (include target_group_arn in case recreated)
+                    # Update RDS assignment
                     cursor.execute(
                         """UPDATE premium_user_assignments
-                           SET instance_id = %s, target_group_arn = %s,
-                               is_shared = 0, last_state_check = NOW()
+                           SET instance_id = %s,
+                               target_group_arn = %s,
+                               is_shared = 0,
+                               last_state_check = NOW()
                            WHERE user_id = %s""",
-                        (new_instance_id, old_target_group_arn, user_id),
+                        (
+                            new_instance_id,
+                            old_target_group_arn,
+                            user_id,
+                        ),
                     )
 
-                connection.commit()  # Commit the migration
+                connection.commit()
 
                 print(
-                    f"Migrated user {user_id} from {old_instance_id} to "
-                    f"{new_instance_id}"
+                    f"Migrated user {user_id} from "
+                    f"{old_instance_id} to {new_instance_id}"
                 )
-                # Trigger experiment sync on new instance (fire-and-forget)
+                # Trigger experiment sync (fire-and-forget)
                 trigger_experiment_sync(user_id)
                 return True
 
@@ -4248,6 +4215,83 @@ def cleanup_ghost_ecs_registrations():
         print(f"Error cleaning up ghost ECS registrations: {str(e)}")
 
 
+ORPHAN_GRACE_PERIOD_MINUTES = 15
+
+
+def cleanup_orphaned_ec2_instances():
+    """Stop EC2 instances tagged Tier=premium that are running
+    but not registered as ECS container instances.
+
+    Orphaned instances inflate desiredCount and waste resources.
+    A 15-minute grace period avoids stopping instances that are
+    still booting and haven't joined ECS yet.
+    """
+    try:
+        cluster_name = get_required_env_var("CLUSTER_NAME")
+        ecs: "ECSClient" = boto3.client("ecs")
+        ec2: "EC2Client" = boto3.client("ec2")
+
+        # Collect EC2 IDs of all ACTIVE ECS container instances
+        ci_response = ecs.list_container_instances(
+            cluster=cluster_name, status="ACTIVE"
+        )
+        ci_arns = ci_response.get("containerInstanceArns", [])
+
+        ecs_ec2_ids: set = set()
+        if ci_arns:
+            desc = ecs.describe_container_instances(
+                cluster=cluster_name,
+                containerInstances=ci_arns,
+            )
+            for ci in desc.get("containerInstances", []):
+                ecs_ec2_ids.add(ci["ec2InstanceId"])
+
+        # List all running premium-tagged EC2 instances
+        ec2_response = ec2.describe_instances(
+            Filters=[
+                {
+                    "Name": "instance-state-name",
+                    "Values": [InstanceState.RUNNING],
+                },
+                {
+                    "Name": "tag:Tier",
+                    "Values": ["premium", "Premium"],
+                },
+            ]
+        )
+
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        stopped_count = 0
+
+        for reservation in ec2_response["Reservations"]:
+            for instance in reservation["Instances"]:
+                iid = instance["InstanceId"]
+                if iid in ecs_ec2_ids:
+                    continue
+
+                launch_time = instance.get("LaunchTime")
+                if launch_time:
+                    age_minutes = (now - launch_time).total_seconds() / 60
+                    if age_minutes < ORPHAN_GRACE_PERIOD_MINUTES:
+                        print(
+                            f"Orphan {iid} running "
+                            f"{age_minutes:.0f}m, "
+                            f"within grace period"
+                        )
+                        continue
+
+                print(f"Stopping orphaned EC2 instance {iid}")
+                ec2.stop_instances(InstanceIds=[iid])
+                stopped_count += 1
+
+        print(f"Orphan cleanup: stopped {stopped_count} " f"instance(s)")
+
+    except Exception as e:
+        print(f"Error cleaning up orphaned EC2 instances: " f"{str(e)}")
+
+
 def get_premium_system_status() -> Dict[str, Any]:
     """Get comprehensive status of premium system including standby pool"""
     try:
@@ -4361,10 +4405,12 @@ def process_shared_instance_optimization() -> Dict[str, Any]:
                     f"{len(real_users)} real users"
                 )
 
-                # Use short timeout for migration checks - don't block waiting
-                # If instance not ready quickly, skip it and use ready ones
+                # Short timeout: don't block waiting for
+                # unready instances during migration checks
                 if not real_users and check_instance_readiness_with_retry(
-                    instance_id, max_wait_seconds=30, retry_interval=10
+                    instance_id,
+                    max_wait_seconds=30,
+                    retry_interval=10,
                 ):
                     available_instances.append(instance_id)
                     print(f"Instance {instance_id} is available for migration")
