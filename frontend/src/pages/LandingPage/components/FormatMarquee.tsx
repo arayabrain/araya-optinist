@@ -1,5 +1,12 @@
 import { Box, styled, Typography, keyframes } from "@mui/material"
 
+import {
+  FONT_SIZE,
+  FONT_WEIGHT,
+  TEXT_COLOR,
+  BG_COLOR,
+} from "pages/LandingPage/constants"
+
 const formats = [
   "HDF5",
   "MATLAB",
@@ -42,7 +49,7 @@ const marqueeScroll = keyframes`
 `
 
 const MarqueeSection = styled("section")({
-  backgroundColor: "#1f2937",
+  backgroundColor: BG_COLOR.DARK,
   padding: "3rem 0",
   overflow: "hidden",
 })
@@ -54,11 +61,9 @@ const Container = styled(Box)({
 })
 
 const MarqueeLabel = styled(Typography)({
-  color: "#9ca3af",
-  fontSize: "0.75rem",
-  fontWeight: 700,
-  textTransform: "uppercase",
-  letterSpacing: "0.2em",
+  color: TEXT_COLOR.MARQUEE_LABEL,
+  fontSize: FONT_SIZE.SECTION_TITLE,
+  fontWeight: FONT_WEIGHT.BOLD,
   textAlign: "center",
   margin: "0 0 2rem",
 })
@@ -80,8 +85,8 @@ const MarqueeContent = styled(Box)({
 })
 
 const MarqueeItem = styled("span")({
-  color: "rgba(255, 255, 255, 0.6)",
-  fontWeight: 900,
-  fontSize: "1.5rem",
+  color: TEXT_COLOR.WHITE_MUTED,
+  fontWeight: FONT_WEIGHT.BLACK,
+  fontSize: FONT_SIZE.DISPLAY_SM,
   padding: "0 2.5rem",
 })

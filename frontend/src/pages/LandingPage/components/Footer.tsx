@@ -1,5 +1,15 @@
 import { Box, styled, Typography } from "@mui/material"
 
+import {
+  FONT_SIZE,
+  FONT_WEIGHT,
+  LINE_HEIGHT,
+  LETTER_SPACING,
+  TEXT_COLOR,
+  BG_COLOR,
+  BORDER_COLOR,
+} from "pages/LandingPage/constants"
+
 export const Footer = () => {
   return (
     <FooterWrapper>
@@ -53,8 +63,8 @@ export const Footer = () => {
 }
 
 const FooterWrapper = styled("footer")({
-  backgroundColor: "white",
-  borderTop: "1px solid #e5e7eb",
+  backgroundColor: BG_COLOR.WHITE,
+  borderTop: `1px solid ${BORDER_COLOR.DEFAULT}`,
   padding: "3rem 0",
 })
 
@@ -84,21 +94,21 @@ const LogoIcon = styled(Box)({
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  color: "#2563eb",
+  color: TEXT_COLOR.ACCENT,
 })
 
 const LogoText = styled(Typography)({
-  fontSize: "1.25rem",
-  fontWeight: 700,
-  letterSpacing: "-0.025em",
+  fontSize: FONT_SIZE.CARD_TITLE,
+  fontWeight: FONT_WEIGHT.BOLD,
+  letterSpacing: LETTER_SPACING.TIGHT,
 })
 
 const FooterDescription = styled(Typography)({
-  fontSize: "0.875rem",
-  color: "#6b7280",
+  fontSize: FONT_SIZE.SMALL,
+  color: TEXT_COLOR.SECONDARY,
   margin: "1rem 0",
   maxWidth: 400,
-  lineHeight: 1.6,
+  lineHeight: LINE_HEIGHT.NORMAL,
 })
 
 const FooterSocial = styled(Box)({
@@ -107,17 +117,17 @@ const FooterSocial = styled(Box)({
 })
 
 const SocialLink = styled("a")({
-  color: "#6b7280",
+  color: TEXT_COLOR.SECONDARY,
   transition: "color 0.2s",
   "&:hover": {
-    color: "#2563eb",
+    color: TEXT_COLOR.ACCENT,
   },
 })
 
 const FooterBottom = styled(Box)({
   marginTop: "2rem",
   paddingTop: "1.5rem",
-  borderTop: "1px solid #e5e7eb",
+  borderTop: `1px solid ${BORDER_COLOR.DEFAULT}`,
   display: "flex",
   flexDirection: "column",
   gap: "0.5rem",
@@ -126,12 +136,12 @@ const FooterBottom = styled(Box)({
 })
 
 const FooterAttribution = styled(Typography)({
-  fontSize: "0.75rem",
-  color: "#6b7280",
+  fontSize: FONT_SIZE.SMALL,
+  color: TEXT_COLOR.SECONDARY,
   fontStyle: "italic",
 })
 
 const FooterCopyright = styled(Typography)({
-  fontSize: "0.75rem",
-  color: "#6b7280",
+  fontSize: FONT_SIZE.SMALL,
+  color: TEXT_COLOR.SECONDARY,
 })

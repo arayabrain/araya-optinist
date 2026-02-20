@@ -3,6 +3,16 @@ import { useNavigate } from "react-router-dom"
 
 import { Box, styled, Typography } from "@mui/material"
 
+import {
+  FONT_SIZE,
+  FONT_WEIGHT,
+  LETTER_SPACING,
+  TEXT_COLOR,
+  BG_COLOR,
+  BORDER_COLOR,
+  BUTTON_BASE,
+} from "pages/LandingPage/constants"
+
 export const Header = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const navigate = useNavigate()
@@ -72,8 +82,8 @@ const HeaderWrapper = styled("header")({
   top: 0,
   zIndex: 50,
   width: "100%",
-  borderBottom: "1px solid #e5e7eb",
-  backgroundColor: "#E1DEDB",
+  borderBottom: `1px solid ${BORDER_COLOR.DEFAULT}`,
+  backgroundColor: BG_COLOR.HEADER,
   backdropFilter: "blur(12px)",
 })
 
@@ -100,13 +110,13 @@ const LogoIcon = styled(Box)({
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  color: "white",
+  color: TEXT_COLOR.WHITE,
 })
 
 const LogoText = styled(Typography)({
-  fontSize: "1.25rem",
-  fontWeight: 700,
-  letterSpacing: "-0.025em",
+  fontSize: FONT_SIZE.CARD_TITLE,
+  fontWeight: FONT_WEIGHT.BOLD,
+  letterSpacing: LETTER_SPACING.TIGHT,
 })
 
 const Nav = styled("nav")({
@@ -119,13 +129,13 @@ const Nav = styled("nav")({
 })
 
 const NavLink = styled("a")({
-  fontSize: "0.875rem",
-  fontWeight: 500,
-  color: "#111827",
+  fontSize: FONT_SIZE.BODY,
+  fontWeight: FONT_WEIGHT.REGULAR,
+  color: TEXT_COLOR.PRIMARY,
   textDecoration: "none",
   transition: "color 0.2s",
   "&:hover": {
-    color: "#2563eb",
+    color: TEXT_COLOR.ACCENT,
   },
 })
 
@@ -136,7 +146,7 @@ const MobileMenuButton = styled("button")({
   background: "none",
   border: "none",
   cursor: "pointer",
-  color: "#6b7280",
+  color: TEXT_COLOR.SECONDARY,
   "@media (min-width: 768px)": {
     display: "none",
   },
@@ -147,30 +157,20 @@ const MobileNav = styled(Box)({
   flexDirection: "column",
   gap: "1rem",
   padding: "1rem 1.5rem 1.5rem",
-  borderTop: "1px solid #e5e7eb",
-  background: "white",
+  borderTop: `1px solid ${BORDER_COLOR.DEFAULT}`,
+  background: BG_COLOR.WHITE,
 })
 
 const MobileNavLink = styled("a")({
-  fontSize: "1rem",
-  fontWeight: 500,
-  color: "#111827",
+  fontSize: FONT_SIZE.BODY,
+  fontWeight: FONT_WEIGHT.REGULAR,
+  color: TEXT_COLOR.PRIMARY,
   textDecoration: "none",
   padding: "0.5rem 0",
 })
 
 const PrimaryButton = styled("button")({
-  backgroundColor: "#2563eb",
-  color: "white",
-  fontSize: "0.875rem",
-  fontWeight: 700,
+  ...BUTTON_BASE,
   height: 40,
   padding: "0 1.5rem",
-  borderRadius: 8,
-  border: "none",
-  cursor: "pointer",
-  transition: "background-color 0.2s",
-  "&:hover": {
-    backgroundColor: "#1d4ed8",
-  },
 })

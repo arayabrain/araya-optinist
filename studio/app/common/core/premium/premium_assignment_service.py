@@ -458,6 +458,11 @@ class PremiumAssignmentService:
 
             if status_code == 200:
                 body = json.loads(response_payload.get("body", "{}"))
+                logger.debug(
+                    "Premium status result for user %s: %s",
+                    user_id,
+                    body,
+                )
                 return body
             elif status_code == 404:
                 # User not assigned

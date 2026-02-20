@@ -26,6 +26,7 @@ import {
   PremiumStatusResult,
   RoutingInfo,
 } from "api/premium/PremiumAssignmentApi"
+import { BASE_URL } from "const/API"
 import { PlanName, SubscriptionStatus } from "const/Subscription"
 import { useSleepDetection } from "hooks/useSleepDetection"
 import { selectLogoutGeneration } from "store/slice/User/UserSelector"
@@ -39,10 +40,15 @@ import {
 } from "utils/crossTabSync"
 import { routingService } from "utils/routing/RoutingService"
 
+// Absolute URL for sendBeacon (must target the API server directly).
+const BEACON_RELEASE_URL = `${BASE_URL}/users/me/premium/release-beacon`
+const BEACON_CONTENT_TYPE = "text/plain"
+
 // Polling configuration constants
-const INITIAL_POLL_INTERVAL_MS = 5000
+// Backend rate limit is 30s, so initial interval must be >= 30s
+const INITIAL_POLL_INTERVAL_MS = 30000
 const MAX_POLL_INTERVAL_MS = 60000
-const MAX_POLL_ATTEMPTS = 120 // ~10 minutes at initial rate
+const MAX_POLL_ATTEMPTS = 40
 const BACKOFF_MULTIPLIER = 1.5
 const ERROR_BACKOFF_MULTIPLIER = 2
 
@@ -456,9 +462,9 @@ export const PremiumAssignmentProvider: React.FC<{
     if (beaconTokenRef.current) {
       const blob = new Blob(
         [JSON.stringify({ token: beaconTokenRef.current })],
-        { type: "application/json" },
+        { type: BEACON_CONTENT_TYPE },
       )
-      navigator.sendBeacon("/api/users/me/premium/release-beacon", blob)
+      navigator.sendBeacon(BEACON_RELEASE_URL, blob)
       beaconTokenRef.current = null
     }
     setState((prev) => ({
@@ -675,9 +681,9 @@ export const PremiumAssignmentProvider: React.FC<{
       if (state.assignmentResult?.instance_id && beaconTokenRef.current) {
         const blob = new Blob(
           [JSON.stringify({ token: beaconTokenRef.current })],
-          { type: "application/json" },
+          { type: BEACON_CONTENT_TYPE },
         )
-        navigator.sendBeacon("/api/users/me/premium/release-beacon", blob)
+        navigator.sendBeacon(BEACON_RELEASE_URL, blob)
       }
     }
 
