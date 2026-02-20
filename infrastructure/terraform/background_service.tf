@@ -151,6 +151,10 @@ resource "aws_ecs_task_definition" "background" {
           value = var.mysql_password
         },
         {
+          name  = "MYSQL_SSL_MODE"
+          value = "REQUIRED"
+        },
+        {
           name  = "BACKEND_HOST"
           value = "0.0.0.0"
         },
