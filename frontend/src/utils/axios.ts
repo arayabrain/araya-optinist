@@ -31,18 +31,23 @@ const axios = axiosLibrary.create({
 
 axios.interceptors.request.use(
   async (config) => {
-    // Add authentication headers
+    // Add authentication headers (skip if null to avoid "Bearer null")
     const token = getToken()
     const exToken = getExToken()
 
-    config.headers!.Authorization = `Bearer ${token}`
+    if (token) {
+      config.headers!.Authorization = `Bearer ${token}`
+    }
     if (exToken) {
       config.headers!.ExToken = exToken
     }
 
     // Add premium routing headers for ALB-based routing
-    const routingHeaders = routingService.getRoutingHeaders()
-    Object.assign(config.headers!, routingHeaders)
+    // Skip if this is a free-tier fallback retry
+    if (!(config as CustomAxiosRequestConfig)._retryWithoutPremium) {
+      const routingHeaders = routingService.getRoutingHeaders()
+      Object.assign(config.headers!, routingHeaders)
+    }
 
     // Check whether the access is to public output data (HTTP header setting)
     if (config.url && isDataviewPublicOutputsRequest(config.url)) {
@@ -208,24 +213,19 @@ const handlePremiumRoutingError = async (
     return Promise.reject(error)
   }
 
-  // Premium instance not ready, falling back to free tier
+  // Premium instance not ready, falling back to free tier.
   const retryConfig = { ...originalRequest }
-
-  // Remove premium routing headers for free tier fallback
   delete retryConfig.headers[RoutingHeaders.USER_TIER]
   delete retryConfig.headers[RoutingHeaders.ROUTING_ID]
-
-  // Mark as retry to prevent infinite loops
   retryConfig._retryWithoutPremium = true
 
   try {
     // eslint-disable-next-line no-console
     console.log("Using free tier while premium instance provisions")
-    return await axiosLibrary(retryConfig)
+    return await axios(retryConfig)
   } catch (retryError) {
     // eslint-disable-next-line no-console
     console.error("Free tier fallback also failed:", retryError)
-    // Let the original error bubble up
     return Promise.reject(error)
   }
 }
@@ -246,10 +246,11 @@ axios.interceptors.response.use(
       return handleUnauthorizedError(error)
     }
 
-    if (
-      error?.response?.status === 503 &&
-      routingService.requiresPremiumRouting()
-    ) {
+    // ALB 503 when premium instance is unavailable.
+    // Also handle network errors (ERR_FAILED / no response)
+    const is503 = error?.response?.status === 503
+    const isNetworkError = !error?.response && !!error?.config
+    if ((is503 || isNetworkError) && routingService.requiresPremiumRouting()) {
       return handlePremiumRoutingError(error)
     }
 

@@ -189,6 +189,7 @@ app.include_router(
 )
 app.include_router(users_admin.router, dependencies=[Depends(get_admin_user)])
 app.include_router(users_me.router, dependencies=[Depends(get_current_user)])
+app.include_router(users_me.beacon_router)
 app.include_router(users_search.router, dependencies=[Depends(get_current_user)])
 app.include_router(workflow.router, dependencies=[Depends(get_current_user)])
 app.include_router(workspace.router, dependencies=[Depends(get_current_user)])
@@ -218,6 +219,7 @@ if MODE.IS_STANDALONE:
     app.dependency_overrides[is_workspace_owner] = skip_dependencies
     app.dependency_overrides[is_workspace_available] = skip_dependencies
 
+app.add_middleware(SecureRoutingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -225,22 +227,14 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["x-user-tier", "x-routing-id"],
 )
 
-# Add SPARoutingMiddleware to handle browser navigation to SPA routes
-# This must be added before other middleware to intercept browser requests early
 app.add_middleware(SPARoutingMiddleware)
 
-# Add LoggingMiddleware to capture client_id for logging
 app.add_middleware(ClientIdLoggingMiddleware)
 
-# Add UserActivityMiddleware to track activity for both free and premium users
-# - Free users: enables intelligent load balancing and migration
-# - Premium users: prevents stale assignment cleanup for active users
 app.add_middleware(UserActivityMiddleware)
-
-# Add SecureRoutingMiddleware to add routing headers based on JWT validation
-app.add_middleware(SecureRoutingMiddleware)
 
 
 @app.get("/is_standalone", response_model=bool, tags=["others"])

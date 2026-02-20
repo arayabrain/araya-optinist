@@ -30,6 +30,8 @@ from studio.app.common.models import FreeUserAssignment
 from studio.app.common.schemas.users import SelfUserUpdate, User, UserPasswordUpdate
 
 router = APIRouter(prefix="/users/me", tags=["users/me"])
+
+beacon_router = APIRouter(prefix="/users/me", tags=["users/me"])
 logger = AppLogger.get_logger()
 
 
@@ -184,7 +186,7 @@ async def get_beacon_token(
     return {"token": token}
 
 
-@router.post("/premium/release-beacon", response_model=Dict)
+@beacon_router.post("/premium/release-beacon", response_model=Dict)
 async def release_premium_beacon(request: Request, db: Session = Depends(get_db)):
     """
     Beacon endpoint for reliable cleanup on browser close.
@@ -299,6 +301,14 @@ async def get_premium_assignment_status(current_user: User = Depends(get_current
         # Get assignment status
         status_info = await premium_assignment_service.get_premium_user_status(
             current_user.id, current_user.uid
+        )
+
+        logger.debug(
+            "Premium status for user %s: " "assigned=%s, is_shared=%s, instance=%s",
+            current_user.id,
+            status_info is not None,
+            status_info.get("is_shared") if status_info else None,
+            status_info.get("instance_id") if status_info else None,
         )
 
         return {
