@@ -485,6 +485,10 @@ resource "aws_db_parameter_group" "main" {
     value = "UTC"
   }
 
+  lifecycle {
+    create_before_destroy = true
+  }
+
   tags = {
     Name = "subscr-optinist-ssl"
   }

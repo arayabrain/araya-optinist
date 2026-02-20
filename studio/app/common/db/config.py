@@ -6,6 +6,7 @@ from sqlalchemy.engine import URL
 from studio.app.dir_path import DIRPATH
 
 DEFAULT_CHARSET = "utf8mb4"
+SSL_CONNECT_ARGS = {"check_hostname": False}
 
 
 def build_mysql_url(
@@ -14,14 +15,11 @@ def build_mysql_url(
     host: str,
     database: str,
     port: Optional[int] = None,
-    ssl_mode: str = "",
     charset: str = DEFAULT_CHARSET,
 ) -> str:
     query: Dict[str, str] = {}
     if charset:
         query["charset"] = charset
-    if ssl_mode:
-        query["ssl_mode"] = ssl_mode
     url = URL.create(
         "mysql+pymysql",
         username=user,
@@ -32,6 +30,41 @@ def build_mysql_url(
         query=query,
     )
     return str(url)
+
+
+def _ssl_required() -> bool:
+    mode = DATABASE_CONFIG.MYSQL_SSL_MODE
+    return bool(mode) and mode != "DISABLED"
+
+
+def get_ssl_creator():
+    """Return a pymysql creator function for SSL connections.
+
+    Returns None when SSL is not required. SQLAlchemy 2.0.43's
+    normal connection paths (URL params, connect_args, do_connect
+    event) all fail to establish SSL with PyMySQL 1.4.6 + RDS
+    Proxy. Using creator= bypasses SQLAlchemy's connection
+    parameter processing entirely, calling pymysql.connect()
+    directly with the params proven to work.
+    """
+    if not _ssl_required():
+        return None
+
+    import pymysql
+
+    cfg = DATABASE_CONFIG
+
+    def _creator():
+        return pymysql.connect(
+            host=cfg.MYSQL_SERVER,
+            user=cfg.MYSQL_USER,
+            password=cfg.MYSQL_PASSWORD,
+            database=cfg.MYSQL_DATABASE,
+            charset=DEFAULT_CHARSET,
+            ssl=SSL_CONNECT_ARGS,
+        )
+
+    return _creator
 
 
 class DatabaseConfig(BaseSettings):
@@ -56,7 +89,6 @@ class DatabaseConfig(BaseSettings):
             password=values.get("MYSQL_PASSWORD"),
             host=values.get("MYSQL_SERVER"),
             database=values.get("MYSQL_DATABASE"),
-            ssl_mode=values.get("MYSQL_SSL_MODE", ""),
         )
 
     class Config:

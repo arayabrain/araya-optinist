@@ -29,7 +29,7 @@ if [ -n "${MYSQL_SSL_MODE}" ]; then
             ssl_opts="--skip-ssl"
             ;;
         *)
-            ssl_opts="--ssl-mode=${MYSQL_SSL_MODE}"
+            ssl_opts="--ssl"
             ;;
     esac
 else
@@ -49,6 +49,21 @@ echo 'Database connection successful'
 # Run database migrations using alembic
 # This ensures all database tables and schemas are up to date
 cd /app
+
+# Verify database SSL connection before running migrations
+echo "Verifying database SSL connection..."
+python3 -c "
+from studio.app.common.db.config import DATABASE_CONFIG, get_ssl_creator
+from sqlalchemy import create_engine, text
+creator = get_ssl_creator()
+kwargs = {'creator': creator} if creator else {}
+engine = create_engine(DATABASE_CONFIG.DATABASE_URL, **kwargs)
+with engine.connect() as c:
+    r = c.execute(text('SHOW STATUS LIKE \"Ssl_cipher\"'))
+    cipher = r.fetchone()
+    print(f'SSL: {cipher[1] if cipher and cipher[1] else \"disabled\"}')
+engine.dispose()
+" 2>&1 || echo "WARNING: SSL verification failed (see above)"
 
 # Run Alembic upgrade - if migrations fail, the container will exit
 # This causes ECS to mark the deployment as failed and revert to the previous version

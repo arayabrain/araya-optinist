@@ -70,7 +70,6 @@ def get_database_url():
         host=os.getenv("DB_HOST", "localhost"),
         database=os.getenv("DB_NAME", "optinist"),
         port=int(os.getenv("DB_PORT", "3306")),
-        ssl_mode=os.getenv("MYSQL_SSL_MODE", ""),
     )
 
 
@@ -192,10 +191,16 @@ async def main():
         )
         return
 
-    print("📦 Connecting to database...")
+    print("Connecting to database...")
 
     try:
-        engine = create_engine(db_url)
+        from studio.app.common.db.config import get_ssl_creator
+
+        kwargs = {}
+        creator = get_ssl_creator()
+        if creator:
+            kwargs["creator"] = creator
+        engine = create_engine(db_url, **kwargs)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         db = SessionLocal()
 
