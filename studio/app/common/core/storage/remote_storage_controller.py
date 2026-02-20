@@ -14,6 +14,7 @@ from studio.app.common.core.utils.datetime_utils import (
     get_current_datetime,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.const import ThumbnailType
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -494,6 +495,26 @@ class BaseRemoteStorageController(metaclass=ABCMeta):
         """
 
     @abstractmethod
+    def download_thumbnail_source(
+        self,
+        workspace_id: str,
+        unique_id: str,
+        original_path: str,
+        thumb_type: ThumbnailType,
+    ) -> bool:
+        """
+        Download the source file needed to generate a thumbnail.
+        """
+
+    @abstractmethod
+    async def upload_thumbnail(
+        self, workspace_id: str, unique_id: str, thumbnail_path: str
+    ) -> bool:
+        """
+        Upload a generated thumbnail PNG to S3 for persistence.
+        """
+
+    @abstractmethod
     async def delete_workspace(
         self, workspace_id: str, directory_type: StorageDirectoryType
     ) -> bool:
@@ -790,6 +811,30 @@ class RemoteStorageController(BaseRemoteStorageController):
             raise e
 
         return result
+
+    async def download_thumbnail_source(
+        self,
+        workspace_id: str,
+        unique_id: str,
+        original_path: str,
+        thumb_type: ThumbnailType,
+    ) -> bool:
+        """
+        Download the source file needed to generate a thumbnail.
+        """
+        return self.__controller.download_thumbnail_source(
+            workspace_id, unique_id, original_path, thumb_type
+        )
+
+    async def upload_thumbnail(
+        self, workspace_id: str, unique_id: str, thumbnail_path: str
+    ) -> bool:
+        """
+        Upload a generated thumbnail PNG to S3 for persistence.
+        """
+        return self.__controller.upload_thumbnail(
+            workspace_id, unique_id, thumbnail_path
+        )
 
     async def delete_workspace(
         self, workspace_id: str, directory_type: StorageDirectoryType
