@@ -91,7 +91,7 @@ class SmkUtils:
 
         input_paths = []
 
-        for node in smk_config["rules"].values():
+        for node in smk_config.get("rules", {}).values():
             if NodeTypeUtil.check_nodetype_from_filetype(node["type"]) == NodeType.DATA:
                 if node["type"] in [FILETYPE.IMAGE]:
                     if apply_basename:

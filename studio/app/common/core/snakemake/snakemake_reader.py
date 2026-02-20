@@ -48,7 +48,8 @@ class SmkConfigReader:
     def read(cls, workspace_id: str, unique_id: str) -> dict:
         filepath = cls.get_config_yaml_path(workspace_id, unique_id)
         config = ConfigReader.read(filepath)
-        assert config, f"Invalid config yaml file: [{filepath}] [{config}]"
+        if config is None:
+            config = {}
 
         return config
 
