@@ -75,6 +75,7 @@ def get_db_connection(auto_commit=False):
                 charset="utf8mb4",
                 cursorclass=pymysql.cursors.DictCursor,
                 autocommit=auto_commit,
+                ssl={"check_hostname": False},
             )
             yield conn
         except Exception as e:

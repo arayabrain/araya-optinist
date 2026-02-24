@@ -54,24 +54,23 @@ def get_test_users():
 
 def get_database_url():
     """Get database URL from environment variables."""
-    # Try common environment variable names
+    from studio.app.common.db.config import build_mysql_url
+
     db_url = (
         os.getenv("DATABASE_URL")
         or os.getenv("DB_URL")
         or os.getenv("SQLALCHEMY_DATABASE_URL")
     )
+    if db_url:
+        return db_url
 
-    if not db_url:
-        # Construct from individual components if available
-        host = os.getenv("DB_HOST", "localhost")
-        port = os.getenv("DB_PORT", "3306")
-        user = os.getenv("DB_USER", "root")
-        password = os.getenv("DB_PASSWORD", "")
-        database = os.getenv("DB_NAME", "optinist")
-
-        db_url = f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}"
-
-    return db_url
+    return build_mysql_url(
+        user=os.getenv("DB_USER", "root"),
+        password=os.getenv("DB_PASSWORD", ""),
+        host=os.getenv("DB_HOST", "localhost"),
+        database=os.getenv("DB_NAME", "optinist"),
+        port=int(os.getenv("DB_PORT", "3306")),
+    )
 
 
 async def create_test_user_in_db(db, user_data, organization_id):
@@ -192,10 +191,16 @@ async def main():
         )
         return
 
-    print("📦 Connecting to database...")
+    print("Connecting to database...")
 
     try:
-        engine = create_engine(db_url)
+        from studio.app.common.db.config import get_ssl_creator
+
+        kwargs = {}
+        creator = get_ssl_creator()
+        if creator:
+            kwargs["creator"] = creator
+        engine = create_engine(db_url, **kwargs)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         db = SessionLocal()
 
