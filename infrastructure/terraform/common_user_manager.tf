@@ -143,7 +143,7 @@ resource "aws_iam_role_policy" "common_user_manager_lambda_policy" {
 
 resource "aws_cloudwatch_log_group" "common_user_manager_logs" {
   name              = "/aws/lambda/subscr-common-user-manager"
-  retention_in_days = 14
+  retention_in_days = 30
 
   tags = {
     Name = "Common User Manager Logs"

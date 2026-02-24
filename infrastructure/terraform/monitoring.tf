@@ -10,6 +10,15 @@ resource "aws_cloudwatch_log_group" "ecs" {
   }
 }
 
+resource "aws_cloudwatch_log_group" "premium_ecs" {
+  name              = "/ecs/subscr-premium-optinist-cloud-taskdef"
+  retention_in_days = 365
+
+  tags = {
+    Name = "subscr-premium-optinist-cloud-logs"
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "cpu_high" {
   alarm_name          = "subscr-optinist-cpu-high"
   comparison_operator = "GreaterThanThreshold"
