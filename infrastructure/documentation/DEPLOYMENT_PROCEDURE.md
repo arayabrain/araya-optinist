@@ -424,7 +424,7 @@ feature-branch → develop-main → main → release tag (vX.Y.Z)
    ```
 
 2. **Create Pull Request: develop-main → main**
-   - Open GitHub: https://github.com/arayabrain/optinist-for-cloud/pulls
+   - Open GitHub: https://github.com/arayabrain/araya-optinist/pulls
    - Create PR from `develop-main` to `main`
    - Ensure all CI tests pass
    - Get code review approval
@@ -433,7 +433,7 @@ feature-branch → develop-main → main → release tag (vX.Y.Z)
 
    After merging to main:
 
-   1. Go to [Releases page](https://github.com/arayabrain/optinist-for-cloud/releases)
+   1. Go to [Releases page](https://github.com/arayabrain/araya-optinist/releases)
    2. Click "Draft a new release"
    3. **Choose a tag:** Create new tag in `vX.Y.Z` format (e.g., `v2.5.0`)
    4. **Target:** `main` branch
@@ -460,7 +460,7 @@ feature-branch → develop-main → main → release tag (vX.Y.Z)
 ### Improvements
 - Improvement description (#PR_NUMBER)
 
-**Full Changelog:** https://github.com/arayabrain/optinist-for-cloud/compare/vX.Y.Z-1...vX.Y.Z
+**Full Changelog:** https://github.com/arayabrain/araya-optinist/compare/vX.Y.Z-1...vX.Y.Z
 ```
 
 ---
@@ -494,7 +494,7 @@ feature-branch → develop-main → main → release tag (vX.Y.Z)
 
 ## Wiki Documentation TODO
 
-**Wiki URL:** https://github.com/arayabrain/optinist-for-cloud/wiki
+**Wiki URL:** https://github.com/arayabrain/araya-optinist/wiki
 
 The project wiki contains additional documentation including:
 - Architecture diagrams
