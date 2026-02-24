@@ -80,7 +80,7 @@ The StripeService handles direct interactions with the Stripe API for payment op
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 2. Frontend calls: POST /subscription/payments/setup-intent             │
+│ 2. Frontend calls: POST /api/subsc/payment-methods/setup-intent          │
 │    → Backend creates Stripe SetupIntent                                 │
 │    → Returns client_secret for Stripe Elements                          │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -94,7 +94,7 @@ The StripeService handles direct interactions with the Stripe API for payment op
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 4. Frontend calls: POST /subscription/payments/default                  │
+│ 4. Frontend calls: PUT /api/subsc/payment-methods                        │
 │    → Backend attaches PaymentMethod to Customer                         │
 │    → Sets as default for subscription                                   │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -160,9 +160,23 @@ The SubscriptionService handles business logic and database operations for subsc
 | `PREMIUM` | Premium tier subscription active | Premium compute |
 | `TRIALING` | Trial period active | Full plan features |
 | `PAST_DUE` | Payment failed, retry in progress | Full access (temporary) |
-| `LIMIT_GRACE` | Over storage limit, grace period | Read-only (30 days) |
+| `LIMIT_GRACE` | Premium expired, 30-day grace period | Full premium access (see below) |
 | `CANCELLED` | Scheduled for cancellation | Full until period end |
 | `UNPAID` | Payment failed, all retries exhausted | Restricted access |
+
+**LIMIT_GRACE details:** When a premium subscription expires, the user
+enters a 30-day grace period. During this period:
+
+- **Access is functionally identical to Premium** — the user retains
+  premium compute routing, 200 GB storage quota, and
+  `has_active_subscription` returns `True`
+  (see `users.py:has_active_subscription`, `RoutingService.ts`)
+- **Workflow execution** is allowed as long as storage stays under quota
+  (the same quota check that applies to all statuses)
+- **Alerts** warn the user that their subscription has expired and
+  show a countdown of grace days remaining
+- After the 30-day grace period, the status transitions to `EXPIRED`
+  and access drops to Free tier (5 GB quota, no premium compute)
 
 #### Grace Period Logic
 
@@ -216,7 +230,7 @@ The WebhookService processes Stripe webhook events for real-time subscription up
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ Stripe Webhook Delivery                                                  │
-│ POST /webhooks/stripe                                                    │
+│ POST /api/subsc/webhooks/stripe                                          │
 └─────────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -341,28 +355,27 @@ def handle_payment_failed(event_data: dict, db: Session):
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/subscription/plans` | GET | List available plans |
-| `/subscription/me` | GET | Get current user's subscription |
-| `/subscription/checkout` | POST | Create checkout session |
-| `/subscription/portal` | POST | Create customer portal session |
-| `/subscription/cancel` | POST | Cancel subscription |
-| `/subscription/update` | POST | Change subscription plan |
+| `/api/subsc/mgmts/plans` | GET | List available plans |
+| `/api/subsc/mgmts` | GET | Get current user's subscription |
+| `/api/subsc/mgmts` | PUT | Update subscription plan |
+| `/api/subsc/mgmts/cancel` | DELETE | Cancel subscription |
+| `/api/subsc/checkout/create-checkout-session` | POST | Create checkout session |
 
 ### Payment Endpoints
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/subscription/payments` | GET | List payment methods |
-| `/subscription/payments/default` | GET | Get default payment method |
-| `/subscription/payments/default` | POST | Set default payment method |
-| `/subscription/payments/{id}` | DELETE | Remove payment method |
-| `/subscription/payments/setup-intent` | POST | Create SetupIntent |
+| `/api/subsc/payment-methods` | GET | List payment methods |
+| `/api/subsc/payment-methods/default` | GET | Get default payment method |
+| `/api/subsc/payment-methods` | PUT | Set default payment method |
+| `/api/subsc/payment-methods/{id}` | DELETE | Remove payment method |
+| `/api/subsc/payment-methods/setup-intent` | POST | Create SetupIntent |
 
 ### Webhook Endpoint
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/webhooks/stripe` | POST | Receive Stripe webhooks |
+| `/api/subsc/webhooks/stripe` | POST | Receive Stripe webhooks |
 
 ---
 
@@ -390,11 +403,260 @@ plans = {
     },
     "premium": {
         "price_id": "price_premium_monthly",
-        "storage_gb": 100,
+        "storage_gb": 200,
         "features": ["Dedicated compute", "Priority support", "Advanced analytics"],
     },
 }
 ```
+
+---
+
+## Premium Lifecycle: Free to Premium to Cancellation to Data Deletion
+
+This section describes the complete user lifecycle from free signup through
+premium subscription, cancellation, grace periods, and eventual data cleanup.
+
+### End-to-End Lifecycle Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        SUBSCRIPTION LIFECYCLE                                   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+  ┌──────────┐     Checkout      ┌───────────┐
+  │          │    completed      │           │
+  │   FREE   │ ────────────────> │  PREMIUM  │
+  │  (5 GB)  │                   │ (200 GB)  │
+  │          │ <──────────────── │           │
+  └──────────┘   Subscription    └─────┬─────┘
+       ^         cancelled             │
+       │                               │ Subscription expires
+       │                               │ (cancel_at_period_end or payment failure)
+       │                               ▼
+       │                         ┌───────────┐
+       │   Storage <= 5 GB       │   GRACE   │  Days 0-30 after expiration
+       │   (no warning needed)   │  PERIOD   │  Premium access retained (200 GB)
+       │ <────────────────────── │           │  Alerts measure against 5 GB free limit
+       │                         └─────┬─────┘
+       │                               │
+       │                               │ Grace period ends (day 30)
+       │                               ▼
+       │                         ┌───────────┐
+       │   Storage <= 5 GB       │  WARNING  │  Days 30-60 after expiration
+       │   (no warning needed)   │  PERIOD   │  "Data will be deleted in X days"
+       │ <────────────────────── │           │
+       │                         └─────┬─────┘
+       │                               │
+       │                               │ Warning period ends (day 60)
+       │                               ▼
+       │                         ┌───────────┐
+       │   Storage <= 5 GB       │  OVERDUE  │  Day 60+ after expiration
+       │   (no warning needed)   │           │  "Data scheduled for deletion"
+       │ <────────────────────── │           │
+       │                         └───────────┘
+       │
+       │         User can re-subscribe at ANY point to return to PREMIUM
+       └─────────────────────────────────────────────────────────────────
+```
+
+**Key principle:** Warnings only appear when the user's storage exceeds the
+free tier limit (5 GB). Users whose data fits within 5 GB transition silently
+back to free with no alerts, regardless of lifecycle stage.
+
+### Timeline After Subscription Expiration
+
+```
+Subscription    Grace Period     Warning Period     Overdue
+  Expires          Ends              Ends          (ongoing)
+    │                │                 │               │
+    T             T + 30d          T + 60d            ...
+    │                │                 │               │
+    ├────────────────┼─────────────────┼───────────────┤
+    │  GRACE (30d)   │  WARNING (30d)  │   OVERDUE     │
+    │                │                 │               │
+    │  Alert: GRACE  │  Alert: GRACE   │ Alert: OVERDUE│
+    │  "Subscription │  "Data deleted  │ "Scheduled    │
+    │   expired,     │   in X days"   │  for deletion"│
+    │   X days left" │                 │               │
+    └────────────────┴─────────────────┴───────────────┘
+
+  Key dates computed by calculate_limit_warning():
+    subscription_end  = UserSubscription.expiration
+    grace_end         = subscription_end + 30 days (GRACE_PERIOD_DAYS)
+    deletion_date     = grace_end + 30 days (WARNING_PERIOD_DAYS)
+```
+
+### Subscription Lifecycle States
+
+| Status | Duration | Storage Quota | Alert Threshold | Alert Type | User Experience |
+|--------|----------|---------------|-----------------|------------|-----------------|
+| `FREE` | Indefinite | 5 GB | 5 GB | `storage` (if over) | Full free features |
+| `ACTIVE` | Billing period | 200 GB | 200 GB | `storage` (if over) | Full premium features |
+| `GRACE` | Days 0-30 | 200 GB (retained) | 5 GB | `grace` | Full premium access, countdown warning |
+| `WARNING` | Days 30-60 | 5 GB | 5 GB | `grace` | "Data will be deleted in X days" |
+| `OVERDUE` | Day 60+ | 5 GB | 5 GB | `overdue` | "Data scheduled for deletion" |
+
+### Limit Warning Decision Tree
+
+`calculate_limit_warning()` evaluates 5 cases to determine the alert:
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                     calculate_limit_warning(user_id)                      │
+└──────────────────────────────────────────────────────────────────────────┘
+                                   │
+                    ┌──────────────┴──────────────┐
+                    │  Get subscription status    │
+                    │  Get storage usage           │
+                    └──────────────┬──────────────┘
+                                   │
+              ┌────────────────────┼────────────────────┐
+              ▼                    ▼                    ▼
+        ┌──────────┐        ┌──────────┐        ┌──────────────────┐
+        │   FREE   │        │  ACTIVE  │        │ GRACE / WARNING  │
+        │  (no     │        │ (premium │        │   / OVERDUE      │
+        │  premium │        │  active) │        │ (premium expired)│
+        │  history)│        │          │        │                  │
+        └────┬─────┘        └────┬─────┘        └────────┬─────────┘
+             │                   │                       │
+        ┌────┴────┐         ┌────┴────┐            ┌─────┴─────┐
+        │ > 5 GB? │         │> 200 GB?│            │  > 5 GB?  │
+        └────┬────┘         └────┬────┘            └─────┬─────┘
+          Y     N            Y     N                 Y       N
+          │     │            │     │                 │       │
+          ▼     ▼            ▼     ▼                 ▼       ▼
+      Case 2  Case 1    Case 3  No alert        Cases 4/5  No alert
+      STORAGE  None     STORAGE                  GRACE or
+      alert             alert                    OVERDUE alert
+```
+
+| Case | Subscription | Storage | Alert Type | `days_remaining` |
+|------|-------------|---------|------------|------------------|
+| 1 | Free, never premium | Under 5 GB | None | -- |
+| 2 | Free, never premium | Over 5 GB | `storage` | 30 (fixed) |
+| 3 | Premium active | Over 200 GB | `storage` | 30 (fixed) |
+| 4 | Grace/Warning period | Over 5 GB | `grace` | Countdown to grace_end or deletion_date |
+| 5 | Overdue (60+ days) | Over 5 GB | `overdue` | 0 |
+
+### LimitWarning Response Schema
+
+**File:** `studio/app/common/schemas/storage.py`
+
+```python
+class LimitWarning(BaseModel):
+    has_alert: bool               # Always True when returned
+    alert_type: str               # "storage", "grace", or "overdue"
+    days_remaining: int           # Days before action required (0 = overdue)
+    excess_data_bytes: int        # Bytes over effective quota
+    excess_data_gb: float         # GB over effective quota
+    storage_usage_bytes: int      # Current total storage usage
+    storage_usage_gb: float
+    storage_quota_bytes: int      # Effective quota (5 GB if grace/overdue)
+    storage_quota_gb: float
+    message: str                  # Human-readable warning
+
+    # Subscription-related (only set for grace/warning/overdue alerts)
+    subscription_end_date: str    # ISO date when premium expired
+    grace_end_date: str           # ISO date when grace period ends (T+30d)
+    deletion_date: str            # ISO date when data deletion begins (T+60d)
+```
+
+### Warning Messages by Status
+
+| Status | Storage Exceeded | Example Message |
+|--------|-----------------|-----------------|
+| `GRACE` | Yes | "Your premium subscription expired on Jan 15, 2025. Your storage (12.0 GB) exceeds the free plan limit (5 GB). You have 22 days to upgrade or remove 7.0 GB of data." |
+| `WARNING` | Yes | "Your premium subscription expired on Jan 15, 2025. Your storage (12.0 GB) exceeds the free plan limit (5 GB). Remove 7.0 GB of data within 14 days or your data will be deleted." |
+| `OVERDUE` | Yes | "Your premium subscription expired on Jan 15, 2025. Your storage (12.0 GB) exceeds the free plan limit (5 GB). Your data is scheduled for deletion. Please upgrade or remove 7.0 GB." |
+| `FREE` | Yes | "Your data usage (7.0 GB) exceeds the free plan limit (5.0 GB). Please upgrade or remove 2.0 GB of data within 30 days." |
+| `ACTIVE` | Yes | "Your storage usage (210.0 GB) is over the limit for your plan. You will be unable to run workflows. Consider cleaning up unused data." |
+
+### Constants Reference
+
+**File:** `studio/app/common/core/subscription/constants.py`
+
+```python
+# Storage quotas
+StorageQuota.FREE = 5                            # 5 GB
+StorageQuota.PREMIUM = 200                       # 200 GB
+
+# Lifecycle periods
+SubscriptionPeriods.GRACE_PERIOD_DAYS = 30       # Grace period after expiry
+SubscriptionPeriods.WARNING_PERIOD_DAYS = 30     # Warning period after grace
+SubscriptionPeriods.STORAGE_WARNING_DAYS = 30    # Days for free users to reduce
+SubscriptionPeriods.QUOTA_DROP_WARNING_DAYS = 3  # Warn before quota drops
+
+# Frontend severity thresholds (days remaining)
+SubscriptionPeriods.CRITICAL_THRESHOLD_DAYS = 0  # Red/error
+SubscriptionPeriods.URGENT_THRESHOLD_DAYS = 7    # Red/error
+SubscriptionPeriods.WARNING_THRESHOLD_DAYS = 14  # Yellow/warning
+```
+
+### Enums Reference
+
+**File:** `studio/app/common/core/subscription/constants.py`
+
+```python
+class SubscriptionLifecycleStatus(StrEnum):
+    ACTIVE = "active"      # Premium not yet expired
+    GRACE = "grace"        # Days 0-30 after expiration
+    WARNING = "warning"    # Days 30-60 after expiration
+    OVERDUE = "overdue"    # Day 60+ after expiration
+    FREE = "free"          # Never had premium
+
+class AlertType(StrEnum):
+    STORAGE = "storage"    # Storage quota exceeded (any plan)
+    GRACE = "grace"        # Grace or warning period (maps from GRACE + WARNING)
+    OVERDUE = "overdue"    # Past all grace periods, deletion imminent
+
+class SubscriptionStatus(StrEnum):
+    FREE = "Free"
+    PREMIUM = "Premium"
+    LIMIT_GRACE = "Limit Grace"
+    EXPIRED = "Expired"
+```
+
+### Limit Warning API Endpoints
+
+**File:** `studio/app/common/routers/storage_limit_alerts.py`
+
+| Endpoint | Method | Purpose | Response |
+|----------|--------|---------|----------|
+| `/storage-limit-alerts/me` | GET | Storage alert for current user | `{ has_alert, alert }` |
+| `/storage-limit-alerts/usage` | GET | Detailed storage usage stats | `{ usage, quota, percent }` |
+| `/storage-limit-alerts/all` | GET | All user alerts (admin only) | `[{ alert }]` |
+| `/storage-limit-alerts/refresh` | POST | Recalculate storage from S3 | `{ updated_usage }` |
+| `/storage-limit-alerts/limit-warning` | GET | Full limit warning details | `LimitWarning` or `null` |
+| `/storage-limit-alerts/limit-warning/check` | GET | Quick warning status check | `LimitWarningStatus` |
+
+### Frontend Alert Component
+
+**File:** `frontend/src/components/common/LimitAlert.tsx`
+
+| Alert Type | Severity | Title | Behavior |
+|------------|----------|-------|----------|
+| `overdue` | error (red) | "Data Cleanup Overdue" | Requires acknowledgment, no auto-dismiss |
+| `storage` | warning (yellow) | "Storage Limit Exceeded" | Dismissible |
+| `grace` | warning (yellow) | "Premium Subscription Expired" | Dismissible, shows countdown |
+
+Features:
+- Progress bar showing time remaining (hours or days granularity)
+- Storage usage details (X GB used / Y GB limit, Z GB excess)
+- Action buttons: "Upgrade to Premium" and "Manage Files"
+- Cross-tab synchronization via localStorage and BroadcastChannel
+- OVERDUE alerts require explicit acknowledgment before dismissal
+
+### Key Functions Reference
+
+| Function | File | Purpose |
+|----------|------|---------|
+| `calculate_limit_warning()` | `studio/app/common/core/cloud/cloud_utils.py` | Core 5-case decision tree for limit warnings |
+| `_generate_subscription_warning_message()` | `studio/app/common/core/cloud/cloud_utils.py` | Context-aware message generation per status |
+| `get_user_storage_usage()` | `studio/app/common/core/cloud/storage_tracking.py` | Get cached storage usage from database |
+| `get_current_user_storage_usage()` | `studio/app/common/core/cloud/storage_tracking.py` | Get fresh storage usage (async, S3 scan) |
+| `handle_checkout_completed()` | `studio/app/common/core/subscription/webhook_service.py` | Stripe webhook: create subscription record |
+| `handle_subscription_cancelled()` | `studio/app/common/core/subscription/webhook_service.py` | Stripe webhook: clean up subscription |
+| `handle_payment_failed()` | `studio/app/common/core/subscription/webhook_service.py` | Stripe webhook: mark subscription past_due |
 
 ---
 
@@ -473,22 +735,22 @@ def handle_webhook(event: stripe.Event):
 | `studio/app/common/core/subscription/stripe_service.py` | Stripe API integration |
 | `studio/app/common/core/subscription/subscription_service.py` | Business logic |
 | `studio/app/common/core/subscription/webhook_service.py` | Webhook handlers |
-| `studio/app/common/routers/subscription.py` | API endpoints |
-| `studio/app/common/routers/webhooks.py` | Webhook receiver |
+| `studio/app/common/routers/subscriptions.py` | API and webhook endpoints |
 
 ### Frontend
 
 | File | Purpose |
 |------|---------|
-| `frontend/src/api/subscription/*.ts` | Subscription API calls |
-| `frontend/src/components/Subscription/*.tsx` | Plan selection, billing UI |
-| `frontend/src/components/Payment/*.tsx` | Payment method management |
+| `frontend/src/api/subscriptions/Subscriptions.ts` | Subscription API calls |
+| `frontend/src/api/paymentMethod/PaymentMethod.ts` | Payment method API calls |
+| `frontend/src/pages/Subscription/*.tsx` | Plan selection, billing UI |
+| `frontend/src/components/common/LimitAlert.tsx` | Storage/grace period alerts |
 
 ### Infrastructure
 
 | File | Purpose |
 |------|---------|
-| `infrastructure/terraform/secrets.tf` | Stripe secrets configuration |
+| `infrastructure/terraform/security.tf` | Stripe secrets (AWS Secrets Manager) |
 
 ---
 
