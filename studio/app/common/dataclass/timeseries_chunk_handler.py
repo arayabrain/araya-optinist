@@ -117,26 +117,36 @@ class TimeSeriesChunkHandler:
             raise ValueError("record_ids and record_data must have same length")
 
         index_map = {}  # Maps record_id to chunk_id
-        chunk_data = {}  # Temporary storage: chunk_id -> {record_id -> data}
+        chunk_data = {}  # Temporary storage: chunk_id -> optimized chunk structure
 
         for i, (record_id, df) in enumerate(zip(record_ids, record_data)):
             chunk_id = i // cls.CHUNK_SIZE
             index_map[str(record_id)] = chunk_id
 
-            # Add to chunk
+            # Initialize chunk structure if new
             if chunk_id not in chunk_data:
-                chunk_data[chunk_id] = {}
-            chunk_data[chunk_id][str(record_id)] = df.to_dict(orient="split")
+                # Store index and columns at chunk level (shared by all records in chunk)
+                chunk_data[chunk_id] = {
+                    "index": df.index.tolist(),
+                    "columns": df.columns.tolist(),
+                    "records": {}
+                }
+
+            # Add only the data portion for this record (not index/columns)
+            df_dict = df.to_dict(orient="split")
+            chunk_data[chunk_id]["records"][str(record_id)] = {
+                "data": df_dict["data"]
+            }
 
         # Write chunk files
-        for chunk_id, records in chunk_data.items():
+        for chunk_id, chunk_content in chunk_data.items():
             chunk_filepath = join_filepath(
                 [dirpath, f"{cls.CHUNK_FILE_PREFIX}{chunk_id}.json"]
             )
             # Sanitize data to convert NaN/Inf to null for JSON compliance
-            sanitized_records = _sanitize_for_json(records)
+            sanitized_chunk = _sanitize_for_json(chunk_content)
             with open(chunk_filepath, "w") as f:
-                json.dump(sanitized_records, f, indent=4)
+                json.dump(sanitized_chunk, f, indent=4)
 
         # Write index mapping file
         index_map_path = join_filepath([dirpath, cls.INDEX_MAP_FILENAME])
@@ -180,7 +190,8 @@ class TimeSeriesChunkHandler:
             # Load chunk and map all records to this chunk_id
             with open(chunk_file, "r") as f:
                 chunk_data = json.load(f)
-                for record_id in chunk_data.keys():
+                # Optimized format: {"index": ..., "columns": ..., "records": {...}}
+                for record_id in chunk_data["records"].keys():
                     index_map[record_id] = chunk_id
 
         return index_map
@@ -262,10 +273,17 @@ class TimeSeriesChunkHandler:
             raise ValueError(f"Record ID '{record_id}' not found in index map")
 
         chunk_data = cls.load_chunk_file(dirpath, chunk_id)
-        record_data = chunk_data.get(record_id)
 
-        if record_data is None:
+        # Optimized format: {"index": ..., "columns": ..., "records": {...}}
+        if record_id not in chunk_data["records"]:
             raise ValueError(f"Record ID '{record_id}' not found in chunk {chunk_id}")
+
+        # Reconstruct split format for compatibility with existing code
+        record_data = {
+            "index": chunk_data["index"],
+            "columns": chunk_data["columns"],
+            "data": chunk_data["records"][record_id]["data"]
+        }
 
         return record_data
 
@@ -343,7 +361,15 @@ class TimeSeriesChunkHandler:
 
         for chunk_id in cls.get_all_chunks(dirpath):
             chunk_data = cls.load_chunk_file(dirpath, chunk_id)
-            all_records.update(chunk_data)
+
+            # Optimized format: {"index": ..., "columns": ..., "records": {...}}
+            for record_id, record_info in chunk_data["records"].items():
+                # Reconstruct split format for compatibility
+                all_records[record_id] = {
+                    "index": chunk_data["index"],
+                    "columns": chunk_data["columns"],
+                    "data": record_info["data"]
+                }
 
         return all_records
 
