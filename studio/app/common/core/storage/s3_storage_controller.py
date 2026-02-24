@@ -189,8 +189,6 @@ class S3StorageController(BaseRemoteStorageController):
             else:
                 break
 
-        print("------------------------------------------------- all_objects:", len(all_objects))
-
         return all_objects
 
     async def _download_s3_with_update_check(
@@ -252,8 +250,6 @@ class S3StorageController(BaseRemoteStorageController):
         for i in range(0, len(keys_to_delete), batch_size):
             batch = keys_to_delete[i : i + batch_size]
             await bucket.delete_objects(Delete={"Objects": batch})
-
-        print("------------------------------------------------- _delete_s3_objects_batched:")
 
     # ----------------------------------------
     # Bucket operations
