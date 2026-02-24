@@ -53,6 +53,7 @@ class S3StorageController(BaseRemoteStorageController):
     S3_BASE_PATH = "app/studio_data"
     S3_INPUT_DIR = "input"
     S3_OUTPUT_DIR = "output"
+    VALIDATION_MAX_OBJECTS = 500
 
     def __init__(self, bucket_name: str):
         # init s3 bucket attributes
@@ -653,6 +654,100 @@ class S3StorageController(BaseRemoteStorageController):
             f"[{workspace_id}/{unique_id}]"
         )
         return True
+
+    async def validate_experiment_in_s3(
+        self, workspace_id: str, unique_id: str
+    ) -> dict:
+        """
+        Validate that an experiment exists in S3 without downloading.
+
+        Checks for required files (experiment.yaml, workflow.yaml) via
+        ListObjectsV2. Used by the background sync job to update DB
+        status without wasting bandwidth on downloads.
+
+        Returns:
+            dict with keys:
+                valid (bool): True if required files exist
+                has_thumbnails (bool): True if thumbnail PNGs found
+                error (str|None): Error message if validation failed
+        """
+        prefix = self.make_s3_output_prefix(workspace_id, unique_id)
+        required = {DIRPATH.EXPERIMENT_YML, DIRPATH.WORKFLOW_YML}
+
+        try:
+            found_files = set()
+            has_thumbnails = False
+
+            async with self.__get_s3_client() as s3_client:
+                continuation_token = None
+                total_listed = 0
+
+                while True:
+                    params = {
+                        "Bucket": self.bucket_name,
+                        "Prefix": prefix,
+                    }
+                    if continuation_token:
+                        params["ContinuationToken"] = continuation_token
+
+                    resp = await s3_client.list_objects_v2(**params)
+
+                    if not resp or resp.get("KeyCount", 0) == 0:
+                        break
+
+                    for obj in resp.get("Contents", []):
+                        key = obj["Key"]
+                        filename = key.rsplit("/", 1)[-1]
+                        file_size = obj.get("Size", 0)
+
+                        if filename in required:
+                            if file_size > 0:
+                                found_files.add(filename)
+                            else:
+                                logger.warning(
+                                    f"Required file {filename}"
+                                    f" is 0 bytes in S3: {key}"
+                                )
+
+                        if filename.endswith("_thumb.png"):
+                            has_thumbnails = True
+
+                    total_listed += resp.get("KeyCount", 0)
+                    if total_listed >= self.VALIDATION_MAX_OBJECTS:
+                        break
+
+                    if resp.get("IsTruncated"):
+                        continuation_token = resp.get("NextContinuationToken")
+                    else:
+                        break
+
+            if not found_files:
+                return {
+                    "valid": False,
+                    "has_thumbnails": False,
+                    "error": "No objects found in S3",
+                }
+
+            missing = required - found_files
+            if missing:
+                return {
+                    "valid": False,
+                    "has_thumbnails": has_thumbnails,
+                    "error": f"Missing required files: {sorted(missing)}",
+                }
+
+            return {
+                "valid": True,
+                "has_thumbnails": has_thumbnails,
+                "error": None,
+            }
+
+        except Exception as e:
+            return {
+                "valid": False,
+                "has_thumbnails": False,
+                "error": f"S3 validation error: {e}",
+            }
 
     async def __download_all_experiments_metas_via_aws_cli(self) -> bool:
         """
