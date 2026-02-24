@@ -822,7 +822,7 @@ class RemoteStorageController(BaseRemoteStorageController):
         """
         Download the source file needed to generate a thumbnail.
         """
-        return self.__controller.download_thumbnail_source(
+        return await self.__controller.download_thumbnail_source(
             workspace_id, unique_id, original_path, thumb_type
         )
 
@@ -832,7 +832,7 @@ class RemoteStorageController(BaseRemoteStorageController):
         """
         Upload a generated thumbnail PNG to S3 for persistence.
         """
-        return self.__controller.upload_thumbnail(
+        return await self.__controller.upload_thumbnail(
             workspace_id, unique_id, thumbnail_path
         )
 
