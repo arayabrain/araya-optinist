@@ -204,7 +204,7 @@ resource "aws_ecs_task_definition" "background" {
         },
         {
           name  = "LOG_LEVEL"
-          value = "DEBUG"
+          value = "INFO"
         },
         {
           name  = "UVICORN_ACCESS_LOG"
