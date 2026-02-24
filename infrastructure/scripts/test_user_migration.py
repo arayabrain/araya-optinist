@@ -144,17 +144,22 @@ def get_running_instance_ids(
 
 
 def get_premium_instance_ids(ec2_client, terraform_ids: List[str]) -> List[str]:
-    """Get running premium EC2 instance IDs."""
-    if not terraform_ids:
-        return []
+    """Get running premium EC2 instance IDs.
+
+    Discovers by Tier=premium tag to catch both Terraform-managed
+    and Lambda-launched instances.
+    """
     try:
         response = ec2_client.describe_instances(
-            InstanceIds=terraform_ids,
             Filters=[
+                {
+                    "Name": "tag:Tier",
+                    "Values": ["premium"],
+                },
                 {
                     "Name": "instance-state-name",
                     "Values": ["running"],
-                }
+                },
             ],
         )
         ids = []
@@ -165,6 +170,124 @@ def get_premium_instance_ids(ec2_client, terraform_ids: List[str]) -> List[str]:
     except ClientError as e:
         print(f"Failed to get premium instances: {e}")
         return []
+
+
+def _get_stopped_premium_instance(ec2_client) -> Optional[str]:
+    """Find a stopped premium instance to start."""
+    try:
+        response = ec2_client.describe_instances(
+            Filters=[
+                {"Name": "tag:Tier", "Values": ["premium"]},
+                {
+                    "Name": "instance-state-name",
+                    "Values": ["stopped"],
+                },
+            ],
+        )
+        for res in response["Reservations"]:
+            for inst in res["Instances"]:
+                return inst["InstanceId"]
+        return None
+    except ClientError as e:
+        print(f"Failed to find stopped premium instances: {e}")
+        return None
+
+
+def _start_premium_instance(ec2_client, instance_id: str) -> bool:
+    """Start a stopped premium instance and wait for running."""
+    try:
+        print(f"  Starting stopped instance {instance_id}...")
+        ec2_client.start_instances(InstanceIds=[instance_id])
+        waiter = ec2_client.get_waiter("instance_running")
+        waiter.wait(
+            InstanceIds=[instance_id],
+            WaiterConfig={
+                "Delay": POLL_INTERVAL_SECONDS,
+                "MaxAttempts": SCALE_UP_TIMEOUT_SECONDS // POLL_INTERVAL_SECONDS,
+            },
+        )
+        print(f"  Instance {instance_id} is now running")
+        return True
+    except ClientError as e:
+        print(f"ERROR: Failed to start instance: {e}")
+        return False
+
+
+PREMIUM_LAUNCH_TEMPLATE_PREFIX = "subscr-optinist-premium-"
+PREMIUM_INSTANCE_TYPE = "t3.large"
+PREMIUM_INSTANCE_TAGS = [
+    {"Key": "Name", "Value": "subscr-premium-running"},
+    {"Key": "Type", "Value": "Premium-Instance"},
+    {"Key": "Tier", "Value": "premium"},
+    {"Key": "Service", "Value": "premium-tier"},
+]
+
+
+def _launch_premium_instance(ec2_client, subnet_ids: List[str]) -> Optional[str]:
+    """Launch a new premium instance from the launch template."""
+    try:
+        resp = ec2_client.describe_launch_templates(
+            Filters=[
+                {
+                    "Name": "launch-template-name",
+                    "Values": [f"{PREMIUM_LAUNCH_TEMPLATE_PREFIX}*"],
+                }
+            ],
+        )
+        templates = resp.get("LaunchTemplates", [])
+        if not templates:
+            print("ERROR: No premium launch template found")
+            return None
+        template_id = templates[0]["LaunchTemplateId"]
+        print(f"  Using launch template {template_id}")
+    except ClientError as e:
+        print(f"ERROR: Failed to find launch template: {e}")
+        return None
+
+    for i, subnet_id in enumerate(subnet_ids):
+        try:
+            print(
+                f"  Launching in subnet {subnet_id} "
+                f"(attempt {i + 1}/{len(subnet_ids)})"
+            )
+            response = ec2_client.run_instances(
+                LaunchTemplate={
+                    "LaunchTemplateId": template_id,
+                    "Version": "$Latest",
+                },
+                InstanceType=PREMIUM_INSTANCE_TYPE,
+                SubnetId=subnet_id,
+                MinCount=1,
+                MaxCount=1,
+                TagSpecifications=[
+                    {
+                        "ResourceType": "instance",
+                        "Tags": PREMIUM_INSTANCE_TAGS,
+                    }
+                ],
+            )
+            instance_id = response["Instances"][0]["InstanceId"]
+            print(f"  Launched {instance_id}, waiting...")
+            waiter = ec2_client.get_waiter("instance_running")
+            waiter.wait(
+                InstanceIds=[instance_id],
+                WaiterConfig={
+                    "Delay": POLL_INTERVAL_SECONDS,
+                    "MaxAttempts": SCALE_UP_TIMEOUT_SECONDS // POLL_INTERVAL_SECONDS,
+                },
+            )
+            print(f"  Instance {instance_id} is running")
+            return instance_id
+        except ClientError as e:
+            code = e.response["Error"]["Code"]
+            if code == "InsufficientInstanceCapacity":
+                print("Insufficient capacity, trying next")
+                continue
+            print(f"ERROR: {code}: {e}")
+            return None
+
+    print("ERROR: All subnets exhausted")
+    return None
 
 
 def _resolve_tier_config(tier: str, outputs: Dict) -> Dict[str, str]:
@@ -201,6 +324,7 @@ def _resolve_tier_config(tier: str, outputs: Dict) -> Dict[str, str]:
                 "subscr-premium-optinist-cloud-service",
             ),
             "premium_instance_ids": raw_ids,
+            "private_subnet_ids": list(outputs.get("private_subnet_ids", {}).values()),
         }
 
 
@@ -231,7 +355,7 @@ def step_lookup_user(
         sys.exit(1)
 
     if not result.get("success"):
-        msg = result.get("message", "Unknown error")
+        msg = result.get("message") or result.get("error") or "Unknown error"
         print(f"ERROR: {msg}")
         sys.exit(1)
 
@@ -275,6 +399,7 @@ def step_ensure_instances(
     cluster_name: str,
     service_name: str,
     premium_instance_ids: List[str],
+    private_subnet_ids: Optional[List[str]] = None,
 ) -> List[str]:
     """Step 2: Ensure >= 2 running instances."""
     print("\n" + "=" * 60)
@@ -329,11 +454,25 @@ def step_ensure_instances(
         )
         sys.exit(1)
     else:
-        print(
-            "ERROR: Only 1 premium instance running. "
-            "Start another instance manually or via "
-            "premium_manager before re-running."
-        )
+        # Try starting a stopped instance first
+        stopped_id = _get_stopped_premium_instance(ec2_client)
+        if stopped_id:
+            if not _start_premium_instance(ec2_client, stopped_id):
+                sys.exit(1)
+        else:
+            # No stopped instances; launch a new one
+            print("  No stopped instances, launching new...")
+            new_id = _launch_premium_instance(ec2_client, private_subnet_ids or [])
+            if not new_id:
+                print("ERROR: Failed to launch instance")
+                sys.exit(1)
+
+        instance_ids = get_premium_instance_ids(ec2_client, premium_instance_ids)
+        print(f"Running instances ({len(instance_ids)}): " f"{instance_ids}")
+        if len(instance_ids) >= MIN_INSTANCES:
+            return instance_ids
+
+        print("ERROR: Still not enough instances")
         sys.exit(1)
 
 
@@ -369,7 +508,7 @@ def step_migrate_user(
         sys.exit(1)
 
     if not result.get("success"):
-        msg = result.get("message", "Unknown error")
+        msg = result.get("message") or result.get("error") or "Unknown error"
         print(f"ERROR: Migration blocked - {msg}")
         sys.exit(1)
 
@@ -391,7 +530,10 @@ def step_manual_verification():
     print("  [ ] Can start a new workflow run")
     print()
     print("Press Enter when done (Ctrl+C to abort)...")
-    input()
+    try:
+        input()
+    except EOFError:
+        print("(non-interactive mode, skipping)")
 
 
 def step_cleanup(
@@ -485,6 +627,7 @@ def main():
             cfg["cluster_name"],
             cfg["service_name"],
             cfg["premium_instance_ids"],
+            cfg.get("private_subnet_ids", []),
         )
 
         step_migrate_user(
