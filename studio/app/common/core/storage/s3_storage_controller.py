@@ -192,18 +192,50 @@ class S3StorageController(BaseRemoteStorageController):
             input_data_local_path,
         )
 
+        # Maximum number of files allowed for download
+        MAX_DOWNLOAD_FILES = 1000
+
         # ----------------------------------------
         # exec downloading
         # ----------------------------------------
 
         async with self.__get_s3_client() as __s3_client:
-            # request s3 list_objects
-            s3_list_objects = await __s3_client.list_objects_v2(
-                Bucket=self.bucket_name, Prefix=input_data_remote_path
-            )
+            # request s3 list_objects with pagination
+            all_s3_objects = []
+            continuation_token = None
+
+            while True:
+                list_params = {
+                    "Bucket": self.bucket_name,
+                    "Prefix": input_data_remote_path,
+                }
+                if continuation_token:
+                    list_params["ContinuationToken"] = continuation_token
+
+                s3_list_objects = await __s3_client.list_objects_v2(**list_params)
+
+                if not s3_list_objects or s3_list_objects.get("KeyCount", 0) == 0:
+                    break
+
+                all_s3_objects.extend(s3_list_objects.get("Contents", []))
+
+                # Check file count limit during listing
+                if len(all_s3_objects) > MAX_DOWNLOAD_FILES:
+                    raise RuntimeError(
+                        f"S3 object count exceeds the limit of "
+                        f"{MAX_DOWNLOAD_FILES}. "
+                        f"prefix={input_data_remote_path}, "
+                        f"found={len(all_s3_objects)}+ objects"
+                    )
+
+                # Check if there are more pages
+                if s3_list_objects.get("IsTruncated"):
+                    continuation_token = s3_list_objects.get("NextContinuationToken")
+                else:
+                    break
 
             # check copy source object
-            if not s3_list_objects or s3_list_objects.get("KeyCount", 0) == 0:
+            if not all_s3_objects:
                 logger.warning(
                     "remote data is not exists. [%s] [%s]",
                     self.bucket_name,
@@ -211,9 +243,12 @@ class S3StorageController(BaseRemoteStorageController):
                 )
                 return False
 
+            # Sort by directory depth (shallower files first)
+            all_s3_objects.sort(key=lambda obj: obj["Key"].count("/"))
+
             # do download data from remote storage
-            target_files_count = len(s3_list_objects["Contents"])
-            for index, s3_object in enumerate(s3_list_objects["Contents"]):
+            target_files_count = len(all_s3_objects)
+            for index, s3_object in enumerate(all_s3_objects):
                 s3_file_path = s3_object["Key"]
                 file_size = s3_object["Size"]
 
@@ -742,24 +777,64 @@ class S3StorageController(BaseRemoteStorageController):
         # Initialize file filter and metrics tracking
         file_filter = FileSyncFilter()
 
+        # Maximum number of files allowed for download
+        MAX_DOWNLOAD_EXPERIMENT_FILES = 5000
+
         # ----------------------------------------
         # exec downloading
         # ----------------------------------------
 
         async with self.__get_s3_client() as __s3_client:
-            # request s3 list_objects
-            s3_list_objects = await __s3_client.list_objects_v2(
-                Bucket=self.bucket_name, Prefix=experiment_remote_path
-            )
+            # request s3 list_objects with pagination
+            all_s3_objects = []
+            continuation_token = None
+
+            while True:
+                list_params = {
+                    "Bucket": self.bucket_name,
+                    "Prefix": experiment_remote_path,
+                }
+                if continuation_token:
+                    list_params["ContinuationToken"] = continuation_token
+
+                s3_list_objects = await __s3_client.list_objects_v2(**list_params)
+
+                if not s3_list_objects or s3_list_objects.get("KeyCount", 0) == 0:
+                    break
+
+                all_s3_objects.extend(s3_list_objects.get("Contents", []))
+
+                # Check file count limit during listing
+                if len(all_s3_objects) > MAX_DOWNLOAD_EXPERIMENT_FILES:
+                    raise RuntimeError(
+                        "S3 object count exceeds the limit of "
+                        f"{MAX_DOWNLOAD_EXPERIMENT_FILES}. "
+                        f"prefix={experiment_remote_path}, "
+                        f"found={len(all_s3_objects)}+ objects"
+                    )
+
+                # Check if there are more pages
+                if s3_list_objects.get("IsTruncated"):
+                    continuation_token = s3_list_objects.get("NextContinuationToken")
+                else:
+                    break
 
             # check copy source directory
-            if not s3_list_objects or s3_list_objects.get("KeyCount", 0) == 0:
+            if not all_s3_objects:
                 logger.warning(
                     "remote data is not exists. [%s] [%s]",
                     self.bucket_name,
                     experiment_remote_path,
                 )
                 return False
+
+            # Sort by directory depth (shallower files first)
+            all_s3_objects.sort(key=lambda obj: obj["Key"].count("/"))
+
+            logger.info(
+                f"Listed {len(all_s3_objects)} objects from S3 "
+                f"[{self.bucket_name}] [{experiment_remote_path}]"
+            )
 
             # cleaning data from local path (only for full sync, not partial syncs)
             # Partial syncs (visualization, essential_only) should preserve existing
@@ -768,7 +843,7 @@ class S3StorageController(BaseRemoteStorageController):
                 await self._clear_local_experiment_data(experiment_local_path)
 
             # do download data from remote storage
-            target_files_count = len(s3_list_objects["Contents"])
+            target_files_count = len(all_s3_objects)
 
             # Coordination files that should not be downloaded from S3
             coordination_files = {
@@ -776,7 +851,7 @@ class S3StorageController(BaseRemoteStorageController):
                 RemoteSyncStatusFileUtil.REMOTE_SYNC_STATUS_FILE,
             }
 
-            for index, s3_object in enumerate(s3_list_objects["Contents"]):
+            for index, s3_object in enumerate(all_s3_objects):
                 s3_file_path = s3_object["Key"]
                 file_size = s3_object["Size"]
 

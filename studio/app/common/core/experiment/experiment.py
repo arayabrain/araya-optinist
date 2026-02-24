@@ -121,6 +121,9 @@ class ExptOutputPathIds:
         """
         import re
 
+        from studio.app.common.core.storage.remote_storage_controller import (
+            RemoteStorageType,
+        )
         from studio.app.common.core.storage.s3_storage_controller import (
             S3StorageController,
         )
@@ -129,8 +132,13 @@ class ExptOutputPathIds:
 
         # Handle absolute paths starting with DIRPATH.OUTPUT_DIR
         # or the production S3 path (used in URLs)
-        s3_output_path = "/" + S3StorageController.make_s3_output_prefix().rstrip("/")
-        output_path_prefixes = [DIRPATH.OUTPUT_DIR, s3_output_path]
+        output_path_prefixes = [DIRPATH.OUTPUT_DIR]
+        if RemoteStorageType.get_activated_type() == RemoteStorageType.S3:
+            s3_output_path = "/" + S3StorageController.make_s3_output_prefix().rstrip(
+                "/"
+            )
+            output_path_prefixes.append(s3_output_path)
+
         for prefix in output_path_prefixes:
             if data_file_path.startswith(prefix):
                 relative_path = data_file_path[len(prefix) :].lstrip("/")

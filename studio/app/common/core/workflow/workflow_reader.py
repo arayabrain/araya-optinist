@@ -1,5 +1,5 @@
 import os
-from typing import Dict
+from typing import Dict, List
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.utils.config_handler import ConfigReader
@@ -9,6 +9,8 @@ from studio.app.common.core.workflow.workflow import (
     Node,
     NodeData,
     NodePosition,
+    NodeType,
+    NodeTypeUtil,
     Style,
 )
 from studio.app.common.schemas.workflow import WorkflowConfig
@@ -94,3 +96,21 @@ class WorkflowConfigReader:
             )
             for key, value in config.items()
         }
+
+    @staticmethod
+    def extract_input_file_paths(config: WorkflowConfig) -> List[str]:
+        """Extract input file paths from workflow nodes."""
+        input_files = []
+
+        for node in config.nodeDict.values():
+            if NodeTypeUtil.check_nodetype(node.type) == NodeType.DATA:
+                if node.data and node.data.path:
+                    # path can be a string or list of strings
+                    paths = (
+                        node.data.path
+                        if isinstance(node.data.path, list)
+                        else [node.data.path]
+                    )
+                    input_files.extend(paths)
+
+        return input_files

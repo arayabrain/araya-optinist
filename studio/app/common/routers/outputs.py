@@ -14,9 +14,9 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageReader,
     RemoteStorageSimpleReader,
+    RemoteStorageSimpleWriter,
     RemoteSyncStatusFileUtil,
 )
-from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.utils.file_reader import JsonReader, Reader
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
@@ -79,16 +79,16 @@ async def get_or_generate_thumbnail(
     For backward compatibility with experiments that don't have PNG thumbnails:
     1. Check if PNG thumbnail exists → return it
     2. If not, check if original file exists locally
-       - If not, download from S3
+       - If not, download from remote storage
     3. Generate PNG from the original file
-    4. Upload PNG to S3 for future use
+    4. Upload PNG to remote storage for future use
     5. Return PNG path
 
     Args:
         workspace_id: Workspace identifier
         unique_id: Experiment unique identifier
         original_path: Path to original TIFF or JSON file
-        remote_bucket_name: S3 bucket name for remote storage
+        remote_bucket_name: remote storage bucket name for remote storage
         thumb_type: ThumbnailType.INPUT (for TIFF) or ThumbnailType.ROI
             (for cell_roi.json)
 
@@ -115,12 +115,14 @@ async def get_or_generate_thumbnail(
         filename = os.path.basename(original_path)
         abs_original_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
 
-    # Download from S3 if needed
+    # Download from remote storage if needed
     if not os.path.exists(abs_original_path) and RemoteStorageController.is_available():
-        s3_controller = S3StorageController(remote_bucket_name)
-        await s3_controller.download_thumbnail_source(
-            workspace_id, unique_id, original_path, thumb_type
-        )
+        async with RemoteStorageSimpleReader(
+            remote_bucket_name
+        ) as remote_storage_controller:
+            await remote_storage_controller.download_thumbnail_source(
+                workspace_id, unique_id, original_path, thumb_type
+            )
 
     # Generate thumbnail if original file now exists
     if os.path.exists(abs_original_path):
@@ -137,15 +139,19 @@ async def get_or_generate_thumbnail(
 
             logger.info(f"Lazy-generated thumbnail: {thumb_path}")
 
-            # Upload to S3 for future use (fire and forget)
+            # Upload to remote storage for future use (fire and forget)
             if RemoteStorageController.is_available():
                 try:
-                    s3_controller = S3StorageController(remote_bucket_name)
-                    await s3_controller.upload_thumbnail(
-                        workspace_id, unique_id, thumb_path
-                    )
+                    async with RemoteStorageSimpleWriter(
+                        remote_bucket_name
+                    ) as remote_storage_controller:
+                        await remote_storage_controller.upload_thumbnail(
+                            workspace_id, unique_id, thumb_path
+                        )
                 except Exception as e:
-                    logger.warning(f"Failed to upload generated thumbnail to S3: {e}")
+                    logger.warning(
+                        f"Failed to upload generated thumbnail to remote storage: {e}"
+                    )
 
             return normalize_output_path(thumb_path)
 
@@ -199,7 +205,8 @@ async def _background_full_sync(
     response_model=bool,
     dependencies=[Depends(is_workspace_available)],
     description="""
-    Sync visualization files (JSON, TIFF) from S3 for viewing experiment results.
+    Sync visualization files (JSON, TIFF)
+    from remote storage for viewing experiment results.
     Call this before loading visualization data to ensure files are available locally.
     Only syncs files needed for visualization, not large PKL/NWB files.
     Automatically triggers background sync for remaining files (PKL/NWB) for Edit ROI.
@@ -212,7 +219,7 @@ async def sync_visualization_files(
     remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ) -> bool:
     """
-    Lazy-load visualization files from S3.
+    Lazy-load visualization files from remote storage.
     Downloads only JSON and TIFF files needed for viewing results.
     Then triggers background download of PKL/NWB files for Edit ROI.
     """
@@ -227,7 +234,10 @@ async def sync_visualization_files(
     if not is_unsynced:
         return True  # Already fully synced
 
-    logger.info(f"Syncing visualization files for {workspace_id}/{unique_id} from S3")
+    logger.info(
+        f"Syncing visualization files for {workspace_id}/{unique_id} "
+        "from remote storage"
+    )
 
     # Use SimpleReader to avoid updating sync status - partial syncs should NOT
     # mark as synced, so background full sync can still run
@@ -264,7 +274,8 @@ async def sync_visualization_files(
     "/thumbnail/{workspace_id}/{unique_id}/{thumb_type}",
     description="""
     Get a thumbnail PNG image for an experiment.
-    Syncs from S3 if not available locally, or generates on-demand if needed.
+    Syncs from remote storage if not available locally,
+      or generates on-demand if needed.
 
     Args:
         workspace_id: Workspace identifier
@@ -285,7 +296,7 @@ async def get_thumbnail(
     Serve thumbnail PNG images for DataView.
 
     This endpoint handles:
-    1. Syncing thumbnails from S3 if not available locally
+    1. Syncing thumbnails from remote storage if not available locally
     2. Generating thumbnails on-demand from source files if needed
     3. Serving the PNG file with proper content type
     """
@@ -293,7 +304,7 @@ async def get_thumbnail(
     # Get the expected thumbnail path
     thumb_path = _get_thumbnail_png_path(workspace_id, unique_id, thumb_type)
 
-    # Try to sync thumbnail from S3 if not available locally
+    # Try to sync thumbnail from remote storage if not available locally
     if not os.path.exists(thumb_path) and RemoteStorageController.is_available():
         try:
             async with RemoteStorageSimpleReader(
@@ -303,7 +314,7 @@ async def get_thumbnail(
                     workspace_id, unique_id, sync_mode="thumbnails_only"
                 )
         except Exception as e:
-            logger.warning(f"Failed to sync thumbnail from S3: {e}")
+            logger.warning(f"Failed to sync thumbnail from remote storage: {e}")
 
     # If thumbnail still doesn't exist, try to generate it
     if not os.path.exists(thumb_path):
@@ -319,7 +330,7 @@ async def get_thumbnail(
                         workspace_id, unique_id, sync_mode="essential_only"
                     )
             except Exception as e:
-                logger.warning(f"Failed to sync config files from S3: {e}")
+                logger.warning(f"Failed to sync config files from remote storage: {e}")
 
         # Get the original file path for generation
         if thumb_type == ThumbnailType.INPUT:
@@ -360,7 +371,7 @@ async def get_thumbnail(
                     status_code=404, detail="Could not determine ROI file path"
                 )
 
-        # Generate thumbnail (may download source from S3 if needed)
+        # Generate thumbnail (may download source from remote storage if needed)
         # Note: get_or_generate_thumbnail returns a normalized (relative) path
         await get_or_generate_thumbnail(
             workspace_id, unique_id, original_path, remote_bucket_name, thumb_type
@@ -641,8 +652,12 @@ async def get_image(
                 and RemoteStorageController.is_available()
             ):
                 logger.info(f"On-demand sync for input file: {workspace_id}/{filename}")
-                s3_controller = S3StorageController(remote_bucket_name)
-                await s3_controller.download_input_data(workspace_id, filename + ext)
+                async with RemoteStorageSimpleReader(
+                    remote_bucket_name
+                ) as remote_storage_controller:
+                    await remote_storage_controller.download_input_data(
+                        workspace_id, filename + ext
+                    )
 
             # Return 404 if file still doesn't exist after sync attempt
             if not os.path.exists(abs_filepath):
@@ -670,7 +685,7 @@ async def get_image(
                 logger.warning(f"File not found after sync attempt: {json_filepath}")
                 # Distinguish between "syncing in progress" vs "file doesn't exist"
                 # If the experiment directory exists but the file doesn't, the file
-                # likely doesn't exist in S3 either (analysis incomplete)
+                # likely doesn't exist in remote storage either (analysis incomplete)
                 experiment_dir = os.path.dirname(os.path.dirname(json_filepath))
                 if os.path.exists(experiment_dir):
                     # Experiment dir exists but file missing -
@@ -706,8 +721,12 @@ async def get_csv(
     # On-demand sync for input files
     if not os.path.exists(filepath) and RemoteStorageController.is_available():
         logger.info(f"On-demand sync for input: {workspace_id}/{original_filename}")
-        s3_controller = S3StorageController(remote_bucket_name)
-        await s3_controller.download_input_data(workspace_id, original_filename)
+        async with RemoteStorageSimpleReader(
+            remote_bucket_name
+        ) as remote_storage_controller:
+            await remote_storage_controller.download_input_data(
+                workspace_id, original_filename
+            )
 
     filename, _ = os.path.splitext(os.path.basename(filepath))
     save_dirpath = join_filepath([os.path.dirname(filepath), filename])
