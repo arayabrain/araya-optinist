@@ -1258,6 +1258,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     - migrate_user: Migrate a user to a different instance
       Event: {"action": "migrate_user", "user_email": "u@test.com",
               "target_instance_id": "i-abc123"}
+
+    - get_instance_users: List users assigned to a specific instance
+      Event: {"action": "get_instance_users",
+              "instance_id": "i-abc123"}
+
+    - reconcile: Reconcile DB instance states with AWS reality
+      Event: {"action": "reconcile"}
     """
 
     print(f"Premium cleanup triggered by event: {json.dumps(event)}")
@@ -1308,6 +1315,36 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     ),
                 }
             result = migrate_user(user_email, target_instance_id)
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"result": result}),
+            }
+
+        elif action == "get_instance_users":
+            instance_id = event.get("instance_id")
+            if not instance_id:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps(
+                        {"error": ("Missing required parameter:" " instance_id")}
+                    ),
+                }
+            user_ids = get_assigned_users_for_instance(instance_id)
+            return {
+                "statusCode": 200,
+                "body": json.dumps(
+                    {
+                        "result": {
+                            "instance_id": instance_id,
+                            "user_ids": user_ids,
+                            "count": len(user_ids),
+                        }
+                    }
+                ),
+            }
+
+        elif action == "reconcile":
+            result = reconcile_instance_states()
             return {
                 "statusCode": 200,
                 "body": json.dumps({"result": result}),

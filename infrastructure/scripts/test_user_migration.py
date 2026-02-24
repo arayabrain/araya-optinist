@@ -50,6 +50,7 @@ from aws_constants import ECSTaskStatus  # noqa: E402
 
 POLL_INTERVAL_SECONDS = 15
 SCALE_UP_TIMEOUT_SECONDS = 300
+EC2_STOP_TIMEOUT_SECONDS = 120
 MIN_INSTANCES = 2
 DEFAULT_REGION = "ap-northeast-1"
 TERRAFORM_DIR = _script_dir.parent / "terraform"
@@ -536,24 +537,99 @@ def step_manual_verification():
         print("(non-interactive mode, skipping)")
 
 
+def _premium_cleanup(
+    ec2_client,
+    lambda_client,
+    cleanup_lambda: str,
+    source_instance: str,
+):
+    """Stop empty source instance and reconcile DB state.
+
+    Runs in the finally block -- all errors are warnings to
+    avoid masking the real test outcome.
+    """
+    if not source_instance:
+        print("  Source instance unknown, skipping stop")
+        return
+
+    # Check if source instance still has users
+    try:
+        result = _invoke_cleanup_lambda(
+            lambda_client,
+            cleanup_lambda,
+            "get_instance_users",
+            instance_id=source_instance,
+        )
+        if result is None:
+            print("  WARNING: Could not query instance users")
+        elif result.get("count", 0) > 0:
+            print(
+                f"  Source {source_instance} still has "
+                f"{result['count']} user(s): "
+                f"{result['user_ids']} -- skipping stop"
+            )
+        else:
+            print(f"  Source {source_instance} has 0 users," " stopping...")
+            try:
+                ec2_client.stop_instances(InstanceIds=[source_instance])
+                waiter = ec2_client.get_waiter("instance_stopped")
+                waiter.wait(
+                    InstanceIds=[source_instance],
+                    WaiterConfig={
+                        "Delay": POLL_INTERVAL_SECONDS,
+                        "MaxAttempts": (
+                            EC2_STOP_TIMEOUT_SECONDS // POLL_INTERVAL_SECONDS
+                        ),
+                    },
+                )
+                print(f"  Instance {source_instance} stopped")
+            except ClientError as e:
+                print(f"  WARNING: Failed to stop: {e}")
+    except Exception as e:
+        print(f"  WARNING: Instance check failed: {e}")
+
+    # Reconcile DB state regardless of stop outcome
+    try:
+        rec = _invoke_cleanup_lambda(lambda_client, cleanup_lambda, "reconcile")
+        if rec is None:
+            print("  WARNING: Reconcile call failed")
+        else:
+            print(
+                f"  Reconcile done: {rec.get('update_count', 0)}"
+                f" updated, "
+                f"{rec.get('cleanup_count', 0)} cleaned"
+            )
+    except Exception as e:
+        print(f"  WARNING: Reconcile failed: {e}")
+
+
 def step_cleanup(
     tier: str,
     ecs_client,
+    ec2_client,
+    lambda_client,
+    cleanup_lambda: str,
+    current_instance: str,
     cluster_name: str,
     service_name: str,
     scale_down: bool,
 ):
-    """Step 5: Scale ECS back to 1 (free tier only)."""
+    """Step 5: Cleanup (stop empty source / scale down ECS)."""
     print("\n" + "=" * 60)
     print("STEP 5: Cleanup")
     print("=" * 60)
 
-    if tier == TIER_PREMIUM:
-        print("Premium tier: no auto scale-down")
-        return
-
     if not scale_down:
         print("Skipping scale-down (--no-scale-down)")
+        return
+
+    if tier == TIER_PREMIUM:
+        _premium_cleanup(
+            ec2_client,
+            lambda_client,
+            cleanup_lambda,
+            current_instance,
+        )
         return
 
     print("Scaling ECS service back to 1...")
@@ -610,6 +686,7 @@ def main():
     print(f"  Lambda:  {cfg['cleanup_lambda']}")
 
     scale_down = not args.no_scale_down
+    current_instance = ""
 
     try:
         assignment = step_lookup_user(
@@ -646,6 +723,10 @@ def main():
         step_cleanup(
             args.tier,
             ecs_client,
+            ec2_client,
+            lambda_client,
+            cfg["cleanup_lambda"],
+            current_instance,
             cfg["cluster_name"],
             cfg["service_name"],
             scale_down,
