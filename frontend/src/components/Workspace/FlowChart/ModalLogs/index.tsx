@@ -23,7 +23,10 @@ import SearchIcon from "@mui/icons-material/Search"
 import WarningIcon from "@mui/icons-material/Warning"
 import { Badge, Box, Modal, Tooltip } from "@mui/material"
 
-import { TLevelsLog } from "components/Workspace/FlowChart/ModalLogs/helpers/service"
+import {
+  fetchAvailableLogLevels,
+  TLevelsLog,
+} from "components/Workspace/FlowChart/ModalLogs/helpers/service"
 import {
   TLogs,
   useLogs,
@@ -39,11 +42,19 @@ const SPACE_CHECK_SCROLL = 50
 
 const ModalLogs = ({ isOpen = false, onClose }: Props) => {
   const [levels, setLevels] = useState<TLevelsLog[]>([])
+  const [availableLevels, setAvailableLevels] = useState<TLevelsLog[]>([])
   const [keyword, setKeywork] = useState("")
   const [openSearch, setOpenSearch] = useState(false)
   const [searchId, setSearchId] = useState("")
   const [openSearchLevels, setOpenSearchLevels] = useState(false)
   const [visibleScrollEnd, setVisibleScrollEnd] = useState(false)
+
+  useEffect(() => {
+    if (!isOpen) return
+    fetchAvailableLogLevels()
+      .then(setAvailableLevels)
+      .catch(() => setAvailableLevels(Object.values(TLevelsLog)))
+  }, [isOpen])
 
   const { logs, onPrevSearchApi, onNextSearchApi, isError, reset } = useLogs(
     levels,
@@ -277,41 +288,51 @@ const ModalLogs = ({ isOpen = false, onClose }: Props) => {
               <FilterAltOffOutlinedIcon />
               <span>{TLevelsLog.ALL}</span>
             </MenuFilter>
-            <MenuFilter
-              active={levels?.includes(TLevelsLog.INFO)}
-              onClick={() => onChangeTypeFilter(TLevelsLog.INFO)}
-            >
-              <InfoIcon color="info" />
-              <span>{TLevelsLog.INFO}</span>
-            </MenuFilter>
-            <MenuFilter
-              active={levels?.includes(TLevelsLog.WARNING)}
-              onClick={() => onChangeTypeFilter(TLevelsLog.WARNING)}
-            >
-              <WarningIcon color="warning" />
-              <span>{TLevelsLog.WARNING}</span>
-            </MenuFilter>
-            <MenuFilter
-              active={levels?.includes(TLevelsLog.DEBUG)}
-              onClick={() => onChangeTypeFilter(TLevelsLog.DEBUG)}
-            >
-              <AdbIcon color="success" />
-              <span>{TLevelsLog.DEBUG}</span>
-            </MenuFilter>
-            <MenuFilter
-              active={levels?.includes(TLevelsLog.ERROR)}
-              onClick={() => onChangeTypeFilter(TLevelsLog.ERROR)}
-            >
-              <ErrorIcon color="error" />
-              <span>{TLevelsLog.ERROR}</span>
-            </MenuFilter>
-            <MenuFilter
-              active={levels?.includes(TLevelsLog.CRITICAL)}
-              onClick={() => onChangeTypeFilter(TLevelsLog.CRITICAL)}
-            >
-              <GradeIcon color="secondary" />
-              <span>{TLevelsLog.CRITICAL}</span>
-            </MenuFilter>
+            {availableLevels.includes(TLevelsLog.INFO) && (
+              <MenuFilter
+                active={levels?.includes(TLevelsLog.INFO)}
+                onClick={() => onChangeTypeFilter(TLevelsLog.INFO)}
+              >
+                <InfoIcon color="info" />
+                <span>{TLevelsLog.INFO}</span>
+              </MenuFilter>
+            )}
+            {availableLevels.includes(TLevelsLog.WARNING) && (
+              <MenuFilter
+                active={levels?.includes(TLevelsLog.WARNING)}
+                onClick={() => onChangeTypeFilter(TLevelsLog.WARNING)}
+              >
+                <WarningIcon color="warning" />
+                <span>{TLevelsLog.WARNING}</span>
+              </MenuFilter>
+            )}
+            {availableLevels.includes(TLevelsLog.DEBUG) && (
+              <MenuFilter
+                active={levels?.includes(TLevelsLog.DEBUG)}
+                onClick={() => onChangeTypeFilter(TLevelsLog.DEBUG)}
+              >
+                <AdbIcon color="success" />
+                <span>{TLevelsLog.DEBUG}</span>
+              </MenuFilter>
+            )}
+            {availableLevels.includes(TLevelsLog.ERROR) && (
+              <MenuFilter
+                active={levels?.includes(TLevelsLog.ERROR)}
+                onClick={() => onChangeTypeFilter(TLevelsLog.ERROR)}
+              >
+                <ErrorIcon color="error" />
+                <span>{TLevelsLog.ERROR}</span>
+              </MenuFilter>
+            )}
+            {availableLevels.includes(TLevelsLog.CRITICAL) && (
+              <MenuFilter
+                active={levels?.includes(TLevelsLog.CRITICAL)}
+                onClick={() => onChangeTypeFilter(TLevelsLog.CRITICAL)}
+              >
+                <GradeIcon color="secondary" />
+                <span>{TLevelsLog.CRITICAL}</span>
+              </MenuFilter>
+            )}
           </BoxFilter>
         ) : (
           <BoxMenu onClick={() => setOpenSearchLevels(true)}>

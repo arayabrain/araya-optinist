@@ -313,11 +313,9 @@ class AppLogger:
             if CLIENT_ID_FILTER_NAME not in handler_config["filters"]:
                 handler_config["filters"].append(CLIENT_ID_FILTER_NAME)
 
-        log_level = os.environ.get("LOG_LEVEL")
-        if log_level:
-            logging_config = LoggingConfigHelper._apply_log_level_override(
-                logging_config, log_level
-            )
+        # NOTE: LOG_LEVEL env var controls the frontend log viewer filter,
+        # not the Python logging level. Python always uses YAML defaults
+        # (DEBUG for optinist/snakemake) so all logs reach CloudWatch.
 
         return logging_config
 

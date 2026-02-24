@@ -2,32 +2,35 @@
 
 ## Executive Summary
 
-- **`LOG_LEVEL` environment variable** controls log verbosity at runtime without modifying YAML config files
-- **`--log-level` CLI argument** provides local developer override (takes precedence over env var)
-- **Single-knob model** overrides all loggers and handlers uniformly when set
-- **YAML defaults preserved** when `LOG_LEVEL` is unset (local development uses existing YAML values)
-- **ECS production default** is `INFO` to reduce CloudWatch noise and cost
+- **Python logging** always uses YAML config defaults (optinist=DEBUG, snakemake=DEBUG) so all log levels reach CloudWatch
+- **`LOG_LEVEL` environment variable** controls which levels appear in the **frontend log viewer**, not Python logging
+- **`--log-level` CLI argument** provides local developer override for Python logging (useful for reducing console noise locally)
+- **ECS production default** is `LOG_LEVEL=INFO`, meaning the frontend hides DEBUG logs while CloudWatch captures everything
+- **Frontend "ALL" filter** excludes DEBUG logs; the DEBUG filter option is hidden when `LOG_LEVEL` >= INFO
 
 ---
 
 ## Key Architectural Principles
 
-1. **Closest to Developer Wins**
-   - CLI argument overrides env var, env var overrides YAML
-   - Precedence: `--log-level` > `LOG_LEVEL` env var > YAML config
+1. **Two Separate Concerns**
+   - Python logging level (controlled by YAML config) determines what is **written** to logs/CloudWatch
+   - `LOG_LEVEL` env var determines what the **frontend log viewer** displays to users
+   - CloudWatch always has the full picture; the frontend filters for readability
 
 2. **Non-Breaking Defaults**
-   - When `LOG_LEVEL` is unset, behavior is identical to before this feature
-   - YAML files remain the source of truth for local standalone development
-   - Invalid `LOG_LEVEL` values log a warning and fall through to YAML defaults
+   - When `LOG_LEVEL` is unset, the frontend shows all levels including DEBUG
+   - YAML files remain the source of truth for Python logging levels
+   - Invalid `LOG_LEVEL` values fall through to showing all levels
 
-3. **Uniform Override**
-   - When `LOG_LEVEL` is set, all loggers (root, optinist, snakemake) and all handlers (console, rotating_file) receive the same level
-   - Simple mental model: one knob controls everything
+3. **Frontend Filtering**
+   - `GET /logs/level` endpoint returns available filter levels based on `LOG_LEVEL`
+   - The "ALL" filter in the log viewer excludes DEBUG (use CloudWatch directly for DEBUG)
+   - The DEBUG filter option is hidden from the UI when `LOG_LEVEL` >= INFO
 
 4. **Child Process Consistency**
    - Env vars are inherited by child processes (snakemake workers, ProcessPoolExecutor)
-   - Each child calls `AppLogger.init_logger()` which re-reads `LOG_LEVEL` from the environment
+   - Each child calls `AppLogger.init_logger()` which uses YAML defaults for logging
+   - `--log-level` CLI arg still overrides Python logging for local development
 
 ---
 
@@ -40,23 +43,26 @@ ECS Task Definition (LOG_LEVEL=INFO)
       -> __main_unit__.main()
         -> AppLogger.get_logging_config()
           -> LoggingConfigHelper.load_and_configure_logging_config()
-            -> Reads YAML file (base config)
+            -> Reads YAML file (base config: optinist=DEBUG, root=INFO)
           -> Adds ClientIdFilter
-          -> Reads LOG_LEVEL env var -> _apply_log_level_override()
+          -> NOTE: LOG_LEVEL env var does NOT override Python logger levels
         -> If --log-level CLI arg set:
-          -> _apply_log_level_override() (overrides env var)
+          -> _apply_log_level_override() (local dev only)
         -> uvicorn.run(log_config=logging_config)
+
+Frontend log viewer:
+  -> GET /logs/level (reads LOG_LEVEL env var -> returns available filter levels)
+  -> GET /logs?levels=... (log reader excludes DEBUG from "ALL" filter)
 ```
 
-### Level Override Behavior
+### Python Logging vs Frontend Display
 
-| YAML Key | Without `LOG_LEVEL` | With `LOG_LEVEL=WARNING` |
-|----------|---------------------|--------------------------|
-| `root.level` | `INFO` | `WARNING` |
-| `loggers.optinist.level` | `DEBUG` | `WARNING` |
-| `loggers.snakemake.level` | `DEBUG` | `WARNING` |
-| `handlers.console.level` | `DEBUG` | `WARNING` |
-| `handlers.rotating_file.level` | `DEBUG` | `WARNING` |
+| Concern | What controls it | Production default |
+|---------|------------------|--------------------|
+| Python logging level | YAML config (`logging.multiuser.yaml`) | optinist=DEBUG, root=INFO |
+| CloudWatch capture | Python logging level | Everything including DEBUG |
+| Frontend "ALL" filter | Backend log reader | Excludes DEBUG |
+| Frontend filter options | `LOG_LEVEL` env var via `/logs/level` | INFO, WARNING, ERROR, CRITICAL |
 
 ---
 
@@ -64,27 +70,35 @@ ECS Task Definition (LOG_LEVEL=INFO)
 
 ### Config Loading Chain
 
-The override is applied in `AppLogger.get_logging_config()` after YAML loading and filter setup:
+`AppLogger.get_logging_config()` loads YAML config and adds filters. `LOG_LEVEL` is **not** applied to Python loggers -- it only controls the frontend:
 
 ```python
 def get_logging_config():
-    # 1. Load YAML config (base defaults)
+    # 1. Load YAML config (base defaults: optinist=DEBUG, root=INFO)
     logging_config = LoggingConfigHelper.load_and_configure_logging_config(...)
 
     # 2. Add ClientIdFilter to all handlers
     # ...
 
-    # 3. Apply LOG_LEVEL env var override if set
-    log_level = os.environ.get("LOG_LEVEL")
-    if log_level:
-        logging_config = LoggingConfigHelper._apply_log_level_override(
-            logging_config, log_level
-        )
-
+    # NOTE: LOG_LEVEL env var controls the frontend log viewer filter,
+    # not the Python logging level.
     return logging_config
 ```
 
-The CLI argument is applied in `__main_unit__.main()` after `get_logging_config()` returns, ensuring it takes precedence over the env var.
+The CLI `--log-level` argument is still applied in `__main_unit__.main()` for local development to override Python logging levels.
+
+### Frontend Level Endpoint
+
+`GET /logs/level` reads `LOG_LEVEL` env var at startup and returns levels >= that threshold:
+
+```python
+# With LOG_LEVEL=INFO -> returns ["INFO", "WARNING", "ERROR", "CRITICAL"]
+# With LOG_LEVEL=DEBUG or unset -> returns all five levels
+```
+
+### Log Reader ALL Filter
+
+When the frontend sends `levels=ALL`, the backend log reader returns everything **except** DEBUG. Users who need DEBUG logs should use CloudWatch directly.
 
 ### Valid Values
 
@@ -212,11 +226,11 @@ In all cases, the startup log line `Starting Optinist server on ...
 
 | Variable | Purpose | Default | Valid Values |
 |----------|---------|---------|--------------|
-| `LOG_LEVEL` | Override log verbosity at runtime | Unset (uses YAML) | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+| `LOG_LEVEL` | Control frontend log viewer filter levels | Unset (shows all) | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
 
 | CLI Argument | Purpose | Default |
 |--------------|---------|---------|
-| `--log-level` | Override log verbosity (local dev) | `None` (uses env var or YAML) |
+| `--log-level` | Override Python logging level (local dev) | `None` (uses YAML defaults) |
 
 ---
 
@@ -256,9 +270,10 @@ poetry run python main.py --log-level DEBUG
 
 | Function | Purpose |
 |----------|---------|
-| `LoggingConfigHelper._apply_log_level_override()` | Apply a level string to all loggers and handlers in a config dict |
-| `AppLogger.get_logging_config()` | Load YAML config, add filters, apply `LOG_LEVEL` env var |
+| `LoggingConfigHelper._apply_log_level_override()` | Apply a level string to all loggers and handlers (used by `--log-level` CLI only) |
+| `AppLogger.get_logging_config()` | Load YAML config and add filters (does not apply `LOG_LEVEL` env var) |
 | `__main_unit__.main()` | Apply `--log-level` CLI override after config load |
+| `GET /logs/level` | Return available frontend filter levels based on `LOG_LEVEL` env var |
 
 ---
 
