@@ -87,36 +87,59 @@ def get_required_env_var(var_name: str, default_value: str = None) -> str:
     return value
 
 
-def get_db_connection():
-    """
-    Get pymysql connection (legacy).
+SSL_ARGS = {"check_hostname": False}
 
-    Note: This function uses pymysql directly for backward compatibility with
-    existing inactivity check functions. New code should use get_sqlalchemy_session().
-    """
+
+def _get_db_params():
+    """Parse RDS connection params from environment."""
+    rds_host = get_required_env_var("RDS_HOST")
+    if ":" in rds_host:
+        host, port_str = rds_host.split(":", 1)
+        port = int(port_str)
+    else:
+        host = rds_host
+        port = DatabaseConfig.DEFAULT_PORT
+    return {
+        "host": host,
+        "port": port,
+        "user": get_required_env_var("RDS_USER"),
+        "password": get_required_env_var("RDS_PASSWORD"),
+        "database": get_required_env_var("RDS_DATABASE"),
+    }
+
+
+def _build_mysql_url(params):
+    """Build SQLAlchemy MySQL connection URL."""
+    return (
+        f"mysql+pymysql://{params['user']}:"
+        f"{params['password']}@{params['host']}:"
+        f"{params['port']}/{params['database']}"
+        f"?charset=utf8mb4"
+    )
+
+
+def _create_ssl_connection(params):
+    """Create a pymysql connection with SSL enforcement."""
+    return pymysql.connect(
+        host=params["host"],
+        port=params["port"],
+        user=params["user"],
+        password=params["password"],
+        database=params["database"],
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.DictCursor,
+        ssl=SSL_ARGS,
+    )
+
+
+def get_db_connection():
+    """Get pymysql connection for direct SQL queries."""
 
     @contextmanager
     def connection_context():
         conn = None
         try:
-            rds_host = get_required_env_var("RDS_HOST")
-            # Parse host and port from RDS_HOST (format: "host:port" or "host")
-            if ":" in rds_host:
-                host, port_str = rds_host.split(":", 1)
-                port = int(port_str)
-            else:
-                host = rds_host
-                port = DatabaseConfig.DEFAULT_PORT
-
-            conn = pymysql.connect(
-                host=host,
-                port=port,
-                user=get_required_env_var("RDS_USER"),
-                password=get_required_env_var("RDS_PASSWORD"),
-                database=get_required_env_var("RDS_DATABASE"),
-                cursorclass=pymysql.cursors.DictCursor,
-                ssl_mode="REQUIRED",
-            )
+            conn = _create_ssl_connection(_get_db_params())
             yield conn
         finally:
             if conn:
@@ -130,28 +153,15 @@ def get_sqlalchemy_session():
     """
     Get SQLAlchemy session for type-safe database operations.
 
-    Note: Creates a new engine per call for Lambda compatibility.
-    Lambda functions should not maintain persistent connections across invocations.
+    Uses creator= bypass because SQLAlchemy's normal SSL
+    params cause Access denied with RDS Proxy.
     """
-    rds_host = get_required_env_var("RDS_HOST")
-    # Parse host and port from RDS_HOST (format: "host:port" or "host")
-    if ":" in rds_host:
-        host, port_str = rds_host.split(":", 1)
-        port = int(port_str)
-    else:
-        host = rds_host
-        port = DatabaseConfig.DEFAULT_PORT
-
-    user = get_required_env_var("RDS_USER")
-    password = get_required_env_var("RDS_PASSWORD")
-    database = get_required_env_var("RDS_DATABASE")
-
-    # Create SQLAlchemy engine (disposed after use for Lambda)
-    connection_string = (
-        f"mysql+pymysql://{user}:{password}@{host}:{port}"
-        f"/{database}?charset=utf8mb4&ssl_mode=REQUIRED"
+    params = _get_db_params()
+    engine = create_engine(
+        _build_mysql_url(params),
+        pool_pre_ping=True,
+        creator=lambda: _create_ssl_connection(params),
     )
-    engine = create_engine(connection_string, pool_pre_ping=True)
 
     session = Session(engine)
     try:
