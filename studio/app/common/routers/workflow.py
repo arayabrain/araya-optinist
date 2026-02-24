@@ -20,10 +20,10 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageLockError,
     RemoteStorageReader,
     RemoteStorageSimpleReader,
+    RemoteStorageSimpleWriter,
     RemoteSyncStatusFileUtil,
     upload_experiment_wrapper,
 )
-from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
@@ -243,92 +243,97 @@ async def import_sample_data(
         # ------------------------------------------------------------
         # Upload the input sample data to remote storage process.
         # ------------------------------------------------------------
+        async with RemoteStorageSimpleWriter(
+            remote_bucket_name,
+        ) as remote_storage_controller:
+            sample_data_dir = Path(
+                join_filepath(
+                    [DIRPATH.ROOT_DIR, sample_data_dir_name, category, "input"]
+                )
+            )
 
-        s3_controller = S3StorageController(remote_bucket_name)
-        sample_data_dir = Path(
-            join_filepath([DIRPATH.ROOT_DIR, sample_data_dir_name, category, "input"])
-        )
+            sample_data_subdir = sorted(
+                [
+                    p
+                    for p in sample_data_dir.iterdir()
+                    if p.is_file() and p.name.startswith("sample_")
+                ]
+            )
 
-        sample_data_subdir = sorted(
-            [
-                p
-                for p in sample_data_dir.iterdir()
-                if p.is_file() and p.name.startswith("sample_")
+            logger.info(f"Found {len(sample_data_subdir)} sample input subdirectories.")
+
+            if not sample_data_subdir:
+                logger.warning("No valid sample input subdirectories found for upload.")
+
+            tasks = [
+                remote_storage_controller.upload_input_data(workspace_id, filename.name)
+                for filename in sample_data_subdir
             ]
-        )
+            await asyncio.gather(*tasks)
 
-        logger.info(f"Found {len(sample_data_subdir)} sample input subdirectories.")
+            # Generate metadata files for various file types and upload to S3
 
-        if not sample_data_subdir:
-            logger.warning("No valid sample input subdirectories found for upload.")
+            # TIFF files: .image_shape.json
+            tiff_files = [
+                p
+                for p in sample_data_subdir
+                if p.name.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value))
+            ]
+            if tiff_files:
+                for tiff_file in tiff_files:
+                    update_image_shape(workspace_id, tiff_file.name)
+                await remote_storage_controller.upload_input_data(
+                    workspace_id, MetadataCacheFile.IMAGE_SHAPE
+                )
 
-        tasks = [
-            s3_controller.upload_input_data(workspace_id, filename.name)
-            for filename in sample_data_subdir
-        ]
-        await asyncio.gather(*tasks)
+            # HDF5 files: .hdf5_structure.json
+            hdf5_files = [
+                p
+                for p in sample_data_subdir
+                if p.name.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value))
+            ]
+            if hdf5_files:
+                for hdf5_file in hdf5_files:
+                    update_hdf5_structure(workspace_id, hdf5_file.name)
+                await remote_storage_controller.upload_input_data(
+                    workspace_id, MetadataCacheFile.HDF5_STRUCTURE
+                )
 
-        # Generate metadata files for various file types and upload to S3
+            # MATLAB files: .mat_structure.json
+            mat_files = [
+                p
+                for p in sample_data_subdir
+                if p.name.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value))
+            ]
+            if mat_files:
+                for mat_file in mat_files:
+                    update_mat_structure(workspace_id, mat_file.name)
+                await remote_storage_controller.upload_input_data(
+                    workspace_id, MetadataCacheFile.MAT_STRUCTURE
+                )
 
-        # TIFF files: .image_shape.json
-        tiff_files = [
-            p
-            for p in sample_data_subdir
-            if p.name.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value))
-        ]
-        if tiff_files:
-            for tiff_file in tiff_files:
-                update_image_shape(workspace_id, tiff_file.name)
-            await s3_controller.upload_input_data(
-                workspace_id, MetadataCacheFile.IMAGE_SHAPE
+            # ------------------------------------------------------------
+            # Upload the output sample data to remote storage process.
+            # ------------------------------------------------------------
+
+            sample_data_output_dir = Path(
+                join_filepath(
+                    [DIRPATH.ROOT_DIR, sample_data_dir_name, category, "output"]
+                )
             )
 
-        # HDF5 files: .hdf5_structure.json
-        hdf5_files = [
-            p
-            for p in sample_data_subdir
-            if p.name.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value))
-        ]
-        if hdf5_files:
-            for hdf5_file in hdf5_files:
-                update_hdf5_structure(workspace_id, hdf5_file.name)
-            await s3_controller.upload_input_data(
-                workspace_id, MetadataCacheFile.HDF5_STRUCTURE
+            sample_data_output_subdirs = sorted(
+                [p for p in sample_data_output_dir.iterdir() if p.is_dir()]
             )
 
-        # MATLAB files: .mat_structure.json
-        mat_files = [
-            p
-            for p in sample_data_subdir
-            if p.name.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value))
-        ]
-        if mat_files:
-            for mat_file in mat_files:
-                update_mat_structure(workspace_id, mat_file.name)
-            await s3_controller.upload_input_data(
-                workspace_id, MetadataCacheFile.MAT_STRUCTURE
-            )
+            if not sample_data_output_subdirs:
+                logger.warning("No valid sample output directories found for upload.")
 
-        # ------------------------------------------------------------
-        # Upload the output sample data to remote storage process.
-        # ------------------------------------------------------------
-
-        sample_data_output_dir = Path(
-            join_filepath([DIRPATH.ROOT_DIR, sample_data_dir_name, category, "output"])
-        )
-
-        sample_data_output_subdirs = sorted(
-            [p for p in sample_data_output_dir.iterdir() if p.is_dir()]
-        )
-
-        if not sample_data_output_subdirs:
-            logger.warning("No valid sample output directories found for upload.")
-
-        tasks = [
-            upload_experiment_wrapper(remote_bucket_name, workspace_id, p.name)
-            for p in sample_data_output_subdirs
-        ]
-        await asyncio.gather(*tasks)
+            tasks = [
+                upload_experiment_wrapper(remote_bucket_name, workspace_id, p.name)
+                for p in sample_data_output_subdirs
+            ]
+            await asyncio.gather(*tasks)
 
     return True
 

@@ -16,6 +16,8 @@ from studio.app.common.core.dataview.dataview_services import (
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
+    RemoteStorageSimpleReader,
+    RemoteStorageType,
 )
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.db.database import get_db
@@ -239,20 +241,24 @@ async def public_reproduce_experiment(
         owner_bucket = None
         if workspace and workspace.user:
             owner_bucket = getattr(workspace.user, "remote_bucket_name", None)
-        s3_bucket = owner_bucket or os.environ.get("S3_DEFAULT_BUCKET_NAME")
+        remote_bucket_name = owner_bucket or os.environ.get("S3_DEFAULT_BUCKET_NAME")
 
-        if s3_bucket:
+        async with RemoteStorageSimpleReader(
+            remote_bucket_name
+        ) as remote_storage_controller:
             logger.info(
                 f"Downloading published experiment {workspace_id}/{unique_id} "
-                f"from S3 bucket {s3_bucket}"
+                f"from remote bucket {remote_bucket_name}"
             )
-            s3_controller = S3StorageController(s3_bucket)
-            available = await s3_controller.download_experiment(workspace_id, unique_id)
+            available = await remote_storage_controller.download_experiment(
+                workspace_id,
+                unique_id,
+            )
 
             if not available:
                 logger.error(
                     f"Failed to download experiment {workspace_id}/{unique_id} "
-                    f"from S3 bucket {s3_bucket}"
+                    f"from remote bucket {remote_bucket_name}"
                 )
                 return JSONResponse(
                     status_code=503,
@@ -407,20 +413,25 @@ async def publish_dataview_records(
 
             # Validate S3 data exists before publishing
             if flag == PublishFlags.on:
-                bucket_name = current_user.remote_bucket_name or os.environ.get(
-                    "S3_DEFAULT_BUCKET_NAME"
-                )
-                if bucket_name:
-                    exists, error_msg = await _validate_experiment_exists_in_s3(
-                        str(record.workspace_id),
-                        record.uid,
-                        bucket_name,
+                remote_storage_type = RemoteStorageType.get_activated_type()
+                if remote_storage_type == RemoteStorageType.S3:
+                    bucket_name = current_user.remote_bucket_name or os.environ.get(
+                        "S3_DEFAULT_BUCKET_NAME"
                     )
-                    if not exists:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Cannot publish: {error_msg}",
+                    if bucket_name:
+                        exists, error_msg = await _validate_experiment_exists_in_s3(
+                            str(record.workspace_id),
+                            record.uid,
+                            bucket_name,
                         )
+                        if not exists:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Cannot publish: {error_msg}",
+                            )
+                else:
+                    # Currently not supported
+                    pass
 
             # Determine new sync status
             new_sync_status = (
