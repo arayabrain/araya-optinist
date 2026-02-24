@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import Integer, Text
@@ -47,7 +47,7 @@ class ExperimentRecord(Base, TimestampMixin, table=True):
         default=0,
     )
 
-    input_paths: Optional[Dict] = Field(default={}, sa_column=Column(JSON))
+    input_paths: Optional[List] = Field(default=[], sa_column=Column(JSON))
 
     thumbnails: Optional[Dict] = Field(default={}, sa_column=Column(JSON))
 
