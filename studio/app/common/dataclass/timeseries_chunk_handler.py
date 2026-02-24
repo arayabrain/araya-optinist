@@ -66,7 +66,8 @@ class TimeSeriesChunkHandler:
             List of rows, where each row is a list of values
 
         Example:
-            Input: columns=["data", "std"], record_info={"data": [1, 2], "std": [0.1, 0.2]}
+            Input: columns=["data", "std"],
+              record_info={"data": [1, 2], "std": [0.1, 0.2]}
             Output: [[1, 0.1], [2, 0.2]]
         """
         if not columns:
@@ -126,16 +127,18 @@ class TimeSeriesChunkHandler:
 
             # Initialize chunk structure if new
             if chunk_id not in chunk_data:
-                # Store index and columns at chunk level (shared by all records in chunk)
+                # Store index and columns at chunk level
+                #  (shared by all records in chunk)
                 chunk_data[chunk_id] = {
                     "index": df.index.tolist(),
                     "columns": df.columns.tolist(),
-                    "records": {}
+                    "records": {},
                 }
 
             # Add only the data portion for this record (not index/columns)
             # Convert DataFrame columns to compact list format
-            # Example: if df has columns ["data", "std"], save as {"data": [v1, v2, ...], "std": [v1, v2, ...]}
+            # Example: if df has columns ["data", "std"],
+            #   save as {"data": [v1, v2, ...], "std": [v1, v2, ...]}
             record_data = {}
             for col in df.columns:
                 record_data[col] = df[col].tolist()
@@ -288,11 +291,7 @@ class TimeSeriesChunkHandler:
         record_info = chunk_data["records"][record_id]
         data_rows = cls._convert_columns_to_rows(columns, record_info)
 
-        return {
-            "index": chunk_data["index"],
-            "columns": columns,
-            "data": data_rows
-        }
+        return {"index": chunk_data["index"], "columns": columns, "data": data_rows}
 
     @classmethod
     def get_all_record_ids(cls, dirpath: str) -> List[str]:
@@ -379,7 +378,7 @@ class TimeSeriesChunkHandler:
                 all_records[record_id] = {
                     "index": chunk_data["index"],
                     "columns": columns,
-                    "data": data_rows
+                    "data": data_rows,
                 }
 
         return all_records

@@ -76,13 +76,9 @@ class TimeSeriesData(BaseData):
             data = self.data[i]
             if self.std is not None:
                 std = self.std[i]
-                df = pd.DataFrame(
-                    np.concatenate([data[:, np.newaxis], std[:, np.newaxis]], axis=1),
-                    index=self.index,
-                    columns=["data", "std"],
-                )
+                df = pd.DataFrame({"data": data, "std": std}, index=self.index)
             else:
-                df = pd.DataFrame(data, index=self.index, columns=["data"])
+                df = pd.DataFrame({"data": data}, index=self.index)
 
             record_data.append(df)
 

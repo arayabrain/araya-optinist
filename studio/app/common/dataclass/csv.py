@@ -41,7 +41,8 @@ class CsvData(BaseData):
 
         # Prepare record data for chunked storage
         record_ids = [str(i) for i in range(len(self.data))]
-        record_data = [pd.DataFrame(row) for row in self.data]
+        # Create DataFrames with explicit "data" column name (similar to TimeSeriesData)
+        record_data = [pd.DataFrame({"data": row}) for row in self.data]
 
         # Use TimeSeriesChunkHandler to save in chunked format
         TimeSeriesChunkHandler.save_chunked_data(
