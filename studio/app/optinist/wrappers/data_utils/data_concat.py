@@ -83,7 +83,7 @@ def data_concat(
                 "Expected std_method values: 'concatenate', 'compute', or 'none'."
             )
         else:
-            logger.info(f"Std method specified: {std_method}")
+            logger.debug(f"Std method specified: {std_method}")
 
     std_axis = params.get("std_axis", None) if params else None
     std_axis_str = str(std_axis).strip().lower() if std_axis is not None else ""
@@ -91,16 +91,16 @@ def data_concat(
     if std_axis is None:
         std_axis = default_params["std_axis"]
     else:
-        logger.info(f"Std axis specified: {std_axis}")
+        logger.debug(f"Std axis specified: {std_axis}")
     if std_axis is not None:
         std_axis = int(std_axis)
 
     output_type = params.get("output_type", None) if params else None
     if output_type is not None and output_type != "":
         output_type = output_type.strip().lower()
-        logger.info(f"Output type specified: {output_type}")
+        logger.debug(f"Output type specified: {output_type}")
     else:
-        logger.info("Output type unspecified, using same type as input data 1")
+        logger.debug("Output type unspecified, using same type as input data 1")
 
     try:
         data1_array = data1.data
@@ -152,17 +152,17 @@ def data_concat(
                 if len(combined) != len(np.unique(combined)):
                     # Has duplicates - create new continuous index
                     concatenated_index = np.arange(len(combined))
-                    logger.info(
+                    logger.debug(
                         f"Created new continuous index "
                         f"(0 to {len(combined)-1}) to avoid duplicates"
                     )
                 else:
                     concatenated_index = combined
-                    logger.info("Concatenated time indices")
+                    logger.debug("Concatenated time indices")
             else:
                 # Use data1's index (should be same for non-time concatenation)
                 concatenated_index = data1.index
-                logger.info("Used data1 index")
+                logger.debug("Used data1 index")
         elif hasattr(data1, "index") and data1.index is not None:
             concatenated_index = data1.index
         elif hasattr(data2, "index") and data2.index is not None:
@@ -180,7 +180,7 @@ def data_concat(
             ):
                 try:
                     concatenated_std = np.concatenate([data1.std, data2.std], axis=axis)
-                    logger.info("Concatenated existing std arrays")
+                    logger.debug("Concatenated existing std arrays")
                 except Exception as e:
                     logger.warning(f"Could not concatenate std arrays: {e}")
 
@@ -195,12 +195,12 @@ def data_concat(
                     concatenated_std = np.broadcast_to(
                         axis_std, concatenated_array.shape
                     )
-                    logger.info(f"Computed std with shape {concatenated_std.shape}")
+                    logger.debug(f"Computed std with shape {concatenated_std.shape}")
                 else:
                     concatenated_std = np.std(
                         concatenated_array, axis=effective_std_axis
                     )
-                    logger.info(f"Computed new std along axis {std_axis}")
+                    logger.debug(f"Computed new std along axis {std_axis}")
 
             except Exception as e:
                 logger.warning(f"Could not compute std: {e}")

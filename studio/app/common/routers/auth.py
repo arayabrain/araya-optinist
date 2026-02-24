@@ -37,7 +37,7 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
         try:
             bucket = await ensure_user_bucket_exists(user.id)
             if bucket:
-                logger.warning(f"Bucket recovery on login for user {user.id}: {bucket}")
+                logger.info(f"Bucket recovery on login for user {user.id}: {bucket}")
         except Exception as bucket_error:
             logger.warning(f"Bucket check failed for user {user.id}: {bucket_error}")
 
@@ -52,7 +52,7 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
                     f"{limit_warning.excess_data_gb} GB over limit"
                 )
             else:
-                logger.warning(f"No limit warning for user {user.id}")
+                logger.debug(f"No limit warning for user {user.id}")
         except Exception as warning_error:
             # Don't fail login due to warning check failure
             logger.warning(

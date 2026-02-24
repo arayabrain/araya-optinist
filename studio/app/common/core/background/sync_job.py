@@ -488,7 +488,9 @@ class PublishedExperimentSyncJob:
                 )
 
                 if all_exist:
-                    logger.info(f"Experiment {workspace_id}/{unique_id} already synced")
+                    logger.debug(
+                        f"Experiment {workspace_id}/{unique_id} already synced"
+                    )
                     cls._mark_sync_complete(exp_id)
                     return True
 

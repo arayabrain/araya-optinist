@@ -229,9 +229,9 @@ class PremiumAssignmentService:
                     f"Successfully assigned premium user {user_id} to "
                     f"instance {body.get('instance_id')}"
                 )
-                logger.info(f"Lambda response body: {body}")
-                logger.info(f"is_shared from Lambda: {body.get('is_shared')}")
-                logger.info(
+                logger.debug(f"Lambda response body: {body}")
+                logger.debug(f"is_shared from Lambda: {body.get('is_shared')}")
+                logger.debug(
                     f"assignment_source from Lambda: {body.get('assignment_source')}"
                 )
                 result = {
@@ -243,7 +243,7 @@ class PremiumAssignmentService:
                     "is_shared": body.get("is_shared", False),
                     "assignment_source": body.get("assignment_source"),
                 }
-                logger.info(f"Returning result: {result}")
+                logger.debug(f"Returning result: {result}")
                 return result
 
             elif status_code == 202:

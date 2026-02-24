@@ -102,15 +102,15 @@ def caiman_mc(
     try:
         __handle_mmap_cleanup(mc, mmap_file_new)
     except Exception as e:
-        logger.error("caiman_mc: Failed to cleanup memmap files.")
-        logger.error(e)
+        logger.warning("caiman_mc: Failed to cleanup memmap files.")
+        logger.warning(e)
 
     # Clean up unique CAIMAN_TEMPDIR
     try:
         CaimanUtils.cleanup_caiman_byid_tempdir(mc_unique_id)
     except Exception as e:
-        logger.error("caiman_mc: Failed to cleanup tempdir.")
-        logger.error(e)
+        logger.warning("caiman_mc: Failed to cleanup tempdir.")
+        logger.warning(e)
 
     return info
 

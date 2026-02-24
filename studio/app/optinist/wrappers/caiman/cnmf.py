@@ -384,7 +384,7 @@ def caiman_cnmf(
     try:
         util_cleanup_image_memmap(mmap_paths)
     except Exception as e:
-        logger.error("Failed to cleanup memmap files.")
-        logger.error(e)
+        logger.warning("Failed to cleanup memmap files.")
+        logger.warning(e)
 
     return info

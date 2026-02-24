@@ -130,7 +130,7 @@ class SmkUtils:
                 return hardware_arch
 
         except Exception as e:
-            logger.info("Failed to detect Apple Silicon: %s", e)
+            logger.warning("Failed to detect Apple Silicon: %s", e)
             return False
 
     @staticmethod

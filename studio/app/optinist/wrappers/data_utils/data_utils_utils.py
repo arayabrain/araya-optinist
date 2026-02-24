@@ -19,15 +19,15 @@ def return_as_data_type(data, processed_data, output_dir, file_name, **kwargs):
     if isinstance(output_type, str) and output_type.strip() == "":
         output_type = None
 
-    logger.info(f"Input data type: {type(data).__name__}")
+    logger.debug(f"Input data type: {type(data).__name__}")
     if output_type is None:
-        logger.info("No output_type specified, using input data type for output")
+        logger.debug("No output_type specified, using input data type for output")
 
     # Determine output type and key based on input type or explicit output_type
     if output_type in ["behaviors_data", "BehaviorData", "CsvData"] or (
         output_type is None and isinstance(data, (BehaviorData, CsvData))
     ):
-        logger.info("Processing as BehaviorData or CsvData")
+        logger.debug("Processing as BehaviorData or CsvData")
         result = BehaviorData(
             data=processed_data,
             std=std,
@@ -40,7 +40,7 @@ def return_as_data_type(data, processed_data, output_dir, file_name, **kwargs):
     elif output_type in ["neural_data", "FluoData"] or (
         output_type is None and isinstance(data, FluoData)
     ):
-        logger.info("Processing as FluoData")
+        logger.debug("Processing as FluoData")
         result = FluoData(
             data=processed_data,
             std=std,
@@ -54,7 +54,7 @@ def return_as_data_type(data, processed_data, output_dir, file_name, **kwargs):
     elif output_type in ["image_data", "ImageData", "image"] or (
         output_type is None and isinstance(data, ImageData)
     ):
-        logger.info("Processing as ImageData")
+        logger.debug("Processing as ImageData")
         result = ImageData(
             data=processed_data,
             output_dir=output_dir,
