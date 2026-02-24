@@ -28,25 +28,28 @@ Background jobs run in a dedicated ECS service, separate from the API process. T
 
 | Job | Interval | Purpose |
 |-----|----------|---------|
-| `PublishedExperimentSyncJob` | 5 min | Two-phase sync: thumbnails first, then metadata |
+| `PublishedExperimentSyncJob` | 5 min | Validate S3 files, update DB status, trigger API download via ALB |
 | `ThumbnailMigrationJob` | Daily | Generate PNG thumbnails for legacy experiments (temporary) |
 | `DataCleanupJob` | 60 min | Clean up data for logged-out free users |
 | `StorageReconciliationJob` | 60 min | Reconcile incremental tracking with S3 |
 
 All jobs are defined in `studio/app/common/core/background/`.
 
-### PublishedExperimentSyncJob: Two-Phase Sync
+### PublishedExperimentSyncJob: Validate + Proactive Download
 
-The sync job uses a two-phase strategy for faster Dataview thumbnail loading:
+The background ECS service has no shared filesystem and no port mappings -- nobody reads files from its local disk. The job validates experiments in S3, updates `local_sync_status` in the DB, then calls the ALB to trigger file downloads on an API instance.
 
-**Phase 1: Thumbnails (sync_mode="thumbnails_only")**
-- Downloads only PNG thumbnail files (~50-100KB each)
-- Higher throughput: 50+ experiments per run
-- Makes Dataview usable quickly
+**How it works:**
+1. Calls `validate_experiment_in_s3()` which uses S3 `ListObjectsV2`
+2. Checks that `experiment.yaml` and `workflow.yaml` exist under the experiment prefix (no file downloads on background instance)
+3. Updates DB status based on validation result (`pending` -> `synced` or `error`)
+4. On success, calls ALB `POST /system-internal/sync-experiment/{workspace_id}/{unique_id}` to trigger thumbnail + metadata download on an API instance
+- Limits: 50 experiments per run, 10 concurrent validations
 
-**Phase 2: Metadata (sync_mode="essential_only")**
-- Downloads remaining YAML/JSON files
-- Completes the sync for experiment listing
+**File downloads on API instances:**
+- **Proactive** (`_trigger_proactive_download`) -- background job triggers via ALB after validation. Pre-caches on one ALB-selected instance; other instances rely on startup sync or on-demand download.
+- **Startup sync** (`run_startup_sync`) -- downloads at API container boot
+- **On-demand** (`dataview.py:public_reproduce_experiment`) -- downloads from S3 when a user requests an experiment not yet local
 
 ### ThumbnailMigrationJob (Temporary)
 
@@ -71,7 +74,7 @@ One-time migration to generate PNG thumbnails for existing experiments.
 - **Task Definition**: 512 CPU, 768 MB memory, single worker
 - **ECS Service**: `desired_count=1` (only one instance needed)
 - **Environment**: `DISABLE_BACKGROUND_SCHEDULER=0` (scheduler enabled)
-- **No ALB**: Background service doesn't serve HTTP traffic
+- **No ALB target**: Background service doesn't serve HTTP traffic, but calls the ALB to trigger API downloads
 - **CloudWatch Alarms**: Task stopped, CPU high, memory high
 
 ### API Services (`compute.tf`)
