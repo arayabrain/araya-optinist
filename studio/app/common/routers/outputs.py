@@ -30,6 +30,32 @@ def get_initial_timeseries_data(dirpath) -> JsonTimeSeriesData:
     )
 
 
+def _load_timeseries_record(dirpath: str, record_id: str) -> JsonTimeSeriesData:
+    """
+    Load a single timeseries record from either chunked or legacy format.
+
+    Args:
+        dirpath: Directory containing the timeseries data
+        record_id: Record identifier (as string)
+
+    Returns:
+        JsonTimeSeriesData for the specified record
+    """
+    if TimeSeriesChunkHandler.is_chunked_format(dirpath):
+        # Chunked format
+        cell_data = TimeSeriesChunkHandler.get_record_data(dirpath, record_id)
+        # Convert from split format to DataFrame
+        df = pd.DataFrame(
+            cell_data["data"], index=cell_data["index"], columns=cell_data["columns"]
+        )
+        return JsonReader.read_as_timeseries_from_df(df)
+    else:
+        # Legacy format
+        return JsonReader.read_as_timeseries(
+            join_filepath([dirpath, f"{record_id}.json"])
+        )
+
+
 @router.get("/inittimedata/{dirpath:path}", response_model=JsonTimeSeriesData)
 async def get_inittimedata(
     dirpath: str,
@@ -52,20 +78,8 @@ async def get_inittimedata(
     index = file_numbers[0]
     str_index = str(index)
 
-    # Load data based on format
-    if TimeSeriesChunkHandler.is_chunked_format(dirpath):
-        # Chunked format
-        cell_data = TimeSeriesChunkHandler.get_record_data(dirpath, str_index)
-        # Convert from split format to timeseries format
-        df = pd.DataFrame(
-            cell_data["data"], index=cell_data["index"], columns=cell_data["columns"]
-        )
-        json_data = JsonReader.read_as_timeseries_from_df(df)
-    else:
-        # Legacy format
-        json_data = JsonReader.read_as_timeseries(
-            join_filepath([dirpath, f"{str_index}.json"])
-        )
+    # Load first record using common helper
+    json_data = _load_timeseries_record(dirpath, str_index)
 
     data = {
         str(i): {json_data.xrange[0]: json_data.data[json_data.xrange[0]]}
@@ -103,20 +117,8 @@ async def get_timedata(
 
     str_index = str(index)
 
-    # Load data based on format
-    if TimeSeriesChunkHandler.is_chunked_format(dirpath):
-        # Chunked format
-        cell_data = TimeSeriesChunkHandler.get_record_data(dirpath, str_index)
-        # Convert from split format to timeseries format
-        df = pd.DataFrame(
-            cell_data["data"], index=cell_data["index"], columns=cell_data["columns"]
-        )
-        json_data = JsonReader.read_as_timeseries_from_df(df)
-    else:
-        # Legacy format
-        json_data = JsonReader.read_as_timeseries(
-            join_filepath([dirpath, f"{str_index}.json"])
-        )
+    # Load record using common helper
+    json_data = _load_timeseries_record(dirpath, str_index)
 
     return_data = get_initial_timeseries_data(dirpath)
 

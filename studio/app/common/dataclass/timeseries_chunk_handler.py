@@ -18,38 +18,14 @@ Backward Compatibility:
 """
 
 import json
-import math
 import os
 from glob import glob
-from typing import Any, Dict, List
+from typing import Dict, List
 
 import pandas as pd
 
 from studio.app.common.core.utils.filepath_creater import join_filepath
-
-
-def _sanitize_for_json(obj: Any) -> Any:
-    """
-    Recursively sanitize data structure for JSON serialization.
-    Converts NaN, Inf, -Inf to None (null in JSON).
-
-    Args:
-        obj: Object to sanitize (dict, list, float, etc.)
-
-    Returns:
-        Sanitized object safe for JSON serialization
-    """
-    if isinstance(obj, dict):
-        return {k: _sanitize_for_json(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [_sanitize_for_json(item) for item in obj]
-    elif isinstance(obj, float):
-        # Check for NaN, Infinity, -Infinity
-        if math.isnan(obj) or math.isinf(obj):
-            return None  # Convert to null in JSON
-        return obj
-    else:
-        return obj
+from studio.app.common.core.utils.json_writer import JsonWriter
 
 
 class TimeSeriesChunkHandler:
@@ -76,6 +52,31 @@ class TimeSeriesChunkHandler:
     # File naming constants
     INDEX_MAP_FILENAME = "chunk_index_map.json"
     CHUNK_FILE_PREFIX = "chunk_"
+
+    @staticmethod
+    def _convert_columns_to_rows(columns: List[str], record_info: dict) -> List[List]:
+        """
+        Convert column-wise data to row-wise data for split format.
+
+        Args:
+            columns: List of column names
+            record_info: Dict mapping column names to lists of values
+
+        Returns:
+            List of rows, where each row is a list of values
+
+        Example:
+            Input: columns=["data", "std"], record_info={"data": [1, 2], "std": [0.1, 0.2]}
+            Output: [[1, 0.1], [2, 0.2]]
+        """
+        if not columns:
+            return []
+
+        num_rows = len(record_info[columns[0]])
+        return [
+            [record_info[col][row_idx] for col in columns]
+            for row_idx in range(num_rows)
+        ]
 
     @classmethod
     def is_chunked_format(cls, dirpath: str) -> bool:
@@ -133,10 +134,13 @@ class TimeSeriesChunkHandler:
                 }
 
             # Add only the data portion for this record (not index/columns)
-            df_dict = df.to_dict(orient="split")
-            chunk_data[chunk_id]["records"][str(record_id)] = {
-                "data": df_dict["data"]
-            }
+            # Convert DataFrame columns to compact list format
+            # Example: if df has columns ["data", "std"], save as {"data": [v1, v2, ...], "std": [v1, v2, ...]}
+            record_data = {}
+            for col in df.columns:
+                record_data[col] = df[col].tolist()
+
+            chunk_data[chunk_id]["records"][str(record_id)] = record_data
 
         # Write chunk files
         for chunk_id, chunk_content in chunk_data.items():
@@ -144,7 +148,7 @@ class TimeSeriesChunkHandler:
                 [dirpath, f"{cls.CHUNK_FILE_PREFIX}{chunk_id}.json"]
             )
             # Sanitize data to convert NaN/Inf to null for JSON compliance
-            sanitized_chunk = _sanitize_for_json(chunk_content)
+            sanitized_chunk = JsonWriter.sanitize_for_json(chunk_content)
             with open(chunk_filepath, "w") as f:
                 json.dump(sanitized_chunk, f, indent=4)
 
@@ -279,13 +283,16 @@ class TimeSeriesChunkHandler:
             raise ValueError(f"Record ID '{record_id}' not found in chunk {chunk_id}")
 
         # Reconstruct split format for compatibility with existing code
-        record_data = {
-            "index": chunk_data["index"],
-            "columns": chunk_data["columns"],
-            "data": chunk_data["records"][record_id]["data"]
-        }
+        # Convert from column-wise lists back to row-wise lists
+        columns = chunk_data["columns"]
+        record_info = chunk_data["records"][record_id]
+        data_rows = cls._convert_columns_to_rows(columns, record_info)
 
-        return record_data
+        return {
+            "index": chunk_data["index"],
+            "columns": columns,
+            "data": data_rows
+        }
 
     @classmethod
     def get_all_record_ids(cls, dirpath: str) -> List[str]:
@@ -363,12 +370,16 @@ class TimeSeriesChunkHandler:
             chunk_data = cls.load_chunk_file(dirpath, chunk_id)
 
             # Optimized format: {"index": ..., "columns": ..., "records": {...}}
+            columns = chunk_data["columns"]
             for record_id, record_info in chunk_data["records"].items():
                 # Reconstruct split format for compatibility
+                # Convert from column-wise lists back to row-wise lists
+                data_rows = cls._convert_columns_to_rows(columns, record_info)
+
                 all_records[record_id] = {
                     "index": chunk_data["index"],
-                    "columns": chunk_data["columns"],
-                    "data": record_info["data"]
+                    "columns": columns,
+                    "data": data_rows
                 }
 
         return all_records
