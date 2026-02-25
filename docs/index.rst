@@ -42,7 +42,7 @@ Explore Our GitHub Repository
 -----------------------------
 We're building in the open! You can explore the codebase, check out open issues, and contribute to the project on GitHub.
 
-`Visit the Optinist GitHub Repository <https://github.com/arayabrain/araya-optinist>`_
+`Visit the Optinist GitHub Repository <https://github.com/oist/optinist>`_
 
 Citation
 --------
