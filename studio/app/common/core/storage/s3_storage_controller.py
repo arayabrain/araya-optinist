@@ -53,6 +53,7 @@ class S3StorageController(BaseRemoteStorageController):
     S3_BASE_PATH = "app/studio_data"
     S3_INPUT_DIR = "input"
     S3_OUTPUT_DIR = "output"
+    VALIDATION_MAX_OBJECTS = 500
 
     def __init__(self, bucket_name: str):
         # init s3 bucket attributes
@@ -140,6 +141,121 @@ class S3StorageController(BaseRemoteStorageController):
     def bucket_name(self) -> str:
         return self.__s3_storage_bucket
 
+    # ----------------------------------------
+    # Common helper methods
+    # ----------------------------------------
+
+    async def _list_s3_objects_paginated(
+        self,
+        s3_client,
+        prefix: str,
+        max_files: int = None,
+    ) -> List[Dict]:
+        """List S3 objects under a prefix with pagination.
+
+        Args:
+            s3_client: Active S3 client
+            prefix: S3 prefix to list
+            max_files: If set, raises RuntimeError when object count exceeds this limit
+
+        Returns:
+            List of S3 object dicts containing 'Key', 'Size', etc.
+        """
+        all_objects = []
+        continuation_token = None
+
+        while True:
+            list_params = {
+                "Bucket": self.bucket_name,
+                "Prefix": prefix,
+            }
+            if continuation_token:
+                list_params["ContinuationToken"] = continuation_token
+
+            response = await s3_client.list_objects_v2(**list_params)
+
+            if not response or response.get("KeyCount", 0) == 0:
+                break
+
+            all_objects.extend(response.get("Contents", []))
+
+            if max_files and len(all_objects) > max_files:
+                raise RuntimeError(
+                    f"S3 object count exceeds the limit of {max_files}. "
+                    f"prefix={prefix}, found={len(all_objects)}+ objects"
+                )
+
+            if response.get("IsTruncated"):
+                continuation_token = response.get("NextContinuationToken")
+            else:
+                break
+
+        return all_objects
+
+    async def _download_s3_with_update_check(
+        self,
+        s3_client,
+        s3_file_path: str,
+        local_file_path: str,
+        file_size: int,
+        progress_info: str = "",
+    ) -> bool:
+        """Download a single file from S3, skipping if already exists with correct size.
+
+        Args:
+            s3_client: Active S3 client
+            s3_file_path: S3 object key
+            local_file_path: Local destination path
+            file_size: Expected file size in bytes
+            progress_info: Optional progress string for logging (e.g. "(3/10)")
+
+        Returns:
+            True if file was downloaded, False if skipped
+        """
+        if os.path.isfile(local_file_path):
+            local_size = os.path.getsize(local_file_path)
+            if local_size == file_size:
+                logger.debug(
+                    f"Skip download (already exists): {s3_file_path} "
+                    f"({file_size:,} bytes)"
+                )
+                return False
+
+        progress_str = f"{progress_info} " if progress_info else ""
+        logger.info(
+            f"Download data from S3 [{self.bucket_name}] "
+            f"{progress_str}{s3_file_path} ({file_size:,} bytes)"
+        )
+
+        os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+
+        await s3_client.download_file(self.bucket_name, s3_file_path, local_file_path)
+
+        logger.info(
+            f"Finish download data from S3 [{self.bucket_name}] " f"{s3_file_path}"
+        )
+
+        return True
+
+    @staticmethod
+    async def _delete_s3_objects_batched(bucket, keys_to_delete: list) -> None:
+        """Delete S3 objects in batches of 1000 (S3 API limit).
+
+        Args:
+            bucket: S3 Bucket resource
+            keys_to_delete: List of dicts with 'Key' (e.g. [{"Key": "path/to/file"}])
+        """
+        if not keys_to_delete:
+            return
+        batch_size = 1000
+        for i in range(0, len(keys_to_delete), batch_size):
+            batch = keys_to_delete[i : i + batch_size]
+            await bucket.delete_objects(Delete={"Objects": batch})
+
+    # ----------------------------------------
+    # Bucket operations
+    # ----------------------------------------
+
     async def create_bucket(self) -> bool:
         """
         Note:
@@ -192,18 +308,14 @@ class S3StorageController(BaseRemoteStorageController):
             input_data_local_path,
         )
 
-        # ----------------------------------------
-        # exec downloading
-        # ----------------------------------------
+        MAX_DOWNLOAD_FILES = 1000
 
         async with self.__get_s3_client() as __s3_client:
-            # request s3 list_objects
-            s3_list_objects = await __s3_client.list_objects_v2(
-                Bucket=self.bucket_name, Prefix=input_data_remote_path
+            all_s3_objects = await self._list_s3_objects_paginated(
+                __s3_client, input_data_remote_path, max_files=MAX_DOWNLOAD_FILES
             )
 
-            # check copy source object
-            if not s3_list_objects or s3_list_objects.get("KeyCount", 0) == 0:
+            if not all_s3_objects:
                 logger.warning(
                     "remote data is not exists. [%s] [%s]",
                     self.bucket_name,
@@ -211,48 +323,28 @@ class S3StorageController(BaseRemoteStorageController):
                 )
                 return False
 
-            # do download data from remote storage
-            target_files_count = len(s3_list_objects["Contents"])
-            for index, s3_object in enumerate(s3_list_objects["Contents"]):
+            # Sort by directory depth (shallower files first)
+            all_s3_objects.sort(key=lambda obj: obj["Key"].count("/"))
+
+            target_files_count = len(all_s3_objects)
+            s3_prefix = __class__.make_s3_input_prefix()
+
+            for index, s3_object in enumerate(all_s3_objects):
                 s3_file_path = s3_object["Key"]
                 file_size = s3_object["Size"]
 
-                # Compute local path from S3 path for each file
+                # Compute local path from S3 path
                 # s3_file_path: app/studio_data/input/{workspace_id}/{relative_path}
                 # local path:   {INPUT_DIR}/{workspace_id}/{relative_path}
-                s3_prefix = __class__.make_s3_input_prefix()
                 relative_path = s3_file_path.replace(s3_prefix, "")
                 local_file_path = os.path.join(DIRPATH.INPUT_DIR, relative_path)
 
-                # Skip if file already exists locally with correct size
-                if os.path.isfile(local_file_path):
-                    local_size = os.path.getsize(local_file_path)
-                    if local_size == file_size:
-                        logger.debug(
-                            f"Skip download (already exists): {s3_file_path} "
-                            f"({file_size:,} bytes)"
-                        )
-                        continue
-
-                logger.info(
-                    f"Download data from S3 [{self.bucket_name}] "
-                    f"({index+1}/{target_files_count}) "
-                    f"{s3_file_path} ({file_size:,} bytes)"
-                )
-
-                # Create local directory before downloading
-                local_file_dir = os.path.dirname(local_file_path)
-                if not os.path.exists(local_file_dir):
-                    os.makedirs(local_file_dir, exist_ok=True)
-                    logger.info(f"Created directory: {local_file_dir}")
-
-                await __s3_client.download_file(
-                    self.bucket_name, s3_file_path, local_file_path
-                )
-
-                logger.info(
-                    f"Finish download data from S3 [{self.bucket_name}] "
-                    f"{s3_file_path}"
+                await self._download_s3_with_update_check(
+                    __s3_client,
+                    s3_file_path,
+                    local_file_path,
+                    file_size,
+                    progress_info=f"({index+1}/{target_files_count})",
                 )
 
         return True
@@ -314,39 +406,21 @@ class S3StorageController(BaseRemoteStorageController):
 
         try:
             async with self.__get_s3_client() as s3_client:
-                continuation_token = None
+                all_s3_objects = await self._list_s3_objects_paginated(
+                    s3_client, prefix
+                )
 
-                while True:
-                    # Build request parameters
-                    list_params = {
-                        "Bucket": self.bucket_name,
-                        "Prefix": prefix,
-                    }
-                    if continuation_token:
-                        list_params["ContinuationToken"] = continuation_token
-
-                    s3_list = await s3_client.list_objects_v2(**list_params)
-
-                    if not s3_list or s3_list.get("KeyCount", 0) == 0:
-                        break
-
-                    for obj in s3_list.get("Contents", []):
-                        key = obj["Key"]
-                        filename = key.replace(prefix, "")
-                        if filename and not filename.endswith("/"):
-                            objects.append(
-                                {
-                                    "filename": filename,
-                                    "size": obj["Size"],
-                                    "last_modified": obj["LastModified"].isoformat(),
-                                }
-                            )
-
-                    # Check if there are more pages
-                    if s3_list.get("IsTruncated"):
-                        continuation_token = s3_list.get("NextContinuationToken")
-                    else:
-                        break
+                for obj in all_s3_objects:
+                    key = obj["Key"]
+                    filename = key.replace(prefix, "")
+                    if filename and not filename.endswith("/"):
+                        objects.append(
+                            {
+                                "filename": filename,
+                                "size": obj["Size"],
+                                "last_modified": obj["LastModified"].isoformat(),
+                            }
+                        )
         except Exception as e:
             if _is_no_such_bucket_error(e):
                 logger.warning(f"Bucket does not exist: {self.bucket_name}")
@@ -366,22 +440,11 @@ class S3StorageController(BaseRemoteStorageController):
             input_data_remote_path,
         )
 
-        # ----------------------------------------
-        # exec deleting
-        # ----------------------------------------
-
         async with self.__get_s3_resource() as __s3_resource:
             bucket = await __s3_resource.Bucket(self.bucket_name)
-
             objects_to_delete = bucket.objects.filter(Prefix=input_data_remote_path)
             keys_to_delete = [{"Key": obj.key} async for obj in objects_to_delete]
-
-            if keys_to_delete:
-                # S3 delete_objects has a limit of 1000 objects per request
-                batch_size = 1000
-                for i in range(0, len(keys_to_delete), batch_size):
-                    batch = keys_to_delete[i : i + batch_size]
-                    await bucket.delete_objects(Delete={"Objects": batch})
+            await self._delete_s3_objects_batched(bucket, keys_to_delete)
 
         return True
 
@@ -592,6 +655,100 @@ class S3StorageController(BaseRemoteStorageController):
         )
         return True
 
+    async def validate_experiment_in_s3(
+        self, workspace_id: str, unique_id: str
+    ) -> dict:
+        """
+        Validate that an experiment exists in S3 without downloading.
+
+        Checks for required files (experiment.yaml, workflow.yaml) via
+        ListObjectsV2. Used by the background sync job to update DB
+        status without wasting bandwidth on downloads.
+
+        Returns:
+            dict with keys:
+                valid (bool): True if required files exist
+                has_thumbnails (bool): True if thumbnail PNGs found
+                error (str|None): Error message if validation failed
+        """
+        prefix = self.make_s3_output_prefix(workspace_id, unique_id)
+        required = {DIRPATH.EXPERIMENT_YML, DIRPATH.WORKFLOW_YML}
+
+        try:
+            found_files = set()
+            has_thumbnails = False
+
+            async with self.__get_s3_client() as s3_client:
+                continuation_token = None
+                total_listed = 0
+
+                while True:
+                    params = {
+                        "Bucket": self.bucket_name,
+                        "Prefix": prefix,
+                    }
+                    if continuation_token:
+                        params["ContinuationToken"] = continuation_token
+
+                    resp = await s3_client.list_objects_v2(**params)
+
+                    if not resp or resp.get("KeyCount", 0) == 0:
+                        break
+
+                    for obj in resp.get("Contents", []):
+                        key = obj["Key"]
+                        filename = key.rsplit("/", 1)[-1]
+                        file_size = obj.get("Size", 0)
+
+                        if filename in required:
+                            if file_size > 0:
+                                found_files.add(filename)
+                            else:
+                                logger.warning(
+                                    f"Required file {filename}"
+                                    f" is 0 bytes in S3: {key}"
+                                )
+
+                        if filename.endswith("_thumb.png"):
+                            has_thumbnails = True
+
+                    total_listed += resp.get("KeyCount", 0)
+                    if total_listed >= self.VALIDATION_MAX_OBJECTS:
+                        break
+
+                    if resp.get("IsTruncated"):
+                        continuation_token = resp.get("NextContinuationToken")
+                    else:
+                        break
+
+            if not found_files:
+                return {
+                    "valid": False,
+                    "has_thumbnails": False,
+                    "error": "No objects found in S3",
+                }
+
+            missing = required - found_files
+            if missing:
+                return {
+                    "valid": False,
+                    "has_thumbnails": has_thumbnails,
+                    "error": f"Missing required files: {sorted(missing)}",
+                }
+
+            return {
+                "valid": True,
+                "has_thumbnails": has_thumbnails,
+                "error": None,
+            }
+
+        except Exception as e:
+            return {
+                "valid": False,
+                "has_thumbnails": False,
+                "error": f"S3 validation error: {e}",
+            }
+
     async def __download_all_experiments_metas_via_aws_cli(self) -> bool:
         """
         NOTE:
@@ -739,21 +896,17 @@ class S3StorageController(BaseRemoteStorageController):
             sync_mode,
         )
 
-        # Initialize file filter and metrics tracking
         file_filter = FileSyncFilter()
-
-        # ----------------------------------------
-        # exec downloading
-        # ----------------------------------------
+        MAX_DOWNLOAD_EXPERIMENT_FILES = 5000
 
         async with self.__get_s3_client() as __s3_client:
-            # request s3 list_objects
-            s3_list_objects = await __s3_client.list_objects_v2(
-                Bucket=self.bucket_name, Prefix=experiment_remote_path
+            all_s3_objects = await self._list_s3_objects_paginated(
+                __s3_client,
+                experiment_remote_path,
+                max_files=MAX_DOWNLOAD_EXPERIMENT_FILES,
             )
 
-            # check copy source directory
-            if not s3_list_objects or s3_list_objects.get("KeyCount", 0) == 0:
+            if not all_s3_objects:
                 logger.warning(
                     "remote data is not exists. [%s] [%s]",
                     self.bucket_name,
@@ -761,14 +914,21 @@ class S3StorageController(BaseRemoteStorageController):
                 )
                 return False
 
+            # Sort by directory depth (shallower files first)
+            all_s3_objects.sort(key=lambda obj: obj["Key"].count("/"))
+
+            logger.info(
+                f"Listed {len(all_s3_objects)} objects from S3 "
+                f"[{self.bucket_name}] [{experiment_remote_path}]"
+            )
+
             # cleaning data from local path (only for full sync, not partial syncs)
             # Partial syncs (visualization, essential_only) should preserve existing
             # files to avoid redundant downloads
             if sync_mode == "all" and os.path.isdir(experiment_local_path):
                 await self._clear_local_experiment_data(experiment_local_path)
 
-            # do download data from remote storage
-            target_files_count = len(s3_list_objects["Contents"])
+            target_files_count = len(all_s3_objects)
 
             # Coordination files that should not be downloaded from S3
             coordination_files = {
@@ -776,7 +936,7 @@ class S3StorageController(BaseRemoteStorageController):
                 RemoteSyncStatusFileUtil.REMOTE_SYNC_STATUS_FILE,
             }
 
-            for index, s3_object in enumerate(s3_list_objects["Contents"]):
+            for index, s3_object in enumerate(all_s3_objects):
                 s3_file_path = s3_object["Key"]
                 file_size = s3_object["Size"]
 
@@ -814,31 +974,12 @@ class S3StorageController(BaseRemoteStorageController):
                         dup_path, f"/{__class__.S3_BASE_PATH}/"
                     )
 
-                local_abs_dir = os.path.dirname(local_abs_path)
-
-                # Skip if file already exists locally with correct size
-                if os.path.isfile(local_abs_path):
-                    local_size = os.path.getsize(local_abs_path)
-                    if local_size == file_size:
-                        logger.debug(
-                            f"Skip download (already exists): {s3_file_path} "
-                            f"({file_size:,} bytes)"
-                        )
-                        continue
-
-                logger.info(
-                    f"Download data from S3 [{self.bucket_name}] "
-                    f"({index+1}/{target_files_count}) "
-                    f"{s3_file_path} ({file_size:,} bytes)"
-                )
-
-                # create local directory before downloading
-                if not os.path.exists(local_abs_dir):
-                    os.makedirs(local_abs_dir)
-
-                # do download experiment files
-                await __s3_client.download_file(
-                    self.bucket_name, s3_file_path, local_abs_path
+                await self._download_s3_with_update_check(
+                    __s3_client,
+                    s3_file_path,
+                    local_abs_path,
+                    file_size,
+                    progress_info=f"({index+1}/{target_files_count})",
                 )
 
         return True
@@ -1022,11 +1163,7 @@ class S3StorageController(BaseRemoteStorageController):
                         f"({total_bytes_deleted:,} bytes) "
                         f"from {experiment_remote_path}"
                     )
-                    # S3 delete_objects has a limit of 1000 objects per request
-                    batch_size = 1000
-                    for i in range(0, len(keys_to_delete), batch_size):
-                        batch = keys_to_delete[i : i + batch_size]
-                        await bucket.delete_objects(Delete={"Objects": batch})
+                    await self._delete_s3_objects_batched(bucket, keys_to_delete)
         except Exception as e:
             if (
                 hasattr(e, "response")
@@ -1195,11 +1332,7 @@ class S3StorageController(BaseRemoteStorageController):
                 keys_to_delete = [{"Key": obj.key} async for obj in objects_to_delete]
 
                 if keys_to_delete:
-                    # S3 delete_objects has a limit of 1000 objects per request
-                    batch_size = 1000
-                    for i in range(0, len(keys_to_delete), batch_size):
-                        batch = keys_to_delete[i : i + batch_size]
-                        await bucket.delete_objects(Delete={"Objects": batch})
+                    await self._delete_s3_objects_batched(bucket, keys_to_delete)
                     logger.info(f"[S3] Deleted S3 objects under prefix: {prefix}")
                 else:
                     logger.warning(f"[S3] No objects found for prefix: {prefix}")

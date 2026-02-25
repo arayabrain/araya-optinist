@@ -3,7 +3,7 @@
 ## Executive Summary
 
 - **EBS provides fast local storage** for Snakemake workflow execution with S3 as durable backup
-- **Two-phase background sync job** downloads published experiments to all instances every 5 minutes (thumbnails first, then metadata)
+- **Background sync job** validates experiments in S3, updates DB status, and triggers proactive download on API instances every 5 minutes
 - **Data cleanup job** removes local data for logged-out users (1-hour grace period)
 - **Workflow protection** ensures cleanup only happens when `active_workflow_count = 0`
 - **S3 verification** guarantees backup exists before any local deletion
@@ -17,7 +17,7 @@ These are the fundamental constraints that the EBS implementation satisfies:
 1. **Multi-instance data accessibility**
    - Public visitors have no sticky session and can be routed to ANY instance by ALB
    - Published experiment data must be accessible from all instances simultaneously
-   - Solution: Background sync job downloads published experiments to all instances
+   - Solution: Background job validates S3, triggers proactive download via ALB; remaining instances use on-demand download
 
 2. **User rebalancing requires data portability**
    - Free Manager Lambda can migrate users between instances at any time
@@ -57,8 +57,8 @@ These are the fundamental constraints that the EBS implementation satisfies:
 └─────────────────┘
          ↓
 ┌─────────────────┐
-│ Background Sync │ → Phase 1: Thumbnails (50/run) → Phase 2: Metadata (10/run)
-│ (every 5 min)   │ → DB: local_sync_status='synced'
+│ Background Sync │ → Validate in S3 → DB: local_sync_status='synced'
+│ (every 5 min)   │   → Trigger proactive download on API instance via ALB
 └─────────────────┘
          ↓
 ┌─────────────────┐
@@ -99,15 +99,15 @@ These are the fundamental constraints that the EBS implementation satisfies:
 - Decrements on completion/failure
 - Prevents cleanup during active workflows
 
-### 2. Background Sync (Two-Phase)
+### 2. Background Sync (Validation + Proactive Download)
 
 **File:** `studio/app/common/core/background/sync_job.py`
 
 **Functionality:**
-- **Phase 1 - Thumbnails:** Downloads thumbnail PNGs (50 per run, 10 concurrency). Thumbnails are small (~50-100KB), enabling fast DataView loading
-- **Phase 2 - Metadata:** Downloads YAML files (10 per run, 3 concurrency). Includes experiment.yaml, workflow.yaml, snakemake_config.yaml
-- **Startup sync:** One-time full sync runs at container startup via `run_startup_sync()`
-- Uses FileLock to prevent concurrent runs on the same instance
+- **Periodic validation:** Validates pending experiments exist in S3 via `ListObjectsV2` (50 per run, 10 concurrency). No file downloads on background instance
+- **Proactive download trigger:** After validation, triggers download on an API instance via ALB (`POST /system-internal/sync-experiment`)
+- **Startup sync:** One-time two-phase download at container startup via `run_startup_sync()` — thumbnails first (10 concurrency), then metadata (3 concurrency)
+- Uses persistent retry tracking across runs (max 9 attempts before alerting)
 
 ### 3. Logout Integration
 
@@ -140,9 +140,9 @@ These are the fundamental constraints that the EBS implementation satisfies:
 
 ## Edge Case Handling
 
-### 1. S3 Download Failures
+### 1. S3 Validation Failures
 
-**Implementation:** Exponential backoff retry (3 attempts with 1s, 2s delays between them)
+**Implementation:** Exponential backoff retry (3 attempts with 1s, 2s backoff delays)
 
 **Monitoring:**
 - CloudWatch metrics: `ExperimentsSynced`, `SyncErrors`, `SyncErrorRate`
@@ -200,19 +200,19 @@ These are the fundamental constraints that the EBS implementation satisfies:
 | Component | Tests | File |
 |-----------|-------|------|
 | Workflow Tracking | 13 | `test_workflow_tracking.py` |
-| Sync Job | 8 | `test_sync_job.py` |
+| Sync Job | 23 | `test_sync_job.py` |
 | Cleanup Job | 11 | `test_cleanup_job.py` |
 | Cleanup Re-login | 8 | `test_cleanup_job_relogin.py` |
 | Dataview Publish | 10 | `test_dataview_publish.py` |
 | Logout Endpoint | 5 | `test_users_me_logout.py` |
 | CLI Scripts | 18 | `test_cli_scripts.py` |
-| **Total** | **73** | **7 files** |
+| **Total** | **88** | **7 files** |
 
 ### Key Test Scenarios
 
 **Backend:**
 -  Workflow count increment/decrement
--  Exponential backoff on S3 failures
+-  Exponential backoff on S3 validation failures
 -  S3 backup verification before cleanup
 -  Orphaned data cleanup from terminated instances
 -  Optimistic locking on concurrent publish/unpublish
@@ -243,43 +243,45 @@ These are the fundamental constraints that the EBS implementation satisfies:
 sequenceDiagram
     participant User as Logged-in User
     participant Visitor as Public Visitor
-    participant Inst1 as Instance 1 (EBS)
-    participant Inst2 as Instance 2 (EBS)
+    participant API1 as API Instance 1 (EBS)
+    participant API2 as API Instance 2 (EBS)
+    participant BG as Background Service
     participant S3 as S3 Bucket
     participant DB as RDS Database
 
-    Note over User,Inst1: 1. Publish Flow
-    User->>Inst1: POST /dataview/publish/123/on
-    Inst1->>S3: Upload experiment files
-    Inst1->>DB: SET publish_status=1,<br/>local_sync_status='pending'
-    Inst1-->>User: Success
+    Note over User,API1: 1. Publish Flow
+    User->>API1: POST /dataview/publish/123/on
+    API1->>S3: Upload experiment files
+    API1->>DB: SET publish_status=1,<br/>local_sync_status='pending'
+    API1-->>User: Success
 
-    Note over Inst2,S3: 2. Background Sync (every 5 min, two-phase)
-    Inst2->>DB: Query WHERE local_sync_status='pending'
-    DB-->>Inst2: [exp123, exp456]
-    Note over Inst2,S3: Phase 1: Thumbnails (50/run, 10 concurrency)
-    Inst2->>S3: Download thumbnail PNGs to local EBS
-    Note over Inst2,S3: Phase 2: Metadata (10/run, 3 concurrency)
-    Inst2->>S3: Download YAML metadata to local EBS
-    Inst2->>DB: SET local_sync_status='synced'
+    Note over BG,S3: 2. Background Validation + Proactive Download (every 5 min)
+    BG->>DB: Query WHERE local_sync_status='pending'
+    DB-->>BG: [exp123, exp456]
+    BG->>S3: Validate exp123 exists (ListObjectsV2)
+    BG->>DB: SET local_sync_status='synced'
+    BG->>API1: POST /system-internal/sync-experiment (via ALB)
+    Note over API1: Downloads thumbnails + metadata from S3<br/>(single ALB-selected instance; others use startup sync or on-demand)
 
-    Note over Visitor,Inst2: 3. Visitor Access (routed to any instance)
-    Visitor->>Inst2: GET /api/public/dataview/.../exp123
-    Inst2->>DB: Check publish_status & local_sync_status
-    DB-->>Inst2: publish_status=1, local_sync_status='synced'
+    Note over Visitor,API2: 3. Visitor Access (ALB routes to any API instance)
+    Visitor->>API2: GET /api/public/dataview/.../exp123
+    API2->>DB: Check publish_status & local_sync_status
 
-    alt Sync Complete (local_sync_status='synced')
-        Inst2->>Inst2: Read from local EBS
-        Inst2-->>Visitor:  Display experiment
+    alt Files exist locally (proactive download or startup sync)
+        API2->>API2: Read from local EBS
+        API2-->>Visitor: 200 Display experiment
+    else Files missing locally (status='synced' but no local files)
+        API2->>S3: On-demand download
+        API2-->>Visitor: 200 Display experiment
     else Sync Pending (local_sync_status='pending')
-        Inst2-->>Visitor: 202 Accepted - "Publishing in progress..."
+        API2-->>Visitor: 202 Accepted - "Publishing in progress..."
         Note over Visitor: Frontend shows loading state<br/>Auto-retries every 30 seconds
     else Sync Error (local_sync_status='error')
-        Inst2-->>Visitor: 503 Service Unavailable - "Temporarily unavailable"
+        API2-->>Visitor: 503 Service Unavailable - "Temporarily unavailable"
         Note over Visitor: Frontend shows error with retry button
     end
 
-    Note over Visitor,S3:  Solution: No EFS cost, eventual consistency (5 min)
+    Note over Visitor,S3: Solution: No EFS cost, eventual consistency (5 min)
 ```
 
 ### Data Cleanup Flow on Logout
@@ -327,7 +329,7 @@ sequenceDiagram
 
 ### Backend
 - `studio/app/common/core/workflow/workflow_tracking.py` - Workflow count tracking
-- `studio/app/common/core/background/sync_job.py` - Background sync (every 5 min)
+- `studio/app/common/core/background/sync_job.py` - Background S3 validation + proactive download trigger (every 5 min)
 - `studio/app/common/core/background/cleanup_job.py` - Data cleanup (every 60 min)
 - `studio/app/common/routers/dataview.py` - Publish/access endpoints
 - `studio/app/common/routers/users_me.py` - Logout endpoint
@@ -341,7 +343,7 @@ sequenceDiagram
 
 ### Testing
 - `studio/tests/app/common/core/workflow/test_workflow_tracking.py` (13 tests)
-- `studio/tests/app/common/core/background/test_sync_job.py` (8 tests)
+- `studio/tests/app/common/core/background/test_sync_job.py` (23 tests)
 - `studio/tests/app/common/core/background/test_cleanup_job.py` (11 tests)
 - `studio/tests/app/common/core/background/test_cleanup_job_relogin.py` (8 tests)
 - `studio/tests/app/common/core/background/test_cli_scripts.py` (18 tests)

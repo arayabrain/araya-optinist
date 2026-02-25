@@ -505,4 +505,4 @@ python test_data_sync.py status <user_id>       # Check system status
 
 - Branch: `feature/proactive-sync`
 - Parent branch: `feature/aws-autoscaling`
-- Related: `ALB_SECURITY_ROUTING_SUMMARY.md`, `PREMIUM_MANAGER_SUMMARY.md`
+- Related: `ALB_ROUTING_SECURITY.md`, `PREMIUM_MANAGER_ARCHITECTURE.md`

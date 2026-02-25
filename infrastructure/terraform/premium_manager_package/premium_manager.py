@@ -153,7 +153,8 @@ def get_db_connection(auto_commit=False):
                 database=get_required_env_var("RDS_DATABASE"),
                 charset="utf8mb4",
                 cursorclass=pymysql.cursors.DictCursor,
-                autocommit=auto_commit,  # Default False for transactions
+                autocommit=auto_commit,
+                ssl={"check_hostname": False},
             )
             yield conn
         except ValueError as e:
@@ -206,6 +207,7 @@ def distributed_lock(lock_name, timeout=LOCK_TIMEOUT_SECONDS):
                 charset="utf8mb4",
                 cursorclass=pymysql.cursors.DictCursor,
                 autocommit=True,
+                ssl={"check_hostname": False},
             )
             with conn.cursor() as cursor:
                 cursor.execute(

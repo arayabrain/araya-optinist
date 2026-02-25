@@ -473,11 +473,11 @@ resource "aws_db_subnet_group" "main" {
 # RDS Parameter Group (Custom)
 resource "aws_db_parameter_group" "main" {
   family = "mysql8.0"
-  name   = "subscr-optinist-no-ssl"
+  name   = "subscr-optinist-ssl"
 
   parameter {
     name  = "require_secure_transport"
-    value = "0"
+    value = "1"
   }
 
   parameter {
@@ -485,8 +485,12 @@ resource "aws_db_parameter_group" "main" {
     value = "UTC"
   }
 
+  lifecycle {
+    create_before_destroy = true
+  }
+
   tags = {
-    Name = "subscr-optinist-no-ssl"
+    Name = "subscr-optinist-ssl"
   }
 }
 
@@ -501,7 +505,7 @@ resource "aws_db_instance" "main" {
   db_name                         = var.mysql_database
   username                        = var.mysql_user
   password                        = var.mysql_password
-  skip_final_snapshot             = true
+  skip_final_snapshot             = false
   final_snapshot_identifier       = "${var.mysql_database}-final-snapshot"
   backup_retention_period         = 35
   monitoring_interval             = 60
@@ -532,7 +536,7 @@ resource "aws_db_proxy" "main" {
   role_arn               = aws_iam_role.rds_proxy.arn
   vpc_subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id]
   vpc_security_group_ids = [aws_security_group.rds.id]
-  require_tls            = false
+  require_tls            = true
 
   tags = {
     Name = "subscr-optinist-rds-proxy"

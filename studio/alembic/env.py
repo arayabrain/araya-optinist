@@ -2,10 +2,10 @@ from logging.config import fileConfig
 
 from alembic import context
 from dotenv import load_dotenv
-from sqlalchemy import engine_from_config, pool
-from sqlmodel import SQLModel
+from sqlalchemy import pool
+from sqlmodel import SQLModel, create_engine
 
-from studio.app.common.db.config import DATABASE_CONFIG
+from studio.app.common.db.config import DATABASE_CONFIG, get_ssl_creator
 from studio.app.common.models import *  # noqa
 
 load_dotenv()
@@ -62,10 +62,14 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section),
-        prefix="sqlalchemy.",
+    kwargs = {}
+    creator = get_ssl_creator()
+    if creator:
+        kwargs["creator"] = creator
+    connectable = create_engine(
+        DATABASE_CONFIG.DATABASE_URL,
         poolclass=pool.NullPool,
+        **kwargs,
     )
 
     with connectable.connect() as connection:

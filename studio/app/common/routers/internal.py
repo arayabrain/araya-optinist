@@ -11,7 +11,16 @@ import secrets
 import time
 from typing import Dict
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    Header,
+    HTTPException,
+    Path,
+    Query,
+    status,
+)
 from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth_dependencies import _get_user_remote_bucket_name
@@ -20,9 +29,11 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageSimpleReader,
 )
+from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.db.database import get_db, get_session
 from studio.app.common.models.user import User
 from studio.app.common.models.workspace import Workspace
+from studio.app.dir_path import DIRPATH
 
 router = APIRouter(prefix="/system-internal", tags=["system-internal"])
 
@@ -32,7 +43,15 @@ INTERNAL_API_SECRET = os.environ.get("INTERNAL_API_SECRET")
 
 # Rate limiting for internal endpoints (in-memory cache)
 _rate_limit_cache: Dict[int, float] = {}
-_RATE_LIMIT_SECONDS = 10  # Allow one sync request per user per 10 seconds
+_sync_rate_limit_cache: Dict[str, float] = {}
+_RATE_LIMIT_SECONDS = 10
+
+
+def _cleanup_rate_limit_cache(cache: Dict, cutoff: float) -> None:
+    """Remove rate-limit entries older than cutoff to prevent unbounded growth."""
+    expired = [k for k, v in cache.items() if v < cutoff]
+    for k in expired:
+        del cache[k]
 
 
 def verify_internal_secret(x_internal_secret: str = Header(...)) -> None:
@@ -78,6 +97,7 @@ async def sync_user_experiments(
     """
     # Rate limiting check
     current_time = time.time()
+    _cleanup_rate_limit_cache(_rate_limit_cache, current_time - _RATE_LIMIT_SECONDS * 2)
     last_request = _rate_limit_cache.get(user_id, 0)
     if current_time - last_request < _RATE_LIMIT_SECONDS:
         logger.warning(
@@ -111,6 +131,115 @@ async def sync_user_experiments(
     background_tasks.add_task(_download_experiments_for_user, bucket_name, user_id)
 
     return {"status": "sync_initiated", "user_id": user_id}
+
+
+@router.post("/sync-experiment/{workspace_id}/{unique_id}")
+async def sync_single_experiment(
+    workspace_id: str = Path(..., pattern=r"^\d+$"),
+    unique_id: str = Path(..., pattern=r"^[a-zA-Z0-9_-]+$"),
+    bucket_name: str = Query(
+        ...,
+        min_length=3,
+        max_length=63,
+        pattern=r"^[a-z0-9][a-z0-9.\-]*[a-z0-9]$",
+    ),
+    has_thumbnails: bool = Query(default=True),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    _: None = Depends(verify_internal_secret),
+):
+    """
+    Trigger download of a single experiment on this
+    API instance.
+
+    Called by the background sync job after validating an
+    experiment in S3. Downloads thumbnails and essential
+    metadata so they are pre-cached before users request
+    them.
+    """
+    # Rate limiting per experiment
+    cache_key = f"{workspace_id}/{unique_id}"
+    current_time = time.time()
+    _cleanup_rate_limit_cache(
+        _sync_rate_limit_cache, current_time - _RATE_LIMIT_SECONDS * 2
+    )
+    last_req = _sync_rate_limit_cache.get(cache_key, 0)
+    if current_time - last_req < _RATE_LIMIT_SECONDS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Sync request too frequent",
+        )
+    _sync_rate_limit_cache[cache_key] = current_time
+
+    logger.info(
+        f"Proactive sync requested for"
+        f" {workspace_id}/{unique_id}"
+        f" (bucket: {bucket_name})"
+    )
+
+    background_tasks.add_task(
+        _download_single_experiment,
+        bucket_name,
+        workspace_id,
+        unique_id,
+        has_thumbnails,
+    )
+
+    return {
+        "status": "sync_initiated",
+        "workspace_id": workspace_id,
+        "unique_id": unique_id,
+    }
+
+
+async def _download_single_experiment(
+    bucket_name: str,
+    workspace_id: str,
+    unique_id: str,
+    has_thumbnails: bool = True,
+) -> None:
+    """
+    Background task to download thumbnails and essential
+    metadata for a single experiment from S3.
+    """
+    if not RemoteStorageController.is_available():
+        logger.warning(
+            "Remote storage not available,"
+            " skipping proactive sync for"
+            f" {workspace_id}/{unique_id}"
+        )
+        return
+
+    # Skip if required files already exist locally
+    local_path = join_filepath([DIRPATH.OUTPUT_DIR, workspace_id, unique_id])
+    exp_yaml = os.path.join(local_path, DIRPATH.EXPERIMENT_YML)
+    wf_yaml = os.path.join(local_path, DIRPATH.WORKFLOW_YML)
+    if os.path.exists(exp_yaml) and os.path.exists(wf_yaml):
+        logger.info(
+            "Skipping proactive sync for"
+            f" {workspace_id}/{unique_id}:"
+            " files already exist locally"
+        )
+        return
+
+    try:
+        async with RemoteStorageSimpleReader(bucket_name) as controller:
+            if has_thumbnails:
+                await controller.download_experiment(
+                    workspace_id,
+                    unique_id,
+                    sync_mode="thumbnails_only",
+                )
+            await controller.download_experiment(
+                workspace_id,
+                unique_id,
+                sync_mode="essential_only",
+            )
+        logger.info("Proactive sync completed for" f" {workspace_id}/{unique_id}")
+    except Exception as e:
+        logger.error(
+            "Proactive sync failed for" f" {workspace_id}/{unique_id}: {e}",
+            exc_info=True,
+        )
 
 
 async def _download_experiments_for_user(bucket_name: str, user_id: int) -> None:

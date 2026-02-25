@@ -47,7 +47,9 @@ from studio.app.common.core.workflow.workflow import (
     WorkflowRunStatus,
 )
 from studio.app.common.core.workflow.workflow_params import get_typecheck_params
+from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.core.workflow.workflow_writer import WorkflowConfigWriter
+from studio.app.common.schemas.workflow import WorkflowConfig
 from studio.app.const import ACCEPT_FILE_EXT, DATE_FORMAT, MetadataCacheFile
 from studio.app.dir_path import DIRPATH
 
@@ -143,29 +145,12 @@ class WorkflowRunner:
 
     def _extract_input_files(self) -> List[str]:
         """Extract input file paths from workflow nodes."""
-        input_files = []
-        data_node_types = {
-            NodeType.IMAGE,
-            NodeType.CSV,
-            NodeType.FLUO,
-            NodeType.BEHAVIOR,
-            NodeType.HDF5,
-            NodeType.MATLAB,
-            NodeType.MICROSCOPE,
-        }
-        for node in self.nodeDict.values():
-            if (
-                node.type in data_node_types
-                or NodeTypeUtil.check_nodetype(node.type) == NodeType.DATA
-            ):
-                if node.data and node.data.path:
-                    # path can be a string or list of strings
-                    paths = (
-                        node.data.path
-                        if isinstance(node.data.path, list)
-                        else [node.data.path]
-                    )
-                    input_files.extend(paths)
+        workflow_config = WorkflowConfig(
+            nodeDict=self.nodeDict,
+            edgeDict=self.edgeDict,
+        )
+        input_files = WorkflowConfigReader.extract_input_file_paths(workflow_config)
+
         return input_files
 
     async def _ensure_input_data_local(self) -> None:
