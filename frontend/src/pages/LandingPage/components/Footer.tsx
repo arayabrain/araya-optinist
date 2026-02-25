@@ -50,8 +50,22 @@ export const Footer = () => {
         </FooterBrand>
         <FooterBottom>
           <FooterAttribution>
-            ARAYA OptiNiSt is developed based on OptiNiSt by ARAYA and OIST
-            (Okinawa Institute of Science and Technology)
+            ARAYA OptiNiSt is based on OptiNiSt. OptiNiSt was developed by{" "}
+            <FooterLink
+              href="https://www.araya.org/en/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              ARAYA
+            </FooterLink>{" "}
+            and{" "}
+            <FooterLink
+              href="https://www.oist.jp/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              OIST
+            </FooterLink>
           </FooterAttribution>
           <CompanyLine>
             <CompanyLink
@@ -153,6 +167,15 @@ const FooterAttribution = styled(Typography)({
   fontSize: FONT_SIZE.SMALL,
   color: TEXT_COLOR.SECONDARY,
   fontStyle: "italic",
+})
+
+const FooterLink = styled("a")({
+  color: TEXT_COLOR.SECONDARY,
+  textDecoration: "underline",
+  transition: "color 0.2s",
+  "&:hover": {
+    color: TEXT_COLOR.ACCENT,
+  },
 })
 
 const CompanyLine = styled(Box)({
