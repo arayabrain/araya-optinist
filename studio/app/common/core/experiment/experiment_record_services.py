@@ -91,6 +91,6 @@ class ExperimentRecordService:
 
         except NoResultFound:
             # If it fails roll back the transaction
-            logger.error(
+            logger.warning(
                 f"Experiment {unique_id} not found in workspace {workspace_id}"
             )

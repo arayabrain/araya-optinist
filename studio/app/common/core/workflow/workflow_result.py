@@ -117,7 +117,7 @@ class WorkflowResult:
             # Check node processed status (inspect ExptConfig)
             expt_function = expt_config.function.get(node_id)
             if not expt_function:
-                logger.warning(f"Invalid node_id [{node_id}]")
+                logger.debug(f"Invalid node_id [{node_id}]")
                 continue
 
             # Perform observations of nodes
@@ -418,7 +418,7 @@ class WorkflowMonitor:
 
             # get process
             process = Process(last_pid)
-            logger.info(f"Found workflow process. {process}")
+            logger.debug(f"Found workflow process. {process}")
 
             # validate process name
             process_cmdline = " ".join(process.cmdline()).replace("\\", "/")
@@ -458,7 +458,7 @@ class WorkflowMonitor:
 
                     if re.search(self.PROCESS_CONDA_CMDLINE, cmdline):
                         conda_ps_create_elapsed = int(time.time() - proc.create_time())
-                        logger.info(
+                        logger.debug(
                             f"Found conda process. [{proc}] [{cmdline}] "
                             f"[{conda_ps_create_elapsed} sec]",
                         )

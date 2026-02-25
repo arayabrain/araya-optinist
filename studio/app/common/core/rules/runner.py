@@ -202,7 +202,7 @@ class Runner:
             if function_id not in output_info["nwbfile"][NWBDATASET.CONFIG]:
                 output_info["nwbfile"][NWBDATASET.CONFIG][function_id] = {}
         except Exception as e:
-            logger.warning(f"Failed to initialize CONFIG dataset for{function_id}:{e}")
+            logger.debug(f"Failed to initialize CONFIG dataset for{function_id}:{e}")
 
         # Store conda env config in CONFIG dataset
         try:
@@ -216,7 +216,7 @@ class Runner:
                 "conda_config"
             ] = config_str
         except Exception as e:
-            logger.info(f"Failed to add conda environment config to NWB file: {e}")
+            logger.debug(f"Failed to add conda environment config to NWB file: {e}")
 
         try:
             # Store node parameters in CONFIG dataset
@@ -225,7 +225,7 @@ class Runner:
                 "node_params"
             ] = params_str
         except Exception as e:
-            logger.warning(f"Failed to add node parameters to NWB file: {e}")
+            logger.debug(f"Failed to add node parameters to NWB file: {e}")
 
         return output_info
 

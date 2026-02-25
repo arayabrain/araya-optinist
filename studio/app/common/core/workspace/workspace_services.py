@@ -39,7 +39,7 @@ class WorkspaceService:
 
                 deleted_statuses.append(deleted_status)
         else:
-            logger.warning(f"Workspace directory '{workspace_dir}' does not exist")
+            logger.debug(f"Workspace directory '{workspace_dir}' does not exist")
 
         if all(deleted_statuses):
             # Delete the workspace directory itself
@@ -68,7 +68,7 @@ class WorkspaceService:
                 shutil.rmtree(directory)
                 logger.info(f"Deleted directory: {directory}")
             else:
-                logger.warning(f"'{directory}' already deleted or never existed")
+                logger.debug(f"'{directory}' already deleted or never existed")
         except Exception as e:
             logger.error(
                 f"Failed to delete directory '{directory}': {e}",
