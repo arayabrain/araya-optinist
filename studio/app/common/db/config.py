@@ -18,8 +18,13 @@ def build_mysql_url(
     charset: str = DEFAULT_CHARSET,
 ) -> str:
     query: Dict[str, str] = {}
+    if ":" in host:
+        host, port = host.split(":")
+        port = int(port)
+
     if charset:
         query["charset"] = charset
+
     url = URL.create(
         "mysql+pymysql",
         username=user,
@@ -55,8 +60,15 @@ def get_ssl_creator():
     cfg = DATABASE_CONFIG
 
     def _creator():
+        if ":" in cfg.MYSQL_SERVER:
+            host, port = cfg.MYSQL_SERVER.split(":")
+            port = int(port)
+        else:
+            host, port = cfg.MYSQL_SERVER, None
+
         return pymysql.connect(
-            host=cfg.MYSQL_SERVER,
+            host=host,
+            port=port,
             user=cfg.MYSQL_USER,
             password=cfg.MYSQL_PASSWORD,
             database=cfg.MYSQL_DATABASE,
