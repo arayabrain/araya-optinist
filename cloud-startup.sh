@@ -21,7 +21,22 @@ echo "DB_NAME: ${MYSQL_DATABASE}"
 # Tries 30 times with 2 second intervals (total 60 seconds timeout)
 max_tries=30
 counter=0
-until mysql --skip-ssl -h "${MYSQL_SERVER}" -u "${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e 'SELECT 1;'
+
+# Build SSL options based on MYSQL_SSL_MODE
+if [ -n "${MYSQL_SSL_MODE}" ]; then
+    case "${MYSQL_SSL_MODE}" in
+        DISABLED)
+            ssl_opts="--skip-ssl"
+            ;;
+        *)
+            ssl_opts="--ssl"
+            ;;
+    esac
+else
+    ssl_opts=""
+fi
+
+until mysql ${ssl_opts} -h "${MYSQL_SERVER}" -u "${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e 'SELECT 1;'
 do
     sleep 2
     [[ counter -eq $max_tries ]] && echo "Failed to connect to Database" && exit 1
@@ -34,6 +49,21 @@ echo 'Database connection successful'
 # Run database migrations using alembic
 # This ensures all database tables and schemas are up to date
 cd /app
+
+# Verify database SSL connection before running migrations
+echo "Verifying database SSL connection..."
+python3 -c "
+from studio.app.common.db.config import DATABASE_CONFIG, get_ssl_creator
+from sqlalchemy import create_engine, text
+creator = get_ssl_creator()
+kwargs = {'creator': creator} if creator else {}
+engine = create_engine(DATABASE_CONFIG.DATABASE_URL, **kwargs)
+with engine.connect() as c:
+    r = c.execute(text('SHOW STATUS LIKE \"Ssl_cipher\"'))
+    cipher = r.fetchone()
+    print(f'SSL: {cipher[1] if cipher and cipher[1] else \"disabled\"}')
+engine.dispose()
+" 2>&1 || echo "WARNING: SSL verification failed (see above)"
 
 # Run Alembic upgrade - if migrations fail, the container will exit
 # This causes ECS to mark the deployment as failed and revert to the previous version

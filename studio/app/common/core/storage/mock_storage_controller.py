@@ -13,6 +13,7 @@ from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
 )
+from studio.app.const import ThumbnailType
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -388,6 +389,28 @@ class MockStorageController(BaseRemoteStorageController):
             shutil.rmtree(experiment_remote_path)
 
         return True
+
+    async def download_thumbnail_source(
+        self,
+        workspace_id: str,
+        unique_id: str,
+        original_path: str,
+        thumb_type: ThumbnailType,
+    ) -> bool:
+        """
+        Download the source file needed to generate a thumbnail.
+        """
+        # Currently not implemented
+        pass
+
+    async def upload_thumbnail(
+        self, workspace_id: str, unique_id: str, thumbnail_path: str
+    ) -> bool:
+        """
+        Upload a generated thumbnail PNG to S3 for persistence.
+        """
+        # Currently not implemented
+        pass
 
     async def delete_workspace(
         self, workspace_id: str, directory_type: StorageDirectoryType

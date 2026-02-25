@@ -151,6 +151,10 @@ resource "aws_ecs_task_definition" "background" {
           value = var.mysql_password
         },
         {
+          name  = "MYSQL_SSL_MODE"
+          value = "REQUIRED"
+        },
+        {
           name  = "BACKEND_HOST"
           value = "0.0.0.0"
         },
@@ -245,6 +249,10 @@ resource "aws_ecs_task_definition" "background" {
         {
           name  = "INTERNAL_API_SECRET"
           value = random_password.internal_api_secret.result
+        },
+        {
+          name  = "ALB_DNS_NAME"
+          value = aws_lb.autoscaling.dns_name
         },
         # Background scheduler ENABLED - this service runs all background jobs
         {

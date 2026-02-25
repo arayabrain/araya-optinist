@@ -6,6 +6,7 @@ from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.workflow.workflow import NodeRunStatus
+from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.db.database import session_scope
 from studio.app.common.models.experiment import ExperimentRecord
 from studio.app.common.schemas.dataview import DataviewThumbnails
@@ -37,6 +38,10 @@ class ExperimentRecordService:
         from studio.app.common.core.dataview.dataview_services import DataviewService
 
         experiment_config = ExptConfigReader.read(workspace_id, unique_id)
+        workflow_config = WorkflowConfigReader.read(workspace_id, unique_id)
+
+        # Get input data paths
+        input_paths = WorkflowConfigReader.extract_input_file_paths(workflow_config)
 
         # Get original thumbnail paths (TIFF/JSON references)
         original_thumbnails = DataviewService.make_dataview_thumnail_paths(
@@ -74,6 +79,7 @@ class ExperimentRecordService:
                     .one()
                 )
                 exp.name = experiment_config.name
+                exp.input_paths = input_paths
                 exp.thumbnails = dict(thumbnails)
                 exp.success = workflow_success
                 exp.analyzed_at = analyzed_at
@@ -83,6 +89,7 @@ class ExperimentRecordService:
                     workspace_id=workspace_id,
                     uid=unique_id,
                     name=experiment_config.name,
+                    input_paths=input_paths,
                     thumbnails=dict(thumbnails),
                     success=workflow_success,
                     analyzed_at=analyzed_at,

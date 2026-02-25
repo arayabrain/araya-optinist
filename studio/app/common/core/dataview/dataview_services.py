@@ -1,9 +1,11 @@
+import json
 import os
 import re
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import Request
+from sqlalchemy import func
 from sqlmodel import Session, delete
 
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptOutputPathIds
@@ -218,7 +220,9 @@ class DataviewService:
                 Workspace.deleted.is_(False),
                 ExperimentRecord.workspace_id == int(workspace_id),
                 ExperimentRecord.publish_status == PublishStatus.on.value,
-                ExperimentRecord.thumbnails["image_url"].as_string() == input_path,
+                func.JSON_CONTAINS(
+                    ExperimentRecord.input_paths, json.dumps(input_path)
+                ),
                 # > Note: input data does not depend on unique_id (shared within
                 # >   a workspace), so it is determined by workspace_id only.
                 # models.ExperimentRecord.uid == unique_id,
@@ -307,28 +311,11 @@ class DataviewService:
             query_params = dict(req.query_params)
             workspace_id = query_params.get("workspace_id")
 
-            # For image data
-            if re.match(cls.OUTPUTS_IMAGE_URL_PREFIX, request_url_path):
-                # Check whether the data is in a public record
-                record = cls.find_published_dataview_record_input(
-                    db, workspace_id, data_file_path
-                )
-                is_allowed_access = record is not None
-
-            # For other data
-            else:
-                """
-                Currently (2025-9), this feature does not support validation
-                  of data other than images.
-                - This is because information about input data other than images is not
-                  stored in experiment_records (a specification change is required).
-                - While validation will need to be strengthened in the future,
-                  the initial version will only validate images
-                  (since most preview requests are images).
-                """
-
-                # Force Allow Access
-                is_allowed_access = True
+            # Check whether the data is in a public record
+            record = cls.find_published_dataview_record_input(
+                db, workspace_id, data_file_path
+            )
+            is_allowed_access = record is not None
 
         return is_allowed_access
 
@@ -574,9 +561,9 @@ class DataviewService:
                     roi_thumb_path = None
 
         return DataviewThumbnails(
-            image_url=normalize_output_path(input_thumb_path)
-            if input_thumb_path
-            else None,
+            image_url=(
+                normalize_output_path(input_thumb_path) if input_thumb_path else None
+            ),
             roi_url=normalize_output_path(roi_thumb_path) if roi_thumb_path else None,
         )
 

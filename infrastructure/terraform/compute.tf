@@ -634,6 +634,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
           value = var.mysql_password
         },
         {
+          name  = "MYSQL_SSL_MODE"
+          value = "REQUIRED"
+        },
+        {
           name  = "BACKEND_HOST"
           value = "0.0.0.0"
         },
@@ -878,6 +882,10 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "DB_PASSWORD"
           value = var.mysql_password
+        },
+        {
+          name  = "MYSQL_SSL_MODE"
+          value = "REQUIRED"
         },
         {
           name  = "BACKEND_HOST"
