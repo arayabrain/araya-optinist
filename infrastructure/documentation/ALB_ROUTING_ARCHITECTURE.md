@@ -159,8 +159,8 @@ sequenceDiagram
 
 **Problem:** Premium instance returns 503 or network error.
 
-**Solution:** Frontend 503 fallback:
-- `handlePremiumRoutingError()` strips routing headers
+**Solution:** Frontend fallback:
+- `handlePremiumRoutingError()` strips routing headers on 503 or network error
 - Sets `_retryWithoutPremium` flag to prevent infinite loops
 - Retries request on free tier
 
@@ -177,11 +177,12 @@ sequenceDiagram
 
 ## Monitoring and Metrics
 
-| Metric | Description | Alert Threshold |
-|---|---|---|
-| `routing_id_mismatch_count` | Validation failures (potential spoofing) | >10/hour |
-| `tier_cache_hit_rate` | Tier cache effectiveness | <90% |
-| `tier_cache_invalidation_count` | Webhook-triggered invalidations | Track against Stripe volume |
+Routing security events are logged but not yet published as CloudWatch metrics:
+
+| Event | Source | Level | Status |
+|-------|--------|-------|--------|
+| Routing ID mismatch | `SecureRoutingMiddleware` | WARNING | Logged (not published to CloudWatch) |
+| Tier cache invalidation | `invalidate_user_tier_cache()` | INFO | Logged (not published to CloudWatch) |
 
 ---
 
@@ -189,8 +190,7 @@ sequenceDiagram
 
 | Variable | Purpose | Location |
 |---|---|---|
-| `ROUTING_SECRET_KEY` | 256-bit HMAC key for routing ID generation | Lambda env var (sensitive) |
-| `SECRET_KEY` | Same HMAC key for backend middleware | Backend env var (sensitive) |
+| `ROUTING_SECRET_KEY` | 256-bit HMAC key for routing ID generation | Lambda env var + Backend env var (sensitive) |
 
 **Key generation:**
 ```bash

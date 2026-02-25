@@ -102,38 +102,22 @@ Formula: `instances = min(max(1, ceil(active_users / 5)), 10)`
 Note: Scaling triggers at >= 5 active users, but 5 users only
 needs 1 instance (`ceil(5/5) = 1`). Actual scale-up starts at 6 users.
 
----
+### Motivation: Sticky Session Overload
 
-## Problem & Solution
+Without Free Manager, all users in a burst (e.g., 20 during a demo) get
+sticky session cookies to the same instance. ASG launches new instances
+but existing users remain stuck on the overloaded one. The only
+workaround is asking users to log out and back in.
 
-### Problem: Sticky Session Overload
+Free Manager solves this by tracking activity in the database, proactively
+scaling the ASG, waiting for instances to be ready, then rebalancing idle
+users across all instances via round-robin migration. Users with active
+workflows are protected by atomic SQL constraints, and experiment metadata
+is synced to new instances after migration.
 
-**Before Free Manager:**
-1. 20 users log in during demo -> All get sticky session cookies to Instance A
-2. Instance A becomes overloaded -> ASG launches Instance B
-3. **Problem:** All 20 users stuck on Instance A due to 5-minute sticky cookies
-4. New users (21+) go to Instance B, but original 20 have poor experience
-5. **Workaround:** Ask users to log out and back in (unprofessional)
+### Flow Diagrams
 
-**After Free Manager:**
-1. 20 users log in -> Activity tracked in database by middleware
-2. Free Manager detects threshold reached (>= 5 users)
-3. Lambda scales ASG immediately (proactive scaling)
-4. **Lambda waits for instances to become ready** (retry every 60s, timeout 15 min)
-5. Lambda uses **multi-instance rebalancing** to distribute evenly
-6. Lambda identifies idle users (no active workflows)
-7. Lambda migrates idle users using round-robin distribution
-8. **Lambda triggers experiment sync** on new instances after migration
-9. **Lambda verifies distribution is balanced** after migration
-10. Users with running workflows stay on Instance A (atomic SQL protection)
-11. Load distributed evenly: Instance A=10, Instance B=10
-12. **Result:** Professional demo experience, no manual intervention
-
----
-
-## Flow Diagrams
-
-### Scheduled Monitoring Flow (Every 5 Minutes)
+#### Scheduled Monitoring Flow (Every 5 Minutes)
 
 ```mermaid
 sequenceDiagram
@@ -194,7 +178,7 @@ sequenceDiagram
     end
 ```
 
-### ASG Lifecycle Event Flow
+#### ASG Lifecycle Event Flow
 
 ```mermaid
 sequenceDiagram
@@ -225,7 +209,7 @@ sequenceDiagram
     end
 ```
 
-### Multi-Instance Rebalancing Algorithm
+#### Multi-Instance Rebalancing Algorithm
 
 ```mermaid
 graph TB
@@ -254,7 +238,7 @@ graph TB
     style A fill:#87CEEB
     style H fill:#FFD700
     style K fill:#90EE90
-    style N fill:#98FB98
+    style N fill:#90EE90
 ```
 
 ---

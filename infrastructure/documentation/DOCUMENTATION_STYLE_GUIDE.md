@@ -35,7 +35,7 @@ Every architecture document should follow this structure:
 | Key Architectural Principles | Design decisions and constraints | 3-5 numbered items |
 | Architecture Overview | Visual diagram + responsibility matrix | 1 diagram + 1 table |
 | Implementation Details | How it works (function signatures + flow diagrams) | As needed |
-| Edge Case Handling | Common failure scenarios and solutions | 3-5 cases |
+| Edge Case Handling | Common failure scenarios and solutions | Roughly 3-5 cases |
 | Monitoring and Metrics | CloudWatch metrics, logs, dashboards | 1-2 tables |
 | Configuration | Environment variables, triggers, schemas | Tables preferred |
 | Key Functions Reference | Function purpose lookup table | 1 table per component |
@@ -495,7 +495,7 @@ Reference these documents as examples:
 | `FREE_MANAGER_ARCHITECTURE.md` | Excellent Mermaid diagrams, clear algorithm explanation |
 | `ALB_ROUTING_ARCHITECTURE.md` | Clear following of style guide |
 | `PREMIUM_USER_ASSIGNMENT.md` | Comprehensive priority matrix, sequence diagrams |
-| `BACKGROUND_JOB_ARCHITECTURE.md` | Concise ASCII diagram, clean structure |
+| `BACKGROUND_JOB_ARCHITECTURE.md` | Full style guide compliance, edge case handling, configuration table |
 
 ---
 

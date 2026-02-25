@@ -1,1331 +1,464 @@
-# Storage Tracking and OOM Mitigation Enhancements
+# Storage Tracking: Incremental Tracking and OOM Mitigation
 
 ## Executive Summary
 
-This document describes the features being added to `develop-main` from the `feature/efficient-S3-scans` branch. These enhancements eliminate Out-of-Memory (OOM) errors caused by full S3 storage scans by implementing an incremental tracking system with periodic reconciliation.
-
-**Key Improvements:**
-- **Incremental Storage Tracking** - Add/subtract bytes on upload/delete instead of scanning S3
-- **Smart Reconciliation** - Only scan when drift exceeds thresholds or time limits
-- **Memory-Efficient Scanning** - Generator-based streaming prevents paginator metadata accumulation
-- **Batch Processing** - Background job processes users in batches to prevent OOM
-- **Concurrency Control** - MySQL distributed locks prevent duplicate scans
+- **Incremental storage tracking** replaces full S3 scans with cheap SQL add/subtract on every upload/delete
+- **Threshold-based reconciliation** only triggers full S3 scans when drift exceeds 5% or 200 MB
+- **Generator-based streaming** uses manual continuation tokens instead of boto3 paginator to maintain O(1) memory
+- **Batch processing** in the background reconciliation job processes 10 users at a time to prevent OOM
+- **MySQL advisory locks** prevent duplicate concurrent scans of the same user
+- **Idempotent storage operations** track each increment/decrement via `StorageOperation` records to prevent double-counting
 
 ---
 
 ## Key Architectural Principles
 
----
+1. **Incremental First, Scan as Fallback**
+   - 99.9% of storage updates are atomic SQL increments/decrements (no S3 calls)
+   - Full S3 scans only happen when drift thresholds are exceeded or during hourly reconciliation
+   - Reduces per-workflow S3 API calls from ~10,000 to zero for most operations
 
-## Problem Statement
+2. **Idempotent Operations**
+   - Every storage change is tracked via `StorageOperation` with an idempotency key
+   - Retries and crash recovery cannot double-count bytes
+   - Failed operations are recovered by background reconciliation
 
-### Before: Full S3 Scan After Every Workflow
+3. **Memory-Bounded Processing**
+   - Generator pattern yields one S3 page at a time (O(1) memory vs O(n) with boto3 paginator)
+   - Background job processes users in batches of 10 with rate limiting
+   - Prevents OOM even for users with millions of S3 objects
 
-**Previous Behavior:**
-```python
-async def update_user_storage_after_workflow(workspace_id: str):
-    # Get user who owns workspace
-    user_id = get_workspace_owner(workspace_id)
-
-    # EXPENSIVE: Full S3 scan every time
-    await get_current_user_storage_usage(user_id, force_live=True)
-    # ↑ Lists ALL objects in ALL workspaces for this user
-```
-
-**Issues:**
-1. **Every workflow completion** triggers full S3 scan
-2. Users with **millions of objects** → OOM during pagination
-3. **boto3 paginator** accumulates metadata for all pages
-4. **No batching** → memory grows linearly with object count
-5. **Concurrent scans** waste resources
-
-**Impact:**
-- Users with 10M objects (1TB storage) → 10,000 pagination requests
-- Each page: 1000 objects × metadata → cumulative memory buildup
-- OOM kills container → workflow fails → poor user experience
+4. **Distributed Lock Coordination**
+   - MySQL `GET_LOCK()` with per-user lock names prevents concurrent scans
+   - Non-blocking lock attempts (timeout=0) allow graceful skip when another process is scanning
+   - Lock released in `finally` block within a single `session_scope()` context
 
 ---
 
-## Solution Architecture
-
-### After: Incremental Tracking + Periodic Reconciliation
+## Architecture Overview
 
 ```mermaid
 graph TB
-    subgraph "Upload/Delete Operations (Real-time)"
-        A[Upload Files] --> B[Calculate Bytes Uploaded]
+    subgraph "Real-time Operations"
+        A[Upload Files] --> B[increment_storage_idempotent]
         B --> C[increment_user_storage]
-        C --> D[UPDATE storage_usage_bytes = <br/>storage_usage_bytes + bytes]
-        D --> E[UPDATE delta_since_last_scan = <br/>delta_since_last_scan + bytes]
+        C --> D[SQL: storage_usage_bytes += N<br/>delta_since_last_scan += N]
 
-        F[Delete Files] --> G[Calculate Bytes Deleted]
-        G --> H[decrement_user_storage]
-        H --> I[UPDATE storage_usage_bytes = <br/>GREATEST 0, storage_usage_bytes - bytes]
-        I --> J[UPDATE delta_since_last_scan = <br/>delta_since_last_scan + bytes]
+        E[Delete Files] --> F[decrement_storage_idempotent]
+        F --> G[decrement_user_storage]
+        G --> H[SQL: storage_usage_bytes -= N<br/>delta_since_last_scan += N]
     end
 
-    subgraph "Workflow Completion (Conditional)"
-        K[Workflow Complete] --> L{Delta > 5%<br/>OR > 200MB?}
-        L -->|No| M[Skip S3 Scan<br/>Use DB Value]
-        L -->|Yes| N[Trigger Full Scan]
-        N --> O[Reset Delta to 0]
-
-        P{Last Scan<br/>> 60 min?} -->|Yes| N
-        P -->|No| M
+    subgraph "Workflow Completion"
+        I[Workflow Complete] --> J{Delta > 5%<br/>OR > 200MB<br/>OR > 60 min?}
+        J -->|No| K[Skip Scan<br/>Use DB Value]
+        J -->|Yes| L[Full S3 Scan<br/>+ Reset Delta]
     end
 
     subgraph "Background Reconciliation (Hourly)"
-        Q[Every 60 Minutes] --> R[Get Users with<br/>delta > 0]
-        R --> S[Process in Batches<br/>of 10 Users]
-        S --> T[Acquire Advisory Lock]
-        T --> U{Lock<br/>Acquired?}
-        U -->|No| V[Skip - Another<br/>Process Scanning]
-        U -->|Yes| W[Full S3 Scan<br/>with Streaming]
-        W --> X[Update DB]
-        X --> Y[Reset Delta]
-        Y --> Z[Release Lock]
+        M[StorageReconciliationJob] --> N[Query Users with<br/>delta > 0 or never scanned]
+        N --> O[Process in Batches of 10]
+        O --> P[Acquire Advisory Lock]
+        P --> Q{Lock?}
+        Q -->|No| R[Skip]
+        Q -->|Yes| S[Full S3 Scan + Reset Delta]
+        S --> T[Release Lock]
     end
+
+    style K fill:#90EE90
+    style L fill:#87CEEB
+    style R fill:#FFB6C1
+    style S fill:#87CEEB
 ```
 
-**Key Principles:**
-1. **Incremental First** - Most updates are cheap SQL operations
-2. **Scan Only When Needed** - Threshold-based triggers (delta or time)
-3. **Batch Processing** - Limit memory footprint of background job
-4. **True Streaming** - Manual pagination prevents metadata accumulation
-5. **Lock Coordination** - Prevent duplicate concurrent scans
+| Responsibility | Real-time Path | Background Job |
+|----------------|----------------|----------------|
+| Update storage bytes | Yes - SQL increment/decrement | Yes - Full S3 scan |
+| Trigger S3 scan | Only when thresholds exceeded | Always (for dirty users) |
+| Prevent duplicate scans | No (cheap SQL, no risk) | Yes - Advisory locks |
+| Batch processing | No (single user per request) | Yes - 10 users per batch |
 
 ---
 
-## Detailed Changes by Component
+## Implementation Details
 
-### 1. Database Schema: Delta Tracking
+### Database Schema: Delta Tracking
 
 **Migration:** `g901g9260021_add_storage_delta_tracking.py`
 
-#### Schema Changes
+Two columns added to `user_storage_usage`:
 
 ```sql
+-- Track cumulative bytes changed since last full S3 scan
 ALTER TABLE user_storage_usage
-  ADD COLUMN delta_since_last_scan BIGINT NOT NULL DEFAULT 0
-    COMMENT 'Cumulative bytes changed since last full S3 scan',
-  ADD COLUMN last_full_scan DATETIME NULL
-    COMMENT 'Timestamp of last full S3 storage scan';
+  ADD COLUMN delta_since_last_scan BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN last_full_scan DATETIME NULL;
 ```
 
-**Purpose:**
-- `delta_since_last_scan`: Tracks how much storage has changed since last reconciliation
-- `last_full_scan`: Determines if hourly reconciliation is needed
+- `delta_since_last_scan`: Absolute sum of all byte changes (uploads + deletes) since last reconciliation
+- `last_full_scan`: Timestamp of last full S3 scan; `NULL` triggers first-time scan
 
-**Example Flow:**
-```
-Initial State:
-  storage_usage_bytes = 1000000000 (1 GB)
-  delta_since_last_scan = 0
-  last_full_scan = 2025-12-24 10:00:00
+### Incremental Tracking Functions
 
-User uploads 100 MB:
-  storage_usage_bytes = 1104857600 (1.1 GB)  [+ 100 MB]
-  delta_since_last_scan = 104857600           [+ 100 MB]
-  last_full_scan = 2025-12-24 10:00:00       [unchanged]
-
-User deletes 50 MB:
-  storage_usage_bytes = 1052428800 (1.05 GB) [- 50 MB]
-  delta_since_last_scan = 157286400           [+ 50 MB to delta]
-  last_full_scan = 2025-12-24 10:00:00       [unchanged]
-
-Full S3 Scan Triggered (delta > threshold):
-  storage_usage_bytes = 1048576000 (1.0 GB)  [actual S3 value]
-  delta_since_last_scan = 0                   [RESET]
-  last_full_scan = 2025-12-24 11:30:00       [updated]
-```
-
----
-
-### 2. Incremental Tracking Functions
+#### increment_user_storage()
 
 **File:** `studio/app/common/core/cloud/storage_tracking.py`
+**Purpose:** Atomic increment of storage usage during upload
+**Input:** `user_id` (int), `bytes_added` (int)
+**Output:** `True` on success; creates storage record if none exists
+**Key constraint:** Uses SQL `storage_usage_bytes + bytes_added` for atomic update
 
-#### Before: Always Full Scan
+#### decrement_user_storage()
 
-```python
-async def update_user_storage_after_workflow(workspace_id: str):
-    user_id = get_workspace_owner(workspace_id)
-    # EXPENSIVE: Always scan all S3 objects
-    await get_current_user_storage_usage(user_id, force_live=True)
-```
+**File:** `studio/app/common/core/cloud/storage_tracking.py`
+**Purpose:** Atomic decrement of storage usage during delete
+**Input:** `user_id` (int), `bytes_removed` (int)
+**Output:** `True` on success
+**Key constraint:** `func.greatest(0, storage_usage_bytes - bytes_removed)` prevents negative values
 
-**Memory Usage:** O(n) where n = number of objects
+#### update_user_storage_after_workflow()
 
-#### After: Increment/Decrement with Threshold Checks
+**File:** `studio/app/common/core/cloud/storage_tracking.py`
+**Purpose:** Smart reconciliation after workflow completion -- only scans if thresholds exceeded
+**Input:** `workspace_id` (str)
+**Output:** None; triggers full scan and delta reset if needed
+**Calls:** `_should_trigger_full_scan()` -> `_perform_full_scan_and_reset_delta()`
 
-```python
-def increment_user_storage(user_id: int, bytes_added: int) -> bool:
-    """
-    Atomic increment of storage usage (called during upload).
-    Creates a storage record if none exists.
-    """
-    if bytes_added <= 0:
-        return True
+#### _should_trigger_full_scan()
 
-    with session_scope() as db:
-        existing_usage = db.execute(
-            select(UserStorageUsage)
-            .where(UserStorageUsage.user_id == user_id)
-        ).first()
+**File:** `studio/app/common/core/cloud/storage_tracking.py`
+**Purpose:** Determine if a full S3 scan is needed based on drift thresholds
+**Input:** `user_id` (int)
+**Output:** `True` if scan needed
 
-        if existing_usage:
-            stmt = (
-                update(UserStorageUsage)
-                .where(UserStorageUsage.user_id == user_id)
-                .values(
-                    storage_usage_bytes=(
-                        UserStorageUsage.storage_usage_bytes + bytes_added
-                    ),
-                    delta_since_last_scan=(
-                        UserStorageUsage.delta_since_last_scan + bytes_added
-                    ),
-                    last_updated=get_current_datetime(),
-                )
-            )
-            db.execute(stmt)
-        else:
-            update_user_storage_usage(user_id, bytes_added)
+Triggers scan when any condition is met:
+1. `last_full_scan` is `NULL` (never scanned)
+2. Delta > 5% of current storage OR delta > 200 MB
+3. Last scan > 60 minutes ago (and delta > 0)
 
-    return True
+#### _perform_full_scan_and_reset_delta()
 
-def decrement_user_storage(user_id: int, bytes_removed: int) -> bool:
-    """
-    Atomic decrement of storage usage (called during delete).
-    Ensures storage never goes below 0 via func.greatest().
-    """
-    if bytes_removed <= 0:
-        return True
+**File:** `studio/app/common/core/cloud/storage_tracking.py`
+**Purpose:** Perform full S3 scan with MySQL advisory lock protection
+**Input:** `user_id` (int)
+**Output:** None; updates `storage_usage_bytes`, resets `delta_since_last_scan`, updates `last_full_scan`
+**Calls:** `_calculate_live_storage_usage()`
 
-    with session_scope() as db:
-        stmt = (
-            update(UserStorageUsage)
-            .where(UserStorageUsage.user_id == user_id)
-            .values(
-                storage_usage_bytes=func.greatest(
-                    0,
-                    UserStorageUsage.storage_usage_bytes - bytes_removed,
-                ),
-                delta_since_last_scan=(
-                    UserStorageUsage.delta_since_last_scan + bytes_removed
-                ),
-                last_updated=get_current_datetime(),
-            )
-        )
-        db.execute(stmt)
+Lock, scan, update, and release all happen within a single `session_scope()` context. If another process holds the lock, returns early.
 
-    return True
+#### _calculate_live_storage_usage()
 
-async def update_user_storage_after_workflow(
-    workspace_id: str,
-) -> None:
-    """
-    Smart reconciliation: only scan if thresholds exceeded.
-    """
-    workspace_id_int = int(workspace_id)
+**File:** `studio/app/common/core/cloud/storage_tracking.py`
+**Purpose:** Calculate actual storage by scanning S3
+**Input:** `user_id` (int)
+**Output:** Total storage in bytes (int)
 
-    with session_scope() as db:
-        result = db.execute(
-            select(Workspace.user_id)
-            .where(Workspace.id == workspace_id_int)
-        ).first()
-        user_id = result[0] if result else None
-
-        if user_id:
-            needs_scan = await _should_trigger_full_scan(user_id)
-            if needs_scan:
-                await _perform_full_scan_and_reset_delta(user_id)
-```
-
-**Scan Triggers:**
-```python
-async def _should_trigger_full_scan(user_id: int) -> bool:
-    """
-    Trigger scan if:
-    1. Delta > 5% of current storage OR > 200MB
-    2. Last scan was > 60 minutes ago (and delta > 0)
-    3. Never scanned before (last_full_scan is NULL)
-    """
-    with session_scope() as db:
-        storage_record = db.execute(
-            select(UserStorageUsage)
-            .where(UserStorageUsage.user_id == user_id)
-        ).first()[0]
-
-        delta = storage_record.delta_since_last_scan
-        last_scan = storage_record.last_full_scan
-        current_storage = storage_record.storage_usage_bytes
-
-        if last_scan is None:
-            return True
-
-        if delta > 0:
-            delta_percent = (
-                (delta / current_storage * 100)
-                if current_storage > 0 else 0
-            )
-            if (
-                delta_percent
-                    > StorageScanTriggers.DELTA_THRESHOLD_PERCENT
-                or delta
-                    > StorageScanTriggers.DELTA_THRESHOLD_BYTES
-            ):
-                return True
-
-            time_since_scan = (
-                get_current_datetime() - last_scan
-            ).total_seconds() / 60
-            if time_since_scan
-                    > StorageScanTriggers.SCAN_INTERVAL_MINUTES:
-                return True
-
-        return False
-```
-
----
-
-### 3. Idempotent Storage Operations
+### Idempotent Storage Operations
 
 **File:** `studio/app/common/core/cloud/storage_operations.py`
 
-The S3 storage controller does **not** call `increment_user_storage` / `decrement_user_storage` directly. Instead, it uses idempotent wrappers that track each operation via the `StorageOperation` model to prevent double-counting during retries or crash recovery.
+The S3 storage controller does not call `increment_user_storage()` / `decrement_user_storage()` directly. Instead, it uses idempotent wrappers that track each operation via the `StorageOperation` model.
 
-#### Idempotent Wrapper Pattern
+#### increment_storage_idempotent()
 
-```python
-def increment_storage_idempotent(
-    user_id: int,
-    bytes_delta: int,
-    idempotency_key: str,
-) -> bool:
-    """
-    Idempotent storage increment to prevent double-counting.
-    Uses StorageOperation table to track pending/completed state.
-    """
-    with session_scope() as db:
-        # Skip if already completed with this key
-        existing = db.execute(
-            select(StorageOperation).where(
-                StorageOperation.idempotency_key == idempotency_key,
-                StorageOperation.status == "completed",
-            )
-        ).first()
-        if existing:
-            return True
+**File:** `studio/app/common/core/cloud/storage_operations.py`
+**Purpose:** Idempotent increment that prevents double-counting during retries
+**Input:** `user_id` (int), `bytes_delta` (int), `idempotency_key` (str)
+**Output:** `True` if increment applied or already completed; `False` if pending
+**Calls:** `increment_user_storage()`
 
-        # Skip if already pending (prevents concurrent duplicates)
-        pending = db.execute(
-            select(StorageOperation).where(
-                StorageOperation.idempotency_key == idempotency_key,
-                StorageOperation.status == "pending",
-            )
-        ).first()
-        if pending:
-            return False
+Flow: Check completed -> check pending -> create pending record -> delegate to base function -> mark completed/failed
 
-        # Create pending record
-        operation = StorageOperation(
-            user_id=user_id,
-            idempotency_key=idempotency_key,
-            operation_type="increment",
-            bytes_delta=bytes_delta,
-            status="pending",
-        )
-        db.add(operation)
-        db.commit()
+`decrement_storage_idempotent()` follows the same pattern.
 
-    # Delegate to base function
-    success = increment_user_storage(user_id, bytes_delta)
-
-    # Mark completed or failed
-    with session_scope() as db:
-        op = db.get(StorageOperation, operation.id)
-        op.status = "completed" if success else "failed"
-        db.commit()
-
-    return success
-```
-
-The same pattern exists for `decrement_storage_idempotent()`.
-
-#### Additional Recovery Functions
+#### Recovery Functions
 
 | Function | Purpose |
 |----------|---------|
 | `get_pending_storage_operations()` | Find operations stuck in pending |
 | `cleanup_old_storage_operations()` | Delete completed ops older than 7 days |
-| `process_failed_storage_operations()` | Retry failed ops with max retry limit |
+| `process_failed_storage_operations()` | Retry failed ops with max retry limit (5) |
 | `process_stale_pending_operations()` | Mark stuck pending ops as failed for reconciliation |
 
----
-
-### 3a. S3 Storage Controller Integration
+### S3 Storage Controller Integration
 
 **File:** `studio/app/common/core/storage/s3_storage_controller.py`
 
-The controller calls the idempotent wrappers (not the base functions) during upload and delete operations:
+The controller calls idempotent wrappers during upload and delete:
+- Upload: accumulates `total_bytes_uploaded`, calls `increment_storage_idempotent()`
+- Delete: accumulates `total_bytes_deleted`, calls `decrement_storage_idempotent()`
 
-```python
-# Upload: tracks bytes and calls idempotent increment
-total_bytes_uploaded += file_size
-increment_storage_idempotent(
-    user_id, total_bytes_uploaded, idempotency_key
-)
-
-# Delete: tracks bytes and calls idempotent decrement
-total_bytes_deleted += await obj.size
-decrement_storage_idempotent(
-    user_id, total_bytes_deleted, idempotency_key
-)
-```
-
-**Benefits:**
-- Real-time storage tracking during operations
-- No S3 scans during normal upload/delete
-- Idempotency keys prevent double-counting on retries
-- Failed operations are recovered by background reconciliation
-
----
-
-### 4. Memory-Efficient S3 Streaming
+### Memory-Efficient S3 Streaming
 
 **File:** `studio/app/common/core/cloud/s3_storage_monitor.py`
 
-#### Before: boto3 Paginator (Metadata Accumulation)
+#### _stream_s3_objects()
 
-```python
-def get_user_s3_storage_size(self, user_id: int) -> int:
-    """
-    ISSUE: boto3 paginator accumulates internal state for ALL pages.
-    For 10M objects (10,000 pages), paginator holds metadata in memory.
-    """
-    paginator = s3_client.get_paginator('list_objects_v2')
-    page_iterator = paginator.paginate(
-        Bucket=bucket,
-        Prefix=prefix,
-        PaginationConfig={'PageSize': 1000}
-    )
+**Purpose:** Generator that yields S3 pages one at a time using manual continuation tokens
+**Input:** `s3_client`, `bucket` (str), `prefix` (str)
+**Output:** Yields individual `list_objects_v2` response pages
 
-    total_size = 0
-    for page in page_iterator:
-        if 'Contents' in page:
-            for obj in page['Contents']:
-                total_size += obj['Size']
+Uses `MaxKeys=1000` and manual `ContinuationToken` handling instead of boto3 paginator. Each page is garbage collected after processing, maintaining O(1) memory.
 
-    return total_size
-    # ↑ Paginator's internal state still in memory
-    # Memory usage: O(n) where n = number of pages
-```
+#### get_user_s3_storage_size_streaming()
 
-**Memory Profile:**
-```
-Page 1:    Paginator metadata = 10 KB
-Page 100:  Paginator metadata = 1 MB
-Page 1000: Paginator metadata = 10 MB
-Page 10000: Paginator metadata = 100 MB  ← OOM risk
-```
-
-#### After: Generator with Manual Continuation Tokens
-
-```python
-def _stream_s3_objects(self, s3_client, bucket: str, prefix: str):
-    """
-    Generator that yields S3 objects one page at a time without accumulating metadata.
-
-    This true streaming approach prevents boto3 paginator from accumulating
-    internal state across all pages, which can cause OOM for large datasets.
-    """
-    continuation_token = None
-
-    while True:
-        # Build request parameters
-        params = {
-            'Bucket': bucket,
-            'Prefix': prefix,
-            'MaxKeys': 1000,  # Page size
-        }
-
-        if continuation_token:
-            params['ContinuationToken'] = continuation_token
-
-        # Fetch single page (no paginator state)
-        response = s3_client.list_objects_v2(**params)
-
-        # Yield the page immediately
-        yield response
-
-        # Check if more pages exist
-        if not response.get('IsTruncated'):
-            break
-
-        continuation_token = response.get('NextContinuationToken')
-        # Previous page automatically garbage collected
-
-async def get_user_s3_storage_size_streaming(self, user_id: int) -> int:
-    """
-    Memory-efficient version using true streaming with generator pattern.
-
-    Memory footprint: O(1) - constant regardless of object count
-    """
-    total_size = 0
-    s3_client = boto3.client('s3')
-
-    try:
-        for workspace_id in workspace_ids:
-            for prefix in prefixes:
-                # Use custom generator for true streaming
-                for page in self._stream_s3_objects(s3_client, bucket, prefix):
-                    if 'Contents' in page:
-                        # Process page immediately
-                        page_size = sum(obj['Size'] for obj in page['Contents'])
-                        total_size += page_size
-                    # Page is automatically garbage collected when loop continues
-
-        return total_size
-    finally:
-        s3_client.close()
-```
-
-**Memory Profile:**
-```
-Page 1:    Memory = 100 KB (single page)
-Page 100:  Memory = 100 KB (single page, previous GC'd)
-Page 1000: Memory = 100 KB (single page, previous GC'd)
-Page 10000: Memory = 100 KB (single page, previous GC'd)
-```
-
-**Key Differences:**
+**Purpose:** Calculate total S3 storage size using streaming generator
+**Input:** `user_id` (int)
+**Output:** Total storage in bytes (int)
+**Calls:** `_stream_s3_objects()` for each workspace prefix
 
 | Aspect | boto3 Paginator | Manual Generator |
 |--------|----------------|------------------|
 | Memory per page | Accumulates | Constant |
 | Total memory (10K pages) | ~100 MB | ~100 KB |
-| Paginator state | Kept in memory | No paginator |
-| Response history | Tracked | Not tracked |
-| Continuation tokens | Automatic | Manual |
 | Garbage collection | After iteration | After each page |
 
----
+### Background Reconciliation Job
 
-### 5. Background Reconciliation Job
+**File:** `studio/app/common/core/background/storage_reconciliation_job.py`
 
-**File:** `studio/app/common/core/background/storage_reconciliation_job.py` (259 lines)
+#### StorageReconciliationJob.run()
 
-#### Purpose
+**Purpose:** Periodically reconcile incremental tracking with actual S3 storage
+**Input:** None (queries `UserStorageUsage` records with `delta_since_last_scan > 0` or `last_full_scan IS NULL`)
+**Output:** Updates storage values, resets deltas, logs drift warnings
+**Calls:** `_perform_full_scan_and_reset_delta()` for each user
 
-Periodically reconcile incremental tracking with actual S3 storage to catch:
-- Failed increment/decrement operations
-- Manual S3 changes outside the app
-- Race conditions during concurrent operations
+Processing flow:
+1. Query users needing reconciliation (delta > 0 or never scanned)
+2. Process in batches of 10 with LIMIT/OFFSET
+3. For each user: acquire advisory lock, full S3 scan, update DB, release lock
+4. Rate limit: 0.5s delay between users to avoid S3 throttling
+5. Log drift warnings when difference exceeds 5% or 100 MB
 
-#### Before: No Background Job (OOM During Workflow)
-
-```python
-# Every workflow completion
-async def update_user_storage_after_workflow(workspace_id: str):
-    user_id = get_workspace_owner(workspace_id)
-    # ALWAYS scan - can happen 100x per hour for active user
-    await get_current_user_storage_usage(user_id, force_live=True)
-```
-
-**Issues:**
-- User with 100 workflows/hour → 100 full S3 scans/hour
-- Each scan: 10,000 API calls for large users
-- OOM risk on every workflow
-
-#### After: Batch Processing Every 60 Minutes
-
-```python
-class StorageReconciliationJob:
-    """
-    Background job to reconcile storage usage for all users.
-    Runs every 60 minutes to balance accuracy vs. cost/performance.
-    """
-
-    # Configuration
-    BATCH_SIZE = 10  # Process 10 users at a time to prevent OOM
-    RATE_LIMIT_DELAY_SECONDS = 0.5  # 0.5s delay between users
-
-    @classmethod
-    async def run(cls):
-        """Process users in batches with rate limiting."""
-        offset = 0
-        total_users = 0
-
-        # Get total count
-        with session_scope() as db:
-            total_users = db.execute("""
-                SELECT COUNT(*) FROM user_storage_usage
-                WHERE delta_since_last_scan > 0 OR last_full_scan IS NULL
-            """).scalar()
-
-        logger.info(f"Starting reconciliation for {total_users} users "
-                   f"(batches of {cls.BATCH_SIZE})")
-
-        # Process in batches
-        while True:
-            # Fetch next batch (LIMIT/OFFSET prevents loading all users)
-            with session_scope() as db:
-                batch_records = db.execute("""
-                    SELECT user_id, storage_usage_bytes,
-                           delta_since_last_scan, last_full_scan
-                    FROM user_storage_usage
-                    WHERE delta_since_last_scan > 0 OR last_full_scan IS NULL
-                    ORDER BY user_id
-                    LIMIT %s OFFSET %s
-                """, (cls.BATCH_SIZE, offset)).fetchall()
-
-            if not batch_records:
-                break  # All users processed
-
-            logger.info(f"Processing batch {offset // cls.BATCH_SIZE + 1}: "
-                       f"{len(batch_records)} users")
-
-            # Process each user in batch
-            for row in batch_records:
-                user_id, db_storage, delta, last_scan = row
-
-                try:
-                    # Perform full S3 scan and reset delta
-                    await _perform_full_scan_and_reset_delta(user_id)
-
-                    # Rate limiting to avoid S3 throttling
-                    await asyncio.sleep(cls.RATE_LIMIT_DELAY_SECONDS)
-
-                except Exception as e:
-                    logger.error(f"Failed to reconcile user {user_id}: {e}")
-                    continue
-
-            # Move to next batch
-            offset += cls.BATCH_SIZE
-            logger.info(f"Batch completed. Progress: {offset}/{total_users}")
-
-        logger.info(f"Storage reconciliation completed")
-```
-
-**Batch Processing Comparison:**
-
-| Scenario | Before (No Batching) | After (Batched) |
-|----------|---------------------|-----------------|
-| 100 active users | Load all 100 into memory | 10 batches of 10 users |
-| Memory footprint | 100 concurrent scans | Max 1 scan at a time |
-| S3 API calls | 100 × 10,000 = 1M calls in 5 min | 1M calls spread over 50+ min |
-| OOM risk | High (parallel scans) | Low (sequential with delays) |
-
-**Job Scheduling:**
-
-```python
-# studio/__main_unit__.py
-
-from studio.app.common.core.background.storage_reconciliation_job import (
-    StorageReconciliationJob,
-)
-
-# Add storage reconciliation job (every 60 minutes)
-BackgroundScheduler.add_job(
-    func=StorageReconciliationJob.run,
-    interval_minutes=StorageReconciliation.INTERVAL_MINUTES,  # 60
-    job_id="storage_reconciliation",
-)
-```
-
----
-
-### 6. MySQL Distributed Locks
+### MySQL Advisory Locks
 
 **File:** `studio/app/common/core/cloud/storage_tracking.py`
 
-#### Purpose
+Lock name scheme: `storage_scan_{ADVISORY_LOCK_NAMESPACE}_{user_id}` (e.g., `storage_scan_12345_42`)
 
-Prevent multiple concurrent scans of the same user (wasteful duplication).
-
-#### Implementation: Single-Session Lock + Scan + Update
-
-```python
-async def _perform_full_scan_and_reset_delta(
-    user_id: int,
-) -> None:
-    """
-    Perform full S3 scan with distributed lock protection.
-
-    Uses MySQL GET_LOCK within a single session so the lock
-    persists across the scan and DB update. If another
-    process is already scanning this user, returns early.
-    """
-    from sqlalchemy import text, update
-
-    lock_name = (
-        f"storage_scan_"
-        f"{StorageReconciliation.ADVISORY_LOCK_NAMESPACE}"
-        f"_{user_id}"
-    )
-
-    try:
-        with session_scope() as db:
-            # Non-blocking lock attempt (timeout=0)
-            lock_result = db.execute(
-                text("SELECT GET_LOCK(:lock_name, :timeout)"
-                     " as lock_result"),
-                {"lock_name": lock_name, "timeout": 0},
-            )
-            if lock_result.scalar() != 1:
-                logger.info(
-                    f"Skipping scan for user {user_id}: "
-                    f"another process is scanning"
-                )
-                return
-
-            try:
-                actual_storage = await _calculate_live_storage_usage(
-                    user_id
-                )
-                now = get_current_datetime()
-                stmt = (
-                    update(UserStorageUsage)
-                    .where(UserStorageUsage.user_id == user_id)
-                    .values(
-                        storage_usage_bytes=actual_storage,
-                        delta_since_last_scan=0,
-                        last_full_scan=now,
-                        last_updated=now,
-                    )
-                )
-                db.execute(stmt)
-            finally:
-                # Always release lock within same session
-                db.execute(
-                    text("SELECT RELEASE_LOCK(:lock_name)"),
-                    {"lock_name": lock_name},
-                )
-
-    except Exception as e:
-        logger.error(
-            f"Failed to perform full scan for "
-            f"user {user_id}: {e}"
-        )
-```
-
-**Key difference from old doc:** The actual implementation acquires the lock, performs the scan, updates the DB, and releases the lock all within a **single `session_scope()`** context. This ensures the lock is always released even if the scan fails (via `finally`).
-
-**Lock Name Scheme:**
-```python
-# MySQL GET_LOCK uses string-based lock names (not PostgreSQL numeric advisory locks)
-ADVISORY_LOCK_NAMESPACE = 12345  # Defined in constants.py
-
-# Examples:
-user_id = 1      → lock_name = "storage_scan_12345_1"
-user_id = 42     → lock_name = "storage_scan_12345_42"
-user_id = 999999 → lock_name = "storage_scan_12345_999999"
-
-# Namespace (12345) provides a unique prefix to prevent conflicts
-# Other system locks can use different namespaces (e.g., backup_12346_*, cleanup_12347_*)
-```
-
-**Benefits:**
-- Non-blocking lock (`GET_LOCK` with timeout=0 returns immediately)
-- Automatic cleanup (lock released when connection closes)
-- Per-user locking (user 1 and user 2 can scan concurrently)
-- Connection-level lock (released when connection terminates)
-
-**Concurrency Example:**
-
-```
-Scenario: Workflow complete + Background job both try to scan user 123
-
-Timeline:
-10:00:00.000 - Workflow triggers scan for user 123
-10:00:00.001 - Acquires distributed lock "storage_scan_12345_123"
-10:00:00.002 - Starts S3 scan (10,000 API calls, ~30 seconds)
-10:00:10.000 - Background job triggers scan for user 123
-10:00:10.001 - Tries to acquire lock "storage_scan_12345_123" → FAILS (already locked)
-10:00:10.002 - Skips scan (logs "another process is already scanning")
-10:00:30.000 - Workflow completes scan, updates DB, releases lock
-
-Result: Only 1 scan performed, background job skipped duplicate work
-```
+- Non-blocking: `GET_LOCK(lock_name, 0)` returns immediately
+- Per-user: different users can scan concurrently
+- Session-scoped: released when connection closes (safety net)
+- Explicit release: `RELEASE_LOCK()` in `finally` block
 
 ---
 
-### 7. Configuration Constants
-
-**File:** `studio/app/common/core/subscription/constants.py`
-
-```python
-class StorageQuota:
-    """Constants for storage quota limits"""
-
-    FREE = 5  # 5 GB for free plan
-    PREMIUM = 200  # 200 GB for premium plan
-    CRITICAL_THRESHOLD_PERCENT = 90  # 90% -> "critical" alert
-    DANGER_THRESHOLD_PERCENT = 100  # 100% -> "danger" alert
-
-
-class StorageReconciliation:
-    """Constants for storage reconciliation background job"""
-
-    # Job scheduling
-    INTERVAL_MINUTES = 60  # Run every 60 minutes
-
-    # Drift detection thresholds (for logging warnings)
-    DRIFT_THRESH_PERCENT = 5.0  # 5% drift
-    DRIFT_THRESH_BYTES = 100 * 1024 * 1024  # 100 MB
-
-    # Batch processing configuration
-    BATCH_SIZE = 10  # Process 10 users at a time to prevent OOM
-    RATE_LIMIT_DELAY_SECONDS = 0.5  # 0.5s delay between users
-
-    # Advisory lock namespace
-    ADVISORY_LOCK_NAMESPACE = 12345
-
-
-class StorageScanTriggers:
-    """Constants for triggering full S3 storage scans"""
-
-    # Delta thresholds for triggering scans
-    DELTA_THRESHOLD_PERCENT = 5.0  # 5% of current storage
-    DELTA_THRESHOLD_BYTES = 200 * 1024 * 1024  # 200 MB
-
-    # Time-based scan interval
-    SCAN_INTERVAL_MINUTES = 60  # Hourly reconciliation
-
-
-class S3Pagination:
-    """Constants for S3 pagination and streaming"""
-
-    PAGE_SIZE = 1000  # Process 1000 objects at a time
-```
----
-
-## OOM Risk Mitigation Analysis
-
-### Before: High OOM Risk
-
-**Failure Modes:**
-1. **Workflow Completion Spike**: 10 concurrent workflows → 10 concurrent scans → 1 GB memory spike → OOM
-2. **Large User Growth**: User reaches 10M objects → 100 MB per scan → OOM on every workflow
-3. **No Batching**: Background job loads all users → 100 users × 100 MB = 10 GB → OOM
-
-**Expected Frequency:** Daily OOM events for users with >5M objects
-
-### After: OOM Risk Eliminated
-
-**Mitigation Layers:**
-1. **Incremental Tracking**: 99.9% of operations never scan S3
-2. **Threshold-Based Scanning**: Only scan when drift significant (5% or 200MB)
-3. **Time-Based Scanning**: Spread scans over time (hourly, not per-workflow)
-4. **Batch Processing**: Background job processes 10 users at a time (not all at once)
-5. **True Streaming**: Generator pattern maintains O(1) memory (not O(n))
-6. **Rate Limiting**: 0.5s delay between users prevents S3 throttling
-7. **Advisory Locks**: Prevents duplicate concurrent scans
-
-**Expected Frequency:** Zero OOM events for normal usage patterns
-
-**Risk Reduction:** **Daily → Never** (for users with incremental changes)
-
----
-
-## Edge Cases Handled
+## Edge Case Handling
 
 ### 1. Drift Detection and Correction
 
-**Problem:** Incremental tracking could drift from actual S3 due to:
-- Failed increment/decrement operations
-- Manual S3 changes outside app
-- Race conditions
+**Problem:** Incremental tracking drifts from actual S3 due to failed operations, manual S3 changes, or race conditions.
 
-**Solution:** Background reconciliation compares DB vs S3 and logs drift:
-
-```python
-# In storage_reconciliation_job.py
-
-# Get storage before scan
-db_storage = 1000000000  # 1 GB from database
-
-# Perform scan
-actual_storage = 1050000000  # 1.05 GB from S3
-
-# Calculate drift
-drift_bytes = abs(actual_storage - db_storage)  # 50 MB
-drift_percent = (drift_bytes / db_storage * 100)  # 5%
-
-if drift_percent > 5.0 or drift_bytes > 100 * 1024 * 1024:
-    logger.warning(
-        f"Significant storage drift corrected for user {user_id}: "
-        f"DB={db_storage:,} → S3={actual_storage:,} bytes "
-        f"(drift: {drift_bytes:,} bytes, {drift_percent:.1f}%)"
-    )
-
-# Always update to S3 value (source of truth)
-update_user_storage_usage(user_id, actual_storage)
-```
-
-**Monitoring:** Drift warnings logged for analysis and alerting
-
+**Solution:** Background reconciliation compares DB vs S3:
+- Logs warning when drift exceeds 5% or 100 MB
+- Always updates DB to S3 value (source of truth)
+- Runs hourly to bound maximum drift window
 
 ### 2. Concurrent Upload/Delete During Scan
 
-**Problem:** User uploads/deletes while background job scans → delta updates during scan
+**Problem:** User uploads/deletes while background job scans, causing delta updates during scan.
 
 **Solution:** Advisory locks prevent scan interference:
-- Scan acquires lock before starting
-- Upload/delete increments delta (doesn't block, uses different lock)
-- Scan completes and resets delta to 0
-- If delta > 0 after scan, next hourly job will reconcile
-
-**Example Timeline:**
-```
-10:00:00 - Background job starts scan for user 123 (acquires lock)
-10:00:10 - User uploads 100MB (increment delta = 100MB, doesn't wait for scan)
-10:00:30 - Scan completes, resets delta to 0
-10:00:31 - Delta now = 100MB (from upload at 10:00:10)
-11:00:00 - Next hourly reconciliation detects delta = 100MB, triggers scan
-```
-
+- Scan acquires lock, performs scan, resets delta, releases lock
+- Upload/delete increments delta concurrently (uses different code path)
+- If delta > 0 after scan reset, next hourly job reconciles
 
 ### 3. Storage Never Goes Negative
 
-**Problem:** Delete more bytes than exist in database (edge case)
+**Problem:** Delete more bytes than exist in database (e.g., due to drift).
 
-**Solution:** `func.greatest(0, ...)` ensures storage_usage_bytes ≥ 0:
-
-```python
-# In decrement_user_storage
-
-stmt = update(UserStorageUsage).values(
-    storage_usage_bytes=func.greatest(0,
-        UserStorageUsage.storage_usage_bytes - bytes_removed)
-)
-
-# Example:
-# DB has: storage_usage_bytes = 50 MB (inaccurate due to drift)
-# Delete: 100 MB
-# Result: storage_usage_bytes = 0 (not -50 MB)
-# Next reconciliation will correct to actual S3 value
+**Solution:** SQL constraint in `decrement_user_storage()`:
+```sql
+-- Ensures storage_usage_bytes >= 0
+storage_usage_bytes = GREATEST(0, storage_usage_bytes - bytes_removed)
 ```
-
 
 ### 4. First-Time User (Never Scanned)
 
-**Problem:** New user with no storage record or `last_full_scan = NULL`
+**Problem:** New user with `last_full_scan = NULL` has no baseline.
 
-**Solution:** Reconciliation job includes `OR last_full_scan IS NULL`:
-
-```sql
-SELECT user_id FROM user_storage_usage
-WHERE delta_since_last_scan > 0 OR last_full_scan IS NULL
-```
-
-**Flow:**
-1. New user created → `last_full_scan = NULL`
-2. First hourly reconciliation → triggers full scan
-3. Updates `last_full_scan = NOW()`
-4. Future reconciliations use threshold logic
-
+**Solution:** Reconciliation query includes `OR last_full_scan IS NULL`:
+- First hourly reconciliation triggers full scan
+- Sets `last_full_scan` timestamp
+- Future reconciliations use threshold logic
 
 ### 5. Database Transaction Failures
 
-**Problem:** Increment/decrement SQL fails mid-operation
-
-**Solution:** Graceful degradation with fallback mode:
-
-```python
-def increment_user_storage(user_id: int, bytes_added: int) -> bool:
-    try:
-        # Atomic SQL operation
-        db.execute(stmt)
-        return True
-    except Exception as orm_error:
-        logger.warning(
-            f"UserStorageUsage table not accessible: {orm_error}, "
-            "skipping storage increment"
-        )
-        return True  # Don't fail the upload/delete operation
-```
-
-**Impact:** Upload/delete succeeds even if tracking fails. Next reconciliation corrects.
-
-
----
-
-## Background Job Deployment Options
-
-### Default: In-Process Scheduler (Single Worker Only)
-
-**File:** `studio/__main_unit__.py`
-
-The background reconciliation job runs via APScheduler inside the FastAPI process:
-
-```python
-# Add storage reconciliation job (every 60 minutes)
-BackgroundScheduler.add_job(
-    func=StorageReconciliationJob.run,
-    interval_minutes=StorageReconciliation.INTERVAL_MINUTES,  # 60
-    job_id="storage_reconciliation",
-)
-```
-
-**Multi-Worker Problem:**
-
-When FastAPI runs with multiple workers (`--workers > 1`):
-- Each worker initializes its own BackgroundScheduler
-- Each scheduler runs the same jobs independently
-- Results in duplicate job execution (N × workers)
-- Potential for race conditions and resource waste
-
-**Example:**
-```bash
-# With 4 workers, each job runs 4× as often!
-uvicorn studio.__main_unit__:app --workers 4
-# → Sync job: every 5 min × 4 workers = 20 executions/hour (expected: 12)
-# → Cleanup job: every 60 min × 4 workers = 4 executions/hour (expected: 1)
-# → Reconciliation job: every 60 min × 4 workers = 4 executions/hour (expected: 1)
-```
-
----
-
-### Recommended: Cron-Based Execution (Production)
-
-For production deployments with multiple workers, **use cron instead of BackgroundScheduler** to avoid duplicate job execution.
-
-#### Benefits
-
-- **No duplicate execution** - Jobs run once per schedule, not once per worker
-- **Independent of web processes** - Jobs continue even if FastAPI crashes
-- **Better observability** - Separate logs, easier to monitor
-- **Resource isolation** - Heavy jobs don't impact web request performance
-- **Easier scaling** - Web workers can scale independently of job execution
-
-#### Implementation
-
-**1. Disable Built-In Scheduler**
-
-Set the environment variable:
-
-```bash
-export DISABLE_BACKGROUND_SCHEDULER=1
-```
-
-Add to your deployment configuration:
-
-**Docker Compose:**
-```yaml
-services:
-  web:
-    environment:
-      - DISABLE_BACKGROUND_SCHEDULER=1
-    command: uvicorn studio.__main_unit__:app --host 0.0.0.0 --port 8000 --workers 4
-```
-
-**Systemd:**
-```ini
-[Service]
-Environment="DISABLE_BACKGROUND_SCHEDULER=1"
-ExecStart=/usr/bin/uvicorn studio.__main_unit__:app --host 0.0.0.0 --port 8000 --workers 4
-```
-
-**2. Create Cron Jobs**
-
-Three CLI scripts are provided in `studio/scripts/`:
-- `run_published_experiment_sync.py` - Syncs published experiments from S3 (every 5 min)
-- `run_data_cleanup.py` - Cleans up logged-out user data (every 60 min)
-- `run_storage_reconciliation.py` - Reconciles storage usage with S3 (every 60 min)
-
-**Option A: User Crontab**
-
-```bash
-crontab -e
-```
-
-Add:
-```cron
-# OptiNiSt Background Jobs
-
-# Sync published experiments every 5 minutes
-*/5 * * * * cd /opt/optinist-for-cloud && /opt/venv/bin/python studio/scripts/run_published_experiment_sync.py >> /var/log/optinist/sync.log 2>&1
-
-# Data cleanup every hour
-0 * * * * cd /opt/optinist-for-cloud && /opt/venv/bin/python studio/scripts/run_data_cleanup.py >> /var/log/optinist/cleanup.log 2>&1
-
-# Storage reconciliation every hour (offset 5 min to avoid collision)
-5 * * * * cd /opt/optinist-for-cloud && /opt/venv/bin/python studio/scripts/run_storage_reconciliation.py >> /var/log/optinist/reconciliation.log 2>&1
-```
-
-**Option B: System Crontab**
-
-Create `/etc/cron.d/optinist-jobs`:
-
-```cron
-# /etc/cron.d/optinist-jobs
-
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-OPTINIST_ROOT=/opt/optinist-for-cloud
-PYTHON_BIN=/opt/optinist-for-cloud/venv/bin/python
-LOG_DIR=/var/log/optinist
-
-*/5 * * * * optinist cd $OPTINIST_ROOT && $PYTHON_BIN studio/scripts/run_published_experiment_sync.py >> $LOG_DIR/sync.log 2>&1
-0 * * * * optinist cd $OPTINIST_ROOT && $PYTHON_BIN studio/scripts/run_data_cleanup.py >> $LOG_DIR/cleanup.log 2>&1
-5 * * * * optinist cd $OPTINIST_ROOT && $PYTHON_BIN studio/scripts/run_storage_reconciliation.py >> $LOG_DIR/reconciliation.log 2>&1
-```
-
-**Option C: Systemd Timers (Recommended)**
-
-Systemd timers provide better logging and monitoring than cron.
-
-**Service Files:**
-
-`/etc/systemd/system/optinist-reconciliation.service`:
-```ini
-[Unit]
-Description=OptiNiSt Storage Reconciliation Job
-After=network.target
-
-[Service]
-Type=oneshot
-User=optinist
-WorkingDirectory=/opt/optinist-for-cloud
-Environment="S3_DEFAULT_BUCKET_NAME=your-bucket"
-Environment="DATABASE_URL=mysql://..."
-ExecStart=/opt/venv/bin/python studio/scripts/run_storage_reconciliation.py
-StandardOutput=journal
-StandardError=journal
-```
-
-`/etc/systemd/system/optinist-reconciliation.timer`:
-```ini
-[Unit]
-Description=Run OptiNiSt Reconciliation every hour
-Requires=optinist-reconciliation.service
-
-[Timer]
-OnBootSec=10min
-OnUnitActiveSec=1h
-
-[Install]
-WantedBy=timers.target
-```
-
-**Enable and start:**
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now optinist-reconciliation.timer
-sudo systemctl list-timers optinist-*
-sudo journalctl -u optinist-reconciliation.service -f
-```
-
-**3. Required Environment Variables**
-
-CLI scripts require the same environment as the FastAPI app:
-
-```bash
-# Required
-export S3_DEFAULT_BUCKET_NAME=my-bucket
-export DATABASE_URL=mysql://user:pass@host:3306/db
-# AWS credentials via IAM role or:
-export AWS_ACCESS_KEY_ID=...
-export AWS_SECRET_ACCESS_KEY=...
-
-# Optional
-export INSTANCE_ID=$(ec2-metadata --instance-id | cut -d " " -f 2)
-export DATA_DIR=/opt/optinist-data
-```
-
-**4. Log Rotation**
-
-Configure logrotate to prevent logs from growing indefinitely:
-
-`/etc/logrotate.d/optinist`:
-```
-/var/log/optinist/*.log {
-    daily
-    rotate 14
-    compress
-    delaycompress
-    notifempty
-    create 0640 optinist optinist
-}
-```
-
-**5. Monitoring**
-
-All background jobs publish CloudWatch metrics:
-
-- **Namespace:** `OptiNiSt/BackgroundJobs`
-- **Metrics:**
-  - `ExperimentsSynced` - Number of experiments synced
-  - `SyncErrors` - Sync failures
-  - `DataCleanupCount` - Users cleaned up
-  - `CleanupErrors` - Cleanup failures
-
-**Recommended Alarms:**
-
-```bash
-# High sync error rate
-aws cloudwatch put-metric-alarm \
-  --alarm-name optinist-high-sync-error-rate \
-  --metric-name SyncErrorRate \
-  --namespace OptiNiSt/BackgroundJobs \
-  --statistic Average \
-  --period 300 \
-  --threshold 50 \
-  --comparison-operator GreaterThanThreshold
-```
-
-#### Testing
-
-Manually test CLI scripts before deployment:
-
-```bash
-cd /opt/optinist-for-cloud
-python studio/scripts/run_published_experiment_sync.py
-python studio/scripts/run_data_cleanup.py
-python studio/scripts/run_storage_reconciliation.py
-```
-
-Exit codes:
-- `0` = Success
-- `1` = Failure
-
----
-
-### Unit Tests
-
-```python
-# Test incremental tracking
-def test_increment_user_storage():
-    user_id = 123
-    initial_storage = 1000000000  # 1 GB
-
-    # Increment 100 MB
-    increment_user_storage(user_id, 100 * 1024 * 1024)
-
-    storage = get_user_storage_usage(user_id)
-    assert storage['storage_usage_bytes'] == 1100 * 1024 * 1024
-    assert storage['delta_since_last_scan'] == 100 * 1024 * 1024
-
-# Test threshold triggers
-def test_should_trigger_full_scan():
-    user_id = 123
-
-    # Set delta to 6% (above 5% threshold)
-    set_delta(user_id, delta=0.06 * get_storage(user_id))
-    assert await _should_trigger_full_scan(user_id) == True
-
-    # Set delta to 3% (below 5% threshold)
-    set_delta(user_id, delta=0.03 * get_storage(user_id))
-    assert await _should_trigger_full_scan(user_id) == False
-
-# Test advisory locks
-def test_advisory_lock_prevents_concurrent_scans():
-    user_id = 123
-
-    # Process 1 acquires lock
-    lock_acquired_1 = try_acquire_lock(user_id)
-    assert lock_acquired_1 == True
-
-    # Process 2 tries to acquire same lock
-    lock_acquired_2 = try_acquire_lock(user_id)
-    assert lock_acquired_2 == False  # Lock already held
-```
-
-### Integration Tests
-
-```python
-# Test full workflow: upload → increment → reconciliation
-async def test_full_storage_tracking_workflow():
-    user_id = create_test_user()
-
-    # 1. Upload files
-    files = [create_test_file(size=100 * 1024 * 1024)]  # 100 MB
-    await s3_controller.upload(files)
-
-    # 2. Verify increment
-    storage = get_user_storage_usage(user_id)
-    assert storage['delta_since_last_scan'] == 100 * 1024 * 1024
-
-    # 3. Trigger reconciliation
-    await _perform_full_scan_and_reset_delta(user_id)
-
-    # 4. Verify delta reset
-    storage = get_user_storage_usage(user_id)
-    assert storage['delta_since_last_scan'] == 0
-```
-
-### Load Tests
-
-```python
-# Test with 10M objects
-async def test_streaming_with_large_dataset():
-    user_id = create_test_user()
-
-    # Create 10M test objects in S3
-    create_test_objects(count=10_000_000, size=100 * 1024)  # 100 KB each
-
-    # Measure memory before scan
-    mem_before = get_memory_usage()
-
-    # Scan using streaming method
-    size = await s3_monitor.get_user_s3_storage_size_streaming(user_id)
-
-    # Measure memory after scan
-    mem_after = get_memory_usage()
-
-    # Verify memory didn't grow linearly with object count
-    memory_increase = mem_after - mem_before
-    assert memory_increase < 200 * 1024 * 1024  # Less than 200 MB
-```
+**Problem:** Increment/decrement SQL fails mid-operation.
+
+**Solution:** Graceful degradation:
+- Returns `True` even on failure (does not block upload/delete)
+- Logs warning for investigation
+- Next reconciliation corrects the drift
 
 ---
 
 ## Monitoring and Metrics
 
+### Application Logs
+
+Storage tracking relies on application-level logging rather than CloudWatch metrics:
+
+| Log Level | Event | Source |
+|-----------|-------|--------|
+| WARNING | Significant drift corrected (>5% or >100 MB) | `StorageReconciliationJob` |
+| DEBUG | Normal reconciliation (no significant drift) | `StorageReconciliationJob` |
+| INFO | Batch progress (batch N of M, users processed) | `StorageReconciliationJob` |
+| INFO | Scan skipped (lock held by another process) | `_perform_full_scan_and_reset_delta()` |
+| WARNING | Storage increment/decrement SQL failure | `increment_user_storage()` / `decrement_user_storage()` |
+| ERROR | Full scan failure for a user | `_perform_full_scan_and_reset_delta()` |
+
+### Background Job Monitoring
+
+The background ECS service that runs `StorageReconciliationJob` is monitored via CloudWatch alarms defined in `BACKGROUND_JOB_ARCHITECTURE.md`:
+
+| Alarm | Metric | Threshold |
+|-------|--------|-----------|
+| `subscr-background-task-stopped` | `RunningTaskCount` | < 1 |
+| `subscr-background-cpu-high` | `CpuUtilized` | > 400 (80% of 512 CPU) |
+| `subscr-background-memory-high` | `MemoryUtilized` | > 600 (80% of 768 MB) |
+
+---
+
+## Configuration
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `S3_DEFAULT_BUCKET_NAME` | S3 bucket for user storage | Required |
+| `DISABLE_BACKGROUND_SCHEDULER` | Disable in-process scheduler (for multi-worker deployments) | `0` |
+| `SKIP_STORAGE_CHECKS` | Skip storage usage lookup (test mode) | Not set |
+
+### Constants
+
+**File:** `studio/app/common/core/subscription/constants.py`
+
+| Class | Constant | Value | Purpose |
+|-------|----------|-------|---------|
+| `StorageQuota` | `FREE` | `5` | Free plan storage limit (GB) |
+| `StorageQuota` | `PREMIUM` | `200` | Premium plan storage limit (GB) |
+| `StorageQuota` | `CRITICAL_THRESHOLD_PERCENT` | `90` | Alert threshold (warning) |
+| `StorageQuota` | `DANGER_THRESHOLD_PERCENT` | `100` | Alert threshold (danger) |
+| `StorageReconciliation` | `INTERVAL_MINUTES` | `60` | Background job interval |
+| `StorageReconciliation` | `BATCH_SIZE` | `10` | Users per batch |
+| `StorageReconciliation` | `RATE_LIMIT_DELAY_SECONDS` | `0.5` | Delay between users |
+| `StorageReconciliation` | `DRIFT_THRESH_PERCENT` | `5.0` | Drift warning threshold |
+| `StorageReconciliation` | `DRIFT_THRESH_BYTES` | `100 MB` | Drift warning threshold |
+| `StorageReconciliation` | `ADVISORY_LOCK_NAMESPACE` | `12345` | MySQL lock namespace |
+| `StorageScanTriggers` | `DELTA_THRESHOLD_PERCENT` | `5.0` | Scan trigger threshold |
+| `StorageScanTriggers` | `DELTA_THRESHOLD_BYTES` | `200 MB` | Scan trigger threshold |
+| `StorageScanTriggers` | `SCAN_INTERVAL_MINUTES` | `60` | Time-based scan interval |
+| `S3Pagination` | `PAGE_SIZE` | `1000` | Objects per S3 page |
+
+### Job Scheduling
+
+**File:** `studio/__main_unit__.py`
+
+```python
+BackgroundScheduler.add_job(
+    func=StorageReconciliationJob.run,
+    interval_minutes=StorageReconciliation.INTERVAL_MINUTES,  # 60
+    job_id="storage_reconciliation",
+)
+```
+
+For multi-worker deployments, disable the in-process scheduler and use cron or systemd timers. See `BACKGROUND_JOB_ARCHITECTURE.md` for deployment options.
+
+---
+
+## Testing
+
+### Unit Tests
+
+- **Incremental tracking**: Verify `increment_user_storage()` updates both `storage_usage_bytes` and `delta_since_last_scan`
+- **Threshold triggers**: Verify `_should_trigger_full_scan()` returns `True` when delta > 5% and `False` when below
+- **Advisory locks**: Verify second lock attempt fails when first lock is held
+- **Negative protection**: Verify `decrement_user_storage()` never produces negative values
+
+### Integration Tests
+
+- **Full workflow**: Upload -> verify increment -> trigger reconciliation -> verify delta reset
+- **Idempotency**: Retry with same idempotency key -> verify no double-counting
+
+### Load Tests
+
+- **Streaming memory**: Scan user with 10M objects, verify memory stays under 200 MB (O(1) not O(n))
+
 ---
 
 ## Key Functions Reference
+
+### Storage Tracking (`studio/app/common/core/cloud/storage_tracking.py`)
+
+| Function | Purpose |
+|----------|---------|
+| `increment_user_storage()` | Atomic SQL increment of storage bytes and delta |
+| `decrement_user_storage()` | Atomic SQL decrement with floor at zero |
+| `update_user_storage_after_workflow()` | Smart reconciliation: scan only if thresholds exceeded |
+| `_should_trigger_full_scan()` | Check delta/time thresholds to decide if scan needed |
+| `_perform_full_scan_and_reset_delta()` | Lock-protected full S3 scan with delta reset |
+| `_calculate_live_storage_usage()` | Calculate actual S3 storage for a user |
+
+### Idempotent Operations (`studio/app/common/core/cloud/storage_operations.py`)
+
+| Function | Purpose |
+|----------|---------|
+| `increment_storage_idempotent()` | Idempotent increment with `StorageOperation` tracking |
+| `decrement_storage_idempotent()` | Idempotent decrement with `StorageOperation` tracking |
+| `get_pending_storage_operations()` | Find operations stuck in pending state |
+| `cleanup_old_storage_operations()` | Delete completed operations older than 7 days |
+| `process_failed_storage_operations()` | Retry failed operations (max 5 retries) |
+| `process_stale_pending_operations()` | Mark stuck pending operations as failed |
+
+### S3 Storage Monitor (`studio/app/common/core/cloud/s3_storage_monitor.py`)
+
+| Function | Purpose |
+|----------|---------|
+| `_stream_s3_objects()` | Generator yielding S3 pages with manual continuation tokens |
+| `get_user_s3_storage_size_streaming()` | Memory-efficient total storage calculation |
+| `calculate_storage_alert_level()` | Determine alert severity from usage percentage |
+| `get_alert_message()` | Generate user-facing alert message |
+| `format_bytes()` | Convert bytes to human-readable string |
+
+### Background Reconciliation (`studio/app/common/core/background/storage_reconciliation_job.py`)
+
+| Function | Purpose |
+|----------|---------|
+| `StorageReconciliationJob.run()` | Batch reconciliation of all dirty users |
+| `reconcile_user_storage()` | Single-user reconciliation for manual triggers |
+
+### S3 Storage Controller (`studio/app/common/core/storage/s3_storage_controller.py`)
+
+| Function | Purpose |
+|----------|---------|
+| Upload path | Calls `increment_storage_idempotent()` after upload |
+| Delete path | Calls `decrement_storage_idempotent()` after delete |
 
 ---
 
 ## Storage Alerts System
 
-The storage alerts system monitors user storage usage and notifies users when they approach or exceed their storage quota.
-
 ### Overview
 
+The storage alerts system monitors user storage usage and notifies users when they approach or exceed their quota.
+
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                       Storage Alerts Architecture                        │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  ┌───────────────────────────────────────────────────────────────────┐  │
-│  │                         Backend APIs                               │  │
-│  │                                                                   │  │
-│  │  GET /storage-limit-alerts/me        → User's current alert       │  │
-│  │  GET /storage-limit-alerts/usage     → Detailed usage stats       │  │
-│  │  POST /storage-limit-alerts/refresh  → Force recalculate usage    │  │
-│  │  GET /storage-limit-alerts/limit-warning → Grace period warnings  │  │
-│  │  GET /storage-limit-alerts/all       → Admin: all user alerts     │  │
-│  │                                                                   │  │
-│  └───────────────────────────────────────────────────────────────────┘  │
-│                                 │                                       │
-│                                 ▼                                       │
-│  ┌───────────────────────────────────────────────────────────────────┐  │
-│  │                      S3StorageMonitor                              │  │
-│  │                                                                   │  │
-│  │  - calculate_storage_alert_level()  → Determine alert severity    │  │
-│  │  - get_alert_message()              → Generate user message       │  │
-│  │  - format_bytes()                   → Human-readable sizes        │  │
-│  │                                                                   │  │
-│  │  Thresholds (from StorageQuota constants):                         │  │
-│  │  - CRITICAL_THRESHOLD = 90%   → Approaching limit (warning)       │  │
-│  │  - DANGER_THRESHOLD   = 100%  → Quota exceeded (danger)           │  │
-│  │                                                                   │  │
-│  └───────────────────────────────────────────────────────────────────┘  │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ Storage Alerts Architecture                              │
+├──────────────────────────────────────────────────────────┤
+│                                                          │
+│  Backend APIs:                                           │
+│  → GET  /storage-limit-alerts/me     (user alert)        │
+│  → GET  /storage-limit-alerts/usage  (usage stats)       │
+│  → POST /storage-limit-alerts/refresh (force refresh)    │
+│  → GET  /storage-limit-alerts/limit-warning (grace)      │
+│  → GET  /storage-limit-alerts/all    (admin)             │
+│                                                          │
+│  S3StorageMonitor:                                       │
+│  → calculate_storage_alert_level()                       │
+│  → Thresholds: 90% critical, 100% danger                 │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ### Alert Levels
@@ -1336,11 +469,9 @@ The storage alerts system monitors user storage usage and notifies users when th
 | `critical` | >= 90% | warning (orange) | "Approaching storage limit" |
 | (none) | < 90% | (no alert) | Normal usage |
 
-### Backend Implementation
+### Backend Endpoints
 
 **File:** `studio/app/common/routers/storage_limit_alerts.py`
-
-#### Endpoints
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
@@ -1351,194 +482,30 @@ The storage alerts system monitors user storage usage and notifies users when th
 | `/storage-limit-alerts/limit-warning/check` | GET | Quick warning status check |
 | `/storage-limit-alerts/all` | GET | Admin: get all user alerts |
 
-#### Alert Response Schema
-
-```python
-# GET /storage-limit-alerts/me response
-{
-    "has_alert": True,
-    "alert": {
-        "user_id": "firebase_uid_123",
-        "alert_level": "critical",  # or "danger"
-        "storage_usage_bytes": 9500000000,
-        "storage_quota_bytes": 10000000000,
-        "storage_usage_percent": 95.0,
-        "timestamp": "2025-01-15T10:30:00Z",
-        "message": "You are using 95% of your storage quota (9.5 GB of 10 GB)",
-        "user_name": "John Doe",
-        "user_email": "john@example.com"
-    }
-}
-```
-
-#### Usage Response Schema
-
-```python
-# GET /storage-limit-alerts/usage response
-{
-    "storage_usage_bytes": 5000000000,
-    "storage_usage_formatted": "5.0 GB",
-    "storage_quota_bytes": 10000000000,
-    "storage_quota_formatted": "10.0 GB",
-    "storage_usage_percent": 50.0,
-    "alert_level": None,  # or "critical" or "danger"
-    "thresholds": {
-        "critical": 90,
-        "danger": 100
-    }
-}
-```
-
 ### Limit Warning System
 
-For users who downgrade from premium or have subscription lapses, the system tracks grace period warnings.
-
-#### Warning Types
+For users who downgrade from premium or have subscription lapses:
 
 | Type | Trigger | Grace Period | Action |
 |------|---------|--------------|--------|
 | `storage` | Storage exceeds free limit | 30 days | Data deletion after grace |
 | `workflow` | Workflow count exceeds limit | 30 days | Restrict new workflows |
 
-#### Limit Warning Response
-
-```python
-# GET /storage-limit-alerts/limit-warning response
-{
-    "has_alert": True,
-    "alert_type": "storage",
-    "days_remaining": 15,
-    "excess_data_bytes": 5000000000,
-    "excess_data_gb": 5.0,
-    "storage_usage_bytes": 10000000000,
-    "storage_usage_gb": 10.0,
-    "storage_quota_bytes": 5000000000,
-    "storage_quota_gb": 5.0,
-    "subscription_end_date": "2025-01-01T00:00:00Z",
-    "grace_end_date": "2025-01-31T00:00:00Z",
-    "deletion_date": "2025-01-31T00:00:00Z",
-    "message": "Your storage (10 GB) exceeds the free plan limit (5 GB). Please reduce usage or upgrade within 15 days."
-}
-```
-
-### Frontend Implementation
-
-#### Components
-
-**StorageAlert Component**
-
-**File:** `frontend/src/components/common/StorageAlert.tsx`
-
-Displays storage alert banner with usage progress bar.
-
-```typescript
-interface StorageAlertProps {
-  showUsageDetails?: boolean  // Show detailed usage breakdown
-  compact?: boolean           // Compact mode for headers
-  onClose?: () => void        // Dismiss callback
-}
-```
-
-Features:
-- Progress bar showing usage percentage
-- Color-coded by severity (red/orange/blue)
-- Refresh button to recalculate
-- Dismissible with X button
-- Detailed view with quota breakdown
-
-**useStorageAlert Hook**
-
-**File:** `frontend/src/hooks/useStorageAlert.ts`
-
-React hook for storage alert state management.
-
-```typescript
-const { alert, hasAlert, loading, checkStorageAlert } = useStorageAlert({
-  autoCheck: true,           // Enable automatic checking
-  checkInterval: 5 * 60000,  // Check every 5 minutes
-  showSnackbar: false,       // Show toast notifications
-})
-```
-
-#### API Functions
-
-**File:** `frontend/src/api/storage/StorageAlerts.ts`
-
-| Function | Purpose |
-|----------|---------|
-| `getMyStorageAlertApi()` | Get current user's alert |
-| `getMyStorageUsageApi()` | Get detailed usage stats |
-| `refreshStorageUsageApi()` | Force refresh calculation |
-| `getMyLimitAlertApi()` | Get limit/grace period warning |
-| `checkLimitAlertStatusApi()` | Quick limit warning check |
-| `getAllStorageAlertsApi()` | Admin: all users (admin only) |
-
-### Alert Flow
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 1. User logs in or navigates to workspace                                │
-└─────────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 2. Frontend calls: GET /storage-limit-alerts/me                          │
-│    (via useStorageAlert hook with autoCheck)                             │
-└─────────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 3. Backend calculates current usage                                      │
-│    - Uses cached value from incremental tracking                         │
-│    - Compares to user's storage_quota_bytes                              │
-│    - Determines alert level based on thresholds                          │
-└─────────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 4. Frontend renders StorageAlert component if has_alert = true           │
-│    - Shows appropriate severity (error/warning)                          │
-│    - Displays usage percentage and quota                                 │
-│    - Offers refresh and dismiss actions                                  │
-└─────────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 5. Periodic refresh (every 5 minutes)                                    │
-│    - Hook automatically re-checks                                        │
-│    - Updates alert state if changed                                      │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### Integration with Run Workflow
-
-The storage alert is also checked before running workflows to prevent users from exceeding their quota.
-
-**File:** `frontend/src/components/Workspace/FlowChart/Buttons/RunButtons.tsx`
-
-```typescript
-// Before running workflow, check storage via API call
-const storageResponse = await getMyStorageAlertApi()
-
-if (storageResponse.has_alert && storageResponse.alert) {
-  const alert = storageResponse.alert
-  if (alert.alert_level === "danger") {
-    return StorageCheckResult.BLOCKED
-  }
-  // "critical" level shows warning but allows proceed
-}
-// If API call fails, returns StorageCheckResult.CONFIRM_NEEDED
-// (shows confirmation dialog rather than blocking)
-```
-
-### Files Summary
+### Frontend Components
 
 | File | Purpose |
 |------|---------|
-| `studio/app/common/routers/storage_limit_alerts.py` | API endpoints |
-| `studio/app/common/core/cloud/s3_storage_monitor.py` | Alert calculation logic |
-| `frontend/src/components/common/StorageAlert.tsx` | Alert UI component |
-| `frontend/src/hooks/useStorageAlert.ts` | Alert state hook |
-| `frontend/src/api/storage/StorageAlerts.ts` | API client functions |
-| `frontend/src/components/common/LimitAlert.tsx` | Limit warning component |
-| `frontend/src/hooks/useLimitAlert.ts` | Limit warning hook |
+| `frontend/src/components/common/StorageAlert.tsx` | Alert banner with usage progress bar |
+| `frontend/src/hooks/useStorageAlert.ts` | Alert state management (auto-check every 5 min) |
+| `frontend/src/api/storage/StorageAlerts.ts` | API client functions for all alert endpoints |
+| `frontend/src/components/common/LimitAlert.tsx` | Limit/grace period warning component |
+| `frontend/src/hooks/useLimitAlert.ts` | Limit warning state management |
+
+### Run Workflow Integration
+
+**File:** `frontend/src/components/Workspace/FlowChart/Buttons/RunButtons.tsx`
+
+Before running a workflow, the frontend checks storage via `getMyStorageAlertApi()`:
+- `danger` level: returns `StorageCheckResult.BLOCKED` (prevents execution)
+- `critical` level: shows warning but allows proceed
+- API failure: returns `StorageCheckResult.CONFIRM_NEEDED` (shows confirmation dialog)

@@ -496,9 +496,10 @@ including standby pool entries.
 | `active_workflow_count` | INTEGER | Active workflows (migration safety) |
 | `last_workflow_start` | TIMESTAMP | Last workflow start time |
 | `last_workflow_end` | TIMESTAMP | Last workflow completion time |
+| `heartbeat_failures` | INTEGER | Consecutive heartbeat failures for grace period tracking (default: 0) |
 
 **Key Indexes:**
-- `uq_premium_user_id` (UNIQUE on user_id)
+- `idx_unique_user_assignment` (conditional UNIQUE on user_id WHERE user_id IS NOT NULL)
 - `idx_instance_id`, `idx_status`, `idx_last_activity`
 - `idx_instance_state`, `idx_is_shared`, `idx_is_standby`
 - `idx_workflow_recovery` (active_workflow_count, last_workflow_start)
@@ -585,38 +586,27 @@ Shared instance optimization complete: 1 users migrated
 
 ### Environment Variables
 
-**Premium Manager:**
-```bash
-# Database
-RDS_HOST                        # Database endpoint (via RDS Proxy, format: host:port)
-RDS_USER                        # Database username
-RDS_PASSWORD                    # Database password
-RDS_DATABASE                    # Database name
+**Premium Manager Lambda:**
 
-# ECS
-CLUSTER_NAME                    # ECS cluster name
-PREMIUM_SERVICE_NAME            # ECS service name for premium tier
-
-# Networking
-VPC_ID                          # VPC ID for target groups
-SUBNET_IDS                      # Comma-separated subnet IDs (for multi-AZ)
-ALB_ARN                         # Application Load Balancer ARN
-ALB_LISTENER_ARN                # ALB HTTPS listener for routing rules
-ALB_DNS_NAME                    # ALB DNS name
-AUTOSCALING_TARGET_GROUP_ARN    # Shared pool target group
-SECURITY_GROUP_ID               # ECS security group
-
-# Instance Management
-PREMIUM_LAUNCH_TEMPLATE_ID      # EC2 launch template for premium instances
-PREMIUM_INSTANCE_IDS            # Comma-separated base EC2 instance IDs
-PREMIUM_STANDBY_POOL_SIZE       # Desired standby pool size (default: 1)
-PREMIUM_SAFETY_BUFFER           # Extra capacity buffer (default: 1)
-PREMIUM_IDLE_TIMEOUT_HOURS      # Hours before idle timeout (default: 3)
-
-# Security
-ROUTING_SECRET_KEY              # HMAC secret for generating routing IDs
-INTERNAL_API_SECRET             # Secret for internal API authentication
-```
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `RDS_HOST` | Database endpoint (via RDS Proxy, format: host:port) | Required |
+| `RDS_USER` | Database username | Required |
+| `RDS_PASSWORD` | Database password | Required |
+| `RDS_DATABASE` | Database name | Required |
+| `CLUSTER_NAME` | ECS cluster name | Required |
+| `PREMIUM_SERVICE_NAME` | ECS service name for premium tier | Required |
+| `VPC_ID` | VPC ID for target groups | Required |
+| `SUBNET_IDS` | Comma-separated subnet IDs (for multi-AZ) | Required |
+| `ALB_LISTENER_ARN` | ALB HTTPS listener for routing rules | Required |
+| `ALB_DNS_NAME` | ALB DNS name (for experiment sync) | Required |
+| `AUTOSCALING_TARGET_GROUP_ARN` | Shared pool target group | Required |
+| `PREMIUM_LAUNCH_TEMPLATE_ID` | EC2 launch template for premium instances | Required |
+| `PREMIUM_STANDBY_POOL_SIZE` | Desired standby pool size | `1` |
+| `PREMIUM_EXTRA_CAPACITY` | Extra capacity buffer for scaling decisions | `1` |
+| `PREMIUM_IDLE_TIMEOUT_HOURS` | Hours before idle timeout | `3` |
+| `ROUTING_SECRET_KEY` | HMAC secret for generating routing IDs | Required |
+| `INTERNAL_API_SECRET` | Secret for internal API authentication | Required |
 
 ### Triggers
 

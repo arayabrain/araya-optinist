@@ -1,11 +1,12 @@
-# Dataview Publishing Architecture
+# Dataview Publishing: Optimistic Locking and Multi-Tenant S3 Access
 
 ## Executive Summary
 
-- **Three-state sync model** tracks publishing state: pending, synced, error
+- **Three-state sync model** tracks experiment publishing state: pending, synced, error
 - **Optimistic locking** prevents concurrent modification conflicts during publish
-- **S3 as source of truth** stores all published experiments durably
-- **Lazy download** automatically fetches experiments from S3 when accessed on different instances
+- **Multi-tenant S3 bucket lookup** resolves the correct owner bucket for shared and published data
+- **On-demand visualization sync** lazily downloads experiment files from S3 when accessed
+- **Public access via header** allows unauthenticated viewing of published experiments
 
 ---
 
@@ -15,16 +16,22 @@
    - **pending**: Published but not yet synced to local storage
    - **synced**: Available locally (either uploaded or downloaded)
    - **error**: Sync failed (upload/download problem)
+   - `LocalSyncStatus` enum in `studio/app/common/schemas/dataview.py`
 
 2. **Optimistic Locking for Data Integrity**
-   - Version field on ExperimentRecord prevents concurrent modifications
+   - `version` field on `ExperimentRecord` prevents concurrent modifications
    - Atomic increment on version during updates
-   - Retry logic handles version conflicts gracefully
+   - Retry loop (max 3 attempts) handles version conflicts, then returns 409
 
-3. **Lazy Loading from S3**
+3. **Owner Bucket Resolution**
+   - Data always lives in the workspace owner's S3 bucket
+   - Accessing shared/published data requires resolving `workspace_id` to the owner's bucket
+   - Fallback chain: owner bucket -> requesting user's bucket -> default bucket
+
+4. **Lazy Loading from S3**
    - Published experiments stored in S3 as source of truth
-   - Local instances download on-demand when accessed
-   - Transparent to user with proper status codes (202, 503)
+   - Local instances download on-demand when accessed via `_ensure_visualization_synced()`
+   - Two sync modes: `visualization` (JSON, TIFF) for fast viewing, `all` (includes PKL, NWB) for Edit ROI
 
 ---
 
@@ -58,323 +65,181 @@ graph TB
     style Z fill:#90EE90
 ```
 
-### Key Constraints Satisfied
-
-1. **Data Consistency** - Optimistic locking prevents publish conflicts
-2. **S3 as Source of Truth** - Published experiments always available via S3
-3. **User Experience** - Clear status codes and retry guidance for pending experiments
-
 ### Responsibility Matrix
 
-| Responsibility                | Dataview Publishing |
-|-------------------------------|---------------------|
-| Publish experiments           | With optimistic lock|
-| Track sync status             | Exclusive           |
-| Upload to S3                  | After publish       |
-| Download from S3              | On access           |
-| Handle version conflicts      | With retry          |
+| Responsibility                | Dataview Router     | Outputs Router      | Auth Dependencies   |
+|-------------------------------|---------------------|---------------------|---------------------|
+| Publish with optimistic lock  | Exclusive           | No                  | No                  |
+| Track sync status             | Exclusive           | No                  | No                  |
+| On-demand S3 download         | For reproduce only  | For all outputs     | No                  |
+| Resolve owner S3 bucket       | No                  | No                  | Exclusive           |
+| Validate public access        | No                  | No                  | Via DataviewService |
 
 ---
 
 ## Implementation Details
 
-### 1. Dataview Publishing with Sync Status
+### publish_dataview_records()
 
 **File:** `studio/app/common/routers/dataview.py`
+**Purpose:** Publish/unpublish an experiment with optimistic locking and sync status tracking
+**Input:** `id` (experiment record ID), `flag` (PublishFlags on/off), authenticated user context
+**Output:** `True` on success, 409 on persistent version conflict, 404 if record not found
+**Calls:** `DataviewService.find_user_owned_dataview_record()` -> SQLAlchemy `update()` with version check
 
-**Endpoint:** `POST /publish/{id}/{flag}` - Publish/unpublish with optimistic locking
+### public_reproduce_experiment()
 
-```python
-@router.post("/publish/{id}/{flag}")
-async def publish_dataview_records(
-    id: int,
-    flag: PublishFlags,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Publish/unpublish with optimistic locking.
+**File:** `studio/app/common/routers/dataview.py`
+**Purpose:** Public access endpoint for viewing published experiments with lazy S3 download
+**Input:** `workspace_id`, `unique_id` (from URL path: `GET /workflow/reproduce/{workspace_id}/{unique_id}`)
+**Output:** 200 with experiment data, 202 if pending sync, 503 on download failure
+**Calls:** `DataviewService.find_published_dataview_record()` -> `remote_storage_controller.download_experiment()`
 
-    Features:
-    - Retry loop (max 3 attempts) for version conflicts
-    - Sets local_sync_status = "pending" when publishing
-    - Atomically increments version number
-    - Returns 409 Conflict on persistent version mismatch
-    """
-```
+### multiple_publish_dataview_records()
 
-**Optimistic Lock Implementation:**
+**File:** `studio/app/common/routers/dataview.py`
+**Purpose:** Bulk publish/unpublish multiple experiments (validates all before publishing)
+**Input:** List of experiment IDs, `flag` (PublishFlags on/off), authenticated user context
+**Output:** `True` on success, 400 if any record cannot be published
+**Calls:** `DataviewService.multiple_publish_dataview_records()`
 
-```python
-stmt = (
-    update(models.ExperimentRecord)
-    .where(models.ExperimentRecord.id == record.id)
-    .where(models.ExperimentRecord.version == current_version)  # Lock condition
-    .values(
-        publish_status=new_publish_status,
-        local_sync_status=new_sync_status,
-        version=models.ExperimentRecord.version + 1,  # Atomic increment
-    )
-)
+### get_outputs_remote_bucket_name()
 
-result = db.execute(stmt)
+**File:** `studio/app/common/core/auth/auth_dependencies.py`
+**Purpose:** Resolve the correct S3 bucket for outputs requests using multi-tier access validation
+**Input:** HTTP request, current user (or `None` for public), database session
+**Output:** S3 bucket name string (owner's bucket, requesting user's bucket, or default)
+**Calls:** `get_current_user_for_dataview_outputs()` -> workspace/share/publish lookups
 
-# If rowcount == 0, version conflict detected
-if result.rowcount == 0:
-    # Retry or raise 409 Conflict
-```
+Resolution priority:
+1. Extract `workspace_id` from query params or URL path parsing
+2. For authenticated users: check if owner, shared user, or accessing published data
+3. For public requests: use workspace owner's bucket (access already validated)
+4. Fallback: requesting user's own bucket, then `S3_DEFAULT_BUCKET_NAME`
 
-**Endpoint:** `GET /{workspace_id}/{unique_id}/reproduce` - Public access with lazy S3 download
+### _ensure_visualization_synced()
 
-```python
-@public_router.get("/{workspace_id}/{unique_id}/reproduce")
-async def public_reproduce_experiment(
-    workspace_id: str,
-    unique_id: str,
-):
-    """
-    Public access with lazy S3 download.
+**File:** `studio/app/common/routers/outputs.py`
+**Purpose:** On-demand sync of visualization files from S3 before serving output data
+**Input:** `dirpath` (local directory path), `remote_bucket_name`
+**Output:** Side effect - downloads visualization files if `RemoteSyncStatusFileUtil` reports unsynced
+**Calls:** `RemoteSyncStatusFileUtil.check_sync_status_unsynced()` -> `remote_storage_controller.download_experiment()`
 
-    Returns:
-    - 202 Accepted: Experiment published but not synced yet
-    - 503 Service Unavailable: Sync failed or download error
-    - 200 OK: Experiment data available
-    """
-```
+### _background_full_sync()
 
-**Status Code Flow:**
+**File:** `studio/app/common/routers/outputs.py`
+**Purpose:** Background task to download remaining PKL/NWB files after visualization sync completes
+**Input:** `remote_bucket_name`, `workspace_id`, `unique_id`
+**Output:** Side effect - downloads all experiment files (prepares Edit ROI without blocking user)
+**Calls:** `remote_storage_controller.download_experiment()` with `sync_mode="all"`
 
-1. **Check Local Existence:**
-   - If experiment exists locally -> Check sync_status
-   - If not exists -> Download from S3
+### get_or_generate_thumbnail()
 
-2. **sync_status = "pending":**
-   - Return HTTP 202 with Retry-After header
-   - Frontend shows "Publishing in progress" message
-   - Auto-retry every 30 seconds (max 10 times = 5 minutes)
-
-3. **sync_status = "error":**
-   - Return HTTP 503
-   - Frontend shows error message with retry button
-
-4. **sync_status = "synced":**
-   - Return HTTP 200 with experiment data
-   - Normal workflow rendering
-
----
-
-### 2. Experiment Record Model Updates
-
-**File:** `studio/app/common/models/experiment.py`
-
-**New Fields:**
-
-```python
-local_sync_status: str = Field(
-    sa_column=Column(
-        String(20),
-        nullable=False,
-        default=LocalSyncStatus.synced.value,
-        comment="Sync status on local storage: pending, synced, error",
-    )
-)
-
-version: int = Field(
-    sa_column=Column(
-        Integer(),
-        nullable=False,
-        default=0,
-        comment="Version number for optimistic locking",
-    ),
-    default=0,
-)
-```
-
-**LocalSyncStatus Enum:**
-
-```python
-class LocalSyncStatus(str, Enum):
-    pending = "pending"  # Published, not synced yet
-    synced = "synced"    # Available locally
-    error = "error"      # Sync failed
-```
-
----
-
-### 3. Frontend Integration
-
-**File:** `frontend/src/components/Dataview/WorkflowDetailsView.tsx`
-
-**State Management:**
-
-```typescript
-const [syncStatus, setSyncStatus] = useState<{
-  pending: boolean
-  error: boolean
-  message: string
-}>({ pending: false, error: false, message: "" })
-const [retryCount, setRetryCount] = useState(0)
-```
-
-**Auto-Retry Logic:**
-
-```typescript
-if (status === 202) {
-  // Experiment is published but not yet synced
-  setSyncStatus({
-    pending: true,
-    error: false,
-    message: data?.message || "Publishing in progress, check back in a few minutes.",
-  })
-
-  // Auto-retry after 30 seconds (max 10 retries = 5 minutes)
-  if (retryCount < 10) {
-    setTimeout(() => {
-      setRetryCount(retryCount + 1)
-    }, 30000)
-  }
-}
-```
-
-**User Interface:**
-
-1. **Pending State (202):**
-   - HourglassEmptyIcon with warning color
-   - Info alert: "Publishing in progress..."
-   - Auto-retry every 30 seconds
-   - Max retry: 5 minutes
-
-2. **Error State (503):**
-   - ErrorOutlineIcon with error color
-   - Error alert with message
-   - Manual retry button
-
-3. **Success State (200):**
-   - Normal workflow details rendering
-
-### Thumbnail Loading States
-
-**File:** `frontend/src/components/Dataview/DataviewRecords.tsx`
-
-Thumbnail rendering handles both new (PNG) and legacy (TIFF) thumbnails:
-
-```tsx
-const renderThumbnailCell = (params: { row: DataviewType }) => {
-  const thumbnailPath = params?.row?.thumbnails?.image_url
-
-  // Check if PNG (fast) or TIFF (needs download)
-  const isLegacyTiff = thumbnailPath?.endsWith('.tif') || thumbnailPath?.endsWith('.tiff')
-
-  if (isLegacyTiff) {
-    return <ImagePlotSimpleWithLoading filePath={thumbnailPath} />
-  }
-
-  // PNG thumbnails are fast and direct
-  return <img src={`/api/outputs/data/${thumbnailPath}`} />
-}
-```
-
-**File:** `frontend/src/components/Dataview/InputsView.tsx`, `OutputsView.tsx`
-
-Loading overlay for full visualization:
-
-```tsx
-const [isSyncing, setIsSyncing] = useState(false)
-
-if (isSyncing) {
-  return (
-    <Dialog open={open}>
-      <CircularProgress />
-      <Typography>Loading visualization data...</Typography>
-    </Dialog>
-  )
-}
-```
+**File:** `studio/app/common/routers/outputs.py`
+**Purpose:** Lazy generation fallback for legacy experiments without PNG thumbnails
+**Input:** `workspace_id`, `unique_id`, `original_path`, `remote_bucket_name`, `thumb_type`
+**Output:** Side effect - generates PNG thumbnail from original TIFF/JSON, uploads to S3
+**Calls:** `ThumbnailGenerator` (via `dataview_services.py`)
 
 ---
 
 ## Flow Diagrams
 
-### Dataview Publishing Flow
+### Publishing Flow
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ 1. User Clicks "Publish" in Frontend                    │
-│    → PUT /api/dataview/publish/{id}/on                  │
+│ 1. User Clicks "Publish" in Frontend                     │
+│    → POST /publish/{id}/{flag}                           │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
-│ 2. Backend: Optimistic Lock Update                     │
-│    → Read current version from DB                       │
-│    → UPDATE experiment_record                           │
-│       SET publish_status = 1,                           │
-│           local_sync_status = 'pending',                │
-│           version = version + 1                         │
-│       WHERE id = ? AND version = ?                      │
+│ 2. Optimistic Lock Update                                │
+│    → Read current version from DB                        │
+│    → Atomically set publish_status, sync_status,         │
+│      and increment version WHERE version matches         │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
-│ 3a. Success (rowcount = 1)                              │
-│    → Return 200 OK                                      │
-│    → Trigger S3 upload (background task)                │
+│ 3. Version Conflict Handling                             │
+│    → rowcount = 1: Success, trigger S3 upload            │
+│    → rowcount = 0: Retry (max 3 attempts)                │
+│    → Persistent conflict: Return 409                     │
 └──────────────────────────────────────────────────────────┘
-         |               ↓
-         |    ┌──────────────────────────────────────────────────────────┐
-         |    │ 3b. Version Conflict (rowcount = 0)                      │
-         |    │    → Another user modified concurrently                  │
-         |    │    → Retry (max 3 times)                                │
-         |    └──────────────────────────────────────────────────────────┘
-         |               ↓
-         |    ┌──────────────────────────────────────────────────────────┐
-         |    │ 3c. Persistent Conflict                                  │
-         |    │    → Return 409 Conflict                                │
-         |    │    → User must try again                                │
-         |    └──────────────────────────────────────────────────────────┘
-         ↓
+                         ↓
 ┌──────────────────────────────────────────────────────────┐
-│ 4. S3 Upload Completes                                  │
-│    → UPDATE experiment_record                           │
-│       SET local_sync_status = 'synced'                  │
-│       WHERE id = ?                                      │
+│ 4. S3 Upload Completes                                   │
+│    → Set local_sync_status = 'synced'                    │
 └──────────────────────────────────────────────────────────┘
 ```
 
 ### Public Access Flow
 
+```mermaid
+sequenceDiagram
+    participant F as Frontend
+    participant D as Dataview Router
+    participant S3 as Remote Storage
+
+    F->>D: GET /workflow/reproduce/{workspace_id}/{unique_id}
+    D->>D: Find published record
+
+    alt Not found locally
+        D->>S3: download_experiment()
+        alt Download success
+            S3-->>D: Files downloaded
+            D-->>F: 200 + experiment data
+        else Download failed
+            S3-->>D: Error
+            D-->>F: 503 Service Unavailable
+        end
+    else Found locally
+        alt sync_status = synced
+            D-->>F: 200 + experiment data
+        else sync_status = pending
+            D-->>F: 202 Accepted (Retry-After)
+        else sync_status = error
+            D-->>F: 503 Service Unavailable
+        end
+    end
+
+    Note over F: 202: Auto-retry every 30s (max 10 = 5 min)
+    Note over F: 503: Show error + manual retry button
+```
+
+### Multi-Tenant Bucket Resolution
+
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ 1. User Visits Public Link                              │
-│    → GET /api/public/dataview/{workspace_id}/{unique_id}/reproduce│
+│ 1. Frontend Request                                      │
+│    → GET /outputs/image/{filepath}?workspace_id=123      │
+│    → Headers: Authorization or DATAVIEW_PUBLIC_REQUEST    │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
-│ 2. Check Local Storage                                  │
-│    → os.path.exists(experiment_path)?                   │
+│ 2. get_outputs_remote_bucket_name()                      │
+│    → Extract workspace_id (query param or URL path)      │
+│    → Validate: owner / shared user / published data      │
+│    → Return workspace owner's S3 bucket name             │
 └──────────────────────────────────────────────────────────┘
-         |                              |
-         | No                           | Yes
-         ↓                              ↓
-┌──────────────────────────────────────┐  ┌──────────────────────────────────────┐
-│ 3a. Download from S3                 │  │ 3b. Check sync_status                │
-│    → s3.download_experiment()        │  │    → Query experiment_record         │
-└──────────────────────────────────────┘  └──────────────────────────────────────┘
-         |                                        |
-         | Success                                |
-         ↓                                        ↓
-┌──────────────────────────────────────┐  ┌──────────────────────────────────────┐
-│ 4a. Download Failed                  │  │ 4b. Status Check                     │
-│    → Return 503 Service Unavailable  │  │    → "pending"  → Return 202 Accepted│
-│    → Frontend shows error            │  │    → "error"    → Return 503 Error   │
-└──────────────────────────────────────┘  │    → "synced"   → Return 200 OK      │
-                                          └──────────────────────────────────────┘
-                                                   ↓
-                                          ┌──────────────────────────────────────┐
-                                          │ 5. Frontend Handling                 │
-                                          │    → 202: Auto-retry every 30s       │
-                                          │    → 503: Show retry button          │
-                                          │    → 200: Render workflow            │
-                                          └──────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 3. Endpoint Handler                                      │
+│    → _ensure_visualization_synced() if needed            │
+│    → Read and return data from local storage             │
+│    → Trigger _background_full_sync() for Edit ROI        │
+└──────────────────────────────────────────────────────────┘
 ```
+
+### Public Dataview Request Chain
+
+Public (unauthenticated) access to published outputs uses a header-based approach:
+
+1. Frontend detects public dataview URL via `isDataviewPublicOutputsRequest()` in `frontend/src/utils/DataviewUtils.ts`
+2. Axios interceptor adds `DATAVIEW_PUBLIC_REQUEST` header (key from `DATAVIEW_PUBLIC_REQUEST_KEY` constant)
+3. Backend `DataviewService.is_dataview_public_outputs_request()` checks for the header
+4. `DataviewService.validate_dataview_public_outputs_request()` verifies `ExperimentRecord.publish_status == 1`
+5. `get_current_user_for_dataview_outputs()` returns `None` (signals public access to bucket lookup)
 
 ---
 
@@ -382,103 +247,84 @@ if (isSyncing) {
 
 ### 1. Concurrent Publish Operations
 
-**Problem:** Two users try to publish same experiment simultaneously.
+**Problem:** Two users try to publish the same experiment simultaneously.
 
-**Solution:** Optimistic locking with retry:
-```python
-# Attempt 1: Version = 5
-UPDATE ... WHERE id = ? AND version = 5  # User A succeeds
-UPDATE ... WHERE id = ? AND version = 5  # User B fails (version now 6)
-
-# Attempt 2: User B retries with version = 6
-UPDATE ... WHERE id = ? AND version = 6  # User B succeeds
-```
-
-**Guarantee:** At most 3 retries, then 409 Conflict returned
+**Solution:** Optimistic locking with version field:
+- Each update includes `WHERE version = current_version`
+- If another user modified first, `rowcount = 0` triggers retry
+- Max 3 retries, then 409 Conflict returned to the user
 
 ### 2. S3 Upload Fails After Publishing
 
-**Problem:** Experiment published (publish_status=1) but S3 upload fails.
+**Problem:** Experiment marked as published but S3 upload fails.
 
-**Solution:** sync_status remains "pending":
-- Users accessing get HTTP 202
-- Background job retries S3 upload
+**Solution:** `local_sync_status` remains "pending":
+- Users accessing the experiment get HTTP 202 with Retry-After header
+- Frontend auto-retries every 30 seconds (max 10 retries = 5 minutes)
 - Manual intervention can re-trigger upload
-
-**User Experience:** "Publishing in progress" message, auto-retry
 
 ### 3. S3 Download Fails on Access
 
-**Problem:** User tries to access published experiment, S3 download fails.
+**Problem:** User accesses published experiment but S3 download fails.
 
-**Solution:** Explicit error handling:
-```python
-if not await s3_controller.download_experiment(workspace_id, unique_id):
-    return JSONResponse(
-        status_code=503,
-        content={
-            "status": "download_error",
-            "message": "Failed to load experiment data, please try again later"
-        }
-    )
-```
+**Solution:** Return HTTP 503 with descriptive error:
+- Frontend shows error message with manual retry button
+- `CloudDownloadIcon` in `ImagePlotSimple` and `RoiPlotSimple` components for retry
 
-**User Experience:** Error message with manual retry button
+### 4. Bucket Lookup Failure
 
-### 4. Never-Ending Auto-Retry in Frontend
+**Problem:** Cannot determine workspace owner's S3 bucket.
 
-**Problem:** Frontend retries forever if experiment never syncs.
-
-**Solution:** Max retry limit:
-```typescript
-// Auto-retry after 30 seconds (max 10 retries = 5 minutes)
-if (retryCount < 10) {
-    setTimeout(() => {
-        setRetryCount(retryCount + 1)
-    }, 30000)
-}
-```
-
-**Guarantee:** Auto-retry stops after 5 minutes, user can manually retry
+**Solution:** Three-tier fallback chain:
+- Try workspace owner's bucket (primary)
+- Fall back to authenticated user's own bucket
+- Fall back to `S3_DEFAULT_BUCKET_NAME` (default)
 
 ---
 
-## Database Schema Changes
+## Experiment Record Model
 
-**Table:** `experiment_record` (ALTER)
+**File:** `studio/app/common/models/experiment.py`
 
-```sql
-ALTER TABLE experiment_record
-ADD COLUMN local_sync_status VARCHAR(20) NOT NULL DEFAULT 'synced'
-    COMMENT 'Sync status on local storage: pending, synced, error';
+Key fields for publishing:
 
-ALTER TABLE experiment_record
-ADD COLUMN version INTEGER NOT NULL DEFAULT 0
-    COMMENT 'Version number for optimistic locking';
-```
+| Field                | Type        | Description                                      |
+|----------------------|-------------|--------------------------------------------------|
+| `publish_status`     | INTEGER     | 0 = unpublished, 1 = published                   |
+| `local_sync_status`  | VARCHAR(20) | Sync state: pending, synced, error                |
+| `version`            | INTEGER     | Optimistic locking version counter (default: 0)   |
+| `thumbnails`         | JSON        | Paths to `input_thumb.png` and `roi_thumb.png`    |
+
+**Enum:** `LocalSyncStatus` defined in `studio/app/common/schemas/dataview.py`
 
 ---
 
 ## Configuration
 
-### Environment Variables
-
-**Required for S3 Integration:**
-```bash
-S3_DEFAULT_BUCKET_NAME      # S3 bucket for published experiments
-AWS_ACCESS_KEY_ID           # AWS credentials (or IAM role)
-AWS_SECRET_ACCESS_KEY       # AWS credentials (or IAM role)
-AWS_REGION                  # AWS region (e.g., us-east-1)
-```
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `S3_DEFAULT_BUCKET_NAME` | S3 bucket for published experiments | None (required) |
+| `AWS_ACCESS_KEY_ID` | AWS credentials (or IAM role) | None |
+| `AWS_SECRET_ACCESS_KEY` | AWS credentials (or IAM role) | None |
+| `AWS_REGION` | AWS region | None |
 
 ### HTTP Status Codes
 
 | Code | Meaning                  | User Experience                           |
 |------|--------------------------|-------------------------------------------|
-| 200  | Success                  | Render experiment workflow                |
-| 202  | Accepted (pending sync)  | "Publishing in progress" + auto-retry     |
-| 409  | Conflict (version clash) | "Concurrent modification, please retry"   |
-| 503  | Service Unavailable      | "Temporarily unavailable" + retry button  |
+| 200  | Success                  | Render experiment workflow                 |
+| 202  | Accepted (pending sync)  | "Publishing in progress" + auto-retry      |
+| 409  | Conflict (version clash) | "Concurrent modification, please retry"    |
+| 503  | Service Unavailable      | "Temporarily unavailable" + retry button   |
+
+### On-Demand Sync Modes
+
+| Mode | Files Downloaded | Use Case |
+|------|------------------|----------|
+| `visualization` | JSON, TIFF | Fast initial viewing |
+| `thumbnails_only` | Thumbnail PNGs | Dataview grid display |
+| `essential_only` | Minimal files for display | Fallback when full sync unavailable |
+| `all` | JSON, TIFF, PKL, NWB | Edit ROI functionality |
 
 ---
 
@@ -488,182 +334,52 @@ AWS_REGION                  # AWS region (e.g., us-east-1)
 
 | Function | Purpose |
 |----------|---------|
-| `publish_dataview_records()` | Publish with optimistic lock |
-| `public_reproduce_experiment()` | Public access with S3 download |
-| `bulk_publish_dataview_records()` | Bulk publish with sync status |
+| `publish_dataview_records()` | Publish with optimistic lock (max 3 retries) |
+| `multiple_publish_dataview_records()` | Bulk publish with pre-validation |
+| `public_reproduce_experiment()` | Public access with lazy S3 download |
+| `get_outputs_remote_bucket_name()` | Resolve owner S3 bucket for outputs |
+| `get_current_user_for_dataview_outputs()` | Return user or None for public access |
+| `_ensure_visualization_synced()` | On-demand sync before serving output data |
+| `_background_full_sync()` | Background download of PKL/NWB for Edit ROI |
+| `get_or_generate_thumbnail()` | Lazy PNG thumbnail generation for legacy experiments |
+| `DataviewService.is_dataview_public_outputs_request()` | Check for public access header |
+| `DataviewService.validate_dataview_public_outputs_request()` | Verify experiment is published |
 
 ### Frontend
 
 | Component | Purpose |
 |-----------|---------|
 | `WorkflowDetailsView.tsx` | Handle 202/503 status codes with auto-retry |
+| `DataviewRecords.tsx` | Thumbnail rendering (PNG vs legacy TIFF detection) |
+| `ImagePlotSimple.tsx` | Image display with download retry on error |
+| `RoiPlotSimple.tsx` | ROI display with download retry on error |
+| `DataviewUtils.ts` | `DATAVIEW_PUBLIC_REQUEST_KEY` constant and URL detection |
 
 ---
 
-## Monitoring and Logging
+## Monitoring and Metrics
 
-### CloudWatch Logs
+### Key Log Messages
 
-**Key Log Messages:**
 ```
 Published experiment {id}, sync_status=pending
-Optimistic lock conflict for experiment {id}, retrying (attempt 2/3)
-Downloading published experiment {workspace_id}/{unique_id} from S3
-Failed to download experiment {workspace_id}/{unique_id} from S3
-Experiment {workspace_id}/{unique_id} is pending sync, returning 202
+Optimistic lock conflict for experiment {id}, retrying (attempt {n}/{max})
+Downloading published experiment {workspace_id}/{unique_id} from remote bucket {bucket}
+Syncing visualization files for {workspace_id}/{unique_id} from remote storage
+On-demand sync for visualization: {workspace_id}/{unique_id}
+Outputs: using owner bucket {bucket} for workspace {workspace_id}
+Outputs: falling back to user {id}'s bucket {bucket} for workspace {workspace_id}
 ```
 
 ### Metrics to Monitor
 
 | Metric                          | Description                              | Alert Threshold     |
 |---------------------------------|------------------------------------------|---------------------|
-| publish_version_conflict_rate   | % of publish attempts with version clash | > 10%               |
-| s3_download_failure_rate        | % of S3 downloads that fail              | > 5%                |
-| pending_sync_duration_avg       | Avg time experiments stay in "pending"   | > 5 minutes         |
+| publish_version_conflict_rate   | % of publish attempts with version clash  | > 10%               |
+| s3_download_failure_rate        | % of S3 downloads that fail               | > 5%                |
+| pending_sync_duration_avg       | Avg time experiments stay in "pending"     | > 5 minutes         |
 
----
-
-## Files Reference
-
-### Modified
-- `studio/app/common/routers/dataview.py` - Optimistic locking + S3 download
-- `studio/app/common/core/dataview/dataview_services.py` - Bulk publish with sync status
-- `studio/app/common/models/experiment.py` - Add local_sync_status + version fields
-- `frontend/src/components/Dataview/WorkflowDetailsView.tsx` - Handle 202/503 status codes
-
-### Added
-- `studio/app/common/schemas/dataview.py` - LocalSyncStatus enum
-- `studio/alembic/versions/a5b9c8d7e6f5_add_sync_logout_and_versioning.py` - Database migration
-
----
-
-## Thumbnail Path Handling
-
-### Database Storage
-
-The `thumbnails` JSON field in ExperimentRecord stores thumbnail paths:
-
-```json
-{
-  "image_url": "output/workspace-123/exp-abc/thumbnails/input_thumb.png",
-  "roi_url": "output/workspace-123/exp-abc/thumbnails/roi_thumb.png"
-}
-```
-
-### Generation at Experiment Completion
-
-Thumbnails are generated when experiments complete:
-- `input_thumb.png`: First frame of input TIFF normalized to uint8
-- `roi_thumb.png`: Rendered cell_roi.json as colored image
-
-**File:** `studio/app/common/core/dataview/dataview_services.py`
-
-### Lazy Generation Fallback
-
-For legacy experiments without PNG thumbnails:
-
-1. Frontend requests thumbnail
-2. Backend checks if PNG exists
-3. If not, downloads original TIFF from S3
-4. Generates PNG, uploads to S3, returns to frontend
-
-**File:** `studio/app/common/routers/outputs.py` - `get_or_generate_thumbnail()`
-
----
-
-## Multi-Tenant S3 Bucket Architecture
-
-### Why Bucket Lookup is Essential
-
-In OptiNiSt Cloud, each user has their own S3 bucket for data storage. When accessing published or shared data, the system must determine **which bucket** contains the data—the **workspace owner's bucket**, not the requesting user's bucket.
-
-**Key Insight:** Data is always stored in the workspace owner's S3 bucket, even when shared with other users.
-
-```
-Example: User B views published data from User A's workspace
-
-  User A (workspace owner)        User B (viewer)
-  ┌─────────────────────┐         ┌─────────────────────┐
-  │ user-a-bucket       │         │ user-b-bucket       │
-  │ ├── workspace-123/  │         │ ├── workspace-456/  │  ← User B's data
-  │ │   └── exp-abc/    │         │ └── ...             │
-  │ │       └── data... │         └─────────────────────┘
-  │ └── ...             │
-  └─────────────────────┘
-            ↑
-            │  Data is stored HERE (in owner's bucket)
-            │
-  ┌─────────┴───────────────────────────────────────────────────────────┐
-  │ Backend must resolve: workspace_id → owner → owner's bucket name    │
-  └─────────────────────────────────────────────────────────────────────┘
-```
-
-### Data Flow: Frontend → API → S3 Bucket
-
-The bucket lookup process uses `workspace_id` to find the correct S3 bucket.
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│ 1. Frontend Request                                                 │
-│    GET /outputs/image/{filepath}?workspace_id=123                   │
-│    Headers: { Authorization: Bearer <token> }                       │
-│    (or for public: DATAVIEW_PUBLIC_REQUEST: true)                   │
-└─────────────────────────────────────────────────────────────────────┘
-                                 ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│ 2. FastAPI Dependency: get_outputs_remote_bucket_name()             │
-│    auth_dependencies.py:358-507                                     │
-│                                                                     │
-│    Step 2a: Extract workspace_id from request                       │
-│    ┌─────────────────────────────────────────────────────────────┐  │
-│    │ Priority:                                                   │  │
-│    │ 1. Query params: ?workspace_id=123                          │  │
-│    │ 2. URL path parsing: /outputs/image/.../output/123/...      │  │
-│    └─────────────────────────────────────────────────────────────┘  │
-│                                                                     │
-│    Step 2b: Validate access (for authenticated users)               │
-│    ┌─────────────────────────────────────────────────────────────┐  │
-│    │ Check if user has access via:                               │  │
-│    │ 1. Is workspace owner? → Yes → Allow                        │  │
-│    │ 2. Is shared user? → Yes → Allow                            │  │
-│    │ 3. Is data published? → Yes → Allow                         │  │
-│    │ 4. None of above → Fall back to user's own bucket           │  │
-│    └─────────────────────────────────────────────────────────────┘  │
-│                                                                     │
-│    Step 2c: Return workspace owner's bucket name                    │
-└─────────────────────────────────────────────────────────────────────┘
-                                 ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│ 3. Endpoint Handler: get_image()                                    │
-│    outputs.py:337-393                                               │
-│                                                                     │
-│    Uses resolved bucket name to:                                    │
-│    - On-demand sync visualization files from S3                     │
-│    - Read and return data to frontend                               │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### Access Validation Logic
-
-The `get_outputs_remote_bucket_name` function implements multi-tier access validation:
-
-```python
-# File: studio/app/common/core/auth/auth_dependencies.py
-
-async def get_outputs_remote_bucket_name(req, current_user, db) -> str:
-    """
-    Resolution priority:
-    1. Extract workspace_id from query params or URL path
-    2. For authenticated users:
-       a. Check if owner or shared user → Use owner's bucket
-       b. Check if data is published → Use owner's bucket
-       c. Otherwise → Fall back to requesting user's bucket
-    3. For public requests (no auth):
-       → Use workspace owner's bucket (access already validated)
-    """
-```
-
-**Security Layers:**
+### Access Validation
 
 | Access Type | Validation | Bucket Returned |
 |-------------|------------|-----------------|
@@ -673,243 +389,10 @@ async def get_outputs_remote_bucket_name(req, current_user, db) -> str:
 | Public Dataview | `DATAVIEW_PUBLIC_REQUEST` header + publish check | Owner's bucket |
 | No Access | None of above | Requesting user's bucket (fallback) |
 
----
-
-## Public Dataview Request Flow
-
-Public access (unauthenticated) to published data uses a special HTTP header.
-
-### Header-Based Public Access
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│ Frontend: Viewing published data without login                      │
-└─────────────────────────────────────────────────────────────────────┘
-                                 ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│ HTTP Request                                                        │
-│   GET /outputs/image/{path}?workspace_id=123                        │
-│   Headers:                                                          │
-│     DATAVIEW_PUBLIC_REQUEST: true  ← Special header                 │
-│     (No Authorization header)                                       │
-└─────────────────────────────────────────────────────────────────────┘
-                                 ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│ Backend: DataviewService.is_dataview_public_outputs_request()       │
-│   dataview_services.py:120-130                                      │
-│                                                                     │
-│   Checks:                                                           │
-│   1. Has DATAVIEW_PUBLIC_REQUEST header?                            │
-│   2. Is outputs endpoint (matches /outputs/* pattern)?              │
-└─────────────────────────────────────────────────────────────────────┘
-                                 ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│ Backend: DataviewService.validate_dataview_public_outputs_request() │
-│   dataview_services.py:133-192                                      │
-│                                                                     │
-│   Validation:                                                       │
-│   1. Extract workspace_id and unique_id from URL                    │
-│   2. Query: Is ExperimentRecord.publish_status == 1?                │
-│   3. Allow access only if data is published                         │
-└─────────────────────────────────────────────────────────────────────┘
-                                 ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│ Backend: get_current_user_for_dataview_outputs()                    │
-│   auth_dependencies.py:161-189                                      │
-│                                                                     │
-│   Returns None for public requests (no authenticated user)          │
-│   → Signals to bucket lookup that this is a public request          │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### Frontend Header Implementation
-
-```typescript
-// File: frontend/src/utils/axios.ts (axios interceptor)
-
-// For public dataview requests, add the special header
-if (isPublicDataviewRequest) {
-  config.headers['DATAVIEW_PUBLIC_REQUEST'] = 'true'
-}
-```
-
----
-
-## On-Demand Visualization Sync
-
-Files are synced from S3 to local storage on-demand when accessed.
-
-### Sync Modes
-
-| Mode | Files Downloaded | Use Case |
-|------|------------------|----------|
-| `visualization` | JSON, TIFF | Fast initial viewing |
-| `all` | JSON, TIFF, PKL, NWB | Edit ROI functionality |
-
-### Sync Flow
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│ 1. User clicks to view experiment data                              │
-│    Frontend: dispatch(getImageData({ path, workspaceId }))          │
-└─────────────────────────────────────────────────────────────────────┘
-                                 ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│ 2. Backend: GET /outputs/image/{path}?workspace_id=123              │
-│    Endpoint calls _ensure_visualization_synced() before reading     │
-└─────────────────────────────────────────────────────────────────────┘
-                                 ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│ 3. _ensure_visualization_synced()                                   │
-│    outputs.py:141-197                                               │
-│                                                                     │
-│    ┌─────────────────────────────────────────────────────────────┐  │
-│    │ Check sync status file:                                     │  │
-│    │ if RemoteSyncStatusFileUtil.check_sync_status_unsynced():   │  │
-│    │     → Download visualization files from S3                  │  │
-│    │     → Download input files (if needed for viewing)          │  │
-│    │ else:                                                       │  │
-│    │     → Already synced, skip download                         │  │
-│    └─────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
-                                 ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│ 4. Return data to frontend                                          │
-│    Data is now available locally for fast repeated access           │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### Background Full Sync
-
-After visualization files are loaded, a background task downloads remaining files:
-
-```python
-# File: outputs.py:37-72
-
-async def _background_full_sync(remote_bucket_name, workspace_id, unique_id):
-    """
-    Background task to download PKL and NWB files.
-    Prepares experiment for Edit ROI without blocking the user.
-    """
-    # Only runs if still unsynced (visualization-only sync doesn't mark as synced)
-    if RemoteSyncStatusFileUtil.check_sync_status_unsynced(workspace_id, unique_id):
-        await remote_storage_controller.download_experiment(
-            workspace_id, unique_id, sync_mode="all"
-        )
-```
-
----
-
-## Endpoint Parameter Reference
-
-### Endpoints That Pass workspace_id
-
-These endpoints include `workspace_id` as a parameter, enabling reliable bucket lookup:
-
-| Endpoint | Parameter | Purpose |
-|----------|-----------|---------|
-| `GET /outputs/image/{filepath}` | `workspace_id` (query) | Image/ROI data |
-| `GET /outputs/csv/{filepath}` | `workspace_id` (query) | CSV input data |
-| `GET /outputs/matlab/{filepath}` | `workspace_id` (query) | MATLAB input data |
-| `POST /outputs/sync/{workspace_id}/{unique_id}` | `workspace_id` (path) | Manual sync trigger |
-
-### Endpoints That Extract workspace_id from Path
-
-These endpoints extract `workspace_id` from the file path when not provided as a parameter:
-
-| Endpoint | Path Pattern | Extraction |
-|----------|--------------|------------|
-| `GET /outputs/inittimedata/{dirpath}` | `.../output/{workspace_id}/{unique_id}/...` | Path parsing |
-| `GET /outputs/timedata/{dirpath}` | `.../output/{workspace_id}/{unique_id}/...` | Path parsing |
-| `GET /outputs/alltimedata/{dirpath}` | `.../output/{workspace_id}/{unique_id}/...` | Path parsing |
-| `GET /outputs/data/{filepath}` | `.../output/{workspace_id}/{unique_id}/...` | Path parsing |
-
-### Path Parsing Logic
-
-```python
-# File: auth_dependencies.py:386-403
-
-# Pattern: /outputs/image//app/studio_data/output/{workspace_id}/{unique_id}/...
-data_file_path = re.sub(r"^/outputs/[^/]+/", "", request_url_path)
-
-if data_file_path.startswith(DIRPATH.OUTPUT_DIR):
-    relative_path = data_file_path[len(DIRPATH.OUTPUT_DIR):].lstrip("/")
-    path_parts = relative_path.split("/")
-    if len(path_parts) >= 2:
-        workspace_id = path_parts[0]
-        unique_id = path_parts[1]
-```
-
----
-
-## Error Handling and Fallbacks
-
-### Bucket Lookup Fallback Chain
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│ 1. Try to find workspace owner's bucket                             │
-│    ↓ Failed                                                         │
-│ 2. Fall back to authenticated user's bucket                         │
-│    ↓ No authenticated user                                          │
-│ 3. Fall back to default bucket (S3_DEFAULT_BUCKET_NAME)             │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### Sync Error Handling
-
-| Scenario | Frontend Behavior |
-|----------|-------------------|
-| File not found after sync | Show "Click to download" button |
-| S3 download fails | Show error message with retry |
-| Network timeout | Show error message with retry |
-
-### Download Button UX
-
-When data is not yet available locally, the frontend shows a download icon:
-
-```typescript
-// File: ImagePlotSimple.tsx, RoiPlotSimple.tsx
-
-if (error != null) {
-  return (
-    <Box>
-      <Typography color="error">{error}</Typography>
-      <Tooltip title="Download">
-        <IconButton onClick={handleRetry}>
-          <CloudDownloadIcon color="primary" />
-        </IconButton>
-      </Tooltip>
-    </Box>
-  )
-}
-```
-
----
-
-## Debugging Bucket Lookup
-
-### Log Messages
-
-Key log messages for debugging bucket resolution:
-
-```
-# Successful owner bucket resolution
-Outputs: user {id} has direct access to workspace {workspace_id}
-Outputs: using owner bucket {bucket} for workspace {workspace_id}
-
-# Published data access
-Outputs: experiment {workspace_id}/{unique_id} is published, allowing access for user {id}
-
-# Fallback scenarios
-Outputs: falling back to user {id}'s bucket {bucket} for workspace {workspace_id}
-Outputs: falling back to default bucket {bucket}
-```
-
 ### Common Issues
 
 | Issue | Cause | Solution |
 |-------|-------|----------|
-| Data loads from wrong bucket | workspace_id not passed | Ensure frontend passes workspace_id |
-| Published data 403 error | publish_status not set | Check ExperimentRecord.publish_status |
+| Data loads from wrong bucket | `workspace_id` not passed | Ensure frontend passes `workspace_id` |
+| Published data 403 error | `publish_status` not set | Check `ExperimentRecord.publish_status` |
 | Sync never completes | Missing bucket permissions | Check S3 IAM policies |

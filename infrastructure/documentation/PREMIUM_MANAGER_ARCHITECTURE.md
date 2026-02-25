@@ -1,8 +1,14 @@
 # Premium Manager Refactoring: Separation of Concerns
 
 ## Executive Summary
-- **Premium Manager** = All compute and capacity decisions (scaling, instance management), plus some infrastructure cleanup (ghost ECS registrations, orphaned EC2 instances)
-- **Premium Cleanup** = Data and resource hygiene (stale records, orphaned ALB resources, instance state reconciliation)
+
+- **Premium Manager** handles all compute and capacity decisions (scaling, instance management), plus infrastructure cleanup (ghost ECS registrations, orphaned EC2 instances)
+- **Premium Cleanup** handles data and resource hygiene (stale records, orphaned ALB resources, instance state reconciliation)
+- **Scheduled coordination** via staggered EventBridge rules: Manager every 15 minutes, Cleanup every 60 minutes, with no direct inter-Lambda communication
+- **Conservative scaling** keeps `active_users + 1` instances running and requires 2 idle instances before scaling down
+- **Frontend integration** provides auto-assignment on login, inactivity monitoring (1h warning, 2h release), and heartbeat-based activity tracking
+
+---
 
 ## Key Architectural Principles
 
@@ -27,6 +33,8 @@ These are the fundamental principles that guide the separation:
    - Cleanup runs hourly to remove stale assignments (configurable via `PREMIUM_IDLE_TIMEOUT_HOURS`, default 2h, currently set to 3h in Terraform)
    - Manager's 15-minute monitoring uses cleaned data for scaling decisions
    - No direct coordination needed - unidirectional data flow
+
+---
 
 ## Architecture Overview
 
@@ -176,6 +184,8 @@ The `handler()` function supports both scheduled and manual invocations:
 | `{"action": "cleanup_test_users", "user_emails": [...]}` | `cleanup_test_user_assignments()` | Manual test user cleanup |
 | `{"action": "get_user_assignment", "user_email": "..."}` | `get_user_assignment()` | Look up user assignment |
 | `{"action": "migrate_user", "user_email": "...", "target_instance_id": "..."}` | `migrate_user()` | Migrate user to different instance |
+| `{"action": "get_instance_users", "instance_id": "..."}` | `get_assigned_users_for_instance()` | List users on a specific instance |
+| `{"action": "reconcile"}` | `reconcile_instance_states()` | Manual reconciliation trigger |
 | Scheduled (default) | Normal cleanup flow | 5-step cleanup process |
 
 #### Scheduled Cleanup Flow
@@ -206,134 +216,134 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 ### User Logout and Scaling Flow
 
 ```
-+----------------------------------------------------------+
-| 1. User Inactive (frontend auto-release: 2h)             |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 2. Frontend Auto-Release (or Cleanup as Safety Net)      |
-|    -> Deletes assignment from premium_user_assignments    |
-|    -> Deletes ALB rule and target group                   |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 3. Premium Manager Monitoring (Every 15 Minutes)         |
-|    -> Queries DB for instances with assigned users        |
-|    -> Finds instances with NO assigned users              |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 4. Scaling Decision (scale_down_if_possible)             |
-|    -> Conservative: Keep max(1, active_users + 1)        |
-|    -> Require idle_instances >= 2 before scaling down     |
-|    -> Stop instances with 0 assignments                   |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 5. Update ECS Service Count                              |
-|    -> ECS desired_count = number of running instances     |
-+----------------------------------------------------------+
+┌──────────────────────────────────────────────────────────┐
+│ 1. User Inactive (frontend auto-release: 2h)             │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 2. Frontend Auto-Release (or Cleanup as Safety Net)      │
+│    → Deletes assignment from premium_user_assignments    │
+│    → Deletes ALB rule and target group                   │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 3. Premium Manager Monitoring (Every 15 Minutes)         │
+│    → Queries DB for instances with assigned users        │
+│    → Finds instances with NO assigned users              │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 4. Scaling Decision (scale_down_if_possible)             │
+│    → Conservative: Keep max(1, active_users + 1)         │
+│    → Require idle_instances >= 2 before scaling down     │
+│    → Stop instances with 0 assignments                   │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 5. Update ECS Service Count                              │
+│    → ECS desired_count = number of running instances     │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ### Cleanup Lambda Flow (Safety Net)
 
 ```
-+----------------------------------------------------------+
-| Premium Cleanup Lambda (Runs Every Hour)                  |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 1. cleanup_stale_assignments() [@with_transaction]       |
-|    -> Find assignments where last_activity > 3 hours     |
-|    -> Delete from premium_user_assignments table          |
-|    -> Delete associated ALB rules/target groups           |
-|    -> Skip deletion of shared autoscaling target group    |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 2. cleanup_orphaned_alb_resources()                      |
-|    -> Find ALB rules with no matching DB entry            |
-|    -> Delete orphaned target groups and rules             |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 3. cleanup_duplicate_alb_rules()                         |
-|    -> Group ALB rules by routing_id                       |
-|    -> Keep rule matching database entry                   |
-|    -> Delete all duplicate rules                          |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 4. reconcile_instance_states()                           |
-|    -> Query AWS for actual instance states                |
-|    -> Update DB to match reality                          |
-|    -> Fix discrepancies (e.g., terminated instances)      |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 5. ensure_standby_pool_capacity() [Read-Only]            |
-|    -> Check if standby pool has minimum capacity          |
-|    -> Log warnings if capacity is low                     |
-|    -> Does NOT create or terminate instances              |
-+----------------------------------------------------------+
+┌──────────────────────────────────────────────────────────┐
+│ Premium Cleanup Lambda (Runs Every Hour)                  │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 1. cleanup_stale_assignments() [@with_transaction]       │
+│    → Find assignments where last_activity > 3 hours      │
+│    → Delete from premium_user_assignments table          │
+│    → Delete associated ALB rules/target groups           │
+│    → Skip deletion of shared autoscaling target group    │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 2. cleanup_orphaned_alb_resources()                      │
+│    → Find ALB rules with no matching DB entry            │
+│    → Delete orphaned target groups and rules             │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 3. cleanup_duplicate_alb_rules()                         │
+│    → Group ALB rules by routing_id                       │
+│    → Keep rule matching database entry                   │
+│    → Delete all duplicate rules                          │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 4. reconcile_instance_states()                           │
+│    → Query AWS for actual instance states                │
+│    → Update DB to match reality                          │
+│    → Fix discrepancies (e.g., terminated instances)      │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 5. ensure_standby_pool_capacity() [Read-Only]            │
+│    → Check if standby pool has minimum capacity          │
+│    → Log warnings if capacity is low                     │
+│    → Does NOT create or terminate instances              │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ### Premium Manager Monitoring Flow (Every 15 Minutes)
 
 ```
-+----------------------------------------------------------+
-| Premium Manager Monitoring (Every 15 Minutes)            |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 1-2. Check/Set Scaling Lock (CloudWatch metrics-based)   |
-|    -> Skip if another operation is in progress            |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 3-4. Get State & Publish Metrics                         |
-|    -> Count active users, running instances, idle         |
-|    -> Publish to CloudWatch OptiNiSt/PremiumManager      |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 5. scale_down_if_possible()                              |
-|    -> Stop idle instances if conditions are met           |
-|    -> Deregister from ECS before stopping                 |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 6. update_premium_service_desired_count()                |
-|    -> Sync ECS desired count with running instances       |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 7. cleanup_failed_standby_instances()                    |
-|    -> Remove DB entries for terminated standby instances  |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 8. cleanup_ghost_ecs_registrations()                     |
-|    -> Deregister ECS container instances where agent is   |
-|       disconnected or EC2 is stopped/terminated           |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 9. cleanup_orphaned_ec2_instances()                      |
-|    -> Stop premium-tagged EC2 instances not in ECS        |
-|    -> 15-minute grace period for booting instances        |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| 10. process_shared_instance_optimization()               |
-|    -> Find users on shared instances                      |
-|    -> Migrate to dedicated if instances available         |
-|    -> Trigger async migration if no instances ready       |
-+----------------------------------------------------------+
-                         |
-+----------------------------------------------------------+
-| Finally: Clear Scaling Lock                              |
-+----------------------------------------------------------+
+┌──────────────────────────────────────────────────────────┐
+│ Premium Manager Monitoring (Every 15 Minutes)            │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 1-2. Check/Set Scaling Lock (CloudWatch metrics-based)   │
+│    → Skip if another operation is in progress            │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 3-4. Get State & Publish Metrics                         │
+│    → Count active users, running instances, idle         │
+│    → Publish to CloudWatch OptiNiSt/PremiumManager      │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 5. scale_down_if_possible()                              │
+│    → Stop idle instances if conditions are met           │
+│    → Deregister from ECS before stopping                 │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 6. update_premium_service_desired_count()                │
+│    → Sync ECS desired count with running instances       │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 7. cleanup_failed_standby_instances()                    │
+│    → Remove DB entries for terminated standby instances  │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 8. cleanup_ghost_ecs_registrations()                     │
+│    → Deregister ECS container instances where agent is   │
+│       disconnected or EC2 is stopped/terminated          │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 9. cleanup_orphaned_ec2_instances()                      │
+│    → Stop premium-tagged EC2 instances not in ECS        │
+│    → 15-minute grace period for booting instances        │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 10. process_shared_instance_optimization()               │
+│    → Find users on shared instances                      │
+│    → Migrate to dedicated if instances available         │
+│    → Trigger async migration if no instances ready       │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ Finally: Clear Scaling Lock                              │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -498,10 +508,9 @@ INTERNAL_API_SECRET          # Secret for internal API authentication
 
 # Capacity tuning
 PREMIUM_STANDBY_POOL_SIZE    # Standby instances to maintain (default: 1)
-PREMIUM_EXTRA_CAPACITY       # Extra capacity buffer for scaling (default: 2, not set in Terraform)
+PREMIUM_EXTRA_CAPACITY       # Extra capacity buffer for scaling (default: 2, Terraform: 1)
 
 # Set in Terraform but only read by Cleanup Lambda:
-# PREMIUM_SAFETY_BUFFER      # (Terraform: 1, not read by Manager code)
 # PREMIUM_IDLE_TIMEOUT_HOURS # (Terraform: 3, not read by Manager code)
 ```
 
@@ -590,6 +599,7 @@ PREMIUM_IDLE_TIMEOUT_HOURS   # Hours before stale assignment cleanup (code defau
 | `cleanup_test_user_assignments()` | Manual: clean up test user assignments |
 | `get_user_assignment()` | Manual: look up user assignment by email |
 | `migrate_user()` | Manual: migrate user to specific instance |
+| `get_assigned_users_for_instance()` | List users assigned to a specific instance |
 | `check_instance_readiness()` | Check if instance has running ECS task |
 
 ---
@@ -601,40 +611,40 @@ The frontend components handle premium user experience including instance assign
 ### Component Overview
 
 ```
-+-----------------------------------------------------------------------+
-|                           App.tsx                                      |
-+-----------------------------------------------------------------------+
-|                                                                       |
-|  +---------------------------------------------------------------+   |
-|  |         PremiumAssignmentProvider (Context)                    |   |
-|  |   - Single source of truth for premium state                  |   |
-|  |   - Auto-assignment on login                                  |   |
-|  |   - Inactivity monitoring (1hr warning, 2hr release)          |   |
-|  |   - Heartbeat management with retry logic                     |   |
-|  |   - Browser close/refresh handling (sendBeacon)               |   |
-|  |   - Exponential backoff polling for dedicated instance         |   |
-|  |   - Leader tab election for polling                           |   |
-|  +---------------------------------------------------------------+   |
-|  |                                                               |   |
-|  |  +-------------------------+  +-----------------------------+ |   |
-|  |  | PremiumAssignment       |  | PremiumNotificationManager | |   |
-|  |  | Manager                 |  |                             | |   |
-|  |  |                         |  | - Success notifications    | |   |
-|  |  | - Cleanup on unmount    |  | - Preparation info toast   | |   |
-|  |  | - Debug logging         |  | - Error notifications      | |   |
-|  |  +-------------------------+  +-----------------------------+ |   |
-|  |                                                               |   |
-|  |  +-----------------------------------------------------------+|   |
-|  |  |                InactivityWarning                           ||   |
-|  |  |   - Shows after 1 hour of inactivity                      ||   |
-|  |  |   - Minute-resolution countdown timer                     ||   |
-|  |  |   - "Stay Active" button sends heartbeat (with retry)     ||   |
-|  |  |   - Session expired state (401 -> auto-logout)            ||   |
-|  |  +-----------------------------------------------------------+|   |
-|  |                                                               |   |
-|  +---------------------------------------------------------------+   |
-|                                                                       |
-+-----------------------------------------------------------------------+
+┌───────────────────────────────────────────────────────────────────────┐
+│                           App.tsx                                     │
+├───────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│  ┌───────────────────────────────────────────────────────────────┐    │
+│  │         PremiumAssignmentProvider (Context)                    │    │
+│  │   → Single source of truth for premium state                  │    │
+│  │   → Auto-assignment on login                                  │    │
+│  │   → Inactivity monitoring (1hr warning, 2hr release)          │    │
+│  │   → Heartbeat management with retry logic                     │    │
+│  │   → Browser close/refresh handling (sendBeacon)               │    │
+│  │   → Exponential backoff polling for dedicated instance        │    │
+│  │   → Leader tab election for polling                           │    │
+│  ├───────────────────────────────────────────────────────────────┤    │
+│  │                                                               │    │
+│  │  ┌─────────────────────────┐  ┌─────────────────────────────┐│    │
+│  │  │ PremiumAssignment       │  │ PremiumNotificationManager ││    │
+│  │  │ Manager                 │  │                             ││    │
+│  │  │                         │  │ → Success notifications     ││    │
+│  │  │ → Cleanup on unmount    │  │ → Preparation info toast    ││    │
+│  │  │ → Debug logging         │  │ → Error notifications       ││    │
+│  │  └─────────────────────────┘  └─────────────────────────────┘│    │
+│  │                                                               │    │
+│  │  ┌───────────────────────────────────────────────────────────┐│    │
+│  │  │                InactivityWarning                           ││    │
+│  │  │   → Shows after 1 hour of inactivity                      ││    │
+│  │  │   → Minute-resolution countdown timer                     ││    │
+│  │  │   → "Stay Active" button sends heartbeat (with retry)     ││    │
+│  │  │   → Session expired state (401 -> auto-logout)            ││    │
+│  │  └───────────────────────────────────────────────────────────┘│    │
+│  │                                                               │    │
+│  └───────────────────────────────────────────────────────────────┘    │
+│                                                                       │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 ### PremiumAssignmentContext
@@ -679,42 +689,42 @@ Note: `autoAssignOnLogin()` is internal only -- triggered by a `useEffect` when 
 | **Inactivity monitoring** | Checks every 30 seconds for user activity |
 | **Warning at 1 hour** | Shows InactivityWarning component |
 | **Auto-release at 2 hours** | Releases instance after extended inactivity |
-| **Heartbeat with retry** | `recordActivity()` retries up to 3 times with 1s delay |
+| **Heartbeat with retry** | `recordActivity()` retries up to 3 times with linear backoff (1s, 2s, 3s) |
 | **Browser close handling** | Uses `navigator.sendBeacon` on `beforeunload` event |
 | **Polling with backoff** | If on shared instance, polls for dedicated with exponential backoff (1.5x multiplier, 30s initial, 60s max, 40 attempts max, leader tab only) |
 
 #### Auto-Assignment Flow
 
 ```
-+-----------------------------------------------------------------------+
-| 1. Premium user logs in                                               |
-|    isPremiumUser = true (from subscription state)                     |
-+-----------------------------------------------------------------------+
-                              |
-+-----------------------------------------------------------------------+
-| 2. autoAssignOnLogin() triggered via useEffect                        |
-|    - Check hasAttemptedAutoAssignment flag (prevent duplicates)        |
-|    - Set flag immediately                                             |
-+-----------------------------------------------------------------------+
-                              |
-+-----------------------------------------------------------------------+
-| 3. Check existing assignment                                          |
-|    GET /users/me/premium/status                                       |
-|    If already assigned -> update state and return                      |
-+-----------------------------------------------------------------------+
-                              |
-+-----------------------------------------------------------------------+
-| 4. Request new assignment                                             |
-|    POST /users/me/premium/assign                                      |
-|    -> Premium Lambda assigns to dedicated or shared instance           |
-+-----------------------------------------------------------------------+
-                              |
-+-----------------------------------------------------------------------+
-| 5. Update state with result                                           |
-|    - assignmentResult stored                                          |
-|    - PremiumNotificationManager shows appropriate notification        |
-|    - If is_shared, start polling with exponential backoff             |
-+-----------------------------------------------------------------------+
+┌──────────────────────────────────────────────────────────┐
+│ 1. Premium user logs in                                  │
+│    isPremiumUser = true (from subscription state)        │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 2. autoAssignOnLogin() triggered via useEffect           │
+│    → Check hasAttemptedAutoAssignment flag                │
+│    → Set flag immediately                                │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 3. Check existing assignment                             │
+│    GET /users/me/premium/status                          │
+│    If already assigned -> update state and return        │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 4. Request new assignment                                │
+│    POST /users/me/premium/assign                         │
+│    → Lambda assigns to dedicated or shared instance      │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│ 5. Update state with result                              │
+│    → assignmentResult stored                             │
+│    → Notification manager shows appropriate toast        │
+│    → If is_shared, start polling with backoff            │
+└──────────────────────────────────────────────────────────┘
 ```
 
 #### Inactivity Monitoring

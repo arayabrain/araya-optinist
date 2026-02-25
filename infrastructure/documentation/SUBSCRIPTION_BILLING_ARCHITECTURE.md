@@ -1,20 +1,37 @@
-# Subscription and Billing System Architecture
+# Subscription Billing: Payment and Lifecycle Management
 
 ## Executive Summary
 
-This document describes the subscription and billing system integrated with Stripe for handling user payments, plan management, and subscription lifecycle events. The system uses Stripe as the payment provider with webhooks to handle real-time billing events.
+- **StripeService** handles direct Stripe API integration for payment methods and subscriptions
+- **SubscriptionService** manages business logic, subscription state, and database operations
+- **WebhookService** processes real-time Stripe webhook notifications for billing events
+- **Webhook-driven architecture** ensures subscription state stays consistent via event handlers rather than polling
+- **Grace period system** provides 30-day grace + 30-day warning after premium expiration before data cleanup
+- **Scheduled plan changes** use Stripe SubscriptionSchedules to prevent race conditions during upgrades/downgrades
 
-**Key Components:**
-- **StripeService** - Direct Stripe API integration for payment methods and subscriptions
-- **SubscriptionService** - Business logic for subscription state and database operations
-- **WebhookService** - Event-driven handlers for Stripe webhook notifications
+---
 
-**Supported Features:**
-- Payment method management (cards via Stripe Elements)
-- Subscription creation, updates, and cancellation
-- Prorated plan changes (upgrade/downgrade)
-- Grace period handling for storage limits
-- Trial periods and scheduled plan changes
+## Key Architectural Principles
+
+1. **Webhook-Driven State Management**
+   - Subscription state changes are driven by Stripe webhook events, not direct API calls
+   - Database updates happen in webhook handlers to ensure consistency with Stripe's source of truth
+   - Webhook signature verification prevents spoofed events
+
+2. **Scheduled Changes Over Immediate Mutations**
+   - Plan changes use Stripe SubscriptionSchedules rather than modifying active subscriptions
+   - Eliminates race conditions between concurrent upgrade/downgrade requests
+   - Database updates deferred to `subscription_schedule.released` webhook
+
+3. **Graceful Degradation After Expiration**
+   - Premium users get 30-day grace period with full access after subscription expires
+   - Additional 30-day warning period before data cleanup
+   - Storage alerts only appear when usage exceeds the free tier limit (5 GB)
+
+4. **PCI Compliance by Design**
+   - Card data never touches application servers (Stripe Elements handles collection)
+   - Only Stripe Customer/Subscription IDs stored in database
+   - SetupIntents used for secure payment method attachment
 
 ---
 
@@ -51,7 +68,7 @@ This document describes the subscription and billing system integrated with Stri
 
 ---
 
-## Service Components
+## Implementation Details
 
 ### 1. StripeService
 
@@ -100,39 +117,17 @@ The StripeService handles direct interactions with the Stripe API for payment op
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### Subscription Update Flow
+#### handle_update_user_subscription()
 
-```python
-def handle_update_user_subscription(user_id: int, new_price_id: str):
-    """
-    Update user's subscription to a new plan.
+**File:** `studio/app/common/core/subscription/stripe_service.py`
+**Purpose:** Update a user's subscription to a different plan using webhook-driven database updates
+**Input:** `db` (Session), `user` (User), `request` (UpdateSubscriptionRequest containing new_plan_id)
+**Output:** `UpdateSubscriptionResponse` with success status, change_type (upgrade/downgrade), effective_date, and proration info
+**Calls:** `stripe.Subscription.modify()` -> `stripe.SubscriptionSchedule.create()` -> `update_scheduled_downgrade()`
 
-    Handles:
-    - Plan upgrades (prorated credit)
-    - Plan downgrades (scheduled at period end)
-    - Same plan (no-op)
-    """
-    # Get current subscription
-    subscription = get_user_subscription(user_id)
-
-    # Determine change type
-    if is_upgrade(current_plan, new_plan):
-        # Immediate upgrade with proration
-        stripe.Subscription.modify(
-            subscription_id,
-            items=[{"id": item_id, "price": new_price_id}],
-            proration_behavior="create_prorations",
-        )
-    else:
-        # Schedule downgrade at billing period end
-        stripe.SubscriptionSchedule.create(
-            from_subscription=subscription_id,
-            phases=[
-                {"items": [{"price": current_price_id}], "end_date": "period_end"},
-                {"items": [{"price": new_price_id}]},
-            ],
-        )
-```
+Plan changes are scheduled at billing period end using Stripe SubscriptionSchedules rather than modifying
+the active subscription directly. Database updates are deferred to the `subscription_schedule.released`
+webhook handler.
 
 ---
 
@@ -170,7 +165,8 @@ enters a 30-day grace period. During this period:
 - **Access is functionally identical to Premium** — the user retains
   premium compute routing, 200 GB storage quota, and
   `has_active_subscription` returns `True`
-  (see `users.py:has_active_subscription`, `RoutingService.ts`)
+  (see `studio/app/common/schemas/users.py:has_active_subscription`,
+  `frontend/src/utils/routing/RoutingService.ts`)
 - **Workflow execution** is allowed as long as storage stays under quota
   (the same quota check that applies to all statuses)
 - **Alerts** warn the user that their subscription has expired and
@@ -178,32 +174,17 @@ enters a 30-day grace period. During this period:
 - After the 30-day grace period, the status transitions to `EXPIRED`
   and access drops to Free tier (5 GB quota, no premium compute)
 
-#### Grace Period Logic
+#### calculate_limit_warning()
 
-```python
-def calculate_limit_warning(user_id: int) -> dict:
-    """
-    Check if user has exceeded free plan limits after subscription ends.
+**File:** `studio/app/common/core/cloud/cloud_utils.py`
+**Purpose:** Core 5-case decision tree that evaluates subscription status and storage usage to determine user alerts
+**Input:** `user_id` (int)
+**Output:** `Optional[LimitWarning]` with alert_type, days_remaining, excess_data_bytes, and warning message; returns `None` when no alert is needed
+**Calls:** `get_user_storage_usage()` -> `get_current_user_storage_usage()` -> `_generate_subscription_warning_message()`
 
-    Returns alert info including:
-    - alert_type: "storage" or "grace" or "overdue"
-    - days_remaining: Days until data deletion
-    - excess_data_bytes: Amount over limit
-    - deletion_date: When data will be purged
-    """
-    storage_info = get_user_storage_usage(user_id)
-
-    # Check if user has exceeded free tier limits
-    if storage_usage > FREE_TIER_STORAGE_LIMIT:
-        grace_end = subscription_end + timedelta(days=30)
-        return {
-            "has_alert": True,
-            "alert_type": AlertType.STORAGE,
-            "days_remaining": (grace_end - now).days,
-            "excess_data_bytes": storage_usage - FREE_TIER_STORAGE_LIMIT,
-            "deletion_date": grace_end.isoformat(),
-        }
-```
+Uses cached storage data if fresh (< 20 minutes), otherwise triggers a live S3 scan. Compares storage
+against the effective quota (200 GB for active premium, 5 GB for grace/warning/overdue/free) and returns
+the appropriate alert type with a countdown of days remaining.
 
 ---
 
@@ -262,61 +243,29 @@ The WebhookService processes Stripe webhook events for real-time subscription up
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### Checkout Completion Handler
+#### handle_checkout_completed()
 
-```python
-def handle_checkout_completed(event_data: dict, db: Session):
-    """
-    Handle successful checkout session completion.
+**File:** `studio/app/common/core/subscription/webhook_service.py`
+**Purpose:** Process successful checkout session completion from Stripe webhook
+**Input:** `db` (Session), `session_data` (dict with Stripe session object containing customer, subscription, and metadata)
+**Output:** Dict with success status, subscription_user_id, purchase_id, expiration_date
+**Calls:** `stripe.Subscription.retrieve()` -> database insert (UserSubscription, SubscriptionUserPurchase)
 
-    Actions:
-    1. Extract customer and subscription IDs
-    2. Look up user by email or create new user
-    3. Create/update subscription record
-    4. Update user's plan and storage quota
-    5. Clear any grace period warnings
-    """
-    session = event_data["object"]
-    customer_id = session["customer"]
-    subscription_id = session["subscription"]
+Includes duplicate detection within a 30-minute window to handle webhook redelivery. Uses a multi-layer
+fallback chain for calculating expiration dates (trial_end -> current_period_end -> period_start + 1 month
+-> latest invoice).
 
-    # Get subscription details from Stripe
-    subscription = stripe.Subscription.retrieve(subscription_id)
+#### handle_payment_failed()
 
-    # Update database
-    user = get_user_by_stripe_customer(customer_id, db)
-    update_user_subscription(
-        user_id=user.id,
-        subscription_id=subscription_id,
-        plan_id=subscription["items"]["data"][0]["price"]["id"],
-        status="active",
-        current_period_end=subscription["current_period_end"],
-    )
-```
+**File:** `studio/app/common/core/subscription/webhook_service.py`
+**Purpose:** Handle failed invoice payment webhook from Stripe
+**Input:** `db` (Session), `invoice_data` (dict with Stripe invoice object containing customer ID)
+**Output:** None
+**Calls:** `invalidate_user_tier_cache()`
 
-#### Payment Failure Handler
-
-```python
-def handle_payment_failed(event_data: dict, db: Session):
-    """
-    Handle failed invoice payment.
-
-    Actions:
-    1. Mark subscription as past_due
-    2. Send failure notification email
-    3. Schedule retry attempts (Stripe automatic)
-    4. After all retries fail, transition to unpaid
-    """
-    invoice = event_data["object"]
-    customer_id = invoice["customer"]
-
-    # Update subscription status
-    user = get_user_by_stripe_customer(customer_id, db)
-    update_subscription_status(user.id, "past_due")
-
-    # Stripe will automatically retry based on settings
-    # After exhausted retries: customer.subscription.deleted event
-```
+Marks the subscription's `sync_status` as `FAILED` and invalidates the user tier cache for immediate
+warning display. Does not downgrade the subscription -- the user keeps premium access during Stripe's
+automatic retry window. If all retries fail, Stripe sends a `customer.subscription.deleted` event.
 
 ---
 
@@ -363,13 +312,13 @@ def handle_payment_failed(event_data: dict, db: Session):
 
 ### Payment Endpoints
 
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/subsc/payment-methods` | GET | List payment methods |
-| `/api/subsc/payment-methods/default` | GET | Get default payment method |
-| `/api/subsc/payment-methods` | PUT | Set default payment method |
-| `/api/subsc/payment-methods/{id}` | DELETE | Remove payment method |
-| `/api/subsc/payment-methods/setup-intent` | POST | Create SetupIntent |
+| Endpoint | Method | Purpose | Status |
+|----------|--------|---------|--------|
+| `/api/subsc/payment-methods` | GET | List payment methods | Not implemented (501) |
+| `/api/subsc/payment-methods/default` | GET | Get default payment method | Active |
+| `/api/subsc/payment-methods` | PUT | Set default payment method | Not implemented (501) |
+| `/api/subsc/payment-methods/{id}` | DELETE | Remove payment method | Not implemented (501) |
+| `/api/subsc/payment-methods/setup-intent` | POST | Create SetupIntent | Not implemented (501) |
 
 ### Webhook Endpoint
 
@@ -556,9 +505,9 @@ class LimitWarning(BaseModel):
     message: str                  # Human-readable warning
 
     # Subscription-related (only set for grace/warning/overdue alerts)
-    subscription_end_date: str    # ISO date when premium expired
-    grace_end_date: str           # ISO date when grace period ends (T+30d)
-    deletion_date: str            # ISO date when data deletion begins (T+60d)
+    subscription_end_date: Optional[str]  # ISO date when premium expired
+    grace_end_date: Optional[str]         # ISO date when grace period ends (T+30d)
+    deletion_date: Optional[str]          # ISO date when data deletion begins (T+60d)
 ```
 
 ### Warning Messages by Status
@@ -660,47 +609,87 @@ Features:
 
 ---
 
-## Error Handling
+## Edge Case Handling
 
-### Stripe API Errors
+### 1. Duplicate Webhook Delivery
 
-```python
-try:
-    subscription = stripe.Subscription.modify(...)
-except stripe.error.CardError as e:
-    # Card declined - notify user to update payment
-    return {"error": "card_declined", "message": e.user_message}
-except stripe.error.RateLimitError:
-    # Too many requests - implement exponential backoff
-    raise HTTPException(status_code=429, detail="Rate limited")
-except stripe.error.InvalidRequestError as e:
-    # Invalid parameters - log and return error
-    logger.error(f"Invalid Stripe request: {e}")
-    raise HTTPException(status_code=400, detail=str(e))
-```
+**Problem:** Stripe may deliver the same webhook event multiple times, causing duplicate subscription records or purchases.
 
-### Webhook Idempotency
+**Solution:** Checkout handler uses a 30-minute duplicate detection window:
+- Queries for existing purchases with the same user_id and plan_id within the last 30 minutes
+- If a duplicate is detected but the subscription is still active, returns success immediately
+- If the subscription has expired/cancelled since the original purchase, allows the new purchase to proceed
 
-```python
-def handle_webhook(event: stripe.Event):
-    """
-    Webhooks may be delivered multiple times.
-    Use event ID for idempotency.
-    """
-    event_id = event["id"]
+### 2. Webhook References Non-Existent User
 
-    # Check if already processed
-    if is_event_processed(event_id):
-        logger.info(f"Event {event_id} already processed, skipping")
-        return {"status": "already_processed"}
+**Problem:** Webhook events may reference Stripe customers that don't exist in the database (test data, incomplete checkouts, deleted users).
 
-    # Process event
-    result = dispatch_webhook_event(event)
+**Solution:** Returns HTTP 200 to prevent infinite Stripe retries:
+- Logs a warning with the unrecognized customer_id
+- Returns `{"success": True, "skipped": True, "reason": "missing_user_account"}`
+- Stripe stops retrying, avoiding alert fatigue
 
-    # Mark as processed
-    mark_event_processed(event_id)
-    return result
-```
+### 3. Subscription Not Found During Payment Event
+
+**Problem:** Payment success/failure webhooks may arrive when no matching subscription exists (e.g., trial-to-paid transitions with timing gaps).
+
+**Solution:** Three-tier subscription lookup fallback:
+- First: active subscriptions (expiration > now)
+- Then: recently expired subscriptions (within 30-day window)
+- Finally: any non-free subscription (ordered by most recent expiration)
+
+### 4. Stale Storage Data During Alert Calculation
+
+**Problem:** Storage usage data may be outdated, causing inaccurate limit warnings.
+
+**Solution:** `calculate_limit_warning()` uses a freshness check:
+- Uses cached storage data if less than 20 minutes old (`MAX_CACHE_AGE_MINUTES`)
+- Triggers a live S3 scan when cached data is stale or missing
+- Prevents excessive S3 API calls while maintaining accuracy
+
+### 5. Payment Failure During Active Subscription
+
+**Problem:** A card decline could immediately cut off a user's premium access.
+
+**Solution:** Graceful degradation during retry window:
+- Subscription `sync_status` set to `FAILED` (tracking only)
+- User retains full premium access during Stripe's automatic retry period
+- User tier cache invalidated for immediate warning display
+- Only after all retries are exhausted does Stripe send `customer.subscription.deleted`
+
+---
+
+## Monitoring and Metrics
+
+The subscription system uses application-level logging for observability. No custom CloudWatch metrics are published.
+
+### Log Levels
+
+| Level | Usage | Example |
+|-------|-------|---------|
+| `INFO` | Significant operations (checkout, plan change, cache invalidation) | `"Successfully processed checkout for user {user_id}"` |
+| `WARNING` | Degraded operations (payment failure, missing user, Stripe not initialized) | `"Payment failed for customer: {customer_id}"` |
+| `ERROR` | Failures (Stripe API errors, database errors, calculation failures) | `"Failed to calculate limit warning for user {user_id}"` |
+| `DEBUG` | Development context (test mode skips, missing subscriptions) | `"Skipping storage usage lookup for user {user_id} (test mode)"` |
+
+### Key Observability Points
+
+| Event | Log Level | Location |
+|-------|-----------|----------|
+| Checkout completed | INFO | `webhook_service.py` |
+| Payment failed | WARNING | `webhook_service.py` |
+| Subscription cancelled | INFO | `webhook_service.py` |
+| Duplicate webhook detected | INFO | `webhook_service.py` |
+| Unknown customer in webhook | WARNING | `webhook_service.py` |
+| Storage cache miss (S3 scan triggered) | INFO | `cloud_utils.py` |
+| Limit warning calculation failure | ERROR | `cloud_utils.py` |
+| User tier cache invalidated | INFO | `stripe_service.py` |
+
+### Database State Tracking
+
+The `sync_status` field on `UserSubscription` tracks webhook processing state:
+- `SYNCED` -- subscription state matches Stripe
+- `FAILED` -- payment failure detected, awaiting Stripe retry
 
 ---
 
