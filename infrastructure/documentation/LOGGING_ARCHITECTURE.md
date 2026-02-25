@@ -34,6 +34,156 @@
 
 ---
 
+## Logging Level Policy
+
+This section defines **when to use each log level**. All new logging calls
+must follow these rules. Existing calls that violate these rules should be
+corrected when the surrounding code is modified.
+
+### Level Definitions
+
+#### CRITICAL
+
+System is unusable or data integrity is compromised.
+
+- Partial operations that leave the system in an inconsistent state
+  (e.g., Firebase account deleted but DB record remains)
+- Unrecoverable startup failures
+
+Expected frequency: near-zero in healthy systems.
+
+#### ERROR
+
+An operation **failed and cannot proceed**. The caller will receive an error
+response, or a job item will be skipped/retried.
+
+Use ERROR when:
+- A database write/read fails unexpectedly
+- An external API call fails (S3, Stripe, Firebase) and no fallback exists
+- A workflow execution fails
+- A business-logic invariant is violated
+
+Do NOT use ERROR when:
+- The system handles the failure gracefully (use WARNING)
+- The failure is expected in normal operation (use WARNING or DEBUG)
+
+#### WARNING
+
+Something **unexpected happened but the system recovered** or degraded
+gracefully. A human should review these periodically but no immediate action
+is required.
+
+Use WARNING when:
+- A resource is missing but the code returns early or uses a fallback
+  (e.g., missing workflow directory, missing experiment config)
+- A non-critical cleanup operation fails (e.g., temp file deletion after
+  successful computation)
+- A caught exception represents a client-side issue, not a server bug
+  (e.g., validation error -> 400/401, expired auth token)
+- A platform detection or optional feature probe fails
+- A caught exception that was handled but may indicate a deeper issue
+
+Do NOT use WARNING when:
+- The condition is the normal/happy path (use DEBUG or INFO)
+- The operation succeeded (use INFO)
+
+#### INFO
+
+A **significant business event or operational milestone** occurred. INFO is
+the default production-visible level in the frontend log viewer.
+
+Use INFO when:
+- A high-level operation starts or completes (workflow run, background job,
+  experiment copy/delete)
+- A business event occurs (user login, subscription created/renewed/cancelled,
+  email sent)
+- Infrastructure initializes (cloud services connected, S3 bucket created,
+  DB connection verified)
+- A job-level summary is produced ("Processed N items", "Cleanup complete")
+
+Do NOT use INFO when:
+- Logging per-item details in a batch operation (use DEBUG)
+- Logging internal function parameters or return values (use DEBUG)
+- Logging step-by-step traces through a multi-step process (use DEBUG)
+- Logging sensitive data: auth tokens, verification links, webhook secrets
+  (use DEBUG -- these should only appear when explicitly requested)
+
+Rule of thumb: **one INFO message per high-level operation**. If a loop
+body contains `logger.info()`, it almost certainly should be `logger.debug()`.
+
+#### DEBUG
+
+**Diagnostic detail** for developers investigating issues. Always captured
+by CloudWatch but hidden from the frontend log viewer when `LOG_LEVEL=INFO`.
+
+Use DEBUG when:
+- Logging step-by-step progress through a multi-step process (webhook
+  processing, checkout flow, S3 sync)
+- Logging per-item details in batch operations (per-file download,
+  per-experiment cleanup, per-user reconciliation)
+- Logging function parameters, return values, or intermediate state
+- Logging cache hits/misses, skip decisions, no-op conditions
+- Logging sensitive data that aids debugging (verification links, password
+  reset links, webhook signatures, Lambda response bodies)
+- Logging the happy/normal path of a check ("no limit warning" = user is
+  within limits = nothing to report at higher levels)
+
+### Decision Flowchart
+
+```
+Is the system in an inconsistent/unusable state?
+  YES -> CRITICAL
+
+Did the operation fail and the caller will get an error?
+  YES -> ERROR
+
+Did something unexpected happen but the system handled it?
+  YES -> WARNING
+
+Is this a significant business event or operational milestone?
+  YES -> INFO
+
+Everything else (traces, per-item details, parameters, sensitive data)
+  -> DEBUG
+```
+
+### Anti-Patterns
+
+These are the most common mistakes found during the log-level audit. Avoid
+them in new code and fix them when modifying existing code.
+
+| Anti-Pattern | Correct Level | Example |
+|---|---|---|
+| Caught exception logged as INFO | WARNING | `"Failed to detect Apple Silicon: {e}"` |
+| Happy-path / no-problem-found logged as WARNING | DEBUG | `"No limit warning for user {id}"` |
+| Successful recovery logged as WARNING | INFO | `"Bucket recovery on login: {bucket}"` |
+| Per-item batch detail logged as INFO | DEBUG | `"Deleting input directory: {dir}"` |
+| Internal state dump logged as INFO | DEBUG | `"Lambda response body: {body}"` |
+| Sensitive credentials logged as INFO | DEBUG | `"Verification link: {url}"` |
+| Graceful early-return logged as ERROR | WARNING | `"'{path}' does not exist"` (returns early) |
+| Non-critical cleanup failure logged as ERROR | WARNING | `"Failed to cleanup memmap files"` |
+
+### Logger Usage
+
+All modules must use `AppLogger.get_logger()` from
+`studio.app.common.core.logger`. Do not use `logging.getLogger()` directly.
+
+```python
+# Correct
+from studio.app.common.core.logger import AppLogger
+logger = AppLogger.get_logger()
+
+# Incorrect -- do not use
+import logging
+logging.getLogger().info(...)
+```
+
+This ensures all log output passes through the centralized configuration
+(YAML-based levels, `ClientIdFilter`, concurrent file handler, `LOG_LEVEL`
+frontend filtering).
+
+---
+
 ## Architecture Overview
 
 ```
