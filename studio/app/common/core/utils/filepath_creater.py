@@ -25,10 +25,6 @@ def normalize_output_path(path: str) -> str:
     if path.startswith(DIRPATH.OUTPUT_DIR):
         return path[len(DIRPATH.OUTPUT_DIR) :].lstrip("/")
 
-    # Handle common Docker path prefix
-    if path.startswith("/app/studio_data/output/"):
-        return path[len("/app/studio_data/output/") :]
-
     return path
 
 
