@@ -117,7 +117,7 @@ class WorkflowResult:
             # Check node processed status (inspect ExptConfig)
             expt_function = expt_config.function.get(node_id)
             if not expt_function:
-                logger.debug(f"Invalid node_id [{node_id}]")
+                logger.warning(f"Invalid node_id [{node_id}]")
                 continue
 
             # Perform observations of nodes

@@ -138,7 +138,7 @@ class ExptConfigReader:
                 return None
             return WorkflowRunStatus(config.success)
         except (ValueError, AssertionError, yaml.YAMLError) as e:
-            logger.debug(
+            logger.warning(
                 f"experiment config read error: [{workspace_id}/{unique_id}] {e}"
             )
             return None

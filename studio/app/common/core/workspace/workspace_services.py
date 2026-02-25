@@ -39,7 +39,7 @@ class WorkspaceService:
 
                 deleted_statuses.append(deleted_status)
         else:
-            logger.debug(f"Workspace directory '{workspace_dir}' does not exist")
+            logger.warning(f"Workspace directory '{workspace_dir}' does not exist")
 
         if all(deleted_statuses):
             # Delete the workspace directory itself

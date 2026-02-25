@@ -29,7 +29,7 @@ class WorkspaceDataCapacityService:
     def update_experiment_data_usage(cls, workspace_id: str, unique_id: str):
         workflow_dir = join_filepath([DIRPATH.OUTPUT_DIR, workspace_id, unique_id])
         if not os.path.exists(workflow_dir):
-            logger.debug(f"'{workflow_dir}' does not exist")
+            logger.warning(f"'{workflow_dir}' does not exist")
             return
 
         data_usage = get_folder_size(workflow_dir)
@@ -44,7 +44,7 @@ class WorkspaceDataCapacityService:
         # Read experiment config
         config = ExptConfigReader.read(workspace_id, unique_id)
         if not config:
-            logger.debug(f"[{workspace_id}/{unique_id}] does not exist")
+            logger.warning(f"[{workspace_id}/{unique_id}] does not exist")
             return
 
         # Make overwrite params
@@ -82,7 +82,7 @@ class WorkspaceDataCapacityService:
     ):
         workspace_dir = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
         if not os.path.exists(workspace_dir):
-            logger.debug(f"'{workspace_dir}' does not exist")
+            logger.warning(f"'{workspace_dir}' does not exist")
             return
 
         input_data_usage = get_folder_size(workspace_dir)
@@ -121,7 +121,7 @@ class WorkspaceDataCapacityService:
     ):
         folder = join_filepath([DIRPATH.OUTPUT_DIR, workspace_id])
         if not os.path.exists(folder):
-            logger.debug(f"'{folder}' does not exist")
+            logger.warning(f"'{folder}' does not exist")
             return
         exp_records = []
 
