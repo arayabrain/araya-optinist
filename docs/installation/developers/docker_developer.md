@@ -20,7 +20,7 @@ Please follow instructions below.
 ### Clone repository
 
 ```bash
-git clone https://github.com/oist/optinist.git
+git clone https://github.com/arayabrain/araya-optinist.git
 ```
 
 #### setup application config files

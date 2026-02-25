@@ -28,7 +28,7 @@ export const Header = () => {
               style={{ height: 32, width: "auto" }}
             />
           </LogoIcon>
-          <LogoText>Araya OptiNiSt</LogoText>
+          <LogoText>ARAYA OptiNiSt</LogoText>
         </Logo>
         <Nav>
           <NavLink href="#features">Features</NavLink>
