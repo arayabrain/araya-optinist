@@ -596,6 +596,105 @@ def get_user_assignment(user_email: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+@with_transaction
+def migrate_user(
+    connection, user_email: str, target_instance_id: str
+) -> Dict[str, Any]:
+    """
+    Migrate a free-tier user to a different instance.
+
+    Replicates the atomic migration SQL from free_user_utils.py
+    with workflow protection (active_workflow_count = 0).
+
+    Args:
+        connection: DB connection (provided by @with_transaction)
+        user_email: Email of the user to migrate
+        target_instance_id: EC2 instance ID to migrate to
+
+    Returns:
+        Dict with migration result
+    """
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM users WHERE email = %s",
+                (user_email,),
+            )
+            user = cursor.fetchone()
+            if not user:
+                return {
+                    "success": False,
+                    "message": f"User not found: {user_email}",
+                }
+
+            user_id = user["id"]
+
+            cursor.execute(
+                """SELECT instance_id, active_workflow_count,
+                          migration_count
+                   FROM free_user_assignments
+                   WHERE user_id = %s""",
+                (user_id,),
+            )
+            assignment = cursor.fetchone()
+            if not assignment:
+                return {
+                    "success": False,
+                    "message": (f"No assignment for {user_email}"),
+                }
+
+            source = assignment["instance_id"]
+            if source == target_instance_id:
+                return {
+                    "success": False,
+                    "message": ("Source and target are the same" f": {source}"),
+                }
+
+            workflows = assignment["active_workflow_count"] or 0
+            if workflows > 0:
+                return {
+                    "success": False,
+                    "message": (
+                        f"User has {workflows} active" " workflow(s), cannot migrate"
+                    ),
+                }
+
+            cursor.execute(
+                """UPDATE free_user_assignments
+                   SET instance_id = %s,
+                       migration_count = migration_count + 1,
+                       last_migration = NOW()
+                   WHERE user_id = %s
+                     AND active_workflow_count = 0""",
+                (target_instance_id, user_id),
+            )
+
+            if cursor.rowcount == 0:
+                return {
+                    "success": False,
+                    "message": "Migration blocked (race condition)",
+                }
+
+            new_count = (assignment["migration_count"] or 0) + 1
+            print(
+                f"Migrated {user_email} (id={user_id})"
+                f" {source} -> {target_instance_id}"
+            )
+
+            return {
+                "success": True,
+                "message": "Migration successful",
+                "user_id": user_id,
+                "source_instance": source,
+                "target_instance": target_instance_id,
+                "migration_count": new_count,
+            }
+
+    except Exception as e:
+        print(f"Error migrating user: {str(e)}")
+        raise e
+
+
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Free Cleanup Lambda Handler
@@ -622,6 +721,10 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     - count_active_users: Count users active in last N minutes
       Event: {"action": "count_active_users", "threshold_minutes": 10}
+
+    - migrate_user: Migrate a user to a different instance
+      Event: {"action": "migrate_user", "user_email": "u@test.com",
+              "target_instance_id": "i-abc123"}
     """
 
     print(f"Free cleanup triggered by event: {json.dumps(event, cls=DecimalEncoder)}")
@@ -737,6 +840,32 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 "body": json.dumps({"result": result}, cls=DecimalEncoder),
             }
 
+        elif action == "migrate_user":
+            user_email = event.get("user_email")
+            target_instance_id = event.get("target_instance_id")
+            if not user_email or not target_instance_id:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps(
+                        {
+                            "error": (
+                                "Missing required parameters:"
+                                " user_email,"
+                                " target_instance_id"
+                            )
+                        },
+                        cls=DecimalEncoder,
+                    ),
+                }
+            result = migrate_user(user_email, target_instance_id)
+            return {
+                "statusCode": 200,
+                "body": json.dumps(
+                    {"result": result},
+                    cls=DecimalEncoder,
+                ),
+            }
+
         else:
             return {
                 "statusCode": 400,
@@ -752,6 +881,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                             "count_active_users",
                             "get_free_test_user_ids",
                             "get_user_assignment",
+                            "migrate_user",
                         ],
                     },
                     cls=DecimalEncoder,
