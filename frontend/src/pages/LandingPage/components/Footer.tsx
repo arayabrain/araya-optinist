@@ -23,7 +23,7 @@ export const Footer = () => {
                 style={{ height: 32, width: "auto" }}
               />
             </LogoIcon>
-            <LogoText>Araya OptiNiSt</LogoText>
+            <LogoText>ARAYA OptiNiSt</LogoText>
           </Logo>
           <FooterDescription>
             OptiNiSt is the no-code platform for scientific data analysis. Build
@@ -50,11 +50,25 @@ export const Footer = () => {
         </FooterBrand>
         <FooterBottom>
           <FooterAttribution>
-            Araya OptiNiSt is developed based on OptiNiSt by OIST (Okinawa
-            Institute of Science and Technology)
+            ARAYA OptiNiSt is developed based on OptiNiSt by ARAYA and OIST
+            (Okinawa Institute of Science and Technology)
           </FooterAttribution>
+          <CompanyLine>
+            <CompanyLink
+              href="https://www.araya.org/en/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <img
+                src="/static/araya_logo.png"
+                alt="ARAYA"
+                style={{ height: 20, width: "auto" }}
+              />
+              <span>Araya Inc.</span>
+            </CompanyLink>
+          </CompanyLine>
           <FooterCopyright>
-            &copy; 2025 Araya OptiNiSt. Built for Science.
+            &copy; 2025 ARAYA OptiNiSt. Built for Science.
           </FooterCopyright>
         </FooterBottom>
       </Container>
@@ -139,6 +153,25 @@ const FooterAttribution = styled(Typography)({
   fontSize: FONT_SIZE.SMALL,
   color: TEXT_COLOR.SECONDARY,
   fontStyle: "italic",
+})
+
+const CompanyLine = styled(Box)({
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+})
+
+const CompanyLink = styled("a")({
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "0.5rem",
+  color: TEXT_COLOR.SECONDARY,
+  fontSize: FONT_SIZE.SMALL,
+  textDecoration: "none",
+  transition: "color 0.2s",
+  "&:hover": {
+    color: TEXT_COLOR.ACCENT,
+  },
 })
 
 const FooterCopyright = styled(Typography)({

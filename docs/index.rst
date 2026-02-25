@@ -18,7 +18,7 @@ Main Features
 - **Managing Workflows**: records and reproduces the workflow pipelines easily.
 
 
-.. _issue: https://github.com/oist/optinist/issues
+.. _issue: https://github.com/arayabrain/araya-optinist/issues
 .. _here: https://www.biorxiv.org/content/early/2017/07/20/061507
 .. _this paper: Coming Soon
 .. _pypi: https://pypi.org/project/optinist/
@@ -42,7 +42,7 @@ Explore Our GitHub Repository
 -----------------------------
 We're building in the open! You can explore the codebase, check out open issues, and contribute to the project on GitHub.
 
-`Visit the Optinist GitHub Repository <https://github.com/oist/optinist>`_
+`Visit the Optinist GitHub Repository <https://github.com/arayabrain/araya-optinist>`_
 
 Citation
 --------

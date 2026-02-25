@@ -59,10 +59,10 @@ export const PublicRepository = () => {
             </span>
             Public Repository
           </SectionLabel>
-          <SectionTitle>Araya OptiNiSt Public Repository</SectionTitle>
+          <SectionTitle>ARAYA OptiNiSt Public Repository</SectionTitle>
           <SectionSubtitle>
             Public data repositories exist, but they rarely ensure consistent
-            analysis methods across datasets. Araya OptiNiSt changes that.
+            analysis methods across datasets. ARAYA OptiNiSt changes that.
           </SectionSubtitle>
         </SectionHeader>
         <PublicRepoGrid>
