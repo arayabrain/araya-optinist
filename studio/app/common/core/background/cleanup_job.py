@@ -24,6 +24,7 @@ from sqlalchemy import func
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.subscription.constants import SyncStatusConstants
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.core.utils.filepath_creater import join_filepath
@@ -198,7 +199,10 @@ class DataCleanupJob:
 
             # Check if critical experiment files exist in S3
             critical_files = ["experiment.yaml", "workflow.yaml"]
-            s3_prefix = f"app/studio_data/output/{workspace_id}/{experiment_id}/"
+            s3_prefix = (
+                f"{S3StorageController.S3_BASE_PATH}"
+                f"/output/{workspace_id}/{experiment_id}/"
+            )
 
             for filename in critical_files:
                 s3_key = f"{s3_prefix}{filename}"

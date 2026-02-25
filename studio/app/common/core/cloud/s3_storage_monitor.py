@@ -100,9 +100,9 @@ class S3StorageMonitor:
             # Check both input and output directories for each workspace
             for workspace_id in workspace_ids:
                 prefixes = [
-                    f"app/studio_data/"
+                    f"{S3StorageController.S3_BASE_PATH}/"
                     f"{S3StorageController.S3_INPUT_DIR}/{workspace_id}/",
-                    f"app/studio_data/"
+                    f"{S3StorageController.S3_BASE_PATH}/"
                     f"{S3StorageController.S3_OUTPUT_DIR}/{workspace_id}/",
                 ]
 
@@ -243,9 +243,9 @@ class S3StorageMonitor:
             # Check both input and output directories for each workspace
             for workspace_id in workspace_ids:
                 prefixes = [
-                    f"app/studio_data/"
+                    f"{S3StorageController.S3_BASE_PATH}/"
                     f"{S3StorageController.S3_INPUT_DIR}/{workspace_id}/",
-                    f"app/studio_data/"
+                    f"{S3StorageController.S3_BASE_PATH}/"
                     f"{S3StorageController.S3_OUTPUT_DIR}/{workspace_id}/",
                 ]
 
