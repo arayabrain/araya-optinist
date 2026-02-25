@@ -6,6 +6,8 @@ Add your algorithm
 :depth: 3
 ```
 
+Additional algorithms can be added to Araya-OptiNiSt Cloud on request. Delivery is greatly sped up if requests include code for new nodes. This guide explains the format for adding new nodes.
+
 ## Example of Algorithm Addition Procedure
 
 ### 1. Prepare Necessary Directories and Files for the Algorithm
@@ -132,7 +134,7 @@ If your function requires specific packages, you can set them using a conda env 
 
 ```yaml
 dependencies:
-  - python=3.9 # Add the dependencies needed for you function
+  - python=3.11 # Add the dependencies needed for you function
   - numpy<2 # Exclude numpy 2.x versions
 ```
 

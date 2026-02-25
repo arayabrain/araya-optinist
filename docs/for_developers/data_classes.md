@@ -23,4 +23,3 @@ Optinist defines several data classes to ensure consistency between Input and Ou
   - LineData
   - PieData
   - PolarData
-  - ScatterData
