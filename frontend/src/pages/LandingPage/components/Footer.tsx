@@ -32,7 +32,7 @@ export const Footer = () => {
           </FooterDescription>
           <FooterSocial>
             <SocialLink
-              href="https://github.com/arayabrain/optinist-for-cloud"
+              href="https://github.com/arayabrain/araya-optinist"
               target="_blank"
               rel="noopener noreferrer"
               aria-label="GitHub"

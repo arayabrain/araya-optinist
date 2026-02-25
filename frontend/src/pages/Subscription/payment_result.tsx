@@ -256,7 +256,7 @@ const PaymentResult: React.FC<PaymentResultProps> = ({
                 sx={styles.githubButton}
                 onClick={() =>
                   window.open(
-                    "https://github.com/arayabrain/optinist-for-cloud",
+                    "https://github.com/arayabrain/araya-optinist",
                     "_blank",
                   )
                 }
