@@ -32,7 +32,7 @@ resource "aws_lambda_function" "premium_manager" {
       RDS_DATABASE                 = var.mysql_database
       ROUTING_SECRET_KEY           = var.routing_secret_key
       # Dynamic capacity settings (use existing ABSOLUTE_MAX + minimal new ones)
-      PREMIUM_SAFETY_BUFFER      = "1" # Extra instances for quick response
+      PREMIUM_EXTRA_CAPACITY     = "1" # Extra instances for quick response
       PREMIUM_STANDBY_POOL_SIZE  = "1" # Number of stopped instances to maintain
       PREMIUM_IDLE_TIMEOUT_HOURS = "3" # Hours before idle instances are converted to standby
 
