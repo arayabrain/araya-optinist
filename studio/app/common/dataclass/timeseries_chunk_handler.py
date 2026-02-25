@@ -139,11 +139,11 @@ class TimeSeriesChunkHandler:
             # Convert DataFrame columns to compact list format
             # Example: if df has columns ["data", "std"],
             #   save as {"data": [v1, v2, ...], "std": [v1, v2, ...]}
-            record_data = {}
+            record_col_data = {}
             for col in df.columns:
-                record_data[col] = df[col].tolist()
+                record_col_data[col] = df[col].tolist()
 
-            chunk_data[chunk_id]["records"][str(record_id)] = record_data
+            chunk_data[chunk_id]["records"][str(record_id)] = record_col_data
 
         # Write chunk files
         for chunk_id, chunk_content in chunk_data.items():
