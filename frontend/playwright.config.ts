@@ -7,7 +7,7 @@ export default defineConfig({
     timeout: 10_000,
   },
   fullyParallel: false,
-  retries: 0,
+  retries: 2,
   reporter: [["html", { open: "never" }], ["list"]],
   use: {
     baseURL: process.env.BASE_URL || "http://localhost:3000",

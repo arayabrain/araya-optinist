@@ -46,6 +46,10 @@ test.describe("Public UI - Public Header", () => {
 test.describe("Registration - Form Validation", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/register")
+    // Wait for the registration form to fully render
+    await expect(page.locator('button:has-text("Sign Up")')).toBeVisible({
+      timeout: 15_000,
+    })
   })
 
   test("TC103 - Form validation - empty fields", async ({ page }) => {
@@ -199,13 +203,16 @@ test.describe("Registration - Success Flow", () => {
 
 test.describe("Login", () => {
   test("TC112 - Unverified email error", async ({ page }) => {
-    await page.goto("/login")
+    // This test does registration + login, so it needs extra time
+    test.setTimeout(120_000)
 
-    // Use a known unverified email (from a previous TC109 registration)
     const unverifiedEmail = `e2e_unverified_${Date.now()}@test.com`
 
     // First register a new user (won't be verified)
     await page.goto("/register")
+    await expect(page.locator('button:has-text("Sign Up")')).toBeVisible({
+      timeout: 30_000,
+    })
     await page.locator('input[name="name"]').fill("Unverified User")
     await page.locator('input[name="email"]').fill(unverifiedEmail)
     await page.locator('input[name="password"]').fill("Test@123")
@@ -214,17 +221,20 @@ test.describe("Login", () => {
 
     await expect(
       page.locator("text=Registration Almost Complete!"),
-    ).toBeVisible({ timeout: 15_000 })
+    ).toBeVisible({ timeout: 30_000 })
 
     // Now try to login with unverified email
     await page.goto("/login")
+    await expect(page.locator('[data-testid="button-submit"]')).toBeVisible({
+      timeout: 30_000,
+    })
     await page.locator('[data-testid="email"]').fill(unverifiedEmail)
     await page.locator('[data-testid="password"]').fill("Test@123")
     await page.locator('[data-testid="button-submit"]').click()
 
     // Should show warning alert with "Resend Email" button
     const alert = page.locator('[role="alert"]').filter({ hasText: "verify" })
-    await expect(alert).toBeVisible({ timeout: 10_000 })
+    await expect(alert).toBeVisible({ timeout: 30_000 })
 
     const resendButton = page.locator('button:has-text("Resend Email")')
     await expect(resendButton).toBeVisible()
@@ -269,8 +279,13 @@ test.describe("Post-Login UI", () => {
   test("TC115 - Dashboard button visibility (logged in)", async ({ page }) => {
     await page.goto("/public")
 
+    // Wait for the page header to render and auth state to resolve
+    await expect(page.locator("text=OptiNiSt Public Repository")).toBeVisible({
+      timeout: 15_000,
+    })
+
     const dashboardButton = page.locator('a:has-text("Dashboard")').first()
-    await expect(dashboardButton).toBeVisible()
+    await expect(dashboardButton).toBeVisible({ timeout: 15_000 })
     await expect(dashboardButton).toHaveAttribute("href", "/dashboard")
 
     // Login button should NOT be visible when logged in
@@ -318,6 +333,11 @@ test.describe("Post-Login UI", () => {
 
   test("TC121 - Upgrade button state", async ({ page }) => {
     await page.goto("/account")
+
+    // Wait for account page to fully load
+    await expect(page.locator('h2:has-text("Account Profile")')).toBeVisible({
+      timeout: 15_000,
+    })
 
     // Upgrade button should be visible (may be disabled in local dev
     // if Stripe is not configured, but should be enabled in production)

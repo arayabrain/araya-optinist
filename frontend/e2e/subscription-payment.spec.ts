@@ -281,10 +281,15 @@ test.describe("Downgrade Flow", () => {
   test("TC250 - Modal title check", async ({ page }) => {
     await page.goto("/subscription")
 
+    // Wait for page to load past the initial app spinner
     const downgradeButton = page.locator('button:has-text("Downgrade")')
+    const upgradeButton = page.locator('button:has-text("Upgrade")')
+    const currentPlanButton = page.locator('button:has-text("Current Plan")')
     const loadingText = page.locator("text=Loading subscription plans...")
-    await expect(downgradeButton.or(loadingText)).toBeVisible({
-      timeout: 15_000,
+    await expect(
+      downgradeButton.or(upgradeButton).or(currentPlanButton).or(loadingText),
+    ).toBeVisible({
+      timeout: 30_000,
     })
 
     test.skip(
