@@ -2,21 +2,22 @@
 Araya-OptiNiSt Cloud
 ==========================================
 
-**Araya-OptiNiSt Cloud** allows researchers to process and visualize their calcium imaging data entirely online. It was built by `Araya Inc. <https://www.araya.org/en/>`_ on top of `OptiNiSt <https://github.com/arayabrain/araya-optinist>`_, an open-source calcium imaging pipeline tool originally developed in collaboration with `OIST <https://www.oist.jp/>`_.
+**Araya-OptiNiSt Cloud** allows researchers to process and visualize their calcium imaging data entirely online. It was built by `Araya Inc. <https://www.araya.org/en/>`_ on top of `OptiNiSt <https://github.com/oist/optinist>`_, an open-source calcium imaging pipeline tool originally developed in collaboration with `OIST <https://www.oist.jp/>`_.
 
 We believe in open, reproducible science and in making it easy to share results between labs. Araya-OptiNiSt Cloud is built around these principles:
 
-- **Public Data Sharing**: Publish your experiments to the ``/public`` page, where anyone can view your results and reproduce your workflows without needing an account.
+- **Public Data Sharing**: Publish your experiments to the `public page <https://www.araya-optinist.com/public>`_, where anyone can view your results and reproduce your workflows without needing an account.
 - **Cloud Computing**: Run analysis pipelines on cloud infrastructure without managing local hardware.
-- **Cloud Storage**: Store your data securely in the cloud with S3-backed storage and on-demand synchronization.
+- **Cloud Storage**: Store your data securely in the cloud with Amazon S3-backed storage and on-demand synchronization.
 
-**Plans** are available to suit different needs, from individual researchers to large labs. See :doc:`other/pricing` for full details.
+**Plans** are available to suit different needs, from individual researchers to large labs.
 
-- **Free** -- 5 GB storage, shared compute resources.
-- **Premium** ($20/month) -- 200 GB storage, dedicated compute resources.
+- **Free** -- Shared compute resources with limited storage.
+- **Premium** -- Dedicated compute resources with expanded storage.
 - **Custom** -- Any size of compute (CPU or GPU) and storage. Additional analysis methods and plots can be added on request.
+See the `Subscription page <https://www.araya-optinist.com/subscription>`_ for full details.
 
-For inquiries about custom plans, contact us at optinist-support@araya.org.
+For inquiries, see the :doc:`other/contact` page.
 
 About OptiNiSt
 ---------------
@@ -79,4 +80,4 @@ Feel free to use it as a space for casual conversations, product questions, requ
 
 Contact Support
 ---------------
-For questions, bug reports, or assistance, reach out to us at optinist-support@araya.org.
+For questions, bug reports, or assistance, see our :doc:`other/contact` page.

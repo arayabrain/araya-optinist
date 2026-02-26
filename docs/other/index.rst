@@ -7,4 +7,4 @@ Other
   :caption: OTHER:
 
   debugging
-  pricing
+  contact
