@@ -27,14 +27,14 @@ Following is the summary of directory structure.
   - `.env`: Application environment variable definition file
     - Depending on usage, the following .env files are available
       - `.env`: Loads for all environments
-      - `.env.development`: Used during development (yarn start) 
+      - `.env.development`: Used during development (yarn start)
       - `.env.production`: Used during production builds (yarn build)
     - [Learn more](https://create-react-app.dev/docs/adding-custom-environment-variables/#what-other-env-files-can-be-used)
 
 - api, components, store/slice directories are separated by its domain.
 
 ### Backend
-- language: Python (v3.8)
+- language: Python (v3.11)
 - framework: FastAPI
 - handle workflow by snakemake.
 

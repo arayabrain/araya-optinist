@@ -615,7 +615,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **f0_percentile** [float (0 <= f0_percentile <= 100), default: 8]: Percentile used for calculating the baseline fluorescence.
 
 #### Maintenance
-- **Description:** For debugging purposes, OptiNiSt provides setup_conda_* nodes. These nodes do not contain any analysis or processing, and are used to setup conda environments. If the Conda environment used by each Node has not yet been created, there is a function to automatically generate it in advance. See the [Debugging](debugging) page for more details.
+- **Description:** For debugging purposes, OptiNiSt provides setup_conda_* nodes. These nodes do not contain any analysis or processing, and are used to setup conda environments for each algorithm in advance.
 
 - **Input:** ImageData (setup_conda_mouse2p_image.tiff)
 - **Output:** None
