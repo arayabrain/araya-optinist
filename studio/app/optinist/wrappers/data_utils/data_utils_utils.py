@@ -21,7 +21,7 @@ def return_as_data_type(data, processed_data, output_dir, file_name, **kwargs):
 
     logger.info(f"Input data type: {type(data).__name__}")
     if output_type is None:
-        logger.info("No output_type specified, using input data type for output")
+        logger.debug("No output_type specified, using input data type for output")
 
     # Determine output type and key based on input type or explicit output_type
     if output_type in ["behaviors_data", "BehaviorData", "CsvData"] or (
@@ -92,5 +92,5 @@ def return_as_data_type(data, processed_data, output_dir, file_name, **kwargs):
         )
         output_key = "data"
 
-    logger.info(f"Created {type(result).__name__} with output key: {output_key}")
+    logger.debug(f"Created {type(result).__name__} with output key: {output_key}")
     return {output_key: result}

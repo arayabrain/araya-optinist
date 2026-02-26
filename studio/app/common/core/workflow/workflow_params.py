@@ -21,7 +21,7 @@ def check_types(params, default_params):
     faq_url = "https://github.com/oist/optinist/wiki/FAQ"
     for key in params.keys():
         if key not in default_params:
-            logger.error(f"Invalid Workflow yaml param: [{key}]. See {faq_url}")
+            logger.warning(f"Invalid Workflow yaml param: [{key}]. See {faq_url}")
             raise KeyError("Workflow yaml error, see FAQ")
         if isinstance(params[key], dict):
             params[key] = check_types(params[key], default_params[key])
