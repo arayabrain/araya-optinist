@@ -266,12 +266,10 @@ async def get_current_user(
         return user
 
     except ValidationError as e:
-        logger.warning(
-            f"Pydantic validation error in get_current_user: {e}", exc_info=True
-        )
+        logger.warning(e)
         raise HTTPException(status_code=422, detail=f"Validator Error: {e}")
     except Exception as e:
-        logger.warning(f"Authentication error in get_current_user: {e}", exc_info=True)
+        logger.warning(e)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             headers={"WWW-Authenticate": 'Bearer realm="auth_required"'},

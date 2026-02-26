@@ -163,7 +163,7 @@ class WorkspaceDataCapacityService:
                     )
                 )
                 db.bulk_save_objects(exp_records)
-                logger.info(
+                logger.debug(
                     f"Deleted and recreated {len(exp_records)} experiment records "
                     f"for workspace [{workspace_id}]"
                 )
@@ -186,7 +186,7 @@ class WorkspaceDataCapacityService:
                         # Insert new record if it doesn't exist
                         db.add(exp_record)
 
-                logger.info(
+                logger.debug(
                     f"Updated/inserted {len(exp_records)} experiment records "
                     f"for workspace [{workspace_id}]"
                 )

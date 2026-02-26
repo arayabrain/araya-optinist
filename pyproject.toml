@@ -6,7 +6,7 @@ license = "GPL-3.0"
 authors = ["OIST <email@example.com>"]
 readme = "README.md"
 documentation = "https://optinist.readthedocs.io"
-repository = "https://github.com/oist/optinist"
+repository = "https://github.com/arayabrain/araya-optinist"
 keywords = ["optinist"]
 classifiers = [
   "Intended Audience :: Developers",

@@ -16,14 +16,14 @@
     <a href="https://pypi.org/project/optinist">
       <img alt="" src="https://badge.fury.io/py/optinist.svg">
     </a>
-    <a href="https://github.com/oist/optinist">
-      <img alt="" src="https://img.shields.io/github/repo-size/oist/optinist">
+    <a href="https://github.com/arayabrain/araya-optinist">
+      <img alt="" src="https://img.shields.io/github/repo-size/arayabrain/araya-optinist">
     </a>
-    <a href="https://github.com/oist/optinist">
-      <img alt="" src="https://img.shields.io/github/stars/oist/optinist?style=social">
+    <a href="https://github.com/arayabrain/araya-optinist">
+      <img alt="" src="https://img.shields.io/github/stars/arayabrain/araya-optinist?style=social">
     </a>
-    <a href="https://github.com/oist/optinist">
-      <img alt="" src="https://img.shields.io/github/forks/oist/optinist?style=social">
+    <a href="https://github.com/arayabrain/araya-optinist">
+      <img alt="" src="https://img.shields.io/github/forks/arayabrain/araya-optinist?style=social">
     </a>
 </p>
 

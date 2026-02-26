@@ -50,7 +50,7 @@ class S3StorageController(BaseRemoteStorageController):
     S3 Storage Controller
     """
 
-    S3_BASE_PATH = "app/studio_data"
+    S3_BASE_PATH = os.environ.get("S3_BASE_PATH", "/app/studio_data").lstrip("/")
     S3_INPUT_DIR = "input"
     S3_OUTPUT_DIR = "output"
     VALIDATION_MAX_OBJECTS = 500
@@ -964,7 +964,7 @@ class S3StorageController(BaseRemoteStorageController):
 
                 # make paths
                 local_abs_path = os.path.join(
-                    os.path.dirname(DIRPATH.OUTPUT_DIR), s3_file_path
+                    os.path.dirname(DIRPATH.OUTPUT_DIR), s3_file_path.lstrip("/")
                 )
 
                 # Fix duplicate path issue

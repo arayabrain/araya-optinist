@@ -31,7 +31,7 @@ def lccd_detect(
         num_cell = roi.shape[1]
     except ValueError as e:
         if "No roi region found" in str(e):
-            logger.info("No ROIs found in LCCD detection")
+            logger.warning("No ROIs found in LCCD detection")
             num_cell = 0
             roi = np.zeros((D.shape[0] * D.shape[1], 0))  # Empty ROIs
         else:

@@ -61,8 +61,8 @@ const MultiUserHeader: FC<{ handleDrawerOpen: () => void }> = ({
         </IconButton>
         <Box display="flex" flexGrow={1} alignItems="center" gap={1.5}>
           <HeaderLogoLink to="/public">
-            <HeaderLogo src="/static/optinist_logo.png" alt="Araya OptiNiSt" />
-            <TitleLogo>Araya OptiNiSt</TitleLogo>
+            <HeaderLogo src="/static/optinist_logo.png" alt="ARAYA OptiNiSt" />
+            <TitleLogo>ARAYA OptiNiSt</TitleLogo>
           </HeaderLogoLink>
         </Box>
         {showTabsRegex.test(location.pathname) && <WorkspaceTabs />}

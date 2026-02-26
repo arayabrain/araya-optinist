@@ -57,7 +57,7 @@ def data_slice(
 
     # Handle case where no slice specs are provided
     if slice_dims is None:
-        logger.info("No slice specifications provided, returning original data")
+        logger.debug("No slice specifications provided, returning original data")
         return return_as_data_type(data, raw_data, output_dir, "sliced_data")
 
     # Convert slice_dims to list format if it's a string
@@ -140,7 +140,7 @@ def data_slice(
         logger.warning(f"Unrecognized slice spec: {spec}")
         index_specs.append(slice(None))
 
-    logger.info(f"Data slice - Applying indexing: {index_specs}")
+    logger.debug(f"Data slice - Applying indexing: {index_specs}")
 
     try:
         # Apply slices to all parts of data

@@ -203,7 +203,7 @@ def caiman_cnmf(
         c, dview, n_processes = setup_cluster(
             backend="multiprocessing", n_processes=n_processes
         )
-    logger.info(f"n_processes: {n_processes}")
+    logger.debug(f"n_processes: {n_processes}")
 
     if use_online:
         ops.change_params(

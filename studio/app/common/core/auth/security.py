@@ -74,13 +74,13 @@ def _validate_token(
         if payload.get("token_type") != token_type:
             err = "Invalid token type"
     except ExpiredSignatureError as e:
-        logger.error(e)
+        logger.warning(e)
         err = "Credentials has expired"
     except (JWTError, ValidationError) as e:
-        logger.error(e)
+        logger.warning(e)
         err = "Could not validate credentials"
     except Exception as e:
-        logger.error(e)
+        logger.warning(e)
         err = "Bad token"
 
     return payload, err

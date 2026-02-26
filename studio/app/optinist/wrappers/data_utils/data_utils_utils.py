@@ -92,5 +92,5 @@ def return_as_data_type(data, processed_data, output_dir, file_name, **kwargs):
         )
         output_key = "data"
 
-    logger.info(f"Created {type(result).__name__} with output key: {output_key}")
+    logger.debug(f"Created {type(result).__name__} with output key: {output_key}")
     return {output_key: result}

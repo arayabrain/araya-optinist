@@ -46,26 +46,49 @@ const StorageAlert: React.FC<StorageAlertProps> = ({
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [dismissed, setDismissed] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const fetchStorageAlert = async () => {
     try {
       setLoading(true)
-      const alertResponse = await getMyStorageAlertApi()
+      setError(null)
 
-      if (alertResponse.has_alert && alertResponse.alert) {
-        setAlert(alertResponse.alert)
-      } else {
-        setAlert(null)
+      // Fetch alert and usage independently so one failure doesn't block the other
+      const [alertResult, usageResult] = await Promise.allSettled([
+        getMyStorageAlertApi(),
+        showUsageDetails ? getMyStorageUsageApi() : Promise.resolve(null),
+      ])
+
+      if (alertResult.status === "fulfilled" && alertResult.value) {
+        const alertResponse = alertResult.value
+        if (alertResponse.has_alert && alertResponse.alert) {
+          setAlert(alertResponse.alert)
+        } else {
+          setAlert(null)
+        }
       }
 
-      if (showUsageDetails) {
-        const usageResponse = await getMyStorageUsageApi()
-        setUsage(usageResponse)
+      if (usageResult.status === "fulfilled" && usageResult.value) {
+        setUsage(usageResult.value)
       }
-    } catch (error) {
+
+      // If both failed, show error
+      if (
+        alertResult.status === "rejected" &&
+        usageResult.status === "rejected"
+      ) {
+        const msg =
+          alertResult.reason instanceof Error
+            ? alertResult.reason.message
+            : "Unknown error"
+        // eslint-disable-next-line no-console
+        console.error("Failed to fetch storage data:", msg)
+        setError("Unable to load storage information")
+      }
+    } catch (err) {
       // eslint-disable-next-line no-console
-      console.error("Failed to fetch storage alert:", error)
-      // Silently fail for storage alerts to not disrupt the main UI
+      console.error("Failed to fetch storage alert:", err)
+      setError("Unable to load storage information")
     } finally {
       setLoading(false)
     }
@@ -107,6 +130,22 @@ const StorageAlert: React.FC<StorageAlertProps> = ({
 
   if (dismissed || (!alert && !showUsageDetails)) {
     return null
+  }
+
+  if (error && !alert && !usage) {
+    return (
+      <Alert
+        severity="warning"
+        sx={{ mb: 2 }}
+        action={
+          <Button size="small" onClick={fetchStorageAlert}>
+            Retry
+          </Button>
+        }
+      >
+        {error}
+      </Alert>
+    )
   }
 
   const getSeverity = (alertLevel: string) => {
@@ -239,20 +278,9 @@ const StorageAlert: React.FC<StorageAlertProps> = ({
             justifyContent="space-between"
             mb={2}
           >
-            <Typography variant="h6" display="flex" alignItems="center" gap={1}>
-              <StorageIcon />
+            <Typography variant="body1" color="text.secondary">
               Storage Usage
             </Typography>
-            <Button
-              size="small"
-              startIcon={
-                refreshing ? <CircularProgress size={16} /> : <RefreshIcon />
-              }
-              onClick={handleRefresh}
-              disabled={refreshing}
-            >
-              Refresh
-            </Button>
           </Box>
 
           {usage.storage_quota_bytes ? (
