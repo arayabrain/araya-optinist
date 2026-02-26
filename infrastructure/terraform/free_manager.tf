@@ -209,7 +209,7 @@ resource "aws_iam_role_policy" "free_manager_lambda_policy" {
 
 resource "aws_cloudwatch_log_group" "free_manager_logs" {
   name              = "/aws/lambda/subscr-free-manager"
-  retention_in_days = 14
+  retention_in_days = 30
 
   tags = {
     Name = "Free Manager Logs"
@@ -379,7 +379,7 @@ resource "aws_lambda_function" "free_cleanup" {
 # CloudWatch Log Group for Free Cleanup
 resource "aws_cloudwatch_log_group" "free_cleanup_logs" {
   name              = "/aws/lambda/subscr-free-cleanup"
-  retention_in_days = 14
+  retention_in_days = 30
 
   tags = {
     Name = "Free Cleanup Lambda Logs"

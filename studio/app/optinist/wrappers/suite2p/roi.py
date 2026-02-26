@@ -95,7 +95,7 @@ def suite2p_roi(
                 logger.info("No ROIs detected in the data.")
 
     except Exception as e:
-        logger.error(f"Error during ROI detection: {str(e)}")
+        logger.warning(f"Error during ROI detection: {str(e)}")
         # Continue with empty results
 
     # Create ROI list

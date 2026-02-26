@@ -145,7 +145,7 @@ def increment_workflow_count(user_id: Optional[int]) -> None:
                 result = session.execute(stmt)
                 if result.rowcount > 0:
                     session.commit()
-                    logger.info(
+                    logger.debug(
                         f"Incremented workflow count for user {user_id} "
                         "(premium tier - primary)"
                     )
@@ -164,7 +164,7 @@ def increment_workflow_count(user_id: Optional[int]) -> None:
                 result = session.execute(stmt)
                 if result.rowcount > 0:
                     session.commit()
-                    logger.info(
+                    logger.debug(
                         f"Incremented workflow count for user {user_id} "
                         f"(free tier - primary)"
                     )
@@ -186,7 +186,7 @@ def increment_workflow_count(user_id: Optional[int]) -> None:
                     result = session.execute(stmt)
                     if result.rowcount > 0:
                         session.commit()
-                        logger.info(
+                        logger.debug(
                             f"Incremented workflow count for user {user_id} "
                             "(premium tier - fallback)"
                         )
@@ -205,7 +205,7 @@ def increment_workflow_count(user_id: Optional[int]) -> None:
                     result = session.execute(stmt)
                     if result.rowcount > 0:
                         session.commit()
-                        logger.info(
+                        logger.debug(
                             f"Incremented workflow count for user {user_id} "
                             "(free tier - fallback)"
                         )
@@ -270,7 +270,7 @@ def decrement_workflow_count(user_id: Optional[int]) -> None:
                 result = session.execute(stmt)
                 if result.rowcount > 0:
                     session.commit()
-                    logger.info(
+                    logger.debug(
                         f"Decremented workflow count for user {user_id} "
                         "(premium tier - primary)"
                     )
@@ -290,7 +290,7 @@ def decrement_workflow_count(user_id: Optional[int]) -> None:
                 result = session.execute(stmt)
                 if result.rowcount > 0:
                     session.commit()
-                    logger.info(
+                    logger.debug(
                         f"Decremented workflow count for user {user_id} "
                         "(free tier - primary)"
                     )
@@ -313,7 +313,7 @@ def decrement_workflow_count(user_id: Optional[int]) -> None:
                     result = session.execute(stmt)
                     if result.rowcount > 0:
                         session.commit()
-                        logger.info(
+                        logger.debug(
                             f"Decremented workflow count for user {user_id} "
                             "(premium tier - fallback)"
                         )
@@ -333,7 +333,7 @@ def decrement_workflow_count(user_id: Optional[int]) -> None:
                     result = session.execute(stmt)
                     if result.rowcount > 0:
                         session.commit()
-                        logger.info(
+                        logger.debug(
                             f"Decremented workflow count for user {user_id} "
                             "(free tier - fallback)"
                         )

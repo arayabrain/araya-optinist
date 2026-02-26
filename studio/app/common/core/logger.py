@@ -24,6 +24,7 @@ _client_id_context: ContextVar[Optional[str]] = ContextVar(
 
 NO_ECS_TASK_DEFAULT = "local"
 _ECS_METADATA_TIMEOUT = 2
+VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
 
 def _get_ecs_task_id() -> str:
@@ -194,6 +195,33 @@ class LoggingConfigHelper:
 
         return logging_config
 
+    @staticmethod
+    def _apply_log_level_override(logging_config: dict, log_level: str) -> dict:
+        """Override all logger and handler levels with the given level.
+
+        Applied once at startup; requires a process restart to change.
+        In ECS, LOG_LEVEL is set in the task definition (compute.tf /
+        background_service.tf). Locally, use --log-level or the env var.
+        """
+        level = log_level.upper()
+        if level not in VALID_LOG_LEVELS:
+            import warnings
+
+            warnings.warn(f"Invalid LOG_LEVEL '{log_level}', using YAML defaults")
+            return logging_config
+
+        if "root" in logging_config:
+            logging_config["root"]["level"] = level
+
+        for logger_cfg in logging_config.get("loggers", {}).values():
+            logger_cfg["level"] = level
+
+        for handler_cfg in logging_config.get("handlers", {}).values():
+            if "level" in handler_cfg:
+                handler_cfg["level"] = level
+
+        return logging_config
+
 
 class AppLogger:
     """
@@ -284,6 +312,10 @@ class AppLogger:
                 handler_config["filters"] = []
             if CLIENT_ID_FILTER_NAME not in handler_config["filters"]:
                 handler_config["filters"].append(CLIENT_ID_FILTER_NAME)
+
+        # NOTE: LOG_LEVEL env var controls the frontend log viewer filter,
+        # not the Python logging level. Python always uses YAML defaults
+        # (DEBUG for optinist/snakemake) so all logs reach CloudWatch.
 
         return logging_config
 

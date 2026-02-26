@@ -219,7 +219,7 @@ class Runner:
                 "conda_config"
             ] = config_str
         except Exception as e:
-            logger.info(f"Failed to add conda environment config to NWB file: {e}")
+            logger.warning(f"Failed to add conda environment config to NWB file: {e}")
 
         try:
             # Store node parameters in CONFIG dataset
