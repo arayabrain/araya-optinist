@@ -22,8 +22,8 @@ This document describes how to deploy OptiNiSt to AWS infrastructure. There are 
      - Discovers infrastructure (RDS endpoint, S3 buckets) via AWS CLI
      - Configures the application with correct settings
 
-
 ## Table of Contents
+
 - [Method 1: Deployment with Terraform Access](#method-1-deployment-with-terraform-access-full-access)
 - [Method 2: Deployment without Terraform Access](#method-2-deployment-without-terraform-access)
 - [Post-Deployment Verification](#post-deployment-verification)
@@ -56,6 +56,7 @@ aws configure
 Use this method if you have access to `infrastructure/terraform/terraform.tfvars`.
 
 ### Prerequisites for Method 1
+
 - Access to `infrastructure/terraform/terraform.tfvars`
 - Terraform installed (v1.0+)
 - Firebase credentials (already configured in terraform.tfvars)
@@ -70,6 +71,7 @@ cd infrastructure/scripts
 ```
 
 This script will:
+
 1. Read configuration from Terraform outputs (domain, port, protocol)
 2. Build the frontend with the correct environment variables
 3. Build and tag the Docker image
@@ -95,12 +97,14 @@ terraform apply
 **Note:** `terraform apply` automatically runs `ecr_build_push.sh` via the `null_resource.build_and_deploy` provisioner. There is no need to run it manually first.
 
 **What gets updated:**
+
 - VPC, subnets, security groups (if modified)
 - Load balancers and target groups
 - ECS services and task definitions
 - RDS database configuration
 - Auto Scaling Groups
 - Route53 and ACM certificates
+
 ---
 
 ## Method 2: Deployment without Terraform Access
@@ -110,6 +114,7 @@ terraform apply
 Use this method for routine deployments after the initial infrastructure setup has been completed.
 
 ### Prerequisites for Method 2
+
 - AWS CLI configured with valid credentials
 - Docker installed and running
 - AWS credentials with permissions for:
@@ -140,12 +145,18 @@ cd infrastructure/scripts
 ```
 
 **Script automatically:**
-1. Gets infrastructure configuration from Terraform outputs
-2. Builds frontend with correct environment variables
-3. Builds and tags Docker image
-4. Pushes to ECR
 
-**Note:** If Terraform outputs are unavailable, the script exits with an error (it does not prompt for values). Ensure you have run `terraform apply` at least once first.
+1. - Gets infrastructure configuration (tries Terraform outputs first, then prompts if unavailable)
+2. - Builds frontend with correct environment variables
+3. - Builds and tags Docker image
+4. - Pushes to ECR
+5. - ECS automatically deploys the new image
+
+**If Terraform outputs aren't available, you'll be prompted for:**
+
+- Frontend Host: `araya-optinist.com` (or ALB DNS)
+- Frontend Protocol: `https`
+- Frontend Port: `443`
 
 ### 2.2 Finding AWS Resource Values (If Needed)
 
@@ -251,10 +262,12 @@ Expected: HTTP 200 response
 ### 5. Access the Application
 
 Open in browser:
+
 - Production: `https://araya-optinist.com`
 - ALB (direct): `http://$ALB_DNS`
 
 Verify:
+
 - Login page appears
 - Application loads without errors
 - Can create and run workflows
@@ -316,10 +329,10 @@ Before deploying a new release, complete the following preparation steps.
 
 Update version numbers in the following files before building:
 
-| File | Field to Update |
-|------|-----------------|
-| `pyproject.toml` | `[tool.poetry] version` |
-| `frontend/package.json` | `version` |
+| File                    | Field to Update         |
+| ----------------------- | ----------------------- |
+| `pyproject.toml`        | `[tool.poetry] version` |
+| `frontend/package.json` | `version`               |
 
 **Version Format:** Use semantic versioning `X.Y.Z` (e.g., `2.4.0`)
 
@@ -336,6 +349,7 @@ Update version numbers in the following files before building:
 **Manual Test Cases:** [Test Case Spreadsheet](https://docs.google.com/spreadsheets/d/1bq0ySUQCnmSc9Lh5PUnfIKcS00fFCvpbDs_e797Z8W4/edit?usp=sharing)
 
 **Automated Tests:**
+
 ```bash
 # Run the test suite
 cd /path/to/optinist-for-cloud
@@ -351,6 +365,7 @@ A parallel test infrastructure (`test-optinist-for-cloud`) will be available for
 **Workflow:**
 
 1. **Create test environment:**
+
    ```bash
    cd infrastructure/terraform
    # Use test workspace/configuration
@@ -369,12 +384,14 @@ A parallel test infrastructure (`test-optinist-for-cloud`) will be available for
    ```
 
 **Test Environment Resources:**
+
 - `test-subscr-optinist-cluster` (ECS)
 - `test-subscr-optinist-*` (ALB, RDS, S3, etc.)
 - Separate Secrets Manager secrets
 - Isolated from production data
 
 **Benefits:**
+
 - Safe testing without affecting production users
 - Full infrastructure validation before release
 - Cost-effective (only runs during testing periods)
@@ -411,6 +428,7 @@ feature-branch → develop-main → main → release tag (vX.Y.Z)
 ### Creating a Release
 
 1. **Ensure all changes are merged to develop-main**
+
    ```bash
    git checkout develop-main
    git pull origin develop-main
@@ -425,7 +443,6 @@ feature-branch → develop-main → main → release tag (vX.Y.Z)
 3. **Merge and Create Release Tag**
 
    After merging to main:
-
    1. Go to [Releases page](https://github.com/arayabrain/araya-optinist/releases)
    2. Click "Draft a new release"
    3. **Choose a tag:** Create new tag in `vX.Y.Z` format (e.g., `v2.5.0`)
@@ -445,12 +462,15 @@ feature-branch → develop-main → main → release tag (vX.Y.Z)
 ## What's Changed
 
 ### New Features
+
 - Feature description (#PR_NUMBER)
 
 ### Bug Fixes
+
 - Fix description (#PR_NUMBER)
 
 ### Improvements
+
 - Improvement description (#PR_NUMBER)
 
 **Full Changelog:** https://github.com/arayabrain/araya-optinist/compare/vX.Y.Z-1...vX.Y.Z
@@ -467,6 +487,7 @@ feature-branch → develop-main → main → release tag (vX.Y.Z)
 1. Documentation source files are located in the `docs/` directory
 
 2. **Build and preview locally:**
+
    ```bash
    cd docs
    make html
@@ -487,14 +508,15 @@ feature-branch → develop-main → main → release tag (vX.Y.Z)
 
 ## Wiki Documentation TODO
 
-**Wiki URL:** https://github.com/arayabrain/araya-optinist/wiki
+**Wiki URL:** https://github.com/oist/optinist/wiki
 
 The project wiki contains additional documentation including:
+
 - Architecture diagrams
 - Troubleshooting guides
 - FAQ
 
-**Note:** Update wiki documentation as needed when making significant changes.
+_Note: Update wiki documentation as needed when making significant changes._
 
 ---
 
@@ -505,6 +527,7 @@ Use the hotfix procedure for urgent fixes that cannot wait for the regular relea
 ### When to Use Hotfix
 
 A hotfix is required when:
+
 - **Security vulnerabilities** are discovered
 - **Critical bugs** causing data loss or corruption
 - **Application fails to start** or crashes frequently
@@ -598,6 +621,7 @@ Or create a PR: `main → develop-main` with title "Sync hotfix vX.Y.Z to develo
 ### Common Issues
 
 **ECS service not updating after push:**
+
 ```bash
 # Force new deployment
 aws ecs update-service \
@@ -608,11 +632,13 @@ aws ecs update-service \
 ```
 
 **Health check failing:**
+
 - Check CloudWatch logs for application errors
 - Verify database connectivity
 - Check Secrets Manager access
 
 **Build script fails:**
+
 - Ensure AWS credentials are valid: `aws sts get-caller-identity`
 - Verify Docker is running
 - Check ECR repository exists

@@ -82,7 +82,7 @@ export const PublicRepository = () => {
               >
                 OptiNiSt
               </a>{" "}
-              by OIST (Okinawa Institute of Science and Technology)
+              by ARAYA and OIST (Okinawa Institute of Science and Technology)
             </Attribution>
             <PublicRepoBenefits>
               {benefits.map((benefit, index) => (
