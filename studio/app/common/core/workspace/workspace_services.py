@@ -68,7 +68,7 @@ class WorkspaceService:
                 shutil.rmtree(directory)
                 logger.info(f"Deleted directory: {directory}")
             else:
-                logger.warning(f"'{directory}' already deleted or never existed")
+                logger.debug(f"'{directory}' already deleted or never existed")
         except Exception as e:
             logger.error(
                 f"Failed to delete directory '{directory}': {e}",
