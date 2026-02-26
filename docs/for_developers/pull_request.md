@@ -11,8 +11,8 @@
 
 ### Branch Rules
 - You can submit Pull Request by pushing new branch.
-  - Make sure the base branch is `develop-main`, and PR is to `develop-main`.
-  - You can't push to the `develop-main` branch directly, the branch is protected.
+  - Make sure the base branch is `develop-subscription`, and PR is to `develop-subscription`.
+  - You can't push to the `develop-subscription` branch directly, the branch is protected.
   - Make sure new branch name is in following format (`xxx` is the name of the feature or bug you are working on.).
     - `feature/xxx`
     - `fix/xxx`

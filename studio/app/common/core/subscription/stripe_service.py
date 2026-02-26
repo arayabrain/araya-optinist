@@ -513,9 +513,9 @@ class StripeService:
                 "current_period_end"
             ]
 
-            logger.info(f"Current period end timestamp: {current_period_end}")
+            logger.debug(f"Current period end timestamp: {current_period_end}")
             period_end_dt = datetime_from_timestamp(current_period_end)
-            logger.info(f"Current period end date: {period_end_dt}")
+            logger.debug(f"Current period end date: {period_end_dt}")
 
             # Schedule change at period end using proper Stripe schedules
             current_period_end = stripe_subscription["items"]["data"][0][

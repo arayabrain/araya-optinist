@@ -80,8 +80,8 @@ class AuthEmailService:
                     "Firebase email service not configured. "
                     "Add FIREBASE_API_KEY to .env to enable automatic email sending."
                 )
-                logger.info(f"Verification link for {email}: {verification_link}")
-                logger.info(
+                logger.debug(f"Verification link for {email}: {verification_link}")
+                logger.debug(
                     "Copy this link and paste it in your browser to verify the email."
                 )
                 return True
@@ -134,8 +134,8 @@ class AuthEmailService:
                     "Firebase email service not configured. "
                     "Add FIREBASE_API_KEY to .env to enable automatic email sending."
                 )
-                logger.info(f"Password reset link for {email}: {reset_link}")
-                logger.info(
+                logger.debug(f"Password reset link for {email}: {reset_link}")
+                logger.debug(
                     "Copy this link and paste it in your browser to reset password."
                 )
                 return True

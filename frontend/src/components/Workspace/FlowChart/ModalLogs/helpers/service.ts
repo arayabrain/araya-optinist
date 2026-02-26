@@ -19,6 +19,13 @@ export type TParams<T = unknown> = {
 
 export type TParamQueryLogs = TParams & { reverse?: boolean; offset: number }
 
+export const fetchAvailableLogLevels = async (): Promise<TLevelsLog[]> => {
+  const { data } = await axios.get("/logs/level")
+  return (data.levels as string[]).map(
+    (l) => TLevelsLog[l as keyof typeof TLevelsLog],
+  )
+}
+
 export const serviceLogs = async (params: TParamQueryLogs) => {
   const { data, config } = await axios.get("/logs", {
     params,

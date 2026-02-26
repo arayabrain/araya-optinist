@@ -262,7 +262,7 @@ class DataCleanupJob:
                 # Clean input data (always safe to delete - user uploads are in S3)
                 input_dir = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
                 if os.path.exists(input_dir):
-                    logger.info(f"Deleting input directory: {input_dir}")
+                    logger.debug(f"Deleting input directory: {input_dir}")
                     shutil.rmtree(input_dir)
 
                 # Clean output data (with S3 verification)
@@ -299,7 +299,7 @@ class DataCleanupJob:
                     # Delete verified experiments
                     for experiment_id in experiments_to_delete:
                         experiment_path = os.path.join(output_dir, experiment_id)
-                        logger.info(
+                        logger.debug(
                             f"Deleting experiment: {workspace_id}/{experiment_id} "
                             f"(S3 backup verified)"
                         )
@@ -308,12 +308,12 @@ class DataCleanupJob:
                     # If all experiments deleted, remove workspace output dir
                     if experiments_to_delete and not experiments_to_keep:
                         if os.path.exists(output_dir) and not os.listdir(output_dir):
-                            logger.info(
+                            logger.debug(
                                 f"Deleting empty output directory: {output_dir}"
                             )
                             shutil.rmtree(output_dir)
 
-                    logger.info(
+                    logger.debug(
                         f"Cleaned workspace {workspace_id} for user {user_id}: "
                         f"{len(experiments_to_delete)} experiments deleted, "
                         f"{len(experiments_to_keep)} kept"

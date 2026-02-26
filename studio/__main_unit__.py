@@ -14,7 +14,7 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
     get_current_user_with_dataview_outputs_check,
 )
-from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.logger import AppLogger, LoggingConfigHelper
 from studio.app.common.core.middleware import (
     ClientIdLoggingMiddleware,
     SecureRoutingMiddleware,
@@ -291,12 +291,28 @@ def main(develop_mode: bool = False):
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--reload", action="store_true")
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default=None,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Override log level (takes precedence over LOG_LEVEL env var)",
+    )
     timeout_keep_alive = 60
     args = parser.parse_args()
 
     logging_config = AppLogger.get_logging_config()
 
-    logger.info(f"Starting Optinist server on {args.host}:{args.port}")
+    if args.log_level:
+        logging_config = LoggingConfigHelper._apply_log_level_override(
+            logging_config, args.log_level
+        )
+
+    effective_level = logging_config.get("root", {}).get("level", "INFO")
+    logger.info(
+        f"Starting Optinist server on {args.host}:{args.port} "
+        f"(log_level={effective_level})"
+    )
 
     if develop_mode:
         if args.workers > 1:

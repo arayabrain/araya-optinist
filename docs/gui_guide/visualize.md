@@ -163,7 +163,7 @@ Click <strong>Merge ROI</strong> (when you combine 2 or more ROI cells) or <stro
 <img width="400px" src="../_static/visualize/merge_roi_clicked.png" alt="Merge roi" />
 </p>
 
-To keep changes and see them in the analysis you must </strong>Commit Edit</strong>.
+To keep changes and see them in the analysis you must <strong>Commit Edit</strong>.
 
 <p align="center">
 <img width="400px" src="../_static/visualize/commit.png" alt="Commit roi changes" />

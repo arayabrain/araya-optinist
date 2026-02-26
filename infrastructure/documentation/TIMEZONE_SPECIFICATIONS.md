@@ -88,77 +88,35 @@ graph TB
 ### Backend: Centralized Utilities
 
 **File:** `studio/app/common/core/utils/datetime_utils.py`
+**Purpose:** Single source of truth for all datetime operations in the backend
+**Output:** All functions return timezone-aware datetime objects (UTC or user-specified)
 
-All backend code should use these utilities for datetime operations:
-
-```python
-# Get current UTC datetime
-now = get_current_datetime()  # Returns datetime with timezone.utc
-
-# Get current UTC timestamp (for file operations)
-ts = get_current_timestamp()  # Returns float (seconds since epoch)
-
-# Convert Unix timestamp to UTC-aware datetime
-dt = datetime_from_timestamp(1705312245.0)  # Returns UTC-aware datetime
-
-# Get datetime in user's timezone (for scientific data)
-user_tz = "America/New_York"  # From browser: Intl.DateTimeFormat().resolvedOptions().timeZone
-local_now = get_datetime_for_timezone(user_tz)  # Returns datetime with ZoneInfo
-
-# Format datetime in user's timezone
-formatted = get_datetime_for_timezone_formatted(user_tz)  # e.g., "2024/01/15 10:30:45"
-
-# Format for user display
-display = format_date_for_display(dt)  # Returns "2024-01-15 (UTC)"
-```
+All backend code should use these utilities rather than calling `datetime.now()` directly. See the **Key Functions Reference** section for the full function list.
 
 ### Backend: Handling Naive Datetimes from Database
 
-When retrieving datetime values from the database, they may be naive (no timezone info). The codebase handles this consistently:
+**Purpose:** Annotate naive datetimes from MySQL with UTC before any comparison
+**Files:** `crud_users.py`, `auth_dependencies.py`, `cloud_utils.py`, `subscriptions.py`, `storage_tracking.py`
 
-```python
-# Pattern used in crud_users.py, auth_dependencies.py, cloud_utils.py
-if expiration_time.tzinfo is None:
-    expiration_time = expiration_time.replace(tzinfo=timezone.utc)
-```
+When retrieving datetime values from the database, they may lack timezone info. The codebase checks `tzinfo is None` and applies `replace(tzinfo=timezone.utc)` before use. The `ensure_utc()` utility centralizes this pattern.
 
-This ensures all datetime comparisons use timezone-aware objects.
-
-### Database: Model Definitions
-
-**TimestampMixin (Base Model)**
+### TimestampMixin
 
 **File:** `studio/app/common/models/base.py`
+**Purpose:** Provides `created_at` and `updated_at` columns to all models via inheritance
+**Output:** Server-side `CURRENT_TIMESTAMP` defaults; `updated_at` auto-updates on row modification
 
-```python
-class TimestampMixin:
-    created_at = Column(TIMESTAMP, nullable=False, server_default=current_timestamp())
-    updated_at = Column(
-        TIMESTAMP,
-        nullable=False,
-        server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
-    )
-```
-
-**Experiment Model with Timezone-Aware Column**
+### ExperimentRecord
 
 **File:** `studio/app/common/models/experiment.py`
+**Purpose:** Stores experiment metadata including timezone-aware `analyzed_at` column
+**Output:** `analyzed_at` uses `DateTime(timezone=True)` -- the only model column that explicitly stores timezone info
 
-```python
-analyzed_at: Optional[datetime] = Column(DateTime(timezone=True))
-```
-
-**Subscription Models**
+### Subscription Models
 
 **File:** `studio/app/common/models/subscription.py`
-
-| Column | Type | Default |
-|--------|------|---------|
-| `created_at` | TIMESTAMP | `server_default=current_timestamp()` |
-| `updated_at` | TIMESTAMP | `CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP` |
-| `expiration` | DateTime | Application-provided UTC value |
-| `last_synced` | TIMESTAMP | `server_default=current_timestamp()` |
-| `cancelled_at` | DateTime | `default_factory=get_current_datetime` |
+**Purpose:** Subscription lifecycle timestamps across `UserSubscription`, `SubscriptionUserPurchase`, and `SubscriptionCancellation` models
+**Output:** Mix of server-side defaults (`current_timestamp()`) and application-side defaults (`get_current_datetime`)
 
 ### Database: All Timestamp Columns
 
@@ -166,9 +124,9 @@ analyzed_at: Optional[datetime] = Column(DateTime(timezone=True))
 |-------|--------|------|-------------------|
 | All tables (via mixin) | `created_at` | TIMESTAMP | `CURRENT_TIMESTAMP` (server) |
 | All tables (via mixin) | `updated_at` | TIMESTAMP | `CURRENT_TIMESTAMP ON UPDATE` |
-| `experiments` | `analyzed_at` | DateTime(timezone=True) | Application code |
-| `user_subscription` | `expiration` | DateTime | Application code |
-| `subscription_stripe_sync` | `last_synced` | TIMESTAMP | `CURRENT_TIMESTAMP` |
+| `experiment_records` | `analyzed_at` | DateTime(timezone=True) | Application code |
+| `subscription_users` | `expiration` | DateTime | Application code |
+| `subscription_users` | `last_synced` | TIMESTAMP | `CURRENT_TIMESTAMP` |
 | `premium_user_assignments` | `assigned_at` | TIMESTAMP | `CURRENT_TIMESTAMP` |
 | `premium_user_assignments` | `last_activity` | TIMESTAMP | `CURRENT_TIMESTAMP` |
 | `premium_user_assignments` | `last_state_check` | TIMESTAMP | `CURRENT_TIMESTAMP` |
@@ -179,96 +137,40 @@ analyzed_at: Optional[datetime] = Column(DateTime(timezone=True))
 | `free_user_assignments` | `last_activity` | TIMESTAMP | `CURRENT_TIMESTAMP` |
 | `free_user_assignments` | `last_workflow_start` | TIMESTAMP | Nullable |
 | `free_user_assignments` | `last_workflow_end` | TIMESTAMP | Nullable |
-| `free_user_assignments` | `last_migration_at` | TIMESTAMP | Nullable |
-| `free_user_assignments` | `migration_lock_time` | TIMESTAMP | Application code |
-| `subscription_user_purchase` | `created_at` | DateTime | `get_current_datetime` + `current_timestamp()` |
-| `subscription_cancellation` | `cancelled_at` | DateTime | `get_current_datetime` |
-| `user_storage_usage` | `last_updated` | DateTime | `current_timestamp()` |
-| `user_storage_usage` | `created_at` | DateTime | `current_timestamp()` |
+| `free_user_assignments` | `last_migration` | TIMESTAMP | Nullable |
+| `free_user_assignments` | `logged_out_at` | TIMESTAMP | Nullable |
+| `subscription_user_purchases` | `created_at` | TIMESTAMP | `get_current_datetime` + `current_timestamp()` |
+| `subscription_cancellations` | `cancelled_at` | TIMESTAMP | `get_current_datetime` + `current_timestamp()` |
+| `user_storage_usage` | `last_updated` | DateTime | `get_current_datetime` + `current_timestamp()` |
+| `user_storage_usage` | `created_at` | DateTime | `get_current_datetime` + `current_timestamp()` |
 | `user_storage_usage` | `last_full_scan` | DateTime | Nullable |
 
 ### API Response Serialization
 
-**Pydantic Schema Configuration**
-
 **File:** `studio/app/common/schemas/subscriptions.py`
+**Purpose:** Serialize all datetime fields to ISO 8601 format with timezone offset
+**Output:** Pydantic `Config.json_encoders` calls `.isoformat()` on all datetime values, producing strings like `"2024-01-15T10:30:45+00:00"`
 
-```python
-class Config:
-    json_encoders = {datetime: lambda v: v.isoformat()}
-```
-
-All datetime fields in API responses are serialized using ISO 8601 format with timezone information:
-
-```json
-{
-  "created_at": "2024-01-15T10:30:45+00:00",
-  "expiration": "2024-02-15T23:59:59+00:00"
-}
-```
-
-### Stripe Integration
-
-**Converting Stripe Timestamps**
-
-Stripe uses Unix timestamps (integers). The codebase converts these to UTC-aware datetimes:
+### WebhookService (Stripe Integration)
 
 **File:** `studio/app/common/core/subscription/webhook_service.py`
+**Purpose:** Convert Stripe Unix timestamps (integers) to UTC-aware datetimes
+**Input:** Stripe event payloads containing `current_period_end`, `period_end`, etc.
+**Output:** UTC-aware datetime objects via `datetime_from_timestamp()`
+**Calls:** `datetime_from_timestamp()` -> `.isoformat()` for API responses
 
-```python
-# Stripe provides Unix timestamps
-period_end = datetime_from_timestamp(subscription.current_period_end)
-
-# Convert to ISO format for API responses
-invoice_data["period_end"] = datetime_from_timestamp(
-    invoice.period_end
-).isoformat()
-```
-
-### Frontend: UTC Time Handling
-
-**Fetching Accurate UTC Time**
+### getAccurateTimeUTC()
 
 **File:** `frontend/src/utils/subscriptions/SubscriptionUtils.ts`
+**Purpose:** Fetch authoritative UTC time to avoid reliance on potentially incorrect client clocks
+**Input:** None
+**Output:** JavaScript `Date` object from `worldtimeapi.org`, falling back to `new Date()` on failure
 
-```typescript
-export async function getAccurateTimeUTC(): Promise<Date> {
-  try {
-    const response = await fetch("http://worldtimeapi.org/api/timezone/UTC")
-    const data = await response.json()
-    return new Date(data.utc_datetime)
-  } catch {
-    // Fallback to client time (JavaScript Date is UTC internally)
-    return new Date()
-  }
-}
-```
+Frontend displays timestamps locally using `toLocaleDateString()` for user-facing values and raw `getTime()` arithmetic for duration calculations.
 
-**Displaying Timestamps Locally**
+### Lambda Functions
 
-```typescript
-// Display subscription expiration in user's local timezone
-new Date(userSubscription.expiration).toLocaleDateString()
-
-// Calculate duration between timestamps
-const durationSeconds = (new Date(finishedAt).getTime() - new Date(startedAt).getTime()) / 1000
-```
-
-### AWS Lambda Functions
-
-All Lambda functions use `datetime.timezone.utc` directly since they cannot import from `datetime_utils.py`:
-
-**Pattern in Lambda code:**
-
-```python
-from datetime import datetime, timedelta, timezone
-
-# Get current UTC time
-now = datetime.now(timezone.utc)
-
-# Return UTC time in ISO format
-return {"timestamp": datetime.now(timezone.utc).isoformat()}
-```
+All Lambda functions use `datetime.now(timezone.utc)` directly since they cannot import from `datetime_utils.py`. Each package duplicates the UTC pattern independently.
 
 **Lambda packages requiring UTC handling:**
 
@@ -279,55 +181,26 @@ return {"timestamp": datetime.now(timezone.utc).isoformat()}
 | `cost_tracker_package` | `cost_tracker.py` |
 | `free_cleanup_package` | `free_cleanup.py` |
 | `common_user_manager_package` | `common_user_manager.py` |
-| `storage_reconciliation_package` | `storage_reconciliation.py` |
 
-### Scientific Data: NWB Files
-
-**Exception to UTC Rule**
-
-NWB files use the user's browser timezone instead of UTC. This ensures scientists see timestamps that match their actual local time when correlating data with lab notebooks and equipment logs.
-
-**Frontend: Detecting Browser Timezone**
+### getBrowserTimezone() (Scientific Data Exception)
 
 **File:** `frontend/src/store/slice/Run/RunSelectors.ts`
+**Purpose:** Detect user's IANA timezone (e.g., "America/New_York") for NWB files and experiment logs
+**Input:** None (reads from `Intl.DateTimeFormat().resolvedOptions().timeZone`)
+**Output:** IANA timezone string, falling back to `TIMEZONE_UTC` constant
+**Calls:** Injected into `nwbParam` via `selectRunPostData()` using the `TIMEZONE_KEY` constant
 
-```typescript
-const getBrowserTimezone = (): string => {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone  // e.g., "America/New_York"
-  } catch {
-    return "UTC"  // Fallback
-  }
-}
+Constants `TIMEZONE_UTC` and `TIMEZONE_KEY` mirror the backend equivalents in `datetime_utils.py` and must be kept in sync.
 
-// Timezone is passed in nwbParam when starting a workflow run
-const nwbParamWithTimezone = {
-  ...nwbParams,
-  timezone: { type: "child", value: getBrowserTimezone(), path: "timezone" },
-}
-```
-
-**Backend: Using Browser Timezone**
+### NWBCreater.acquisition()
 
 **File:** `studio/app/optinist/core/nwb/nwb_creater.py`
+**Purpose:** Create NWB files with `session_start_time` in the user's local timezone
+**Input:** Config dict containing `TIMEZONE_KEY` (IANA timezone string from browser)
+**Output:** `NWBFile` with timezone-aware `session_start_time` via `get_datetime_for_timezone()`
+**Calls:** `get_datetime_for_timezone()` from `datetime_utils.py`
 
-```python
-from studio.app.common.core.utils.datetime_utils import (
-    TIMEZONE_KEY,
-    get_datetime_for_timezone,
-)
-
-# Get timezone from config (passed from user's browser)
-timezone_str = config.get(TIMEZONE_KEY)  # e.g., "America/New_York"
-session_start_time = get_datetime_for_timezone(timezone_str)
-
-nwbfile = NWBFile(
-    session_start_time=session_start_time,  # User's local time, not UTC
-    # ...
-)
-```
-
-**Rationale:** Scientists correlate NWB data with their lab notebooks, equipment logs, and other records that use local time. Using UTC would create confusion when reviewing experiment data. The browser timezone ensures the timestamp reflects the user's actual location, not the server's timezone.
+**Rationale:** Scientists correlate NWB data with their lab notebooks, equipment logs, and other records that use local time. Using UTC would create confusion when reviewing experiment data.
 
 ---
 
@@ -340,7 +213,7 @@ nwbfile = NWBFile(
 **Solution:** Application code annotates naive datetimes with UTC:
 - Check `if dt.tzinfo is None`
 - Apply `dt.replace(tzinfo=timezone.utc)`
-- Pattern used consistently in `crud_users.py`, `auth_dependencies.py`, `cloud_utils.py`
+- Pattern used consistently in `crud_users.py`, `auth_dependencies.py`, `cloud_utils.py`, `subscriptions.py`, `storage_tracking.py`
 
 **Guarantee:** All datetime comparisons use timezone-aware objects.
 
@@ -432,6 +305,8 @@ default-time-zone = '+00:00'
 | `get_datetime_for_timezone(tz)` | Returns current datetime in specified IANA timezone |
 | `get_datetime_for_timezone_formatted(tz)` | Returns formatted datetime in specified IANA timezone |
 | `format_date_for_display()` | Formats datetime with UTC indicator for user display |
+| `ensure_utc()` | Ensures a datetime is UTC-aware (annotates naive, converts aware) |
+| `is_datetime_aware()` | Checks if a datetime has timezone information |
 
 ### datetime_utils.py Constants
 
@@ -461,32 +336,14 @@ default-time-zone = '+00:00'
 
 ### Verifying UTC Behavior
 
-```python
-from studio.app.common.core.utils.datetime_utils import get_current_datetime
-
-# Verify timezone is UTC
-now = get_current_datetime()
-assert now.tzinfo == timezone.utc
-
-# Verify timestamp conversion
-from studio.app.common.core.utils.datetime_utils import datetime_from_timestamp
-dt = datetime_from_timestamp(1705312245.0)
-assert dt.tzinfo == timezone.utc
-```
+- All values from `get_current_datetime()` should have `tzinfo == timezone.utc`
+- All values from `datetime_from_timestamp()` should have `tzinfo == timezone.utc`
+- See `studio/tests/app/common/core/utils/test_datetime_utils.py` for unit tests
 
 ### Common Test Patterns
 
-```python
-# Mock current time for tests
-from unittest.mock import patch
-from datetime import datetime, timezone
-
-fixed_time = datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
-
-with patch('studio.app.common.core.utils.datetime_utils.datetime') as mock_dt:
-    mock_dt.now.return_value = fixed_time
-    # Test code that uses get_current_datetime()
-```
+- Mock `datetime.now` via `patch('studio.app.common.core.utils.datetime_utils.datetime')` to control time in tests
+- Use `datetime(..., tzinfo=timezone.utc)` for fixed test times to ensure timezone awareness
 
 ---
 

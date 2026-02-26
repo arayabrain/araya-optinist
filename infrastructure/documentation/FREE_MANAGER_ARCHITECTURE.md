@@ -6,20 +6,22 @@
 - **Proactive scaling** based on active user count (threshold: 5 users)
 - **Multi-instance rebalancing** distributes load evenly across ALL instances
 - **Workflow protection** ensures users with active jobs are never migrated
+- **Experiment sync** automatically syncs experiment metadata after migration
 
 ## Key Architectural Principles
 
 1. **Activity-Based Scaling**
-   - Monitors active user count (activity within 10 minutes)
+   - Monitors active user count (activity within 5 minutes)
    - Scales ASG when threshold reached (default: 5 users)
    - Calculates instances needed: `ceil(active_users / 5)`
    - Maximum instances: 10 (configurable)
 
 2. **Proactive Rebalancing**
    - Distributes users evenly across ALL instances (not just most/least loaded)
+   - Also rebalances when distribution is imbalanced without scaling
    - Waits for new instances with retry (max 17 min in code, Lambda timeout 15 min)
    - Migrates idle users via round-robin distribution
-   - Verifies distribution is balanced after migration (max-min ≤ 1)
+   - Verifies distribution is balanced after migration (max-min <= 1)
 
 3. **Job Preservation (Triple Protection)**
    - Database field: `active_workflow_count` tracks running jobs
@@ -31,22 +33,27 @@
    - Users migrate within 5 minutes after rebalancing (cookie expires)
    - No user-visible disruption during migration
 
+5. **Post-Migration Experiment Sync**
+   - After successful migration, triggers experiment metadata sync on new instance
+   - Calls internal API endpoint (`/system-internal/sync-experiments/{user_id}`)
+   - Fire-and-forget: migration succeeds even if sync fails
+
 ## Architecture Overview
 
 ```mermaid
 graph TB
     subgraph "User Activity Flow"
-        A[User HTTP Request] --> B[FreeUserActivityMiddleware]
+        A[User HTTP Request] --> B[UserActivityMiddleware]
         B --> C[Update free_user_assignments]
         C --> D[Track: last_activity, instance_id, active_wf]
     end
 
     subgraph "Free Manager Lambda (Every 5 min)"
         E[Scheduled Trigger] --> F{Count Active Users}
-        F -->|≥ 5 users| G[Scale ASG]
+        F -->|>= 5 users| G[Scale ASG]
         F -->|< 5 users| H[No Action]
 
-        G --> I[Wait for Instances<br/>max 10 minutes]
+        G --> I[Wait for Instances<br/>max 17 minutes]
         I --> J[Get Available Instances]
         J --> K[Rebalance Users<br/>Multi-Instance Algorithm]
         K --> L[Verify Distribution]
@@ -63,10 +70,11 @@ graph TB
         Q --> R[Get Idle Users<br/>active_wf = 0]
         R --> S[Migrate Round-Robin<br/>to Underloaded]
         S --> T[Update DB instance_id]
+        T --> V[Trigger Experiment Sync<br/>on New Instance]
     end
 
     D --> F
-    T --> U[User Next Request<br/>Routes to New Instance]
+    V --> U[User Next Request<br/>Routes to New Instance]
 
     style G fill:#90EE90
     style K fill:#FFD700
@@ -76,47 +84,40 @@ graph TB
 
 ### Scaling Strategy Matrix
 
-| Active Users | Instances Needed | Rationale | Action |
-|-------------|------------------|-----------|--------|
-| 0-4 | 1 | Below threshold | No scaling |
-| 5-9 | 2 | Threshold reached | Scale to 2, rebalance |
-| 10-14 | 2 | Within capacity | No scaling |
-| 15-19 | 3 | Need more capacity | Scale to 3, rebalance |
-| 20-24 | 4 | Need more capacity | Scale to 4, rebalance |
-| 45-49 | 9 | Near max | Scale to 9, rebalance |
-| 50+ | 10 | Maximum instances | Scale to 10 (cap) |
+Formula: `instances = min(max(1, ceil(active_users / 5)), 10)`
 
----
+| Active Users | Instances Needed | Action |
+|-------------|------------------|--------|
+| 0-5 | 1 | Below threshold or 1 instance sufficient |
+| 6-10 | 2 | Scale to 2, rebalance |
+| 11-15 | 3 | Scale to 3, rebalance |
+| 16-20 | 4 | Scale to 4, rebalance |
+| 21-25 | 5 | Scale to 5, rebalance |
+| 26-30 | 6 | Scale to 6, rebalance |
+| 31-35 | 7 | Scale to 7, rebalance |
+| 36-40 | 8 | Scale to 8, rebalance |
+| 41-45 | 9 | Scale to 9, rebalance |
+| 46+ | 10 | Maximum instances (cap) |
 
-## Problem & Solution
+Note: Scaling triggers at >= 5 active users, but 5 users only
+needs 1 instance (`ceil(5/5) = 1`). Actual scale-up starts at 6 users.
 
-### Problem: Sticky Session Overload
+### Motivation: Sticky Session Overload
 
-**Before Free Manager:**
-1. 20 users log in during demo → All get sticky session cookies to Instance A
-2. Instance A becomes overloaded → ASG launches Instance B
-3. **Problem:** All 20 users stuck on Instance A due to 5-minute sticky cookies
-4. New users (21+) go to Instance B, but original 20 have poor experience
-5. **Workaround:** Ask users to log out and back in (unprofessional)
+Without Free Manager, all users in a burst (e.g., 20 during a demo) get
+sticky session cookies to the same instance. ASG launches new instances
+but existing users remain stuck on the overloaded one. The only
+workaround is asking users to log out and back in.
 
-**After Free Manager:**
-1. 20 users log in → Activity tracked in database by middleware
-2. Free Manager detects threshold reached (≥5 users)
-3. Lambda launches Instance B immediately (proactive scaling)
-4. **Lambda waits for Instance B to become ready** (retry every 60s, timeout 15 min)
-5. Lambda uses **multi-instance rebalancing** to distribute evenly
-6. Lambda identifies idle users (no active workflows)
-7. Lambda migrates idle users using round-robin distribution
-8. **Lambda verifies distribution is balanced** after migration
-9. Users with running workflows stay on Instance A (atomic SQL protection)
-10. Load distributed evenly: Instance A=10, Instance B=10
-11. **Result:** Professional demo experience, no manual intervention
+Free Manager solves this by tracking activity in the database, proactively
+scaling the ASG, waiting for instances to be ready, then rebalancing idle
+users across all instances via round-robin migration. Users with active
+workflows are protected by atomic SQL constraints, and experiment metadata
+is synced to new instances after migration.
 
----
+### Flow Diagrams
 
-## Flow Diagrams
-
-### Scheduled Monitoring Flow (Every 5 Minutes)
+#### Scheduled Monitoring Flow (Every 5 Minutes)
 
 ```mermaid
 sequenceDiagram
@@ -127,12 +128,12 @@ sequenceDiagram
     participant ECS
 
     CW->>FM: Trigger (every 5 min)
-    FM->>DB: Count active users (last_activity < 10 min)
+    FM->>DB: Count active users (last_activity < 5 min)
     DB-->>FM: active_count = 18
 
     alt active_count >= threshold (5)
         FM->>FM: Calculate needed: ceil(18/5) = 4 instances
-        FM->>ASG: Get current capacity
+        FM->>ASG: Get current capacity (via get_service_info)
         ASG-->>FM: current = 2 instances
 
         alt Need to scale up
@@ -160,13 +161,16 @@ sequenceDiagram
             DB-->>FM: 14 idle users on Instance A
 
             FM->>DB: Migrate users round-robin
-            Note over FM,DB: A→B: 4 users<br/>A→C: 5 users<br/>A→D: 5 users
+            Note over FM,DB: A->B: 4 users<br/>A->C: 5 users<br/>A->D: 5 users
 
             FM->>DB: Verify distribution
-            DB-->>FM: A:4, B:4, C:5, D:5 (balanced ✓)
+            DB-->>FM: A:4, B:4, C:5, D:5 (balanced)
 
             FM->>FM: Clear scaling lock
             FM->>CW: Publish metric: ActiveLogins=18
+
+        else No scaling needed but imbalanced
+            FM->>FM: Rebalance without scaling
         end
     else active_count < threshold
         FM->>CW: Publish metric: ActiveLogins=3
@@ -174,7 +178,7 @@ sequenceDiagram
     end
 ```
 
-### ASG Lifecycle Event Flow
+#### ASG Lifecycle Event Flow
 
 ```mermaid
 sequenceDiagram
@@ -189,6 +193,7 @@ sequenceDiagram
     EB->>FM: Trigger Free Manager
 
     FM->>FM: Detect event source: aws.autoscaling
+    FM->>FM: Verify ASG name matches expected ASG
     FM->>ASG: Get desired capacity
     ASG-->>FM: desired = 3
 
@@ -204,7 +209,7 @@ sequenceDiagram
     end
 ```
 
-### Multi-Instance Rebalancing Algorithm
+#### Multi-Instance Rebalancing Algorithm
 
 ```mermaid
 graph TB
@@ -222,18 +227,18 @@ graph TB
         H --> I[Found 12 idle users]
 
         I --> J[Migrate round-robin]
-        J --> K[A→B: 5 users<br/>A→C: 5 users]
+        J --> K[A->B: 5 users<br/>A->C: 5 users]
 
         K --> L[New distribution:<br/>A:6, B:6, C:6]
-        L --> M{Balanced?<br/>max-min ≤ 1}
-        M -->|Yes| N[Success ✓]
+        L --> M{Balanced?<br/>max-min <= 1}
+        M -->|Yes| N[Success]
         M -->|No| O[Continue migration]
     end
 
     style A fill:#87CEEB
     style H fill:#FFD700
     style K fill:#90EE90
-    style N fill:#98FB98
+    style N fill:#90EE90
 ```
 
 ---
@@ -242,361 +247,222 @@ graph TB
 
 ### 1. Middleware: Activity Tracking
 
-**File:** `studio/app/common/core/middleware/free_user_activity_middleware.py`
+#### UserActivityMiddleware
 
-**Purpose:** Track user activity and instance assignment
+**File:** `studio/app/common/core/middleware/user_activity_middleware.py`
+**Purpose:** Track user activity and instance assignment for both
+free and premium tiers. Aliased as `FreeUserActivityMiddleware`
+for backwards compatibility.
+**Input:** ASGI scope (HTTP request with JWT Authorization header)
+**Output:** Updates `free_user_assignments` or
+`premium_user_assignments` table via async background task
+**Calls:** `extract_uid_from_firebase_jwt()` ->
+`_get_user_id_and_tier()` ->
+`_update_free_user_activity_async()` or
+`_update_premium_user_activity_async()`
 
-```python
-class FreeUserActivityMiddleware:
-    """
-    Middleware to track free tier user activity.
+Performance optimizations:
+- In-memory cache (60s TTL) throttles DB writes to once/min/user
+- User tier cache (5 min TTL) avoids repeated subscription lookups
+- Instance ID cached at startup (fetched once from EC2 metadata)
 
-    For each HTTP request from a free tier user:
-    1. Extract user_id from auth token
-    2. Check subscription_status = "Free"
-    3. Update free_user_assignments table:
-       - last_activity = NOW()
-       - instance_id = current_instance
-    """
-
-    async def __call__(self, request: Request):
-        # Extract user from auth token
-        user = get_authenticated_user(request)
-
-        if user and user.subscription_status == "Free":
-            # Get current instance ID
-            instance_id = os.environ.get("INSTANCE_ID")
-
-            # Update activity tracking
-            update_free_user_activity(
-                user_id=user.id,
-                instance_id=instance_id,
-                last_activity=datetime.now(timezone.utc)
-            )
-
-        return await self.app(request)
-```
+**Instance ID Resolution:**
+The middleware first checks the `INSTANCE_ID` environment variable,
+then falls back to IMDSv2 metadata service (with IMDSv1 fallback).
+The result is cached at startup. Returns "local" in development
+(skips DB update).
 
 ### 2. Free Manager Lambda
 
 **File:** `infrastructure/terraform/free_manager_package/free_manager.py`
 
-**Function:** `handler()` - Main Lambda handler supporting dual triggers
+#### handler()
 
+**File:** `infrastructure/terraform/free_manager_package/free_manager.py`
+**Purpose:** Main Lambda entry point supporting dual triggers
+(CloudWatch scheduled events and ASG lifecycle events)
+**Input:** Lambda event dict and context; routes on
+`event["source"]`
+**Output:** Dict with statusCode and JSON body describing
+actions taken
+**Calls:** `handle_asg_event()` or
+`handle_scheduled_monitoring()` based on event source
+
+#### handle_scheduled_monitoring()
+
+**File:** `infrastructure/terraform/free_manager_package/free_manager.py`
+**Purpose:** Periodic monitoring (every 5 minutes) -- counts
+active users, scales ASG if threshold reached, rebalances
+users across instances, publishes CloudWatch metrics
+**Input:** Lambda event and context (scheduled trigger)
+**Output:** Dict with scaling/rebalancing results
+**Calls:** `count_active_free_users()` ->
+`publish_active_user_metric()` -> `scale_and_rebalance()`
+
+#### scale_and_rebalance()
+
+**File:** `infrastructure/terraform/free_manager_package/free_manager.py`
+**Purpose:** Scale ECS service and rebalance idle users.
+Handles three scenarios: scale up (with instance wait loop),
+conservative scale down (only if overprovisioned by >= 2),
+and rebalance-only when distribution is imbalanced.
+**Input:** `active_user_count`, `max_instances`
+**Output:** Dict with scaling action, migrated users, and
+balance status. Uses CloudWatch metric lock to prevent
+concurrent operations.
+**Calls:** `is_scaling_in_progress()` -> `get_service_info()`
+-> `scale_service()` -> `get_available_instance_ids()` ->
+`rebalance_idle_users_multi()` -> `is_distribution_balanced()`
+
+Key formula:
 ```python
-def handler(event, context):
-    """
-    Main Lambda handler - supports dual triggers.
-
-    Triggered by:
-    1. CloudWatch Event (every 5 minutes) - full monitoring and scaling
-    2. ASG lifecycle events - immediate ECS sync
-    """
-    event_source = event.get("source", "")
-
-    if event_source == "aws.autoscaling":
-        # ASG event - quick sync only
-        return handle_asg_event(event, context)
-    else:
-        # Scheduled event - full monitoring
-        return handle_scheduled_monitoring(event, context)
+desired = min(max(1, (active_users + 4) // 5), max_instances)
 ```
 
-**Function:** `handle_scheduled_monitoring()` - Periodic monitoring and scaling
+Wait loop retries every 60s. Code sets `max_wait_time = 1020s`
+(17 min) but Lambda timeout is 900s (15 min), so effective
+timeout is 15 minutes. Rebalancing retried on next Lambda run
+if not completed.
 
-```python
-def handle_scheduled_monitoring(event, context):
-    """
-    Handle periodic monitoring (every 5 minutes).
+#### scale_service()
 
-    Responsibilities:
-    - Count active users
-    - Scale ASG if needed
-    - Rebalance users across instances
-    - Publish metrics
-    """
-    # Get configuration
-    user_threshold = int(os.environ.get("FREE_USER_THRESHOLD", "5"))
-    activity_threshold = int(os.environ.get("FREE_IDLE_THRESHOLD_MINUTES", "10"))
-    max_instances = int(os.environ.get("MAX_FREE_INSTANCES", "10"))
+**File:** `infrastructure/terraform/free_manager_package/free_manager.py`
+**Purpose:** Scale ASG and ECS service together. Sets ASG
+desired capacity directly (`HonorCooldown=False` for immediate
+scaling), then updates ECS desired count to match. This manual
+approach prevents runaway scaling from ECS managed scaling
+(CPU spike cascades).
+**Input:** `cluster_name`, `service_name`, `desired_count`
+**Output:** None (side effect: ASG and ECS capacity updated)
+**Calls:** `autoscaling_client.set_desired_capacity()` ->
+`ecs_client.update_service()`
 
-    # Count active users
-    active_user_count = count_active_free_users(
-        activity_threshold_minutes=activity_threshold
-    )
+#### get_service_info()
 
-    # Publish metric
-    publish_active_user_metric(active_user_count)
+**File:** `infrastructure/terraform/free_manager_package/free_manager.py`
+**Purpose:** Get current ASG and ECS service information.
+Returns ASG desired capacity as source of truth for scaling,
+plus ECS running/pending counts.
+**Input:** `cluster_name`, `service_name`
+**Output:** Dict with `desired_count` (from ASG),
+`running_count` and `pending_count` (from ECS)
+**Calls:** `autoscaling_client.describe_auto_scaling_groups()`
+-> `ecs_client.describe_services()`
 
-    # Scale and rebalance if threshold reached
-    if active_user_count >= user_threshold:
-        result = scale_and_rebalance(
-            active_user_count=active_user_count,
-            max_instances=max_instances
-        )
-    else:
-        result = {"status": "no_action_needed"}
+#### get_available_instance_ids()
 
-    return {"statusCode": 200, "body": json.dumps(result)}
-```
-
-**Function:** `scale_and_rebalance()` - Scale ECS service and rebalance users
-
-```python
-def scale_and_rebalance(active_user_count: int, max_instances: int):
-    """
-    Scale ECS service and rebalance idle users to new instances.
-
-    Flow:
-    1. Check if scaling already in progress (prevent concurrent operations)
-    2. Calculate instances needed: ceil(active_users / 5)
-    3. Scale ASG if needed
-    4. Wait for new instances to become ready (retry every 60s, Lambda timeout 15 min)
-    5. Rebalance users across all instances
-    6. Verify distribution is balanced
-    """
-    # Prevent concurrent scaling operations
-    if is_scaling_in_progress():
-        return {"status": "scaling_in_progress"}
-
-    set_scaling_lock(True)
-
-    try:
-        # Calculate instances needed
-        instances_needed = (active_user_count + 4) // 5  # Ceil division
-        instances_needed = min(instances_needed, max_instances)
-
-        # Get current capacity
-        cluster_name = os.environ.get("CLUSTER_NAME")
-        service_name = os.environ.get("FREE_SERVICE_NAME")
-
-        current_capacity = get_current_ecs_capacity(cluster_name, service_name)
-
-        # Scale if needed
-        if instances_needed > current_capacity:
-            print(f"Scaling from {current_capacity} to {instances_needed}")
-            scale_service(cluster_name, service_name, instances_needed)
-
-            # Wait for instances to be ready
-            # Embedded retry logic with 60-second intervals
-            # Note: Code has max_wait_time = 1020 (17 min) but Lambda timeout is 900s (15 min)
-            max_wait_time = 1020  # 17 minutes (code value)
-            available_instances = []
-
-            while time.time() - start_time < max_wait_time:
-                available_instances = get_available_instance_ids(
-                    cluster_name, service_name
-                )
-                if len(available_instances) >= instances_needed:
-                    break
-                time.sleep(60)  # Check every 60 seconds
-
-            if available_instances:
-                # Rebalance users across all instances
-                migrated = rebalance_idle_users_multi(available_instances)
-
-                # Verify distribution
-                is_balanced = is_distribution_balanced()
-
-                return {
-                    "status": "scaled_and_rebalanced",
-                    "instances": instances_needed,
-                    "users_migrated": len(migrated),
-                    "balanced": is_balanced
-                }
-
-        return {"status": "no_scaling_needed"}
-
-    finally:
-        set_scaling_lock(False)
-```
-
-**Function:** `scale_service()` - Scale ASG and ECS service
-
-```python
-def scale_service(cluster_name: str, service_name: str, desired_count: int):
-    """
-    Scale ASG and ECS service.
-
-    Unlike premium tier which uses individual EC2 instances, free tier
-    uses an Auto Scaling Group (ASG) with ECS. We need to scale the ASG
-    directly, not just the ECS service desired count.
-
-    This prevents the runaway scaling issue that occurs with ECS managed
-    scaling (where instance startup CPU spikes trigger additional scaling).
-    """
-    asg_name = os.environ.get("ASG_NAME")
-
-    # Set ASG desired capacity
-    autoscaling_client.set_desired_capacity(
-        AutoScalingGroupName=asg_name,
-        DesiredCapacity=desired_count,
-        HonorCooldown=False  # Immediate scaling
-    )
-
-    # Update ECS service to match
-    ecs_client.update_service(
-        cluster=cluster_name,
-        service=service_name,
-        desiredCount=desired_count
-    )
-```
+**File:** `infrastructure/terraform/free_manager_package/free_manager.py`
+**Purpose:** Get list of RUNNING EC2 instance IDs from ECS
+cluster. Three-step verification: list container instances
+(ACTIVE, DRAINING, REGISTERING), filter for connected ECS
+agents, verify EC2 state is 'running'.
+**Input:** `cluster_name`, `service_name`
+**Output:** List of EC2 instance IDs that are fully ready to
+handle traffic
+**Calls:** `ecs_client.list_container_instances()` ->
+`ecs_client.describe_container_instances()` ->
+`ec2_client.describe_instances()`
 
 ### 3. Multi-Instance Rebalancing
 
+#### rebalance_idle_users_multi()
+
 **File:** `infrastructure/terraform/free_manager_package/free_manager.py`
+**Purpose:** Rebalance idle users across ALL available
+instances using round-robin distribution from overloaded
+to underloaded instances
+**Input:** `available_instances` (list of instance IDs)
+**Output:** List of migrated user IDs
+**Calls:** `get_users_per_instance()` ->
+`get_idle_users_for_instance()` ->
+`migrate_user_to_instance()`
 
-**Function:** `rebalance_idle_users_multi()` - Distribute users across all instances
+Algorithm:
+1. Calculate target users per instance (even distribution)
+2. Identify overloaded instances (count > target + 1)
+3. Identify underloaded instances (count < target)
+4. Migrate idle users from overloaded to underloaded
+   (round-robin)
 
+Key constraint:
 ```python
-def rebalance_idle_users_multi(available_instances: List[str]) -> List[str]:
-    """
-    Rebalance idle users across ALL available instances.
-
-    Algorithm:
-    1. Calculate target users per instance (even distribution)
-    2. Identify overloaded instances (count > target + 1)
-    3. Identify underloaded instances (count < target)
-    4. Migrate users from overloaded to underloaded in round-robin
-    5. Verify balanced distribution (max - min ≤ 1)
-
-    Idle users = active_workflow_count = 0
-    """
-    if len(available_instances) < 2:
-        return []  # Cannot rebalance with < 2 instances
-
-    # Get current distribution
-    users_per_instance = get_users_per_instance()
-
-    # Build complete map (includes instances with 0 users)
-    instance_user_counts = {inst: 0 for inst in available_instances}
-    instance_user_counts.update(users_per_instance)
-
-    total_users = sum(instance_user_counts.values())
-    target_per_instance = total_users // len(available_instances)
-
-    # Identify overloaded (> target + 1)
-    overloaded = [
-        (inst, count)
-        for inst, count in instance_user_counts.items()
-        if count > target_per_instance + 1
-    ]
-
-    # Identify underloaded (< target)
-    underloaded = [
-        (inst, count)
-        for inst, count in instance_user_counts.items()
-        if count < target_per_instance
-    ]
-
-    if not overloaded or not underloaded:
-        return []  # Already balanced
-
-    # Sort by severity
-    overloaded.sort(key=lambda x: x[1], reverse=True)
-    underloaded.sort(key=lambda x: x[1])
-
-    migrated = []
-    underloaded_idx = 0  # Round-robin index
-
-    # Migrate users from each overloaded instance
-    for source_inst, source_count in overloaded:
-        users_to_move = source_count - target_per_instance
-
-        # Get idle users (active_workflow_count = 0)
-        idle_users = get_idle_users_for_instance(source_inst)
-
-        if not idle_users:
-            continue
-
-        # Migrate round-robin to underloaded instances
-        idle_users_to_migrate = idle_users[:users_to_move]
-
-        for user_id in idle_users_to_migrate:
-            if underloaded_idx >= len(underloaded):
-                break
-
-            dest_inst, _ = underloaded[underloaded_idx]
-
-            if migrate_user_to_instance(user_id, dest_inst):
-                migrated.append(user_id)
-
-                # Update underloaded count
-                underloaded[underloaded_idx] = (dest_inst, _ + 1)
-
-                # Move to next underloaded instance (round-robin)
-                if underloaded[underloaded_idx][1] >= target_per_instance:
-                    underloaded_idx += 1
-
-    return migrated
+# Only users with no active workflows can be migrated
+idle_users = get_idle_users_for_instance(source_inst)
+# active_workflow_count = 0
 ```
 
-### 4. Workflow Protection
+### 4. Workflow Protection and Migration
+
+#### migrate_user_to_instance()
 
 **File:** `infrastructure/terraform/free_manager_package/free_user_utils.py`
+**Purpose:** Atomic user migration with triple workflow
+protection. After successful migration, triggers experiment
+metadata sync on the new instance (fire-and-forget).
+**Input:** `user_id`, `new_instance_id`
+**Output:** True if migration succeeded, False if user has
+active workflows or does not exist
+**Calls:** SQL UPDATE with constraint ->
+`trigger_experiment_sync()`
 
-**Function:** `migrate_user_to_instance()` - Atomic migration with workflow protection
-
-```python
-def migrate_user_to_instance(user_id: str, new_instance_id: str) -> bool:
-    """
-    Migrate a user to a new instance.
-
-    CRITICAL: Triple protection against migrating users with active workflows:
-    1. Database field: active_workflow_count tracks running jobs
-    2. SQL constraint: WHERE active_workflow_count = 0
-    3. Atomic update: Users with jobs cannot be migrated (SQL guarantee)
-
-    This updates the database record and the user's next request
-    will be routed to the new instance via load balancer (sticky session expires).
-    """
-    with get_db_connection() as conn:
-        with conn.cursor() as cursor:
-            # Atomic migration with workflow protection
-            query = """
-                UPDATE free_user_assignments
-                SET instance_id = %s,
-                    migration_count = migration_count + 1,
-                    last_migration = NOW()
-                WHERE user_id = %s
-                  AND active_workflow_count = 0  # CRITICAL: Only idle users
-            """
-            cursor.execute(query, (new_instance_id, user_id))
-            conn.commit()
-
-            if cursor.rowcount > 0:
-                print(f"Migrated user {user_id} to {new_instance_id}")
-                return True
-            else:
-                print(f"Cannot migrate user {user_id}: has active workflows")
-                return False
+Key constraint:
+```sql
+-- Only migrate idle users (atomic protection)
+WHERE user_id = %s AND active_workflow_count = 0
 ```
 
-**Function:** `get_idle_users_for_instance()` - Get idle users safe to migrate
+#### trigger_experiment_sync()
 
-```python
-def get_idle_users_for_instance(instance_id: str) -> List[str]:
-    """
-    Get list of idle users on a specific instance.
+**File:** `infrastructure/terraform/free_manager_package/free_user_utils.py`
+**Purpose:** Trigger experiment metadata sync for user on
+their new instance. Calls internal API to ensure experiment
+metadata is downloaded from S3. Fire-and-forget: migration
+succeeds even if sync fails.
+**Input:** `user_id` (int)
+**Output:** True if sync initiated, False on failure
+**Calls:** POST to
+`/system-internal/sync-experiments/{user_id}` via ALB
 
-    Idle users = logged in but NO active workflows.
-    They are safe to migrate without disrupting work.
-    """
-    with get_db_connection() as conn:
-        with conn.cursor() as cursor:
-            # No time-based restriction - users without workflows
-            # can be migrated regardless of last activity time
-            query = """
-                SELECT user_id
-                FROM free_user_assignments
-                WHERE instance_id = %s
-                  AND active_workflow_count = 0
-            """
-            cursor.execute(query, (instance_id,))
-            results = cursor.fetchall()
+#### get_idle_users_for_instance()
 
-            return [row["user_id"] for row in results]
-```
+**File:** `infrastructure/terraform/free_manager_package/free_user_utils.py`
+**Purpose:** Get list of idle users on a specific instance.
+Idle = no active workflows (`active_workflow_count = 0`).
+No time-based restriction: users without workflows can be
+migrated regardless of last activity time.
+**Input:** `instance_id`
+**Output:** List of user IDs safe to migrate
+
+#### get_users_per_instance()
+
+**File:** `infrastructure/terraform/free_manager_package/free_user_utils.py`
+**Purpose:** Get count of active users per instance. Only
+counts users with activity within threshold (filters by
+`last_activity >= cutoff`). Inactive users are not counted
+in distribution calculations.
+**Input:** `activity_threshold_minutes` (default: 10)
+**Output:** Dict mapping `instance_id` -> user count
+
+### 5. Workflow Tracking
+
+#### increment_workflow_count()
+
+**File:** `studio/app/common/core/workflow/workflow_tracking.py`
+**Purpose:** Increment `active_workflow_count` when a workflow
+starts. Determines user tier (free/premium), then updates the
+appropriate assignment table. Falls back to alternative table
+if primary does not have a record.
+**Input:** `user_id`
+**Output:** None (side effect: count incremented in DB)
+
+#### decrement_workflow_count()
+
+**File:** `studio/app/common/core/workflow/workflow_tracking.py`
+**Purpose:** Decrement `active_workflow_count` when a workflow
+completes. Uses `GREATEST(0, count - 1)` to prevent going
+below zero, avoiding race conditions.
+**Input:** `user_id`
+**Output:** None (side effect: count decremented in DB)
 
 ---
 
@@ -606,99 +472,21 @@ def get_idle_users_for_instance(instance_id: str) -> List[str]:
 
 **Problem:** Multiple Lambda invocations could try to scale simultaneously.
 
-**Solution:** CloudWatch metrics-based locking:
-
-```python
-def is_scaling_in_progress() -> bool:
-    """Check if a scaling operation is currently in progress."""
-    response = cloudwatch_client.get_metric_data(
-        MetricDataQueries=[{
-            "Id": "scaling_lock",
-            "MetricStat": {
-                "Metric": {
-                    "Namespace": "OptiNiSt/FreeManager",
-                    "MetricName": "ScalingInProgress"
-                },
-                "Period": 900,  # 15 minutes
-                "Stat": "Maximum"
-            }
-        }],
-        StartTime=datetime.now(timezone.utc) - timedelta(minutes=15),
-        EndTime=datetime.now(timezone.utc)
-    )
-
-    values = response["MetricDataResults"][0].get("Values", [])
-    return values and values[0] > 0
-
-def set_scaling_lock(in_progress: bool):
-    """Set or clear the scaling lock."""
-    cloudwatch_client.put_metric_data(
-        Namespace="OptiNiSt/FreeManager",
-        MetricData=[{
-            "MetricName": "ScalingInProgress",
-            "Value": 1.0 if in_progress else 0.0,
-            "Unit": "None"
-        }]
-    )
-```
+**Solution:** CloudWatch metrics-based locking via
+`is_scaling_in_progress()` and `set_scaling_lock()`:
+- Checks `ScalingInProgress` metric (15-min window, Maximum stat)
+- Set before scaling, cleared in `finally` block
+- Fails open: returns False if check fails (allows scaling)
 
 ### 2. Instances Not Ready in Time
 
-**Problem:** New instances take 6-8 minutes to launch (includes lifecycle hooks ~5 min, EC2 boot ~5 min, ECS tasks ~7 min).
+**Problem:** New instances take 6-8 minutes to launch (lifecycle hooks ~5 min, EC2 boot ~5 min, ECS tasks ~7 min).
 
-**Solution:** Retry logic with timeout:
+**Solution:** Retry logic with timeout. The scale_and_rebalance() function
+retries every 60 seconds. Code sets max_wait_time = 1020s (17 min) but
+Lambda timeout is 900s (15 min), so effective timeout is 15 minutes.
+Rebalancing will be retried on the next 5-minute Lambda run if not completed.
 
-```python
-# Embedded in scale_and_rebalance() function
-# Note: Code sets max_wait_time = 1020s (17 min) but Lambda timeout is 900s (15 min)
-# Effective timeout is 15 minutes (Lambda timeout)
-max_wait_time = 1020  # 17 minutes in code
-check_interval = 60  # Check every 60 seconds
-start_time = time.time()
-
-while time.time() - start_time < max_wait_time:
-        # Get running tasks
-        response = ecs_client.list_tasks(
-            cluster=cluster_name,
-            serviceName=service_name,
-            desiredStatus='RUNNING'
-        )
-
-        task_arns = response.get('taskArns', [])
-
-        if len(task_arns) >= desired_count:
-            # Get container instances
-            tasks = ecs_client.describe_tasks(
-                cluster=cluster_name,
-                tasks=task_arns
-            )
-
-            # Extract instance IDs
-            container_instance_arns = [
-                task['containerInstanceArn']
-                for task in tasks['tasks']
-            ]
-
-            instances = ecs_client.describe_container_instances(
-                cluster=cluster_name,
-                containerInstances=container_instance_arns
-            )
-
-            instance_ids = [
-                ci['ec2InstanceId']
-                for ci in instances['containerInstances']
-            ]
-
-            print(f"All {len(instance_ids)} instances ready")
-            return instance_ids
-
-        elapsed = time.time() - start_time
-        print(f"Waiting for instances ({elapsed:.0f}s / {timeout_seconds}s)")
-        time.sleep(retry_interval)
-
-    print("Timeout waiting for instances")
-    return []
-```
 
 ### 3. Users With Active Workflows
 
@@ -707,109 +495,42 @@ while time.time() - start_time < max_wait_time:
 **Solution:** SQL-level protection (atomic check):
 
 ```sql
--- This query ONLY migrates users with NO active workflows
-UPDATE free_user_assignments
-SET instance_id = %s,
-    migration_count = migration_count + 1,
-    last_migration = NOW()
+-- Key constraint: only migrate idle users
 WHERE user_id = %s
   AND active_workflow_count = 0  -- Atomic protection
 ```
 
-**Workflow tracking** (middleware updates):
-
-```python
-# When workflow starts
-def on_workflow_start(user_id, workflow_id):
-    conn.execute("""
-        UPDATE free_user_assignments
-        SET active_workflow_count = active_workflow_count + 1,
-            last_workflow_start = NOW()
-        WHERE user_id = %s
-    """, (user_id,))
-
-# When workflow ends
-def on_workflow_end(user_id, workflow_id):
-    conn.execute("""
-        UPDATE free_user_assignments
-        SET active_workflow_count = GREATEST(0, active_workflow_count - 1),
-            last_workflow_end = NOW()
-        WHERE user_id = %s
-    """, (user_id,))
-```
 
 ### 4. ASG and ECS Out of Sync
 
 **Problem:** Manual ASG scaling or alarm-driven scaling changes ASG capacity but not ECS.
 
-**Solution:** Dual triggers - ASG events sync ECS immediately:
+**Solution:** Dual triggers -- ASG events sync ECS immediately
+via `handle_asg_event()`:
+- EventBridge rule triggers on launch/terminate events
+- Verifies the event is for the expected ASG before acting
+- Reads ASG desired capacity and updates ECS desired count
+  to match
 
-```python
-def handle_asg_event(event, context):
-    """
-    Handle ASG lifecycle events - sync ECS to ASG immediately.
-
-    EventBridge rule triggers this when ASG scales up/down.
-    Ensures ECS desired count matches ASG desired capacity.
-    """
-    detail = event.get("detail", {})
-    asg_name = detail.get("AutoScalingGroupName")
-
-    # Get ASG desired capacity
-    asg_response = autoscaling_client.describe_auto_scaling_groups(
-        AutoScalingGroupNames=[asg_name]
-    )
-    asg_desired = asg_response["AutoScalingGroups"][0]["DesiredCapacity"]
-
-    # Get ECS desired count
-    ecs_response = ecs_client.describe_services(
-        cluster=cluster_name,
-        services=[service_name]
-    )
-    ecs_desired = ecs_response["services"][0]["desiredCount"]
-
-    # Sync if different
-    if asg_desired != ecs_desired:
-        ecs_client.update_service(
-            cluster=cluster_name,
-            service=service_name,
-            desiredCount=asg_desired
-        )
-        print(f"Synced ECS from {ecs_desired} to {asg_desired}")
-```
 
 ### 5. Unbalanced Distribution After Migration
 
-**Problem:** Migration might not achieve perfect balance.
+**Problem:** Migration might not achieve perfect balance (users with active workflows can't be moved).
 
-**Solution:** Verification and logging:
+**Solution:** Verification after migration via
+`is_distribution_balanced()`:
+- Checks `max(counts) - min(counts) <= tolerance`
+- Default tolerance: 1
+- If still imbalanced, will retry on next Lambda run
 
-```python
-def is_distribution_balanced() -> bool:
-    """
-    Verify that user distribution is balanced.
 
-    Balanced = max(user_counts) - min(user_counts) <= 1
-    """
-    users_per_instance = get_users_per_instance()
+### 6. Conservative Scale-Down
 
-    if not users_per_instance:
-        return True  # No users = balanced
+**Problem:** Frequent scale up/down oscillation wastes resources.
 
-    counts = list(users_per_instance.values())
-    max_count = max(counts)
-    min_count = min(counts)
+**Solution:** Only scales down when overprovisioned by >= 2 instances.
+This prevents thrashing when user count hovers near a boundary.
 
-    is_balanced = (max_count - min_count) <= 1
-
-    if is_balanced:
-        print(f"Distribution balanced: {users_per_instance}")
-    else:
-        print(f"Distribution unbalanced: {users_per_instance}")
-        print(f"Max: {max_count}, Min: {min_count}, Diff: {max_count - min_count}")
-
-    return is_balanced
-```
 
 ---
 
@@ -821,10 +542,8 @@ def is_distribution_balanced() -> bool:
 
 | Metric Name | Description | Unit | Namespace |
 |-------------|-------------|------|-----------|
-| `ActiveLogins` | Users with activity in last 10 minutes | Count | OptiNiSt/FreeUsers |
+| `ActiveLogins` | Users with activity in last 5 minutes | Count | OptiNiSt/FreeUsers |
 | `ScalingInProgress` | Lock to prevent concurrent operations | None (0 or 1) | OptiNiSt/FreeManager |
-| `InstanceCount` | Number of ECS instances running | Count | OptiNiSt/FreeManager |
-| `RebalancedUsers` | Users migrated in last operation | Count | OptiNiSt/FreeManager |
 
 **Dashboard:** `subscr-optinist-monitoring` (integrated with premium tier monitoring)
 
@@ -842,18 +561,22 @@ User threshold reached (18 >= 5), initiating scaling
 ============================================================
 SCALE AND REBALANCE
 ============================================================
-Instances needed: ceil(18 / 5) = 4
-Current capacity: 2
-Scaling from 2 to 4 instances
+Active users: 18
+Max instances: 10
+Calculated desired instances: 4
+Formula: min(max(1, (18 + 4) // 5), 10)
 
-Scaling ASG subscr-free-tier-asg to 4
+Scaling up from 2 to 4 instances
+Scaling ASG subscr-optinist-asg to desired capacity: 4
 Successfully set ASG desired capacity to 4
 Successfully updated ECS service to 4 tasks
 
-Waiting for instances to become ready...
-[60s / 600s] Found 3 running tasks, need 4
-[120s / 600s] Found 4 running tasks, need 4
-All 4 instances ready: ['i-abc123', 'i-def456', 'i-ghi789', 'i-jkl012']
+Waiting for new instances to launch and become ECS-ready (up to 17 minutes)
+[Attempt 1] Checking instance readiness (elapsed: 0s / 1020s)
+Found 3/4 running instances
+[Attempt 2] Checking instance readiness (elapsed: 60s / 1020s)
+Found 4/4 running instances
+All instances ready! Attempting rebalancing
 
 ============================================================
 MULTI-INSTANCE REBALANCING
@@ -868,19 +591,13 @@ Underloaded instances: [('i-def456', 0), ('i-ghi789', 0), ('i-jkl012', 0)]
 Processing overloaded instance i-abc123: 18 users (need to move 14)
 Found 14 idle users, migrating 14
 
-Migrating user user_1 from i-abc123 to i-def456
-Migrating user user_2 from i-abc123 to i-ghi789
-Migrating user user_3 from i-abc123 to i-jkl012
-Migrating user user_4 from i-abc123 to i-def456
-Migrating user user_5 from i-abc123 to i-ghi789
-... (14 migrations total)
+14 users migrated successfully
+New distribution: {'i-abc123': 4, 'i-def456': 5, 'i-ghi789': 5, 'i-jkl012': 4}
+Distribution check: max=5, min=4, diff=1, tolerance=1, balanced=True
+Rebalancing successful - distribution is balanced!
 
-Rebalancing complete: 14 users migrated
-Final distribution: {'i-abc123': 4, 'i-def456': 5, 'i-ghi789': 5, 'i-jkl012': 4}
-Distribution balanced (max-min = 1)
-
-Clearing scaling lock
-Published metric: ActiveLogins=18
+Scaling lock CLEARED
+Published CloudWatch metric: ActiveLogins=18
 ```
 
 **ASG Event Logs:**
@@ -890,7 +607,7 @@ Published metric: ActiveLogins=18
 ASG EVENT HANDLER
 ============================================================
 Event Type: EC2 Instance Launch Successful
-ASG Name: subscr-free-tier-asg
+ASG Name: subscr-optinist-asg
 ASG desired capacity: 3
 ECS desired count: 2
 
@@ -907,7 +624,7 @@ Successfully synced ECS to 3
 **Free Manager Lambda:**
 ```bash
 # Database
-RDS_HOST                        # Database endpoint
+RDS_HOST                        # Database endpoint (host:port format)
 RDS_USER                        # Database username
 RDS_PASSWORD                    # Database password
 RDS_DATABASE                    # Database name
@@ -919,12 +636,16 @@ ASG_NAME                        # Auto Scaling Group name
 
 # Scaling Configuration
 FREE_USER_THRESHOLD             # Users to trigger scaling (default: 5)
-FREE_IDLE_THRESHOLD_MINUTES     # Activity threshold minutes (default: 10)
+FREE_IDLE_THRESHOLD_MINUTES     # Activity threshold minutes (production: 5)
 MAX_FREE_INSTANCES              # Maximum instances (default: 10)
+
+# Internal API (for experiment sync after migration)
+ALB_DNS_NAME                    # ALB DNS name for internal API calls
+INTERNAL_API_SECRET             # Secret for internal API authentication
 
 # Lambda Configuration
 # Timeout: 900 seconds (15 minutes)
-# Runtime: Python 3.9
+# Runtime: Python 3.11
 ```
 
 ### Triggers
@@ -940,31 +661,39 @@ MAX_FREE_INSTANCES              # Maximum instances (default: 10)
 
 ```sql
 CREATE TABLE free_user_assignments (
-    user_id VARCHAR(255) PRIMARY KEY,
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT UNSIGNED NOT NULL UNIQUE,
     instance_id VARCHAR(20) NOT NULL,
     assigned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_activity TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    last_activity TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     active_workflow_count INT NOT NULL DEFAULT 0,
     last_workflow_start TIMESTAMP NULL,
     last_workflow_end TIMESTAMP NULL,
     migration_count INT NOT NULL DEFAULT 0,
     last_migration TIMESTAMP NULL,
+    logged_out_at TIMESTAMP NULL,
 
-    INDEX idx_last_activity (last_activity),
-    INDEX idx_instance_id (instance_id),
-    INDEX idx_active_workflows (active_workflow_count)
+    FOREIGN KEY (user_id) REFERENCES users(id)
 );
 ```
+
+**ORM Model:** `studio/app/common/models/free_user.py` (`FreeUserAssignment`)
 
 ---
 
 ## Testing
 
-### Test Suite
+### Test Files
 
-**File:** `studio/scripts/test_free_manager.py`
+**Unit tests:** `studio/tests/infrastructure/test_free_manager.py`
+- Mocked unit tests for Lambda handler routing, scaling logic, etc.
+- Run with pytest: `pytest studio/tests/infrastructure/test_free_manager.py`
 
-**What it Tests:**
+**Integration tests:** `infrastructure/scripts/test_free_manager.py`
+- E2E tests against real AWS resources (requires AWS credentials)
+- Tests activity tracking, scaling, rebalancing, workflow protection
+
+**What the integration tests cover:**
 
 1. **Activity Tracking** - Verify middleware updates last_activity
 2. **Active User Count** - Verify Lambda counts users correctly
@@ -975,10 +704,10 @@ CREATE TABLE free_user_assignments (
 7. **CloudWatch Metrics** - Verify metrics are published
 8. **JSON Serialization** - Verify Decimal types from DB serialize properly
 
-**Running the Tests:**
+**Running integration tests:**
 
 ```bash
-cd studio/scripts
+cd infrastructure/scripts
 
 # Run all tests
 python test_free_manager.py
@@ -988,65 +717,6 @@ python test_free_manager.py --terraform-dir /path/to/terraform
 
 # Specify AWS region
 python test_free_manager.py --region ap-northeast-1
-```
-
-**Expected Output:**
-
-```
-============================================================
-FREE MANAGER LAMBDA TESTS
-============================================================
-Initialized FreeManagerTester
-Free Manager Lambda: subscr-free-manager
-Free Cleanup Lambda: subscr-free-cleanup
-ECS Cluster: subscr-cluster
-Free Service: subscr-optinist-cloud-service
-
-TEST 1: Cleanup existing test data
-Invoking cleanup Lambda...
-Cleaned up 5 test user sessions
-
-TEST 2: Setup test users (simulate 7 active users)
-Creating user activity for 7 test users...
-Successfully created activity for 7 users
-
-TEST 3: Invoke Free Manager Lambda
-Invoking Free Manager Lambda...
-Response: {
-  "status": "scaled_and_rebalanced",
-  "active_users": 7,
-  "instances_needed": 2,
-  "users_migrated": 3,
-  "balanced": true
-}
-Lambda executed successfully
-
-TEST 4: Verify ECS scaling
-Current ECS desired count: 2
-ECS scaled to 2 instances (from 1)
-
-TEST 5: Verify user distribution
-Instance i-abc123: 4 users
-Instance i-def456: 3 users
-Distribution balanced: True (max-min = 1)
-Users distributed evenly
-
-TEST 6: Verify workflow protection
-Creating workflow for test user...
-Attempting to migrate user with active workflow...
-User with active workflow was NOT migrated
-
-TEST 7: Verify CloudWatch metrics
-Metric: ActiveLogins = 7 (timestamp: 2025-11-18 10:00:00)
-CloudWatch metrics published correctly
-
-TEST 8: Verify JSON serialization
-Database returned Decimal types
-Successfully serialized to JSON
-
-============================================================
-ALL TESTS PASSED (8/8)
-============================================================
 ```
 
 ### Manual Testing Scenarios
@@ -1092,14 +762,14 @@ python test_free_manager.py --action check_assignment --user test_user_1
 ```bash
 # 1. Manually scale ASG
 aws autoscaling set-desired-capacity \
-  --auto-scaling-group-name subscr-free-tier-asg \
+  --auto-scaling-group-name subscr-optinist-asg \
   --desired-capacity 3
 
 # Expected: EventBridge triggers Free Manager, ECS syncs to 3
 
 # 2. Verify ECS synced
 aws ecs describe-services \
-  --cluster subscr-cluster \
+  --cluster subscr-optinist-cloud-cluster \
   --services subscr-optinist-cloud-service \
   --query 'services[0].desiredCount'
 
@@ -1110,7 +780,7 @@ aws ecs describe-services \
 
 ## Key Functions Reference
 
-### Free Manager Lambda
+### Free Manager Lambda (`free_manager.py`)
 
 | Function | Purpose |
 |----------|---------|
@@ -1118,22 +788,33 @@ aws ecs describe-services \
 | `handle_scheduled_monitoring()` | 5-minute monitoring loop |
 | `handle_asg_event()` | ASG lifecycle event handler |
 | `scale_and_rebalance()` | Main scaling and rebalancing logic |
+| `get_service_info()` | Get ASG capacity and ECS task counts |
 | `scale_service()` | Scale ASG and ECS service |
 | `rebalance_idle_users_multi()` | Multi-instance rebalancing algorithm |
+| `get_available_instance_ids()` | Discover running EC2 instances |
 | `is_scaling_in_progress()` | Check CloudWatch metric lock |
 | `set_scaling_lock()` | Set/clear CloudWatch metric lock |
 | `publish_active_user_metric()` | Publish ActiveLogins metric |
 
-### Free User Utils
+### Free User Utils (`free_user_utils.py`)
 
 | Function | Purpose |
 |----------|---------|
 | `count_active_free_users()` | Count users with recent activity |
-| `get_users_per_instance()` | Get user distribution map |
+| `get_users_per_instance()` | Get user distribution map (activity-filtered) |
 | `get_idle_users_for_instance()` | Get idle users on specific instance |
 | `migrate_user_to_instance()` | Atomic user migration with workflow protection |
+| `trigger_experiment_sync()` | Sync experiment metadata after migration |
 | `is_user_idle()` | Check if user is safe to migrate |
-| `is_distribution_balanced()` | Verify even distribution (max-min <= 1) |
+| `is_distribution_balanced()` | Verify even distribution (max-min <= tolerance) |
+
+### Workflow Tracking (`workflow_tracking.py`)
+
+| Function | Purpose |
+|----------|---------|
+| `increment_workflow_count()` | Increment active_workflow_count on start |
+| `decrement_workflow_count()` | Decrement active_workflow_count on end |
+| `get_active_workflow_count()` | Query current workflow count |
 
 ---
 
@@ -1141,7 +822,7 @@ aws ecs describe-services \
 
 - **Free Manager Lambda:** `subscr-free-manager`
 - **Free Cleanup Lambda:** `subscr-free-cleanup` (test data cleanup)
-- **Auto Scaling Group:** `subscr-free-tier-asg`
+- **Auto Scaling Group:** `subscr-optinist-asg`
 - **ECS Service:** `subscr-optinist-cloud-service`
 - **EventBridge Rules:**
   - `subscr-free-manager-schedule` (5 min monitoring)
@@ -1156,12 +837,13 @@ aws ecs describe-services \
 | Aspect | Free Tier | Premium Tier |
 |--------|-----------|--------------|
 | **Architecture** | Auto Scaling Group (ASG) | Individual EC2 instances |
-| **Scaling Trigger** | Active user count (≥5) | Per-user assignment |
+| **Scaling Trigger** | Active user count (>= 5) | Per-user assignment |
 | **Scaling Unit** | 1 instance per 5 users | 1 instance per user |
 | **Load Balancing** | Proactive rebalancing | User assignment at login |
 | **Sticky Sessions** | 5-minute ALB cookies | Target group per user |
 | **Max Instances** | 10 (configurable) | Unlimited (cost-limited) |
 | **Cost Model** | Shared resources | Dedicated resources |
 | **Monitoring** | Every 5 minutes | Every 15 minutes |
-| **Migration** | Multi-instance rebalancing | Autoscaling pool → dedicated |
+| **Migration** | Multi-instance rebalancing | Autoscaling pool -> dedicated |
 | **Workflow Protection** | SQL-level (active_wf = 0) | User stays on dedicated instance |
+| **Post-Migration** | Experiment sync via internal API | N/A |
