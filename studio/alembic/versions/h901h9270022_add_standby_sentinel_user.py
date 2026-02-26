@@ -5,8 +5,8 @@ Revises: g901g9260021
 Create Date: 2025-12-25 11:54:00.000000
 
 """
-import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects.mysql import BIGINT as MYSQL_BIGINT
 
 # revision identifiers, used by Alembic.
 revision = "h901h9270022"
@@ -18,19 +18,19 @@ depends_on = None
 def upgrade() -> None:
     """Allow NULL user_id for standby premium instances."""
 
-    # Drop the existing unique constraint on user_id
-    op.drop_constraint("uq_premium_user_id", "premium_user_assignments", type_="unique")
-
     # Drop the existing foreign key constraint
     op.drop_constraint(
         "fk_premium_user", "premium_user_assignments", type_="foreignkey"
     )
 
+    # Drop the existing unique constraint on user_id
+    op.drop_constraint("uq_premium_user_id", "premium_user_assignments", type_="unique")
+
     # Modify user_id column to allow NULL
     op.alter_column(
         "premium_user_assignments",
         "user_id",
-        existing_type=sa.BIGINT(unsigned=True),
+        existing_type=MYSQL_BIGINT(unsigned=True),
         nullable=True,
     )
 
@@ -47,7 +47,6 @@ def upgrade() -> None:
         "premium_user_assignments",
         ["user_id"],
         unique=True,
-        mysql_length={"user_id": None},
     )
 
 
@@ -66,7 +65,7 @@ def downgrade() -> None:
     op.alter_column(
         "premium_user_assignments",
         "user_id",
-        existing_type=sa.BIGINT(unsigned=True),
+        existing_type=MYSQL_BIGINT(unsigned=True),
         nullable=False,
     )
 
