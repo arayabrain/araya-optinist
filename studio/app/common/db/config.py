@@ -34,7 +34,7 @@ def build_mysql_url(
         port=port,
         query=query,
     )
-    return str(url)
+    return url.render_as_string(hide_password=False)
 
 
 def _ssl_required() -> bool:
