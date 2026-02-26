@@ -60,7 +60,7 @@ class S3StorageController(BaseRemoteStorageController):
         assert bucket_name, "S3 bucket name is not defined."
         self.__s3_storage_bucket = bucket_name
         self.__s3_storage_url = f"s3://{bucket_name}"
-        logger.info(f"Init S3StorageController: {bucket_name=}")
+        logger.debug(f"Init S3StorageController: {bucket_name=}")
 
     def __get_s3_client(self):
         return aioboto3.Session().client("s3")
@@ -222,7 +222,7 @@ class S3StorageController(BaseRemoteStorageController):
                 return False
 
         progress_str = f"{progress_info} " if progress_info else ""
-        logger.info(
+        logger.debug(
             f"Download data from S3 [{self.bucket_name}] "
             f"{progress_str}{s3_file_path} ({file_size:,} bytes)"
         )
@@ -231,7 +231,7 @@ class S3StorageController(BaseRemoteStorageController):
 
         await s3_client.download_file(self.bucket_name, s3_file_path, local_file_path)
 
-        logger.info(
+        logger.debug(
             f"Finish download data from S3 [{self.bucket_name}] " f"{s3_file_path}"
         )
 
@@ -608,7 +608,7 @@ class S3StorageController(BaseRemoteStorageController):
         # Construct the S3 path for this specific experiment
         experiment_prefix = __class__.make_s3_output_prefix(workspace_id, unique_id)
 
-        logger.info(
+        logger.debug(
             f"Downloading experiment metadata from S3: [{self.bucket_name}]"
             f"[{workspace_id}/{unique_id}]"
         )
@@ -649,7 +649,7 @@ class S3StorageController(BaseRemoteStorageController):
                         f"[{file_remote_path}]: {e}"
                     )
 
-        logger.info(
+        logger.debug(
             f"Downloaded {downloaded_count} metadata files for "
             f"[{workspace_id}/{unique_id}]"
         )
@@ -917,7 +917,7 @@ class S3StorageController(BaseRemoteStorageController):
             # Sort by directory depth (shallower files first)
             all_s3_objects.sort(key=lambda obj: obj["Key"].count("/"))
 
-            logger.info(
+            logger.debug(
                 f"Listed {len(all_s3_objects)} objects from S3 "
                 f"[{self.bucket_name}] [{experiment_remote_path}]"
             )
@@ -1059,7 +1059,7 @@ class S3StorageController(BaseRemoteStorageController):
         for index, (local_abs_path, s3_file_path, file_size) in enumerate(
             adjusted_target_files
         ):
-            logger.info(
+            logger.debug(
                 f"Upload data to S3 [{self.bucket_name}] "
                 f"({index+1}/{target_files_count}) "
                 f"{s3_file_path} ({file_size:,} bytes)"
@@ -1109,7 +1109,7 @@ class S3StorageController(BaseRemoteStorageController):
                         user_id, total_bytes_uploaded, idempotency_key
                     )
                     if success:
-                        logger.info(
+                        logger.debug(
                             f"Incremented storage for user {user_id} by "
                             f"{total_bytes_uploaded:,} bytes after upload"
                         )
@@ -1158,7 +1158,7 @@ class S3StorageController(BaseRemoteStorageController):
                     total_bytes_deleted += await obj.size
 
                 if keys_to_delete:
-                    logger.info(
+                    logger.debug(
                         f"Deleting {len(keys_to_delete)} objects "
                         f"({total_bytes_deleted:,} bytes) "
                         f"from {experiment_remote_path}"
@@ -1201,7 +1201,7 @@ class S3StorageController(BaseRemoteStorageController):
                         user_id, total_bytes_deleted, idempotency_key
                     )
                     if success:
-                        logger.info(
+                        logger.debug(
                             f"Decremented storage for user {user_id} by "
                             f"{total_bytes_deleted:,} bytes after deletion"
                         )

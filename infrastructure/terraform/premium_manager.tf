@@ -178,7 +178,7 @@ data "archive_file" "premium_manager_zip" {
 # CloudWatch Log Group for Premium Manager
 resource "aws_cloudwatch_log_group" "premium_manager_logs" {
   name              = "/aws/lambda/subscr-premium-manager"
-  retention_in_days = 14
+  retention_in_days = 30
 
   tags = {
     Name = "Premium Manager Logs"
@@ -265,7 +265,7 @@ data "archive_file" "premium_cleanup_zip" {
 # CloudWatch Log Group for Premium Cleanup
 resource "aws_cloudwatch_log_group" "premium_cleanup_logs" {
   name              = "/aws/lambda/subscr-premium-cleanup"
-  retention_in_days = 14
+  retention_in_days = 30
 
   tags = {
     Name = "Premium Cleanup Lambda Logs"

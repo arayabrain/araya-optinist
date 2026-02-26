@@ -69,13 +69,13 @@ def _get_fallback_storage_quota(user_id: int) -> Dict[str, Any]:
 
         if subscription_type == SubscriptionType.PREMIUM:
             default_quota_bytes = StorageQuota.PREMIUM * StorageSize.GB
-            logger.info(
+            logger.debug(
                 f"Using paid plan quota for user {user_id} "
                 f"({plan_name}): {StorageQuota.PREMIUM}GB"
             )
         else:
             default_quota_bytes = StorageQuota.FREE * StorageSize.GB
-            logger.info(
+            logger.debug(
                 f"Using free plan quota for user {user_id} "
                 f"({plan_name}): {StorageQuota.FREE}GB"
             )
@@ -413,7 +413,7 @@ async def get_current_user_storage_usage(user_id: int, force_live: bool = False)
                 storage_info,
                 SubscriptionPeriods.MAX_CACHE_AGE_MINUTES,
             ):
-                logger.info(f"Using cached storage data for " f"user {user_id}")
+                logger.debug(f"Using cached storage data for " f"user {user_id}")
                 return storage_info["storage_usage_bytes"]
             else:
                 logger.info(

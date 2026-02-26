@@ -376,6 +376,27 @@ resource "aws_s3_bucket_versioning" "app_storage" {
   }
 }
 
+# Lifecycle rules for ALB access logs
+resource "aws_s3_bucket_lifecycle_configuration" "app_storage" {
+  bucket = aws_s3_bucket.app_storage.id
+
+  rule {
+    id     = "expire-alb-logs"
+    status = "Enabled"
+
+    filter {
+      prefix = "alb-logs/"
+    }
+
+    expiration {
+      days = 30
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+  }
+}
 
 # Block all public access to S3
 resource "aws_s3_bucket_public_access_block" "app_storage" {

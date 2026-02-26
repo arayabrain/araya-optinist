@@ -93,9 +93,9 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
             current_user.id, current_user.uid
         )
 
-        logger.info(f"Assignment service result: {result}")
-        logger.info(f"is_shared from service: {result.get('is_shared')}")
-        logger.info(
+        logger.debug(f"Assignment service result: {result}")
+        logger.debug(f"is_shared from service: {result.get('is_shared')}")
+        logger.debug(
             f"assignment_source from service: {result.get('assignment_source')}"
         )
 
@@ -107,7 +107,7 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
                 "is_shared": result.get("is_shared", False),
                 "assignment_source": result.get("assignment_source"),
             }
-            logger.info(f"API response: {response}")
+            logger.debug(f"API response: {response}")
             return response
         elif result.get("requires_retry"):
             # Return 202 for scaling in progress

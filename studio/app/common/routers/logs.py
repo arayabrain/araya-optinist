@@ -1,10 +1,12 @@
+import logging
+import os
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing_extensions import Optional
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
-from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.logger import VALID_LOG_LEVELS, AppLogger
 from studio.app.common.core.utils.log_reader import LogLevel, LogReader
 from studio.app.common.schemas.outputs import PaginatedLineResult
 from studio.app.common.schemas.users import User
@@ -12,6 +14,36 @@ from studio.app.common.schemas.users import User
 router = APIRouter(prefix="/logs", tags=["logs"])
 
 logger = AppLogger.get_logger()
+
+LOG_LEVEL_NUMERIC = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+
+# Read once at startup; controls which levels the frontend log viewer offers
+_UI_MIN_LEVEL = os.environ.get("LOG_LEVEL", "DEBUG").upper()
+if _UI_MIN_LEVEL not in VALID_LOG_LEVELS:
+    _UI_MIN_LEVEL = "DEBUG"
+_UI_MIN_NUMERIC = LOG_LEVEL_NUMERIC.get(_UI_MIN_LEVEL, logging.DEBUG)
+
+
+@router.get(
+    "/level",
+    summary="Return available log filter levels for the frontend viewer",
+)
+async def get_available_log_levels(
+    _current_user: User = Depends(get_current_user),
+):
+    return {
+        "levels": [
+            name
+            for name, numeric in LOG_LEVEL_NUMERIC.items()
+            if numeric >= _UI_MIN_NUMERIC
+        ]
+    }
 
 
 @router.get(

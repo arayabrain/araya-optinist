@@ -687,7 +687,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
         },
         {
           name  = "LOG_LEVEL"
-          value = "DEBUG"
+          value = "INFO"
         },
         {
           name  = "UVICORN_ACCESS_LOG"
@@ -937,7 +937,7 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "LOG_LEVEL"
-          value = "DEBUG"
+          value = "INFO"
         },
         {
           name  = "UVICORN_ACCESS_LOG"

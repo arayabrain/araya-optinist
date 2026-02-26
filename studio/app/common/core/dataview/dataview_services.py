@@ -521,13 +521,13 @@ class DataviewService:
                         ThumbnailGenerator.generate_tiff_thumbnail(
                             abs_image_path, input_thumb_path
                         )
-                        logger.info(f"Generated TIFF thumbnail: {input_thumb_path}")
+                        logger.debug(f"Generated TIFF thumbnail: {input_thumb_path}")
                     else:
                         # TIFF file not found locally, generate placeholder
                         ThumbnailGenerator.generate_placeholder_thumbnail(
                             input_thumb_path, file_path=image_path
                         )
-                        logger.info(
+                        logger.debug(
                             f"Generated placeholder thumbnail (TIFF not found): "
                             f"{input_thumb_path}"
                         )
@@ -536,7 +536,7 @@ class DataviewService:
                     ThumbnailGenerator.generate_placeholder_thumbnail(
                         input_thumb_path, file_path=image_path
                     )
-                    logger.info(f"Generated placeholder thumbnail: {input_thumb_path}")
+                    logger.debug(f"Generated placeholder thumbnail: {input_thumb_path}")
             except Exception as e:
                 logger.warning(f"Failed to generate input thumbnail: {e}")
                 input_thumb_path = None
@@ -555,7 +555,7 @@ class DataviewService:
                     ThumbnailGenerator.generate_roi_thumbnail(
                         abs_roi_path, roi_thumb_path
                     )
-                    logger.info(f"Generated ROI thumbnail: {roi_thumb_path}")
+                    logger.debug(f"Generated ROI thumbnail: {roi_thumb_path}")
                 except Exception as e:
                     logger.warning(f"Failed to generate ROI thumbnail: {e}")
                     roi_thumb_path = None

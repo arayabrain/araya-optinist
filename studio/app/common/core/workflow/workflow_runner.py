@@ -126,13 +126,13 @@ class WorkflowRunner:
         if hasattr(self, "workflow_start_time"):
             end_time = time.time()
             duration = end_time - self.workflow_start_time
-            self.logger.info(
+            self.logger.debug(
                 f"WORKFLOW {status.upper()}: {self.runItem.name} "
                 f"(ID: {self.unique_id}, User: {self.user_id}) "
                 f"completed in {duration:.2f}s at {time.strftime('%Y-%m-%d %H:%M:%S')}"
             )
         else:
-            self.logger.info(
+            self.logger.debug(
                 f"WORKFLOW {status.upper()}: {self.runItem.name} "
                 f"(ID: {self.unique_id}, User: {self.user_id}) "
                 f"at {time.strftime('%Y-%m-%d %H:%M:%S')}"
