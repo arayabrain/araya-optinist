@@ -17,14 +17,14 @@ class TestStartupSync:
 
     @pytest.mark.asyncio
     async def test_downloads_missing_experiments(self):
-        """Test startup sync downloads experiments missing locally"""
+        """Test startup sync downloads experiments missing locally via coordinator"""
         published = [
             ("ws1", "uid1", 1, "bucket1"),
             ("ws2", "uid2", 2, "bucket1"),
         ]
 
-        mock_s3 = MagicMock()
-        mock_s3.download_experiment = AsyncMock(return_value=True)
+        mock_coordinator = MagicMock()
+        mock_coordinator.ensure_synced_batch = AsyncMock(return_value=[])
 
         with patch.object(
             PublishedExperimentSyncJob,
@@ -33,13 +33,14 @@ class TestStartupSync:
         ):
             with patch("os.path.exists", return_value=False):
                 with patch(
-                    "studio.app.common.core.background" ".sync_job.S3StorageController",
-                    return_value=mock_s3,
+                    "studio.app.common.core.storage.download_coordinator."
+                    "DownloadCoordinator.get_instance",
+                    return_value=mock_coordinator,
                 ):
                     await PublishedExperimentSyncJob.run_startup_sync()
 
-        # 2 experiments x 2 phases = 4 download calls
-        assert mock_s3.download_experiment.call_count == 4
+        # 2 phases (THUMBNAILS_ONLY + ESSENTIAL_ONLY), 1 bucket each = 2 calls
+        assert mock_coordinator.ensure_synced_batch.call_count == 2
 
     @pytest.mark.asyncio
     async def test_skips_locally_present_experiments(self):

@@ -17,7 +17,6 @@ from studio.app.common.core.snakemake.snakemake_reader import SmkConfigReader
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageLockError,
-    RemoteStorageReader,
     RemoteStorageSimpleReader,
     RemoteSyncStatusFileUtil,
 )
@@ -40,6 +39,7 @@ logger = AppLogger.get_logger()
 )
 async def get_experiments(
     workspace_id: str,
+    db: Session = Depends(get_db),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     # search EXPERIMENT_YMLs
@@ -48,19 +48,41 @@ async def get_experiments(
 
     is_remote_storage_available = RemoteStorageController.is_available()
 
-    # NOTE: If remote_storage is available and config_paths does not exist,
-    # assume that data may exist in remote_storage and execute download of metadata.
-    if is_remote_storage_available and not config_paths:
-        async with RemoteStorageSimpleReader(
-            remote_bucket_name
-        ) as remote_storage_controller:
-            await remote_storage_controller.download_all_experiments_metas(
-                [workspace_id]
+    if is_remote_storage_available:
+        if not config_paths:
+            # No local configs at all -- download all metadata from remote
+            async with RemoteStorageSimpleReader(
+                remote_bucket_name
+            ) as remote_storage_controller:
+                await remote_storage_controller.download_all_experiments_metas(
+                    [workspace_id]
+                )
+            config_paths = glob(
+                ExptConfigReader.get_config_yaml_wild_path(workspace_id)
             )
+        else:
+            # Per-experiment DB comparison: download metadata for experiments
+            # in DB but missing locally (fixes Issue C all-or-nothing fallback)
+            try:
+                from studio.app.common.core.storage.download_coordinator import (
+                    DownloadCoordinator,
+                )
 
-        # search EXPERIMENT_YMLs, again
-        exp_config = {}
-        config_paths = glob(ExptConfigReader.get_config_yaml_wild_path(workspace_id))
+                coordinator = DownloadCoordinator.get_instance()
+                await coordinator.ensure_metadata_available(
+                    bucket_name=remote_bucket_name,
+                    workspace_id=workspace_id,
+                    db=db,
+                    caller="records_page",
+                )
+                # Re-glob to pick up newly downloaded files
+                config_paths = glob(
+                    ExptConfigReader.get_config_yaml_wild_path(workspace_id)
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Per-experiment metadata sync failed: {e}", exc_info=True
+                )
 
     for path in config_paths:
         try:
@@ -291,19 +313,29 @@ async def sync_remote_experiment(
     unique_id: str,
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
-    try:
-        async with RemoteStorageReader(
-            remote_bucket_name, workspace_id, unique_id
-        ) as remote_storage_controller:
-            result = await remote_storage_controller.download_experiment(
-                workspace_id, unique_id
-            )
+    """User-initiated full sync (entry point #2, exclusive lock)."""
+    from studio.app.common.core.storage.download_coordinator import DownloadCoordinator
+    from studio.app.common.core.storage.sync_tier import SyncTier
 
-        if not result:
+    try:
+        coordinator = DownloadCoordinator.get_instance()
+        result = await coordinator.ensure_synced(
+            bucket_name=remote_bucket_name,
+            workspace_id=workspace_id,
+            unique_id=unique_id,
+            required_tier=SyncTier.ALL,
+            caller="user_sync_remote",
+            use_exclusive_lock=True,
+            update_db_status=True,
+        )
+
+        if not result.success:
+            if result.is_lock_error:
+                raise RemoteStorageLockError(workspace_id, unique_id)
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="record not found"
             )
-        return result
+        return True
 
     except HTTPException as e:
         logger.error(e)

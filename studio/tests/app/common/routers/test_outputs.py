@@ -1,6 +1,7 @@
 import os
 import shutil
 
+from studio.app.common.core.storage.mock_storage_controller import MockStorageController
 from studio.app.dir_path import DIRPATH
 
 # Test data source is always in the repo at studio/test_data/
@@ -16,6 +17,15 @@ output_src = f"{TEST_DATA_SOURCE_DIR}/output_test/{workspace_id}/{unique_id}"
 output_dst = f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}"
 if not os.path.exists(output_dst) or not os.path.samefile(output_src, output_dst):
     shutil.copytree(output_src, output_dst, dirs_exist_ok=True)
+
+# Also seed mock storage so the DownloadCoordinator can sync from it.
+# The coordinator clears local data before re-copying from remote storage,
+# so the mock storage must contain the test data for it to be restored.
+mock_output_dst = f"{MockStorageController.MOCK_OUTPUT_DIR}/{workspace_id}/{unique_id}"
+if not os.path.exists(mock_output_dst) or not os.path.samefile(
+    output_src, mock_output_dst
+):
+    shutil.copytree(output_src, mock_output_dst, dirs_exist_ok=True)
 
 timeseries_dirpath = (
     f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}/func1/fluorescence.json"

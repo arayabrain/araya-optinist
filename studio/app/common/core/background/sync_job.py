@@ -64,6 +64,21 @@ class PublishedExperimentSyncJob:
         try:
             logger.info("Starting published experiment validation job")
             await cls._run_validation_logic()
+
+            # Periodic staleness spot-check (API containers only).
+            # The background service has its own separate EBS and doesn't
+            # serve user requests, so skip there.
+            is_background_service = os.environ.get("IS_BACKGROUND_SERVICE", "0") == "1"
+            if not is_background_service:
+                try:
+                    from studio.app.common.core.storage.sync_state_tracker import (
+                        SyncStateTracker,
+                    )
+
+                    SyncStateTracker.check_synced_staleness_spot_check(sample_size=10)
+                except Exception as e:
+                    logger.debug(f"Staleness spot-check skipped: {e}")
+
         except Exception as e:
             logger.error(
                 f"Fatal error in sync job: {e}",
@@ -81,6 +96,8 @@ class PublishedExperimentSyncJob:
         - Downloads only experiments missing locally
         - Does NOT modify DB sync status
         - Does NOT use file locking
+
+        Uses DownloadCoordinator for deduplication (entry point #1).
         """
         logger.info("Starting one-time startup sync")
 
@@ -89,11 +106,39 @@ class PublishedExperimentSyncJob:
             if not missing:
                 return
 
-            s3_controllers: dict[str, S3StorageController] = {}
-            await cls._sync_startup_thumbnails(missing, s3_controllers)
-            await cls._sync_startup_metadata(missing, s3_controllers)
+            from studio.app.common.core.storage.download_coordinator import (
+                DownloadCoordinator,
+            )
+            from studio.app.common.core.storage.sync_tier import SyncTier
 
-            logger.info(f"Startup sync completed for" f" {len(missing)} experiments")
+            coordinator = DownloadCoordinator.get_instance()
+
+            # Group by bucket for batch processing
+            by_bucket: dict[str, list[tuple[str, str]]] = {}
+            for ws_id, uid, _, bucket in missing:
+                by_bucket.setdefault(bucket, []).append((ws_id, uid))
+
+            # Phase 1: Thumbnails (high concurrency)
+            for bucket, experiments in by_bucket.items():
+                await coordinator.ensure_synced_batch(
+                    bucket_name=bucket,
+                    experiments=experiments,
+                    required_tier=SyncTier.THUMBNAILS_ONLY,
+                    concurrency=cls.THUMBNAIL_CONCURRENCY,
+                    caller="startup_sync",
+                )
+
+            # Phase 2: Essential metadata (lower concurrency)
+            for bucket, experiments in by_bucket.items():
+                await coordinator.ensure_synced_batch(
+                    bucket_name=bucket,
+                    experiments=experiments,
+                    required_tier=SyncTier.ESSENTIAL_ONLY,
+                    concurrency=cls.METADATA_CONCURRENCY,
+                    caller="startup_sync",
+                )
+
+            logger.info(f"Startup sync completed for {len(missing)} experiments")
         except Exception as e:
             logger.error(f"Startup sync error: {e}", exc_info=True)
 
@@ -107,58 +152,6 @@ class PublishedExperimentSyncJob:
         if bucket_name not in controllers:
             controllers[bucket_name] = S3StorageController(bucket_name)
         return controllers[bucket_name]
-
-    @classmethod
-    async def _sync_startup_thumbnails(
-        cls,
-        experiments: List[Tuple[str, str, int, str]],
-        s3_controllers: dict[str, S3StorageController],
-    ):
-        """Phase 1: Download thumbnails (high concurrency)."""
-        sem = asyncio.Semaphore(cls.THUMBNAIL_CONCURRENCY)
-
-        async def dl_thumb(ws_id, uid, bucket):
-            async with sem:
-                try:
-                    s3 = cls._get_s3_controller(bucket, s3_controllers)
-                    await s3.download_experiment(
-                        ws_id,
-                        uid,
-                        sync_mode="thumbnails_only",
-                    )
-                except Exception as e:
-                    logger.warning(f"Startup thumb sync failed" f" {ws_id}/{uid}: {e}")
-
-        await asyncio.gather(
-            *[dl_thumb(w, u, b) for w, u, _, b in experiments],
-            return_exceptions=True,
-        )
-
-    @classmethod
-    async def _sync_startup_metadata(
-        cls,
-        experiments: List[Tuple[str, str, int, str]],
-        s3_controllers: dict[str, S3StorageController],
-    ):
-        """Phase 2: Download essential metadata."""
-        sem = asyncio.Semaphore(cls.METADATA_CONCURRENCY)
-
-        async def dl_meta(ws_id, uid, bucket):
-            async with sem:
-                try:
-                    s3 = cls._get_s3_controller(bucket, s3_controllers)
-                    await s3.download_experiment(
-                        ws_id,
-                        uid,
-                        sync_mode="essential_only",
-                    )
-                except Exception as e:
-                    logger.warning(f"Startup meta sync failed" f" {ws_id}/{uid}: {e}")
-
-        await asyncio.gather(
-            *[dl_meta(w, u, b) for w, u, _, b in experiments],
-            return_exceptions=True,
-        )
 
     @classmethod
     async def _run_validation_logic(cls):
@@ -565,28 +558,47 @@ class PublishedExperimentSyncJob:
     @classmethod
     def _mark_sync_complete(cls, exp_id: int):
         """Mark experiment as successfully synced"""
+        from sqlalchemy import update
+
         with session_scope() as db:
-            experiment = db.get(ExperimentRecord, exp_id)
-            if experiment:
-                experiment.local_sync_status = LocalSyncStatus.synced.value
-                db.add(experiment)
-                db.commit()
-                logger.debug(f"Marked experiment {exp_id} as synced")
+            stmt = (
+                update(ExperimentRecord)
+                .where(ExperimentRecord.id == exp_id)
+                .where(
+                    ExperimentRecord.local_sync_status != LocalSyncStatus.synced.value
+                )
+                .values(
+                    local_sync_status=LocalSyncStatus.synced.value,
+                    version=ExperimentRecord.version + 1,
+                )
+            )
+            result = db.execute(stmt)
+            db.commit()
+            if result.rowcount == 0:
+                logger.debug(f"Experiment {exp_id} already synced or not found")
             else:
-                logger.warning(f"Experiment {exp_id} not found for sync status update")
+                logger.debug(f"Marked experiment {exp_id} as synced")
 
     @classmethod
     def _mark_sync_error(cls, exp_id: int):
         """Mark experiment sync as failed (retries next run)"""
+        from sqlalchemy import update
+
         with session_scope() as db:
-            experiment = db.get(ExperimentRecord, exp_id)
-            if experiment:
-                experiment.local_sync_status = LocalSyncStatus.error.value
-                db.add(experiment)
-                db.commit()
-                logger.debug(f"Marked experiment {exp_id} as sync error")
-            else:
+            stmt = (
+                update(ExperimentRecord)
+                .where(ExperimentRecord.id == exp_id)
+                .values(
+                    local_sync_status=LocalSyncStatus.error.value,
+                    version=ExperimentRecord.version + 1,
+                )
+            )
+            result = db.execute(stmt)
+            db.commit()
+            if result.rowcount == 0:
                 logger.warning(f"Experiment {exp_id} not found for sync error update")
+            else:
+                logger.debug(f"Marked experiment {exp_id} as sync error")
 
     @classmethod
     def _increment_retry_count(cls, exp_id: int):

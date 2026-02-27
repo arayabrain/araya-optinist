@@ -101,9 +101,28 @@ async def lifespan(app: FastAPI):
     if not MODE.IS_STANDALONE:
         import asyncio
 
+        from studio.app.common.core.storage.download_coordinator import (
+            DownloadCoordinator,
+        )
+        from studio.app.common.core.storage.sync_state_tracker import SyncStateTracker
+
+        # Initialize coordinator during lifespan (post-fork, EC-21)
+        DownloadCoordinator.initialize()
+
         async def _startup_sync():
             try:
                 await asyncio.sleep(5)
+
+                # Invalidate stale DB records BEFORE downloading
+                try:
+                    stale_count = await asyncio.to_thread(
+                        SyncStateTracker.invalidate_stale_records
+                    )
+                    if stale_count:
+                        logger.info(f"Invalidated {stale_count} stale sync records")
+                except Exception as e:
+                    logger.warning(f"Stale record invalidation failed: {e}")
+
                 await PublishedExperimentSyncJob.run_startup_sync()
             except Exception as e:
                 logger.error(f"Startup sync error: {e}", exc_info=True)
