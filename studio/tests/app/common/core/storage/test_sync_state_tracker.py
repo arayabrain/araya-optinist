@@ -330,7 +330,9 @@ class TestInvalidateStaleRecords:
             count = SyncStateTracker.invalidate_stale_records()
 
         assert count == 1
-        assert mock_record.local_sync_status == "pending"
+        # Bulk update() is used instead of ORM attribute assignment
+        mock_db.execute.assert_called_once()
+        mock_db.commit.assert_called()
 
     @patch("studio.app.common.core.storage.sync_state_tracker.DIRPATH")
     def test_keeps_valid_records(self, mock_dirpath, tmp_path):
@@ -410,17 +412,17 @@ class TestReconcile:
     def test_all_tier_creates_success_status(self, mock_status):
         mock_status.check_sync_status_success.return_value = False
 
-        mock_record = MagicMock()
-        mock_record.local_sync_status = "pending"
         mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.first.return_value = mock_record
+        mock_db.execute.return_value.rowcount = 1
 
         with patch("studio.app.common.db.database.session_scope") as mock_scope:
             mock_scope.return_value.__enter__.return_value = mock_db
             SyncStateTracker.reconcile("ws1", "uid1", SyncTier.ALL, "bucket")
 
         mock_status.create_sync_status_file_for_success.assert_called_once()
-        assert mock_record.local_sync_status == "synced"
+        # Bulk update() is used instead of ORM attribute assignment
+        mock_db.execute.assert_called_once()
+        mock_db.commit.assert_called_once()
 
     @patch("studio.app.common.core.storage.sync_state_tracker.RemoteSyncStatusFileUtil")
     def test_all_tier_skips_if_already_success(self, mock_status):
@@ -471,6 +473,7 @@ class TestCheckSyncedStalenessSpotCheck:
         mock_dirpath.OUTPUT_DIR = str(tmp_path / "output")
 
         mock_record = MagicMock()
+        mock_record.id = 1
         mock_record.workspace_id = "ws1"
         mock_record.uid = "uid1"
         mock_record.local_sync_status = "synced"
@@ -488,7 +491,9 @@ class TestCheckSyncedStalenessSpotCheck:
             count = SyncStateTracker.check_synced_staleness_spot_check(sample_size=1)
 
         assert count == 1
-        assert mock_record.local_sync_status == "pending"
+        # Bulk update() is used instead of ORM attribute assignment
+        mock_db.execute.assert_called_once()
+        mock_db.commit.assert_called()
 
     @patch("studio.app.common.core.storage.sync_state_tracker.DIRPATH")
     def test_keeps_valid_record(self, mock_dirpath, tmp_path):

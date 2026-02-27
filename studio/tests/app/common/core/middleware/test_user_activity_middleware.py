@@ -570,20 +570,15 @@ class TestClearFreeUserLoggedOutAt:
     """Test clearing logged_out_at on re-login"""
 
     def test_clear_logged_out_at_clears_timestamp(self):
-        """clear_free_user_logged_out_at should clear logged_out_at field"""
-        from datetime import datetime
+        """clear_free_user_logged_out_at should execute update and return True"""
         from unittest.mock import MagicMock, patch
 
         from studio.app.common.core.middleware.user_activity_middleware import (
             clear_free_user_logged_out_at,
         )
 
-        mock_assignment = MagicMock()
-        mock_assignment.logged_out_at = datetime.now()
         mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = (
-            mock_assignment
-        )
+        mock_session.execute.return_value.rowcount = 1
 
         with patch(
             "studio.app.common.core.middleware."
@@ -594,11 +589,11 @@ class TestClearFreeUserLoggedOutAt:
             result = clear_free_user_logged_out_at(TEST_USER_ID)
 
             assert result is True
-            assert mock_assignment.logged_out_at is None
+            mock_session.execute.assert_called_once()
             mock_session.commit.assert_called_once()
 
     def test_clear_logged_out_at_updates_last_activity(self):
-        """clear_free_user_logged_out_at should update last_activity"""
+        """clear_free_user_logged_out_at should include last_activity in update"""
         from datetime import datetime
         from unittest.mock import MagicMock, patch
 
@@ -606,13 +601,8 @@ class TestClearFreeUserLoggedOutAt:
             clear_free_user_logged_out_at,
         )
 
-        mock_assignment = MagicMock()
-        mock_assignment.logged_out_at = datetime.now()
-        mock_assignment.last_activity = None
         mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = (
-            mock_assignment
-        )
+        mock_session.execute.return_value.rowcount = 1
 
         with patch(
             "studio.app.common.core.middleware."
@@ -624,12 +614,14 @@ class TestClearFreeUserLoggedOutAt:
                 "user_activity_middleware.get_current_datetime"
             ) as mock_now:
                 mock_now.return_value = datetime(2025, 1, 15, 12, 0, 0)
-                clear_free_user_logged_out_at(TEST_USER_ID)
+                result = clear_free_user_logged_out_at(TEST_USER_ID)
 
-                assert mock_assignment.last_activity == datetime(2025, 1, 15, 12, 0, 0)
+                assert result is True
+                mock_now.assert_called_once()
+                mock_session.execute.assert_called_once()
 
     def test_clear_logged_out_at_returns_true_if_no_assignment(self):
-        """Should return True if no assignment exists"""
+        """Should return True even if no rows matched"""
         from unittest.mock import MagicMock, patch
 
         from studio.app.common.core.middleware.user_activity_middleware import (
@@ -637,7 +629,7 @@ class TestClearFreeUserLoggedOutAt:
         )
 
         mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = None
+        mock_session.execute.return_value.rowcount = 0
 
         with patch(
             "studio.app.common.core.middleware."
@@ -648,22 +640,17 @@ class TestClearFreeUserLoggedOutAt:
             result = clear_free_user_logged_out_at(TEST_USER_ID)
 
             assert result is True
-            mock_session.commit.assert_not_called()
 
     def test_clear_logged_out_at_returns_true_if_already_null(self):
-        """Should return True if already None"""
+        """Should return True even if logged_out_at is already None (0 rows matched)"""
         from unittest.mock import MagicMock, patch
 
         from studio.app.common.core.middleware.user_activity_middleware import (
             clear_free_user_logged_out_at,
         )
 
-        mock_assignment = MagicMock()
-        mock_assignment.logged_out_at = None
         mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = (
-            mock_assignment
-        )
+        mock_session.execute.return_value.rowcount = 0
 
         with patch(
             "studio.app.common.core.middleware."
@@ -674,7 +661,6 @@ class TestClearFreeUserLoggedOutAt:
             result = clear_free_user_logged_out_at(TEST_USER_ID)
 
             assert result is True
-            mock_session.commit.assert_not_called()
 
     def test_clear_logged_out_at_returns_false_on_exception(self):
         """Should return False on DB error"""
@@ -697,19 +683,15 @@ class TestClearFreeUserLoggedOutAt:
             assert result is False
 
     def test_clear_logged_out_at_prevents_cleanup_after_relogin(self):
-        """Clearing logged_out_at should prevent cleanup job"""
+        """Clearing logged_out_at should execute update to set it to None"""
         from unittest.mock import MagicMock, patch
 
         from studio.app.common.core.middleware.user_activity_middleware import (
             clear_free_user_logged_out_at,
         )
 
-        mock_assignment = MagicMock()
-        mock_assignment.logged_out_at = MagicMock()
         mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = (
-            mock_assignment
-        )
+        mock_session.execute.return_value.rowcount = 1
 
         with patch(
             "studio.app.common.core.middleware."
@@ -717,9 +699,11 @@ class TestClearFreeUserLoggedOutAt:
         ) as mock_session_scope:
             mock_session_scope.return_value.__enter__.return_value = mock_session
 
-            clear_free_user_logged_out_at(TEST_USER_ID)
+            result = clear_free_user_logged_out_at(TEST_USER_ID)
 
-            assert mock_assignment.logged_out_at is None
+            assert result is True
+            mock_session.execute.assert_called_once()
+            mock_session.commit.assert_called_once()
 
 
 class TestHeartbeatFailureTracking:

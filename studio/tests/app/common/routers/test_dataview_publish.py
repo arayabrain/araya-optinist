@@ -444,6 +444,7 @@ class TestPublicDataviewReproduceWorkflow:
         mock_validation.is_displayable = True
 
         mock_db = MagicMock()
+        mock_db.execute.return_value.rowcount = 1
 
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
@@ -466,7 +467,6 @@ class TestPublicDataviewReproduceWorkflow:
                 workspace_id="1", unique_id="exp123", db=mock_db
             )
 
-        # Verify sync status was updated
-        assert mock_record.local_sync_status == LocalSyncStatus.synced.value
-        mock_db.add.assert_called_once_with(mock_record)
+        # Verify bulk update was executed and committed
+        mock_db.execute.assert_called_once()
         mock_db.commit.assert_called_once()
