@@ -22,14 +22,14 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageSimpleReader,
     RemoteSyncStatusFileUtil,
 )
-from studio.app.common.models.experiment import ExperimentRecord
-from studio.app.common.models.workspace import Workspace
-from studio.app.common.schemas.dataview import PublishStatus
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
     is_workspace_owner,
 )
 from studio.app.common.db.database import get_db
+from studio.app.common.models.experiment import ExperimentRecord
+from studio.app.common.models.workspace import Workspace
+from studio.app.common.schemas.dataview import PublishStatus
 from studio.app.common.schemas.experiment import CopyItem, DeleteItem, RenameItem
 
 router = APIRouter(prefix="/experiments", tags=["experiments"])
@@ -83,9 +83,7 @@ async def get_experiments(
             # Per-experiment DB comparison: download metadata for experiments
             # in DB but missing locally
             try:
-                local_uids = ExptConfigReader.get_local_experiment_uids(
-                    workspace_id
-                )
+                local_uids = ExptConfigReader.get_local_experiment_uids(workspace_id)
                 published_uids = _get_published_uids(db, workspace_id)
                 missing_uids = published_uids - local_uids
 

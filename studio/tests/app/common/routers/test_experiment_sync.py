@@ -88,7 +88,7 @@ class TestGetExperimentsMetadataSync:
             )
             mock_reader_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            result = await get_experiments(
+            await get_experiments(
                 workspace_id="ws1",
                 db=mock_db,
                 remote_bucket_name="bucket1",
@@ -261,7 +261,7 @@ class TestGetExperimentsMetadataSync:
             )
             mock_reader_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            result = await get_experiments(
+            await get_experiments(
                 workspace_id="ws1",
                 db=mock_db,
                 remote_bucket_name="bucket1",
