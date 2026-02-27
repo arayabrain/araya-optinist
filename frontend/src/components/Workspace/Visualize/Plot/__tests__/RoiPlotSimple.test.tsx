@@ -32,6 +32,7 @@ jest.mock("store/slice/DisplayData/DisplayDataActions", () => ({
     // Return a thunk function
     return () => Promise.resolve()
   },
+  SYNC_IN_PROGRESS_MESSAGE: "Syncing from cloud storage...",
 }))
 
 describe("RoiPlotSimple Component", () => {
@@ -152,6 +153,165 @@ describe("RoiPlotSimple Component", () => {
         workspaceId: 1,
         uniqueId: "workflow-123",
       })
+    })
+
+    it("hides retry button when error contains 'not found'", () => {
+      const initialState = {
+        displayData: {
+          roi: {
+            "/test/path": {
+              type: "roi",
+              data: [],
+              pending: false,
+              fulfilled: false,
+              error:
+                "Output file not found. Analysis may not have generated this file.",
+              roiUniqueList: [],
+            },
+          },
+          loading: false,
+          loadingStack: [],
+        },
+      }
+      store = mockStore(initialState)
+
+      renderWithProviders(
+        <RoiPlotSimple filePath="/test/path" workspaceId={1} />,
+      )
+
+      // Should show error message
+      expect(
+        screen.getByText(
+          "Output file not found. Analysis may not have generated this file.",
+        ),
+      ).toBeDefined()
+
+      // Should NOT show retry button for not-found errors
+      expect(screen.queryByRole("button")).toBeNull()
+    })
+
+    it("shows retry button for syncing errors", () => {
+      const initialState = {
+        displayData: {
+          roi: {
+            "/test/path": {
+              type: "roi",
+              data: [],
+              pending: false,
+              fulfilled: false,
+              error: "Syncing from cloud storage...",
+              roiUniqueList: [],
+            },
+          },
+          loading: false,
+          loadingStack: [],
+        },
+      }
+      store = mockStore(initialState)
+
+      renderWithProviders(
+        <RoiPlotSimple filePath="/test/path" workspaceId={1} />,
+      )
+
+      // Should show syncing message
+      expect(screen.getByText("Syncing from cloud storage...")).toBeDefined()
+
+      // Should show retry button (syncing is retryable)
+      const retryButton = screen.getByRole("button")
+      expect(retryButton).toBeDefined()
+    })
+
+    it("uses text.secondary color for 503 syncing errors", () => {
+      const initialState = {
+        displayData: {
+          roi: {
+            "/test/path": {
+              type: "roi",
+              data: [],
+              pending: false,
+              fulfilled: false,
+              error: "Syncing from cloud storage...",
+              errorStatus: 503,
+              roiUniqueList: [],
+            },
+          },
+          loading: false,
+          loadingStack: [],
+        },
+      }
+      store = mockStore(initialState)
+
+      renderWithProviders(
+        <RoiPlotSimple filePath="/test/path" workspaceId={1} />,
+      )
+
+      // Should show syncing message with text.secondary color
+      const errorText = screen.getByText("Syncing from cloud storage...")
+      expect(errorText).toBeDefined()
+
+      // Verify the button exists with "Retry sync" tooltip
+      const button = screen.getByRole("button")
+      expect(button).toBeDefined()
+    })
+
+    it("uses error color for non-503 errors", () => {
+      const initialState = {
+        displayData: {
+          roi: {
+            "/test/path": {
+              type: "roi",
+              data: [],
+              pending: false,
+              fulfilled: false,
+              error: "Server error occurred",
+              errorStatus: 500,
+              roiUniqueList: [],
+            },
+          },
+          loading: false,
+          loadingStack: [],
+        },
+      }
+      store = mockStore(initialState)
+
+      renderWithProviders(
+        <RoiPlotSimple filePath="/test/path" workspaceId={1} />,
+      )
+
+      // Should show error message (with "error" color, not "text.secondary")
+      const errorText = screen.getByText("Server error occurred")
+      expect(errorText).toBeDefined()
+    })
+
+    it("hides retry button for 404 errors based on errorStatus", () => {
+      const initialState = {
+        displayData: {
+          roi: {
+            "/test/path": {
+              type: "roi",
+              data: [],
+              pending: false,
+              fulfilled: false,
+              error: "Output file not found",
+              errorStatus: 404,
+              roiUniqueList: [],
+            },
+          },
+          loading: false,
+          loadingStack: [],
+        },
+      }
+      store = mockStore(initialState)
+
+      renderWithProviders(
+        <RoiPlotSimple filePath="/test/path" workspaceId={1} />,
+      )
+
+      // Should show error message
+      expect(screen.getByText("Output file not found")).toBeDefined()
+
+      // Should NOT show retry button for 404 errors
+      expect(screen.queryByRole("button")).toBeNull()
     })
 
     it("prevents click propagation when retry button is clicked", () => {

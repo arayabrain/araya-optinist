@@ -17,29 +17,45 @@ class TestStartupSync:
 
     @pytest.mark.asyncio
     async def test_downloads_missing_experiments(self):
-        """Test startup sync downloads experiments missing locally"""
+        """Test startup sync downloads experiments missing locally via coordinator"""
         published = [
             ("ws1", "uid1", 1, "bucket1"),
             ("ws2", "uid2", 2, "bucket1"),
         ]
 
-        mock_s3 = MagicMock()
-        mock_s3.download_experiment = AsyncMock(return_value=True)
+        from studio.app.common.core.storage.sync_tier import DownloadResult, SyncTier
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.ensure_synced_batch = AsyncMock(
+            return_value={
+                "ws1/uid1": DownloadResult(
+                    success=True, achieved_tier=SyncTier.THUMBNAILS_ONLY
+                )
+            }
+        )
 
         with patch.object(
             PublishedExperimentSyncJob,
             "_get_all_published_experiments",
             return_value=published,
+        ), patch("os.path.exists", return_value=False), patch(
+            "studio.app.common.core.storage.download_coordinator"
+            ".DownloadCoordinator.get_instance",
+            return_value=mock_coordinator,
         ):
-            with patch("os.path.exists", return_value=False):
-                with patch(
-                    "studio.app.common.core.background" ".sync_job.S3StorageController",
-                    return_value=mock_s3,
-                ):
-                    await PublishedExperimentSyncJob.run_startup_sync()
+            await PublishedExperimentSyncJob.run_startup_sync()
 
-        # 2 experiments x 2 phases = 4 download calls
-        assert mock_s3.download_experiment.call_count == 4
+        # 2 phases (thumbnails + essential) x 1 bucket = 2 batch calls
+        assert mock_coordinator.ensure_synced_batch.call_count == 2
+
+        # Verify tiers: first call thumbnails, second call essential
+        calls = mock_coordinator.ensure_synced_batch.call_args_list
+        assert calls[0][1]["required_tier"] == SyncTier.THUMBNAILS_ONLY
+        assert calls[1][1]["required_tier"] == SyncTier.ESSENTIAL_ONLY
+
+        # Both calls should include both experiments
+        assert len(calls[0][1]["experiments"]) == 2
+        assert len(calls[1][1]["experiments"]) == 2
 
     @pytest.mark.asyncio
     async def test_skips_locally_present_experiments(self):
@@ -48,23 +64,23 @@ class TestStartupSync:
             ("ws1", "uid1", 1, "bucket1"),
         ]
 
-        mock_s3 = MagicMock()
-        mock_s3.download_experiment = AsyncMock(return_value=True)
+        mock_coordinator = MagicMock()
+        mock_coordinator.ensure_synced_batch = AsyncMock(return_value={})
 
         with patch.object(
             PublishedExperimentSyncJob,
             "_get_all_published_experiments",
             return_value=published,
+        ), patch("os.path.exists", return_value=True), patch(
+            "studio.app.common.core.storage.download_coordinator"
+            ".DownloadCoordinator.get_instance",
+            return_value=mock_coordinator,
         ):
-            # Both yaml files exist locally
-            with patch("os.path.exists", return_value=True):
-                with patch(
-                    "studio.app.common.core.background" ".sync_job.S3StorageController",
-                    return_value=mock_s3,
-                ):
-                    await PublishedExperimentSyncJob.run_startup_sync()
+            await PublishedExperimentSyncJob.run_startup_sync()
 
-        assert mock_s3.download_experiment.call_count == 0
+        # All experiments present locally -> _get_missing_experiments returns []
+        # -> coordinator never called
+        assert mock_coordinator.ensure_synced_batch.call_count == 0
 
     @pytest.mark.asyncio
     async def test_handles_empty_published_list(self):
@@ -566,3 +582,107 @@ class TestRetryCount:
             mock_boto.return_value = mock_cw
             cls._check_persistent_failure(42, "ws1", "uid1")
             mock_cw.put_metric_data.assert_called_once()
+
+
+class TestStalenessSpotCheck:
+    """Tests for staleness spot-check in sync_job.run() (Gap #6)."""
+
+    @pytest.mark.asyncio
+    async def test_run_calls_staleness_spot_check_on_api_container(self):
+        """run() calls SyncStateTracker.check_synced_staleness_spot_check
+        when not running as background service."""
+        with patch.object(
+            PublishedExperimentSyncJob,
+            "_run_validation_logic",
+            new_callable=AsyncMock,
+        ), patch.dict(os.environ, {"IS_BACKGROUND_SERVICE": "0"}, clear=False), patch(
+            "studio.app.common.core.storage.sync_state_tracker.SyncStateTracker"
+        ) as mock_tracker:
+            await PublishedExperimentSyncJob.run()
+
+        mock_tracker.check_synced_staleness_spot_check.assert_called_once_with(
+            sample_size=10
+        )
+
+    @pytest.mark.asyncio
+    async def test_run_skips_staleness_on_background_service(self):
+        """run() skips staleness spot-check on background service containers."""
+        with patch.object(
+            PublishedExperimentSyncJob,
+            "_run_validation_logic",
+            new_callable=AsyncMock,
+        ), patch.dict(os.environ, {"IS_BACKGROUND_SERVICE": "1"}, clear=False), patch(
+            "studio.app.common.core.storage.sync_state_tracker.SyncStateTracker"
+        ) as mock_tracker:
+            await PublishedExperimentSyncJob.run()
+
+        mock_tracker.check_synced_staleness_spot_check.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_continues_on_staleness_exception(self):
+        """run() catches and logs staleness spot-check exceptions."""
+        with patch.object(
+            PublishedExperimentSyncJob,
+            "_run_validation_logic",
+            new_callable=AsyncMock,
+        ), patch.dict(os.environ, {"IS_BACKGROUND_SERVICE": "0"}, clear=False), patch(
+            "studio.app.common.core.storage.sync_state_tracker.SyncStateTracker"
+        ) as mock_tracker:
+            mock_tracker.check_synced_staleness_spot_check.side_effect = RuntimeError(
+                "DB unavailable"
+            )
+            # Should not raise
+            await PublishedExperimentSyncJob.run()
+
+
+class TestStartupSyncMultiBucket:
+    """Tests for multi-bucket startup sync logic (Gap #9)."""
+
+    @pytest.mark.asyncio
+    async def test_groups_experiments_by_bucket(self):
+        """Startup sync groups experiments by bucket for batch processing."""
+        published = [
+            ("ws1", "uid1", 1, "bucket-a"),
+            ("ws2", "uid2", 2, "bucket-b"),
+            ("ws3", "uid3", 3, "bucket-a"),
+        ]
+
+        from studio.app.common.core.storage.sync_tier import SyncTier
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.ensure_synced_batch = AsyncMock(return_value={})
+
+        with patch.object(
+            PublishedExperimentSyncJob,
+            "_get_all_published_experiments",
+            return_value=published,
+        ), patch("os.path.exists", return_value=False), patch(
+            "studio.app.common.core.storage.download_coordinator."
+            "DownloadCoordinator.get_instance",
+            return_value=mock_coordinator,
+        ):
+            await PublishedExperimentSyncJob.run_startup_sync()
+
+        # 2 buckets x 2 phases (thumbnails + essential) = 4 batch calls
+        assert mock_coordinator.ensure_synced_batch.call_count == 4
+
+        calls = mock_coordinator.ensure_synced_batch.call_args_list
+        # First two calls: thumbnails phase for each bucket
+        bucket_a_thumb = [
+            c
+            for c in calls
+            if c[1]["bucket_name"] == "bucket-a"
+            and c[1]["required_tier"] == SyncTier.THUMBNAILS_ONLY
+        ]
+        bucket_b_thumb = [
+            c
+            for c in calls
+            if c[1]["bucket_name"] == "bucket-b"
+            and c[1]["required_tier"] == SyncTier.THUMBNAILS_ONLY
+        ]
+        assert len(bucket_a_thumb) == 1
+        assert len(bucket_b_thumb) == 1
+        # bucket-a should have 2 experiments
+        assert len(bucket_a_thumb[0][1]["experiments"]) == 2
+        # bucket-b should have 1 experiment
+        assert len(bucket_b_thumb[0][1]["experiments"]) == 1

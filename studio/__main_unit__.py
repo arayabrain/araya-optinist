@@ -101,10 +101,41 @@ async def lifespan(app: FastAPI):
     if not MODE.IS_STANDALONE:
         import asyncio
 
+        from studio.app.common.core.storage.download_coordinator import (
+            DownloadCoordinator,
+        )
+        from studio.app.common.core.storage.startup_leader import (
+            release_startup_leader,
+            try_become_startup_leader,
+        )
+        from studio.app.common.core.storage.sync_state_tracker import SyncStateTracker
+
+        # Initialize coordinator during lifespan (post-fork, EC-21)
+        DownloadCoordinator.initialize()
+
         async def _startup_sync():
+            """Only one worker out of N should perform startup sync."""
             try:
                 await asyncio.sleep(5)
-                await PublishedExperimentSyncJob.run_startup_sync()
+
+                # Leader election: only 1 worker syncs
+                if not try_become_startup_leader():
+                    logger.info("Startup sync deferred to leader worker")
+                    return
+
+                try:
+                    # Invalidate stale DB records BEFORE downloading
+                    stale_count = await asyncio.to_thread(
+                        SyncStateTracker.invalidate_stale_records
+                    )
+                    if stale_count:
+                        logger.info(f"Invalidated {stale_count} stale sync records")
+
+                    # Run startup sync
+                    await PublishedExperimentSyncJob.run_startup_sync()
+                finally:
+                    # Always release leader file, even on error
+                    release_startup_leader()
             except Exception as e:
                 logger.error(f"Startup sync error: {e}", exc_info=True)
 

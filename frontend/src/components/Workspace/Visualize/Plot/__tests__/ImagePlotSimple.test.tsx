@@ -34,6 +34,7 @@ jest.mock("store/slice/DisplayData/DisplayDataActions", () => ({
     // Return a thunk function
     return () => Promise.resolve()
   },
+  SYNC_IN_PROGRESS_MESSAGE: "Syncing from cloud storage...",
 }))
 
 describe("ImagePlotSimple Component", () => {
@@ -190,6 +191,157 @@ describe("ImagePlotSimple Component", () => {
 
       // Parent onClick should NOT be called
       expect(mockOnClick).not.toHaveBeenCalled()
+    })
+
+    it("hides retry button when error contains 'not found'", () => {
+      const initialState = {
+        displayData: {
+          image: {
+            "/test/image.tiff": {
+              type: "image",
+              data: [],
+              pending: false,
+              fulfilled: false,
+              error: "Input image file not found: test.tif",
+            },
+          },
+          loading: false,
+          loadingStack: [],
+        },
+      }
+      store = mockStore(initialState)
+
+      renderWithProviders(
+        <ImagePlotSimple filePath="/test/image.tiff" workspaceId={1} />,
+      )
+
+      // Should show error message
+      expect(
+        screen.getByText("Input image file not found: test.tif"),
+      ).toBeDefined()
+
+      // Should NOT show retry button for not-found errors
+      expect(screen.queryByRole("button")).toBeNull()
+    })
+
+    it("shows retry button for syncing errors", () => {
+      const initialState = {
+        displayData: {
+          image: {
+            "/test/image.tiff": {
+              type: "image",
+              data: [],
+              pending: false,
+              fulfilled: false,
+              error: "Syncing from cloud storage...",
+            },
+          },
+          loading: false,
+          loadingStack: [],
+        },
+      }
+      store = mockStore(initialState)
+
+      renderWithProviders(
+        <ImagePlotSimple filePath="/test/image.tiff" workspaceId={1} />,
+      )
+
+      // Should show syncing message
+      expect(screen.getByText("Syncing from cloud storage...")).toBeDefined()
+
+      // Should show retry button (syncing is retryable)
+      const retryButton = screen.getByRole("button")
+      expect(retryButton).toBeDefined()
+    })
+
+    it("uses text.secondary color for 503 syncing errors", () => {
+      const initialState = {
+        displayData: {
+          image: {
+            "/test/image.tiff": {
+              type: "image",
+              data: [],
+              pending: false,
+              fulfilled: false,
+              error: "Syncing from cloud storage...",
+              errorStatus: 503,
+            },
+          },
+          loading: false,
+          loadingStack: [],
+        },
+      }
+      store = mockStore(initialState)
+
+      const { container } = renderWithProviders(
+        <ImagePlotSimple filePath="/test/image.tiff" workspaceId={1} />,
+      )
+
+      // Should show syncing message with text.secondary color
+      const errorText = screen.getByText("Syncing from cloud storage...")
+      expect(errorText).toBeDefined()
+
+      // Verify the tooltip says "Retry sync" for syncing state
+      const button = screen.getByRole("button")
+      expect(button).toBeDefined()
+    })
+
+    it("uses error color for non-503 errors", () => {
+      const initialState = {
+        displayData: {
+          image: {
+            "/test/image.tiff": {
+              type: "image",
+              data: [],
+              pending: false,
+              fulfilled: false,
+              error: "Server error occurred",
+              errorStatus: 500,
+            },
+          },
+          loading: false,
+          loadingStack: [],
+        },
+      }
+      store = mockStore(initialState)
+
+      renderWithProviders(
+        <ImagePlotSimple filePath="/test/image.tiff" workspaceId={1} />,
+      )
+
+      // Should show error message (with "error" color, not "text.secondary")
+      const errorText = screen.getByText("Server error occurred")
+      expect(errorText).toBeDefined()
+    })
+
+    it("hides retry button for 404 errors based on errorStatus", () => {
+      const initialState = {
+        displayData: {
+          image: {
+            "/test/image.tiff": {
+              type: "image",
+              data: [],
+              pending: false,
+              fulfilled: false,
+              error: "Output file not found",
+              errorStatus: 404,
+            },
+          },
+          loading: false,
+          loadingStack: [],
+        },
+      }
+      store = mockStore(initialState)
+
+      renderWithProviders(
+        <ImagePlotSimple filePath="/test/image.tiff" workspaceId={1} />,
+      )
+
+      // Should show error message
+      expect(screen.getByText("Output file not found")).toBeDefined()
+
+      // Should NOT show retry button for 404 errors
+      expect(screen.queryByRole("button")).toBeNull()
     })
 
     it("displays custom error message from server response", () => {

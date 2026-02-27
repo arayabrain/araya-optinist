@@ -97,6 +97,7 @@ interface BaseDisplay<T extends DATA_TYPE, Data> {
   meta?: PlotMetaData
   pending: boolean
   error: string | null
+  errorStatus?: number
   fulfilled: boolean
 }
 

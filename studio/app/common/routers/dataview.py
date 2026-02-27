@@ -16,7 +16,6 @@ from studio.app.common.core.dataview.dataview_services import (
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
-    RemoteStorageSimpleReader,
     RemoteStorageType,
 )
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
@@ -243,31 +242,66 @@ async def public_reproduce_experiment(
             owner_bucket = getattr(workspace.user, "remote_bucket_name", None)
         remote_bucket_name = owner_bucket or os.environ.get("S3_DEFAULT_BUCKET_NAME")
 
-        async with RemoteStorageSimpleReader(
-            remote_bucket_name
-        ) as remote_storage_controller:
-            logger.info(
-                f"Downloading published experiment {workspace_id}/{unique_id} "
-                f"from remote bucket {remote_bucket_name}"
+        # Use coordinator for deduplication (entry point #5)
+        from studio.app.common.core.storage.download_coordinator import (
+            DownloadCoordinator,
+        )
+        from studio.app.common.core.storage.sync_tier import SyncTier
+
+        coordinator = DownloadCoordinator.get_instance()
+
+        logger.info(
+            f"Downloading published experiment {workspace_id}/{unique_id} "
+            f"from remote bucket {remote_bucket_name}"
+        )
+        dl_result = await coordinator.ensure_synced(
+            bucket_name=remote_bucket_name,
+            workspace_id=workspace_id,
+            unique_id=unique_id,
+            required_tier=SyncTier.ALL,
+            caller="public_reproduce",
+            update_db_status=True,
+        )
+
+        if not dl_result.success:
+            logger.error(
+                f"Failed to download experiment {workspace_id}/{unique_id} "
+                f"from remote bucket {remote_bucket_name}: {dl_result.error}"
             )
-            available = await remote_storage_controller.download_experiment(
-                workspace_id,
-                unique_id,
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "download_error",
+                    "message": "Failed to load experiment data, "
+                    "please try again later",
+                },
             )
 
-            if not available:
-                logger.error(
-                    f"Failed to download experiment {workspace_id}/{unique_id} "
-                    f"from remote bucket {remote_bucket_name}"
-                )
-                return JSONResponse(
-                    status_code=503,
-                    content={
-                        "status": "download_error",
-                        "message": "Failed to load experiment data, "
-                        "please try again later",
-                    },
-                )
+        # Download input files (TIFF/CSV) needed for viewing (Issue D fix)
+        try:
+            from studio.app.common.core.snakemake.smk_utils import SmkUtils
+
+            input_filenames = SmkUtils.get_datatypes_inputs(
+                workspace_id, unique_id, apply_basename=True
+            )
+            if input_filenames:
+                controller = RemoteStorageController(remote_bucket_name)
+                for input_filename in input_filenames:
+                    downloaded = await controller.download_input_data(
+                        workspace_id, input_filename
+                    )
+                    if not downloaded:
+                        logger.warning(
+                            f"Input file not found in S3: "
+                            f"{workspace_id}/{input_filename}"
+                        )
+        except (AssertionError, KeyError):
+            # snakemake_config.yaml missing or incomplete
+            pass
+        except Exception as e:
+            logger.warning(
+                f"Input file download failed for {workspace_id}/{unique_id}: {e}"
+            )
 
     # Validate experiment is displayable (checks if required files exist locally)
     # This should be done BEFORE checking sync status, because on-demand download

@@ -39,6 +39,25 @@ class ExptConfigReader:
         return path
 
     @classmethod
+    def get_local_experiment_uids(cls, workspace_id: str) -> set:
+        """Return set of experiment UIDs that exist locally on filesystem.
+
+        Uses glob to find experiment.yaml files and extracts UIDs from paths.
+        """
+        from glob import glob
+
+        config_paths = glob(cls.get_config_yaml_wild_path(workspace_id))
+        uids = set()
+        for path in config_paths:
+            try:
+                ids = ExptOutputPathIds(os.path.dirname(path))
+                if ids.unique_id:
+                    uids.add(ids.unique_id)
+            except Exception:
+                pass
+        return uids
+
+    @classmethod
     async def ensure_synced_async(
         cls,
         workspace_id: str,
@@ -51,6 +70,8 @@ class ExptConfigReader:
         Call this before read() in async contexts to handle cross-instance
         scenarios where a user has been migrated to a new instance.
 
+        Uses DownloadCoordinator for deduplication (entry point #9).
+
         Args:
             workspace_id: Workspace ID containing the experiment
             unique_id: Unique ID of the experiment
@@ -61,7 +82,6 @@ class ExptConfigReader:
         """
         from studio.app.common.core.storage.remote_storage_controller import (
             RemoteStorageController,
-            RemoteStorageSimpleReader,
         )
 
         config_path = cls.get_config_yaml_path(workspace_id, unique_id)
@@ -80,10 +100,20 @@ class ExptConfigReader:
         )
 
         try:
-            async with RemoteStorageSimpleReader(remote_bucket_name) as controller:
-                # Download only this specific experiment's metadata (efficient)
-                await controller.download_experiment_meta(workspace_id, unique_id)
-            return os.path.exists(config_path)
+            from studio.app.common.core.storage.download_coordinator import (
+                DownloadCoordinator,
+            )
+            from studio.app.common.core.storage.sync_tier import SyncTier
+
+            coordinator = DownloadCoordinator.get_instance()
+            result = await coordinator.ensure_synced(
+                bucket_name=remote_bucket_name,
+                workspace_id=workspace_id,
+                unique_id=unique_id,
+                required_tier=SyncTier.METADATA_ONLY,
+                caller="config_reader",
+            )
+            return result.success and os.path.exists(config_path)
         except Exception as e:
             logger.warning(f"Failed to sync experiment from S3: {e}", exc_info=True)
             return False
