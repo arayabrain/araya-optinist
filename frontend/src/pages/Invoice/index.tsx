@@ -407,7 +407,7 @@ const InvoicesPage: FC = () => {
   const handleManageBilling = async (): Promise<void> => {
     if (!shouldShowLoader) {
       window.open(
-        "https://billing.stripe.com/p/login/test_5kQ9ATdaS2TbdknghI2wU00",
+        "https://billing.stripe.com/p/login/5kQ9ATdaS2TbdknghI2wU00",
         "_blank",
       )
     }
