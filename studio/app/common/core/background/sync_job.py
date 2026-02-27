@@ -558,28 +558,47 @@ class PublishedExperimentSyncJob:
     @classmethod
     def _mark_sync_complete(cls, exp_id: int):
         """Mark experiment as successfully synced"""
+        from sqlalchemy import update
+
         with session_scope() as db:
-            experiment = db.get(ExperimentRecord, exp_id)
-            if experiment:
-                experiment.local_sync_status = LocalSyncStatus.synced.value
-                db.add(experiment)
-                db.commit()
-                logger.debug(f"Marked experiment {exp_id} as synced")
+            stmt = (
+                update(ExperimentRecord)
+                .where(ExperimentRecord.id == exp_id)
+                .where(
+                    ExperimentRecord.local_sync_status != LocalSyncStatus.synced.value
+                )
+                .values(
+                    local_sync_status=LocalSyncStatus.synced.value,
+                    version=ExperimentRecord.version + 1,
+                )
+            )
+            result = db.execute(stmt)
+            db.commit()
+            if result.rowcount == 0:
+                logger.debug(f"Experiment {exp_id} already synced or not found")
             else:
-                logger.warning(f"Experiment {exp_id} not found for sync status update")
+                logger.debug(f"Marked experiment {exp_id} as synced")
 
     @classmethod
     def _mark_sync_error(cls, exp_id: int):
         """Mark experiment sync as failed (retries next run)"""
+        from sqlalchemy import update
+
         with session_scope() as db:
-            experiment = db.get(ExperimentRecord, exp_id)
-            if experiment:
-                experiment.local_sync_status = LocalSyncStatus.error.value
-                db.add(experiment)
-                db.commit()
-                logger.debug(f"Marked experiment {exp_id} as sync error")
-            else:
+            stmt = (
+                update(ExperimentRecord)
+                .where(ExperimentRecord.id == exp_id)
+                .values(
+                    local_sync_status=LocalSyncStatus.error.value,
+                    version=ExperimentRecord.version + 1,
+                )
+            )
+            result = db.execute(stmt)
+            db.commit()
+            if result.rowcount == 0:
                 logger.warning(f"Experiment {exp_id} not found for sync error update")
+            else:
+                logger.debug(f"Marked experiment {exp_id} as sync error")
 
     @classmethod
     def _increment_retry_count(cls, exp_id: int):

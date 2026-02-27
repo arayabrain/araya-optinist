@@ -1,3 +1,4 @@
+import os
 import shutil
 from typing import Generator
 
@@ -38,6 +39,11 @@ def session_fixture():
     yield
 
     shutil.rmtree(f"{DIRPATH.DATA_DIR}/output")
+
+    # Clean up mock storage seeded by test modules
+    mock_storage_dir = os.environ.get("MOCK_STORAGE_DIR")
+    if mock_storage_dir and os.path.exists(mock_storage_dir):
+        shutil.rmtree(mock_storage_dir, ignore_errors=True)
 
 
 @pytest.fixture(scope="module")

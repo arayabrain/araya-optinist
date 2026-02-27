@@ -301,17 +301,21 @@ def clear_free_user_logged_out_at(user_id: int) -> bool:
     they log back in.
     """
     try:
-        with session_scope() as session:
-            assignment = (
-                session.query(FreeUserAssignment)
-                .filter(FreeUserAssignment.user_id == user_id)
-                .first()
-            )
+        from sqlalchemy import update
 
-            if assignment and assignment.logged_out_at is not None:
-                assignment.logged_out_at = None
-                assignment.last_activity = get_current_datetime()
-                session.commit()
+        with session_scope() as session:
+            stmt = (
+                update(FreeUserAssignment)
+                .where(FreeUserAssignment.user_id == user_id)
+                .where(FreeUserAssignment.logged_out_at.isnot(None))
+                .values(
+                    logged_out_at=None,
+                    last_activity=get_current_datetime(),
+                )
+            )
+            result = session.execute(stmt)
+            session.commit()
+            if result.rowcount > 0:
                 logger.debug(f"Cleared logged_out_at for user {user_id} on re-login")
 
         return True
@@ -405,23 +409,25 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
         if not instance_id or instance_id == "local":
             return False
 
-        # Update database - query first, then update or insert
+        # Update database with direct SQL to avoid StaleDataError
+        # across concurrent workers
+        from sqlalchemy import update
+
         with session_scope() as session:
             now = get_current_datetime()
 
-            # Check if assignment already exists
-            existing = (
-                session.query(FreeUserAssignment)
-                .filter(FreeUserAssignment.user_id == user_id)
-                .first()
+            # Try UPDATE first (common path for existing users)
+            stmt = (
+                update(FreeUserAssignment)
+                .where(FreeUserAssignment.user_id == user_id)
+                .values(
+                    last_activity=now,
+                    instance_id=instance_id,
+                )
             )
-
-            if existing:
-                # Update existing record
-                existing.last_activity = now
-                existing.instance_id = instance_id
-            else:
-                # Insert new record
+            result = session.execute(stmt)
+            if result.rowcount == 0:
+                # No existing row — insert new record
                 assignment = FreeUserAssignment(
                     user_id=user_id,
                     instance_id=instance_id,

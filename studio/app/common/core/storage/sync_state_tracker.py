@@ -191,6 +191,7 @@ class SyncStateTracker:
                 if not records:
                     break
 
+                stale_ids = []
                 for record in records:
                     last_id = record.id
 
@@ -207,13 +208,27 @@ class SyncStateTracker:
                         not os.path.isfile(experiment_yaml)
                         or not os.path.isfile(workflow_yaml)
                     ):
-                        record.local_sync_status = LocalSyncStatus.pending.value
-                        invalidated_count += 1
+                        stale_ids.append(record.id)
                         logger.info(
                             f"coordinator.stale_record_invalidated "
                             f"workspace_id={record.workspace_id} "
                             f"uid={record.uid}"
                         )
+
+                if stale_ids:
+                    from sqlalchemy import update
+
+                    stmt = (
+                        update(ExperimentRecord)
+                        .where(ExperimentRecord.id.in_(stale_ids))
+                        .values(
+                            local_sync_status=LocalSyncStatus.pending.value,
+                            version=ExperimentRecord.version + 1,
+                        )
+                    )
+                    db.execute(stmt)
+                    db.commit()
+                    invalidated_count += len(stale_ids)
 
         logger.info(f"coordinator.stale_records_invalidated count={invalidated_count}")
         return invalidated_count
@@ -252,21 +267,29 @@ class SyncStateTracker:
 
         # Update DB status
         try:
+            from sqlalchemy import update
+
             from studio.app.common.db.database import session_scope
             from studio.app.common.models.experiment import ExperimentRecord
             from studio.app.common.schemas.dataview import LocalSyncStatus
 
             with session_scope() as db:
-                record = (
-                    db.query(ExperimentRecord)
-                    .filter(
-                        ExperimentRecord.workspace_id == workspace_id,
-                        ExperimentRecord.uid == unique_id,
+                stmt = (
+                    update(ExperimentRecord)
+                    .where(ExperimentRecord.workspace_id == workspace_id)
+                    .where(ExperimentRecord.uid == unique_id)
+                    .where(
+                        ExperimentRecord.local_sync_status
+                        != LocalSyncStatus.synced.value
                     )
-                    .first()
+                    .values(
+                        local_sync_status=LocalSyncStatus.synced.value,
+                        version=ExperimentRecord.version + 1,
+                    )
                 )
-                if record and record.local_sync_status != LocalSyncStatus.synced.value:
-                    record.local_sync_status = LocalSyncStatus.synced.value
+                result = db.execute(stmt)
+                db.commit()
+                if result.rowcount > 0:
                     logger.info(
                         f"coordinator.reconcile_db_updated "
                         f"workspace_id={workspace_id} uid={unique_id}"
@@ -296,6 +319,7 @@ class SyncStateTracker:
         from studio.app.common.schemas.dataview import LocalSyncStatus, PublishStatus
 
         invalidated_count = 0
+        stale_ids = []
 
         try:
             with session_scope() as db:
@@ -340,13 +364,27 @@ class SyncStateTracker:
                         not os.path.isfile(experiment_yaml)
                         or not os.path.isfile(workflow_yaml)
                     ):
-                        record.local_sync_status = LocalSyncStatus.pending.value
-                        invalidated_count += 1
+                        stale_ids.append(record.id)
                         logger.warning(
                             f"coordinator.spot_check_stale "
                             f"workspace_id={record.workspace_id} "
                             f"uid={record.uid}"
                         )
+
+                if stale_ids:
+                    from sqlalchemy import update
+
+                    stmt = (
+                        update(ExperimentRecord)
+                        .where(ExperimentRecord.id.in_(stale_ids))
+                        .values(
+                            local_sync_status=LocalSyncStatus.pending.value,
+                            version=ExperimentRecord.version + 1,
+                        )
+                    )
+                    db.execute(stmt)
+                    db.commit()
+                    invalidated_count = len(stale_ids)
 
         except Exception as e:
             logger.debug(f"Staleness spot-check skipped: {e}")

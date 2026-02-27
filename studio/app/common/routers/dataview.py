@@ -351,9 +351,24 @@ async def public_reproduce_experiment(
                 f"Experiment {workspace_id}/{unique_id} data is available, "
                 f"updating sync status from '{record.local_sync_status}' to 'synced'"
             )
-            record.local_sync_status = LocalSyncStatus.synced.value
-            db.add(record)
+            from sqlalchemy import update
+
+            stmt = (
+                update(models.ExperimentRecord)
+                .where(models.ExperimentRecord.id == record.id)
+                .where(models.ExperimentRecord.version == record.version)
+                .values(
+                    local_sync_status=LocalSyncStatus.synced.value,
+                    version=models.ExperimentRecord.version + 1,
+                )
+            )
+            result = db.execute(stmt)
             db.commit()
+            if result.rowcount == 0:
+                logger.info(
+                    f"Experiment {workspace_id}/{unique_id} sync status "
+                    f"already updated by another process"
+                )
 
     return await reproduce_experiment(workspace_id, unique_id)
 
