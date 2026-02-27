@@ -39,6 +39,25 @@ class ExptConfigReader:
         return path
 
     @classmethod
+    def get_local_experiment_uids(cls, workspace_id: str) -> set:
+        """Return set of experiment UIDs that exist locally on filesystem.
+
+        Uses glob to find experiment.yaml files and extracts UIDs from paths.
+        """
+        from glob import glob
+
+        config_paths = glob(cls.get_config_yaml_wild_path(workspace_id))
+        uids = set()
+        for path in config_paths:
+            try:
+                ids = ExptOutputPathIds(os.path.dirname(path))
+                if ids.unique_id:
+                    uids.add(ids.unique_id)
+            except Exception:
+                pass
+        return uids
+
+    @classmethod
     async def ensure_synced_async(
         cls,
         workspace_id: str,

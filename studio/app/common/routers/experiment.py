@@ -1,10 +1,11 @@
 import os
 from dataclasses import asdict
 from glob import glob
-from typing import Dict
+from typing import Dict, Set
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
+from sqlalchemy import select
 from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
@@ -21,6 +22,9 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageSimpleReader,
     RemoteSyncStatusFileUtil,
 )
+from studio.app.common.models.experiment import ExperimentRecord
+from studio.app.common.models.workspace import Workspace
+from studio.app.common.schemas.dataview import PublishStatus
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
     is_workspace_owner,
@@ -33,6 +37,20 @@ router = APIRouter(prefix="/experiments", tags=["experiments"])
 logger = AppLogger.get_logger()
 
 
+def _get_published_uids(db: Session, workspace_id: str) -> Set[str]:
+    """Query DB for UIDs of published experiments in the given workspace."""
+    statement = (
+        select(ExperimentRecord.uid)
+        .join(Workspace, Workspace.id == ExperimentRecord.workspace_id)
+        .where(ExperimentRecord.workspace_id == int(workspace_id))
+        .where(ExperimentRecord.publish_status == PublishStatus.on.value)
+        .where(ExperimentRecord.success == 1)
+        .where(Workspace.deleted == 0)
+    )
+    result = db.execute(statement)
+    return {row[0] for row in result}
+
+
 @router.get(
     "/{workspace_id}",
     response_model=Dict[str, ExptExtConfig],
@@ -40,6 +58,7 @@ logger = AppLogger.get_logger()
 )
 async def get_experiments(
     workspace_id: str,
+    db: Session = Depends(get_db),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     # search EXPERIMENT_YMLs
@@ -48,19 +67,44 @@ async def get_experiments(
 
     is_remote_storage_available = RemoteStorageController.is_available()
 
-    # NOTE: If remote_storage is available and config_paths does not exist,
-    # assume that data may exist in remote_storage and execute download of metadata.
-    if is_remote_storage_available and not config_paths:
-        async with RemoteStorageSimpleReader(
-            remote_bucket_name
-        ) as remote_storage_controller:
-            await remote_storage_controller.download_all_experiments_metas(
-                [workspace_id]
+    if is_remote_storage_available:
+        if not config_paths:
+            # No local configs at all -- download all metadata from remote
+            async with RemoteStorageSimpleReader(
+                remote_bucket_name
+            ) as remote_storage_controller:
+                await remote_storage_controller.download_all_experiments_metas(
+                    [workspace_id]
+                )
+            config_paths = glob(
+                ExptConfigReader.get_config_yaml_wild_path(workspace_id)
             )
+        else:
+            # Per-experiment DB comparison: download metadata for experiments
+            # in DB but missing locally
+            try:
+                local_uids = ExptConfigReader.get_local_experiment_uids(
+                    workspace_id
+                )
+                published_uids = _get_published_uids(db, workspace_id)
+                missing_uids = published_uids - local_uids
 
-        # search EXPERIMENT_YMLs, again
-        exp_config = {}
-        config_paths = glob(ExptConfigReader.get_config_yaml_wild_path(workspace_id))
+                if missing_uids:
+                    async with RemoteStorageSimpleReader(
+                        remote_bucket_name
+                    ) as remote_storage_controller:
+                        for uid in missing_uids:
+                            await remote_storage_controller.download_experiment_meta(
+                                workspace_id, uid
+                            )
+                    # Re-glob to pick up newly downloaded files
+                    config_paths = glob(
+                        ExptConfigReader.get_config_yaml_wild_path(workspace_id)
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Per-experiment metadata sync failed: {e}", exc_info=True
+                )
 
     for path in config_paths:
         try:
