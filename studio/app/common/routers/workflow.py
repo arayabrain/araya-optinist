@@ -98,10 +98,13 @@ async def fetch_last_experiment(
                 is_remote_synced=is_remote_synced,
             )
         else:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No experiment found in workspace",
+            )
 
     except HTTPException as e:
-        logger.error(e)
+        logger.error(f"HTTPException {e.status_code}: {e.detail}")
         raise e
     except RemoteStorageLockError as e:
         logger.error(e)
@@ -161,7 +164,7 @@ async def reproduce_experiment(
             )
 
     except HTTPException as e:
-        logger.error(e)
+        logger.error(f"HTTPException {e.status_code}: {e.detail}")
         raise e
     except RemoteStorageLockError as e:
         logger.error(e)

@@ -166,6 +166,7 @@ describe("RoiPlotSimple Component", () => {
               fulfilled: false,
               error:
                 "Output file not found. Analysis may not have generated this file.",
+              errorStatus: 404,
               roiUniqueList: [],
             },
           },

@@ -26,6 +26,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 # Test data
 TEST_UID = "test_user_12345"
@@ -783,6 +784,37 @@ class TestHeartbeatFailureTracking:
             count = increment_heartbeat_failures(TEST_USER_ID)
 
             assert count == -1
+
+    def test_free_activity_sync_returns_true_on_integrity_error(self):
+        """Race condition: concurrent INSERT should return True (row exists)"""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _logged_out_users,
+            _update_free_user_activity_sync,
+        )
+
+        _logged_out_users.pop(TEST_USER_ID, None)
+
+        # UPDATE returns rowcount=0 (no existing row), then commit raises
+        # IntegrityError on the INSERT (another worker inserted first)
+        mock_update_result = MagicMock()
+        mock_update_result.rowcount = 0
+
+        mock_session = MagicMock()
+        mock_session.execute.return_value = mock_update_result
+        mock_session.commit.side_effect = IntegrityError(
+            "Duplicate entry", params=None, orig=Exception()
+        )
+
+        mw_path = "studio.app.common.core.middleware.user_activity_middleware"
+        with (
+            patch(f"{mw_path}.session_scope") as mock_session_scope,
+            patch(f"{mw_path}._get_instance_id", return_value="i-abc123"),
+        ):
+            mock_session_scope.return_value.__enter__.return_value = mock_session
+
+            result = _update_free_user_activity_sync(TEST_USER_ID)
+
+            assert result is True
 
     def test_premium_sync_resets_heartbeat_failures(self):
         """Successful heartbeat should reset heartbeat_failures"""

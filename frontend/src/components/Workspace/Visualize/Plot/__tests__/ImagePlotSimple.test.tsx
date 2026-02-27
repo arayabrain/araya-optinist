@@ -203,6 +203,7 @@ describe("ImagePlotSimple Component", () => {
               pending: false,
               fulfilled: false,
               error: "Input image file not found: test.tif",
+              errorStatus: 404,
             },
           },
           loading: false,

@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jwt
@@ -438,6 +439,15 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
 
             session.commit()
             return True
+
+    except IntegrityError:
+        # Race condition: another worker inserted the row between our
+        # UPDATE (rowcount==0) and INSERT. Row exists — treat as success.
+        logger.debug(
+            f"Concurrent insert for free user {user_id}, "
+            f"row already exists (benign race)"
+        )
+        return True
 
     except Exception as e:
         logger.error(f"Error updating free user activity for user {user_id}: {e}")
