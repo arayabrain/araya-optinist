@@ -269,6 +269,32 @@ async def public_reproduce_experiment(
                     },
                 )
 
+        # Download input files (TIFF/CSV) needed for viewing (Issue D fix)
+        try:
+            from studio.app.common.core.snakemake.smk_utils import SmkUtils
+
+            input_filenames = SmkUtils.get_datatypes_inputs(
+                workspace_id, unique_id, apply_basename=True
+            )
+            if input_filenames:
+                controller = RemoteStorageController(remote_bucket_name)
+                for input_filename in input_filenames:
+                    downloaded = await controller.download_input_data(
+                        workspace_id, input_filename
+                    )
+                    if not downloaded:
+                        logger.warning(
+                            f"Input file not found in S3: "
+                            f"{workspace_id}/{input_filename}"
+                        )
+        except (AssertionError, KeyError):
+            # snakemake_config.yaml missing or incomplete
+            pass
+        except Exception as e:
+            logger.warning(
+                f"Input file download failed for {workspace_id}/{unique_id}: {e}"
+            )
+
     # Validate experiment is displayable (checks if required files exist locally)
     # This should be done BEFORE checking sync status, because on-demand download
     # may have just succeeded
@@ -317,9 +343,24 @@ async def public_reproduce_experiment(
                 f"Experiment {workspace_id}/{unique_id} data is available, "
                 f"updating sync status from '{record.local_sync_status}' to 'synced'"
             )
-            record.local_sync_status = LocalSyncStatus.synced.value
-            db.add(record)
+            from sqlalchemy import update
+
+            stmt = (
+                update(models.ExperimentRecord)
+                .where(models.ExperimentRecord.id == record.id)
+                .where(models.ExperimentRecord.version == record.version)
+                .values(
+                    local_sync_status=LocalSyncStatus.synced.value,
+                    version=models.ExperimentRecord.version + 1,
+                )
+            )
+            result = db.execute(stmt)
             db.commit()
+            if result.rowcount == 0:
+                logger.info(
+                    f"Experiment {workspace_id}/{unique_id} sync status "
+                    f"already updated by another process"
+                )
 
     return await reproduce_experiment(workspace_id, unique_id)
 

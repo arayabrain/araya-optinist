@@ -1,3 +1,5 @@
+import { AxiosError } from "axios"
+
 import { createAsyncThunk } from "@reduxjs/toolkit"
 
 import {
@@ -41,6 +43,38 @@ import {
   PlotMetaData,
   DISPLAY_DATA_SLICE_NAME,
 } from "store/slice/DisplayData/DisplayDataType"
+
+export interface RejectPayload {
+  message: string
+  status?: number
+}
+
+export const SYNC_IN_PROGRESS_MESSAGE = "Syncing from cloud storage..."
+
+export function getDisplayErrorMessage(
+  payload: RejectPayload | undefined,
+  fallback: string,
+): string {
+  if (payload?.status === 503) {
+    return SYNC_IN_PROGRESS_MESSAGE
+  }
+  return payload?.message ?? fallback
+}
+
+function extractErrorPayload(e: unknown): RejectPayload {
+  if (e instanceof AxiosError) {
+    const status = e.response?.status
+    const detail = (e.response?.data as { detail?: string })?.detail
+    return {
+      message: detail ?? e.message ?? "Request failed",
+      status,
+    }
+  }
+  if (e instanceof Error) {
+    return { message: e.message }
+  }
+  return { message: String(e) }
+}
 
 export const getTimeSeriesInitData = createAsyncThunk<
   {
@@ -140,7 +174,7 @@ export const getImageData = createAsyncThunk<
       })
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
@@ -155,7 +189,7 @@ export const getCsvData = createAsyncThunk<
       const response = await getCsvDataApi(path, { workspaceId })
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
@@ -170,7 +204,7 @@ export const getMatlabData = createAsyncThunk<
       const response = await getMatlabDataApi(path, { workspaceId })
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
@@ -189,7 +223,7 @@ export const getRoiData = createAsyncThunk<
       )
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
