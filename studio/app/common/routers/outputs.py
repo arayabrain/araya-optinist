@@ -10,6 +10,7 @@ from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
 from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentNotFoundError,
     RemoteExperimentSyncMode,
     RemoteStorageController,
     RemoteStorageLockError,
@@ -268,6 +269,9 @@ async def sync_visualization_files(
             except (AssertionError, KeyError):
                 # snakemake.yaml may be empty or missing required keys
                 pass
+    except RemoteExperimentNotFoundError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except RemoteStorageLockError as e:
         logger.warning(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
@@ -327,6 +331,9 @@ async def get_thumbnail(
                     unique_id,
                     sync_mode=sync_mode,
                 )
+        except RemoteExperimentNotFoundError as e:
+            logger.warning(e)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
         except RemoteStorageLockError as e:
             logger.warning(e)
             raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
@@ -350,6 +357,11 @@ async def get_thumbnail(
                         unique_id,
                         sync_mode=sync_mode,
                     )
+            except RemoteExperimentNotFoundError as e:
+                logger.warning(e)
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail=str(e)
+                )
             except RemoteStorageLockError as e:
                 logger.warning(e)
                 raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
@@ -477,6 +489,9 @@ async def _ensure_visualization_synced(dirpath: str, remote_bucket_name: str) ->
             except (AssertionError, KeyError):
                 # snakemake.yaml may be empty or missing required keys
                 pass
+    except RemoteExperimentNotFoundError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except RemoteStorageLockError as e:
         logger.warning(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))

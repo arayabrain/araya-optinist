@@ -15,6 +15,7 @@ from studio.app.common.core.experiment.experiment_writer import ExptDataWriter
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.snakemake_reader import SmkConfigReader
 from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentNotFoundError,
     RemoteStorageController,
     RemoteStorageLockError,
     RemoteStorageReader,
@@ -125,6 +126,9 @@ async def rename_experiment(
 
         return config
 
+    except RemoteExperimentNotFoundError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
@@ -166,6 +170,9 @@ async def delete_experiment(
 
         return result
 
+    except RemoteExperimentNotFoundError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
@@ -221,6 +228,9 @@ async def delete_experiment_list(
 
         return True
 
+    except RemoteExperimentNotFoundError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
@@ -310,6 +320,9 @@ async def sync_remote_experiment(
     except HTTPException as e:
         logger.error(e, exc_info=True)
         raise e
+    except RemoteExperimentNotFoundError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
