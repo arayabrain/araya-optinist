@@ -89,6 +89,16 @@ class RemoteStorageBucketNotFoundError(Exception):
         super().__init__(message)
 
 
+class RemoteExperimentNotFoundError(Exception):
+    """Raised when specified experiment data does not exist."""
+
+    def __init__(self, workspace_id: str, unique_id: str):
+        self.workspace_id = workspace_id
+        self.unique_id = unique_id
+        message = f"Remote experiment data does not exist: ({workspace_id}/{unique_id})"
+        super().__init__(message)
+
+
 @dataclass
 class RemoteSyncStatusData:
     remote_bucket_name: str

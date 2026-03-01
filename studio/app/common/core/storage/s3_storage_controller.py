@@ -22,6 +22,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.file_filter import FileSyncFilter
 from studio.app.common.core.storage.remote_storage_controller import (
     BaseRemoteStorageController,
+    RemoteExperimentNotFoundError,
     RemoteExperimentSyncMode,
     RemoteStorageBucketNotFoundError,
     RemoteSyncLockFileUtil,
@@ -912,11 +913,11 @@ class S3StorageController(BaseRemoteStorageController):
 
             if not all_s3_objects:
                 logger.warning(
-                    "remote data is not exists. [%s] [%s]",
+                    "Remote data is not exists. [%s] [%s]",
                     self.bucket_name,
                     experiment_remote_path,
                 )
-                return False
+                raise RemoteExperimentNotFoundError(workspace_id, unique_id)
 
             # Sort by directory depth (shallower files first)
             all_s3_objects.sort(key=lambda obj: obj["Key"].count("/"))

@@ -15,6 +15,7 @@ from studio.app.common.core.dataview.dataview_services import (
 )
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentNotFoundError,
     RemoteStorageController,
     RemoteStorageLockError,
     RemoteStorageReader,
@@ -219,7 +220,7 @@ async def public_reproduce_experiment(
     )
 
     if not record:
-        raise HTTPException(status_code=404)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     # Ensure experiment is available on local EBS (download from S3 if needed)
     # Also try to sync if status is pending/error - the local data might be incomplete
@@ -267,13 +268,16 @@ async def public_reproduce_experiment(
                         f"from remote bucket {remote_bucket_name}"
                     )
                     return JSONResponse(
-                        status_code=503,
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                         content={
                             "status": "download_error",
                             "message": "Failed to load experiment data, "
                             "please try again later",
                         },
                     )
+        except RemoteExperimentNotFoundError as e:
+            logger.warning(e)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
         except RemoteStorageLockError as e:
             logger.warning(e)
             raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
@@ -294,7 +298,7 @@ async def public_reproduce_experiment(
                     f"and not yet available locally"
                 )
                 return JSONResponse(
-                    status_code=202,
+                    status_code=status.HTTP_202_ACCEPTED,
                     content={
                         "status": "pending_sync",
                         "message": (
@@ -311,7 +315,7 @@ async def public_reproduce_experiment(
             f"{display_validation.reason}"
         )
         return JSONResponse(
-            status_code=503,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={
                 "status": "data_error",
                 "message": display_validation.reason
@@ -390,7 +394,7 @@ async def publish_dataview_records(
             )
 
             if not record:
-                raise HTTPException(status_code=404)
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
             # Validate publish eligibility when publishing
             if flag == PublishFlags.on:
@@ -402,7 +406,7 @@ async def publish_dataview_records(
                 )
                 if not validation.can_publish:
                     raise HTTPException(
-                        status_code=400,
+                        status_code=status.HTTP_400_BAD_REQUEST,
                         detail=validation.reason,
                     )
 
@@ -435,7 +439,7 @@ async def publish_dataview_records(
                         )
                         if not exists:
                             raise HTTPException(
-                                status_code=400,
+                                status_code=status.HTTP_400_BAD_REQUEST,
                                 detail=f"Cannot publish: {error_msg}",
                             )
                 else:
@@ -499,12 +503,14 @@ async def publish_dataview_records(
                 continue
             else:
                 raise HTTPException(
-                    status_code=500, detail=f"Failed to publish experiment: {str(e)}"
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to publish experiment: {str(e)}",
                 )
 
     # Should never reach here
     raise HTTPException(
-        status_code=500, detail="Failed to publish experiment after multiple retries"
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Failed to publish experiment after multiple retries",
     )
 
 
@@ -527,7 +533,7 @@ def multiple_publish_dataview_records(
         # First check S3 bucket (applies to all)
         if not current_user.remote_bucket_name:
             raise HTTPException(
-                status_code=400,
+                status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot publish data: No cloud storage bucket configured "
                 "for your account. Please contact support to enable publishing.",
             )
@@ -563,7 +569,7 @@ def multiple_publish_dataview_records(
                 detail += f"- {rec['name']}: {rec['reason']}\n"
             if len(failed_records) > 5:
                 detail += f"... and {len(failed_records) - 5} more"
-            raise HTTPException(status_code=400, detail=detail)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
     DataviewService.multiple_publish_dataview_records(db, current_user.id, ids, flag)
 
