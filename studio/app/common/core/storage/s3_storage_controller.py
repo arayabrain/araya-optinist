@@ -22,6 +22,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.file_filter import FileSyncFilter
 from studio.app.common.core.storage.remote_storage_controller import (
     BaseRemoteStorageController,
+    RemoteExperimentSyncMode,
     RemoteStorageBucketNotFoundError,
     RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
@@ -865,7 +866,10 @@ class S3StorageController(BaseRemoteStorageController):
         return True
 
     async def download_experiment(
-        self, workspace_id: str, unique_id: str, sync_mode: str = "all"
+        self,
+        workspace_id: str,
+        unique_id: str,
+        sync_mode: RemoteExperimentSyncMode = RemoteExperimentSyncMode.ALL,
     ) -> bool:
         """
         Download experiment from S3 to local storage.
@@ -873,10 +877,10 @@ class S3StorageController(BaseRemoteStorageController):
         Args:
             workspace_id: Workspace identifier
             unique_id: Unique experiment identifier
-            sync_mode:
-                - 'all': sync everything (default)
-                - 'essential_only': skip large files, sync yaml/json (for dataview)
-                - 'visualization': sync only json and tiff (for viewing results)
+            sync_mode: RemoteExperimentSyncMode enum value
+                - ALL: sync everything (default)
+                - ESSENTIAL_ONLY: skip large files, sync yaml/json (for dataview)
+                - VISUALIZATION: sync only json and tiff (for viewing results)
 
         Returns:
             True if download successful, False otherwise
@@ -925,7 +929,9 @@ class S3StorageController(BaseRemoteStorageController):
             # cleaning data from local path (only for full sync, not partial syncs)
             # Partial syncs (visualization, essential_only) should preserve existing
             # files to avoid redundant downloads
-            if sync_mode == "all" and os.path.isdir(experiment_local_path):
+            if sync_mode == RemoteExperimentSyncMode.ALL and os.path.isdir(
+                experiment_local_path
+            ):
                 await self._clear_local_experiment_data(experiment_local_path)
 
             target_files_count = len(all_s3_objects)
@@ -1252,7 +1258,9 @@ class S3StorageController(BaseRemoteStorageController):
                 await self.download_input_data(workspace_id, filename)
             else:
                 await self.download_experiment(
-                    workspace_id, unique_id, sync_mode="visualization"
+                    workspace_id,
+                    unique_id,
+                    sync_mode=RemoteExperimentSyncMode.VISUALIZATION,
                 )
             return True
         except Exception as e:

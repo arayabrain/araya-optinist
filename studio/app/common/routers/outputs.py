@@ -10,6 +10,7 @@ from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
 from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentSyncMode,
     RemoteStorageController,
     RemoteStorageLockError,
     RemoteStorageReader,
@@ -189,7 +190,7 @@ async def _background_full_sync(
             remote_bucket_name, workspace_id, unique_id
         ) as remote_storage_controller:
             await remote_storage_controller.download_experiment(
-                workspace_id, unique_id, sync_mode="all"
+                workspace_id, unique_id, sync_mode=RemoteExperimentSyncMode.ALL
             )
 
         logger.info(f"Background full sync completed for {workspace_id}/{unique_id}")
@@ -245,7 +246,9 @@ async def sync_visualization_files(
             remote_bucket_name, workspace_id, unique_id
         ) as remote_storage_controller:
             result = await remote_storage_controller.download_experiment(
-                workspace_id, unique_id, sync_mode="visualization"
+                workspace_id,
+                unique_id,
+                sync_mode=RemoteExperimentSyncMode.VISUALIZATION,
             )
 
             # Also download input files needed for viewing images
@@ -314,7 +317,9 @@ async def get_thumbnail(
                 remote_bucket_name, workspace_id, unique_id
             ) as remote_storage_controller:
                 await remote_storage_controller.download_experiment(
-                    workspace_id, unique_id, sync_mode="thumbnails_only"
+                    workspace_id,
+                    unique_id,
+                    sync_mode=RemoteExperimentSyncMode.THUMBNAILS_ONLY,
                 )
         except RemoteStorageLockError as e:
             logger.warning(e)
@@ -334,7 +339,9 @@ async def get_thumbnail(
                     remote_bucket_name, workspace_id, unique_id
                 ) as remote_storage_controller:
                     await remote_storage_controller.download_experiment(
-                        workspace_id, unique_id, sync_mode="essential_only"
+                        workspace_id,
+                        unique_id,
+                        sync_mode=RemoteExperimentSyncMode.ESSENTIAL_ONLY,
                     )
             except RemoteStorageLockError as e:
                 logger.warning(e)
@@ -446,7 +453,9 @@ async def _ensure_visualization_synced(dirpath: str, remote_bucket_name: str) ->
             remote_bucket_name, workspace_id, unique_id
         ) as remote_storage_controller:
             await remote_storage_controller.download_experiment(
-                workspace_id, unique_id, sync_mode="visualization"
+                workspace_id,
+                unique_id,
+                sync_mode=RemoteExperimentSyncMode.VISUALIZATION,
             )
             # Also download input files (if snakemake config is available)
             try:

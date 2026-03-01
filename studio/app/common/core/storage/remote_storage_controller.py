@@ -51,6 +51,13 @@ class RemoteSyncAction(Enum):
     DELETE = "delete"
 
 
+class RemoteExperimentSyncMode(Enum):
+    ALL = "all"
+    VISUALIZATION = "visualization"
+    ESSENTIAL_ONLY = "essential_only"
+    THUMBNAILS_ONLY = "thumbnails_only"
+
+
 class StorageDirectoryType(Enum):
     INPUT = "input"
     OUTPUT = "output"
@@ -471,7 +478,12 @@ class BaseRemoteStorageController(metaclass=ABCMeta):
         """
 
     @abstractmethod
-    def download_experiment(self, workspace_id: str, unique_id: str) -> bool:
+    def download_experiment(
+        self,
+        workspace_id: str,
+        unique_id: str,
+        sync_mode: RemoteExperimentSyncMode = RemoteExperimentSyncMode.ALL,
+    ) -> bool:
         """
         download experiment data from remote storage.
         """
@@ -681,7 +693,10 @@ class RemoteStorageController(BaseRemoteStorageController):
         return await self.__controller.download_experiment_meta(workspace_id, unique_id)
 
     async def download_experiment(
-        self, workspace_id: str, unique_id: str, sync_mode: str = "all"
+        self,
+        workspace_id: str,
+        unique_id: str,
+        sync_mode: RemoteExperimentSyncMode = RemoteExperimentSyncMode.ALL,
     ) -> bool:
         """
         Download experiment from remote storage.
@@ -689,14 +704,15 @@ class RemoteStorageController(BaseRemoteStorageController):
         Args:
             workspace_id: Workspace identifier
             unique_id: Experiment identifier
-            sync_mode: 'all' (full sync), 'visualization' (json/tiff only),
-                       or 'essential_only' (yaml/json only)
+            sync_mode: RemoteExperimentSyncMode.ALL (full sync),
+                       RemoteExperimentSyncMode.VISUALIZATION (json/tiff only),
+                       or RemoteExperimentSyncMode.ESSENTIAL_ONLY (yaml/json only)
 
-        Note: Only sync_mode='all' updates the sync status file and downloads
+        Note: Only sync_mode=ALL updates the sync status file and downloads
         input data. Partial syncs (visualization, essential_only) leave the
         status unchanged so that a full sync can still be triggered later.
         """
-        is_full_sync = sync_mode == "all"
+        is_full_sync = sync_mode == RemoteExperimentSyncMode.ALL
 
         sync_status_params = {
             "remote_bucket_name": self.bucket_name,

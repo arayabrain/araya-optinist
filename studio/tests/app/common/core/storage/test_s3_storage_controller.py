@@ -8,6 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentSyncMode,
+)
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 
 
@@ -126,7 +129,7 @@ class TestS3StorageControllerDownloadExperiment:
             mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
 
             result = await self.controller.download_experiment(
-                "1", "exp123", sync_mode="all"
+                "1", "exp123", sync_mode=RemoteExperimentSyncMode.ALL
             )
 
         assert result is True
@@ -170,7 +173,7 @@ class TestS3StorageControllerDownloadExperiment:
             mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
 
             result = await self.controller.download_experiment(
-                "1", "exp123", sync_mode="essential_only"
+                "1", "exp123", sync_mode=RemoteExperimentSyncMode.ESSENTIAL_ONLY
             )
 
         assert result is True
@@ -225,7 +228,7 @@ class TestS3StorageControllerDownloadExperiment:
             mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
 
             result = await self.controller.download_experiment(
-                "1", "exp123", sync_mode="thumbnails_only"
+                "1", "exp123", sync_mode=RemoteExperimentSyncMode.THUMBNAILS_ONLY
             )
 
         assert result is True
@@ -273,7 +276,7 @@ class TestS3StorageControllerDownloadExperiment:
             mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
 
             result = await self.controller.download_experiment(
-                "1", "exp123", sync_mode="visualization"
+                "1", "exp123", sync_mode=RemoteExperimentSyncMode.VISUALIZATION
             )
 
         assert result is True
