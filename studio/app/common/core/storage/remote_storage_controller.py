@@ -3,6 +3,7 @@ import os
 import shutil
 import time
 from abc import ABCMeta, abstractmethod
+from dataclasses import asdict, dataclass
 from datetime import timedelta
 from enum import Enum
 from typing import Dict, List
@@ -88,6 +89,25 @@ class RemoteStorageBucketNotFoundError(Exception):
         super().__init__(message)
 
 
+@dataclass
+class RemoteSyncStatusData:
+    remote_bucket_name: str
+    remote_storage_type: str
+    sync_action: str
+    sync_status: str
+    timestamp: str
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RemoteSyncStatusData":
+        return cls(
+            remote_bucket_name=data.get("remote_bucket_name", ""),
+            remote_storage_type=data.get("remote_storage_type", ""),
+            sync_action=data.get("sync_action", ""),
+            sync_status=data.get("sync_status", ""),
+            timestamp=data.get("timestamp", ""),
+        )
+
+
 class RemoteSyncStatusFileUtil:
     REMOTE_SYNC_STATUS_FILE = "remote_sync_stat.json"
 
@@ -118,8 +138,8 @@ class RemoteSyncStatusFileUtil:
         remote_sync_status = None
         if os.path.isfile(remote_sync_status_file_path):
             with open(remote_sync_status_file_path) as f:
-                sync_status_data = json.load(f)
-                status_str = str(sync_status_data.get("status")).upper()
+                sync_status_data = RemoteSyncStatusData.from_dict(json.load(f))
+                status_str = sync_status_data.sync_status.upper()
                 if status_str in RemoteSyncStatus.__members__:
                     remote_sync_status = RemoteSyncStatus[status_str]
 
@@ -151,7 +171,7 @@ class RemoteSyncStatusFileUtil:
         remote_bucket_name: str,
         workspace_id: str,
         unique_id: str,
-        remote_sync_action: RemoteSyncAction,
+        sync_action: RemoteSyncAction,
         status: RemoteSyncStatus,
     ) -> None:
         """
@@ -166,14 +186,14 @@ class RemoteSyncStatusFileUtil:
             exist_ok=True,
         )
         with open(remote_sync_status_file_path, "w") as f:
-            sync_status_data = {
-                "remote_bucket_name": remote_bucket_name,
-                "remote_storage_type": RemoteStorageType.get_activated_type().value,
-                "action": remote_sync_action.value,
-                "status": status.value,
-                "timestamp": get_current_datetime(),
-            }
-            json.dump(sync_status_data, f, default=str, indent=2)
+            sync_status_data = RemoteSyncStatusData(
+                remote_bucket_name=remote_bucket_name,
+                remote_storage_type=RemoteStorageType.get_activated_type().value,
+                sync_action=sync_action.value,
+                sync_status=status.value,
+                timestamp=str(get_current_datetime()),
+            )
+            json.dump(asdict(sync_status_data), f, indent=2)
 
     @classmethod
     def create_sync_status_file_for_success(
@@ -181,13 +201,13 @@ class RemoteSyncStatusFileUtil:
         remote_bucket_name: str,
         workspace_id: str,
         unique_id: str,
-        remote_sync_action: RemoteSyncAction,
+        sync_action: RemoteSyncAction,
     ) -> None:
         cls.create_sync_status_file(
             remote_bucket_name,
             workspace_id,
             unique_id,
-            remote_sync_action,
+            sync_action,
             RemoteSyncStatus.SUCCESS,
         )
 
@@ -197,13 +217,13 @@ class RemoteSyncStatusFileUtil:
         remote_bucket_name: str,
         workspace_id: str,
         unique_id: str,
-        remote_sync_action: RemoteSyncAction,
+        sync_action: RemoteSyncAction,
     ) -> None:
         cls.create_sync_status_file(
             remote_bucket_name,
             workspace_id,
             unique_id,
-            remote_sync_action,
+            sync_action,
             RemoteSyncStatus.PROCESSING,
         )
 
@@ -213,13 +233,13 @@ class RemoteSyncStatusFileUtil:
         remote_bucket_name: str,
         workspace_id: str,
         unique_id: str,
-        remote_sync_action: RemoteSyncAction,
+        sync_action: RemoteSyncAction,
     ) -> None:
         cls.create_sync_status_file(
             remote_bucket_name,
             workspace_id,
             unique_id,
-            remote_sync_action,
+            sync_action,
             RemoteSyncStatus.ERROR,
         )
 
@@ -247,8 +267,8 @@ class RemoteSyncStatusFileUtil:
         remote_bucket_name = None
         if os.path.isfile(remote_sync_status_file_path):
             with open(remote_sync_status_file_path) as f:
-                sync_status_data = json.load(f)
-                remote_bucket_name = sync_status_data.get("remote_bucket_name")
+                sync_status_data = RemoteSyncStatusData.from_dict(json.load(f))
+                remote_bucket_name = sync_status_data.remote_bucket_name
         else:
             logger.warning(
                 f"remote_sync_status_file not found. [{remote_sync_status_file_path}]"
@@ -718,7 +738,7 @@ class RemoteStorageController(BaseRemoteStorageController):
             "remote_bucket_name": self.bucket_name,
             "workspace_id": workspace_id,
             "unique_id": unique_id,
-            "remote_sync_action": RemoteSyncAction.DOWNLOAD,
+            "sync_action": RemoteSyncAction.DOWNLOAD,
         }
         result = False
 
@@ -764,7 +784,7 @@ class RemoteStorageController(BaseRemoteStorageController):
             "remote_bucket_name": self.bucket_name,
             "workspace_id": workspace_id,
             "unique_id": unique_id,
-            "remote_sync_action": RemoteSyncAction.UPLOAD,
+            "sync_action": RemoteSyncAction.UPLOAD,
         }
         result = False
 
@@ -800,7 +820,7 @@ class RemoteStorageController(BaseRemoteStorageController):
             "remote_bucket_name": self.bucket_name,
             "workspace_id": workspace_id,
             "unique_id": unique_id,
-            "remote_sync_action": RemoteSyncAction.DELETE,
+            "sync_action": RemoteSyncAction.DELETE,
         }
         result = False
 
