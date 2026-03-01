@@ -576,6 +576,13 @@ class S3StorageController(BaseRemoteStorageController):
                                     os.path.dirname(flie_local_path), exist_ok=True
                                 )
 
+                                # Check for the existence of the remote file
+                                #   before executing download_file
+                                #   (to avoid creating an empty file locally)
+                                await __s3_client.head_object(
+                                    Bucket=self.bucket_name, Key=file_remote_path
+                                )
+
                                 # download file
                                 await __s3_client.download_file(
                                     self.bucket_name,
@@ -636,6 +643,13 @@ class S3StorageController(BaseRemoteStorageController):
                     # Create local directory if needed
                     os.makedirs(os.path.dirname(file_local_path), exist_ok=True)
 
+                    # Check for the existence of the remote file
+                    #   before executing download_file
+                    #   (to avoid creating an empty file locally)
+                    await __s3_client.head_object(
+                        Bucket=self.bucket_name, Key=file_remote_path
+                    )
+
                     # Download file from S3
                     await __s3_client.download_file(
                         self.bucket_name,
@@ -646,7 +660,7 @@ class S3StorageController(BaseRemoteStorageController):
                     logger.debug(f"Downloaded: {file_remote_path}")
                 except Exception as e:
                     # File may not exist in S3 - this is OK for optional files
-                    logger.debug(
+                    logger.warning(
                         f"Could not download [{self.bucket_name}]"
                         f"[{file_remote_path}]: {e}"
                     )

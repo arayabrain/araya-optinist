@@ -101,7 +101,7 @@ async def fetch_last_experiment(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     except HTTPException as e:
-        logger.error(e)
+        logger.error(e, exc_info=True)
         raise e
     except RemoteStorageLockError as e:
         logger.error(e)
@@ -161,7 +161,7 @@ async def reproduce_experiment(
             )
 
     except HTTPException as e:
-        logger.error(e)
+        logger.error(e, exc_info=True)
         raise e
     except RemoteStorageLockError as e:
         logger.error(e)
