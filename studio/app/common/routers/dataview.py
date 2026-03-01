@@ -223,15 +223,18 @@ async def public_reproduce_experiment(
 
     # Ensure experiment is available on local EBS (download from S3 if needed)
     # Also try to sync if status is pending/error - the local data might be incomplete
-    needs_sync = RemoteSyncStatusFileUtil.check_sync_status_unsynced(
+    is_unsynced = RemoteSyncStatusFileUtil.check_sync_status_unsynced(
         workspace_id, unique_id
     )
-    if not needs_sync and hasattr(record, "local_sync_status"):
+
+    if not is_unsynced and hasattr(record, "local_sync_status"):
         # Also sync if status indicates data might be incomplete
         needs_sync = record.local_sync_status in [
             LocalSyncStatus.pending.value,
             LocalSyncStatus.error.value,
         ]
+    else:
+        needs_sync = is_unsynced
 
     if needs_sync:
         # Get owner's bucket from workspace

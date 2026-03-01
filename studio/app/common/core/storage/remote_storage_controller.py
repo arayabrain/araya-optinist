@@ -151,6 +151,7 @@ class RemoteSyncStatusFileUtil:
         check remote storage sync status file. (is success)
         """
         sync_status = cls.check_sync_status_file(workspace_id, unique_id)
+
         return sync_status == RemoteSyncStatus.SUCCESS
 
     @classmethod
@@ -160,13 +161,7 @@ class RemoteSyncStatusFileUtil:
         """
         sync_status = cls.check_sync_status_file(workspace_id, unique_id)
 
-        return sync_status not in [
-            # Note: 'PROCESSING' is actually not yet synced (sync in progress),
-            #   but it is not clearly in an unsynced state (such as Error),
-            #   so it is treated as a synced state here.
-            RemoteSyncStatus.PROCESSING,
-            RemoteSyncStatus.SUCCESS,
-        ]
+        return sync_status != RemoteSyncStatus.SUCCESS
 
     @classmethod
     def create_sync_status_file(
