@@ -2,7 +2,7 @@ import os
 from typing import Optional
 
 import pandas as pd
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 
 from studio.app.common.core.auth.auth_dependencies import get_outputs_remote_bucket_name
@@ -11,6 +11,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
+    RemoteStorageLockError,
     RemoteStorageReader,
     RemoteStorageSimpleReader,
     RemoteStorageSimpleWriter,
@@ -117,8 +118,8 @@ async def get_or_generate_thumbnail(
 
     # Download from remote storage if needed
     if not os.path.exists(abs_original_path) and RemoteStorageController.is_available():
-        async with RemoteStorageSimpleReader(
-            remote_bucket_name
+        async with RemoteStorageReader(
+            remote_bucket_name, workspace_id, unique_id
         ) as remote_storage_controller:
             await remote_storage_controller.download_thumbnail_source(
                 workspace_id, unique_id, original_path, thumb_type
@@ -239,27 +240,29 @@ async def sync_visualization_files(
         "from remote storage"
     )
 
-    # Use SimpleReader to avoid updating sync status - partial syncs should NOT
-    # mark as synced, so background full sync can still run
-    async with RemoteStorageSimpleReader(
-        remote_bucket_name
-    ) as remote_storage_controller:
-        result = await remote_storage_controller.download_experiment(
-            workspace_id, unique_id, sync_mode="visualization"
-        )
-
-        # Also download input files needed for viewing images
-        try:
-            input_filenames = SmkUtils.get_datatypes_inputs(
-                workspace_id, unique_id, apply_basename=True
+    try:
+        async with RemoteStorageReader(
+            remote_bucket_name, workspace_id, unique_id
+        ) as remote_storage_controller:
+            result = await remote_storage_controller.download_experiment(
+                workspace_id, unique_id, sync_mode="visualization"
             )
-            for input_filename in input_filenames:
-                await remote_storage_controller.download_input_data(
-                    workspace_id, input_filename
+
+            # Also download input files needed for viewing images
+            try:
+                input_filenames = SmkUtils.get_datatypes_inputs(
+                    workspace_id, unique_id, apply_basename=True
                 )
-        except (AssertionError, KeyError):
-            # snakemake.yaml may be empty or missing required keys
-            pass
+                for input_filename in input_filenames:
+                    await remote_storage_controller.download_input_data(
+                        workspace_id, input_filename
+                    )
+            except (AssertionError, KeyError):
+                # snakemake.yaml may be empty or missing required keys
+                pass
+    except RemoteStorageLockError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
 
     # Trigger background task to download remaining files (PKL/NWB)
     # This prepares Edit ROI while user is viewing results
@@ -307,14 +310,18 @@ async def get_thumbnail(
     # Try to sync thumbnail from remote storage if not available locally
     if not os.path.exists(thumb_path) and RemoteStorageController.is_available():
         try:
-            async with RemoteStorageSimpleReader(
-                remote_bucket_name
+            async with RemoteStorageReader(
+                remote_bucket_name, workspace_id, unique_id
             ) as remote_storage_controller:
                 await remote_storage_controller.download_experiment(
                     workspace_id, unique_id, sync_mode="thumbnails_only"
                 )
+        except RemoteStorageLockError as e:
+            logger.warning(e)
+            raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
         except Exception as e:
             logger.warning(f"Failed to sync thumbnail from remote storage: {e}")
+            pass  # Continue processing
 
     # If thumbnail still doesn't exist, try to generate it
     if not os.path.exists(thumb_path):
@@ -323,14 +330,18 @@ async def get_thumbnail(
         # find the source TIFF/JSON files for generation
         if RemoteStorageController.is_available():
             try:
-                async with RemoteStorageSimpleReader(
-                    remote_bucket_name
+                async with RemoteStorageReader(
+                    remote_bucket_name, workspace_id, unique_id
                 ) as remote_storage_controller:
                     await remote_storage_controller.download_experiment(
                         workspace_id, unique_id, sync_mode="essential_only"
                     )
+            except RemoteStorageLockError as e:
+                logger.warning(e)
+                raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
             except Exception as e:
                 logger.warning(f"Failed to sync config files from remote storage: {e}")
+                pass  # Continue processing
 
         # Get the original file path for generation
         if thumb_type == ThumbnailType.INPUT:
@@ -430,26 +441,28 @@ async def _ensure_visualization_synced(dirpath: str, remote_bucket_name: str) ->
 
     logger.info(f"On-demand sync for visualization: {workspace_id}/{unique_id}")
 
-    # Use SimpleReader to avoid updating sync status - partial syncs should NOT
-    # mark as synced, so that Edit ROI can still trigger a full sync later
-    async with RemoteStorageSimpleReader(
-        remote_bucket_name
-    ) as remote_storage_controller:
-        await remote_storage_controller.download_experiment(
-            workspace_id, unique_id, sync_mode="visualization"
-        )
-        # Also download input files (if snakemake config is available)
-        try:
-            input_filenames = SmkUtils.get_datatypes_inputs(
-                workspace_id, unique_id, apply_basename=True
+    try:
+        async with RemoteStorageReader(
+            remote_bucket_name, workspace_id, unique_id
+        ) as remote_storage_controller:
+            await remote_storage_controller.download_experiment(
+                workspace_id, unique_id, sync_mode="visualization"
             )
-            for input_filename in input_filenames:
-                await remote_storage_controller.download_input_data(
-                    workspace_id, input_filename
+            # Also download input files (if snakemake config is available)
+            try:
+                input_filenames = SmkUtils.get_datatypes_inputs(
+                    workspace_id, unique_id, apply_basename=True
                 )
-        except (AssertionError, KeyError):
-            # snakemake.yaml may be empty or missing required keys
-            pass
+                for input_filename in input_filenames:
+                    await remote_storage_controller.download_input_data(
+                        workspace_id, input_filename
+                    )
+            except (AssertionError, KeyError):
+                # snakemake.yaml may be empty or missing required keys
+                pass
+    except RemoteStorageLockError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
 
 
 def get_initial_timeseries_data(dirpath) -> JsonTimeSeriesData:

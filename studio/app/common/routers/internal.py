@@ -27,6 +27,7 @@ from studio.app.common.core.auth.auth_dependencies import _get_user_remote_bucke
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
+    RemoteStorageReader,
     RemoteStorageSimpleReader,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
@@ -222,7 +223,9 @@ async def _download_single_experiment(
         return
 
     try:
-        async with RemoteStorageSimpleReader(bucket_name) as controller:
+        async with RemoteStorageReader(
+            bucket_name, workspace_id, unique_id
+        ) as controller:
             if has_thumbnails:
                 await controller.download_experiment(
                     workspace_id,

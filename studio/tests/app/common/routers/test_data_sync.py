@@ -430,8 +430,8 @@ class TestLazySync:
             "studio.app.common.core.storage.remote_storage_controller."
             "RemoteStorageController"
         ) as mock_controller_class, patch(
-            "studio.app.common.core.storage.remote_storage_controller."
-            "RemoteStorageSimpleReader"
+            "studio.app.common.core.experiment.experiment_reader."
+            "RemoteStorageReader"
         ) as mock_reader_class:
             mock_controller_class.is_available.return_value = True
 
@@ -486,8 +486,8 @@ class TestLazySync:
             "studio.app.common.core.storage.remote_storage_controller."
             "RemoteStorageController"
         ) as mock_controller_class, patch(
-            "studio.app.common.core.storage.remote_storage_controller."
-            "RemoteStorageSimpleReader"
+            "studio.app.common.core.experiment.experiment_reader."
+            "RemoteStorageReader"
         ) as mock_reader_class:
             mock_controller_class.is_available.return_value = True
 
@@ -1112,7 +1112,7 @@ class TestDownloadSingleExperiment:
         with patch(
             "studio.app.common.routers.internal." "RemoteStorageController"
         ) as mock_ctrl, patch(
-            "studio.app.common.routers.internal." "RemoteStorageSimpleReader",
+            "studio.app.common.routers.internal." "RemoteStorageReader",
             return_value=mock_reader,
         ), patch(
             "os.path.exists", return_value=False
@@ -1149,7 +1149,7 @@ class TestDownloadSingleExperiment:
         with patch(
             "studio.app.common.routers.internal." "RemoteStorageController"
         ) as mock_ctrl, patch(
-            "studio.app.common.routers.internal." "RemoteStorageSimpleReader",
+            "studio.app.common.routers.internal." "RemoteStorageReader",
             return_value=mock_reader,
         ), patch(
             "os.path.exists", return_value=False
@@ -1182,7 +1182,7 @@ class TestDownloadSingleExperiment:
         with patch(
             "studio.app.common.routers.internal." "RemoteStorageController"
         ) as mock_ctrl, patch(
-            "studio.app.common.routers.internal." "RemoteStorageSimpleReader",
+            "studio.app.common.routers.internal." "RemoteStorageReader",
             return_value=mock_reader,
         ), patch(
             "os.path.exists", return_value=True
@@ -1206,7 +1206,7 @@ class TestDownloadSingleExperiment:
         with patch(
             "studio.app.common.routers.internal." "RemoteStorageController"
         ) as mock_ctrl, patch(
-            "studio.app.common.routers.internal." "RemoteStorageSimpleReader",
+            "studio.app.common.routers.internal." "RemoteStorageReader",
             return_value=mock_reader,
         ), patch(
             "os.path.exists", return_value=False
