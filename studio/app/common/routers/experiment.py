@@ -292,21 +292,23 @@ async def sync_remote_experiment(
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     try:
+        result = False
+
         async with RemoteStorageReader(
             remote_bucket_name, workspace_id, unique_id
         ) as remote_storage_controller:
             result = await remote_storage_controller.download_experiment(
                 workspace_id, unique_id
             )
+            if not result:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="record not found"
+                )
 
-        if not result:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="record not found"
-            )
         return result
 
     except HTTPException as e:
-        logger.error(e)
+        logger.error(e, exc_info=True)
         raise e
     except RemoteStorageLockError as e:
         logger.error(e)

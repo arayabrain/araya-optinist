@@ -92,9 +92,9 @@ class RemoteStorageBucketNotFoundError(Exception):
 @dataclass
 class RemoteSyncStatusData:
     remote_bucket_name: str
-    remote_storage_type: str
-    sync_action: str
-    sync_status: str
+    remote_storage_type: str  # RemoteStorageType
+    sync_action: str  # RemoteSyncAction
+    sync_status: str  # RemoteSyncStatus
     timestamp: str
 
     @classmethod
@@ -135,32 +135,35 @@ class RemoteSyncStatusFileUtil:
             workspace_id, unique_id
         )
 
-        remote_sync_status = None
+        sync_status = None
         if os.path.isfile(remote_sync_status_file_path):
             with open(remote_sync_status_file_path) as f:
                 sync_status_data = RemoteSyncStatusData.from_dict(json.load(f))
-                status_str = sync_status_data.sync_status.upper()
-                if status_str in RemoteSyncStatus.__members__:
-                    remote_sync_status = RemoteSyncStatus[status_str]
+                sync_status_str = sync_status_data.sync_status.upper()
+                if sync_status_str in RemoteSyncStatus.__members__:
+                    sync_status = RemoteSyncStatus[sync_status_str]
 
-        return remote_sync_status
+        return sync_status
 
     @classmethod
     def check_sync_status_success(cls, workspace_id: str, unique_id: str) -> bool:
         """
         check remote storage sync status file. (is success)
         """
-        return (
-            cls.check_sync_status_file(workspace_id, unique_id)
-            == RemoteSyncStatus.SUCCESS
-        )
+        sync_status = cls.check_sync_status_file(workspace_id, unique_id)
+        return sync_status == RemoteSyncStatus.SUCCESS
 
     @classmethod
     def check_sync_status_unsynced(cls, workspace_id: str, unique_id: str) -> bool:
         """
         check remote storage sync status file. (is unsynced)
         """
-        return cls.check_sync_status_file(workspace_id, unique_id) not in [
+        sync_status = cls.check_sync_status_file(workspace_id, unique_id)
+
+        return sync_status not in [
+            # Note: 'PROCESSING' is actually not yet synced (sync in progress),
+            #   but it is not clearly in an unsynced state (such as Error),
+            #   so it is treated as a synced state here.
             RemoteSyncStatus.PROCESSING,
             RemoteSyncStatus.SUCCESS,
         ]
@@ -172,7 +175,7 @@ class RemoteSyncStatusFileUtil:
         workspace_id: str,
         unique_id: str,
         sync_action: RemoteSyncAction,
-        status: RemoteSyncStatus,
+        sync_status: RemoteSyncStatus,
     ) -> None:
         """
         create remote storage sync status file.
@@ -190,7 +193,7 @@ class RemoteSyncStatusFileUtil:
                 remote_bucket_name=remote_bucket_name,
                 remote_storage_type=RemoteStorageType.get_activated_type().value,
                 sync_action=sync_action.value,
-                sync_status=status.value,
+                sync_status=sync_status.value,
                 timestamp=str(get_current_datetime()),
             )
             json.dump(asdict(sync_status_data), f, indent=2)
@@ -894,6 +897,9 @@ class RemoteStorageController(BaseRemoteStorageController):
 class BaseRemoteStorageSimpleReaderWriter(metaclass=ABCMeta):
     """
     Simplified Reader/Writer wrapper for RemoteStorageController
+    - This Reader class does not implement exclusive control of experiment data.
+      - It is used to access remote data (such as input data or a single file)
+        without specifying the experiment data key (workspace_id, unique_id).
     - params: Specify only bucket_name
     """
 
@@ -943,11 +949,13 @@ class BaseRemoteStorageReaderWriter(metaclass=ABCMeta):
         workspace_id: str,
         unique_id: str,
         sync_action: RemoteSyncAction,
+        sync_mode: RemoteExperimentSyncMode = RemoteExperimentSyncMode.ALL,
     ):
         self.bucket_name = bucket_name
         self.workspace_id = workspace_id
         self.unique_id = unique_id
         self.sync_action = sync_action
+        self.sync_mode = sync_mode
 
         is_locked = RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, unique_id)
         if is_locked:
@@ -958,12 +966,14 @@ class BaseRemoteStorageReaderWriter(metaclass=ABCMeta):
         RemoteSyncLockFileUtil.create_sync_lock_file(workspace_id, unique_id)
 
         # generate remote-sync-status-file (for pendding)
-        RemoteSyncStatusFileUtil.create_sync_status_file_for_processing(
-            bucket_name,
-            workspace_id,
-            unique_id,
-            self.sync_action,
-        )
+        # *updates are only made when self.sync_mode==ALL (full sync)
+        if self.sync_mode == RemoteExperimentSyncMode.ALL:
+            RemoteSyncStatusFileUtil.create_sync_status_file_for_processing(
+                bucket_name,
+                workspace_id,
+                unique_id,
+                self.sync_action,
+            )
 
         self.__controller = RemoteStorageController(bucket_name)
 
@@ -972,20 +982,22 @@ class BaseRemoteStorageReaderWriter(metaclass=ABCMeta):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         # update remote-sync-status-file
-        if not exc_type:  # Processing success
-            RemoteSyncStatusFileUtil.create_sync_status_file_for_success(
-                self.bucket_name,
-                self.workspace_id,
-                self.unique_id,
-                self.sync_action,
-            )
-        else:  # Processing error
-            RemoteSyncStatusFileUtil.create_sync_status_file_for_error(
-                self.bucket_name,
-                self.workspace_id,
-                self.unique_id,
-                self.sync_action,
-            )
+        # *updates are only made when self.sync_mode==ALL (full sync)
+        if self.sync_mode == RemoteExperimentSyncMode.ALL:
+            if not exc_type:  # Processing success
+                RemoteSyncStatusFileUtil.create_sync_status_file_for_success(
+                    self.bucket_name,
+                    self.workspace_id,
+                    self.unique_id,
+                    self.sync_action,
+                )
+            else:  # Processing error
+                RemoteSyncStatusFileUtil.create_sync_status_file_for_error(
+                    self.bucket_name,
+                    self.workspace_id,
+                    self.unique_id,
+                    self.sync_action,
+                )
 
         # delete lock file
         RemoteSyncLockFileUtil.delete_sync_lock_file(self.workspace_id, self.unique_id)
@@ -996,9 +1008,15 @@ class RemoteStorageReader(BaseRemoteStorageReaderWriter):
     Reader wrapper for RemoteStorageController
     """
 
-    def __init__(self, bucket_name: str, workspace_id: str, unique_id: str):
+    def __init__(
+        self,
+        bucket_name: str,
+        workspace_id: str,
+        unique_id: str,
+        sync_mode: RemoteExperimentSyncMode = RemoteExperimentSyncMode.ALL,
+    ):
         super().__init__(
-            bucket_name, workspace_id, unique_id, RemoteSyncAction.DOWNLOAD
+            bucket_name, workspace_id, unique_id, RemoteSyncAction.DOWNLOAD, sync_mode
         )
 
 

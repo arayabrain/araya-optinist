@@ -225,7 +225,10 @@ async def _download_single_experiment(
 
     try:
         async with RemoteStorageReader(
-            bucket_name, workspace_id, unique_id
+            bucket_name,
+            workspace_id,
+            unique_id,
+            RemoteExperimentSyncMode.THUMBNAILS_ONLY,
         ) as controller:
             if has_thumbnails:
                 await controller.download_experiment(

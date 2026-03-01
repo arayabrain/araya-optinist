@@ -120,7 +120,10 @@ async def get_or_generate_thumbnail(
     # Download from remote storage if needed
     if not os.path.exists(abs_original_path) and RemoteStorageController.is_available():
         async with RemoteStorageReader(
-            remote_bucket_name, workspace_id, unique_id
+            remote_bucket_name,
+            workspace_id,
+            unique_id,
+            RemoteExperimentSyncMode.THUMBNAILS_ONLY,
         ) as remote_storage_controller:
             await remote_storage_controller.download_thumbnail_source(
                 workspace_id, unique_id, original_path, thumb_type
@@ -186,11 +189,12 @@ async def _background_full_sync(
 
         logger.info(f"Background full sync starting for {workspace_id}/{unique_id}")
 
+        sync_mode = RemoteExperimentSyncMode.ALL
         async with RemoteStorageReader(
-            remote_bucket_name, workspace_id, unique_id
+            remote_bucket_name, workspace_id, unique_id, sync_mode
         ) as remote_storage_controller:
             await remote_storage_controller.download_experiment(
-                workspace_id, unique_id, sync_mode=RemoteExperimentSyncMode.ALL
+                workspace_id, unique_id, sync_mode=sync_mode
             )
 
         logger.info(f"Background full sync completed for {workspace_id}/{unique_id}")
@@ -242,13 +246,14 @@ async def sync_visualization_files(
     )
 
     try:
+        sync_mode = RemoteExperimentSyncMode.VISUALIZATION
         async with RemoteStorageReader(
-            remote_bucket_name, workspace_id, unique_id
+            remote_bucket_name, workspace_id, unique_id, sync_mode
         ) as remote_storage_controller:
             result = await remote_storage_controller.download_experiment(
                 workspace_id,
                 unique_id,
-                sync_mode=RemoteExperimentSyncMode.VISUALIZATION,
+                sync_mode=sync_mode,
             )
 
             # Also download input files needed for viewing images
@@ -313,13 +318,14 @@ async def get_thumbnail(
     # Try to sync thumbnail from remote storage if not available locally
     if not os.path.exists(thumb_path) and RemoteStorageController.is_available():
         try:
+            sync_mode = RemoteExperimentSyncMode.THUMBNAILS_ONLY
             async with RemoteStorageReader(
-                remote_bucket_name, workspace_id, unique_id
+                remote_bucket_name, workspace_id, unique_id, sync_mode
             ) as remote_storage_controller:
                 await remote_storage_controller.download_experiment(
                     workspace_id,
                     unique_id,
-                    sync_mode=RemoteExperimentSyncMode.THUMBNAILS_ONLY,
+                    sync_mode=sync_mode,
                 )
         except RemoteStorageLockError as e:
             logger.warning(e)
@@ -335,13 +341,14 @@ async def get_thumbnail(
         # find the source TIFF/JSON files for generation
         if RemoteStorageController.is_available():
             try:
+                sync_mode = RemoteExperimentSyncMode.ESSENTIAL_ONLY
                 async with RemoteStorageReader(
-                    remote_bucket_name, workspace_id, unique_id
+                    remote_bucket_name, workspace_id, unique_id, sync_mode
                 ) as remote_storage_controller:
                     await remote_storage_controller.download_experiment(
                         workspace_id,
                         unique_id,
-                        sync_mode=RemoteExperimentSyncMode.ESSENTIAL_ONLY,
+                        sync_mode=sync_mode,
                     )
             except RemoteStorageLockError as e:
                 logger.warning(e)
@@ -449,13 +456,14 @@ async def _ensure_visualization_synced(dirpath: str, remote_bucket_name: str) ->
     logger.info(f"On-demand sync for visualization: {workspace_id}/{unique_id}")
 
     try:
+        sync_mode = RemoteExperimentSyncMode.VISUALIZATION
         async with RemoteStorageReader(
-            remote_bucket_name, workspace_id, unique_id
+            remote_bucket_name, workspace_id, unique_id, sync_mode
         ) as remote_storage_controller:
             await remote_storage_controller.download_experiment(
                 workspace_id,
                 unique_id,
-                sync_mode=RemoteExperimentSyncMode.VISUALIZATION,
+                sync_mode=sync_mode,
             )
             # Also download input files (if snakemake config is available)
             try:
