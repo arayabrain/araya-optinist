@@ -8,12 +8,12 @@ import { FC, useEffect, useRef, useState } from "react"
 
 import { useSnackbar } from "notistack"
 
+import { logPremiumUiEvent } from "api/premium/PremiumAssignmentApi"
 import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 
 const PremiumNotificationManager: FC = () => {
   const { enqueueSnackbar, closeSnackbar } = useSnackbar()
-  const { isPremiumUser, assignmentResult, error, isAssigning } =
-    usePremiumAssignment()
+  const { isPremiumUser, assignmentResult, error } = usePremiumAssignment()
 
   const [hasShownAssignmentSuccess, setHasShownAssignmentSuccess] =
     useState(false)
@@ -45,6 +45,9 @@ const PremiumNotificationManager: FC = () => {
           autoHideDuration: 5000,
         },
       )
+      logPremiumUiEvent("dedicated_instance_ready", {
+        instance_id: assignmentResult.instance_id,
+      })
 
       setHasShownAssignmentSuccess(true)
       setLastAssignmentId(assignmentResult.instance_id)
@@ -58,10 +61,9 @@ const PremiumNotificationManager: FC = () => {
     enqueueSnackbar,
   ])
 
-  // Show waiting snackbar when premium user does not have
-  // a dedicated instance (covers shared, scaling, not-yet-assigned)
+  // Show waiting snackbar when premium user does not have a dedicated instance.
   useEffect(() => {
-    if (isPremiumUser && !hasDedicatedInstance && !isAssigning) {
+    if (isPremiumUser && !hasDedicatedInstance) {
       if (!waitingKeyRef.current) {
         const key = enqueueSnackbar(
           "Please wait while your dedicated premium " +
@@ -72,17 +74,25 @@ const PremiumNotificationManager: FC = () => {
           },
         )
         waitingKeyRef.current = key
+        logPremiumUiEvent("waiting_popup_shown", {
+          has_assignment: !!assignmentResult,
+          is_shared: assignmentResult?.is_shared ?? null,
+          instance_id: assignmentResult?.instance_id ?? null,
+        })
       }
     }
 
     if (hasDedicatedInstance && waitingKeyRef.current) {
+      logPremiumUiEvent("waiting_popup_dismissed", {
+        instance_id: assignmentResult?.instance_id ?? null,
+      })
       closeSnackbar(waitingKeyRef.current)
       waitingKeyRef.current = null
     }
   }, [
     isPremiumUser,
     hasDedicatedInstance,
-    isAssigning,
+    assignmentResult,
     enqueueSnackbar,
     closeSnackbar,
   ])
