@@ -104,7 +104,7 @@ async def fetch_last_experiment(
             )
 
     except HTTPException as e:
-        logger.error(f"HTTPException {e.status_code}: {e.detail}")
+        logger.error(e, exc_info=True)
         raise e
     except RemoteStorageLockError as e:
         logger.error(e)
@@ -164,7 +164,7 @@ async def reproduce_experiment(
             )
 
     except HTTPException as e:
-        logger.error(f"HTTPException {e.status_code}: {e.detail}")
+        logger.error(e, exc_info=True)
         raise e
     except RemoteStorageLockError as e:
         logger.error(e)
@@ -363,17 +363,21 @@ async def force_sync_unsynced_experiment(
     )
 
     if is_remote_unsynced:
-        async with RemoteStorageReader(
-            remote_bucket_name, workspace_id, unique_id
-        ) as remote_storage_controller:
-            result = await remote_storage_controller.download_experiment(
-                workspace_id, unique_id
-            )
-
-            if not result:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="sync remote experiment failed",
+        try:
+            async with RemoteStorageReader(
+                remote_bucket_name, workspace_id, unique_id
+            ) as remote_storage_controller:
+                result = await remote_storage_controller.download_experiment(
+                    workspace_id, unique_id
                 )
+
+                if not result:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="sync remote experiment failed",
+                    )
+        except RemoteStorageLockError as e:
+            logger.warning(e)
+            raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
 
     return True

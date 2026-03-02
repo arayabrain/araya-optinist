@@ -283,10 +283,14 @@ class TestPublicDataviewReproduceWorkflow:
             "find_published_dataview_record",
             return_value=mock_record,
         ):
-            with patch("os.path.exists", return_value=True):
+            with patch(
+                "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
+                "check_sync_status_unsynced",
+                return_value=False,
+            ):
                 with patch("os.environ.get", return_value="test-bucket"):
                     with patch(
-                        "studio.app.common.routers.dataview.RemoteStorageSimpleReader",
+                        "studio.app.common.routers.dataview.RemoteStorageReader",
                         return_value=mock_remote_reader,
                     ):
                         with patch(
@@ -327,10 +331,14 @@ class TestPublicDataviewReproduceWorkflow:
             "find_published_dataview_record",
             return_value=mock_record,
         ):
-            with patch("os.path.exists", return_value=True):
+            with patch(
+                "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
+                "check_sync_status_unsynced",
+                return_value=False,
+            ):
                 with patch("os.environ.get", return_value="test-bucket"):
                     with patch(
-                        "studio.app.common.routers.dataview.RemoteStorageSimpleReader",
+                        "studio.app.common.routers.dataview.RemoteStorageReader",
                         return_value=mock_remote_reader,
                     ):
                         with patch(
@@ -371,10 +379,14 @@ class TestPublicDataviewReproduceWorkflow:
             "find_published_dataview_record",
             return_value=mock_record,
         ):
-            with patch("os.path.exists", return_value=False):
+            with patch(
+                "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
+                "check_sync_status_unsynced",
+                return_value=True,
+            ):
                 with patch("os.environ.get", return_value="test-bucket"):
                     with patch(
-                        "studio.app.common.routers.dataview.RemoteStorageSimpleReader",
+                        "studio.app.common.routers.dataview.RemoteStorageReader",
                         return_value=mock_remote_reader,
                     ):
                         with patch(
@@ -431,9 +443,28 @@ class TestPublicDataviewReproduceWorkflow:
         ), patch(
             "studio.app.common.routers.dataview.reproduce_experiment"
         ):
-            await public_reproduce_experiment(
-                workspace_id="1", unique_id="exp123", db=mock_db
-            )
+            with patch(
+                "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
+                "check_sync_status_unsynced",
+                return_value=False,
+            ):
+                with patch("os.environ.get", return_value="test-bucket"):
+                    with patch(
+                        "studio.app.common.routers.dataview.RemoteStorageReader",
+                        return_value=mock_remote_reader,
+                    ):
+                        with patch(
+                            "studio.app.common.routers.dataview.PublishValidator."
+                            "validate_for_display",
+                            return_value=mock_validation,
+                        ):
+                            with patch(
+                                "studio.app.common.routers.dataview."
+                                "reproduce_experiment"
+                            ):
+                                await public_reproduce_experiment(
+                                    workspace_id="1", unique_id="exp123", db=mock_db
+                                )
 
         # Verify bulk update was executed and committed
         mock_db.execute.assert_called_once()
