@@ -63,6 +63,7 @@ interface PremiumAssignmentState {
   statusResult: PremiumStatusResult | null
   routingInfo: RoutingInfo | null
   error: string | null
+  isRetryableError: boolean
   isPremiumUser: boolean
   showInactivityWarning: boolean
   lastActivityTime: number
@@ -106,6 +107,7 @@ export const PremiumAssignmentProvider: React.FC<{
     statusResult: null,
     routingInfo: null,
     error: null,
+    isRetryableError: false,
     isPremiumUser: false,
     showInactivityWarning: false,
     lastActivityTime: Date.now(),
@@ -156,6 +158,7 @@ export const PremiumAssignmentProvider: React.FC<{
         statusResult: null,
         routingInfo: null,
         error: null,
+        isRetryableError: false,
         isPremiumUser: false,
         showInactivityWarning: false,
         lastActivityTime: Date.now(),
@@ -278,16 +281,25 @@ export const PremiumAssignmentProvider: React.FC<{
         return null
       }
 
-      setState((prev) => ({ ...prev, isAssigning: true, error: null }))
+      setState((prev) => ({
+        ...prev,
+        isAssigning: true,
+        error: null,
+        isRetryableError: false,
+      }))
 
       try {
         const result = await assignPremiumInstance()
+        const isRetryable =
+          !result.assigned &&
+          (result.scaling_in_progress || result.retry_after != null)
 
         setState((prev) => ({
           ...prev,
           isAssigning: false,
           assignmentResult: result,
           error: result.assigned ? null : result.message,
+          isRetryableError: isRetryable,
         }))
 
         if (result.assigned) {
@@ -321,6 +333,7 @@ export const PremiumAssignmentProvider: React.FC<{
           ...prev,
           isAssigning: false,
           error: errorMessage,
+          isRetryableError: false,
         }))
         return null
       }
@@ -417,6 +430,7 @@ export const PremiumAssignmentProvider: React.FC<{
           ...prev,
           assignmentResult,
           error: null,
+          isRetryableError: false,
         }))
         routingService.setPremiumAssigned(true)
         try {
@@ -427,6 +441,7 @@ export const PremiumAssignmentProvider: React.FC<{
         }
         return
       }
+      setState((prev) => ({ ...prev, isAssigning: true }))
 
       // Attempt assignment directly (inline to avoid dependency issues)
       const assignmentResponse = await assignPremiumInstance()
@@ -434,6 +449,7 @@ export const PremiumAssignmentProvider: React.FC<{
         // Update state to reflect the assignment
         setState((prev) => ({
           ...prev,
+          isAssigning: false,
           assignmentResult: assignmentResponse,
           error: null,
         }))
@@ -444,10 +460,34 @@ export const PremiumAssignmentProvider: React.FC<{
         } catch {
           // Non-critical; beacon will fail gracefully
         }
+      } else {
+        // Only store assignmentResult for transient errors (scaling/retry)
+        // so the waiting popup stays visible and polling retries.
+        // For non-retryable errors, leave assignmentResult null to prevent
+        // contradictory polling + "Falling back to shared" notification.
+        const isRetryable =
+          assignmentResponse.scaling_in_progress ||
+          assignmentResponse.retry_after != null
+        setState((prev) => ({
+          ...prev,
+          isAssigning: false,
+          assignmentResult: isRetryable ? assignmentResponse : null,
+          error: assignmentResponse.message || null,
+          isRetryableError: isRetryable,
+        }))
       }
     } catch (error) {
+      // Set error state so the error notification fires
+      const errorMessage =
+        error instanceof Error ? error.message : "Assignment failed"
       // eslint-disable-next-line no-console
       console.warn("Auto-assignment failed:", error)
+      setState((prev) => ({
+        ...prev,
+        isAssigning: false,
+        error: errorMessage,
+        isRetryableError: false,
+      }))
       routingService.clearRoutingInfo()
     }
   }, [isPremiumUser, hasAttemptedAutoAssignment])
@@ -597,11 +637,13 @@ export const PremiumAssignmentProvider: React.FC<{
   // Poll for premium instance when user is on temporary shared instance
   // Only the leader tab polls to prevent duplicate API calls
   useEffect(() => {
+    const hasDedicated =
+      state.assignmentResult?.assigned && !state.assignmentResult?.is_shared
     const shouldPoll =
       isPremiumUser &&
       isTabLeader &&
-      state.assignmentResult?.assigned &&
-      state.assignmentResult?.is_shared
+      state.assignmentResult != null &&
+      !hasDedicated
 
     if (!shouldPoll) {
       return
@@ -618,6 +660,7 @@ export const PremiumAssignmentProvider: React.FC<{
         error:
           "No premium instance available after extended wait. " +
           "Please try again later or contact support.",
+        isRetryableError: false,
       }))
       return
     }
@@ -639,6 +682,7 @@ export const PremiumAssignmentProvider: React.FC<{
             ...prev,
             assignmentResult: result,
             error: null,
+            isRetryableError: false,
           }))
           // Reset polling state on success
           setPollInterval(INITIAL_POLL_INTERVAL_MS)
