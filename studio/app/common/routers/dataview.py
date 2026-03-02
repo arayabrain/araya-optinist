@@ -215,8 +215,8 @@ async def public_reproduce_experiment(
     db: Session = Depends(get_db),
 ):
     # Check target record accessibility
-    record = DataviewService.find_published_dataview_record(
-        db, int(workspace_id), unique_id
+    record = DataviewService.find_dataview_record(
+        db, int(workspace_id), unique_id, published_only=True
     )
 
     if not record:
