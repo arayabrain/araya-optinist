@@ -10,7 +10,10 @@ from studio.app.common.core.experiment.experiment import (
     ExptOutputPathIds,
 )
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.storage.remote_storage_controller import RemoteStorageReader
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentSyncMode,
+    RemoteStorageReader,
+)
 from studio.app.common.core.utils.config_handler import ConfigReader
 from studio.app.common.core.utils.datetime_utils import TIMEZONE_KEY
 from studio.app.common.core.utils.filepath_creater import join_filepath
@@ -100,7 +103,10 @@ class ExptConfigReader:
 
         try:
             async with RemoteStorageReader(
-                remote_bucket_name, workspace_id, unique_id
+                remote_bucket_name,
+                workspace_id,
+                unique_id,
+                sync_mode=RemoteExperimentSyncMode.METADATA_ONLY,
             ) as controller:
                 # Download only this specific experiment's metadata (efficient)
                 await controller.download_experiment_meta(workspace_id, unique_id)

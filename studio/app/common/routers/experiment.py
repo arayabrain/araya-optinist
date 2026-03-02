@@ -17,6 +17,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.snakemake_reader import SmkConfigReader
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteExperimentNotFoundError,
+    RemoteExperimentSyncMode,
     RemoteStorageController,
     RemoteStorageLockError,
     RemoteStorageReader,
@@ -89,10 +90,13 @@ async def get_experiments(
                 missing_uids = published_uids - local_uids
 
                 if missing_uids:
-                    async with RemoteStorageSimpleReader(
-                        remote_bucket_name
-                    ) as remote_storage_controller:
-                        for uid in missing_uids:
+                    for uid in missing_uids:
+                        async with RemoteStorageReader(
+                            remote_bucket_name,
+                            workspace_id,
+                            uid,
+                            sync_mode=RemoteExperimentSyncMode.METADATA_ONLY,
+                        ) as remote_storage_controller:
                             await remote_storage_controller.download_experiment_meta(
                                 workspace_id, uid
                             )
