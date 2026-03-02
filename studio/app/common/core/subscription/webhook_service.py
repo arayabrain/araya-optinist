@@ -18,6 +18,8 @@ from studio.app.common.core.subscription.constants import (
     CancellationReason,
     InvoiceStatus,
     PaymentStatus,
+    StorageQuota,
+    StorageSize,
     StripeWebhookEvent,
     SubscriptionCurrencyType,
     SubscriptionPlanIds,
@@ -30,6 +32,7 @@ from studio.app.common.models.subscription import (
     SubscriptionPlans,
     SubscriptionUserAccount,
     SubscriptionUserPurchase,
+    UserStorageUsage,
     UserSubscription,
 )
 from studio.app.common.models.user import User
@@ -348,7 +351,35 @@ class WebhookService:
             # 10. Commit all changes
             db.commit()
 
-            # 11. Invalidate tier cache for immediate routing update
+            # 11. Update storage quota based on new subscription plan
+            storage_quota_bytes = (
+                StorageQuota.PREMIUM * StorageSize.GB
+                if plan_id == SubscriptionPlanIds.PREMIUM
+                else StorageQuota.FREE * StorageSize.GB
+            )
+            storage_record = (
+                db.query(UserStorageUsage)
+                .filter(UserStorageUsage.user_id == user_id)
+                .first()
+            )
+            if storage_record:
+                storage_record.storage_quota_bytes = storage_quota_bytes
+                db.add(storage_record)
+            else:
+                db.add(
+                    UserStorageUsage(
+                        user_id=user_id,
+                        storage_usage_bytes=0,
+                        storage_quota_bytes=storage_quota_bytes,
+                    )
+                )
+            db.commit()
+            logger.info(
+                f"Webhook: Updated storage quota for user {user_id} to "
+                f"{storage_quota_bytes / StorageSize.GB:.0f}GB (plan_id={plan_id})"
+            )
+
+            # 12. Invalidate tier cache for immediate routing update
             user = db.query(User).filter(User.id == user_id).first()
             if user:
                 invalidate_user_tier_cache(user.uid)
