@@ -371,7 +371,7 @@ class SubscriptionService:
     @staticmethod
     def get_users_with_upcoming_quota_drop(db: Session) -> List[dict]:
         """
-        Get users whose quota will drop soon due to grace period ending (Case 79).
+        Get users whose quota will drop soon due to grace period ending.
 
         This identifies users in grace period whose current storage usage exceeds
         the FREE tier quota. These users should be warned about impending quota drop.

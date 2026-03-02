@@ -194,7 +194,7 @@ class TestRateLimitCleanup:
 
 
 class TestRateLimitCacheOnReleaseFailure:
-    """Test rate limit cache preserved on release failure (Case 44)"""
+    """Test rate limit cache preserved on release failure."""
 
     def setup_method(self):
         """Clear cache before each test"""
@@ -277,7 +277,7 @@ class TestRateLimitCacheOnReleaseFailure:
 
             await service.release_premium_user(user_id=1, user_uid="test-uid")
 
-        # Rate limit cache should STILL be in effect (per Case 1 fix)
+        # Rate limit cache should STILL be in effect after release failure.
         # This prevents rapid re-login attempts
         assert 1 in _assignment_attempts
         can_assign, _ = service.can_assign_premium(user_id=1)
@@ -350,7 +350,7 @@ class TestRateLimitRegressions:
 
 
 class TestLambdaTimeoutHandling:
-    """Tests for Lambda timeout and retry handling (Case 68)."""
+    """Tests for Lambda timeout and retry handling."""
 
     def setup_method(self):
         """Clear cache before each test"""

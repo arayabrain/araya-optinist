@@ -302,7 +302,7 @@ async def test_RemoteStorageController_list_input_data_objects():
 
 
 class TestSyncStatusOnPartialFailure:
-    """Tests for Case 69: Verify sync status reflects actual operation result."""
+    """Verify sync status reflects actual operation result."""
 
     @pytest.mark.asyncio
     async def test_upload_experiment_false_result_marks_error_status(self):

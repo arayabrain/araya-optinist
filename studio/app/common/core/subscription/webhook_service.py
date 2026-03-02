@@ -813,7 +813,7 @@ class WebhookService:
                         .first()
                     )
 
-                # Case 77 fallback: Look up any subscription by user regardless of date
+                # Fallback: Look up any subscription by user regardless of date
                 if not user_subscription:
                     logger.warning(
                         "Webhook: No subscription within extended window, "

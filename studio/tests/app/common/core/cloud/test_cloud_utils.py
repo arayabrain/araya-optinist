@@ -1151,13 +1151,11 @@ async def test_calculate_limit_warning_expired_premium_high_storage():
                 )
 
 
-# ============================================================================
-# Case 72: Failed Storage Operations Retry Tests
-# ============================================================================
+# Failed Storage Operations Retry Tests
 
 
 class TestProcessFailedStorageOperations:
-    """Case 72: Failed storage decrement queue processing."""
+    """Failed storage decrement queue processing."""
 
     def test_process_no_failed_operations(self):
         """Should return 0 when no failed operations exist."""

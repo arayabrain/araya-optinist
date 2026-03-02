@@ -672,7 +672,7 @@ class TestMiddlewareIntegration:
 
 
 class TestCORSConfiguration:
-    """RC1: CORS must expose routing headers so the browser
+    """CORS must expose routing headers so the browser
     can read them, and SecureRoutingMiddleware must run before
     CORS in the response path (LIFO order means it is added
     after CORS in the source)."""

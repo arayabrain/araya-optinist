@@ -249,7 +249,7 @@ class TestGetPendingStorageOperations:
 
 
 class TestProcessStalePendingOperations:
-    """Tests for process_stale_pending_operations function (Case 69)."""
+    """Tests for process_stale_pending_operations function."""
 
     @patch("studio.app.common.core.cloud.storage_operations.session_scope")
     def test_marks_stale_increment_as_failed(self, mock_session):
