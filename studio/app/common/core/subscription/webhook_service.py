@@ -5,6 +5,7 @@ from typing import Any, Dict
 import stripe
 from dateutil.relativedelta import relativedelta
 from fastapi import HTTPException
+from sqlalchemy import update
 from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
@@ -348,24 +349,14 @@ class WebhookService:
             # 9. Record purchase (optionally store session_id for reference)
             purchase = CheckoutService.record_purchase(db, plan_id, user_id)
 
-            # 10. Commit all changes
-            db.commit()
-
-            # 11. Update storage quota based on new subscription plan
-            storage_quota_bytes = (
-                StorageQuota.PREMIUM * StorageSize.GB
-                if plan_id == SubscriptionPlanIds.PREMIUM
-                else StorageQuota.FREE * StorageSize.GB
-            )
-            storage_record = (
-                db.query(UserStorageUsage)
-                .filter(UserStorageUsage.user_id == user_id)
-                .first()
-            )
-            if storage_record:
-                storage_record.storage_quota_bytes = storage_quota_bytes
-                db.add(storage_record)
-            else:
+            # 10. Update storage quota based on new subscription plan
+            storage_quota_bytes = StorageQuota.bytes_for_plan(plan_id)
+            rows_updated = db.execute(
+                update(UserStorageUsage)
+                .where(UserStorageUsage.user_id == user_id)
+                .values(storage_quota_bytes=storage_quota_bytes)
+            ).rowcount
+            if not rows_updated:
                 db.add(
                     UserStorageUsage(
                         user_id=user_id,
@@ -373,6 +364,8 @@ class WebhookService:
                         storage_quota_bytes=storage_quota_bytes,
                     )
                 )
+
+            # 11. Commit all changes atomically
             db.commit()
             logger.info(
                 f"Webhook: Updated storage quota for user {user_id} to "
