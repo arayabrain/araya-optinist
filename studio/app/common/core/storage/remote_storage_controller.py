@@ -54,6 +54,7 @@ class RemoteSyncAction(Enum):
 
 class RemoteExperimentSyncMode(Enum):
     ALL = "all"
+    METADATA_ONLY = "metadata_only"
     VISUALIZATION = "visualization"
     ESSENTIAL_ONLY = "essential_only"
     THUMBNAILS_ONLY = "thumbnails_only"
