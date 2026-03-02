@@ -434,9 +434,6 @@ class TestPublicDataviewReproduceWorkflow:
         ), patch("os.path.exists", return_value=True), patch(
             "os.environ.get", return_value="test-bucket"
         ), patch(
-            "studio.app.common.routers.dataview.RemoteStorageSimpleReader",
-            return_value=mock_remote_reader,
-        ), patch(
             "studio.app.common.routers.dataview.PublishValidator."
             "validate_for_display",
             return_value=mock_validation,
