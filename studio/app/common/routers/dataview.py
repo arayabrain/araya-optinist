@@ -1,7 +1,7 @@
 import os
 from typing import List, Optional, Sequence, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from fastapi_pagination.ext.sqlmodel import paginate
 from sqlalchemy.sql import Select
@@ -15,9 +15,12 @@ from studio.app.common.core.dataview.dataview_services import (
 )
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentNotFoundError,
     RemoteStorageController,
-    RemoteStorageSimpleReader,
+    RemoteStorageLockError,
+    RemoteStorageReader,
     RemoteStorageType,
+    RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.db.database import get_db
@@ -34,7 +37,6 @@ from studio.app.common.schemas.dataview import (
 )
 from studio.app.common.schemas.users import User
 from studio.app.common.schemas.workflow import WorkflowWithResults
-from studio.app.dir_path import DIRPATH
 
 router = APIRouter(tags=["Dataview"], prefix="/api/dataview")
 public_router = APIRouter(tags=["Dataview"], prefix="/api/public/dataview")
@@ -218,18 +220,22 @@ async def public_reproduce_experiment(
     )
 
     if not record:
-        raise HTTPException(status_code=404)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     # Ensure experiment is available on local EBS (download from S3 if needed)
     # Also try to sync if status is pending/error - the local data might be incomplete
-    experiment_path = os.path.join(DIRPATH.OUTPUT_DIR, workspace_id, unique_id)
-    needs_sync = not os.path.exists(experiment_path)
-    if not needs_sync and hasattr(record, "local_sync_status"):
+    is_unsynced = RemoteSyncStatusFileUtil.check_sync_status_unsynced(
+        workspace_id, unique_id
+    )
+
+    if not is_unsynced and hasattr(record, "local_sync_status"):
         # Also sync if status indicates data might be incomplete
         needs_sync = record.local_sync_status in [
             LocalSyncStatus.pending.value,
             LocalSyncStatus.error.value,
         ]
+    else:
+        needs_sync = is_unsynced
 
     if needs_sync:
         # Get owner's bucket from workspace
@@ -243,31 +249,38 @@ async def public_reproduce_experiment(
             owner_bucket = getattr(workspace.user, "remote_bucket_name", None)
         remote_bucket_name = owner_bucket or os.environ.get("S3_DEFAULT_BUCKET_NAME")
 
-        async with RemoteStorageSimpleReader(
-            remote_bucket_name
-        ) as remote_storage_controller:
-            logger.info(
-                f"Downloading published experiment {workspace_id}/{unique_id} "
-                f"from remote bucket {remote_bucket_name}"
-            )
-            available = await remote_storage_controller.download_experiment(
-                workspace_id,
-                unique_id,
-            )
-
-            if not available:
-                logger.error(
-                    f"Failed to download experiment {workspace_id}/{unique_id} "
+        try:
+            async with RemoteStorageReader(
+                remote_bucket_name, workspace_id, unique_id
+            ) as remote_storage_controller:
+                logger.info(
+                    f"Downloading published experiment {workspace_id}/{unique_id} "
                     f"from remote bucket {remote_bucket_name}"
                 )
-                return JSONResponse(
-                    status_code=503,
-                    content={
-                        "status": "download_error",
-                        "message": "Failed to load experiment data, "
-                        "please try again later",
-                    },
+                available = await remote_storage_controller.download_experiment(
+                    workspace_id,
+                    unique_id,
                 )
+
+                if not available:
+                    logger.error(
+                        f"Failed to download experiment {workspace_id}/{unique_id} "
+                        f"from remote bucket {remote_bucket_name}"
+                    )
+                    return JSONResponse(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        content={
+                            "status": "download_error",
+                            "message": "Failed to load experiment data, "
+                            "please try again later",
+                        },
+                    )
+        except RemoteExperimentNotFoundError as e:
+            logger.warning(e)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        except RemoteStorageLockError as e:
+            logger.warning(e)
+            raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
 
     # Validate experiment is displayable (checks if required files exist locally)
     # This should be done BEFORE checking sync status, because on-demand download
@@ -285,7 +298,7 @@ async def public_reproduce_experiment(
                     f"and not yet available locally"
                 )
                 return JSONResponse(
-                    status_code=202,
+                    status_code=status.HTTP_202_ACCEPTED,
                     content={
                         "status": "pending_sync",
                         "message": (
@@ -302,7 +315,7 @@ async def public_reproduce_experiment(
             f"{display_validation.reason}"
         )
         return JSONResponse(
-            status_code=503,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={
                 "status": "data_error",
                 "message": display_validation.reason
@@ -381,7 +394,7 @@ async def publish_dataview_records(
             )
 
             if not record:
-                raise HTTPException(status_code=404)
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
             # Validate publish eligibility when publishing
             if flag == PublishFlags.on:
@@ -393,7 +406,7 @@ async def publish_dataview_records(
                 )
                 if not validation.can_publish:
                     raise HTTPException(
-                        status_code=400,
+                        status_code=status.HTTP_400_BAD_REQUEST,
                         detail=validation.reason,
                     )
 
@@ -426,7 +439,7 @@ async def publish_dataview_records(
                         )
                         if not exists:
                             raise HTTPException(
-                                status_code=400,
+                                status_code=status.HTTP_400_BAD_REQUEST,
                                 detail=f"Cannot publish: {error_msg}",
                             )
                 else:
@@ -467,7 +480,7 @@ async def publish_dataview_records(
                     continue
                 else:
                     raise HTTPException(
-                        status_code=409,
+                        status_code=status.HTTP_409_CONFLICT,
                         detail="Concurrent modification detected. Please try again.",
                     )
 
@@ -490,12 +503,14 @@ async def publish_dataview_records(
                 continue
             else:
                 raise HTTPException(
-                    status_code=500, detail=f"Failed to publish experiment: {str(e)}"
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to publish experiment: {str(e)}",
                 )
 
     # Should never reach here
     raise HTTPException(
-        status_code=500, detail="Failed to publish experiment after multiple retries"
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Failed to publish experiment after multiple retries",
     )
 
 
@@ -518,7 +533,7 @@ def multiple_publish_dataview_records(
         # First check S3 bucket (applies to all)
         if not current_user.remote_bucket_name:
             raise HTTPException(
-                status_code=400,
+                status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot publish data: No cloud storage bucket configured "
                 "for your account. Please contact support to enable publishing.",
             )
@@ -554,7 +569,7 @@ def multiple_publish_dataview_records(
                 detail += f"- {rec['name']}: {rec['reason']}\n"
             if len(failed_records) > 5:
                 detail += f"... and {len(failed_records) - 5} more"
-            raise HTTPException(status_code=400, detail=detail)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
     DataviewService.multiple_publish_dataview_records(db, current_user.id, ids, flag)
 
