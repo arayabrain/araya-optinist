@@ -663,5 +663,199 @@ class TestWebhookCacheInvalidation:
             mock_invalidate.assert_called_once_with(mock_user.uid)
 
 
+class TestStorageQuotaBytesForPlan:
+    """Unit tests for StorageQuota.bytes_for_plan mapping"""
+
+    def test_premium_plan_returns_premium_quota(self):
+        from studio.app.common.core.subscription.constants import (
+            StorageQuota,
+            StorageSize,
+            SubscriptionPlanIds,
+        )
+
+        result = StorageQuota.bytes_for_plan(SubscriptionPlanIds.PREMIUM)
+        assert result == StorageQuota.PREMIUM * StorageSize.GB
+
+    def test_free_plan_returns_free_quota(self):
+        from studio.app.common.core.subscription.constants import (
+            StorageQuota,
+            StorageSize,
+            SubscriptionPlanIds,
+        )
+
+        result = StorageQuota.bytes_for_plan(SubscriptionPlanIds.FREE)
+        assert result == StorageQuota.FREE * StorageSize.GB
+
+    def test_unknown_plan_falls_back_to_free_quota(self):
+        from studio.app.common.core.subscription.constants import (
+            StorageQuota,
+            StorageSize,
+        )
+
+        result = StorageQuota.bytes_for_plan(999)
+        assert result == StorageQuota.FREE * StorageSize.GB
+
+
+class TestCheckoutStorageQuotaUpdate:
+    """Test that handle_checkout_completed updates storage quota correctly"""
+
+    @pytest.fixture
+    def mock_db(self):
+        db = Mock(spec=Session)
+        db.query = Mock()
+        db.add = Mock()
+        db.execute = Mock()
+        db.commit = Mock()
+        db.rollback = Mock()
+        return db
+
+    @pytest.fixture
+    def session_data(self):
+        """Minimal session data to reach step 10"""
+        return {
+            "id": "cs_test_session",
+            "customer": "cus_test123",
+            "payment_status": "paid",
+            "metadata": {"user_id": "42", "plan_id": "2"},
+            "subscription": "sub_stripe_123",
+        }
+
+    @pytest.fixture
+    def mock_user(self):
+        user = Mock()
+        user.id = 42
+        user.uid = "uid_42"
+        return user
+
+    def _setup_checkout_mocks(self, mock_db, mock_user):
+        """Patch CheckoutService, stripe, and cache so we reach step 10"""
+        # Step 1: duplicate check — no existing purchase
+        mock_query_purchase = Mock()
+        mock_query_purchase.join.return_value.filter.return_value.first.return_value = (
+            None
+        )
+        # Step 12: user lookup for cache invalidation
+        mock_query_user = Mock()
+        mock_query_user.filter.return_value.first.return_value = mock_user
+
+        mock_db.query.side_effect = [mock_query_purchase, mock_query_user]
+
+        mock_purchase = Mock()
+        mock_purchase.id = 1
+
+        mock_stripe_sub = {
+            "current_period_end": 1735689600,
+            "trial_end": None,
+            "current_period_start": 1733097600,
+        }
+
+        patches = {
+            "plan": patch.object(
+                CheckoutService,
+                "get_subscription_plan",
+                return_value=Mock(id=2),
+            ),
+            "provider": patch.object(
+                CheckoutService,
+                "get_or_create_stripe_provider",
+                return_value=1,
+            ),
+            "account": patch.object(CheckoutService, "create_or_update_user_account"),
+            "payment": patch.object(CheckoutService, "set_default_payment_method"),
+            "subscription": patch.object(
+                CheckoutService,
+                "create_or_update_subscription",
+                return_value=1,
+            ),
+            "purchase": patch.object(
+                CheckoutService,
+                "record_purchase",
+                return_value=mock_purchase,
+            ),
+            "stripe": patch(
+                "studio.app.common.core.subscription.webhook_service."
+                "stripe.Subscription.retrieve",
+                return_value=mock_stripe_sub,
+            ),
+            "cache": patch(
+                "studio.app.common.core.subscription.webhook_service."
+                "invalidate_user_tier_cache",
+            ),
+            "datetime": patch.object(
+                SubscriptionService,
+                "get_current_datetime",
+                return_value=get_current_datetime(),
+            ),
+        }
+        return patches
+
+    def test_existing_storage_record_updated_via_execute(
+        self, mock_db, session_data, mock_user
+    ):
+        """When storage record exists, db.execute(update) should be called"""
+        patches = self._setup_checkout_mocks(mock_db, mock_user)
+        # db.execute returns a result with rowcount=1 (existing record updated)
+        mock_db.execute.return_value.rowcount = 1
+
+        with (
+            patches["plan"],
+            patches["provider"],
+            patches["account"],
+            patches["payment"],
+            patches["subscription"],
+            patches["purchase"],
+            patches["stripe"],
+            patches["cache"],
+            patches["datetime"],
+        ):
+            result = WebhookService.handle_checkout_completed(mock_db, session_data)
+
+        assert result["success"] is True
+        # Verify db.execute was called (the update statement)
+        mock_db.execute.assert_called_once()
+        # Verify db.add was NOT called for storage (no new record needed)
+        mock_db.add.assert_not_called()
+        # Verify single atomic commit
+        mock_db.commit.assert_called_once()
+
+    def test_no_storage_record_creates_new_via_add(
+        self, mock_db, session_data, mock_user
+    ):
+        """When no storage record exists, db.add(UserStorageUsage) should be called"""
+        from studio.app.common.models.subscription import UserStorageUsage
+
+        patches = self._setup_checkout_mocks(mock_db, mock_user)
+        # db.execute returns rowcount=0 (no existing record)
+        mock_db.execute.return_value.rowcount = 0
+
+        with (
+            patches["plan"],
+            patches["provider"],
+            patches["account"],
+            patches["payment"],
+            patches["subscription"],
+            patches["purchase"],
+            patches["stripe"],
+            patches["cache"],
+            patches["datetime"],
+        ):
+            result = WebhookService.handle_checkout_completed(mock_db, session_data)
+
+        assert result["success"] is True
+        # Verify db.add was called with a UserStorageUsage instance
+        mock_db.add.assert_called_once()
+        added_obj = mock_db.add.call_args[0][0]
+        assert isinstance(added_obj, UserStorageUsage)
+        assert added_obj.user_id == 42
+        assert added_obj.storage_usage_bytes == 0
+        from studio.app.common.core.subscription.constants import (
+            StorageQuota,
+            SubscriptionPlanIds,
+        )
+
+        expected_quota = StorageQuota.bytes_for_plan(SubscriptionPlanIds.PREMIUM)
+        assert added_obj.storage_quota_bytes == expected_quota
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

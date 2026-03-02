@@ -204,6 +204,15 @@ class StorageQuota:
     CRITICAL_THRESHOLD_PERCENT = 90  # 90% usage threshold for critical warning
     DANGER_THRESHOLD_PERCENT = 100  # 100% usage threshold for danger warning
 
+    @classmethod
+    def bytes_for_plan(cls, plan_id: int) -> int:
+        """Return storage quota in bytes for a given SubscriptionPlanIds value."""
+        _PLAN_QUOTA_GB = {
+            SubscriptionPlanIds.PREMIUM: cls.PREMIUM,
+            SubscriptionPlanIds.FREE: cls.FREE,
+        }
+        return _PLAN_QUOTA_GB.get(plan_id, cls.FREE) * StorageSize.GB
+
 
 class SubscriptionPeriods:
     """
