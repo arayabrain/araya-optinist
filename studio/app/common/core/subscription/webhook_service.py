@@ -548,6 +548,32 @@ class WebhookService:
 
                 db.commit()
 
+                # Update storage quota to free tier
+                storage_quota_bytes = StorageQuota.FREE * StorageSize.GB
+                storage_record = (
+                    db.query(UserStorageUsage)
+                    .filter(UserStorageUsage.user_id == user_account.user_id)
+                    .first()
+                )
+                if storage_record:
+                    storage_record.storage_quota_bytes = storage_quota_bytes
+                    db.add(storage_record)
+                else:
+                    db.add(
+                        UserStorageUsage(
+                            user_id=user_account.user_id,
+                            storage_usage_bytes=0,
+                            storage_quota_bytes=storage_quota_bytes,
+                        )
+                    )
+                db.commit()
+                logger.info(
+                    f"Webhook: Updated storage quota for user "
+                    f"{user_account.user_id} to "
+                    f"{storage_quota_bytes / StorageSize.GB:.0f}GB "
+                    f"(cancelled)"
+                )
+
                 # Invalidate cache so next request reflects free tier immediately
                 user = db.query(User).filter(User.id == user_account.user_id).first()
                 if user:
@@ -661,6 +687,35 @@ class WebhookService:
                 )
 
             db.commit()
+
+            # Update storage quota based on new plan
+            storage_quota_bytes = (
+                StorageQuota.PREMIUM * StorageSize.GB
+                if new_plan_id == SubscriptionPlanIds.PREMIUM
+                else StorageQuota.FREE * StorageSize.GB
+            )
+            storage_record = (
+                db.query(UserStorageUsage)
+                .filter(UserStorageUsage.user_id == user.id)
+                .first()
+            )
+            if storage_record:
+                storage_record.storage_quota_bytes = storage_quota_bytes
+                db.add(storage_record)
+            else:
+                db.add(
+                    UserStorageUsage(
+                        user_id=user.id,
+                        storage_usage_bytes=0,
+                        storage_quota_bytes=storage_quota_bytes,
+                    )
+                )
+            db.commit()
+            logger.info(
+                f"Webhook: Updated storage quota for user {user.id} to "
+                f"{storage_quota_bytes / StorageSize.GB:.0f}GB "
+                f"(plan_id={new_plan_id})"
+            )
 
             # Invalidate cache for immediate tier change
             invalidate_user_tier_cache(user.uid)
