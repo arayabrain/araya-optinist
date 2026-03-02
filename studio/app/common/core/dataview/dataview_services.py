@@ -179,13 +179,17 @@ class DataviewService:
     OUTPUTS_IMAGE_URL_PREFIX = r"^/outputs/image/"
 
     @classmethod
-    def find_published_dataview_record(
-        cls, db: Session, workspace_id: int, unique_id: str
+    def find_dataview_record(
+        cls,
+        db: Session,
+        workspace_id: int,
+        unique_id: str,
+        published_only: bool = False,
     ) -> ExperimentRecord:
         """
-        Search for a published experiment_record that matches the specified id
+        Search for a experiment_record that matches the specified id
         """
-        record: ExperimentRecord = (
+        query = (
             db.query(ExperimentRecord)
             .join(
                 Workspace,
@@ -195,12 +199,15 @@ class DataviewService:
                 Workspace.deleted.is_(False),
                 ExperimentRecord.workspace_id == int(workspace_id),
                 ExperimentRecord.uid == unique_id,
-                ExperimentRecord.publish_status == PublishStatus.on.value,
             )
-            .first()
         )
 
-        return record
+        if published_only:
+            query = query.filter(
+                ExperimentRecord.publish_status == PublishStatus.on.value,
+            )
+
+        return query.first()
 
     @classmethod
     def find_published_dataview_record_input(
@@ -301,8 +308,8 @@ class DataviewService:
         # Request case for output data
         if workspace_id and unique_id:
             # Check whether the data is in a public record
-            record = DataviewService.find_published_dataview_record(
-                db, int(workspace_id), unique_id
+            record = DataviewService.find_dataview_record(
+                db, int(workspace_id), unique_id, published_only=True
             )
             is_allowed_access = record is not None
 

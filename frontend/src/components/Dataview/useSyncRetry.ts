@@ -43,7 +43,7 @@ export const useSyncRetry = ({
       .catch((error) => {
         setLoading(false)
 
-        if (is_public && error?.response) {
+        if (error?.response) {
           const status = error.response.status
           const data = error.response.data
 

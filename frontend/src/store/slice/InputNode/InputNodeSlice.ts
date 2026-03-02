@@ -4,7 +4,10 @@ import { isInputNodePostData } from "api/run/RunUtils"
 import { INITIAL_IMAGE_ELEMENT_ID } from "const/flowchart"
 import { WORKSPACE_TYPE } from "const/Workspace"
 import { FileNodeFactory } from "factories/FileNodeFactory"
-import { publicDataviewReproduceWorkflow } from "store/slice/Dataview/DataviewActions"
+import {
+  privateDataviewReproduceWorkflow,
+  publicDataviewReproduceWorkflow,
+} from "store/slice/Dataview/DataviewActions"
 import { uploadFile } from "store/slice/FileUploader/FileUploaderActions"
 import { addInputNode } from "store/slice/FlowElement/FlowElementActions"
 import {
@@ -234,6 +237,7 @@ export const inputNodeSlice = createSlice({
         isAnyOf(
           fetchWorkflow.fulfilled,
           reproduceWorkflow.fulfilled,
+          privateDataviewReproduceWorkflow.fulfilled,
           publicDataviewReproduceWorkflow.fulfilled,
         ),
         (state, action) => {

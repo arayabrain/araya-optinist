@@ -280,7 +280,7 @@ class TestPublicDataviewReproduceWorkflow:
 
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
-            "find_published_dataview_record",
+            "find_dataview_record",
             return_value=mock_record,
         ):
             with patch(
@@ -328,7 +328,7 @@ class TestPublicDataviewReproduceWorkflow:
 
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
-            "find_published_dataview_record",
+            "find_dataview_record",
             return_value=mock_record,
         ):
             with patch(
@@ -376,7 +376,7 @@ class TestPublicDataviewReproduceWorkflow:
 
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
-            "find_published_dataview_record",
+            "find_dataview_record",
             return_value=mock_record,
         ):
             with patch(
@@ -428,7 +428,7 @@ class TestPublicDataviewReproduceWorkflow:
 
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
-            "find_published_dataview_record",
+            "find_dataview_record",
             return_value=mock_record,
         ):
             with patch(
