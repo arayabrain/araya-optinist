@@ -70,7 +70,7 @@ class TestGetExperimentsMetadataSync:
             "studio.app.common.routers.experiment._get_published_uids",
             return_value={"uid1", "uid2"},
         ), patch(
-            "studio.app.common.routers.experiment.RemoteStorageSimpleReader"
+            "studio.app.common.routers.experiment.RemoteStorageReader"
         ) as mock_reader_cls, patch(
             "studio.app.common.routers.experiment.ExptConfigReader.read_from_path",
             return_value=config,
