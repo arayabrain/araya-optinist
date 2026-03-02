@@ -35,7 +35,8 @@ const PremiumNotificationManager: FC = () => {
       isPremiumUser &&
       hasDedicatedInstance &&
       assignmentResult.instance_id &&
-      (hasNewInstance || wasWaiting)
+      hasNewInstance &&
+      wasWaiting
     ) {
       enqueueSnackbar(
         "Premium instance assigned successfully! " +
@@ -63,7 +64,7 @@ const PremiumNotificationManager: FC = () => {
 
   // Show waiting snackbar when premium user does not have a dedicated instance.
   useEffect(() => {
-    if (isPremiumUser && !hasDedicatedInstance) {
+    if (isPremiumUser && assignmentResult && !hasDedicatedInstance) {
       if (!waitingKeyRef.current) {
         const key = enqueueSnackbar(
           "Please wait while your dedicated premium " +
