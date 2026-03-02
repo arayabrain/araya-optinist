@@ -45,17 +45,22 @@ async def ensure_experiment_synced_for_edit(
         logger.info(
             f"Edit ROI: Lazy loading experiment {workspace_id}/{unique_id} from S3"
         )
-        async with RemoteStorageReader(
-            remote_bucket_name, workspace_id, unique_id
-        ) as remote_storage_controller:
-            result = await remote_storage_controller.download_experiment(
-                workspace_id, unique_id
-            )
-            if not result:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Failed to sync experiment data for Edit ROI",
+
+        try:
+            async with RemoteStorageReader(
+                remote_bucket_name, workspace_id, unique_id
+            ) as remote_storage_controller:
+                result = await remote_storage_controller.download_experiment(
+                    workspace_id, unique_id
                 )
+                if not result:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="Failed to sync experiment data for Edit ROI",
+                    )
+        except RemoteStorageLockError as e:
+            logger.warning(e)
+            raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
 
 
 @router.post(

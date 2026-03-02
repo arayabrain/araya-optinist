@@ -10,6 +10,7 @@ from studio.app.common.core.experiment.experiment import (
     ExptOutputPathIds,
 )
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.remote_storage_controller import RemoteStorageReader
 from studio.app.common.core.utils.config_handler import ConfigReader
 from studio.app.common.core.utils.datetime_utils import TIMEZONE_KEY
 from studio.app.common.core.utils.filepath_creater import join_filepath
@@ -80,7 +81,6 @@ class ExptConfigReader:
         """
         from studio.app.common.core.storage.remote_storage_controller import (
             RemoteStorageController,
-            RemoteStorageSimpleReader,
         )
 
         config_path = cls.get_config_yaml_path(workspace_id, unique_id)
@@ -99,7 +99,9 @@ class ExptConfigReader:
         )
 
         try:
-            async with RemoteStorageSimpleReader(remote_bucket_name) as controller:
+            async with RemoteStorageReader(
+                remote_bucket_name, workspace_id, unique_id
+            ) as controller:
                 # Download only this specific experiment's metadata (efficient)
                 await controller.download_experiment_meta(workspace_id, unique_id)
             return os.path.exists(config_path)

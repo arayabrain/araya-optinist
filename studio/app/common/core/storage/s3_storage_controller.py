@@ -22,6 +22,8 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.file_filter import FileSyncFilter
 from studio.app.common.core.storage.remote_storage_controller import (
     BaseRemoteStorageController,
+    RemoteExperimentNotFoundError,
+    RemoteExperimentSyncMode,
     RemoteStorageBucketNotFoundError,
     RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
@@ -574,6 +576,13 @@ class S3StorageController(BaseRemoteStorageController):
                                     os.path.dirname(flie_local_path), exist_ok=True
                                 )
 
+                                # Check for the existence of the remote file
+                                #   before executing download_file
+                                #   (to avoid creating an empty file locally)
+                                await __s3_client.head_object(
+                                    Bucket=self.bucket_name, Key=file_remote_path
+                                )
+
                                 # download file
                                 await __s3_client.download_file(
                                     self.bucket_name,
@@ -634,6 +643,13 @@ class S3StorageController(BaseRemoteStorageController):
                     # Create local directory if needed
                     os.makedirs(os.path.dirname(file_local_path), exist_ok=True)
 
+                    # Check for the existence of the remote file
+                    #   before executing download_file
+                    #   (to avoid creating an empty file locally)
+                    await __s3_client.head_object(
+                        Bucket=self.bucket_name, Key=file_remote_path
+                    )
+
                     # Download file from S3
                     await __s3_client.download_file(
                         self.bucket_name,
@@ -644,7 +660,7 @@ class S3StorageController(BaseRemoteStorageController):
                     logger.debug(f"Downloaded: {file_remote_path}")
                 except Exception as e:
                     # File may not exist in S3 - this is OK for optional files
-                    logger.debug(
+                    logger.warning(
                         f"Could not download [{self.bucket_name}]"
                         f"[{file_remote_path}]: {e}"
                     )
@@ -865,7 +881,10 @@ class S3StorageController(BaseRemoteStorageController):
         return True
 
     async def download_experiment(
-        self, workspace_id: str, unique_id: str, sync_mode: str = "all"
+        self,
+        workspace_id: str,
+        unique_id: str,
+        sync_mode: RemoteExperimentSyncMode = RemoteExperimentSyncMode.ALL,
     ) -> bool:
         """
         Download experiment from S3 to local storage.
@@ -873,10 +892,10 @@ class S3StorageController(BaseRemoteStorageController):
         Args:
             workspace_id: Workspace identifier
             unique_id: Unique experiment identifier
-            sync_mode:
-                - 'all': sync everything (default)
-                - 'essential_only': skip large files, sync yaml/json (for dataview)
-                - 'visualization': sync only json and tiff (for viewing results)
+            sync_mode: RemoteExperimentSyncMode enum value
+                - ALL: sync everything (default)
+                - ESSENTIAL_ONLY: skip large files, sync yaml/json (for dataview)
+                - VISUALIZATION: sync only json and tiff (for viewing results)
 
         Returns:
             True if download successful, False otherwise
@@ -908,11 +927,11 @@ class S3StorageController(BaseRemoteStorageController):
 
             if not all_s3_objects:
                 logger.warning(
-                    "remote data is not exists. [%s] [%s]",
+                    "Remote data is not exists. [%s] [%s]",
                     self.bucket_name,
                     experiment_remote_path,
                 )
-                return False
+                raise RemoteExperimentNotFoundError(workspace_id, unique_id)
 
             # Sort by directory depth (shallower files first)
             all_s3_objects.sort(key=lambda obj: obj["Key"].count("/"))
@@ -925,7 +944,9 @@ class S3StorageController(BaseRemoteStorageController):
             # cleaning data from local path (only for full sync, not partial syncs)
             # Partial syncs (visualization, essential_only) should preserve existing
             # files to avoid redundant downloads
-            if sync_mode == "all" and os.path.isdir(experiment_local_path):
+            if sync_mode == RemoteExperimentSyncMode.ALL and os.path.isdir(
+                experiment_local_path
+            ):
                 await self._clear_local_experiment_data(experiment_local_path)
 
             target_files_count = len(all_s3_objects)
@@ -1252,7 +1273,9 @@ class S3StorageController(BaseRemoteStorageController):
                 await self.download_input_data(workspace_id, filename)
             else:
                 await self.download_experiment(
-                    workspace_id, unique_id, sync_mode="visualization"
+                    workspace_id,
+                    unique_id,
+                    sync_mode=RemoteExperimentSyncMode.VISUALIZATION,
                 )
             return True
         except Exception as e:
