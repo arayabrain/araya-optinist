@@ -179,6 +179,29 @@ class DataviewService:
     OUTPUTS_IMAGE_URL_PREFIX = r"^/outputs/image/"
 
     @classmethod
+    def find_dataview_record(
+        cls, db: Session, workspace_id: int, unique_id: str
+    ) -> ExperimentRecord:
+        """
+        Search for a experiment_record that matches the specified id
+        """
+        record: ExperimentRecord = (
+            db.query(ExperimentRecord)
+            .join(
+                Workspace,
+                Workspace.id == ExperimentRecord.workspace_id,
+            )
+            .filter(
+                Workspace.deleted.is_(False),
+                ExperimentRecord.workspace_id == int(workspace_id),
+                ExperimentRecord.uid == unique_id,
+            )
+            .first()
+        )
+
+        return record
+
+    @classmethod
     def find_published_dataview_record(
         cls, db: Session, workspace_id: int, unique_id: str
     ) -> ExperimentRecord:

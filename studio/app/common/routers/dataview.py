@@ -205,7 +205,7 @@ async def search_dataview_records(
     "/workflow/reproduce/{workspace_id}/{unique_id}",
     response_model=WorkflowWithResults,
     description="""
-- Public access wrapper for `GET /workflow/reproduce`
+- Public Dataview access wrapper for `GET /workflow/reproduce`
 - Returns 202 if experiment is published but not yet synced
 """,
 )
@@ -238,49 +238,11 @@ async def public_reproduce_experiment(
         needs_sync = is_unsynced
 
     if needs_sync:
-        # Get owner's bucket from workspace
-        workspace = (
-            db.query(models.Workspace)
-            .filter(models.Workspace.id == int(workspace_id))
-            .first()
+        download_error = await _ensure_experiment_downloaded(
+            db, workspace_id, unique_id
         )
-        owner_bucket = None
-        if workspace and workspace.user:
-            owner_bucket = getattr(workspace.user, "remote_bucket_name", None)
-        remote_bucket_name = owner_bucket or os.environ.get("S3_DEFAULT_BUCKET_NAME")
-
-        try:
-            async with RemoteStorageReader(
-                remote_bucket_name, workspace_id, unique_id
-            ) as remote_storage_controller:
-                logger.info(
-                    f"Downloading published experiment {workspace_id}/{unique_id} "
-                    f"from remote bucket {remote_bucket_name}"
-                )
-                available = await remote_storage_controller.download_experiment(
-                    workspace_id,
-                    unique_id,
-                )
-
-                if not available:
-                    logger.error(
-                        f"Failed to download experiment {workspace_id}/{unique_id} "
-                        f"from remote bucket {remote_bucket_name}"
-                    )
-                    return JSONResponse(
-                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                        content={
-                            "status": "download_error",
-                            "message": "Failed to load experiment data, "
-                            "please try again later",
-                        },
-                    )
-        except RemoteExperimentNotFoundError as e:
-            logger.warning(e)
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
-        except RemoteStorageLockError as e:
-            logger.warning(e)
-            raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+        if download_error is not None:
+            return download_error
 
     # Validate experiment is displayable (checks if required files exist locally)
     # This should be done BEFORE checking sync status, because on-demand download
@@ -337,6 +299,66 @@ async def public_reproduce_experiment(
     return await reproduce_experiment(workspace_id, unique_id)
 
 
+async def _ensure_experiment_downloaded(
+    db: Session, workspace_id: str, unique_id: str
+) -> None:
+    """
+    Download experiment data from remote storage (S3) to local EBS if needed.
+    Resolves the owner's bucket from the workspace record.
+
+    Raises:
+        HTTPException(404): If experiment not found in remote storage
+        HTTPException(423): If remote storage is locked
+
+    Returns JSONResponse(503) via raise-like return if download fails,
+    so callers must check the return value.
+    """
+    workspace = (
+        db.query(models.Workspace)
+        .filter(models.Workspace.id == int(workspace_id))
+        .first()
+    )
+    owner_bucket = None
+    if workspace and workspace.user:
+        owner_bucket = getattr(workspace.user, "remote_bucket_name", None)
+    remote_bucket_name = owner_bucket or os.environ.get("S3_DEFAULT_BUCKET_NAME")
+
+    try:
+        async with RemoteStorageReader(
+            remote_bucket_name, workspace_id, unique_id
+        ) as remote_storage_controller:
+            logger.info(
+                f"Downloading dataview experiment {workspace_id}/{unique_id} "
+                f"from remote bucket {remote_bucket_name}"
+            )
+            available = await remote_storage_controller.download_experiment(
+                workspace_id,
+                unique_id,
+            )
+
+            if not available:
+                logger.error(
+                    f"Failed to download experiment {workspace_id}/{unique_id} "
+                    f"from remote bucket {remote_bucket_name}"
+                )
+                return JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={
+                        "status": "download_error",
+                        "message": "Failed to load experiment data, "
+                        "please try again later",
+                    },
+                )
+    except RemoteExperimentNotFoundError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except RemoteStorageLockError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+
+    return None
+
+
 async def _validate_experiment_exists_in_s3(
     workspace_id: str, unique_id: str, bucket_name: str
 ) -> Tuple[bool, Optional[str]]:
@@ -369,6 +391,41 @@ async def _validate_experiment_exists_in_s3(
         return False, f"Could not verify S3 data: {str(e)}"
 
     return True, None
+
+
+@router.get(
+    "/workflow/reproduce/{workspace_id}/{unique_id}",
+    response_model=WorkflowWithResults,
+    description="""
+- Dataview access wrapper for `GET /workflow/reproduce`
+""",
+)
+async def private_reproduce_experiment(
+    workspace_id: str,
+    unique_id: str,
+    db: Session = Depends(get_db),
+):
+    # Check target record accessibility
+    record = DataviewService.find_dataview_record(db, int(workspace_id), unique_id)
+
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    # Ensure experiment is available on local EBS (download from S3 if needed)
+    # Also try to sync if status is pending/error - the local data might be incomplete
+    is_unsynced = RemoteSyncStatusFileUtil.check_sync_status_unsynced(
+        workspace_id, unique_id
+    )
+    needs_sync = is_unsynced
+
+    if needs_sync:
+        download_error = await _ensure_experiment_downloaded(
+            db, workspace_id, unique_id
+        )
+        if download_error is not None:
+            return download_error
+
+    return await reproduce_experiment(workspace_id, unique_id)
 
 
 @router.post(
