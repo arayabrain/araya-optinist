@@ -26,7 +26,9 @@ from sqlmodel import Session, select
 from studio.app.common.core.auth.auth_dependencies import _get_user_remote_bucket_name
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentSyncMode,
     RemoteStorageController,
+    RemoteStorageReader,
     RemoteStorageSimpleReader,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
@@ -222,17 +224,22 @@ async def _download_single_experiment(
         return
 
     try:
-        async with RemoteStorageSimpleReader(bucket_name) as controller:
+        async with RemoteStorageReader(
+            bucket_name,
+            workspace_id,
+            unique_id,
+            RemoteExperimentSyncMode.THUMBNAILS_ONLY,
+        ) as controller:
             if has_thumbnails:
                 await controller.download_experiment(
                     workspace_id,
                     unique_id,
-                    sync_mode="thumbnails_only",
+                    sync_mode=RemoteExperimentSyncMode.THUMBNAILS_ONLY,
                 )
             await controller.download_experiment(
                 workspace_id,
                 unique_id,
-                sync_mode="essential_only",
+                sync_mode=RemoteExperimentSyncMode.ESSENTIAL_ONLY,
             )
         logger.info("Proactive sync completed for" f" {workspace_id}/{unique_id}")
     except Exception as e:

@@ -22,6 +22,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentSyncMode,
+)
+
 # ---------------------------------------------------------------------------
 # Mock aws_constants for Lambda tests (aws_constants is only available in Lambda)
 # Only install if not already loaded (e.g., by infrastructure test conftest)
@@ -430,8 +434,7 @@ class TestLazySync:
             "studio.app.common.core.storage.remote_storage_controller."
             "RemoteStorageController"
         ) as mock_controller_class, patch(
-            "studio.app.common.core.storage.remote_storage_controller."
-            "RemoteStorageSimpleReader"
+            "studio.app.common.core.experiment.experiment_reader." "RemoteStorageReader"
         ) as mock_reader_class:
             mock_controller_class.is_available.return_value = True
 
@@ -486,8 +489,7 @@ class TestLazySync:
             "studio.app.common.core.storage.remote_storage_controller."
             "RemoteStorageController"
         ) as mock_controller_class, patch(
-            "studio.app.common.core.storage.remote_storage_controller."
-            "RemoteStorageSimpleReader"
+            "studio.app.common.core.experiment.experiment_reader." "RemoteStorageReader"
         ) as mock_reader_class:
             mock_controller_class.is_available.return_value = True
 
@@ -1112,7 +1114,7 @@ class TestDownloadSingleExperiment:
         with patch(
             "studio.app.common.routers.internal." "RemoteStorageController"
         ) as mock_ctrl, patch(
-            "studio.app.common.routers.internal." "RemoteStorageSimpleReader",
+            "studio.app.common.routers.internal." "RemoteStorageReader",
             return_value=mock_reader,
         ), patch(
             "os.path.exists", return_value=False
@@ -1132,11 +1134,11 @@ class TestDownloadSingleExperiment:
         calls = mock_reader.download_experiment.call_args_list
         assert calls[0] == (
             ("ws1", "uid1"),
-            {"sync_mode": "thumbnails_only"},
+            {"sync_mode": RemoteExperimentSyncMode.THUMBNAILS_ONLY},
         )
         assert calls[1] == (
             ("ws1", "uid1"),
-            {"sync_mode": "essential_only"},
+            {"sync_mode": RemoteExperimentSyncMode.ESSENTIAL_ONLY},
         )
 
     @pytest.mark.asyncio
@@ -1149,7 +1151,7 @@ class TestDownloadSingleExperiment:
         with patch(
             "studio.app.common.routers.internal." "RemoteStorageController"
         ) as mock_ctrl, patch(
-            "studio.app.common.routers.internal." "RemoteStorageSimpleReader",
+            "studio.app.common.routers.internal." "RemoteStorageReader",
             return_value=mock_reader,
         ), patch(
             "os.path.exists", return_value=False
@@ -1169,7 +1171,7 @@ class TestDownloadSingleExperiment:
         calls = mock_reader.download_experiment.call_args_list
         assert calls[0] == (
             ("ws1", "uid1"),
-            {"sync_mode": "essential_only"},
+            {"sync_mode": RemoteExperimentSyncMode.ESSENTIAL_ONLY},
         )
 
     @pytest.mark.asyncio
@@ -1182,7 +1184,7 @@ class TestDownloadSingleExperiment:
         with patch(
             "studio.app.common.routers.internal." "RemoteStorageController"
         ) as mock_ctrl, patch(
-            "studio.app.common.routers.internal." "RemoteStorageSimpleReader",
+            "studio.app.common.routers.internal." "RemoteStorageReader",
             return_value=mock_reader,
         ), patch(
             "os.path.exists", return_value=True
@@ -1206,7 +1208,7 @@ class TestDownloadSingleExperiment:
         with patch(
             "studio.app.common.routers.internal." "RemoteStorageController"
         ) as mock_ctrl, patch(
-            "studio.app.common.routers.internal." "RemoteStorageSimpleReader",
+            "studio.app.common.routers.internal." "RemoteStorageReader",
             return_value=mock_reader,
         ), patch(
             "os.path.exists", return_value=False

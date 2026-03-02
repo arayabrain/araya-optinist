@@ -19,6 +19,9 @@ if TYPE_CHECKING:
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentSyncMode,
+)
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.subscription.constants import SyncStatusConstants
 from studio.app.common.db.database import session_scope
@@ -124,7 +127,7 @@ class PublishedExperimentSyncJob:
                     await s3.download_experiment(
                         ws_id,
                         uid,
-                        sync_mode="thumbnails_only",
+                        sync_mode=RemoteExperimentSyncMode.THUMBNAILS_ONLY,
                     )
                 except Exception as e:
                     logger.warning(f"Startup thumb sync failed" f" {ws_id}/{uid}: {e}")
@@ -150,7 +153,7 @@ class PublishedExperimentSyncJob:
                     await s3.download_experiment(
                         ws_id,
                         uid,
-                        sync_mode="essential_only",
+                        sync_mode=RemoteExperimentSyncMode.ESSENTIAL_ONLY,
                     )
                 except Exception as e:
                     logger.warning(f"Startup meta sync failed" f" {ws_id}/{uid}: {e}")

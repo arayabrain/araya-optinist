@@ -5,10 +5,13 @@ Tests file filtering logic for selective S3 sync operations.
 """
 
 from studio.app.common.core.storage.file_filter import FileSyncFilter
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentSyncMode,
+)
 
 
 class TestFileSyncFilterAllMode:
-    """Tests for sync_mode='all'"""
+    """Tests for sync_mode=ALL"""
 
     def setup_method(self):
         self.filter = FileSyncFilter()
@@ -24,13 +27,15 @@ class TestFileSyncFilterAllMode:
         ]
 
         for file_path in test_files:
-            should_sync, reason = self.filter.should_sync_file(file_path, "all")
+            should_sync, reason = self.filter.should_sync_file(
+                file_path, RemoteExperimentSyncMode.ALL
+            )
             assert should_sync is True
             assert reason == "sync_mode=all"
 
 
 class TestFileSyncFilterThumbnailsOnlyMode:
-    """Tests for sync_mode='thumbnails_only'"""
+    """Tests for sync_mode=THUMBNAILS_ONLY"""
 
     def setup_method(self):
         self.filter = FileSyncFilter()
@@ -45,7 +50,7 @@ class TestFileSyncFilterThumbnailsOnlyMode:
 
         for file_path in thumb_files:
             should_sync, reason = self.filter.should_sync_file(
-                file_path, "thumbnails_only"
+                file_path, RemoteExperimentSyncMode.THUMBNAILS_ONLY
             )
             assert should_sync is True, f"Expected {file_path} to sync"
             assert reason == "thumbnail file"
@@ -63,14 +68,14 @@ class TestFileSyncFilterThumbnailsOnlyMode:
 
         for file_path in non_thumb_files:
             should_sync, reason = self.filter.should_sync_file(
-                file_path, "thumbnails_only"
+                file_path, RemoteExperimentSyncMode.THUMBNAILS_ONLY
             )
             assert should_sync is False, f"Expected {file_path} to be skipped"
             assert reason == "not needed for thumbnails"
 
 
 class TestFileSyncFilterVisualizationMode:
-    """Tests for sync_mode='visualization'"""
+    """Tests for sync_mode=VISUALIZATION"""
 
     def setup_method(self):
         self.filter = FileSyncFilter()
@@ -85,7 +90,7 @@ class TestFileSyncFilterVisualizationMode:
 
         for file_path in json_files:
             should_sync, reason = self.filter.should_sync_file(
-                file_path, "visualization"
+                file_path, RemoteExperimentSyncMode.VISUALIZATION
             )
             assert should_sync is True, f"Expected {file_path} to sync"
             assert reason == "visualization file"
@@ -101,7 +106,7 @@ class TestFileSyncFilterVisualizationMode:
 
         for file_path in tiff_files:
             should_sync, reason = self.filter.should_sync_file(
-                file_path, "visualization"
+                file_path, RemoteExperimentSyncMode.VISUALIZATION
             )
             assert should_sync is True, f"Expected {file_path} to sync"
             assert reason == "visualization file"
@@ -116,7 +121,7 @@ class TestFileSyncFilterVisualizationMode:
 
         for file_path in yaml_files:
             should_sync, reason = self.filter.should_sync_file(
-                file_path, "visualization"
+                file_path, RemoteExperimentSyncMode.VISUALIZATION
             )
             assert should_sync is True, f"Expected {file_path} to sync"
             assert reason == "visualization file"
@@ -132,14 +137,14 @@ class TestFileSyncFilterVisualizationMode:
 
         for file_path in large_files:
             should_sync, reason = self.filter.should_sync_file(
-                file_path, "visualization"
+                file_path, RemoteExperimentSyncMode.VISUALIZATION
             )
             assert should_sync is False, f"Expected {file_path} to be skipped"
             assert reason == "not needed for visualization"
 
 
 class TestFileSyncFilterEssentialOnlyMode:
-    """Tests for sync_mode='essential_only'"""
+    """Tests for sync_mode=ESSENTIAL_ONLY"""
 
     def setup_method(self):
         self.filter = FileSyncFilter()
@@ -154,7 +159,7 @@ class TestFileSyncFilterEssentialOnlyMode:
 
         for file_path in yaml_files:
             should_sync, reason = self.filter.should_sync_file(
-                file_path, "essential_only"
+                file_path, RemoteExperimentSyncMode.ESSENTIAL_ONLY
             )
             assert should_sync is True, f"Expected {file_path} to sync"
             assert reason == "essential file"
@@ -169,7 +174,7 @@ class TestFileSyncFilterEssentialOnlyMode:
 
         for file_path in json_files:
             should_sync, reason = self.filter.should_sync_file(
-                file_path, "essential_only"
+                file_path, RemoteExperimentSyncMode.ESSENTIAL_ONLY
             )
             assert should_sync is True, f"Expected {file_path} to sync"
             assert reason == "essential file"
@@ -189,7 +194,7 @@ class TestFileSyncFilterEssentialOnlyMode:
 
         for file_path in large_files:
             should_sync, reason = self.filter.should_sync_file(
-                file_path, "essential_only"
+                file_path, RemoteExperimentSyncMode.ESSENTIAL_ONLY
             )
             assert should_sync is False, f"Expected {file_path} to be skipped"
             assert reason == "large file - skipped"
@@ -204,7 +209,7 @@ class TestFileSyncFilterEssentialOnlyMode:
 
         for file_path in unknown_files:
             should_sync, reason = self.filter.should_sync_file(
-                file_path, "essential_only"
+                file_path, RemoteExperimentSyncMode.ESSENTIAL_ONLY
             )
             assert should_sync is True, f"Expected {file_path} to sync"
             assert reason == "unknown type - synced for safety"
@@ -226,20 +231,20 @@ class TestFileSyncFilterCaseInsensitivity:
 
         for file_path in files:
             should_sync, reason = self.filter.should_sync_file(
-                file_path, "thumbnails_only"
+                file_path, RemoteExperimentSyncMode.THUMBNAILS_ONLY
             )
             assert should_sync is True, f"Expected {file_path} to match"
 
     def test_case_insensitive_extensions(self):
         """Extension matching is case-insensitive"""
         files_by_mode = {
-            "visualization": [
+            RemoteExperimentSyncMode.VISUALIZATION: [
                 ("file.JSON", True),
                 ("file.Json", True),
                 ("file.TIFF", True),
                 ("file.Yaml", True),
             ],
-            "essential_only": [
+            RemoteExperimentSyncMode.ESSENTIAL_ONLY: [
                 ("config.YAML", True),
                 ("data.JSON", True),
                 ("config.YML", True),
@@ -267,9 +272,9 @@ class TestFileSyncFilterPathHandling:
         ]
 
         expected = [
-            ("thumbnails_only", True),
-            ("visualization", True),
-            ("essential_only", True),
+            (RemoteExperimentSyncMode.THUMBNAILS_ONLY, True),
+            (RemoteExperimentSyncMode.VISUALIZATION, True),
+            (RemoteExperimentSyncMode.ESSENTIAL_ONLY, True),
         ]
 
         for path, (mode, should_sync_expected) in zip(s3_paths, expected):
@@ -284,6 +289,8 @@ class TestFileSyncFilterPathHandling:
         ]
 
         for path in nested_paths:
-            should_sync, reason = self.filter.should_sync_file(path, "visualization")
+            should_sync, reason = self.filter.should_sync_file(
+                path, RemoteExperimentSyncMode.VISUALIZATION
+            )
             assert should_sync is True
             assert reason == "visualization file"
