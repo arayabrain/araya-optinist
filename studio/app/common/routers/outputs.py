@@ -15,7 +15,6 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageLockError,
     RemoteStorageReader,
-    RemoteStorageSimpleReader,
     RemoteStorageSimpleWriter,
     RemoteSyncStatusFileUtil,
 )
