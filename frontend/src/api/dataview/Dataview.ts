@@ -20,6 +20,16 @@ export const getDataviewRecordsApi = async (
   return response.data
 }
 
+export async function privateDataviewReproduceWorkflowApi(
+  workspaceId: number,
+  uid: string,
+): Promise<WorkflowWithResultDTO> {
+  const response = await axios.get(
+    `/api/dataview/workflow/reproduce/${workspaceId}/${uid}`,
+  )
+  return response.data
+}
+
 export async function publicDataviewReproduceWorkflowApi(
   workspaceId: number,
   uid: string,

@@ -1,7 +1,10 @@
 import { createSlice, isAnyOf, PayloadAction } from "@reduxjs/toolkit"
 
 import { COMPLETE_STATUS } from "api/run/Run"
-import { publicDataviewReproduceWorkflow } from "store/slice/Dataview/DataviewActions"
+import {
+  privateDataviewReproduceWorkflow,
+  publicDataviewReproduceWorkflow,
+} from "store/slice/Dataview/DataviewActions"
 import { convertFunctionsToRunResultDTO } from "store/slice/Experiments/ExperimentsUtils"
 import { clearFlowElements } from "store/slice/FlowElement/FlowElementSlice"
 import {
@@ -96,6 +99,7 @@ export const pipelineSlice = createSlice({
         isAnyOf(
           fetchWorkflow.fulfilled,
           reproduceWorkflow.fulfilled,
+          privateDataviewReproduceWorkflow.fulfilled,
           publicDataviewReproduceWorkflow.fulfilled,
         ),
         (state, action) => {
@@ -159,6 +163,7 @@ export const pipelineSlice = createSlice({
         isAnyOf(
           fetchWorkflow.rejected,
           reproduceWorkflow.rejected,
+          privateDataviewReproduceWorkflow.rejected,
           publicDataviewReproduceWorkflow.rejected,
           clearFlowElements,
         ),

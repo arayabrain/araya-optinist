@@ -24,7 +24,10 @@ import Loading from "components/common/Loading"
 import { SyncStatusView } from "components/Dataview/SyncStatusView"
 import { useSyncRetry } from "components/Dataview/useSyncRetry"
 import { WORKSPACE_TYPE } from "const/Workspace"
-import { publicDataviewReproduceWorkflow } from "store/slice/Dataview/DataviewActions"
+import {
+  privateDataviewReproduceWorkflow,
+  publicDataviewReproduceWorkflow,
+} from "store/slice/Dataview/DataviewActions"
 import { DataviewType } from "store/slice/Dataview/DataviewType"
 import { selectFlowNodes } from "store/slice/FlowElement/FlowElementSelectors"
 import { clearFlowElements } from "store/slice/FlowElement/FlowElementSlice"
@@ -75,7 +78,9 @@ export const WorkflowDetailsView = ({
   })
 
   const fetchFn = useCallback(() => {
-    const api = is_public ? publicDataviewReproduceWorkflow : reproduceWorkflow
+    const api = is_public
+      ? publicDataviewReproduceWorkflow
+      : privateDataviewReproduceWorkflow
     return dispatch(
       api({
         workspaceId: dataviewRecord!.workspace.id,
