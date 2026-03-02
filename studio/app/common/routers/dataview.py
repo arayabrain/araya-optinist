@@ -23,6 +23,9 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
+from studio.app.common.core.workspace.workspace_dependencies import (
+    is_workspace_available,
+)
 from studio.app.common.db.database import get_db
 from studio.app.common.routers.workflow import reproduce_experiment
 from studio.app.common.schemas.base import SortDirection, SortOptions
@@ -301,7 +304,7 @@ async def public_reproduce_experiment(
 
 async def _ensure_experiment_downloaded(
     db: Session, workspace_id: str, unique_id: str
-) -> None:
+) -> Optional[JSONResponse]:
     """
     Download experiment data from remote storage (S3) to local EBS if needed.
     Resolves the owner's bucket from the workspace record.
@@ -396,6 +399,7 @@ async def _validate_experiment_exists_in_s3(
 @router.get(
     "/workflow/reproduce/{workspace_id}/{unique_id}",
     response_model=WorkflowWithResults,
+    dependencies=[Depends(is_workspace_available)],
     description="""
 - Dataview access wrapper for `GET /workflow/reproduce`
 """,
