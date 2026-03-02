@@ -1,4 +1,4 @@
-"""RC3: EFS mount path regression tests for compute.tf.
+"""EFS mount path regression tests for compute.tf.
 
 Ensures the snakemake volume containerPath is correct and
 consistent across all ECS task definitions.
@@ -25,7 +25,7 @@ _MOUNT_BLOCK_RE = re.compile(
 
 
 class TestEFSMountPaths:
-    """RC3: Verify EFS mount paths in compute.tf."""
+    """Verify EFS mount paths in compute.tf."""
 
     @pytest.fixture(autouse=True)
     def _load_tf(self):

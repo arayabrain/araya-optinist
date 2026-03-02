@@ -86,10 +86,10 @@ class TestPremiumCleanupHandler:
 
 
 class TestCheckInstanceReadiness:
-    """TC-25..27: check_instance_readiness tests."""
+    """check_instance_readiness tests."""
 
     def test_success(self, mock_env_vars_premium):
-        """TC-25: Running premium ECS task returns True."""
+        """Running premium ECS task returns True."""
         test_inst = "i-ready123"
         ci_arn = "arn:aws:ecs:us-east-1:123:container-instance/ci1"
         task_arn = "arn:aws:ecs:us-east-1:123:task/t1"
@@ -137,7 +137,7 @@ class TestCheckInstanceReadiness:
             assert result is True
 
     def test_no_tasks(self, mock_env_vars_premium):
-        """TC-26: No tasks on container returns False."""
+        """No tasks on container returns False."""
         test_inst = "i-notasks123"
         ci_arn = "arn:aws:ecs:us-east-1:123:container-instance/ci2"
 
@@ -172,7 +172,7 @@ class TestCheckInstanceReadiness:
             assert result is False
 
     def test_no_container(self, mock_env_vars_premium):
-        """TC-27: No container instance returns False."""
+        """No container instance returns False."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ) as mock_boto3:
@@ -195,10 +195,10 @@ class TestCheckInstanceReadiness:
 
 
 class TestCleanupStaleAssignments:
-    """TC-28..30: cleanup_stale_assignments tests."""
+    """cleanup_stale_assignments tests."""
 
     def test_no_stale_assignments(self, mock_env_vars_premium):
-        """TC-28: No stale assignments returns 0 cleaned."""
+        """No stale assignments returns 0 cleaned."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "pymysql.connect"
         ) as mock_pymysql, patch("boto3.client"):
@@ -213,7 +213,7 @@ class TestCleanupStaleAssignments:
             assert result["cleaned_assignments"] == 0
 
     def test_deletes_alb_and_db(self, mock_env_vars_premium):
-        """TC-29: Stale assignment triggers ALB + DB cleanup."""
+        """Stale assignment triggers ALB + DB cleanup."""
         rule_arn = "arn:aws:rule/stale-rule"
         tg_arn = "arn:aws:tg/stale-tg"
 
@@ -257,7 +257,7 @@ class TestCleanupStaleAssignments:
             )
 
     def test_skips_autoscaling_tg(self, mock_env_vars_premium):
-        """TC-30: Autoscaling TG not deleted on stale cleanup."""
+        """Autoscaling TG not deleted on stale cleanup."""
         rule_arn = "arn:aws:rule/stale-asg-rule"
         asg_tg_arn = mock_env_vars_premium["AUTOSCALING_TARGET_GROUP_ARN"]
 
@@ -300,10 +300,10 @@ class TestCleanupStaleAssignments:
 
 
 class TestCleanupOrphanedAlbResources:
-    """TC-31..33: cleanup_orphaned_alb_resources tests."""
+    """cleanup_orphaned_alb_resources tests."""
 
     def test_no_orphans(self, mock_env_vars_premium):
-        """TC-31: All ALB rules match DB, no orphans."""
+        """All ALB rules match DB, no orphans."""
         valid_rule_arn = "arn:aws:rule/valid-in-db"
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
@@ -372,7 +372,7 @@ class TestCleanupOrphanedAlbResources:
             assert not mock_elbv2.delete_rule.called
 
     def test_deletes_orphan(self, mock_env_vars_premium):
-        """TC-32: Orphaned ALB rule (not in DB) deleted."""
+        """Orphaned ALB rule (not in DB) deleted."""
         orphan_arn = "arn:aws:rule/orphan-no-db"
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
@@ -431,7 +431,7 @@ class TestCleanupOrphanedAlbResources:
             mock_elbv2.delete_rule.assert_called_once_with(RuleArn=orphan_arn)
 
     def test_skips_default_rule(self, mock_env_vars_premium):
-        """TC-33: Default ALB rule is never deleted."""
+        """Default ALB rule is never deleted."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
@@ -474,10 +474,10 @@ class TestCleanupOrphanedAlbResources:
 
 
 class TestReconcileInstanceStates:
-    """TC-34..36: reconcile_instance_states tests."""
+    """reconcile_instance_states tests."""
 
     def test_cleans_terminated_instance(self, mock_env_vars_premium):
-        """TC-34: Terminated instance assignment cleaned."""
+        """Terminated instance assignment cleaned."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "premium_cleanup" ".get_all_premium_instances_with_states"
         ) as mock_aws, patch("boto3.client") as mock_boto3, patch(
@@ -519,7 +519,7 @@ class TestReconcileInstanceStates:
             assert result["cleanup_count"] == 1
 
     def test_updates_state_mismatch(self, mock_env_vars_premium):
-        """TC-35: DB state updated when AWS state differs."""
+        """DB state updated when AWS state differs."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "premium_cleanup" ".get_all_premium_instances_with_states"
         ) as mock_aws, patch("boto3.client") as mock_boto3, patch(
@@ -568,7 +568,7 @@ class TestReconcileInstanceStates:
             assert result["update_count"] == 1
 
     def test_skips_autoscaling_pool(self, mock_env_vars_premium):
-        """TC-36: autoscaling-pool rows are skipped."""
+        """autoscaling-pool rows are skipped."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "premium_cleanup" ".get_all_premium_instances_with_states"
         ) as mock_aws, patch("boto3.client") as mock_boto3, patch(

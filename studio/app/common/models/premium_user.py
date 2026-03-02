@@ -79,7 +79,7 @@ class PremiumUserAssignment(SQLModel, table=True):
         sa_column=Column(TIMESTAMP, nullable=True), default=None
     )
 
-    # Heartbeat tracking for Case 71 - grace period on heartbeat failures
+    # Heartbeat tracking - grace period on heartbeat failures
     heartbeat_failures: int = Field(
         sa_column=Column(
             INTEGER,

@@ -416,7 +416,7 @@ def test_full_webhook_payload():
 
 
 class TestSubscriptionLookbackWindow:
-    """Test suite for Case 77: Extended lookback window for trial-to-paid conversion"""
+    """Extended lookback window for trial-to-paid conversion."""
 
     def test_subscription_lookback_constant_is_30_days(self):
         """RECENT_SUBSCRIPTION_WINDOW_DAYS should be 30 days for extended lookback"""
@@ -428,7 +428,7 @@ class TestSubscriptionLookbackWindow:
 
 
 class TestPaymentFailureTracking:
-    """Test suite for Case 73: Payment failure tracking"""
+    """Payment failure tracking."""
 
     @pytest.fixture
     def mock_db(self):
@@ -497,7 +497,7 @@ class TestPaymentFailureTracking:
 
 
 class TestWebhookCacheInvalidation:
-    """Test suite for Case 76: user tier cache invalidation in webhook handlers"""
+    """User tier cache invalidation in webhook handlers."""
 
     @pytest.fixture
     def mock_db(self):

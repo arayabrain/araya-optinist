@@ -11,7 +11,7 @@ logger = AppLogger.get_logger()
 
 # Unique per-worker UUID, generated lazily on first access.
 # Lazy init ensures each forked worker gets its own UUID even when
-# the module is imported before fork (e.g. uvicorn --preload) (EC-25).
+# the module is imported before fork (e.g. uvicorn --preload).
 _WORKER_UUID: Optional[str] = None
 _WORKER_PID: Optional[int] = None
 
@@ -39,7 +39,7 @@ class AtomicClaimFile:
 
     Used by: startup leader election, download claim sentinels.
     Pattern mirrors existing RemoteSyncLockFileUtil but uses O_CREAT|O_EXCL
-    instead of plain open() for race-free creation (EC-3).
+    instead of plain open() for race-free creation.
     """
 
     @staticmethod

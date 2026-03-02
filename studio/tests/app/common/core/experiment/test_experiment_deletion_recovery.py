@@ -1,5 +1,5 @@
 """
-Tests for Experiment Deletion Recovery (Case 14)
+Tests for Experiment Deletion Recovery.
 
 Tests the behavior when S3 deletion succeeds but DB deletion fails.
 The experiment should be marked as orphaned rather than left as a ghost.
@@ -19,7 +19,7 @@ TEST_BUCKET_NAME = "test-bucket"
 
 
 class TestExperimentDeletionRecovery:
-    """Tests for Case 14: S3 deletion succeeds but DB deletion fails"""
+    """Tests for S3 deletion succeeds but DB deletion fails."""
 
     @pytest.mark.asyncio
     async def test_successful_deletion(self):
