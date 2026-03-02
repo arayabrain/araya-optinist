@@ -388,6 +388,31 @@ async def send_premium_heartbeat(current_user: User = Depends(get_current_user))
         }
 
 
+@router.post("/premium/ui-event")
+async def log_premium_ui_event(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Log a frontend premium UI event to backend logs (CloudWatch).
+    Lightweight endpoint for correlating UI timing with backend events.
+    """
+    body = await request.json()
+    event_type = body.get("event_type", "unknown")
+    timestamp_ms = body.get("timestamp_ms")
+    details = body.get("details", {})
+
+    logger.info(
+        "Premium UI event: user=%s (uid: %s) event=%s timestamp_ms=%s details=%s",
+        current_user.id,
+        current_user.uid,
+        event_type,
+        timestamp_ms,
+        details,
+    )
+    return {"logged": True}
+
+
 @router.put("", response_model=User)
 async def update_me(
     data: SelfUserUpdate,

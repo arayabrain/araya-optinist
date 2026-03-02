@@ -103,3 +103,21 @@ export const sendPremiumHeartbeat =
 
 export const getBeaconTokenApi = () =>
   axios.get<{ token: string }>("/users/me/premium/beacon-token")
+
+/**
+ * Log a premium UI event to the backend (CloudWatch) for timing correlation.
+ */
+export const logPremiumUiEvent = async (
+  eventType: string,
+  details?: Record<string, unknown>,
+): Promise<void> => {
+  try {
+    await axios.post("/users/me/premium/ui-event", {
+      event_type: eventType,
+      timestamp_ms: Date.now(),
+      details: details ?? {},
+    })
+  } catch {
+    // Non-critical logging; swallow errors silently
+  }
+}
