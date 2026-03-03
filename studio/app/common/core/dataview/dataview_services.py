@@ -522,28 +522,12 @@ class DataviewService:
                     [thumb_dir, ThumbnailType.INPUT.filename]
                 )
 
-                # Check if it's a TIFF file that we can render
-                if ThumbnailGenerator.can_generate_tiff_thumbnail(image_path):
-                    if abs_image_path and os.path.exists(abs_image_path):
-                        ThumbnailGenerator.generate_tiff_thumbnail(
-                            abs_image_path, input_thumb_path
-                        )
-                        logger.debug(f"Generated TIFF thumbnail: {input_thumb_path}")
-                    else:
-                        # TIFF file not found locally, generate placeholder
-                        ThumbnailGenerator.generate_placeholder_thumbnail(
-                            input_thumb_path, file_path=image_path
-                        )
-                        logger.debug(
-                            f"Generated placeholder thumbnail (TIFF not found): "
-                            f"{input_thumb_path}"
-                        )
-                else:
-                    # Non-TIFF file (HDF5, MAT, microscope, etc.) - generate placeholder
-                    ThumbnailGenerator.generate_placeholder_thumbnail(
-                        input_thumb_path, file_path=image_path
-                    )
-                    logger.debug(f"Generated placeholder thumbnail: {input_thumb_path}")
+                ThumbnailGenerator.generate_input_thumbnail(
+                    source_path=image_path,
+                    output_path=input_thumb_path,
+                    abs_source_path=abs_image_path,
+                )
+                logger.debug(f"Generated input thumbnail: {input_thumb_path}")
             except Exception as e:
                 logger.warning(f"Failed to generate input thumbnail: {e}")
                 input_thumb_path = None

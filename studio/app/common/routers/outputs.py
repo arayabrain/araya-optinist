@@ -130,15 +130,27 @@ async def get_or_generate_thumbnail(
                 workspace_id, unique_id, original_path, thumb_type
             )
 
-    # Generate thumbnail if original file now exists
-    if os.path.exists(abs_original_path):
+    # Generate thumbnail
+    # - INPUT: always generates (TIFF render if file exists, placeholder if not)
+    # - ROI: requires the source file to exist
+    can_generate = False
+    if thumb_type == ThumbnailType.INPUT:
+        can_generate = True  # generate_input_thumbnail handles missing files
+    elif os.path.exists(abs_original_path):
+        can_generate = True
+
+    if can_generate:
         try:
             thumb_dir = os.path.dirname(thumb_path)
             create_directory(thumb_dir)
 
             if thumb_type == ThumbnailType.INPUT:
-                ThumbnailGenerator.generate_tiff_thumbnail(
-                    abs_original_path, thumb_path
+                ThumbnailGenerator.generate_input_thumbnail(
+                    source_path=original_path,
+                    output_path=thumb_path,
+                    abs_source_path=(
+                        abs_original_path if os.path.exists(abs_original_path) else None
+                    ),
                 )
             else:
                 ThumbnailGenerator.generate_roi_thumbnail(abs_original_path, thumb_path)

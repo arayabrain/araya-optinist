@@ -182,7 +182,7 @@ class ThumbnailGenerator:
         output_path: str,
         file_path: str = None,
         label: str = None,
-        size: int = 512,
+        size: int = 256,
     ) -> None:
         """
         Generate a placeholder PNG thumbnail with text label.
@@ -195,7 +195,7 @@ class ThumbnailGenerator:
             output_path: Path to save PNG thumbnail
             file_path: Optional source file path (used to detect type from extension)
             label: Optional explicit label text (overrides file_path detection)
-            size: Thumbnail size in pixels (default 512px)
+            size: Thumbnail size in pixels (default 256px)
         """
         # Determine label from file extension if not provided
         if label is None and file_path:
@@ -300,6 +300,33 @@ class ThumbnailGenerator:
                             for dx in range(scale):
                                 if 0 <= py + dy < h and 0 <= px + dx < w:
                                     img[py + dy, px + dx] = text_color
+
+    @classmethod
+    def generate_input_thumbnail(
+        cls, source_path: str, output_path: str, abs_source_path: str = None
+    ) -> None:
+        """
+        Generate an input thumbnail, choosing the right strategy automatically.
+
+        - TIFF file exists locally → render first frame as grayscale
+        - TIFF file not found locally → placeholder with file type label
+        - Non-TIFF file (HDF5, MAT, etc.) → placeholder with file type label
+
+        Args:
+            source_path: Original file path (used for extension detection and label)
+            output_path: Path to save the PNG thumbnail
+            abs_source_path: Absolute path to the source file for reading.
+                If None, uses source_path directly.
+        """
+        resolved = abs_source_path or source_path
+
+        if cls.can_generate_tiff_thumbnail(source_path):
+            if resolved and os.path.exists(resolved):
+                cls.generate_tiff_thumbnail(resolved, output_path)
+            else:
+                cls.generate_placeholder_thumbnail(output_path, file_path=source_path)
+        else:
+            cls.generate_placeholder_thumbnail(output_path, file_path=source_path)
 
     @classmethod
     def can_generate_tiff_thumbnail(cls, file_path: str) -> bool:
