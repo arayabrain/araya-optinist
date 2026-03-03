@@ -13,6 +13,7 @@ import React, {
   useCallback,
   useRef,
 } from "react"
+import { flushSync } from "react-dom"
 import { useSelector } from "react-redux"
 
 import {
@@ -441,7 +442,10 @@ export const PremiumAssignmentProvider: React.FC<{
         }
         return
       }
-      setState((prev) => ({ ...prev, isAssigning: true }))
+
+      flushSync(() => {
+        setState((prev) => ({ ...prev, isAssigning: true }))
+      })
 
       // Attempt assignment directly (inline to avoid dependency issues)
       const assignmentResponse = await assignPremiumInstance()
