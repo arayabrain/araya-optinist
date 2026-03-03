@@ -464,6 +464,11 @@ export const PremiumAssignmentProvider: React.FC<{
     try {
       // Check current status first (inline to avoid dependency issues)
       const statusResponse = await getPremiumStatus()
+      if (statusResponse?.error) {
+        // Lambda failed transiently — don't trigger assignment flow.
+        // Not persisted to sessionStorage, so page refresh retries.
+        return
+      }
       if (statusResponse?.assignment) {
         // User already has an assignment - update state immediately so notifications trigger
         // Convert PremiumAssignment to PremiumAssignmentResult format
