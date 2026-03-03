@@ -32,7 +32,7 @@ from studio.app.common.schemas.dataview import (
     PublishValidationResult,
 )
 from studio.app.common.schemas.workflow import WorkflowConfig
-from studio.app.const import ThumbnailConst, ThumbnailType
+from studio.app.const import ThumbnailType
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -506,22 +506,19 @@ class DataviewService:
             ThumbnailGenerator,
         )
 
-        thumb_dir = join_filepath(
-            [DIRPATH.OUTPUT_DIR, workspace_id, unique_id, ThumbnailConst.DIRNAME]
-        )
-
         input_thumb_path = None
         roi_thumb_path = None
 
         # Generate input thumbnail
         if image_path:
-            abs_image_path = cls._resolve_image_path(workspace_id, image_path)
+            abs_image_path = ThumbnailGenerator.resolve_source_path(
+                workspace_id, image_path
+            )
+            input_thumb_path = ThumbnailGenerator.get_thumbnail_path(
+                workspace_id, unique_id, ThumbnailType.INPUT
+            )
             try:
-                create_directory(thumb_dir)
-                input_thumb_path = join_filepath(
-                    [thumb_dir, ThumbnailType.INPUT.filename]
-                )
-
+                create_directory(os.path.dirname(input_thumb_path))
                 ThumbnailGenerator.generate_input_thumbnail(
                     source_path=image_path,
                     output_path=input_thumb_path,
@@ -534,15 +531,15 @@ class DataviewService:
 
         # Generate ROI thumbnail from cell_roi.json
         if roi_path:
-            abs_roi_path = roi_path
-            if not os.path.isabs(roi_path):
-                abs_roi_path = join_filepath([DIRPATH.OUTPUT_DIR, roi_path])
-            if os.path.exists(abs_roi_path):
+            abs_roi_path = ThumbnailGenerator.resolve_source_path(
+                workspace_id, roi_path
+            )
+            if abs_roi_path:
+                roi_thumb_path = ThumbnailGenerator.get_thumbnail_path(
+                    workspace_id, unique_id, ThumbnailType.ROI
+                )
                 try:
-                    create_directory(thumb_dir)
-                    roi_thumb_path = join_filepath(
-                        [thumb_dir, ThumbnailType.ROI.filename]
-                    )
+                    create_directory(os.path.dirname(roi_thumb_path))
                     ThumbnailGenerator.generate_roi_thumbnail(
                         abs_roi_path, roi_thumb_path
                     )
@@ -557,25 +554,3 @@ class DataviewService:
             ),
             roi_url=normalize_output_path(roi_thumb_path) if roi_thumb_path else None,
         )
-
-    @classmethod
-    def _resolve_image_path(cls, workspace_id: str, image_path: str) -> Optional[str]:
-        """
-        Resolve image path to absolute path.
-        Input images can be in the input directory (just filename) or output directory.
-        """
-        if os.path.isabs(image_path) and os.path.exists(image_path):
-            return image_path
-
-        # Try as relative path from output dir
-        abs_path = join_filepath([DIRPATH.OUTPUT_DIR, image_path])
-        if os.path.exists(abs_path):
-            return abs_path
-
-        # Try as input file (just filename)
-        filename = os.path.basename(image_path)
-        input_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
-        if os.path.exists(input_path):
-            return input_path
-
-        return None

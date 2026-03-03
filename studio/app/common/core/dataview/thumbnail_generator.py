@@ -2,16 +2,78 @@
 
 import json
 import os
+from typing import Optional
 
 import imageio.v3 as imageio
 import numpy as np
 import tifffile
 
-from studio.app.const import EXTENSION_LABELS
+from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.const import EXTENSION_LABELS, ThumbnailConst, ThumbnailType
+from studio.app.dir_path import DIRPATH
 
 
 class ThumbnailGenerator:
     """Utility class for generating PNG thumbnails from various sources."""
+
+    @classmethod
+    def get_thumbnail_path(
+        cls, workspace_id: str, unique_id: str, thumb_type: ThumbnailType
+    ) -> str:
+        """
+        Get the absolute path for a thumbnail PNG.
+
+        Args:
+            workspace_id: Workspace identifier
+            unique_id: Experiment unique identifier
+            thumb_type: ThumbnailType.INPUT or ThumbnailType.ROI
+
+        Returns:
+            Absolute path to the thumbnail PNG file
+        """
+        return join_filepath(
+            [
+                DIRPATH.OUTPUT_DIR,
+                workspace_id,
+                unique_id,
+                ThumbnailConst.DIRNAME,
+                thumb_type.filename,
+            ]
+        )
+
+    @classmethod
+    def resolve_source_path(cls, workspace_id: str, file_path: str) -> Optional[str]:
+        """
+        Resolve a source file path to an absolute path.
+
+        Tries in order:
+        1. Already absolute and exists → return as-is
+        2. Relative from OUTPUT_DIR → return if exists
+        3. Basename in INPUT_DIR/workspace_id → return if exists
+        4. None if not found
+
+        Args:
+            workspace_id: Workspace identifier
+            file_path: File path (absolute, relative, or just filename)
+
+        Returns:
+            Absolute path if found, None otherwise
+        """
+        if os.path.isabs(file_path) and os.path.exists(file_path):
+            return file_path
+
+        # Try as relative path from output dir
+        abs_path = join_filepath([DIRPATH.OUTPUT_DIR, file_path])
+        if os.path.exists(abs_path):
+            return abs_path
+
+        # Try as input file (just filename)
+        filename = os.path.basename(file_path)
+        input_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
+        if os.path.exists(input_path):
+            return input_path
+
+        return None
 
     @classmethod
     def generate_tiff_thumbnail(

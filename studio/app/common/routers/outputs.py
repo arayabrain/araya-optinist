@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 
 from studio.app.common.core.auth.auth_dependencies import get_outputs_remote_bucket_name
+from studio.app.common.core.dataview.thumbnail_generator import ThumbnailGenerator
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
@@ -31,42 +32,12 @@ from studio.app.common.core.workspace.workspace_dependencies import (
 )
 from studio.app.common.dataclass.timeseries_chunk_handler import TimeSeriesChunkHandler
 from studio.app.common.schemas.outputs import JsonTimeSeriesData, OutputData
-from studio.app.const import (
-    ACCEPT_FILE_EXT,
-    ORIGINAL_DATA_EXT,
-    ThumbnailConst,
-    ThumbnailType,
-)
+from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT, ThumbnailType
 from studio.app.dir_path import DIRPATH
 
 router = APIRouter(prefix="/outputs", tags=["outputs"])
 
 logger = AppLogger.get_logger()
-
-
-def _get_thumbnail_png_path(
-    workspace_id: str, unique_id: str, thumb_type: ThumbnailType
-) -> str:
-    """
-    Get the expected path for a thumbnail PNG.
-
-    Args:
-        workspace_id: Workspace identifier
-        unique_id: Experiment unique identifier
-        thumb_type: ThumbnailType.INPUT or ThumbnailType.ROI
-
-    Returns:
-        Absolute path to the thumbnail PNG file
-    """
-    return join_filepath(
-        [
-            DIRPATH.OUTPUT_DIR,
-            workspace_id,
-            unique_id,
-            ThumbnailConst.DIRNAME,
-            thumb_type.filename,
-        ]
-    )
 
 
 async def get_or_generate_thumbnail(
@@ -98,28 +69,21 @@ async def get_or_generate_thumbnail(
     Returns:
         Path to the thumbnail PNG file (may be newly generated)
     """
-    from studio.app.common.core.dataview.thumbnail_generator import ThumbnailGenerator
-    from studio.app.common.core.utils.filepath_creater import create_directory
-
-    thumb_path = _get_thumbnail_png_path(workspace_id, unique_id, thumb_type)
+    thumb_path = ThumbnailGenerator.get_thumbnail_path(
+        workspace_id, unique_id, thumb_type
+    )
 
     # Check if PNG thumbnail already exists
     if os.path.exists(thumb_path):
         return normalize_output_path(thumb_path)
 
     # Resolve the original file path
-    abs_original_path = original_path
-    if not os.path.isabs(original_path):
-        # Try output directory first
-        abs_original_path = join_filepath([DIRPATH.OUTPUT_DIR, original_path])
-
-    # For input files (TIFFs), the path might be just a filename
-    if thumb_type == ThumbnailType.INPUT and not os.path.exists(abs_original_path):
-        filename = os.path.basename(original_path)
-        abs_original_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
+    abs_original_path = ThumbnailGenerator.resolve_source_path(
+        workspace_id, original_path
+    )
 
     # Download from remote storage if needed
-    if not os.path.exists(abs_original_path) and RemoteStorageController.is_available():
+    if abs_original_path is None and RemoteStorageController.is_available():
         async with RemoteStorageReader(
             remote_bucket_name,
             workspace_id,
@@ -129,6 +93,10 @@ async def get_or_generate_thumbnail(
             await remote_storage_controller.download_thumbnail_source(
                 workspace_id, unique_id, original_path, thumb_type
             )
+        # Re-resolve after download
+        abs_original_path = ThumbnailGenerator.resolve_source_path(
+            workspace_id, original_path
+        )
 
     # Generate thumbnail
     # - INPUT: always generates (TIFF render if file exists, placeholder if not)
@@ -136,21 +104,18 @@ async def get_or_generate_thumbnail(
     can_generate = False
     if thumb_type == ThumbnailType.INPUT:
         can_generate = True  # generate_input_thumbnail handles missing files
-    elif os.path.exists(abs_original_path):
+    elif abs_original_path is not None:
         can_generate = True
 
     if can_generate:
         try:
-            thumb_dir = os.path.dirname(thumb_path)
-            create_directory(thumb_dir)
+            create_directory(os.path.dirname(thumb_path))
 
             if thumb_type == ThumbnailType.INPUT:
                 ThumbnailGenerator.generate_input_thumbnail(
                     source_path=original_path,
                     output_path=thumb_path,
-                    abs_source_path=(
-                        abs_original_path if os.path.exists(abs_original_path) else None
-                    ),
+                    abs_source_path=abs_original_path,
                 )
             else:
                 ThumbnailGenerator.generate_roi_thumbnail(abs_original_path, thumb_path)
@@ -329,7 +294,9 @@ async def get_thumbnail(
     """
 
     # Get the expected thumbnail path
-    thumb_path = _get_thumbnail_png_path(workspace_id, unique_id, thumb_type)
+    thumb_path = ThumbnailGenerator.get_thumbnail_path(
+        workspace_id, unique_id, thumb_type
+    )
 
     # Try to sync thumbnail from remote storage if not available locally
     if not os.path.exists(thumb_path) and RemoteStorageController.is_available():
@@ -426,7 +393,9 @@ async def get_thumbnail(
             workspace_id, unique_id, original_path, remote_bucket_name, thumb_type
         )
         # Re-get the absolute path since generation should have created the file
-        thumb_path = _get_thumbnail_png_path(workspace_id, unique_id, thumb_type)
+        thumb_path = ThumbnailGenerator.get_thumbnail_path(
+            workspace_id, unique_id, thumb_type
+        )
 
     # Check if thumbnail exists after all attempts
     if not os.path.exists(thumb_path):
