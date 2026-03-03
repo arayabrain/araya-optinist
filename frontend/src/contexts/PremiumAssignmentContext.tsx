@@ -153,14 +153,15 @@ export const PremiumAssignmentProvider: React.FC<{
   const [pollInterval, setPollInterval] = useState(INITIAL_POLL_INTERVAL_MS)
   const [pollAttempts, setPollAttempts] = useState(() => {
     const stored = ssRead(SS_POLL_ATTEMPTS)
-    return stored ? parseInt(stored, 10) || 0 : 0
+    const n = Number(stored)
+    return Number.isNaN(n) ? 0 : n
   })
 
   // Sync pollAttempts to sessionStorage so the cap survives page refreshes
   useEffect(() => {
     if (pollAttempts > 0) {
       ssWrite(SS_POLL_ATTEMPTS, String(pollAttempts))
-    } else {
+    } else if (ssRead(SS_POLL_ATTEMPTS) !== null) {
       ssRemove(SS_POLL_ATTEMPTS)
     }
   }, [pollAttempts])
@@ -491,7 +492,7 @@ export const PremiumAssignmentProvider: React.FC<{
         } catch {
           // Non-critical; beacon will fail gracefully
         }
-        ssWrite(SS_HAS_ATTEMPTED, "true")
+        ssWrite(SS_HAS_ATTEMPTED, "true") // duplicated in assign path below — both exits must persist
         return
       }
 
@@ -534,8 +535,10 @@ export const PremiumAssignmentProvider: React.FC<{
       }
       // Persist only after a successful status/assign round-trip.
       // On network error (catch below), leave unpersisted so refresh retries.
-      ssWrite(SS_HAS_ATTEMPTED, "true")
+      ssWrite(SS_HAS_ATTEMPTED, "true") // duplicated in already-assigned path above — both exits must persist
     } catch (error) {
+      // hasAttemptedRef stays true to prevent rapid-fire retries on this mount.
+      // sessionStorage is NOT written, so a page refresh will retry.
       // Set error state so the error notification fires
       const errorMessage =
         error instanceof Error ? error.message : "Assignment failed"
@@ -549,7 +552,7 @@ export const PremiumAssignmentProvider: React.FC<{
       }))
       routingService.clearRoutingInfo()
     }
-  }, [isPremiumUser])
+  }, [isPremiumUser]) // refs and setState are stable — no other deps needed
 
   /**
    * Auto-release on logout via sendBeacon.
