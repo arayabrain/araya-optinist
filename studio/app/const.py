@@ -39,7 +39,7 @@ FRONTEND_URL = get_env_var("FRONTEND_URL", default="http://localhost:3000")
 
 # File sync patterns for selective sync
 ESSENTIAL_SYNC_PATTERNS = (".yaml", ".yml", ".json")
-LARGE_FILE_PATTERNS = tuple(ACCEPT_FILE_EXT.ALL_EXT.value + [".pkl"])
+LARGE_FILE_PATTERNS = tuple(ACCEPT_FILE_EXT.ALL_EXT.value + [".pkl", ".bin", ".npy"])
 # Visualization mode: JSON for timeseries data, TIFF for images,
 # YAML for snakemake config
 VISUALIZATION_SYNC_PATTERNS = (".json", ".tif", ".tiff", ".yaml")
