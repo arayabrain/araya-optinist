@@ -4,8 +4,9 @@ Contract tests for router endpoints that use DownloadCoordinator.
 Verifies that each endpoint calls the coordinator with the correct
 tier, caller, and flags, and handles DownloadResult correctly.
 
-Note: DownloadCoordinator is lazily imported inside function bodies in all
-routers, so we patch it at its source module path, not the consuming module.
+Note: Most routers lazily import DownloadCoordinator inside function bodies,
+so we patch at the source module path (_DC_PATH). outputs.py uses a module-level
+import, so we patch the name in that module directly (_DC_OUTPUTS_PATH).
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,8 +15,11 @@ import pytest
 
 from studio.app.common.core.storage.sync_tier import DownloadResult, SyncTier
 
-# Canonical patch path for DownloadCoordinator (lazily imported everywhere)
+# Canonical patch path for DownloadCoordinator (lazily imported in most routers)
 _DC_PATH = "studio.app.common.core.storage.download_coordinator.DownloadCoordinator"
+
+# outputs.py uses a module-level import, so patch the name in that module
+_DC_OUTPUTS_PATH = "studio.app.common.routers.outputs.DownloadCoordinator"
 
 
 def _mock_coordinator(**method_overrides):
@@ -45,7 +49,7 @@ class TestSyncVisualizationFilesContract:
         ) as mock_rsc:
             mock_rsc.is_available.return_value = True
 
-            with patch(_DC_PATH) as mock_dc_cls:
+            with patch(_DC_OUTPUTS_PATH) as mock_dc_cls:
                 mock_coordinator = MagicMock()
                 mock_coordinator.ensure_synced = AsyncMock(return_value=mock_result)
                 mock_dc_cls.get_instance.return_value = mock_coordinator
@@ -92,7 +96,7 @@ class TestSyncVisualizationFilesContract:
         ) as mock_rsc:
             mock_rsc.is_available.return_value = True
 
-            with patch(_DC_PATH) as mock_dc_cls:
+            with patch(_DC_OUTPUTS_PATH) as mock_dc_cls:
                 mock_coordinator = MagicMock()
                 mock_coordinator.ensure_synced = AsyncMock(return_value=mock_result)
                 mock_dc_cls.get_instance.return_value = mock_coordinator
@@ -114,7 +118,7 @@ class TestBackgroundFullSyncContract:
 
         mock_result = DownloadResult(success=True, achieved_tier=SyncTier.ALL)
 
-        with patch(_DC_PATH) as mock_dc_cls:
+        with patch(_DC_OUTPUTS_PATH) as mock_dc_cls:
             mock_coordinator = MagicMock()
             mock_coordinator.ensure_synced = AsyncMock(return_value=mock_result)
             mock_dc_cls.get_instance.return_value = mock_coordinator
@@ -163,7 +167,7 @@ class TestGetThumbnailContract:
             ) as mock_exists:
                 mock_exists.return_value = False
 
-                with patch(_DC_PATH) as mock_dc_cls:
+                with patch(_DC_OUTPUTS_PATH) as mock_dc_cls:
                     mock_coordinator = MagicMock()
                     mock_coordinator.ensure_synced = AsyncMock(return_value=mock_result)
                     mock_dc_cls.get_instance.return_value = mock_coordinator
