@@ -130,9 +130,7 @@ async def lifespan(app: FastAPI):
                             SyncStateTracker.invalidate_stale_records
                         )
                         if stale_count:
-                            logger.info(
-                                f"Invalidated {stale_count} stale sync records"
-                            )
+                            logger.info(f"Invalidated {stale_count} stale sync records")
                     except Exception as e:
                         logger.warning(f"Stale record invalidation failed: {e}")
 

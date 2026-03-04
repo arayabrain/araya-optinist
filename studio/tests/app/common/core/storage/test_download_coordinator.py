@@ -42,7 +42,7 @@ class TestDownloadCoordinatorSingleton:
 
 
 class TestDownloadLimiter:
-    """DownloadLimiter provides in-process + cross-process deduplication."""
+    """DownloadLimiter provides in-process deduplication."""
 
     @pytest.mark.asyncio
     async def test_get_lock_returns_asyncio_lock(self):
@@ -63,42 +63,6 @@ class TestDownloadLimiter:
         lock1 = await limiter.get_lock("ws1/uid1")
         lock2 = await limiter.get_lock("ws1/uid2")
         assert lock1 is not lock2
-
-    @pytest.mark.asyncio
-    async def test_try_claim_and_release(self):
-        """Claim can be acquired and released."""
-        acquired, _ = await DownloadLimiter.try_claim(
-            "ws_test", "uid_test", SyncTier.ALL, "test"
-        )
-        assert acquired is True
-
-        # Release
-        await DownloadLimiter.release_claim("ws_test", "uid_test")
-
-        # Should be acquirable again
-        acquired2, _ = await DownloadLimiter.try_claim(
-            "ws_test", "uid_test", SyncTier.ALL, "test"
-        )
-        assert acquired2 is True
-        await DownloadLimiter.release_claim("ws_test", "uid_test")
-
-    @pytest.mark.asyncio
-    async def test_check_claim_when_held(self):
-        acquired, _ = await DownloadLimiter.try_claim(
-            "ws_check", "uid_check", SyncTier.METADATA_ONLY, "test"
-        )
-        assert acquired is True
-
-        is_held, data = await DownloadLimiter.check_claim("ws_check", "uid_check")
-        assert is_held is True
-        assert data["tier"] == int(SyncTier.METADATA_ONLY)
-
-        await DownloadLimiter.release_claim("ws_check", "uid_check")
-
-    @pytest.mark.asyncio
-    async def test_check_claim_when_not_held(self):
-        is_held, data = await DownloadLimiter.check_claim("ws_none", "uid_none")
-        assert is_held is False
 
     @pytest.mark.asyncio
     async def test_evict_unlocked_at_capacity(self):
@@ -224,29 +188,19 @@ class TestEnsureSynced:
                         return_value=self._make_probe(SyncTier.NONE)
                     )
 
-                    with patch(
-                        "studio.app.common.core.storage.download_coordinator."
-                        "AtomicClaimFile"
-                    ) as mock_claim:
-                        mock_claim.try_acquire_or_detect_stale.return_value = (
-                            True,
-                            None,
+                    with patch.object(
+                        coordinator,
+                        "_download_metadata_only",
+                        new_callable=AsyncMock,
+                        return_value=SyncTier.METADATA_ONLY,
+                    ) as mock_dl:
+                        result = await coordinator.ensure_synced(
+                            "bucket",
+                            "ws1",
+                            "uid1",
+                            SyncTier.METADATA_ONLY,
+                            "test",
                         )
-                        mock_claim.release.return_value = None
-
-                        with patch.object(
-                            coordinator,
-                            "_download_metadata_only",
-                            new_callable=AsyncMock,
-                            return_value=SyncTier.METADATA_ONLY,
-                        ) as mock_dl:
-                            result = await coordinator.ensure_synced(
-                                "bucket",
-                                "ws1",
-                                "uid1",
-                                SyncTier.METADATA_ONLY,
-                                "test",
-                            )
 
         assert result.success is True
         assert result.achieved_tier == SyncTier.METADATA_ONLY
@@ -272,29 +226,19 @@ class TestEnsureSynced:
                         return_value=self._make_probe(SyncTier.NONE)
                     )
 
-                    with patch(
-                        "studio.app.common.core.storage.download_coordinator."
-                        "AtomicClaimFile"
-                    ) as mock_claim:
-                        mock_claim.try_acquire_or_detect_stale.return_value = (
-                            True,
-                            None,
+                    with patch.object(
+                        coordinator,
+                        "_download_standard",
+                        new_callable=AsyncMock,
+                        return_value=SyncTier.ALL,
+                    ) as mock_dl:
+                        result = await coordinator.ensure_synced(
+                            "bucket",
+                            "ws1",
+                            "uid1",
+                            SyncTier.ALL,
+                            "test",
                         )
-                        mock_claim.release.return_value = None
-
-                        with patch.object(
-                            coordinator,
-                            "_download_standard",
-                            new_callable=AsyncMock,
-                            return_value=SyncTier.ALL,
-                        ) as mock_dl:
-                            result = await coordinator.ensure_synced(
-                                "bucket",
-                                "ws1",
-                                "uid1",
-                                SyncTier.ALL,
-                                "test",
-                            )
 
         assert result.success is True
         mock_dl.assert_called_once_with("bucket", "ws1", "uid1", SyncTier.ALL)
@@ -319,30 +263,20 @@ class TestEnsureSynced:
                         return_value=self._make_probe(SyncTier.NONE)
                     )
 
-                    with patch(
-                        "studio.app.common.core.storage.download_coordinator."
-                        "AtomicClaimFile"
-                    ) as mock_claim:
-                        mock_claim.try_acquire_or_detect_stale.return_value = (
-                            True,
-                            None,
+                    with patch.object(
+                        coordinator,
+                        "_download_exclusive",
+                        new_callable=AsyncMock,
+                        return_value=SyncTier.ALL,
+                    ) as mock_dl:
+                        result = await coordinator.ensure_synced(
+                            "bucket",
+                            "ws1",
+                            "uid1",
+                            SyncTier.ALL,
+                            "test",
+                            use_exclusive_lock=True,
                         )
-                        mock_claim.release.return_value = None
-
-                        with patch.object(
-                            coordinator,
-                            "_download_exclusive",
-                            new_callable=AsyncMock,
-                            return_value=SyncTier.ALL,
-                        ) as mock_dl:
-                            result = await coordinator.ensure_synced(
-                                "bucket",
-                                "ws1",
-                                "uid1",
-                                SyncTier.ALL,
-                                "test",
-                                use_exclusive_lock=True,
-                            )
 
         assert result.success is True
         mock_dl.assert_called_once()
@@ -421,30 +355,20 @@ class TestEnsureSynced:
                     )
                     mock_tracker.reconcile = MagicMock()
 
-                    with patch(
-                        "studio.app.common.core.storage.download_coordinator."
-                        "AtomicClaimFile"
-                    ) as mock_claim:
-                        mock_claim.try_acquire_or_detect_stale.return_value = (
-                            True,
-                            None,
+                    with patch.object(
+                        coordinator,
+                        "_download_standard",
+                        new_callable=AsyncMock,
+                        return_value=SyncTier.ALL,
+                    ):
+                        result = await coordinator.ensure_synced(
+                            "bucket",
+                            "ws1",
+                            "uid1",
+                            SyncTier.ALL,
+                            "test",
+                            update_db_status=True,
                         )
-                        mock_claim.release.return_value = None
-
-                        with patch.object(
-                            coordinator,
-                            "_download_standard",
-                            new_callable=AsyncMock,
-                            return_value=SyncTier.ALL,
-                        ):
-                            result = await coordinator.ensure_synced(
-                                "bucket",
-                                "ws1",
-                                "uid1",
-                                SyncTier.ALL,
-                                "test",
-                                update_db_status=True,
-                            )
 
         assert result.success is True
         # reconcile is called via asyncio.to_thread; verify it was called

@@ -408,7 +408,7 @@ class TestPublicDataviewReproduceWorkflow:
 
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
-            "find_published_dataview_record",
+            "find_dataview_record",
             return_value=mock_record,
         ), patch("os.path.exists", return_value=False), patch(
             "os.environ.get", return_value="test-bucket"

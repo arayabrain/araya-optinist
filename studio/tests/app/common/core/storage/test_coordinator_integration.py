@@ -266,33 +266,23 @@ class TestCoordinatorConcurrencyContract:
                         side_effect=mock_probe
                     )
 
-                    with patch(
-                        "studio.app.common.core.storage.download_coordinator."
-                        "AtomicClaimFile"
-                    ) as mock_claim:
-                        mock_claim.try_acquire_or_detect_stale.return_value = (
-                            True,
-                            None,
+                    with patch.object(
+                        coordinator,
+                        "_download_standard",
+                        side_effect=mock_download_standard,
+                    ):
+                        # Launch 3 concurrent calls for same experiment
+                        results = await asyncio.gather(
+                            coordinator.ensure_synced(
+                                "bucket", "ws1", "uid1", SyncTier.ALL, "c1"
+                            ),
+                            coordinator.ensure_synced(
+                                "bucket", "ws1", "uid1", SyncTier.ALL, "c2"
+                            ),
+                            coordinator.ensure_synced(
+                                "bucket", "ws1", "uid1", SyncTier.ALL, "c3"
+                            ),
                         )
-                        mock_claim.release.return_value = None
-
-                        with patch.object(
-                            coordinator,
-                            "_download_standard",
-                            side_effect=mock_download_standard,
-                        ):
-                            # Launch 3 concurrent calls for same experiment
-                            results = await asyncio.gather(
-                                coordinator.ensure_synced(
-                                    "bucket", "ws1", "uid1", SyncTier.ALL, "c1"
-                                ),
-                                coordinator.ensure_synced(
-                                    "bucket", "ws1", "uid1", SyncTier.ALL, "c2"
-                                ),
-                                coordinator.ensure_synced(
-                                    "bucket", "ws1", "uid1", SyncTier.ALL, "c3"
-                                ),
-                            )
 
         # All should succeed
         assert all(r.success for r in results)

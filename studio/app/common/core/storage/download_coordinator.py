@@ -1,13 +1,10 @@
 import asyncio
-import os
 import shutil
-import tempfile
 import threading
 import time
 from typing import Dict, List, Optional, Tuple
 
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.storage.atomic_claim_file import AtomicClaimFile
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageLockError,
@@ -21,18 +18,13 @@ logger = AppLogger.get_logger()
 # Minimum free disk space (bytes) before refusing downloads (EC-5)
 _MIN_FREE_DISK_BYTES = 1 * 1024 * 1024 * 1024  # 1 GB
 
-# Claim sentinel directory
-_CLAIMS_DIR = os.path.join(tempfile.gettempdir(), "optinist_claims")
-
-# Claim sentinel expiry
-_CLAIM_EXPIRE_MINUTES = 10
-
 
 class DownloadLimiter:
-    """Two-level deduplication for download operations.
+    """In-process deduplication for download operations.
 
-    Level 1: In-process asyncio.Lock per experiment key.
-    Level 2: Cross-process advisory claim sentinel files.
+    Uses asyncio.Lock per experiment key to prevent concurrent downloads
+    of the same experiment within a single worker process.
+    Cross-process dedup is handled by the startup leader election system.
     """
 
     _MAX_LOCKS = 1000
@@ -55,48 +47,6 @@ class DownloadLimiter:
         to_remove = [k for k, v in self._locks.items() if not v.locked()]
         for k in to_remove:
             del self._locks[k]
-
-    @staticmethod
-    def _claim_path(workspace_id: str, unique_id: str) -> str:
-        return os.path.join(_CLAIMS_DIR, f"{workspace_id}_{unique_id}.json")
-
-    @staticmethod
-    async def try_claim(
-        workspace_id: str,
-        unique_id: str,
-        tier: SyncTier,
-        caller: str,
-    ) -> Tuple[bool, Optional[dict]]:
-        """Try to create a cross-process advisory claim sentinel.
-
-        Returns (acquired, existing_claim_data).
-        """
-        path = DownloadLimiter._claim_path(workspace_id, unique_id)
-        content = {"tier": int(tier), "caller": caller}
-
-        return await asyncio.to_thread(
-            AtomicClaimFile.try_acquire_or_detect_stale,
-            path,
-            content,
-            _CLAIM_EXPIRE_MINUTES,
-        )
-
-    @staticmethod
-    async def release_claim(workspace_id: str, unique_id: str) -> None:
-        """Release the cross-process claim sentinel."""
-        path = DownloadLimiter._claim_path(workspace_id, unique_id)
-        await asyncio.to_thread(AtomicClaimFile.release, path)
-
-    @staticmethod
-    async def check_claim(
-        workspace_id: str,
-        unique_id: str,
-    ) -> Tuple[bool, Optional[dict]]:
-        """Check if a claim is held by another process."""
-        path = DownloadLimiter._claim_path(workspace_id, unique_id)
-        return await asyncio.to_thread(
-            AtomicClaimFile.is_held, path, _CLAIM_EXPIRE_MINUTES
-        )
 
 
 class DownloadCoordinator:
@@ -153,12 +103,11 @@ class DownloadCoordinator:
 
         1. Check current sync state (SyncStateTracker) -- skip if already done
         2. Acquire in-process dedup lock (DownloadLimiter)
-        3. Write cross-process claim sentinel (advisory)
-        4. For METADATA_ONLY: call download_experiment_meta()
+        3. For METADATA_ONLY: call download_experiment_meta()
            For higher tiers: call download_experiment(sync_mode=tier.to_sync_mode())
            For exclusive paths: use RemoteStorageReader context manager
-        5. Update sync state on completion (SyncStateTracker)
-        6. Reconcile DB + file status when appropriate
+        4. Update sync state on completion (SyncStateTracker)
+        5. Reconcile DB + file status when appropriate
         """
         start_time = time.monotonic()
 
@@ -222,103 +171,52 @@ class DownloadCoordinator:
                         duration_ms=int((time.monotonic() - start_time) * 1000),
                     )
 
-                # Step 3: Cross-process advisory claim
-                claimed, existing_claim = await DownloadLimiter.try_claim(
-                    workspace_id, unique_id, required_tier, caller
+                # Step 3: Perform download
+                logger.info(
+                    f"coordinator.download_started "
+                    f"experiment={workspace_id}/{unique_id} "
+                    f"tier={required_tier.name} "
+                    f"caller={caller}"
                 )
 
-                if not claimed and existing_claim:
-                    try:
-                        existing_tier = SyncTier(existing_claim.get("tier", 0))
-                    except (ValueError, KeyError):
-                        existing_tier = SyncTier.NONE
-                    if existing_tier >= required_tier:
-                        # Another process claims same or higher tier.
-                        # Re-check filesystem: if data is already present,
-                        # the other process finished and we can skip safely.
-                        # If not, proceed with download (idempotent) rather
-                        # than returning success when data isn't available.
-                        recheck = await SyncStateTracker.get_sync_probe_async(
-                            workspace_id, unique_id
-                        )
-                        if recheck.tier >= required_tier:
-                            logger.info(
-                                f"coordinator.download_skipped "
-                                f"reason=claim_held_and_files_present "
-                                f"experiment={workspace_id}/{unique_id} "
-                                f"existing_tier={existing_tier.name} "
-                                f"caller={caller}"
-                            )
-                            return DownloadResult(
-                                success=True,
-                                achieved_tier=recheck.tier,
-                                was_deduplicated=True,
-                                duration_ms=int((time.monotonic() - start_time) * 1000),
-                            )
-                        # Claim held but files not present yet --
-                        # proceed with download (advisory dedup, idempotent)
-                        logger.info(
-                            f"coordinator.download_proceeding "
-                            f"reason=claim_held_but_files_missing "
-                            f"experiment={workspace_id}/{unique_id} "
-                            f"existing_tier={existing_tier.name} "
-                            f"caller={caller}"
-                        )
-                    # Lower tier in progress -- we need higher tier
-                    # Proceed with download (will get remaining files)
-
-                try:
-                    # Step 4: Perform download
-                    logger.info(
-                        f"coordinator.download_started "
-                        f"experiment={workspace_id}/{unique_id} "
-                        f"tier={required_tier.name} "
-                        f"caller={caller}"
+                if use_exclusive_lock:
+                    achieved = await self._download_exclusive(
+                        bucket_name, workspace_id, unique_id, required_tier
+                    )
+                elif required_tier == SyncTier.METADATA_ONLY:
+                    achieved = await self._download_metadata_only(
+                        bucket_name, workspace_id, unique_id
+                    )
+                else:
+                    achieved = await self._download_standard(
+                        bucket_name, workspace_id, unique_id, required_tier
                     )
 
-                    if use_exclusive_lock:
-                        achieved = await self._download_exclusive(
-                            bucket_name, workspace_id, unique_id, required_tier
-                        )
-                    elif required_tier == SyncTier.METADATA_ONLY:
-                        achieved = await self._download_metadata_only(
-                            bucket_name, workspace_id, unique_id
-                        )
-                    else:
-                        achieved = await self._download_standard(
-                            bucket_name, workspace_id, unique_id, required_tier
-                        )
+                duration_ms = int((time.monotonic() - start_time) * 1000)
 
-                    duration_ms = int((time.monotonic() - start_time) * 1000)
-
-                    # Step 5+6: Reconcile if needed
-                    if update_db_status and achieved >= SyncTier.ALL:
-                        await asyncio.to_thread(
-                            SyncStateTracker.reconcile,
-                            workspace_id,
-                            unique_id,
-                            achieved,
-                            bucket_name,
-                        )
-
-                    logger.info(
-                        f"coordinator.download_completed "
-                        f"experiment={workspace_id}/{unique_id} "
-                        f"tier={achieved.name} "
-                        f"duration_ms={duration_ms} "
-                        f"caller={caller}"
+                # Step 4+5: Reconcile if needed
+                if update_db_status and achieved >= SyncTier.ALL:
+                    await asyncio.to_thread(
+                        SyncStateTracker.reconcile,
+                        workspace_id,
+                        unique_id,
+                        achieved,
+                        bucket_name,
                     )
 
-                    return DownloadResult(
-                        success=True,
-                        achieved_tier=achieved,
-                        duration_ms=duration_ms,
-                    )
+                logger.info(
+                    f"coordinator.download_completed "
+                    f"experiment={workspace_id}/{unique_id} "
+                    f"tier={achieved.name} "
+                    f"duration_ms={duration_ms} "
+                    f"caller={caller}"
+                )
 
-                finally:
-                    # Always release claim sentinel
-                    if claimed:
-                        await DownloadLimiter.release_claim(workspace_id, unique_id)
+                return DownloadResult(
+                    success=True,
+                    achieved_tier=achieved,
+                    duration_ms=duration_ms,
+                )
 
         except RemoteStorageLockError as e:
             duration_ms = int((time.monotonic() - start_time) * 1000)
