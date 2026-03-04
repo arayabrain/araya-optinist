@@ -17,10 +17,8 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.snakemake_reader import SmkConfigReader
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteExperimentNotFoundError,
-    RemoteExperimentSyncMode,
     RemoteStorageController,
     RemoteStorageLockError,
-    RemoteStorageReader,
     RemoteStorageSimpleReader,
     RemoteSyncStatusFileUtil,
 )
@@ -83,27 +81,23 @@ async def get_experiments(
             )
         else:
             # Per-experiment DB comparison: download metadata for experiments
-            # in DB but missing locally
+            # in DB but missing locally (fixes Issue C all-or-nothing fallback)
             try:
-                local_uids = ExptConfigReader.get_local_experiment_uids(workspace_id)
-                published_uids = _get_published_uids(db, workspace_id)
-                missing_uids = published_uids - local_uids
+                from studio.app.common.core.storage.download_coordinator import (
+                    DownloadCoordinator,
+                )
 
-                if missing_uids:
-                    for uid in missing_uids:
-                        async with RemoteStorageReader(
-                            remote_bucket_name,
-                            workspace_id,
-                            uid,
-                            sync_mode=RemoteExperimentSyncMode.METADATA_ONLY,
-                        ) as remote_storage_controller:
-                            await remote_storage_controller.download_experiment_meta(
-                                workspace_id, uid
-                            )
-                    # Re-glob to pick up newly downloaded files
-                    config_paths = glob(
-                        ExptConfigReader.get_config_yaml_wild_path(workspace_id)
-                    )
+                coordinator = DownloadCoordinator.get_instance()
+                await coordinator.ensure_metadata_available(
+                    bucket_name=remote_bucket_name,
+                    workspace_id=workspace_id,
+                    db=db,
+                    caller="records_page",
+                )
+                # Re-glob to pick up newly downloaded files
+                config_paths = glob(
+                    ExptConfigReader.get_config_yaml_wild_path(workspace_id)
+                )
             except Exception as e:
                 logger.warning(
                     f"Per-experiment metadata sync failed: {e}", exc_info=True
@@ -347,21 +341,29 @@ async def sync_remote_experiment(
     unique_id: str,
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
+    """User-initiated full sync (entry point #2, exclusive lock)."""
+    from studio.app.common.core.storage.download_coordinator import DownloadCoordinator
+    from studio.app.common.core.storage.sync_tier import SyncTier
+
     try:
-        result = False
+        coordinator = DownloadCoordinator.get_instance()
+        result = await coordinator.ensure_synced(
+            bucket_name=remote_bucket_name,
+            workspace_id=workspace_id,
+            unique_id=unique_id,
+            required_tier=SyncTier.ALL,
+            caller="user_sync_remote",
+            use_exclusive_lock=True,
+            update_db_status=True,
+        )
 
-        async with RemoteStorageReader(
-            remote_bucket_name, workspace_id, unique_id
-        ) as remote_storage_controller:
-            result = await remote_storage_controller.download_experiment(
-                workspace_id, unique_id
+        if not result.success:
+            if result.is_lock_error:
+                raise RemoteStorageLockError(workspace_id, unique_id)
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="record not found"
             )
-            if not result:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, detail="record not found"
-                )
-
-        return result
+        return True
 
     except HTTPException as e:
         logger.error(e, exc_info=True)

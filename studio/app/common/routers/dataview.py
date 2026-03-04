@@ -15,10 +15,7 @@ from studio.app.common.core.dataview.dataview_services import (
 )
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
-    RemoteExperimentNotFoundError,
     RemoteStorageController,
-    RemoteStorageLockError,
-    RemoteStorageReader,
     RemoteStorageType,
     RemoteSyncStatusFileUtil,
 )
@@ -291,13 +288,28 @@ async def public_reproduce_experiment(
     # Data is valid and available locally - update sync status if needed
     if hasattr(record, "local_sync_status"):
         if record.local_sync_status != LocalSyncStatus.synced.value:
+            from sqlalchemy import update
+
             logger.info(
                 f"Experiment {workspace_id}/{unique_id} data is available, "
                 f"updating sync status from '{record.local_sync_status}' to 'synced'"
             )
-            record.local_sync_status = LocalSyncStatus.synced.value
-            db.add(record)
+            stmt = (
+                update(models.ExperimentRecord)
+                .where(models.ExperimentRecord.id == record.id)
+                .where(models.ExperimentRecord.version == record.version)
+                .values(
+                    local_sync_status=LocalSyncStatus.synced.value,
+                    version=models.ExperimentRecord.version + 1,
+                )
+            )
+            result = db.execute(stmt)
             db.commit()
+            if result.rowcount == 0:
+                logger.info(
+                    f"Experiment {workspace_id}/{unique_id} sync status "
+                    "already updated by another process"
+                )
 
     return await reproduce_experiment(workspace_id, unique_id)
 
@@ -326,38 +338,29 @@ async def _ensure_experiment_downloaded(
         owner_bucket = getattr(workspace.user, "remote_bucket_name", None)
     remote_bucket_name = owner_bucket or os.environ.get("S3_DEFAULT_BUCKET_NAME")
 
-    try:
-        async with RemoteStorageReader(
-            remote_bucket_name, workspace_id, unique_id
-        ) as remote_storage_controller:
-            logger.info(
-                f"Downloading dataview experiment {workspace_id}/{unique_id} "
-                f"from remote bucket {remote_bucket_name}"
-            )
-            available = await remote_storage_controller.download_experiment(
-                workspace_id,
-                unique_id,
-            )
+    from studio.app.common.core.storage.download_coordinator import DownloadCoordinator
+    from studio.app.common.core.storage.sync_tier import SyncTier
 
-            if not available:
-                logger.error(
-                    f"Failed to download experiment {workspace_id}/{unique_id} "
-                    f"from remote bucket {remote_bucket_name}"
-                )
-                return JSONResponse(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    content={
-                        "status": "download_error",
-                        "message": "Failed to load experiment data, "
-                        "please try again later",
-                    },
-                )
-    except RemoteExperimentNotFoundError as e:
-        logger.warning(e)
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
-    except RemoteStorageLockError as e:
-        logger.warning(e)
-        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+    coordinator = DownloadCoordinator.get_instance()
+    result = await coordinator.ensure_synced(
+        bucket_name=remote_bucket_name,
+        workspace_id=workspace_id,
+        unique_id=unique_id,
+        required_tier=SyncTier.ALL,
+        caller="public_reproduce",
+        update_db_status=True,
+    )
+
+    if result.is_lock_error:
+        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=result.error)
+    if not result.success:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "status": "download_error",
+                "message": "Failed to load experiment data, " "please try again later",
+            },
+        )
 
     return None
 

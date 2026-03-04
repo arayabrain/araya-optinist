@@ -26,16 +26,12 @@ from sqlmodel import Session, select
 from studio.app.common.core.auth.auth_dependencies import _get_user_remote_bucket_name
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
-    RemoteExperimentSyncMode,
     RemoteStorageController,
-    RemoteStorageReader,
     RemoteStorageSimpleReader,
 )
-from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.db.database import get_db, get_session
 from studio.app.common.models.user import User
 from studio.app.common.models.workspace import Workspace
-from studio.app.dir_path import DIRPATH
 
 router = APIRouter(prefix="/system-internal", tags=["system-internal"])
 
@@ -202,50 +198,39 @@ async def _download_single_experiment(
     """
     Background task to download thumbnails and essential
     metadata for a single experiment from S3.
+
+    Uses DownloadCoordinator for deduplication and tier tracking.
     """
-    if not RemoteStorageController.is_available():
-        logger.warning(
-            "Remote storage not available,"
-            " skipping proactive sync for"
-            f" {workspace_id}/{unique_id}"
-        )
-        return
+    from studio.app.common.core.storage.download_coordinator import DownloadCoordinator
+    from studio.app.common.core.storage.sync_tier import SyncTier
 
-    # Skip if required files already exist locally
-    local_path = join_filepath([DIRPATH.OUTPUT_DIR, workspace_id, unique_id])
-    exp_yaml = os.path.join(local_path, DIRPATH.EXPERIMENT_YML)
-    wf_yaml = os.path.join(local_path, DIRPATH.WORKFLOW_YML)
-    if os.path.exists(exp_yaml) and os.path.exists(wf_yaml):
+    coordinator = DownloadCoordinator.get_instance()
+
+    if has_thumbnails:
+        await coordinator.ensure_synced(
+            bucket_name=bucket_name,
+            workspace_id=workspace_id,
+            unique_id=unique_id,
+            required_tier=SyncTier.THUMBNAILS_ONLY,
+            caller="proactive_sync",
+        )
+
+    result = await coordinator.ensure_synced(
+        bucket_name=bucket_name,
+        workspace_id=workspace_id,
+        unique_id=unique_id,
+        required_tier=SyncTier.ESSENTIAL_ONLY,
+        caller="proactive_sync",
+    )
+
+    if result.success:
         logger.info(
-            "Skipping proactive sync for"
-            f" {workspace_id}/{unique_id}:"
-            " files already exist locally"
+            f"Proactive sync completed for {workspace_id}/{unique_id}"
+            f" (skipped={result.was_skipped}, dedup={result.was_deduplicated})"
         )
-        return
-
-    try:
-        async with RemoteStorageReader(
-            bucket_name,
-            workspace_id,
-            unique_id,
-            RemoteExperimentSyncMode.THUMBNAILS_ONLY,
-        ) as controller:
-            if has_thumbnails:
-                await controller.download_experiment(
-                    workspace_id,
-                    unique_id,
-                    sync_mode=RemoteExperimentSyncMode.THUMBNAILS_ONLY,
-                )
-            await controller.download_experiment(
-                workspace_id,
-                unique_id,
-                sync_mode=RemoteExperimentSyncMode.ESSENTIAL_ONLY,
-            )
-        logger.info("Proactive sync completed for" f" {workspace_id}/{unique_id}")
-    except Exception as e:
+    else:
         logger.error(
-            "Proactive sync failed for" f" {workspace_id}/{unique_id}: {e}",
-            exc_info=True,
+            f"Proactive sync failed for {workspace_id}/{unique_id}: {result.error}"
         )
 
 
@@ -253,6 +238,8 @@ async def _download_experiments_for_user(bucket_name: str, user_id: int) -> None
     """
     Background task to download experiment metadata from S3.
     Creates its own database session to avoid using closed session.
+
+    Uses DownloadCoordinator for deduplication.
 
     Args:
         bucket_name: S3 bucket name for the user
@@ -266,11 +253,16 @@ async def _download_experiments_for_user(bucket_name: str, user_id: int) -> None
 
     db = None
     try:
+        from studio.app.common.core.storage.download_coordinator import (
+            DownloadCoordinator,
+        )
+        from studio.app.common.core.storage.sync_tier import SyncTier
+        from studio.app.common.models.experiment import ExperimentRecord
+
         # Create new database session for background task
         db = get_session()
 
         # Get all workspace IDs for this user
-        # Workspace.user_id is the foreign key to User.id (integer)
         workspaces = (
             db.execute(select(Workspace).where(Workspace.user_id == user_id))
             .scalars()
@@ -282,8 +274,37 @@ async def _download_experiments_for_user(bucket_name: str, user_id: int) -> None
             logger.info(f"No workspaces found for user {user_id}, skipping sync")
             return
 
-        async with RemoteStorageSimpleReader(bucket_name) as controller:
-            await controller.download_all_experiments_metas(workspace_ids)
+        # Get experiment UIDs per workspace from DB, with fallback to
+        # full S3 discovery for workspaces with no DB records yet
+        coordinator = DownloadCoordinator.get_instance()
+        ws_ids_without_records = []
+        for ws_id in workspace_ids:
+            experiments = (
+                db.query(ExperimentRecord.uid)
+                .filter(
+                    ExperimentRecord.workspace_id == ws_id,
+                    ExperimentRecord.success == 1,
+                )
+                .all()
+            )
+            if experiments:
+                exp_list = [(str(ws_id), r[0]) for r in experiments]
+                await coordinator.ensure_synced_batch(
+                    bucket_name=bucket_name,
+                    experiments=exp_list,
+                    required_tier=SyncTier.METADATA_ONLY,
+                    concurrency=5,
+                    caller="user_migration",
+                )
+            else:
+                ws_ids_without_records.append(str(ws_id))
+
+        # Fallback: discover experiments from S3 for workspaces with
+        # no DB records (e.g. first migration, external uploads)
+        if ws_ids_without_records:
+            async with RemoteStorageSimpleReader(bucket_name) as controller:
+                await controller.download_all_experiments_metas(ws_ids_without_records)
+
         logger.info(f"Experiment sync completed for user {user_id}")
     except Exception as e:
         logger.error(f"Experiment sync failed for user {user_id}: {e}", exc_info=True)

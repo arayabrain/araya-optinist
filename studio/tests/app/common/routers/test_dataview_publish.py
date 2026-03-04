@@ -262,17 +262,16 @@ class TestPublicDataviewReproduceWorkflow:
         """Test 202 response when experiment is pending sync and data not available"""
         from unittest.mock import AsyncMock
 
+        from studio.app.common.core.storage.sync_tier import DownloadResult, SyncTier
         from studio.app.common.routers.dataview import public_reproduce_experiment
 
         mock_record = MagicMock()
         mock_record.local_sync_status = LocalSyncStatus.pending.value
 
-        mock_remote_controller = MagicMock()
-        mock_remote_controller.download_experiment = AsyncMock(return_value=True)
-
-        mock_remote_reader = AsyncMock()
-        mock_remote_reader.__aenter__ = AsyncMock(return_value=mock_remote_controller)
-        mock_remote_reader.__aexit__ = AsyncMock(return_value=False)
+        mock_coordinator = MagicMock()
+        mock_coordinator.ensure_synced = AsyncMock(
+            return_value=DownloadResult(success=True, achieved_tier=SyncTier.ALL)
+        )
 
         mock_validation = MagicMock()
         mock_validation.is_displayable = False
@@ -282,25 +281,20 @@ class TestPublicDataviewReproduceWorkflow:
             "studio.app.common.routers.dataview.DataviewService."
             "find_dataview_record",
             return_value=mock_record,
+        ), patch("os.path.exists", return_value=True), patch(
+            "os.environ.get", return_value="test-bucket"
+        ), patch(
+            "studio.app.common.core.storage.download_coordinator."
+            "DownloadCoordinator.get_instance",
+            return_value=mock_coordinator,
+        ), patch(
+            "studio.app.common.routers.dataview.PublishValidator."
+            "validate_for_display",
+            return_value=mock_validation,
         ):
-            with patch(
-                "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
-                "check_sync_status_unsynced",
-                return_value=False,
-            ):
-                with patch("os.environ.get", return_value="test-bucket"):
-                    with patch(
-                        "studio.app.common.routers.dataview.RemoteStorageReader",
-                        return_value=mock_remote_reader,
-                    ):
-                        with patch(
-                            "studio.app.common.routers.dataview.PublishValidator."
-                            "validate_for_display",
-                            return_value=mock_validation,
-                        ):
-                            response = await public_reproduce_experiment(
-                                workspace_id="1", unique_id="exp123", db=MagicMock()
-                            )
+            response = await public_reproduce_experiment(
+                workspace_id="1", unique_id="exp123", db=MagicMock()
+            )
 
         assert response.status_code == 202
         assert "pending_sync" in response.body.decode()
@@ -310,17 +304,16 @@ class TestPublicDataviewReproduceWorkflow:
         """Test 503 response when experiment has sync error and data not available"""
         from unittest.mock import AsyncMock
 
+        from studio.app.common.core.storage.sync_tier import DownloadResult, SyncTier
         from studio.app.common.routers.dataview import public_reproduce_experiment
 
         mock_record = MagicMock()
         mock_record.local_sync_status = LocalSyncStatus.error.value
 
-        mock_remote_controller = MagicMock()
-        mock_remote_controller.download_experiment = AsyncMock(return_value=True)
-
-        mock_remote_reader = AsyncMock()
-        mock_remote_reader.__aenter__ = AsyncMock(return_value=mock_remote_controller)
-        mock_remote_reader.__aexit__ = AsyncMock(return_value=False)
+        mock_coordinator = MagicMock()
+        mock_coordinator.ensure_synced = AsyncMock(
+            return_value=DownloadResult(success=True, achieved_tier=SyncTier.ALL)
+        )
 
         mock_validation = MagicMock()
         mock_validation.is_displayable = False
@@ -330,46 +323,39 @@ class TestPublicDataviewReproduceWorkflow:
             "studio.app.common.routers.dataview.DataviewService."
             "find_dataview_record",
             return_value=mock_record,
+        ), patch("os.path.exists", return_value=True), patch(
+            "os.environ.get", return_value="test-bucket"
+        ), patch(
+            "studio.app.common.core.storage.download_coordinator."
+            "DownloadCoordinator.get_instance",
+            return_value=mock_coordinator,
+        ), patch(
+            "studio.app.common.routers.dataview.PublishValidator."
+            "validate_for_display",
+            return_value=mock_validation,
         ):
-            with patch(
-                "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
-                "check_sync_status_unsynced",
-                return_value=False,
-            ):
-                with patch("os.environ.get", return_value="test-bucket"):
-                    with patch(
-                        "studio.app.common.routers.dataview.RemoteStorageReader",
-                        return_value=mock_remote_reader,
-                    ):
-                        with patch(
-                            "studio.app.common.routers.dataview.PublishValidator."
-                            "validate_for_display",
-                            return_value=mock_validation,
-                        ):
-                            response = await public_reproduce_experiment(
-                                workspace_id="1", unique_id="exp123", db=MagicMock()
-                            )
+            response = await public_reproduce_experiment(
+                workspace_id="1", unique_id="exp123", db=MagicMock()
+            )
 
         assert response.status_code == 503
         assert "data_error" in response.body.decode()
 
     @pytest.mark.asyncio
     async def test_reproduce_downloads_from_s3_if_missing(self):
-        """Test S3 download when experiment not on local EBS"""
+        """Test S3 download via coordinator when experiment not on local EBS"""
         from unittest.mock import AsyncMock
 
+        from studio.app.common.core.storage.sync_tier import DownloadResult, SyncTier
         from studio.app.common.routers.dataview import public_reproduce_experiment
 
         mock_record = MagicMock()
         mock_record.local_sync_status = LocalSyncStatus.synced.value
 
-        mock_remote_controller = MagicMock()
-        # Use AsyncMock for async method
-        mock_remote_controller.download_experiment = AsyncMock(return_value=True)
-
-        mock_remote_reader = AsyncMock()
-        mock_remote_reader.__aenter__ = AsyncMock(return_value=mock_remote_controller)
-        mock_remote_reader.__aexit__ = AsyncMock(return_value=False)
+        mock_coordinator = MagicMock()
+        mock_coordinator.ensure_synced = AsyncMock(
+            return_value=DownloadResult(success=True, achieved_tier=SyncTier.ALL)
+        )
 
         mock_validation = MagicMock()
         mock_validation.is_displayable = True
@@ -378,83 +364,109 @@ class TestPublicDataviewReproduceWorkflow:
             "studio.app.common.routers.dataview.DataviewService."
             "find_dataview_record",
             return_value=mock_record,
+        ), patch("os.path.exists", return_value=False), patch(
+            "os.environ.get", return_value="test-bucket"
+        ), patch(
+            "studio.app.common.core.storage.download_coordinator."
+            "DownloadCoordinator.get_instance",
+            return_value=mock_coordinator,
+        ), patch(
+            "studio.app.common.routers.dataview.PublishValidator."
+            "validate_for_display",
+            return_value=mock_validation,
+        ), patch(
+            "studio.app.common.routers.dataview.reproduce_experiment"
         ):
-            with patch(
-                "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
-                "check_sync_status_unsynced",
-                return_value=True,
-            ):
-                with patch("os.environ.get", return_value="test-bucket"):
-                    with patch(
-                        "studio.app.common.routers.dataview.RemoteStorageReader",
-                        return_value=mock_remote_reader,
-                    ):
-                        with patch(
-                            "studio.app.common.routers.dataview.PublishValidator."
-                            "validate_for_display",
-                            return_value=mock_validation,
-                        ):
-                            with patch(
-                                "studio.app.common.routers.dataview."
-                                "reproduce_experiment"
-                            ):
-                                await public_reproduce_experiment(
-                                    workspace_id="1", unique_id="exp123", db=MagicMock()
-                                )
+            await public_reproduce_experiment(
+                workspace_id="1", unique_id="exp123", db=MagicMock()
+            )
 
-        mock_remote_controller.download_experiment.assert_called_once()
+        mock_coordinator.ensure_synced.assert_called_once()
+        call_kwargs = mock_coordinator.ensure_synced.call_args[1]
+        assert call_kwargs["required_tier"] == SyncTier.ALL
+        assert call_kwargs["caller"] == "public_reproduce"
+
+    @pytest.mark.asyncio
+    async def test_reproduce_download_failure_returns_503(self):
+        """Test 503 response when coordinator.ensure_synced returns failure (Gap #5)"""
+        from unittest.mock import AsyncMock
+
+        from studio.app.common.core.storage.sync_tier import DownloadResult, SyncTier
+        from studio.app.common.routers.dataview import public_reproduce_experiment
+
+        mock_record = MagicMock()
+        mock_record.local_sync_status = LocalSyncStatus.synced.value
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.ensure_synced = AsyncMock(
+            return_value=DownloadResult(
+                success=False,
+                achieved_tier=SyncTier.NONE,
+                error="S3 connection timeout",
+            )
+        )
+
+        with patch(
+            "studio.app.common.routers.dataview.DataviewService."
+            "find_dataview_record",
+            return_value=mock_record,
+        ), patch("os.path.exists", return_value=False), patch(
+            "os.environ.get", return_value="test-bucket"
+        ), patch(
+            "studio.app.common.core.storage.download_coordinator."
+            "DownloadCoordinator.get_instance",
+            return_value=mock_coordinator,
+        ):
+            response = await public_reproduce_experiment(
+                workspace_id="1", unique_id="exp123", db=MagicMock()
+            )
+
+        assert response.status_code == 503
+        assert "download_error" in response.body.decode()
 
     @pytest.mark.asyncio
     async def test_reproduce_auto_updates_sync_status_when_data_available(self):
         """Test sync status auto-updates to synced when data is available"""
         from unittest.mock import AsyncMock
 
+        from studio.app.common.core.storage.sync_tier import DownloadResult, SyncTier
         from studio.app.common.routers.dataview import public_reproduce_experiment
 
         mock_record = MagicMock()
         mock_record.local_sync_status = LocalSyncStatus.error.value
 
-        mock_remote_controller = MagicMock()
-        mock_remote_controller.download_experiment = AsyncMock(return_value=True)
-
-        mock_remote_reader = AsyncMock()
-        mock_remote_reader.__aenter__ = AsyncMock(return_value=mock_remote_controller)
-        mock_remote_reader.__aexit__ = AsyncMock(return_value=False)
+        mock_coordinator = MagicMock()
+        mock_coordinator.ensure_synced = AsyncMock(
+            return_value=DownloadResult(success=True, achieved_tier=SyncTier.ALL)
+        )
 
         mock_validation = MagicMock()
         mock_validation.is_displayable = True
 
         mock_db = MagicMock()
+        mock_db.execute.return_value.rowcount = 1
 
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
             "find_dataview_record",
             return_value=mock_record,
+        ), patch("os.path.exists", return_value=True), patch(
+            "os.environ.get", return_value="test-bucket"
+        ), patch(
+            "studio.app.common.core.storage.download_coordinator."
+            "DownloadCoordinator.get_instance",
+            return_value=mock_coordinator,
+        ), patch(
+            "studio.app.common.routers.dataview.PublishValidator."
+            "validate_for_display",
+            return_value=mock_validation,
+        ), patch(
+            "studio.app.common.routers.dataview.reproduce_experiment"
         ):
-            with patch(
-                "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
-                "check_sync_status_unsynced",
-                return_value=False,
-            ):
-                with patch("os.environ.get", return_value="test-bucket"):
-                    with patch(
-                        "studio.app.common.routers.dataview.RemoteStorageReader",
-                        return_value=mock_remote_reader,
-                    ):
-                        with patch(
-                            "studio.app.common.routers.dataview.PublishValidator."
-                            "validate_for_display",
-                            return_value=mock_validation,
-                        ):
-                            with patch(
-                                "studio.app.common.routers.dataview."
-                                "reproduce_experiment"
-                            ):
-                                await public_reproduce_experiment(
-                                    workspace_id="1", unique_id="exp123", db=mock_db
-                                )
+            await public_reproduce_experiment(
+                workspace_id="1", unique_id="exp123", db=mock_db
+            )
 
-        # Verify sync status was updated
-        assert mock_record.local_sync_status == LocalSyncStatus.synced.value
-        mock_db.add.assert_called_once_with(mock_record)
+        # Verify bulk update was executed and committed
+        mock_db.execute.assert_called_once()
         mock_db.commit.assert_called_once()

@@ -22,10 +22,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from studio.app.common.core.storage.remote_storage_controller import (
-    RemoteExperimentSyncMode,
-)
-
 # ---------------------------------------------------------------------------
 # Mock aws_constants for Lambda tests (aws_constants is only available in Lambda)
 # Only install if not already loaded (e.g., by infrastructure test conftest)
@@ -423,10 +419,18 @@ class TestLazySync:
 
     @pytest.mark.asyncio
     async def test_missing_config_triggers_sync(self, tmp_path):
-        """When config missing locally, should download from S3."""
+        """When config missing locally, should download via DownloadCoordinator."""
         from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
+        from studio.app.common.core.storage.sync_tier import DownloadResult, SyncTier
 
         config_path = str(tmp_path / "missing" / "experiment.yaml")
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.ensure_synced = AsyncMock(
+            return_value=DownloadResult(
+                success=True, achieved_tier=SyncTier.METADATA_ONLY
+            )
+        )
 
         with patch.object(
             ExptConfigReader, "get_config_yaml_path", return_value=config_path
@@ -434,24 +438,22 @@ class TestLazySync:
             "studio.app.common.core.storage.remote_storage_controller."
             "RemoteStorageController"
         ) as mock_controller_class, patch(
-            "studio.app.common.core.experiment.experiment_reader." "RemoteStorageReader"
-        ) as mock_reader_class:
+            "studio.app.common.core.storage.download_coordinator."
+            "DownloadCoordinator.get_instance",
+            return_value=mock_coordinator,
+        ):
             mock_controller_class.is_available.return_value = True
-
-            # Mock the async context manager
-            mock_reader = AsyncMock()
-            mock_reader.__aenter__.return_value = mock_reader
-            mock_reader.__aexit__.return_value = None
-            mock_reader_class.return_value = mock_reader
 
             result = await ExptConfigReader.ensure_synced_async(
                 "workspace1", "exp1", "test-bucket"
             )
 
-            # Should have tried to sync the specific experiment
-            mock_reader.download_experiment_meta.assert_called_once_with(
-                "workspace1", "exp1"
-            )
+            # Should have called coordinator with METADATA_ONLY tier
+            mock_coordinator.ensure_synced.assert_called_once()
+            call_kwargs = mock_coordinator.ensure_synced.call_args[1]
+            assert call_kwargs["required_tier"] == SyncTier.METADATA_ONLY
+            assert call_kwargs["workspace_id"] == "workspace1"
+            assert call_kwargs["unique_id"] == "exp1"
             # Result depends on whether file exists after sync (mock returns False)
             assert result is False  # File doesn't exist after mock sync
 
@@ -478,10 +480,20 @@ class TestLazySync:
 
     @pytest.mark.asyncio
     async def test_sync_failure_handled_gracefully(self, tmp_path):
-        """S3 errors should be logged and return False, not propagate exception."""
+        """Coordinator errors should be logged and return False, not propagate."""
         from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
+        from studio.app.common.core.storage.sync_tier import DownloadResult, SyncTier
 
         config_path = str(tmp_path / "missing" / "experiment.yaml")
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.ensure_synced = AsyncMock(
+            return_value=DownloadResult(
+                success=False,
+                achieved_tier=SyncTier.NONE,
+                error="S3 connection failed",
+            )
+        )
 
         with patch.object(
             ExptConfigReader, "get_config_yaml_path", return_value=config_path
@@ -489,14 +501,11 @@ class TestLazySync:
             "studio.app.common.core.storage.remote_storage_controller."
             "RemoteStorageController"
         ) as mock_controller_class, patch(
-            "studio.app.common.core.experiment.experiment_reader." "RemoteStorageReader"
-        ) as mock_reader_class:
+            "studio.app.common.core.storage.download_coordinator."
+            "DownloadCoordinator.get_instance",
+            return_value=mock_coordinator,
+        ):
             mock_controller_class.is_available.return_value = True
-
-            # Mock reader to raise an exception
-            mock_reader = AsyncMock()
-            mock_reader.__aenter__.side_effect = Exception("S3 connection failed")
-            mock_reader_class.return_value = mock_reader
 
             # Should not raise, just return False
             result = await ExptConfigReader.ensure_synced_async(
@@ -1091,36 +1100,48 @@ class TestDownloadSingleExperiment:
 
     @pytest.mark.asyncio
     async def test_skips_when_remote_storage_unavailable(self):
-        """Returns early when remote storage is not available."""
-        with patch(
-            "studio.app.common.routers.internal." "RemoteStorageController"
-        ) as mock_ctrl:
-            mock_ctrl.is_available.return_value = False
+        """Coordinator returns failure when remote storage is not available."""
+        from studio.app.common.core.storage.sync_tier import DownloadResult, SyncTier
 
+        mock_coordinator = MagicMock()
+        mock_coordinator.ensure_synced = AsyncMock(
+            return_value=DownloadResult(
+                success=False,
+                achieved_tier=SyncTier.NONE,
+                error="Remote storage not available",
+            )
+        )
+
+        with patch(
+            "studio.app.common.core.storage.download_coordinator."
+            "DownloadCoordinator.get_instance",
+            return_value=mock_coordinator,
+        ):
             from studio.app.common.routers.internal import _download_single_experiment
 
             # Should not raise
             await _download_single_experiment("bucket1", "ws1", "uid1")
 
-            mock_ctrl.is_available.assert_called_once()
+            # Only essential tier call (has_thumbnails=True by default, so 2 calls)
+            assert mock_coordinator.ensure_synced.call_count == 2
 
     @pytest.mark.asyncio
     async def test_downloads_thumbnails_then_essential(self):
-        """Downloads thumbnails_only then essential_only."""
-        mock_reader = AsyncMock()
-        mock_reader.__aenter__.return_value = mock_reader
-        mock_reader.__aexit__.return_value = None
+        """Downloads thumbnails_only then essential_only via coordinator."""
+        from studio.app.common.core.storage.sync_tier import DownloadResult, SyncTier
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.ensure_synced = AsyncMock(
+            return_value=DownloadResult(
+                success=True, achieved_tier=SyncTier.ESSENTIAL_ONLY
+            )
+        )
 
         with patch(
-            "studio.app.common.routers.internal." "RemoteStorageController"
-        ) as mock_ctrl, patch(
-            "studio.app.common.routers.internal." "RemoteStorageReader",
-            return_value=mock_reader,
-        ), patch(
-            "os.path.exists", return_value=False
+            "studio.app.common.core.storage.download_coordinator."
+            "DownloadCoordinator.get_instance",
+            return_value=mock_coordinator,
         ):
-            mock_ctrl.is_available.return_value = True
-
             from studio.app.common.routers.internal import _download_single_experiment
 
             await _download_single_experiment(
@@ -1130,34 +1151,28 @@ class TestDownloadSingleExperiment:
                 has_thumbnails=True,
             )
 
-        assert mock_reader.download_experiment.call_count == 2
-        calls = mock_reader.download_experiment.call_args_list
-        assert calls[0] == (
-            ("ws1", "uid1"),
-            {"sync_mode": RemoteExperimentSyncMode.THUMBNAILS_ONLY},
-        )
-        assert calls[1] == (
-            ("ws1", "uid1"),
-            {"sync_mode": RemoteExperimentSyncMode.ESSENTIAL_ONLY},
-        )
+        assert mock_coordinator.ensure_synced.call_count == 2
+        calls = mock_coordinator.ensure_synced.call_args_list
+        assert calls[0][1]["required_tier"] == SyncTier.THUMBNAILS_ONLY
+        assert calls[1][1]["required_tier"] == SyncTier.ESSENTIAL_ONLY
 
     @pytest.mark.asyncio
     async def test_skips_thumbnails_when_not_present(self):
         """has_thumbnails=False skips thumbnail download."""
-        mock_reader = AsyncMock()
-        mock_reader.__aenter__.return_value = mock_reader
-        mock_reader.__aexit__.return_value = None
+        from studio.app.common.core.storage.sync_tier import DownloadResult, SyncTier
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.ensure_synced = AsyncMock(
+            return_value=DownloadResult(
+                success=True, achieved_tier=SyncTier.ESSENTIAL_ONLY
+            )
+        )
 
         with patch(
-            "studio.app.common.routers.internal." "RemoteStorageController"
-        ) as mock_ctrl, patch(
-            "studio.app.common.routers.internal." "RemoteStorageReader",
-            return_value=mock_reader,
-        ), patch(
-            "os.path.exists", return_value=False
+            "studio.app.common.core.storage.download_coordinator."
+            "DownloadCoordinator.get_instance",
+            return_value=mock_coordinator,
         ):
-            mock_ctrl.is_available.return_value = True
-
             from studio.app.common.routers.internal import _download_single_experiment
 
             await _download_single_experiment(
@@ -1167,54 +1182,56 @@ class TestDownloadSingleExperiment:
                 has_thumbnails=False,
             )
 
-        assert mock_reader.download_experiment.call_count == 1
-        calls = mock_reader.download_experiment.call_args_list
-        assert calls[0] == (
-            ("ws1", "uid1"),
-            {"sync_mode": RemoteExperimentSyncMode.ESSENTIAL_ONLY},
-        )
+        # Only essential tier (no thumbnails call)
+        assert mock_coordinator.ensure_synced.call_count == 1
+        call_kwargs = mock_coordinator.ensure_synced.call_args[1]
+        assert call_kwargs["required_tier"] == SyncTier.ESSENTIAL_ONLY
 
     @pytest.mark.asyncio
     async def test_skips_when_files_exist_locally(self):
-        """Early return when YAML files already present."""
-        mock_reader = AsyncMock()
-        mock_reader.__aenter__.return_value = mock_reader
-        mock_reader.__aexit__.return_value = None
+        """Coordinator returns was_skipped when files already present."""
+        from studio.app.common.core.storage.sync_tier import DownloadResult, SyncTier
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.ensure_synced = AsyncMock(
+            return_value=DownloadResult(
+                success=True,
+                achieved_tier=SyncTier.ESSENTIAL_ONLY,
+                was_skipped=True,
+            )
+        )
 
         with patch(
-            "studio.app.common.routers.internal." "RemoteStorageController"
-        ) as mock_ctrl, patch(
-            "studio.app.common.routers.internal." "RemoteStorageReader",
-            return_value=mock_reader,
-        ), patch(
-            "os.path.exists", return_value=True
+            "studio.app.common.core.storage.download_coordinator."
+            "DownloadCoordinator.get_instance",
+            return_value=mock_coordinator,
         ):
-            mock_ctrl.is_available.return_value = True
-
             from studio.app.common.routers.internal import _download_single_experiment
 
             await _download_single_experiment("bucket1", "ws1", "uid1")
 
-        assert mock_reader.download_experiment.call_count == 0
+        # Coordinator still called (it checks internally), but was_skipped=True
+        assert mock_coordinator.ensure_synced.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_handles_download_exception(self):
-        """Exception during download is caught, not propagated."""
-        mock_reader = AsyncMock()
-        mock_reader.__aenter__.return_value = mock_reader
-        mock_reader.__aexit__.return_value = None
-        mock_reader.download_experiment.side_effect = RuntimeError("S3 error")
+    async def test_handles_download_failure(self):
+        """Coordinator failure is logged, not propagated."""
+        from studio.app.common.core.storage.sync_tier import DownloadResult, SyncTier
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.ensure_synced = AsyncMock(
+            return_value=DownloadResult(
+                success=False,
+                achieved_tier=SyncTier.NONE,
+                error="S3 error",
+            )
+        )
 
         with patch(
-            "studio.app.common.routers.internal." "RemoteStorageController"
-        ) as mock_ctrl, patch(
-            "studio.app.common.routers.internal." "RemoteStorageReader",
-            return_value=mock_reader,
-        ), patch(
-            "os.path.exists", return_value=False
+            "studio.app.common.core.storage.download_coordinator."
+            "DownloadCoordinator.get_instance",
+            return_value=mock_coordinator,
         ):
-            mock_ctrl.is_available.return_value = True
-
             from studio.app.common.routers.internal import _download_single_experiment
 
             # Should not raise

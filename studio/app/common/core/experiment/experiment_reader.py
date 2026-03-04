@@ -10,10 +10,6 @@ from studio.app.common.core.experiment.experiment import (
     ExptOutputPathIds,
 )
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.storage.remote_storage_controller import (
-    RemoteExperimentSyncMode,
-    RemoteStorageReader,
-)
 from studio.app.common.core.utils.config_handler import ConfigReader
 from studio.app.common.core.utils.datetime_utils import TIMEZONE_KEY
 from studio.app.common.core.utils.filepath_creater import join_filepath
@@ -74,6 +70,8 @@ class ExptConfigReader:
         Call this before read() in async contexts to handle cross-instance
         scenarios where a user has been migrated to a new instance.
 
+        Uses DownloadCoordinator for deduplication (entry point #9).
+
         Args:
             workspace_id: Workspace ID containing the experiment
             unique_id: Unique ID of the experiment
@@ -102,15 +100,20 @@ class ExptConfigReader:
         )
 
         try:
-            async with RemoteStorageReader(
-                remote_bucket_name,
-                workspace_id,
-                unique_id,
-                sync_mode=RemoteExperimentSyncMode.METADATA_ONLY,
-            ) as controller:
-                # Download only this specific experiment's metadata (efficient)
-                await controller.download_experiment_meta(workspace_id, unique_id)
-            return os.path.exists(config_path)
+            from studio.app.common.core.storage.download_coordinator import (
+                DownloadCoordinator,
+            )
+            from studio.app.common.core.storage.sync_tier import SyncTier
+
+            coordinator = DownloadCoordinator.get_instance()
+            result = await coordinator.ensure_synced(
+                bucket_name=remote_bucket_name,
+                workspace_id=workspace_id,
+                unique_id=unique_id,
+                required_tier=SyncTier.METADATA_ONLY,
+                caller="config_reader",
+            )
+            return result.success and os.path.exists(config_path)
         except Exception as e:
             logger.warning(f"Failed to sync experiment from S3: {e}", exc_info=True)
             return False
