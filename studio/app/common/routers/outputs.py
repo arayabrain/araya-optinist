@@ -2,7 +2,7 @@ import os
 from typing import Optional
 
 import pandas as pd
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import FileResponse
 
 from studio.app.common.core.auth.auth_dependencies import get_outputs_remote_bucket_name
@@ -10,10 +10,9 @@ from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
 from studio.app.common.core.storage.remote_storage_controller import (
-    RemoteExperimentNotFoundError,
     RemoteExperimentSyncMode,
     RemoteStorageController,
-    RemoteStorageSimpleReader,
+    RemoteStorageReader,
     RemoteStorageSimpleWriter,
 )
 from studio.app.common.core.utils.file_reader import JsonReader, Reader

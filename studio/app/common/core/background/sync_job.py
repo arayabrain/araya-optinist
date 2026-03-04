@@ -19,9 +19,6 @@ if TYPE_CHECKING:
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.storage.remote_storage_controller import (
-    RemoteExperimentSyncMode,
-)
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.subscription.constants import SyncStatusConstants
 from studio.app.common.db.database import session_scope

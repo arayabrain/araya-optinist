@@ -17,7 +17,6 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.snakemake_reader import SmkConfigReader
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteExperimentNotFoundError,
-    RemoteExperimentSyncMode,
     RemoteStorageController,
     RemoteStorageLockError,
     RemoteStorageSimpleReader,
