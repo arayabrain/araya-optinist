@@ -633,7 +633,8 @@ resource "aws_cloudwatch_metric_alarm" "premium_cost_high" {
   statistic           = "Maximum"
   threshold           = "500"
   alarm_description   = "Monthly cost estimate is high"
-  alarm_actions       = []
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   tags = {
     Name    = "High Monthly Cost Alarm"
@@ -651,6 +652,8 @@ resource "aws_cloudwatch_metric_alarm" "premium_cpu_high" {
   statistic           = "Average"
   threshold           = "80"
   alarm_description   = "Premium ECS service CPU utilization is high"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     ServiceName = aws_ecs_service.premium.name
@@ -673,6 +676,8 @@ resource "aws_cloudwatch_metric_alarm" "premium_memory_high" {
   statistic           = "Average"
   threshold           = "85"
   alarm_description   = "Premium ECS service memory utilization is high"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     ServiceName = aws_ecs_service.premium.name

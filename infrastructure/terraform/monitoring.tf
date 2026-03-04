@@ -19,6 +19,23 @@ resource "aws_cloudwatch_log_group" "premium_ecs" {
   }
 }
 
+# ==================================================
+# SNS Topic for Critical Alert Notifications
+# ==================================================
+resource "aws_sns_topic" "critical_alerts" {
+  name = "subscr-optinist-critical-alerts"
+
+  tags = {
+    Name = "OptiNiSt Critical Alerts"
+  }
+}
+
+resource "aws_sns_topic_subscription" "critical_alerts_email" {
+  topic_arn = aws_sns_topic.critical_alerts.arn
+  protocol  = "email"
+  endpoint  = "support@araya-optinist.com"
+}
+
 resource "aws_cloudwatch_metric_alarm" "cpu_high" {
   alarm_name          = "subscr-optinist-cpu-high"
   comparison_operator = "GreaterThanThreshold"
@@ -113,6 +130,8 @@ resource "aws_cloudwatch_metric_alarm" "load_average_high" {
   statistic           = "Average"
   threshold           = "80"
   alarm_description   = "EC2 CPU utilization is high"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.main.name
@@ -132,6 +151,8 @@ resource "aws_cloudwatch_metric_alarm" "high_iowait" {
   statistic           = "Average"
   threshold           = "30"
   alarm_description   = "High I/O wait time detected"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.main.name
@@ -151,6 +172,8 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
   statistic           = "Average"
   threshold           = "80"
   alarm_description   = "RDS CPU utilization is high"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     DBInstanceIdentifier = aws_db_instance.main.id
@@ -167,6 +190,8 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
   statistic           = "Average"
   threshold           = "80"
   alarm_description   = "RDS connection count is high"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     DBInstanceIdentifier = aws_db_instance.main.id
@@ -183,6 +208,8 @@ resource "aws_cloudwatch_metric_alarm" "rds_storage_low" {
   statistic           = "Average"
   threshold           = "10737418240"
   alarm_description   = "RDS free storage space is low"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     DBInstanceIdentifier = aws_db_instance.main.id
@@ -202,6 +229,8 @@ resource "aws_cloudwatch_metric_alarm" "efs_burst_credit_balance" {
   statistic           = "Average"
   threshold           = "1000000000000"
   alarm_description   = "EFS burst credits running low"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     FileSystemId = aws_efs_file_system.snmk.id
@@ -218,6 +247,8 @@ resource "aws_cloudwatch_metric_alarm" "efs_throughput_high" {
   statistic           = "Average"
   threshold           = "80"
   alarm_description   = "EFS approaching I/O limit"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     FileSystemId = aws_efs_file_system.snmk.id
@@ -237,6 +268,8 @@ resource "aws_cloudwatch_metric_alarm" "alb_5xx_errors" {
   statistic           = "Sum"
   threshold           = "10"
   alarm_description   = "ALB target 5XX errors exceeded threshold"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     LoadBalancer = aws_lb.autoscaling.arn_suffix
@@ -253,6 +286,8 @@ resource "aws_cloudwatch_metric_alarm" "alb_response_time_high" {
   statistic           = "Average"
   threshold           = "5"
   alarm_description   = "ALB response time is too high"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     LoadBalancer = aws_lb.autoscaling.arn_suffix
