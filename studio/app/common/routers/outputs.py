@@ -9,12 +9,12 @@ from studio.app.common.core.auth.auth_dependencies import get_outputs_remote_buc
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
+from studio.app.common.core.storage.download_coordinator import DownloadCoordinator
 from studio.app.common.core.storage.remote_storage_controller import (
-    RemoteExperimentSyncMode,
     RemoteStorageController,
-    RemoteStorageReader,
     RemoteStorageSimpleWriter,
 )
+from studio.app.common.core.storage.sync_tier import SyncTier
 from studio.app.common.core.utils.file_reader import JsonReader, Reader
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
@@ -116,15 +116,10 @@ async def get_or_generate_thumbnail(
 
     # Download from remote storage if needed
     if not os.path.exists(abs_original_path) and RemoteStorageController.is_available():
-        async with RemoteStorageReader(
-            remote_bucket_name,
-            workspace_id,
-            unique_id,
-            RemoteExperimentSyncMode.THUMBNAILS_ONLY,
-        ) as remote_storage_controller:
-            await remote_storage_controller.download_thumbnail_source(
-                workspace_id, unique_id, original_path, thumb_type
-            )
+        controller = RemoteStorageController(remote_bucket_name)
+        await controller.download_thumbnail_source(
+            workspace_id, unique_id, original_path, thumb_type
+        )
 
     # Generate thumbnail if original file now exists
     if os.path.exists(abs_original_path):
@@ -175,11 +170,6 @@ async def _background_full_sync(
     Uses DownloadCoordinator with exclusive lock (entry point #8).
     """
     try:
-        from studio.app.common.core.storage.download_coordinator import (
-            DownloadCoordinator,
-        )
-        from studio.app.common.core.storage.sync_tier import SyncTier
-
         coordinator = DownloadCoordinator.get_instance()
         result = await coordinator.ensure_synced(
             bucket_name=remote_bucket_name,
@@ -227,9 +217,6 @@ async def sync_visualization_files(
 
     Uses DownloadCoordinator for deduplication (entry point #4).
     """
-    from studio.app.common.core.storage.download_coordinator import DownloadCoordinator
-    from studio.app.common.core.storage.sync_tier import SyncTier
-
     if not RemoteStorageController.is_available():
         return True  # No remote storage, files should be local
 
@@ -296,11 +283,6 @@ async def get_thumbnail(
 
     # Try to sync thumbnail from remote storage if not available locally
     if not os.path.exists(thumb_path) and RemoteStorageController.is_available():
-        from studio.app.common.core.storage.download_coordinator import (
-            DownloadCoordinator,
-        )
-        from studio.app.common.core.storage.sync_tier import SyncTier
-
         coordinator = DownloadCoordinator.get_instance()
         await coordinator.ensure_synced(
             bucket_name=remote_bucket_name,
@@ -316,11 +298,6 @@ async def get_thumbnail(
         # Note: thumbnails_only mode doesn't download the config files needed to
         # find the source TIFF/JSON files for generation
         if RemoteStorageController.is_available():
-            from studio.app.common.core.storage.download_coordinator import (
-                DownloadCoordinator,
-            )
-            from studio.app.common.core.storage.sync_tier import SyncTier
-
             coordinator = DownloadCoordinator.get_instance()
             await coordinator.ensure_synced(
                 bucket_name=remote_bucket_name,
@@ -433,9 +410,6 @@ async def _ensure_visualization_synced(dirpath: str, remote_bucket_name: str) ->
 
     Uses DownloadCoordinator for deduplication.
     """
-    from studio.app.common.core.storage.download_coordinator import DownloadCoordinator
-    from studio.app.common.core.storage.sync_tier import SyncTier
-
     if not RemoteStorageController.is_available():
         return
 

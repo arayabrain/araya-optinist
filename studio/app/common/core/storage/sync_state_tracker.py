@@ -69,6 +69,13 @@ class SyncStateTracker:
         """Async version that offloads file I/O to thread pool (EC-6)."""
         return await asyncio.to_thread(cls.get_sync_probe, workspace_id, unique_id)
 
+    @staticmethod
+    def _has_metadata_files(experiment_dir: str) -> bool:
+        """Check if both experiment.yaml and workflow.yaml exist."""
+        return os.path.isfile(
+            os.path.join(experiment_dir, "experiment.yaml")
+        ) and os.path.isfile(os.path.join(experiment_dir, "workflow.yaml"))
+
     @classmethod
     def _detect_tier_from_filesystem(
         cls,
@@ -89,10 +96,7 @@ class SyncStateTracker:
             return SyncTier.NONE
 
         # METADATA_ONLY: experiment.yaml AND workflow.yaml must both exist
-        experiment_yaml = os.path.join(experiment_dir, "experiment.yaml")
-        workflow_yaml = os.path.join(experiment_dir, "workflow.yaml")
-
-        if not (os.path.isfile(experiment_yaml) and os.path.isfile(workflow_yaml)):
+        if not cls._has_metadata_files(experiment_dir):
             return SyncTier.NONE
 
         # Check for thumbnails (at least one PNG)
@@ -198,15 +202,9 @@ class SyncStateTracker:
                     experiment_dir = join_filepath(
                         [DIRPATH.OUTPUT_DIR, str(record.workspace_id), record.uid]
                     )
-                    experiment_yaml = os.path.join(experiment_dir, "experiment.yaml")
-                    workflow_yaml = os.path.join(experiment_dir, "workflow.yaml")
 
-                    # Invalidate if the directory doesn't exist or either
-                    # key metadata file is missing (matches _detect_tier_from_filesystem
-                    # which requires BOTH files for METADATA_ONLY tier)
-                    if not os.path.isdir(experiment_dir) or (
-                        not os.path.isfile(experiment_yaml)
-                        or not os.path.isfile(workflow_yaml)
+                    if not os.path.isdir(experiment_dir) or not cls._has_metadata_files(
+                        experiment_dir
                     ):
                         stale_ids.append(record.id)
                         logger.info(
@@ -357,12 +355,9 @@ class SyncStateTracker:
                     experiment_dir = join_filepath(
                         [DIRPATH.OUTPUT_DIR, str(record.workspace_id), record.uid]
                     )
-                    experiment_yaml = os.path.join(experiment_dir, "experiment.yaml")
-                    workflow_yaml = os.path.join(experiment_dir, "workflow.yaml")
 
-                    if not os.path.isdir(experiment_dir) or (
-                        not os.path.isfile(experiment_yaml)
-                        or not os.path.isfile(workflow_yaml)
+                    if not os.path.isdir(experiment_dir) or not cls._has_metadata_files(
+                        experiment_dir
                     ):
                         stale_ids.append(record.id)
                         logger.warning(
