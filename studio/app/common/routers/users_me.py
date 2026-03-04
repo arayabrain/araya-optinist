@@ -1,7 +1,7 @@
 from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.cloud.cloud_utils import (
@@ -252,19 +252,18 @@ async def logout_free_user(
         invalidate_activity_cache(current_user.id)
         mark_user_logged_out(current_user.id)
 
-        # Get the free user assignment
-        statement = select(FreeUserAssignment).where(
-            FreeUserAssignment.user_id == current_user.id
+        # Update logged_out_at timestamp via direct SQL
+        from sqlalchemy import update
+
+        stmt = (
+            update(FreeUserAssignment)
+            .where(FreeUserAssignment.user_id == current_user.id)
+            .values(logged_out_at=get_current_datetime())
         )
-        result_row = db.execute(statement).first()
-        assignment = result_row[0] if result_row else None
+        result = db.execute(stmt)
+        db.commit()
 
-        if assignment:
-            # Update logged_out_at timestamp
-            assignment.logged_out_at = get_current_datetime()
-            db.add(assignment)
-            db.commit()
-
+        if result.rowcount > 0:
             logger.info(
                 f"Free user {current_user.id} logged out, data cleanup scheduled"
             )
@@ -387,6 +386,31 @@ async def send_premium_heartbeat(current_user: User = Depends(get_current_user))
             "heartbeat_failures": failure_count,
             "error": str(e),
         }
+
+
+@router.post("/premium/ui-event")
+async def log_premium_ui_event(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Log a frontend premium UI event to backend logs (CloudWatch).
+    Lightweight endpoint for correlating UI timing with backend events.
+    """
+    body = await request.json()
+    event_type = body.get("event_type", "unknown")
+    timestamp_ms = body.get("timestamp_ms")
+    details = body.get("details", {})
+
+    logger.info(
+        "Premium UI event: user=%s (uid: %s) event=%s timestamp_ms=%s details=%s",
+        current_user.id,
+        current_user.uid,
+        event_type,
+        timestamp_ms,
+        details,
+    )
+    return {"logged": True}
 
 
 @router.put("", response_model=User)

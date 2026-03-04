@@ -1,5 +1,5 @@
 """
-Tests for ExptConfigReader.get_local_experiment_uids() (Gap #12).
+Tests for ExptConfigReader.get_local_experiment_uids().
 
 Tests edge cases including silently swallowed exceptions.
 """

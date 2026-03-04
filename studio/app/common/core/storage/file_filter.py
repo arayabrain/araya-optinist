@@ -1,3 +1,6 @@
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentSyncMode,
+)
 from studio.app.const import (
     ESSENTIAL_SYNC_PATTERNS,
     LARGE_FILE_PATTERNS,
@@ -10,34 +13,33 @@ class FileSyncFilter:
     """Filter files for selective syncing."""
 
     def should_sync_file(
-        self, file_path: str, sync_mode: str = "all"
+        self,
+        file_path: str,
+        sync_mode: RemoteExperimentSyncMode = RemoteExperimentSyncMode.ALL,
     ) -> tuple[bool, str]:
         """
         Determine if a file should be synced based on sync mode.
 
         Args:
             file_path: Path to the file
-            sync_mode:
-                - 'all': sync everything
-                - 'essential_only': skip large files, sync yaml/json
-                - 'visualization': sync only json and tiff (for viewing results)
+            sync_mode: RemoteExperimentSyncMode enum value
 
         Returns:
             (should_sync, reason)
         """
-        if sync_mode == "all":
+        if sync_mode == RemoteExperimentSyncMode.ALL:
             return (True, "sync_mode=all")
 
         file_lower = file_path.lower()
 
         # Thumbnails only mode: sync only PNG thumbnail files for fast DataView loading
-        if sync_mode == "thumbnails_only":
+        if sync_mode == RemoteExperimentSyncMode.THUMBNAILS_ONLY:
             if any(pattern in file_lower for pattern in ThumbnailConst.FILE_PATTERNS):
                 return (True, "thumbnail file")
             return (False, "not needed for thumbnails")
 
         # Visualization mode: only sync JSON and TIFF files needed for viewing
-        if sync_mode == "visualization":
+        if sync_mode == RemoteExperimentSyncMode.VISUALIZATION:
             if any(
                 file_lower.endswith(pattern) for pattern in VISUALIZATION_SYNC_PATTERNS
             ):

@@ -1,15 +1,15 @@
 """add_alert_fix_tables_and_columns
 
-Add tables and columns for alert/edge case fixes from ALERT_FIX_SUMMARY.
+Add tables and columns for alert and edge case fixes.
 
 Tables created:
-- user_deletion_records: Two-phase user deletion tracking (Case 25)
-- background_tasks: Persistent background task queue (Case 18)
-- storage_operations: Idempotent storage tracking (Cases 16-17)
+- user_deletion_records: Two-phase user deletion tracking
+- background_tasks: Persistent background task queue
+- storage_operations: Idempotent storage tracking
 
 Columns added:
-- experiment_records.deletion_error (Case 14)
-- premium_user_assignments.heartbeat_failures (Case 71)
+- experiment_records.deletion_error
+- premium_user_assignments.heartbeat_failures
 
 Revision ID: j901j9290024
 Revises: i901i9280023
@@ -28,9 +28,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # =========================================================================
-    # Case 14: experiment_records.deletion_error
-    # =========================================================================
+    # experiment_records.deletion_error
     op.add_column(
         "experiment_records",
         sa.Column(
@@ -41,9 +39,7 @@ def upgrade() -> None:
         ),
     )
 
-    # =========================================================================
-    # Case 71: premium_user_assignments.heartbeat_failures
-    # =========================================================================
+    # premium_user_assignments.heartbeat_failures
     op.add_column(
         "premium_user_assignments",
         sa.Column(
@@ -55,9 +51,7 @@ def upgrade() -> None:
         ),
     )
 
-    # =========================================================================
-    # Cases 16-17: storage_operations table
-    # =========================================================================
+    # storage_operations table
     op.create_table(
         "storage_operations",
         sa.Column(
@@ -126,9 +120,7 @@ def upgrade() -> None:
         sa.Index("idx_storage_ops_status_retry", "status", "retry_count"),
     )
 
-    # =========================================================================
-    # Case 18: background_tasks table (generic task queue)
-    # =========================================================================
+    # background_tasks table
     op.create_table(
         "background_tasks",
         sa.Column(
@@ -225,9 +217,7 @@ def upgrade() -> None:
         sa.Index("idx_background_tasks_status_created", "status", "created_at"),
     )
 
-    # =========================================================================
-    # Case 25: user_deletion_records table
-    # =========================================================================
+    # user_deletion_records table
     op.create_table(
         "user_deletion_records",
         sa.Column(

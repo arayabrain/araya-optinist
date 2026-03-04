@@ -1,10 +1,11 @@
 import os
 from dataclasses import asdict
 from glob import glob
-from typing import Dict
+from typing import Dict, Set
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
+from sqlalchemy import select
 from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
@@ -15,6 +16,8 @@ from studio.app.common.core.experiment.experiment_writer import ExptDataWriter
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.snakemake_reader import SmkConfigReader
 from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentNotFoundError,
+    RemoteExperimentSyncMode,
     RemoteStorageController,
     RemoteStorageLockError,
     RemoteStorageSimpleReader,
@@ -25,11 +28,28 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_owner,
 )
 from studio.app.common.db.database import get_db
+from studio.app.common.models.experiment import ExperimentRecord
+from studio.app.common.models.workspace import Workspace
+from studio.app.common.schemas.dataview import PublishStatus
 from studio.app.common.schemas.experiment import CopyItem, DeleteItem, RenameItem
 
 router = APIRouter(prefix="/experiments", tags=["experiments"])
 
 logger = AppLogger.get_logger()
+
+
+def _get_published_uids(db: Session, workspace_id: str) -> Set[str]:
+    """Query DB for UIDs of published experiments in the given workspace."""
+    statement = (
+        select(ExperimentRecord.uid)
+        .join(Workspace, Workspace.id == ExperimentRecord.workspace_id)
+        .where(ExperimentRecord.workspace_id == int(workspace_id))
+        .where(ExperimentRecord.publish_status == PublishStatus.on.value)
+        .where(ExperimentRecord.success == 1)
+        .where(Workspace.deleted == 0)
+    )
+    result = db.execute(statement)
+    return {row[0] for row in result}
 
 
 @router.get(
@@ -147,6 +167,9 @@ async def rename_experiment(
 
         return config
 
+    except RemoteExperimentNotFoundError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
@@ -188,6 +211,9 @@ async def delete_experiment(
 
         return result
 
+    except RemoteExperimentNotFoundError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
@@ -243,6 +269,9 @@ async def delete_experiment_list(
 
         return True
 
+    except RemoteExperimentNotFoundError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
@@ -338,8 +367,11 @@ async def sync_remote_experiment(
         return True
 
     except HTTPException as e:
-        logger.error(e)
+        logger.error(e, exc_info=True)
         raise e
+    except RemoteExperimentNotFoundError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))

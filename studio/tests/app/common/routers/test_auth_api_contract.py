@@ -331,9 +331,7 @@ def test_token_type_value():
     ), "token_type should be 'bearer' for standard OAuth2"
 
 
-# ============================================================================
-# Contract Tests: Login Clears logged_out_at (Case 58/62)
-# ============================================================================
+# Contract Tests: Login Clears logged_out_at
 
 
 @pytest.mark.asyncio
@@ -342,7 +340,7 @@ async def test_contract_login_clears_logged_out_status():
     Contract test: Login endpoint clears logged_out_at for free users.
 
     This prevents the cleanup job from deleting a user's data after they
-    re-login. See ALERT_FIX_PLAN Case 58/62.
+    re-login.
     """
     with patch("studio.app.common.routers.auth.auth") as mock_auth:
         with patch(

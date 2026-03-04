@@ -1,5 +1,5 @@
 """
-Tests for BackgroundTaskService (Case 18).
+Tests for BackgroundTaskService.
 Verifies that background tasks are properly queued and processed.
 """
 from unittest.mock import MagicMock, patch

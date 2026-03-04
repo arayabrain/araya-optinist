@@ -7,6 +7,7 @@ from typing import Dict, List
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     BaseRemoteStorageController,
+    RemoteExperimentSyncMode,
     StorageDirectoryType,
 )
 from studio.app.common.core.utils.filepath_creater import (
@@ -285,7 +286,10 @@ class MockStorageController(BaseRemoteStorageController):
         return True
 
     async def download_experiment(
-        self, workspace_id: str, unique_id: str, sync_mode: str = "all"
+        self,
+        workspace_id: str,
+        unique_id: str,
+        sync_mode: RemoteExperimentSyncMode = RemoteExperimentSyncMode.ALL,
     ) -> bool:
         # make paths
         experiment_local_path = self._make_experiment_local_path(

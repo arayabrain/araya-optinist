@@ -104,26 +104,42 @@ async def lifespan(app: FastAPI):
         from studio.app.common.core.storage.download_coordinator import (
             DownloadCoordinator,
         )
+        from studio.app.common.core.storage.startup_leader import (
+            release_startup_leader,
+            try_become_startup_leader,
+        )
         from studio.app.common.core.storage.sync_state_tracker import SyncStateTracker
 
-        # Initialize coordinator during lifespan (post-fork, EC-21)
+        # Initialize coordinator during lifespan (post-fork)
         DownloadCoordinator.initialize()
 
         async def _startup_sync():
+            """Only one worker out of N should perform startup sync."""
             try:
                 await asyncio.sleep(5)
 
-                # Invalidate stale DB records BEFORE downloading
-                try:
-                    stale_count = await asyncio.to_thread(
-                        SyncStateTracker.invalidate_stale_records
-                    )
-                    if stale_count:
-                        logger.info(f"Invalidated {stale_count} stale sync records")
-                except Exception as e:
-                    logger.warning(f"Stale record invalidation failed: {e}")
+                # Leader election: only 1 worker syncs
+                if not try_become_startup_leader():
+                    logger.info("Startup sync deferred to leader worker")
+                    return
 
-                await PublishedExperimentSyncJob.run_startup_sync()
+                try:
+                    # Invalidate stale DB records BEFORE downloading
+                    try:
+                        stale_count = await asyncio.to_thread(
+                            SyncStateTracker.invalidate_stale_records
+                        )
+                        if stale_count:
+                            logger.info(
+                                f"Invalidated {stale_count} stale sync records"
+                            )
+                    except Exception as e:
+                        logger.warning(f"Stale record invalidation failed: {e}")
+
+                    await PublishedExperimentSyncJob.run_startup_sync()
+                finally:
+                    # Always release leader file, even on error
+                    release_startup_leader()
             except Exception as e:
                 logger.error(f"Startup sync error: {e}", exc_info=True)
 

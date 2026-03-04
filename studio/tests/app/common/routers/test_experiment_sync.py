@@ -1,7 +1,7 @@
 """
 Tests for experiment router sync-related behavior.
 
-Covers gap #11: get_experiments() graceful degradation when
+Covers get_experiments() graceful degradation when
 coordinator.ensure_metadata_available() raises.
 """
 
@@ -13,7 +13,7 @@ from studio.app.common.routers.experiment import get_experiments
 
 
 class TestGetExperimentsMetadataSync:
-    """Tests for per-experiment metadata sync in get_experiments (Gap #11)."""
+    """Tests for per-experiment metadata sync in get_experiments."""
 
     @pytest.mark.asyncio
     async def test_continues_on_coordinator_exception(self):
