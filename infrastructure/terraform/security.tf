@@ -304,7 +304,8 @@ resource "aws_iam_instance_profile" "nat_instance" {
   role = aws_iam_role.nat_instance.name
 }
 
-# RDS monitoring role
+# RDS Enhanced Monitoring role (kept for easy re-enablement)
+# To re-enable: set monitoring_interval = 60 and monitoring_role_arn in infrastructure.tf
 # -------------------
 resource "aws_iam_role" "rds_monitoring" {
   name = "subscr-rds-monitoring-role"

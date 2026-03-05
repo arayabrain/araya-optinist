@@ -1,6 +1,13 @@
 # Provider configuration
 provider "aws" {
   region = var.aws_region
+
+  default_tags {
+    tags = {
+      Project   = "subscr-optinist"
+      ManagedBy = "Terraform"
+    }
+  }
 }
 
 terraform {

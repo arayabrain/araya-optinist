@@ -101,6 +101,7 @@ cost_trend_json=$(run_aws aws ce get-cost-and-usage \
   --granularity MONTHLY \
   --metrics BlendedCost \
   --group-by Type=DIMENSION,Key=SERVICE \
+  --filter '{"Tags":{"Key":"Project","Values":["subscr-optinist"]}}' \
   --region "$COST_REGION" \
   --output json)
 
@@ -252,6 +253,23 @@ if [ -n "$slowquery_output" ] && ! echo "$slowquery_output" | grep -qi "error\|R
   slowquery_status="$slowquery_count slow queries logged in the past 30 days."
 fi
 
+# 2d. RDS error log check
+echo "  Checking RDS error log..."
+rds_error_output=$(run_aws aws logs filter-log-events \
+  --log-group-name "/aws/rds/instance/$RDS_INSTANCE/error" \
+  --start-time "$(epoch_days_ago 30)000" \
+  --region "$REGION" \
+  --max-items 20 \
+  --query 'events[*].message' \
+  --output text)
+
+rds_error_status="No RDS errors logged in the past 30 days."
+rds_error_count=0
+if [ -n "$rds_error_output" ] && ! echo "$rds_error_output" | grep -qi "ResourceNotFoundException\|None"; then
+  rds_error_count=$(echo "$rds_error_output" | wc -l | tr -d ' ')
+  rds_error_status="$rds_error_count RDS error/warning entries in the past 30 days."
+fi
+
 cat >> "$REPORT" <<EOF
 ## 2. RDS Health Check
 
@@ -272,6 +290,19 @@ $slowquery_status
 
 \`\`\`
 $slowquery_output
+\`\`\`
+
+</details>
+
+### RDS Error Log
+
+$rds_error_status
+
+<details>
+<summary>Recent RDS error log entries</summary>
+
+\`\`\`
+$rds_error_output
 \`\`\`
 
 </details>
@@ -404,6 +435,8 @@ efs_info=$(aws efs describe-file-systems --region "$REGION" \
 efs_table=$(echo "$efs_info" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
+# Filter to project EFS volumes only
+data = [fs for fs in data if 'subscr' in (fs.get('Name') or '').lower()]
 print('| FileSystem | Name | Size | Status |')
 print('|---|---|---|---|')
 for fs in data:
@@ -419,6 +452,8 @@ log_group_table=$(aws logs describe-log-groups \
   --output json 2>/dev/null | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
+# Filter to project log groups only (subscr- prefix in path)
+data = [r for r in data if 'subscr' in r[0]]
 data.sort(key=lambda x: x[1] or 0, reverse=True)
 print('| Log Group | Stored | Retention |')
 print('|---|---|---|')

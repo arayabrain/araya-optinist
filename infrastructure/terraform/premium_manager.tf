@@ -572,6 +572,16 @@ resource "aws_lambda_function" "cost_tracker" {
   ]
 }
 
+# CloudWatch Log Group for Cost Tracker
+resource "aws_cloudwatch_log_group" "cost_tracker_logs" {
+  name              = "/aws/lambda/subscr-cost-tracker"
+  retention_in_days = 30
+
+  tags = {
+    Name    = "Cost Tracker Lambda Logs"
+    Service = "cost-monitoring"
+  }
+}
 
 # Cost Controller Lambda Role
 resource "aws_iam_role" "cost_controller_lambda" {

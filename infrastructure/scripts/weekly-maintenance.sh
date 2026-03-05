@@ -21,8 +21,24 @@ LOG_GROUPS=(
   "/ecs/subscr-optinist-cloud-taskdef"
   "/ecs/subscr-premium-optinist-cloud-taskdef"
   "/ecs/subscr-background-optinist-cloud-taskdef"
+  "/aws/lambda/subscr-premium-manager"
+  "/aws/lambda/subscr-premium-cleanup"
+  "/aws/lambda/subscr-free-manager"
+  "/aws/lambda/subscr-free-cleanup"
+  "/aws/lambda/subscr-common-user-manager"
+  "/aws/lambda/subscr-cost-tracker"
 )
-LOG_LABELS=("Free Tier" "Premium Tier" "Background Service")
+LOG_LABELS=(
+  "Free Tier"
+  "Premium Tier"
+  "Background Service"
+  "Lambda: Premium Manager"
+  "Lambda: Premium Cleanup"
+  "Lambda: Free Manager"
+  "Lambda: Free Cleanup"
+  "Lambda: Common User Manager"
+  "Lambda: Cost Tracker"
+)
 ERROR_SAMPLE_LIMIT=20  # max error lines to include per log group
 ALB_NAME="subscr-optinist-lb"
 ASG_NAME="subscr-optinist-asg"
@@ -149,11 +165,11 @@ fi
 # ---------------------------------------------------------------------------
 # 2. CloudWatch Log Review (Errors)
 # ---------------------------------------------------------------------------
-echo "  Reviewing CloudWatch logs for errors..."
+echo "  Reviewing CloudWatch logs for errors and warnings..."
 total_errors=0
 
 cat >> "$REPORT" <<'EOF'
-## 2. CloudWatch Log Review (Errors)
+## 2. CloudWatch Log Review (Errors & Warnings)
 
 EOF
 
@@ -162,12 +178,16 @@ for i in "${!LOG_GROUPS[@]}"; do
   group="${LOG_GROUPS[$i]}"
   echo "    $label..."
 
-  # Use CloudWatch Logs Insights to match only Python logging ERROR level
+  # Use CloudWatch Logs Insights to match error/warning entries.
+  # Catches: Python logging (ERROR:/WARNING:), Lambda runtime ([ERROR]),
+  # Python tracebacks, and Lambda timeouts.
+  # The parse+ispresent handles per-line filtering for ECS multi-line events;
+  # the like clauses catch Lambda-specific formats that don't use Python logging.
   query_id=$(run_aws aws logs start-query \
     --log-group-name "$group" \
     --start-time "$START_EPOCH_S" \
     --end-time "$NOW_EPOCH_S" \
-    --query-string "filter @message like / ERROR:/ | sort @timestamp desc | limit $ERROR_SAMPLE_LIMIT" \
+    --query-string "fields @timestamp, @message | parse @message / (?<level>ERROR|WARNING):/ | filter ispresent(level) or @message like /\[ERROR\]/ or @message like /Traceback/ or @message like /Task timed out/ | sort @timestamp desc | limit $ERROR_SAMPLE_LIMIT" \
     --region "$REGION" \
     --query 'queryId' \
     --output text)
@@ -178,7 +198,9 @@ for i in "${!LOG_GROUPS[@]}"; do
   if [ "$AWS_LAST_OK" = false ] || [ -z "$query_id" ] || [ "$query_id" = "None" ]; then
     sample="(Log group \`$group\` not found or query failed)"
   else
-    # Poll for query completion (up to ~20s)
+    # Poll for query completion (up to ~25s)
+    # Initial sleep gives CloudWatch time to start the query
+    sleep 1
     query_status="Running"
     poll_attempts=0
     while [ "$query_status" = "Running" ] || [ "$query_status" = "Scheduled" ]; do
@@ -199,6 +221,19 @@ for i in "${!LOG_GROUPS[@]}"; do
       query_status=$(echo "$query_result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','Unknown'))" 2>/dev/null || echo "Unknown")
     done
 
+    # If status is still Unknown, check if it's actually Complete with 0 results
+    if [ "$query_status" = "Unknown" ]; then
+      actual_status=$(echo "$query_result" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+s = data.get('status', 'Unknown')
+print(s)
+" 2>/dev/null || echo "Unknown")
+      if [ "$actual_status" = "Complete" ]; then
+        query_status="Complete"
+      fi
+    fi
+
     if [ "$query_status" = "Complete" ]; then
       # Get accurate count from statistics.recordsMatched
       error_count=$(echo "$query_result" | python3 -c "
@@ -207,11 +242,13 @@ data = json.load(sys.stdin)
 print(int(float(data.get('statistics', {}).get('recordsMatched', 0))))
 " 2>/dev/null || echo "0")
 
-      # Extract sample messages from results
+      # Extract sample messages — filter per-line to strip neighboring DEBUG/INFO
+      # from ECS multi-line events, while also keeping Lambda-style error formats.
       sample=$(echo "$query_result" | python3 -c "
-import sys, json
+import sys, json, re
 data = json.load(sys.stdin)
 results = data.get('results', [])
+ERROR_RE = re.compile(r' (ERROR|WARNING):|\[ERROR\]|Traceback|Task timed out')
 if not results:
     print('No errors found.')
 else:
@@ -219,13 +256,16 @@ else:
         fields = {f['field']: f['value'] for f in row}
         ts = fields.get('@timestamp', '')
         msg = fields.get('@message', '').strip()
-        # Truncate long messages
-        if len(msg) > 200:
-            msg = msg[:200] + '...'
-        print(f'{ts}  {msg}')
+        filtered = [l for l in msg.splitlines() if ERROR_RE.search(l)]
+        if not filtered:
+            continue
+        for line in filtered:
+            if len(line) > 200:
+                line = line[:200] + '...'
+            print(f'{ts}  {line}')
 " 2>/dev/null || echo "(Failed to parse query results)")
     else
-      sample="(Query did not complete: status=$query_status)"
+      sample="(Query timed out or returned no results — status: $query_status)"
     fi
   fi
 
@@ -234,10 +274,10 @@ else:
   cat >> "$REPORT" <<EOF
 ### $label
 
-**Application errors: $error_count** (log group: \`$group\`)
+**Errors/warnings: $error_count** (log group: \`$group\`)
 
 <details>
-<summary>Last $ERROR_SAMPLE_LIMIT error entries</summary>
+<summary>Sample entries (ERROR/WARNING only)</summary>
 
 \`\`\`
 $sample
@@ -275,6 +315,33 @@ if echo "$history_output" | grep -q "subscr-"; then
   actionable_history_lines=$(echo "$history_output" | grep "to ALARM" | grep -vE "$ASG_ALARM_PATTERN" || true)
 fi
 
+# Build per-alarm summary table from history output
+alarm_summary_table=""
+if [ "$transition_count" -gt 0 ]; then
+  alarm_summary_table=$(echo "$history_output" | python3 -c "
+import sys, re
+from collections import defaultdict
+
+alarm_data = defaultdict(lambda: {'ALARM': 0, 'total': 0})
+for line in sys.stdin:
+    m = re.search(r'(subscr-\S+)', line)
+    if not m:
+        continue
+    alarm = m.group(1)
+    alarm_data[alarm]['total'] += 1
+    if 'to ALARM' in line:
+        alarm_data[alarm]['ALARM'] += 1
+
+if alarm_data:
+    print('| Alarm | ALARM fires | Total transitions |')
+    print('|---|---|---|')
+    for alarm in sorted(alarm_data):
+        d = alarm_data[alarm]
+        short = alarm.replace('subscr-optinist-', '')
+        print(f'| {short} | {d[\"ALARM\"]} | {d[\"total\"]} |')
+" 2>/dev/null || echo "*(Failed to parse alarm history)*")
+fi
+
 {
   echo "## 3. Alarm History (Past 7 Days)"
   echo ""
@@ -288,6 +355,20 @@ fi
   fi
   echo "Total transitions: $transition_count (of which $asg_history_count are ASG scaling alarms)"
   echo ""
+  if [ -n "$alarm_summary_table" ]; then
+    echo "### Per-Alarm Summary"
+    echo ""
+    echo "- **ALARM fires** — the alarm threshold was breached. For non-ASG alarms (ALB 5xx,"
+    echo "  RDS, EFS), any fires should be investigated. For ASG scaling alarms, fires are"
+    echo "  expected and trigger automatic scale up/down."
+    echo "- **Total transitions** — includes routine INSUFFICIENT_DATA ↔ OK cycling, which"
+    echo "  happens during zero-traffic periods (ALB metrics stop reporting) or when ECS tasks"
+    echo "  scale to zero (CPU/memory metrics become unavailable). High totals with zero ALARM"
+    echo "  fires are normal and need no action."
+    echo ""
+    echo "$alarm_summary_table"
+    echo ""
+  fi
   echo "<details>"
   echo "<summary>Full alarm history</summary>"
   echo ""
@@ -388,21 +469,81 @@ if [ "$AWS_LAST_OK" = false ]; then
   asg_capacity="(ASG \`$ASG_NAME\` not found)"
 fi
 
+# Count launches vs terminations from ASG output
+launch_count=0
+termination_count=0
+if echo "$asg_output" | grep -q "Launching"; then
+  launch_count=$(echo "$asg_output" | grep -c "Launching" || true)
+fi
+if echo "$asg_output" | grep -q "Terminating"; then
+  termination_count=$(echo "$asg_output" | grep -c "Terminating" || true)
+fi
+
+# Build per-alarm transition table for ASG alarms (reuse history_output from Section 3)
+asg_alarm_table=""
+if [ "$asg_history_count" -gt 0 ]; then
+  asg_alarm_table=$(echo "$history_output" | python3 -c "
+import sys, re
+from collections import defaultdict
+
+pattern = re.compile(r'($ASG_ALARM_PATTERN)')
+alarm_data = defaultdict(lambda: {'ALARM': 0, 'total': 0})
+for line in sys.stdin:
+    m = pattern.search(line)
+    if not m:
+        continue
+    alarm = m.group(1)
+    alarm_data[alarm]['total'] += 1
+    if 'to ALARM' in line:
+        alarm_data[alarm]['ALARM'] += 1
+
+if alarm_data:
+    print('| Alarm | ALARM fires | Total transitions |')
+    print('|---|---|---|')
+    for alarm in sorted(alarm_data):
+        d = alarm_data[alarm]
+        short = alarm.replace('subscr-optinist-', '')
+        print(f'| {short} | {d[\"ALARM\"]} | {d[\"total\"]} |')
+" 2>/dev/null || echo "*(Failed to parse alarm history)*")
+fi
+
 cat >> "$REPORT" <<EOF
 ## 5. Autoscaling Activity
 
 These 4 alarms trigger scale up/down automatically and do not send email notifications.
 The weekly report is the primary visibility for autoscaling behavior.
 
-**ASG scaling events (7 days): $scale_events**
-**Autoscaling alarm transitions (7 days): $autoscale_transitions**
-
-Current ASG capacity:
+### Current ASG Capacity
 
 \`\`\`
 $asg_capacity
 \`\`\`
 
+### Scaling Event Summary (7 days)
+
+| Event Type | Count |
+|---|---|
+| Instance launches | $launch_count |
+| Instance terminations | $termination_count |
+| Total | $scale_events |
+
+EOF
+
+if [ -n "$asg_alarm_table" ]; then
+  cat >> "$REPORT" <<EOF
+### Per-Alarm Transition Breakdown (7 days)
+
+$asg_alarm_table
+
+EOF
+else
+  cat >> "$REPORT" <<EOF
+**Autoscaling alarm transitions (7 days): $autoscale_transitions**
+
+EOF
+fi
+
+cat >> "$REPORT" <<EOF
 <details>
 <summary>Recent scaling activity</summary>
 
@@ -695,7 +836,7 @@ cat >> "$REPORT" <<EOF
 | Metric | Value |
 |---|---|
 | Actionable alarms | $actionable_alarm_count |
-| Application errors (7 days) | $total_errors |
+| App errors/warnings (7 days) | $total_errors |
 | Actionable alarm fires (7 days) | $actionable_alarm_fires |
 | All ECS services healthy | $health_status |
 | ASG scaling events (7 days) | $scale_events |
