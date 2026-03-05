@@ -97,6 +97,7 @@ export const CsvParamSettingDialog = memo(function CsvParamSettingDialog({
           getFilesTree({ workspaceId, fileType: FILE_TREE_TYPE_SET.CSV }),
         )
       } catch (error) {
+        // eslint-disable-next-line no-console
         console.error("Failed to sync file:", error)
         setIsSyncing(false)
         return

@@ -715,8 +715,7 @@ export const PremiumAssignmentProvider: React.FC<{
   }, [
     isPremiumUser,
     isTabLeader,
-    state.assignmentResult?.assigned,
-    state.assignmentResult?.is_shared,
+    state.assignmentResult,
     pollInterval,
     pollAttempts,
   ])
