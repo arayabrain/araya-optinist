@@ -16,9 +16,9 @@ from datetime import datetime
 
 
 # -- Project information -----------------------------------------------------
-project = "OptiNiSt"
-copyright = f"{datetime.now().year}, OIST"
-author = ""
+project = "Araya-OptiNiSt Cloud"
+copyright = f"{datetime.now().year}, Araya Inc., OIST"
+author = "Araya Inc."
 release = "2.4.0"
 
 # -- readthedocs -------------------------------------------------------------
