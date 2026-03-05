@@ -82,6 +82,10 @@ NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 NOW_EPOCH_S=$(date -u +%s)
 START_EPOCH_S=$(epoch_days_ago 7)
 
+# Temp dir for appendix data (log samples, alarm history, scaling activity)
+APPENDIX_TMP=$(mktemp -d)
+trap 'rm -rf "$APPENDIX_TMP"' EXIT
+
 echo "Generating weekly maintenance report..."
 
 # ---------------------------------------------------------------------------
@@ -167,11 +171,7 @@ fi
 # ---------------------------------------------------------------------------
 echo "  Reviewing CloudWatch logs for errors and warnings..."
 total_errors=0
-
-cat >> "$REPORT" <<'EOF'
-## 2. CloudWatch Log Review (Errors & Warnings)
-
-EOF
+declare -a LOG_COUNTS=()
 
 for i in "${!LOG_GROUPS[@]}"; do
   label="${LOG_LABELS[$i]}"
@@ -270,23 +270,102 @@ else:
   fi
 
   total_errors=$((total_errors + error_count))
+  LOG_COUNTS+=("$error_count")
 
-  cat >> "$REPORT" <<EOF
-### $label
-
-**Errors/warnings: $error_count** (log group: \`$group\`)
-
-<details>
-<summary>Sample entries (ERROR/WARNING only)</summary>
-
-\`\`\`
-$sample
-\`\`\`
-
-</details>
-
-EOF
+  # Store sample for appendix
+  echo "$sample" > "$APPENDIX_TMP/log_sample_$i.txt"
 done
+
+# --- Section 2 output: summary table + error type breakdown ---
+{
+  echo "## 2. CloudWatch Log Review (Errors & Warnings)"
+  echo ""
+  echo "| Log Group | Errors/Warnings |"
+  echo "|---|---|"
+  for i in "${!LOG_GROUPS[@]}"; do
+    echo "| ${LOG_LABELS[$i]} (\`${LOG_GROUPS[$i]}\`) | ${LOG_COUNTS[$i]} |"
+  done
+  echo "| **Total** | **$total_errors** |"
+  echo ""
+} >> "$REPORT"
+
+# Error type breakdown per log group (from sampled entries)
+for i in "${!LOG_GROUPS[@]}"; do
+  count="${LOG_COUNTS[$i]}"
+  if [ "$count" -eq 0 ] 2>/dev/null; then
+    continue
+  fi
+
+  sample_file="$APPENDIX_TMP/log_sample_$i.txt"
+  sample_lines=$(grep -c . "$sample_file" 2>/dev/null || echo "0")
+  if [ "$sample_lines" -eq 0 ]; then
+    continue
+  fi
+
+  breakdown=$(python3 - < "$sample_file" <<'PYEOF'
+import sys, re
+from collections import defaultdict
+
+PATTERNS = [
+    (re.compile(r'stripe_webhook\(\).*Invalid signature'), 'Stripe webhook invalid signature', 'ERROR', 'stripe_webhook():700 — signature mismatch'),
+    (re.compile(r'_should_upgrade_to_ws\(\)'), 'WebSocket upgrade unsupported', 'WARNING', 'uvicorn.error — missing WebSocket library'),
+    (re.compile(r'Firebase token validation failed|Token expired'), 'Firebase token expired', 'WARNING', 'get_current_user():272 — routine token expiry'),
+    (re.compile(r'update_user_storage_usage\(\)'), 'Storage usage update failed', 'WARNING', 'update_user_storage_usage():236'),
+    (re.compile(r'upload_experiment\(\)'), 'Experiment file upload failed', 'ERROR', 'upload_experiment():1101'),
+    (re.compile(r'read_experiment_status\(\)'), 'Experiment config read error', 'WARNING', 'read_experiment_status():228'),
+    (re.compile(r'Traceback'), 'Unhandled traceback', 'ERROR', ''),
+    (re.compile(r'Task timed out'), 'Lambda timeout', 'ERROR', ''),
+]
+
+counts = defaultdict(lambda: {'count': 0, 'severity': '', 'note': ''})
+for line in sys.stdin:
+    line = line.strip()
+    if not line or line in ('No errors found.', ) or line.startswith('('):
+        continue
+
+    matched = False
+    for pattern, name, severity, note in PATTERNS:
+        if pattern.search(line):
+            counts[name]['count'] += 1
+            counts[name]['severity'] = severity
+            counts[name]['note'] = note
+            matched = True
+            break
+
+    if not matched:
+        m = re.search(r'(\w+)\(\):(\d+)', line)
+        if m:
+            name = f'{m.group(1)}() error'
+            severity = 'ERROR' if ' ERROR:' in line or '[ERROR]' in line else 'WARNING'
+            counts[name] = {'count': counts[name]['count'] + 1, 'severity': severity, 'note': f'{m.group(1)}():{m.group(2)}'}
+        else:
+            counts['Other']['count'] += 1
+            counts['Other']['severity'] = 'ERROR'
+            counts['Other']['note'] = ''
+
+if counts:
+    print('| Error Type | Count | Severity | Notes |')
+    print('|---|---|---|---|')
+    for key in sorted(counts, key=lambda k: counts[k]['count'], reverse=True):
+        d = counts[key]
+        print(f'| {key} | ~{d["count"]} | {d["severity"]} | {d["note"]} |')
+PYEOF
+  ) 2>/dev/null || breakdown=""
+
+  if [ -n "$breakdown" ]; then
+    {
+      echo "**${LOG_LABELS[$i]}** ($count total) — error types from sample of $sample_lines:"
+      echo ""
+      echo "$breakdown"
+      echo ""
+    } >> "$REPORT"
+  fi
+done
+
+{
+  echo "> Full log samples in [Appendix A](#appendix-a-cloudwatch-log-samples)."
+  echo ""
+} >> "$REPORT"
 
 # ---------------------------------------------------------------------------
 # 3. Alarm History (Past 7 Days)
@@ -369,16 +448,12 @@ fi
     echo "$alarm_summary_table"
     echo ""
   fi
-  echo "<details>"
-  echo "<summary>Full alarm history</summary>"
-  echo ""
-  echo '```'
-  echo "$history_output"
-  echo '```'
-  echo ""
-  echo "</details>"
+  echo "> Full alarm history in [Appendix B](#appendix-b-alarm-history)."
   echo ""
 } >> "$REPORT"
+
+# Store alarm history for appendix
+echo "$history_output" > "$APPENDIX_TMP/alarm_history.txt"
 
 # ---------------------------------------------------------------------------
 # 4. ECS Service Health
@@ -386,54 +461,69 @@ fi
 echo "  Checking ECS service health..."
 all_healthy=true
 
-cat >> "$REPORT" <<'EOF'
-## 4. ECS Service Health
-
-EOF
+# Collect ECS data into arrays for a single summary table
+declare -a ECS_NAMES=()
+declare -a ECS_STATUSES=()
+declare -a ECS_DESIRED=()
+declare -a ECS_RUNNING=()
+declare -a ECS_ROLLOUTS=()
+declare -a ECS_HEALTH=()
 
 for svc in "${SERVICES[@]}"; do
-  svc_output=$(run_aws aws ecs describe-services \
+  svc_json=$(run_aws aws ecs describe-services \
     --cluster "$CLUSTER" \
     --services "$svc" \
     --region "$REGION" \
     --query 'services[0].{Service:serviceName,Status:status,Running:runningCount,Desired:desiredCount,Rollout:deployments[0].rolloutState}' \
-    --output table)
+    --output json)
 
-  if [ "$AWS_LAST_OK" = false ]; then
-    svc_output="(Service \`$svc\` not found in cluster \`$CLUSTER\`)"
-    status_icon="UNKNOWN"
+  if [ "$AWS_LAST_OK" = false ] || [ -z "$svc_json" ]; then
+    ECS_NAMES+=("$svc")
+    ECS_STATUSES+=("UNKNOWN")
+    ECS_DESIRED+=("?")
+    ECS_RUNNING+=("?")
+    ECS_ROLLOUTS+=("UNKNOWN")
+    ECS_HEALTH+=("UNKNOWN")
     all_healthy=false
   else
-    # Check healthy: running == desired and status == ACTIVE
-    running=$(run_aws aws ecs describe-services \
-      --cluster "$CLUSTER" --services "$svc" --region "$REGION" \
-      --query 'services[0].runningCount' --output text)
-    if [ "$AWS_LAST_OK" = false ] || [ -z "$running" ] || [ "$running" = "None" ]; then
-      running="0"
-    fi
-    desired=$(run_aws aws ecs describe-services \
-      --cluster "$CLUSTER" --services "$svc" --region "$REGION" \
-      --query 'services[0].desiredCount' --output text)
-    if [ "$AWS_LAST_OK" = false ] || [ -z "$desired" ] || [ "$desired" = "None" ]; then
-      desired="0"
-    fi
+    svc_name=$(echo "$svc_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('Service','$svc'))" 2>/dev/null || echo "$svc")
+    svc_status=$(echo "$svc_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('Status','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
+    running=$(echo "$svc_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('Running',0))" 2>/dev/null || echo "0")
+    desired=$(echo "$svc_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('Desired',0))" 2>/dev/null || echo "0")
+    rollout=$(echo "$svc_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('Rollout','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
 
-    status_icon="HEALTHY"
+    health="HEALTHY"
     if [ "$running" != "$desired" ]; then
-      status_icon="UNHEALTHY (running=$running, desired=$desired)"
+      health="UNHEALTHY"
       all_healthy=false
     fi
+
+    ECS_NAMES+=("$svc_name")
+    ECS_STATUSES+=("$svc_status")
+    ECS_DESIRED+=("$desired")
+    ECS_RUNNING+=("$running")
+    ECS_ROLLOUTS+=("$rollout")
+    ECS_HEALTH+=("$health")
   fi
-
-  cat >> "$REPORT" <<EOF
-### $svc — $status_icon
-
-\`\`\`
-$svc_output
-\`\`\`
-
-EOF
 done
+
+# Output single summary table
+{
+  echo "## 4. ECS Service Health"
+  echo ""
+  echo "| Service | Status | Desired | Running | Rollout | Health |"
+  echo "|---|---|---|---|---|---|"
+  for i in "${!ECS_NAMES[@]}"; do
+    echo "| ${ECS_NAMES[$i]} | ${ECS_STATUSES[$i]} | ${ECS_DESIRED[$i]} | ${ECS_RUNNING[$i]} | ${ECS_ROLLOUTS[$i]} | ${ECS_HEALTH[$i]} |"
+  done
+  echo ""
+  if [ "$all_healthy" = true ]; then
+    echo "**All services HEALTHY.**"
+  else
+    echo "**One or more services UNHEALTHY — see details above.**"
+  fi
+  echo ""
+} >> "$REPORT"
 
 # ---------------------------------------------------------------------------
 # 5. Autoscaling Activity
@@ -543,17 +633,13 @@ else
 EOF
 fi
 
-cat >> "$REPORT" <<EOF
-<details>
-<summary>Recent scaling activity</summary>
-
-\`\`\`
-$asg_output
-\`\`\`
-
-</details>
+cat >> "$REPORT" <<'EOF'
+> Full scaling activity in [Appendix C](#appendix-c-scaling-activity).
 
 EOF
+
+# Store scaling activity for appendix
+echo "$asg_output" > "$APPENDIX_TMP/scaling_activity.txt"
 
 # ---------------------------------------------------------------------------
 # 6. Infrastructure Metrics
@@ -853,7 +939,62 @@ cat >> "$REPORT" <<EOF
 ### Notes
 
 *(add any observations, patterns, or concerns)*
+
+---
+---
+
+# Appendices — Raw Logs
+
 EOF
+
+# ---------------------------------------------------------------------------
+# Appendix A: CloudWatch Log Samples
+# ---------------------------------------------------------------------------
+echo "  Writing appendices..."
+{
+  echo "## Appendix A: CloudWatch Log Samples"
+  echo ""
+  for i in "${!LOG_GROUPS[@]}"; do
+    label="${LOG_LABELS[$i]}"
+    group="${LOG_GROUPS[$i]}"
+    count="${LOG_COUNTS[$i]}"
+    echo "### A.$((i+1)) $label"
+    echo ""
+    echo "Log group: \`$group\` — $count errors/warnings"
+    echo ""
+    echo '```'
+    cat "$APPENDIX_TMP/log_sample_$i.txt" 2>/dev/null || echo "(no data)"
+    echo '```'
+    echo ""
+  done
+} >> "$REPORT"
+
+# ---------------------------------------------------------------------------
+# Appendix B: Alarm History
+# ---------------------------------------------------------------------------
+{
+  echo "## Appendix B: Alarm History"
+  echo ""
+  echo "$transition_count total transitions ($asg_history_count ASG scaling)"
+  echo ""
+  echo '```'
+  cat "$APPENDIX_TMP/alarm_history.txt" 2>/dev/null || echo "(no data)"
+  echo '```'
+  echo ""
+} >> "$REPORT"
+
+# ---------------------------------------------------------------------------
+# Appendix C: Scaling Activity
+# ---------------------------------------------------------------------------
+{
+  echo "## Appendix C: Scaling Activity"
+  echo ""
+  echo "$scale_events events ($launch_count launches, $termination_count terminations)"
+  echo ""
+  echo '```'
+  cat "$APPENDIX_TMP/scaling_activity.txt" 2>/dev/null || echo "(no data)"
+  echo '```'
+} >> "$REPORT"
 
 echo ""
 echo "Report saved to: $REPORT"

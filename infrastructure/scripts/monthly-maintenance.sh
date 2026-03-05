@@ -53,6 +53,10 @@ MONTH_START=$(date -u +%Y-%m-01)
 START_ISO_30=$(iso_days_ago 30)
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
+# Temp dir for appendix data
+APPENDIX_TMP=$(mktemp -d)
+trap 'rm -rf "$APPENDIX_TMP"' EXIT
+
 echo "Generating monthly maintenance report..."
 
 # ---------------------------------------------------------------------------
@@ -96,12 +100,22 @@ EOF
 echo "  Reviewing AWS costs (3-month trend)..."
 COST_START=$(month_start_ago 3)
 
+# Discover which AWS services have Project=subscr-optinist tagged resources.
+# Cost allocation tags are not activated (requires management account), so we
+# query the tagging API and manually cross-reference with Cost Explorer results.
+echo "    Discovering tagged resources..."
+tagged_arns_json=$(aws resourcegroupstaggingapi get-resources \
+  --tag-filters Key=Project,Values=subscr-optinist \
+  --region "$REGION" \
+  --query 'ResourceTagMappingList[].ResourceARN' \
+  --output json 2>/dev/null || echo '[]')
+echo "$tagged_arns_json" > "$APPENDIX_TMP/tagged_arns.json"
+
 cost_trend_json=$(run_aws aws ce get-cost-and-usage \
   --time-period "Start=$COST_START,End=$TODAY" \
   --granularity MONTHLY \
   --metrics BlendedCost \
   --group-by Type=DIMENSION,Key=SERVICE \
-  --filter '{"Tags":{"Key":"Project","Values":["subscr-optinist"]}}' \
   --region "$COST_REGION" \
   --output json)
 
@@ -112,11 +126,50 @@ else
 cost_tmp=$(mktemp)
 echo "$cost_trend_json" > "$cost_tmp"
 
-cost_trend_table=$(python3 - "$cost_tmp" <<'PYEOF'
+cost_trend_table=$(python3 - "$cost_tmp" "$APPENDIX_TMP/tagged_arns.json" <<'PYEOF'
 import json, sys
 
 with open(sys.argv[1]) as f:
     data = json.load(f)
+with open(sys.argv[2]) as f:
+    tagged_arns = json.load(f)
+
+# Map ARN service prefixes to Cost Explorer service dimension names.
+# CE names don't follow a standard pattern, so we maintain an explicit map.
+ARN_TO_CE = {
+    'ec2':                  ['Amazon Elastic Compute Cloud - Compute', 'EC2 - Other', 'Amazon Virtual Private Cloud'],
+    'rds':                  ['Amazon Relational Database Service', 'AWS Backup'],
+    'elasticloadbalancing': ['Amazon Elastic Load Balancing'],
+    'ecs':                  ['Amazon Elastic Container Service'],
+    'elasticfilesystem':    ['Amazon Elastic File System'],
+    's3':                   ['Amazon Simple Storage Service'],
+    'lambda':               ['AWS Lambda'],
+    'logs':                 ['AmazonCloudWatch', 'Amazon CloudWatch'],
+    'cloudwatch':           ['AmazonCloudWatch', 'Amazon CloudWatch'],
+    'monitoring':           ['AmazonCloudWatch', 'Amazon CloudWatch'],
+    'route53':              ['Amazon Route 53'],
+    'acm':                  ['AWS Certificate Manager'],
+    'secretsmanager':       ['AWS Secrets Manager'],
+    'ecr':                  ['Amazon EC2 Container Registry', 'Amazon Elastic Container Registry Public'],
+    'events':               ['Amazon EventBridge', 'CloudWatch Events'],
+    'sns':                  ['Amazon Simple Notification Service'],
+    'sqs':                  ['Amazon Simple Queue Service'],
+    'kms':                  ['AWS Key Management Service'],
+    'autoscaling':          ['Amazon Elastic Compute Cloud - Compute', 'EC2 - Other'],
+    'rds-db':               ['Amazon Relational Database Service'],
+    'dynamodb':             ['Amazon DynamoDB'],
+    'servicediscovery':     ['AWS Cloud Map'],
+    'ssm':                  ['AWS Systems Manager'],
+}
+
+# Build set of CE service names that correspond to tagged resources
+tagged_ce_services = set()
+for arn in tagged_arns:
+    parts = arn.split(':')
+    if len(parts) >= 3:
+        svc = parts[2]
+        for ce_name in ARN_TO_CE.get(svc, []):
+            tagged_ce_services.add(ce_name)
 
 months = []
 service_costs = {}
@@ -128,9 +181,34 @@ for period in data.get('ResultsByTime', []):
         amt = float(group['Metrics']['BlendedCost']['Amount'])
         service_costs.setdefault(svc, {})[month] = amt
 
+if not months:
+    print('*(No cost data returned)*')
+    sys.exit(0)
+
+# Account-level services that cannot be tagged to individual resources
+# but are project costs in a dedicated account.
+ALWAYS_INCLUDE = {
+    'Tax',
+    'AWS CloudTrail',
+    'AWS Cost Explorer',
+    'AWS Glue',
+    'AWS Key Management Service',
+    'Amazon Location Service',
+    'Amazon EC2 Container Registry (ECR)',
+    'Amazon Route 53',
+}
+
+# Filter to only services with tagged resources (if we found any)
+if tagged_ce_services:
+    filtered = {s: c for s, c in service_costs.items() if s in tagged_ce_services or s in ALWAYS_INCLUDE}
+    excluded = {s: c for s, c in service_costs.items() if s not in tagged_ce_services and s not in ALWAYS_INCLUDE}
+else:
+    filtered = service_costs
+    excluded = {}
+
 # Sort by most recent full month cost (second to last, since last is MTD)
 sort_month = months[-2] if len(months) > 1 else months[0]
-sorted_svcs = sorted(service_costs.items(),
+sorted_svcs = sorted(filtered.items(),
     key=lambda x: x[1].get(sort_month, 0), reverse=True)
 
 # Header
@@ -184,6 +262,15 @@ if len(months) >= 3 and totals[months[-3]] > 0:
 else:
     total_row += ' | - |'
 print(total_row)
+
+# Show excluded costs if any were filtered out
+if excluded:
+    excluded_total = sum(
+        sum(c.values()) for c in excluded.values()
+    )
+    if excluded_total > 1.0:
+        print()
+        print(f'*{len(excluded)} untagged services excluded (${excluded_total:.2f} total across all months): {", ".join(sorted(excluded.keys()))}*')
 PYEOF
 ) || cost_trend_table="*(Failed to parse cost data)*"
 
@@ -196,6 +283,9 @@ cat >> "$REPORT" <<EOF
 
 $cost_trend_table
 
+EOF
+
+cat >> "$REPORT" <<'EOF'
 **Action items:**
 - [ ] Flag any service with > 20% cost increase from previous month
 - [ ] Review premium instance uptime vs. utilization
@@ -270,6 +360,10 @@ if [ -n "$rds_error_output" ] && ! echo "$rds_error_output" | grep -qi "Resource
   rds_error_status="$rds_error_count RDS error/warning entries in the past 30 days."
 fi
 
+# Store RDS logs for appendix
+echo "$slowquery_output" > "$APPENDIX_TMP/rds_slowquery.txt"
+echo "$rds_error_output" > "$APPENDIX_TMP/rds_errors.txt"
+
 cat >> "$REPORT" <<EOF
 ## 2. RDS Health Check
 
@@ -285,27 +379,11 @@ $backup_output
 
 $slowquery_status
 
-<details>
-<summary>Slow query sample</summary>
-
-\`\`\`
-$slowquery_output
-\`\`\`
-
-</details>
-
 ### RDS Error Log
 
 $rds_error_status
 
-<details>
-<summary>Recent RDS error log entries</summary>
-
-\`\`\`
-$rds_error_output
-\`\`\`
-
-</details>
+> Full RDS logs in [Appendix A](#appendix-a-rds-logs).
 
 EOF
 
@@ -385,6 +463,9 @@ if [ "$alarm_fires" -gt 0 ]; then
   unique_alarms=$(echo "$alarm_history" | grep "to ALARM" | awk '{print $1}' | sort -u | tr '\n' ', ' | sed 's/,$//')
 fi
 
+# Store alarm history for appendix
+echo "$alarm_history" > "$APPENDIX_TMP/alarm_history.txt"
+
 cat >> "$REPORT" <<EOF
 ## 4. Alarm Summary (Past 30 Days)
 
@@ -393,14 +474,7 @@ cat >> "$REPORT" <<EOF
 | Times alarms entered ALARM state | $alarm_fires |
 | Unique alarms that fired | $unique_alarms |
 
-<details>
-<summary>Full alarm history</summary>
-
-\`\`\`
-$alarm_history
-\`\`\`
-
-</details>
+> Full alarm history in [Appendix B](#appendix-b-alarm-history).
 
 EOF
 
@@ -485,8 +559,6 @@ $efs_table
 
 $log_group_table
 
-> Log storage is a major CloudWatch cost driver. Review retention periods if costs are rising.
-
 EOF
 
 # ---------------------------------------------------------------------------
@@ -514,7 +586,51 @@ cat >> "$REPORT" <<'EOF'
 ### Action Items
 
 - [ ] *(fill in any follow-up actions)*
+
+---
+---
+
+# Appendices — Raw Logs
+
 EOF
+
+# ---------------------------------------------------------------------------
+# Appendix A: RDS Logs
+# ---------------------------------------------------------------------------
+echo "  Writing appendices..."
+{
+  echo "## Appendix A: RDS Logs"
+  echo ""
+  echo "### A.1 Slow Query Sample"
+  echo ""
+  echo "$slowquery_count slow queries logged in the past 30 days."
+  echo ""
+  echo '```'
+  cat "$APPENDIX_TMP/rds_slowquery.txt" 2>/dev/null || echo "(no data)"
+  echo '```'
+  echo ""
+  echo "### A.2 RDS Error Log"
+  echo ""
+  echo "$rds_error_count error/warning entries in the past 30 days."
+  echo ""
+  echo '```'
+  cat "$APPENDIX_TMP/rds_errors.txt" 2>/dev/null || echo "(no data)"
+  echo '```'
+  echo ""
+} >> "$REPORT"
+
+# ---------------------------------------------------------------------------
+# Appendix B: Alarm History
+# ---------------------------------------------------------------------------
+{
+  echo "## Appendix B: Alarm History"
+  echo ""
+  echo "$alarm_fires ALARM transitions in the past 30 days."
+  echo ""
+  echo '```'
+  cat "$APPENDIX_TMP/alarm_history.txt" 2>/dev/null || echo "(no data)"
+  echo '```'
+} >> "$REPORT"
 
 echo ""
 echo "Report saved to: $REPORT"

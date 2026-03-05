@@ -3,7 +3,7 @@
 # ==================================================
 resource "aws_cloudwatch_log_group" "ecs" {
   name              = "/ecs/subscr-optinist-cloud-taskdef"
-  retention_in_days = 365
+  retention_in_days = 120
 
   tags = {
     Name = "subscr-optinist-cloud-logs"
@@ -12,7 +12,7 @@ resource "aws_cloudwatch_log_group" "ecs" {
 
 resource "aws_cloudwatch_log_group" "premium_ecs" {
   name              = "/ecs/subscr-premium-optinist-cloud-taskdef"
-  retention_in_days = 365
+  retention_in_days = 120
 
   tags = {
     Name = "subscr-premium-optinist-cloud-logs"
