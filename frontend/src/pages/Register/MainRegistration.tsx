@@ -20,11 +20,16 @@ import {
   CircularProgress,
   Snackbar,
   styled,
+  Tooltip,
   Typography,
 } from "@mui/material"
 
 import PublicHeader from "components/PublicLayout/PublicHeader"
-import { regexIgnoreS, regexPassword } from "const/Auth"
+import {
+  ALLOWED_SPECIAL_CHARACTERS,
+  regexIgnoreS,
+  regexPassword,
+} from "const/Auth"
 import {
   registerUser,
   resendVerificationEmail,
@@ -368,8 +373,10 @@ const RegistrationForm = () => {
                 />
               </InputWrapper>
               <HelperText>
-                At least 6 characters including letters, numbers, and special
-                characters
+                At least 6 characters including letters, numbers, and{" "}
+                <Tooltip title={ALLOWED_SPECIAL_CHARACTERS} arrow>
+                  <SpecialCharsLink>special characters</SpecialCharsLink>
+                </Tooltip>
               </HelperText>
             </Box>
 
@@ -445,10 +452,7 @@ const FormCard = styled(Box)({
     "0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)",
 })
 
-const CardHeader = styled(Box)({
-  marginBottom: 32,
-  textAlign: "center",
-})
+const CardHeader = styled(Box)({ marginBottom: 32, textAlign: "center" })
 
 const LogoWrapper = styled(Box)({
   display: "flex",
@@ -456,10 +460,7 @@ const LogoWrapper = styled(Box)({
   marginBottom: 24,
 })
 
-const Logo = styled("img")({
-  height: 60,
-  width: "auto",
-})
+const Logo = styled("img")({ height: 60, width: "auto" })
 
 const Title = styled(Typography)({
   fontSize: 24,
@@ -509,17 +510,12 @@ const Input = styled("input")({
   transition: "all 0.2s",
   outline: "none",
   boxSizing: "border-box",
-  "::placeholder": {
-    color: "#9ca3af",
-  },
+  "::placeholder": { color: "#9ca3af" },
   ":focus": {
     borderColor: "#000000",
     boxShadow: "0 0 0 3px rgba(0, 0, 0, 0.1)",
   },
-  ":disabled": {
-    backgroundColor: "#f3f4f6",
-    cursor: "not-allowed",
-  },
+  ":disabled": { backgroundColor: "#f3f4f6", cursor: "not-allowed" },
   "&.error": {
     borderColor: "#ef4444",
     boxShadow: "0 0 0 3px rgba(239, 68, 68, 0.1)",
@@ -534,6 +530,13 @@ const HelperText = styled(Typography)({
   fontSize: 12,
   color: "#6b7280",
   marginTop: 4,
+})
+
+const SpecialCharsLink = styled("span")({
+  color: "#1e2125",
+  textDecoration: "underline solid",
+  fontWeight: 500,
+  cursor: "help",
 })
 
 const CheckboxWrapper = styled(Box)({
@@ -567,13 +570,8 @@ const SubmitButton = styled("button")({
   fontWeight: 500,
   cursor: "pointer",
   transition: "background-color 0.2s",
-  ":hover": {
-    backgroundColor: "#1f2937",
-  },
-  ":disabled": {
-    backgroundColor: "#9ca3af",
-    cursor: "not-allowed",
-  },
+  ":hover": { backgroundColor: "#1f2937" },
+  ":disabled": { backgroundColor: "#9ca3af", cursor: "not-allowed" },
   marginBottom: 16,
 })
 
@@ -590,13 +588,8 @@ const ResendButton = styled("button")({
   cursor: "pointer",
   transition: "all 0.2s",
   marginBottom: 16,
-  ":hover": {
-    backgroundColor: "#f9fafb",
-  },
-  ":disabled": {
-    opacity: 0.6,
-    cursor: "not-allowed",
-  },
+  ":hover": { backgroundColor: "#f9fafb" },
+  ":disabled": { opacity: 0.6, cursor: "not-allowed" },
 })
 
 const LoginWrapper = styled(Typography)({
@@ -609,13 +602,9 @@ const LoginLink = styled(Link)({
   color: "#000000",
   textDecoration: "none",
   fontWeight: 500,
-  ":hover": {
-    textDecoration: "underline",
-  },
+  ":hover": { textDecoration: "underline" },
 })
 
-const SuccessContent = styled(Box)({
-  textAlign: "center",
-})
+const SuccessContent = styled(Box)({ textAlign: "center" })
 
 export default RegistrationForm
