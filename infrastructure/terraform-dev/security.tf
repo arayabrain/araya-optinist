@@ -455,26 +455,7 @@ resource "aws_iam_policy" "development_optinist_cloud_user_policy" {
       {
         Effect = "Allow"
         Action = [
-          "logs:GetLogEvents",
-          "logs:FilterLogEvents",
-          "logs:DescribeLogGroups",
-          "logs:DescribeLogStreams",
-          "iam:PassRole",
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject",
-          "s3:ListBucket",
-          "s3:CreateBucket",
-          "s3:DeleteBucket",
           "ec2:DescribeInstances",
-          "ecs:DescribeTasks",
-          "ecs:DescribeContainerInstances",
-          "ecs:ListTasks",
-          "ecs:ListClusters",
-          "ecs:DescribeClusters",
-          "ecs:ListContainerInstances",
-          "ecs:DescribeServices",
-          "ecs:UpdateService",
           "ecr:GetAuthorizationToken",
           "ecr:DescribeRepositories",
           "ecr:BatchCheckLayerAvailability",
@@ -486,12 +467,76 @@ resource "aws_iam_policy" "development_optinist_cloud_user_policy" {
           "cloudwatch:GetMetricStatistics",
           "cloudwatch:DescribeAlarms",
           "autoscaling:DescribeAutoScalingGroups",
-          "autoscaling:SetDesiredCapacity",
-          "autoscaling:SuspendProcesses",
-          "autoscaling:ResumeProcesses",
-          "lambda:InvokeFunction"
+          "ecs:ListClusters",
+          "ecs:ListContainerInstances"
         ]
         Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket",
+          "s3:CreateBucket",
+          "s3:DeleteBucket"
+        ]
+        Resource = [
+          "arn:aws:s3:::development-optinist-*",
+          "arn:aws:s3:::development-optinist-*/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeTasks",
+          "ecs:DescribeContainerInstances",
+          "ecs:ListTasks",
+          "ecs:DescribeClusters",
+          "ecs:DescribeServices",
+          "ecs:UpdateService"
+        ]
+        Resource = [
+          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:cluster/development-optinist-*",
+          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:service/development-optinist-*/*",
+          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:task/development-optinist-*/*",
+          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:container-instance/development-optinist-*/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:GetLogEvents",
+          "logs:FilterLogEvents",
+          "logs:DescribeLogGroups",
+          "logs:DescribeLogStreams"
+        ]
+        Resource = [
+          "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/development-*",
+          "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/development-*:*",
+          "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/development-*",
+          "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/development-*:*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "autoscaling:SetDesiredCapacity",
+          "autoscaling:SuspendProcesses",
+          "autoscaling:ResumeProcesses"
+        ]
+        Resource = "arn:aws:autoscaling:${var.aws_region}:${data.aws_caller_identity.current.account_id}:autoScalingGroup:*:autoScalingGroupName/development-optinist-*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:development-*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "iam:PassRole"
+        Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/development-*"
       }
     ]
   })
@@ -531,8 +576,8 @@ resource "aws_iam_role_policy" "ecs_task_s3_access" {
         Resource = [
           aws_s3_bucket.app_storage.arn,
           "${aws_s3_bucket.app_storage.arn}/*",
-          "arn:aws:s3:::optinist-user-*",
-          "arn:aws:s3:::optinist-user-*/*"
+          "arn:aws:s3:::development-optinist-user-*",
+          "arn:aws:s3:::development-optinist-user-*/*"
         ]
       }
     ]
