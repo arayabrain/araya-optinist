@@ -66,6 +66,7 @@ if TYPE_CHECKING:
 # Constants
 DEFAULT_DEVELOPMENT_CAPACITY = 3  # Fallback capacity for dev/testing
 DEFAULT_IDLE_TIMEOUT_HOURS = 3  # Hours before idle instances become standby
+STICKY_SESSION_DURATION_SECONDS = 300  # Match ALB target group stickiness settings
 
 # MySQL GET_LOCK names for preventing concurrent instance creation
 CREATE_STANDBY_LOCK = "create_standby_lock"
@@ -1764,6 +1765,18 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
 
             # 10. Optimize shared instances (safety net)
             try:
+                try:
+                    fix_result = fix_incorrect_is_shared_flags()
+                    if fix_result.get("fixed_count", 0) > 0:
+                        print(
+                            f"Fixed {fix_result['fixed_count']} stale is_shared flags"
+                        )
+                except Exception:
+                    print("WARNING: fix_incorrect_is_shared_flags() failed")
+                    import traceback
+
+                    traceback.print_exc()
+
                 shared_result = process_shared_instance_optimization()
                 shared_migrations = shared_result.get("migrations_performed", 0)
                 shared_found = shared_result.get("shared_instances_found", 0)
@@ -2116,6 +2129,26 @@ def target_group_exists(target_group_arn: str) -> bool:
         raise
 
 
+def _enable_sticky_sessions(
+    elbv2: "ElasticLoadBalancingv2Client", target_group_arn: str
+) -> None:
+    """Enable ALB sticky sessions on a target group (matches compute.tf main TG)."""
+    try:
+        elbv2.modify_target_group_attributes(
+            TargetGroupArn=target_group_arn,
+            Attributes=[
+                {"Key": "stickiness.enabled", "Value": "true"},
+                {"Key": "stickiness.type", "Value": "lb_cookie"},
+                {
+                    "Key": "stickiness.lb_cookie.duration_seconds",
+                    "Value": str(STICKY_SESSION_DURATION_SECONDS),
+                },
+            ],
+        )
+    except Exception as e:
+        print(f"WARNING: Failed to enable sticky sessions on {target_group_arn}: {e}")
+
+
 def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
     """
     Create a new target group for a premium user, or return existing one if
@@ -2151,7 +2184,9 @@ def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
                 {"Key": "Service", "Value": "optinist-premium"},
             ],
         )
-        return response["TargetGroups"][0]["TargetGroupArn"]
+        tg_arn = response["TargetGroups"][0]["TargetGroupArn"]
+        _enable_sticky_sessions(elbv2, tg_arn)
+        return tg_arn
 
     except Exception as e:
         if "DuplicateTargetGroupName" in str(e):
@@ -2162,6 +2197,7 @@ def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
             try:
                 response = elbv2.describe_target_groups(Names=[target_group_name])
                 existing_arn = response["TargetGroups"][0]["TargetGroupArn"]
+                _enable_sticky_sessions(elbv2, existing_arn)
                 print(f"Found existing target group: {existing_arn}")
                 return existing_arn
             except Exception as describe_error:
@@ -2748,6 +2784,7 @@ def assign_premium_user(
             target_group_arn = target_group_response["TargetGroups"][0][
                 "TargetGroupArn"
             ]
+            _enable_sticky_sessions(elbv2, target_group_arn)
 
             # 8. Register instance to target group
             elbv2.register_targets(
