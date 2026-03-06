@@ -5,7 +5,7 @@
 # Premium Manager Lambda Function
 resource "aws_lambda_function" "premium_manager" {
   filename      = "${path.module}/premium_manager.py.zip"
-  function_name = "subscr-premium-manager"
+  function_name = "${var.environment}-premium-manager"
   role          = aws_iam_role.premium_manager_lambda.arn
   handler       = "premium_manager.handler"
   runtime       = "python3.11"
@@ -68,7 +68,7 @@ resource "aws_lambda_function" "premium_manager" {
 
 # CloudWatch Events Rule for Premium Manager (every 15 minutes)
 resource "aws_cloudwatch_event_rule" "premium_manager_schedule" {
-  name                = "subscr-premium-manager-schedule"
+  name                = "${var.environment}-premium-manager-schedule"
   description         = "Trigger premium manager every 15 minutes for monitoring and scaling"
   schedule_expression = "rate(15 minutes)"
   state               = "ENABLED"
@@ -106,7 +106,7 @@ resource "aws_lambda_permission" "allow_cloudwatch_manager" {
 
 # CloudWatch Events Rule for Premium Cleanup (every hour)
 resource "aws_cloudwatch_event_rule" "premium_cleanup_schedule" {
-  name                = "subscr-premium-cleanup-schedule"
+  name                = "${var.environment}-premium-cleanup-schedule"
   description         = "Trigger premium assignment cleanup every hour"
   schedule_expression = "rate(1 hour)"
   state               = "ENABLED"
@@ -177,7 +177,7 @@ data "archive_file" "premium_manager_zip" {
 
 # CloudWatch Log Group for Premium Manager
 resource "aws_cloudwatch_log_group" "premium_manager_logs" {
-  name              = "/aws/lambda/subscr-premium-manager"
+  name              = "/aws/lambda/${var.environment}-premium-manager"
   retention_in_days = 30
 
   tags = {
@@ -189,7 +189,7 @@ resource "aws_cloudwatch_log_group" "premium_manager_logs" {
 # Premium Cleanup Lambda Function
 resource "aws_lambda_function" "premium_cleanup" {
   filename      = "${path.module}/premium_cleanup.py.zip"
-  function_name = "subscr-premium-cleanup"
+  function_name = "${var.environment}-premium-cleanup"
   role          = aws_iam_role.premium_manager_lambda.arn
   handler       = "premium_cleanup.handler"
   runtime       = "python3.11"
@@ -264,7 +264,7 @@ data "archive_file" "premium_cleanup_zip" {
 
 # CloudWatch Log Group for Premium Cleanup
 resource "aws_cloudwatch_log_group" "premium_cleanup_logs" {
-  name              = "/aws/lambda/subscr-premium-cleanup"
+  name              = "/aws/lambda/${var.environment}-premium-cleanup"
   retention_in_days = 30
 
   tags = {
@@ -280,7 +280,7 @@ resource "aws_cloudwatch_log_group" "premium_cleanup_logs" {
 
 # Premium Manager Lambda Role
 resource "aws_iam_role" "premium_manager_lambda" {
-  name = "subscr-premium-manager-lambda-role"
+  name = "${var.environment}-premium-manager-lambda-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -308,7 +308,7 @@ resource "aws_iam_role_policy_attachment" "premium_manager_lambda_vpc" {
 
 # Premium Manager Lambda Permissions
 resource "aws_iam_role_policy" "premium_manager_permissions" {
-  name = "subscr-premium-manager-permissions"
+  name = "${var.environment}-premium-manager-permissions"
   role = aws_iam_role.premium_manager_lambda.id
 
   policy = jsonencode({
@@ -427,7 +427,7 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
           "${aws_lb.autoscaling.arn}/*",
           aws_lb_listener.autoscaling_https.arn,
           "arn:aws:elasticloadbalancing:${var.aws_region}:${data.aws_caller_identity.current.account_id}:listener-rule/*",
-          "arn:aws:elasticloadbalancing:${var.aws_region}:${data.aws_caller_identity.current.account_id}:targetgroup/subscr-*",
+          "arn:aws:elasticloadbalancing:${var.aws_region}:${data.aws_caller_identity.current.account_id}:targetgroup/${var.environment}-*",
           "arn:aws:elasticloadbalancing:${var.aws_region}:${data.aws_caller_identity.current.account_id}:targetgroup/premium-*"
         ]
       },
@@ -498,7 +498,7 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
 
 # Spot Interruption Handler Lambda Role
 resource "aws_iam_role" "spot_interruption_handler" {
-  name = "subscr-spot-interruption-handler-role"
+  name = "${var.environment}-spot-interruption-handler-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -547,7 +547,7 @@ data "archive_file" "cost_tracker_zip" {
 # Cost Tracking Lambda Function
 resource "aws_lambda_function" "cost_tracker" {
   filename         = "${path.module}/cost_tracker.py.zip"
-  function_name    = "subscr-cost-tracker"
+  function_name    = "${var.environment}-cost-tracker"
   role             = aws_iam_role.premium_manager_lambda.arn
   handler          = "cost_tracker.handler"
   runtime          = "python3.11"
@@ -575,7 +575,7 @@ resource "aws_lambda_function" "cost_tracker" {
 
 # Cost Controller Lambda Role
 resource "aws_iam_role" "cost_controller_lambda" {
-  name = "subscr-cost-controller-lambda-role"
+  name = "${var.environment}-cost-controller-lambda-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -598,7 +598,7 @@ resource "aws_iam_role_policy_attachment" "cost_controller_lambda_basic" {
 
 # EventBridge rule to trigger cost tracker Lambda hourly
 resource "aws_cloudwatch_event_rule" "cost_tracker_schedule" {
-  name                = "subscr-cost-tracker-schedule"
+  name                = "${var.environment}-cost-tracker-schedule"
   description         = "Trigger cost tracker Lambda hourly to publish cost metrics"
   schedule_expression = "rate(1 hour)"
 
@@ -624,7 +624,7 @@ resource "aws_lambda_permission" "allow_eventbridge_cost_tracker" {
 
 # Essential CloudWatch Alarms for Premium Monitoring
 resource "aws_cloudwatch_metric_alarm" "premium_cost_high" {
-  alarm_name          = "subscr-premium-monthly-cost-high"
+  alarm_name          = "${var.environment}-premium-monthly-cost-high"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "1"
   metric_name         = "TotalMonthlyCost"
@@ -642,7 +642,7 @@ resource "aws_cloudwatch_metric_alarm" "premium_cost_high" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "premium_cpu_high" {
-  alarm_name          = "subscr-premium-cpu-high"
+  alarm_name          = "${var.environment}-premium-cpu-high"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "2"
   metric_name         = "CPUUtilization"
@@ -664,7 +664,7 @@ resource "aws_cloudwatch_metric_alarm" "premium_cpu_high" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "premium_memory_high" {
-  alarm_name          = "subscr-premium-memory-high"
+  alarm_name          = "${var.environment}-premium-memory-high"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "3"
   metric_name         = "MemoryUtilization"

@@ -1,13 +1,19 @@
 # Provider configuration
 provider "aws" {
   region = var.aws_region
+
+  default_tags {
+    tags = {
+      Environment = var.environment
+      ManagedBy   = "terraform"
+      Project     = "optinist-cloud"
+    }
+  }
 }
 
 terraform {
   backend "s3" {
-    bucket = "subscr-optinist-for-cloud-tfstate"
-    key    = "terraform.tfstate"
-    region = "ap-northeast-1"
+    # Backend configuration is provided via -backend-config=backends/<env>.hcl
     # dynamodb_table = "terraform-state-lock"  # Uncomment after initial bootstrap
     # encrypt        = true                     # Uncomment after initial bootstrap
   }
@@ -22,6 +28,29 @@ variable "aws_region" {
 variable "availability_zone" {
   description = "Availability zone for the subnet"
   default     = ""
+}
+
+variable "environment" {
+  description = "Environment name prefix for resource naming (e.g. subscr, development)"
+  type        = string
+}
+
+variable "enable_custom_domain" {
+  description = "Toggle Route53/ACM/HTTPS resources (false for dev environments)"
+  type        = bool
+  default     = true
+}
+
+variable "vpc_cidr" {
+  description = "VPC CIDR block"
+  type        = string
+  default     = "10.1.0.0/16"
+}
+
+variable "s3_user_bucket_prefix" {
+  description = "Prefix for per-user S3 bucket wildcard in IAM policies"
+  type        = string
+  default     = "optinist-user"
 }
 
 # Database configuration
@@ -200,8 +229,11 @@ variable "admin_storage_quota_bytes" {
 
 # Data sources
 data "aws_caller_identity" "current" {}
+data "aws_elb_service_account" "main" {}
 
-
+locals {
+  env_prefix = "${var.environment}-optinist"
+}
 
 # =======
 # Outputs
@@ -392,17 +424,17 @@ output "domain_port" {
 
 output "acm_certificate_arn" {
   description = "ARN of the ACM certificate for HTTPS"
-  value       = aws_acm_certificate.main.arn
+  value       = var.enable_custom_domain ? aws_acm_certificate.main[0].arn : null
 }
 
 output "acm_certificate_status" {
   description = "Validation status of the ACM certificate"
-  value       = aws_acm_certificate.main.status
+  value       = var.enable_custom_domain ? aws_acm_certificate.main[0].status : null
 }
 
 output "route53_zone_id" {
-  description = "Route53 hosted zone ID for araya-optinist.com"
-  value       = data.aws_route53_zone.main.zone_id
+  description = "Route53 hosted zone ID"
+  value       = var.enable_custom_domain ? data.aws_route53_zone.main[0].zone_id : null
 }
 
 output "alb_listener_https_arn" {

@@ -40,7 +40,7 @@ data "archive_file" "aws_constants_layer_zip" {
 # Create the Lambda Layer
 resource "aws_lambda_layer_version" "aws_constants" {
   filename            = "${path.module}/aws_constants_layer.zip"
-  layer_name          = "subscr-aws-constants"
+  layer_name          = "${var.environment}-aws-constants"
   description         = "Shared AWS constants for subscription Lambda functions"
   compatible_runtimes = ["python3.9", "python3.10", "python3.11", "python3.12"]
 

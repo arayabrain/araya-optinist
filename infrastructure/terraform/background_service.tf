@@ -15,7 +15,7 @@
 # Background Service Launch Template
 # ===========================
 resource "aws_launch_template" "background" {
-  name_prefix   = "subscr-optinist-background-"
+  name_prefix   = "${local.env_prefix}-background-"
   image_id      = data.aws_ami.ecs_optimized.id
   instance_type = "t3.micro" # Minimal instance for background jobs
 
@@ -55,7 +55,7 @@ resource "aws_launch_template" "background" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Name    = "subscr-optinist-background-instance"
+      Name    = "${local.env_prefix}-background-instance"
       Type    = "ECS-Background"
       Tier    = "background"
       Service = "background-jobs"
@@ -80,7 +80,7 @@ resource "aws_instance" "background" {
   subnet_id     = aws_subnet.private1.id
 
   tags = {
-    Name    = "subscr-optinist-background"
+    Name    = "${local.env_prefix}-background"
     Type    = "Background-Instance"
     Service = "background-jobs"
     Tier    = "background"
@@ -95,7 +95,7 @@ resource "aws_instance" "background" {
 # Background ECS Task Definition
 # ===========================
 resource "aws_ecs_task_definition" "background" {
-  family                   = "subscr-background-optinist-cloud-taskdef"
+  family                   = "${var.environment}-background-optinist-cloud-taskdef"
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
   cpu                      = 512 # Lower CPU for background jobs
@@ -105,7 +105,7 @@ resource "aws_ecs_task_definition" "background" {
 
   container_definitions = jsonencode([
     {
-      name              = "subscr-background-optinist-cloud-container"
+      name              = "${var.environment}-background-optinist-cloud-container"
       image             = "${var.ecr_repository_url}:latest"
       cpu               = 512
       memory            = 768
@@ -120,7 +120,7 @@ resource "aws_ecs_task_definition" "background" {
       environment = [
         {
           name  = "CLOUDWATCH_LOG_GROUP"
-          value = "/ecs/subscr-background-optinist-cloud-taskdef"
+          value = "/ecs/${var.environment}-background-optinist-cloud-taskdef"
         },
         {
           name  = "PYTHONPATH"
@@ -278,7 +278,7 @@ resource "aws_ecs_task_definition" "background" {
 
       mountPoints = [
         {
-          sourceVolume  = "subscr-background-optinist-cloud-snmk-volume"
+          sourceVolume  = "${var.environment}-background-optinist-cloud-snmk-volume"
           containerPath = "/app/.snakemake"
           readOnly      = false
         }
@@ -296,10 +296,10 @@ resource "aws_ecs_task_definition" "background" {
       logConfiguration = {
         logDriver = "awslogs"
         options = {
-          "awslogs-group"             = "/ecs/subscr-background-optinist-cloud-taskdef"
+          "awslogs-group"             = "/ecs/${var.environment}-background-optinist-cloud-taskdef"
           "awslogs-multiline-pattern" = "^\\[\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
           "max-buffer-size"           = "25m"
-          "awslogs-region"            = "ap-northeast-1"
+          "awslogs-region"            = var.aws_region
           "awslogs-create-group"      = "true"
           "awslogs-stream-prefix"     = "ecs"
           "mode"                      = "non-blocking"
@@ -309,7 +309,7 @@ resource "aws_ecs_task_definition" "background" {
   ])
 
   volume {
-    name = "subscr-background-optinist-cloud-snmk-volume"
+    name = "${var.environment}-background-optinist-cloud-snmk-volume"
     efs_volume_configuration {
       file_system_id     = aws_efs_file_system.snmk.id
       root_directory     = "/"
@@ -322,7 +322,7 @@ resource "aws_ecs_task_definition" "background" {
   }
 
   tags = {
-    Name = "subscr-background-optinist-cloud-taskdef"
+    Name = "${var.environment}-background-optinist-cloud-taskdef"
     Tier = "background"
   }
 }
@@ -331,7 +331,7 @@ resource "aws_ecs_task_definition" "background" {
 # Background ECS Service
 # ===========================
 resource "aws_ecs_service" "background" {
-  name                               = "subscr-background-optinist-cloud-service"
+  name                               = "${var.environment}-background-optinist-cloud-service"
   cluster                            = aws_ecs_cluster.main.id
   task_definition                    = aws_ecs_task_definition.background.arn
   desired_count                      = 1 # Single instance for all background jobs
@@ -355,7 +355,7 @@ resource "aws_ecs_service" "background" {
   ]
 
   tags = {
-    Name = "subscr-background-optinist-cloud-service"
+    Name = "${var.environment}-background-optinist-cloud-service"
     Tier = "background"
   }
 }
@@ -364,7 +364,7 @@ resource "aws_ecs_service" "background" {
 # CloudWatch Log Group
 # ===========================
 resource "aws_cloudwatch_log_group" "background_logs" {
-  name              = "/ecs/subscr-background-optinist-cloud-taskdef"
+  name              = "/ecs/${var.environment}-background-optinist-cloud-taskdef"
   retention_in_days = 14
 
   tags = {
@@ -379,7 +379,7 @@ resource "aws_cloudwatch_log_group" "background_logs" {
 
 # Alarm for background task stopped (service count drops to 0)
 resource "aws_cloudwatch_metric_alarm" "background_task_stopped" {
-  alarm_name          = "subscr-background-task-stopped"
+  alarm_name          = "${var.environment}-background-task-stopped"
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = "2"
   metric_name         = "RunningTaskCount"
@@ -402,7 +402,7 @@ resource "aws_cloudwatch_metric_alarm" "background_task_stopped" {
 
 # Alarm for background service CPU utilization (warn if overloaded)
 resource "aws_cloudwatch_metric_alarm" "background_cpu_high" {
-  alarm_name          = "subscr-background-cpu-high"
+  alarm_name          = "${var.environment}-background-cpu-high"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "3"
   metric_name         = "CpuUtilized"
@@ -425,7 +425,7 @@ resource "aws_cloudwatch_metric_alarm" "background_cpu_high" {
 
 # Alarm for background service memory utilization
 resource "aws_cloudwatch_metric_alarm" "background_memory_high" {
-  alarm_name          = "subscr-background-memory-high"
+  alarm_name          = "${var.environment}-background-memory-high"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "3"
   metric_name         = "MemoryUtilized"
