@@ -293,6 +293,60 @@ cat >> "$REPORT" <<'EOF'
 
 EOF
 
+# 1b. Cost Tracker Custom Metrics (from Optinist/CostTracking namespace)
+echo "  Querying cost tracker metrics..."
+COST_METRICS=(
+  "ActualMonthToDateSpend"
+  "ExpectedMonthlyBudget"
+  "CostPerPremiumUser"
+  "CostPerFreeUser"
+  "PremiumUtilization"
+  "FreeUtilization"
+  "PremiumSessionHoursMTD"
+  "ActivePremiumUsers"
+  "ActiveFreeUsers"
+  "PremiumInstanceCount"
+  "FreeInstanceCount"
+)
+
+cost_tracker_table="| Metric | Latest Value |
+|---|---|"
+
+for metric in "${COST_METRICS[@]}"; do
+  val=$(aws cloudwatch get-metric-statistics \
+    --namespace "Optinist/CostTracking" \
+    --metric-name "$metric" \
+    --start-time "$(iso_days_ago 2)" \
+    --end-time "$NOW_ISO" \
+    --period 3600 \
+    --statistics Maximum \
+    --region "$REGION" \
+    --query 'Datapoints | sort_by(@, &Timestamp) | [-1].Maximum' \
+    --output text 2>/dev/null || echo "N/A")
+  if [ "$val" = "None" ] || [ -z "$val" ]; then
+    val="N/A"
+  elif echo "$metric" | grep -qi "cost\|spend\|budget"; then
+    val=$(python3 -c "print(f'\${float($val):.2f}')" 2>/dev/null || echo "$val")
+  elif echo "$metric" | grep -qi "utilization"; then
+    val=$(python3 -c "print(f'{float($val):.1f}%')" 2>/dev/null || echo "$val")
+  elif echo "$metric" | grep -qi "hours"; then
+    val=$(python3 -c "print(f'{float($val):.1f}h')" 2>/dev/null || echo "$val")
+  else
+    val=$(python3 -c "v=float($val); print(f'{v:.0f}' if v==int(v) else f'{v:.2f}')" 2>/dev/null || echo "$val")
+  fi
+  cost_tracker_table="$cost_tracker_table
+| \`$metric\` | $val |"
+done
+
+cat >> "$REPORT" <<EOF
+### Cost Tracker Metrics (Latest)
+
+$cost_tracker_table
+
+> Source: \`Optinist/CostTracking\` CloudWatch namespace (published hourly by \`subscr-cost-tracker\` Lambda).
+
+EOF
+
 # ---------------------------------------------------------------------------
 # 2. RDS Health Check
 # ---------------------------------------------------------------------------

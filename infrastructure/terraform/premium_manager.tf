@@ -537,29 +537,60 @@ resource "aws_cloudwatch_log_metric_filter" "premium_assignments" {
 # Cost tracker
 # ======================
 
+# Install dependencies for cost tracker Lambda
+resource "null_resource" "install_cost_tracker_dependencies" {
+  provisioner "local-exec" {
+    command = <<-EOT
+      mkdir -p ${path.module}/cost_tracker_package
+      /usr/bin/python3 -m pip install pymysql -t ${path.module}/cost_tracker_package/ --no-cache-dir
+      cp ${path.module}/../aws_constants.py ${path.module}/cost_tracker_package/aws_constants.py
+    EOT
+  }
+
+  triggers = {
+    code_changes = md5(join("", [
+      filesha256("${path.module}/cost_tracker_package/cost_tracker.py"),
+      filesha256("${path.module}/../aws_constants.py")
+    ]))
+  }
+}
+
 # Create ZIP using archive_file for cost tracker Lambda
 data "archive_file" "cost_tracker_zip" {
   type        = "zip"
   source_dir  = "${path.module}/cost_tracker_package"
   output_path = "${path.module}/cost_tracker.py.zip"
+
+  depends_on = [null_resource.install_cost_tracker_dependencies]
 }
 
 # Cost Tracking Lambda Function
 resource "aws_lambda_function" "cost_tracker" {
   filename         = "${path.module}/cost_tracker.py.zip"
   function_name    = "subscr-cost-tracker"
-  role             = aws_iam_role.premium_manager_lambda.arn
+  role             = aws_iam_role.cost_controller_lambda.arn
   handler          = "cost_tracker.handler"
   runtime          = "python3.11"
   timeout          = 300
+  layers           = [aws_lambda_layer_version.aws_constants.arn]
   source_code_hash = data.archive_file.cost_tracker_zip.output_base64sha256
 
   environment {
     variables = {
-      ASG_NAME      = aws_autoscaling_group.main.name
-      REGION        = var.aws_region
-      INSTANCE_TYPE = "t3.large"
+      ASG_NAME               = aws_autoscaling_group.main.name
+      REGION                 = var.aws_region
+      RDS_HOST               = aws_db_proxy.main.endpoint
+      RDS_USER               = var.mysql_user
+      RDS_PASSWORD           = var.mysql_password
+      RDS_DATABASE           = var.mysql_database
+      PREMIUM_HOURLY_RATE    = "0.1088"
+      FREE_HOURLY_RATE       = "0.1088"
     }
+  }
+
+  vpc_config {
+    subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id]
+    security_group_ids = [aws_security_group.ecs.id]
   }
 
   tags = {
@@ -568,7 +599,9 @@ resource "aws_lambda_function" "cost_tracker" {
   }
 
   depends_on = [
-    aws_iam_role_policy_attachment.premium_manager_lambda_basic
+    aws_iam_role_policy_attachment.cost_controller_lambda_vpc,
+    aws_cloudwatch_log_group.cost_tracker_logs,
+    data.archive_file.cost_tracker_zip
   ]
 }
 
@@ -583,9 +616,9 @@ resource "aws_cloudwatch_log_group" "cost_tracker_logs" {
   }
 }
 
-# Cost Controller Lambda Role
+# Cost Tracker Lambda Role (dedicated least-privilege role)
 resource "aws_iam_role" "cost_controller_lambda" {
-  name = "subscr-cost-controller-lambda-role"
+  name = "subscr-cost-tracker-lambda-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -601,9 +634,46 @@ resource "aws_iam_role" "cost_controller_lambda" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "cost_controller_lambda_basic" {
+resource "aws_iam_role_policy_attachment" "cost_controller_lambda_vpc" {
   role       = aws_iam_role.cost_controller_lambda.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "cost_tracker_permissions" {
+  name = "subscr-cost-tracker-permissions"
+  role = aws_iam_role.cost_controller_lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData",
+          "cloudwatch:GetMetricData"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceStatus"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "autoscaling:DescribeAutoScalingGroups"
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "ce:GetCostAndUsage"
+        Resource = "*"
+      }
+    ]
+  })
 }
 
 # EventBridge rule to trigger cost tracker Lambda hourly
@@ -632,22 +702,23 @@ resource "aws_lambda_permission" "allow_eventbridge_cost_tracker" {
   source_arn    = aws_cloudwatch_event_rule.cost_tracker_schedule.arn
 }
 
-# Essential CloudWatch Alarms for Premium Monitoring
-resource "aws_cloudwatch_metric_alarm" "premium_cost_high" {
-  alarm_name          = "subscr-premium-monthly-cost-high"
+# Account-level cost alarm
+# Fires when projected monthly spend exceeds the budget set in tfvars
+resource "aws_cloudwatch_metric_alarm" "monthly_cost_high" {
+  alarm_name          = "subscr-monthly-cost-high"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "1"
-  metric_name         = "TotalMonthlyCost"
-  namespace           = "OptiNiSt/Cost"
-  period              = "86400" # Daily
+  metric_name         = "ExpectedMonthlyBudget"
+  namespace           = "Optinist/CostTracking"
+  period              = "86400"
   statistic           = "Maximum"
-  threshold           = "500"
-  alarm_description   = "Monthly cost estimate is high"
+  threshold           = var.monthly_budget_usd
+  alarm_description   = "Projected monthly spend exceeds budget ($${var.monthly_budget_usd})"
   alarm_actions       = [aws_sns_topic.critical_alerts.arn]
   ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   tags = {
-    Name    = "High Monthly Cost Alarm"
+    Name    = "Monthly Cost Budget Alarm"
     Service = "cost-monitoring"
   }
 }

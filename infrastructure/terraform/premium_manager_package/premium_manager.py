@@ -439,6 +439,15 @@ def _store_user_assignment_transaction(
                         f"workflows - will preserve count in premium assignment"
                     )
 
+            # Close free-tier usage log before deleting assignment
+            if user_id is not None:
+                cursor.execute(
+                    """UPDATE instance_usage_log SET ended_at = NOW()
+                       WHERE user_id = %s AND tier = 'free'
+                       AND ended_at IS NULL""",
+                    (user_id,),
+                )
+
             cursor.execute(
                 """DELETE FROM free_user_assignments WHERE user_id = %s""",
                 (user_id,),
@@ -477,6 +486,15 @@ def _store_user_assignment_transaction(
                 preserved_workflow_count,  # Preserve workflow count from free tier
             ),
         )
+
+        # Log premium usage session (skip standby — no real user)
+        if user_id is not None and not is_standby:
+            cursor.execute(
+                """INSERT INTO instance_usage_log
+                   (user_id, instance_id, tier, started_at)
+                   VALUES (%s, %s, 'premium', NOW())""",
+                (user_id, instance_id),
+            )
 
     print(
         f"Stored assignment in RDS: user {user_id} -> instance {instance_id} "
@@ -520,6 +538,15 @@ def _remove_user_assignment_transaction(connection, user_id: int):
 
         if not assignment:
             raise Exception(f"No assignment found for user {user_id}")
+
+        # Close usage log BEFORE delete (crash-safe: orphan assignment
+        # is recoverable, missing ended_at is not)
+        cursor.execute(
+            """UPDATE instance_usage_log SET ended_at = NOW()
+               WHERE user_id = %s AND tier = 'premium'
+               AND ended_at IS NULL""",
+            (user_id,),
+        )
 
         # Delete assignment
         cursor.execute(

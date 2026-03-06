@@ -390,12 +390,12 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["AWS/Billing", "EstimatedCharges", "Currency", "USD", "ServiceName", "AmazonEC2", { "label" : "EC2 Costs" }],
-            ["AWS/Billing", "EstimatedCharges", "Currency", "USD", "ServiceName", "AmazonECS", { "label" : "ECS Costs" }],
-            ["AWS/Billing", "EstimatedCharges", "Currency", "USD", "ServiceName", "AmazonElasticLoadBalancing", { "label" : "ALB Costs" }],
+            ["Optinist/CostTracking", "ActualMonthToDateSpend", { "label" : "Actual MTD Spend ($)", "yAxis" : "left" }],
+            ["Optinist/CostTracking", "ExpectedMonthlyBudget", { "label" : "Expected Budget ($)", "yAxis" : "left" }],
             ["Optinist/CostTracking", "PremiumInstanceCount", { "label" : "Premium Instances", "yAxis" : "right" }],
             ["Optinist/CostTracking", "FreeInstanceCount", { "label" : "Free Tier Instances", "yAxis" : "right" }],
-            ["Optinist/CostTracking", "PremiumUtilization", { "label" : "Premium Utilization %", "yAxis" : "right" }]
+            ["Optinist/CostTracking", "ActivePremiumUsers", { "label" : "Active Premium Users", "yAxis" : "right" }],
+            ["Optinist/CostTracking", "ActiveFreeUsers", { "label" : "Active Free Users", "yAxis" : "right" }]
           ]
           view    = "timeSeries"
           stacked = false
@@ -403,6 +403,16 @@ resource "aws_cloudwatch_dashboard" "main" {
           title   = "Cost Tracking & Instance Counts"
           period  = 3600
           stat    = "Maximum"
+          yAxis = {
+            left = {
+              label = "USD"
+              min   = 0
+            }
+            right = {
+              label = "Count"
+              min   = 0
+            }
+          }
         }
       },
       # Row 3: Load Balancer Performance
@@ -694,7 +704,7 @@ resource "aws_cloudwatch_dashboard" "main" {
             aws_cloudwatch_metric_alarm.background_cpu_high.arn,
             aws_cloudwatch_metric_alarm.background_memory_high.arn,
             # Premium Tier Alarms
-            aws_cloudwatch_metric_alarm.premium_cost_high.arn,
+            aws_cloudwatch_metric_alarm.monthly_cost_high.arn,
             aws_cloudwatch_metric_alarm.premium_cpu_high.arn,
             aws_cloudwatch_metric_alarm.premium_memory_high.arn,
             # Autoscaling Alarms

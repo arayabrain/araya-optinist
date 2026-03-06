@@ -39,6 +39,7 @@ from studio.app.common.core.subscription.constants import SubscriptionPlanIds
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import session_scope
 from studio.app.common.models import FreeUserAssignment
+from studio.app.common.models.instance_usage import InstanceUsageLog
 
 # Constants
 BEARER_PREFIX = "Bearer "
@@ -436,6 +437,15 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
                     last_activity=now,
                 )
                 session.add(assignment)
+
+                # Log usage session for cost tracking
+                usage_entry = InstanceUsageLog(
+                    user_id=user_id,
+                    instance_id=instance_id,
+                    tier="free",
+                    started_at=now,
+                )
+                session.add(usage_entry)
 
             session.commit()
             return True

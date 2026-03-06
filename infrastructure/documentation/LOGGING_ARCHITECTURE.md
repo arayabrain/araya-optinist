@@ -687,7 +687,7 @@ The free manager also triggers on ASG lifecycle events (instance launch/terminat
 | `subscr-background-task-stopped`   | RunningTaskCount          | < 1          | ECS/ContainerInsights  |
 | `subscr-background-cpu-high`       | CpuUtilized               | > 400 units  | ECS/ContainerInsights  |
 | `subscr-background-memory-high`    | MemoryUtilized            | > 600 MB     | ECS/ContainerInsights  |
-| `subscr-premium-monthly-cost-high` | TotalMonthlyCost          | > $500/day   | OptiNiSt/Cost          |
+| `subscr-monthly-cost-high` | TotalMonthlyCost          | > $500/day   | OptiNiSt/Cost          |
 | `subscr-premium-cpu-high`          | CPUUtilization            | > 80%        | AWS/ECS                |
 | `subscr-premium-memory-high`       | MemoryUtilization         | > 85%        | AWS/ECS                |
 

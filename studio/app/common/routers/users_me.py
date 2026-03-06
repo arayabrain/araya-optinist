@@ -27,6 +27,7 @@ from studio.app.common.core.users import crud_users
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import get_db
 from studio.app.common.models import FreeUserAssignment
+from studio.app.common.models.instance_usage import InstanceUsageLog
 from studio.app.common.schemas.users import SelfUserUpdate, User, UserPasswordUpdate
 
 router = APIRouter(prefix="/users/me", tags=["users/me"])
@@ -255,12 +256,27 @@ async def logout_free_user(
         # Update logged_out_at timestamp via direct SQL
         from sqlalchemy import update
 
+        now = get_current_datetime()
+
         stmt = (
             update(FreeUserAssignment)
             .where(FreeUserAssignment.user_id == current_user.id)
-            .values(logged_out_at=get_current_datetime())
+            .values(logged_out_at=now)
         )
         result = db.execute(stmt)
+
+        # Close usage log session
+        usage_stmt = (
+            update(InstanceUsageLog)
+            .where(
+                InstanceUsageLog.user_id == current_user.id,
+                InstanceUsageLog.tier == "free",
+                InstanceUsageLog.ended_at.is_(None),
+            )
+            .values(ended_at=now)
+        )
+        db.execute(usage_stmt)
+
         db.commit()
 
         if result.rowcount > 0:

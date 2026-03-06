@@ -205,6 +205,11 @@ variable "admin_storage_quota_bytes" {
   default     = 214748364800 # 200 GB
 }
 
+variable "monthly_budget_usd" {
+  description = "Monthly cost budget in USD. Alert fires when projected spend exceeds this."
+  type        = number
+}
+
 # Data sources
 data "aws_caller_identity" "current" {}
 
