@@ -479,11 +479,11 @@ cat >> "$REPORT" <<EOF
 EOF
 
 # ---------------------------------------------------------------------------
-# 5. Storage Overview
+# 5. Storage Overview (with month-over-month trends)
 # ---------------------------------------------------------------------------
 echo "  Checking storage usage..."
 
-# S3 main bucket
+# S3 main bucket — current snapshot
 s3_objects="N/A"
 s3_size="N/A"
 s3_raw=$(aws s3 ls "s3://$S3_BUCKET" --recursive --summarize 2>&1) || true
@@ -501,15 +501,75 @@ if [ -n "$s3_summary" ]; then
   fi
 fi
 
-# EFS
+# S3 — 3-month trend via CloudWatch BucketSizeBytes (daily metric published by S3)
+echo "    Fetching S3 storage trend (3 months)..."
+s3_trend_json=$(aws cloudwatch get-metric-statistics \
+  --namespace AWS/S3 \
+  --metric-name BucketSizeBytes \
+  --dimensions "Name=BucketName,Value=$S3_BUCKET" "Name=StorageType,Value=StandardStorage" \
+  --start-time "$(iso_days_ago 90)" \
+  --end-time "$NOW_ISO" \
+  --period 2592000 \
+  --statistics Average \
+  --region "$REGION" \
+  --output json 2>/dev/null || echo '{"Datapoints":[]}')
+
+s3_trend_table=$(echo "$s3_trend_json" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+pts = sorted(data.get('Datapoints', []), key=lambda x: x['Timestamp'])
+if not pts:
+    print('*(No S3 CloudWatch metric data available — metric may take 24h to appear)*')
+    sys.exit(0)
+print('| Month | Size | Change |')
+print('|---|---|---|')
+prev = None
+for pt in pts:
+    month = pt['Timestamp'][:7]
+    gb = pt['Average'] / 1073741824
+    if prev is not None and prev > 0:
+        pct = ((gb - prev) / prev) * 100
+        change = f'{pct:+.1f}%'
+    else:
+        change = '-'
+    print(f'| {month} | {gb:.2f} GB | {change} |')
+    prev = gb
+" 2>/dev/null || echo "*(Failed to parse S3 trend data)*")
+
+# EFS — current size + 3-month trend
 efs_info=$(aws efs describe-file-systems --region "$REGION" \
   --query 'FileSystems[*].{Id:FileSystemId,Name:Name,SizeGB:SizeInBytes.Value,Status:LifeCycleState}' \
   --output json 2>/dev/null || echo "[]")
 
+# Get EFS filesystem IDs for trend queries
+efs_ids=$(echo "$efs_info" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for fs in data:
+    if 'subscr' in (fs.get('Name') or '').lower():
+        print(fs['Id'])
+" 2>/dev/null)
+
+echo "    Fetching EFS storage trends (3 months)..."
+efs_trend_data=""
+for fs_id in $efs_ids; do
+  efs_metric_json=$(aws cloudwatch get-metric-statistics \
+    --namespace AWS/EFS \
+    --metric-name StorageBytes \
+    --dimensions "Name=FileSystemId,Value=$fs_id" "Name=StorageClass,Value=Total" \
+    --start-time "$(iso_days_ago 90)" \
+    --end-time "$NOW_ISO" \
+    --period 2592000 \
+    --statistics Average \
+    --region "$REGION" \
+    --output json 2>/dev/null || echo '{"Datapoints":[]}')
+  efs_metric_compact=$(echo "$efs_metric_json" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin)))" 2>/dev/null || echo '{"Datapoints":[]}')
+  efs_trend_data="${efs_trend_data}${fs_id}|${efs_metric_compact}"$'\n'
+done
+
 efs_table=$(echo "$efs_info" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-# Filter to project EFS volumes only
 data = [fs for fs in data if 'subscr' in (fs.get('Name') or '').lower()]
 print('| FileSystem | Name | Size | Status |')
 print('|---|---|---|---|')
@@ -518,6 +578,44 @@ for fs in data:
     name = fs.get('Name', '-') or '-'
     print(f'| {fs[\"Id\"]} | {name} | {size_gb:.1f} GB | {fs[\"Status\"]} |')
 " 2>/dev/null || echo "*(Failed to retrieve EFS data)*")
+
+efs_trend_table=$(echo "$efs_trend_data" | python3 -c "
+import sys, json
+lines = [l.strip() for l in sys.stdin if l.strip()]
+if not lines:
+    print('*(No EFS trend data available)*')
+    sys.exit(0)
+all_trends = []
+for line in lines:
+    parts = line.split('|', 1)
+    if len(parts) != 2:
+        continue
+    fs_id = parts[0]
+    try:
+        data = json.loads(parts[1])
+    except json.JSONDecodeError:
+        continue
+    pts = sorted(data.get('Datapoints', []), key=lambda x: x['Timestamp'])
+    if not pts:
+        continue
+    for i, pt in enumerate(pts):
+        gb = pt['Average'] / 1073741824
+        month = pt['Timestamp'][:7]
+        if i > 0:
+            prev_gb = pts[i-1]['Average'] / 1073741824
+            pct = ((gb - prev_gb) / prev_gb) * 100 if prev_gb > 0 else 0
+            change = f'{pct:+.1f}%'
+        else:
+            change = '-'
+        all_trends.append((fs_id, month, gb, change))
+if not all_trends:
+    print('*(No EFS CloudWatch metric data available)*')
+    sys.exit(0)
+print('| FileSystem | Month | Size | Change |')
+print('|---|---|---|---|')
+for fs_id, month, gb, change in all_trends:
+    print(f'| {fs_id} | {month} | {gb:.2f} GB | {change} |')
+" 2>/dev/null || echo "*(Failed to parse EFS trend data)*")
 
 # Log groups
 log_group_table=$(aws logs describe-log-groups \
@@ -551,9 +649,17 @@ cat >> "$REPORT" <<EOF
 | Objects | $s3_objects |
 | Total size | $s3_size |
 
+#### S3 Storage Trend (3 Months)
+
+$s3_trend_table
+
 ### EFS
 
 $efs_table
+
+#### EFS Storage Trend (3 Months)
+
+$efs_trend_table
 
 ### CloudWatch Log Groups
 
