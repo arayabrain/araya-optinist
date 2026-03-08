@@ -95,12 +95,42 @@ aws configure
 
 ### First-Time Setup
 
-Before deploying any environment, the S3 state bucket must exist:
+#### 1. Create S3 bucket for Terraform state
 
 ```bash
-# Create the state bucket (one-time, per environment)
-aws s3 mb s3://subscr-optinist-for-cloud-tfstate --region ap-northeast-1         # production
-aws s3 mb s3://development-optinist-for-cloud-tfstate --region ap-northeast-1    # development
+# Production state bucket
+aws s3api create-bucket \
+  --bucket subscr-optinist-for-cloud-tfstate \
+  --region ap-northeast-1 \
+  --create-bucket-configuration LocationConstraint=ap-northeast-1
+
+# Development state bucket
+aws s3api create-bucket \
+  --bucket development-optinist-for-cloud-tfstate \
+  --region ap-northeast-1 \
+  --create-bucket-configuration LocationConstraint=ap-northeast-1
+```
+
+#### 2. Create a separate Firebase project (development only)
+
+Create a new Firebase project in the [Firebase Console](https://console.firebase.google.com/) for test use.
+Update `firebase_config_json` and `firebase_private_json` in `environments/development.tfvars`.
+
+#### 3. Set up Stripe test mode (development only)
+
+1. In the [Stripe Dashboard](https://dashboard.stripe.com/), toggle to "Test mode"
+2. Create test products and prices matching the production structure
+3. Create a test webhook endpoint pointing to the test ALB
+4. Update `stripe_secret_key`, `stripe_webhook_secret`, and plan IDs in `environments/development.tfvars`
+
+#### 4. Fill in tfvars placeholders
+
+Copy the example file and replace all `<PLACEHOLDER>` values:
+
+```bash
+cd infrastructure/terraform/environments
+cp development.tfvars.example development.tfvars
+# Edit development.tfvars — replace all <PLACEHOLDER> values
 ```
 
 ---
@@ -194,6 +224,18 @@ terraform destroy -var-file=environments/production.tfvars
 | **Stripe keys** | Live mode | Test mode |
 | **Firebase project** | Production project | Separate dev project |
 | **Resource name prefix** | `subscr-optinist-*` | `development-optinist-*` |
+
+### Subnet CIDRs
+
+Subnets are derived automatically via `cidrsubnet(var.vpc_cidr, 4, N)`:
+
+| Subnet | Production | Development |
+|--------|-----------|-------------|
+| VPC | `10.1.0.0/16` | `10.2.0.0/16` |
+| Public 1 | `10.1.0.0/20` | `10.2.0.0/20` |
+| Public 2 | `10.1.16.0/20` | `10.2.16.0/20` |
+| Private 1 | `10.1.128.0/20` | `10.2.128.0/20` |
+| Private 2 | `10.1.144.0/20` | `10.2.144.0/20` |
 
 ### What Stays the Same
 
@@ -387,3 +429,25 @@ Before first `terraform apply` on development, replace all `<PLACEHOLDER>` value
 | **DNS/SSL** | Route53 zone, ACM certificate (production only) | `araya-optinist.com` |
 | **IAM** | Task execution role, task role, instance role, IAM user, Lambda roles | `${env}-optinist-*`, `${env}-*` |
 | **Background** | Background ECS service, launch template, ASG | `${env}-optinist-background-*` |
+
+---
+
+## Development Environment Lifecycle
+
+### When to Create / Destroy
+
+| Scenario | Action |
+|----------|--------|
+| Testing a new release | `terraform apply` → test → `terraform destroy` |
+| PR review with infra changes | Create, test, destroy |
+| Long-running QA | Keep alive, destroy when done |
+| Cost concern | Always destroy when not in use |
+
+### Cost Considerations
+
+The development environment runs the same infrastructure as production (VPC, RDS, ECS, ALB, NAT instances, Lambda functions). **Destroy it when not in use** to avoid unnecessary costs. Key cost drivers:
+
+- **RDS instance** — runs 24/7 while the environment is up
+- **NAT instances** — 2x t3.nano running continuously
+- **EC2 instances** — ASG maintains at least 1 instance
+- **ALB** — hourly charge while provisioned
