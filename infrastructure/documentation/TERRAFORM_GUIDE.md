@@ -32,18 +32,52 @@ infrastructure/terraform/
 │   └── development.hcl          # S3 backend config → development-optinist-for-cloud-tfstate
 │
 ├── environments/
-│   ├── production.tfvars        # Production variable values
-│   └── development.tfvars       # Development variable values (placeholders for secrets)
+│   ├── production.tfvars.example    # Production variable template (secrets redacted)
+│   ├── development.tfvars.example   # Development variable template (placeholders)
+│   ├── production.tfvars            # Actual production values (gitignored, stored in Google Drive)
+│   └── development.tfvars           # Actual development values (gitignored, stored in Google Drive)
 │
 ├── *_package/                   # Lambda function source code directories
-│   ├── premium_manager_package/
-│   ├── free_manager_package/
-│   ├── common_user_manager_package/
-│   ├── free_cleanup_package/
-│   └── cost_tracker_package/
 │
 └── .terraform/                  # Auto-generated — provider plugins, state config (gitignored)
 ```
+
+### Shared Resources (already exist, not created by Terraform)
+
+The following resources are **pre-existing** and shared across environments. They are **not created or destroyed** by `terraform apply` / `terraform destroy`:
+
+| Resource | Status | Location / Notes |
+|----------|--------|-----------------|
+| **S3 state buckets** | Already created | `subscr-optinist-for-cloud-tfstate` (prod), `development-optinist-for-cloud-tfstate` (dev). These persist across all testing rounds to preserve Terraform state. |
+| **ECR repository** | Already created | `637423646530.dkr.ecr.ap-northeast-1.amazonaws.com/optinist-for-cloud` — shared between prod and dev |
+| **Firebase project (prod)** | Already created | Production Firebase project in [Firebase Console](https://console.firebase.google.com/) |
+| **Firebase project (dev)** | Already created | Separate development Firebase project. Config stored in `development.tfvars` |
+| **Stripe account** | Already created | Test mode keys for dev, live mode keys for prod. Keys in [Stripe Dashboard](https://dashboard.stripe.com/) |
+| **tfvars files** | Already created | Stored in Google Drive: [TODO: Add Google Drive link here]. Download to `environments/` before running Terraform |
+
+---
+
+## What Gets Destroyed vs What Persists
+
+When you run `terraform destroy`, only the AWS resources managed by Terraform are removed. External dependencies and configuration files persist:
+
+| Destroyed by `terraform destroy` | NOT destroyed (persists) |
+|----------------------------------|--------------------------|
+| VPC, subnets, route tables | S3 tfstate bucket (keeps your state history) |
+| EC2 instances (NAT, ASG, premium) | ECR repository and Docker images |
+| RDS instance and RDS Proxy | Firebase project and user accounts |
+| ALB, target groups, listeners | Stripe products, prices, and webhook configs |
+| ECS cluster, services, task definitions | `*.tfvars` files (local files on your machine / Google Drive) |
+| S3 app storage bucket | `backends/*.hcl` files (checked into git) |
+| EFS filesystem | `*.tfvars.example` files (checked into git) |
+| Lambda functions and layers | AWS IAM user credentials (if saved locally) |
+| Secrets Manager secrets | |
+| CloudWatch log groups, alarms, dashboard | |
+| IAM roles, policies, user | |
+| Security groups | |
+| Route53/ACM (production only) | |
+
+**Important**: The S3 tfstate bucket is **never destroyed** by `terraform destroy`. It is kept permanently so you can track state history and re-create the environment. If you ever need to remove it, do so manually with `aws s3 rb s3://development-optinist-for-cloud-tfstate --force`.
 
 ---
 
@@ -64,7 +98,7 @@ These variables control environment-specific behavior:
 
 ### How Resource Names Are Generated
 
-```
+```hcl
 locals {
   env_prefix = "${var.environment}-optinist"
 }
@@ -73,6 +107,74 @@ locals {
 # Production: subscr-optinist-app-storage, subscr-optinist-cloud-ecs-cluster
 # Development: development-optinist-app-storage, development-optinist-cloud-ecs-cluster
 ```
+
+---
+
+## How `enable_custom_domain` Works
+
+The `enable_custom_domain` variable controls whether Route53, ACM (SSL certificate), and HTTPS are set up. This has a significant impact on how the application is accessed.
+
+### Production (`enable_custom_domain = true`)
+
+```
+User → https://araya-optinist.com
+         │
+         ▼
+    Route53 (DNS)
+         │  A record → ALB
+         ▼
+    ALB Listener (port 443, HTTPS)
+         │  SSL terminated with ACM certificate
+         │  TLS 1.3
+         ▼
+    ECS Target Group (port 8000)
+
+    ALB Listener (port 80, HTTP)
+         │  Redirects to HTTPS (301)
+         ▼
+    https://araya-optinist.com
+```
+
+**Resources created**: Route53 hosted zone, ACM certificate, DNS validation records, A records (apex + www), HTTPS listener with SSL.
+
+### Development (`enable_custom_domain = false`)
+
+```
+User → http://<ALB-DNS-NAME>
+         │
+         ▼
+    ALB Listener (port 80, HTTP)
+         │  Forwards directly to target group (no redirect)
+         ▼
+    ECS Target Group (port 8000)
+
+    ALB Listener (port 8080, HTTP)
+         │  Secondary listener, also forwards to target group
+         ▼
+    ECS Target Group (port 8000)
+```
+
+**Resources NOT created**: No Route53, no ACM certificate, no DNS records, no SSL. The ALB uses plain HTTP only.
+
+### How to Access the Development Site
+
+After `terraform apply`, get the ALB DNS name:
+
+```bash
+# Get the ALB DNS name from Terraform outputs
+terraform output alb_dns_name
+
+# Example output:
+# development-optinist-lb-1234567890.ap-northeast-1.elb.amazonaws.com
+```
+
+Access the development site at:
+
+```
+http://<ALB-DNS-NAME>
+```
+
+This URL is auto-generated by AWS and changes if you destroy and recreate the environment. After first apply, update `frontend_domain` in your `development.tfvars` with this value, then run `terraform apply` again so the ECS task definitions have the correct `FRONTEND_SERVER_HOST` for Stripe callbacks and CORS.
 
 ---
 
@@ -93,18 +195,22 @@ aws configure
 # Access Key / Secret Key: (from team lead)
 ```
 
-### First-Time Setup
+### First-Time Setup (One-Time Only)
+
+The following steps only need to be done **once**. If another developer has already completed them, skip to "Working with Development".
 
 #### 1. Create S3 bucket for Terraform state
 
+> **Note**: These buckets already exist. This step is only needed if setting up a completely new environment from scratch. The state buckets are **never destroyed** — they persist across all testing rounds.
+
 ```bash
-# Production state bucket
+# Production state bucket (already exists)
 aws s3api create-bucket \
   --bucket subscr-optinist-for-cloud-tfstate \
   --region ap-northeast-1 \
   --create-bucket-configuration LocationConstraint=ap-northeast-1
 
-# Development state bucket
+# Development state bucket (already exists)
 aws s3api create-bucket \
   --bucket development-optinist-for-cloud-tfstate \
   --region ap-northeast-1 \
@@ -113,19 +219,36 @@ aws s3api create-bucket \
 
 #### 2. Create a separate Firebase project (development only)
 
-Create a new Firebase project in the [Firebase Console](https://console.firebase.google.com/) for test use.
-Update `firebase_config_json` and `firebase_private_json` in `environments/development.tfvars`.
+> **Note**: The development Firebase project already exists. Config is stored in the shared `development.tfvars` on Google Drive.
+
+If creating from scratch:
+1. Create a new Firebase project in the [Firebase Console](https://console.firebase.google.com/)
+2. Enable Authentication (Email/Password provider)
+3. Generate a service account key (Project Settings → Service Accounts → Generate new private key)
+4. Update `firebase_config_json` and `firebase_private_json` in `environments/development.tfvars`
 
 #### 3. Set up Stripe test mode (development only)
 
+> **Note**: Stripe test mode is already configured. Keys are stored in the shared `development.tfvars` on Google Drive.
+
+If creating from scratch:
 1. In the [Stripe Dashboard](https://dashboard.stripe.com/), toggle to "Test mode"
 2. Create test products and prices matching the production structure
 3. Create a test webhook endpoint pointing to the test ALB
 4. Update `stripe_secret_key`, `stripe_webhook_secret`, and plan IDs in `environments/development.tfvars`
 
-#### 4. Fill in tfvars placeholders
+#### 4. Get tfvars files
 
-Copy the example file and replace all `<PLACEHOLDER>` values:
+Download the tfvars files from Google Drive and place them in the `environments/` directory:
+
+```bash
+# Download from Google Drive: [TODO: Add Google Drive link]
+# Place files at:
+#   infrastructure/terraform/environments/production.tfvars
+#   infrastructure/terraform/environments/development.tfvars
+```
+
+If the tfvars files don't exist yet, create them from the examples:
 
 ```bash
 cd infrastructure/terraform/environments
@@ -161,12 +284,7 @@ cd infrastructure/terraform
 # 1. Initialize — connects to development state bucket
 terraform init -backend-config=backends/development.hcl
 
-# 2. Fill in placeholders in development.tfvars
-#    Replace all <PLACEHOLDER> values with real secrets:
-#    - MySQL passwords (generate new ones)
-#    - Stripe TEST mode keys
-#    - Firebase config (separate dev Firebase project)
-#    - OptiNiSt secret keys (generate new ones)
+# 2. Ensure development.tfvars exists (download from Google Drive or copy from example)
 
 # 3. Preview what will be created
 terraform plan -var-file=environments/development.tfvars
@@ -174,9 +292,12 @@ terraform plan -var-file=environments/development.tfvars
 # 4. Deploy the development environment
 terraform apply -var-file=environments/development.tfvars
 
-# 5. After first apply — note the ALB DNS name from output:
+# 5. Get the development site URL:
 terraform output alb_dns_name
-# Update frontend_domain in development.tfvars with this value, then:
+# Access at: http://<ALB-DNS-NAME>
+
+# 6. After first apply — update frontend_domain in development.tfvars
+#    with the ALB DNS name, then apply again for correct CORS/callback URLs:
 terraform apply -var-file=environments/development.tfvars
 ```
 
@@ -194,13 +315,19 @@ terraform init -backend-config=backends/development.hcl -reconfigure
 
 The `-reconfigure` flag tells Terraform to switch backends without migrating state.
 
-### Destroying an Environment
+### Destroying the Development Environment
 
 ```bash
 # Destroy development (safe — only affects dev state)
 terraform init -backend-config=backends/development.hcl -reconfigure
 terraform destroy -var-file=environments/development.tfvars
+```
 
+This destroys all AWS resources but **preserves**: S3 tfstate bucket, Firebase project, Stripe config, tfvars files, ECR images.
+
+To recreate later, simply run `terraform apply` again — no first-time setup needed.
+
+```bash
 # DANGER: Destroy production — requires explicit confirmation
 terraform init -backend-config=backends/production.hcl -reconfigure
 terraform destroy -var-file=environments/production.tfvars
@@ -214,11 +341,12 @@ terraform destroy -var-file=environments/production.tfvars
 
 | Aspect | Production (`subscr`) | Development (`development`) |
 |--------|----------------------|----------------------------|
+| **Access URL** | `https://araya-optinist.com` | `http://<ALB-DNS-NAME>` (see `terraform output alb_dns_name`) |
 | **VPC CIDR** | `10.1.0.0/16` | `10.2.0.0/16` |
 | **Custom domain** | `araya-optinist.com` (HTTPS) | ALB DNS name (HTTP) |
-| **Route53 / ACM** | Created | Not created |
-| **ALB HTTP listener** | Redirects to HTTPS (301) | Forwards to target group |
-| **ALB HTTPS listener** | Port 443, TLS 1.3 | Port 8080, plain HTTP |
+| **Route53 / ACM** | Created | Not created (`enable_custom_domain = false`) |
+| **ALB HTTP listener (port 80)** | Redirects to HTTPS (301) | Forwards directly to target group |
+| **ALB HTTPS listener** | Port 443, TLS 1.3, ACM cert | Port 8080, plain HTTP, no cert |
 | **ASG max instances** | 3 | 2 |
 | **S3 state bucket** | `subscr-optinist-for-cloud-tfstate` | `development-optinist-for-cloud-tfstate` |
 | **Stripe keys** | Live mode | Test mode |
@@ -451,3 +579,5 @@ The development environment runs the same infrastructure as production (VPC, RDS
 - **NAT instances** — 2x t3.nano running continuously
 - **EC2 instances** — ASG maintains at least 1 instance
 - **ALB** — hourly charge while provisioned
+
+See `DEV_ENVIRONMENT_COST_ESTIMATE.md` for a detailed monthly cost breakdown (~$286/month if running 24/7).

@@ -26,10 +26,3 @@ tensorflow-*.whl
 
 .env*
 !*.env*.example
-
-# Terraform
-*.tfvars
-!*.tfvars.example
-*.tfstate
-*.tfstate.backup
-.terraform/
