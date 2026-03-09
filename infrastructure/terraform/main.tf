@@ -33,6 +33,11 @@ variable "availability_zone" {
 variable "environment" {
   description = "Environment name prefix for resource naming (e.g. subscr, development)"
   type        = string
+
+  validation {
+    condition     = length(var.environment) > 0
+    error_message = "The environment variable must not be empty. Use 'subscr' for production or 'development' for development."
+  }
 }
 
 variable "enable_custom_domain" {

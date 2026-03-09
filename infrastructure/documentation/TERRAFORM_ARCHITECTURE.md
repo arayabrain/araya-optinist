@@ -238,5 +238,3 @@ The development environment runs the same infrastructure as production (VPC, RDS
 - **NAT instances** — 2x t3.nano running continuously
 - **EC2 instances** — ASG maintains at least 1 instance
 - **ALB** — hourly charge while provisioned
-
-See `DEV_ENVIRONMENT_COST_ESTIMATE.md` for a detailed monthly cost breakdown (~$286/month if running 24/7).
