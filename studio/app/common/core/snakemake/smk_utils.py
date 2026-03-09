@@ -102,7 +102,7 @@ class SmkUtils:
                 return hardware_arch
 
         except Exception as e:
-            logger.info("Failed to detect Apple Silicon: %s", e)
+            logger.warning("Failed to detect Apple Silicon: %s", e)
             return False
 
     @staticmethod
@@ -122,12 +122,14 @@ class SmkUtils:
                 modified_params["advanced"]["quality_evaluation_params"][
                     "use_cnn"
                 ] = False
-                logger.info("Disabled CNN usage in CaImAn parameters for Apple Silicon")
+                logger.debug(
+                    "Disabled CNN usage in CaImAn parameters for Apple Silicon"
+                )
 
         # Also check top-level parameters
         if "quality_evaluation_params" in modified_params:
             modified_params["quality_evaluation_params"]["use_cnn"] = False
-            logger.info("Disabled CNN usage in CaImAn parameters for Apple Silicon")
+            logger.debug("Disabled CNN usage in CaImAn parameters for Apple Silicon")
 
         return modified_params
 

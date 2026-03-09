@@ -1,4 +1,3 @@
-import logging
 from typing import Optional
 
 import sqlalchemy
@@ -14,12 +13,15 @@ from studio.app.common.core.auth.auth_helper import (
     extract_uid_from_firebase_credential,
     extract_uid_from_jwt_token,
 )
+from studio.app.common.core.logger import AppLogger
 from studio.app.common.db.database import get_db
 from studio.app.common.models import User as UserModel
 from studio.app.common.models import UserRole as UserRoleModel
 from studio.app.common.models.experiment import ExperimentRecord
 from studio.app.common.models.workspace import Workspace
 from studio.app.common.schemas.users import User
+
+logger = AppLogger.get_logger()
 
 
 async def get_current_user(
@@ -54,10 +56,10 @@ async def get_current_user(
         return User.from_orm(authed_user)
 
     except ValidationError as e:
-        logging.getLogger().error(e)
+        logger.warning(e)
         raise HTTPException(status_code=422, detail=f"Validator Error: {e}")
     except Exception as e:
-        logging.getLogger().error(e)
+        logger.warning(e)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             headers={"WWW-Authenticate": 'Bearer realm="auth_required"'},

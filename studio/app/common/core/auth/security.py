@@ -1,4 +1,3 @@
-import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Tuple, Union
 
@@ -6,6 +5,9 @@ from jose import ExpiredSignatureError, JWTError, jwt
 from pydantic import ValidationError
 
 from studio.app.common.core.auth.auth_config import AUTH_CONFIG
+from studio.app.common.core.logger import AppLogger
+
+logger = AppLogger.get_logger()
 
 
 def _create_token(
@@ -71,13 +73,13 @@ def _validate_token(
         if payload.get("token_type") != token_type:
             err = "Invalid token type"
     except ExpiredSignatureError as e:
-        logging.getLogger().error(e)
+        logger.warning(e)
         err = "Credentials has expired"
     except (JWTError, ValidationError) as e:
-        logging.getLogger().error(e)
+        logger.warning(e)
         err = "Could not validate credentials"
     except Exception as e:
-        logging.getLogger().error(e)
+        logger.warning(e)
         err = "Bad token"
 
     return payload, err

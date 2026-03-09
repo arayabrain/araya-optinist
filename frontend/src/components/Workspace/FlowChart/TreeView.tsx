@@ -132,14 +132,16 @@ export const AlgorithmTreeView = memo(function AlgorithmTreeView() {
 
       {/* Algorithm hierarchy remains static */}
       <TreeItem nodeId="Algorithm" label="Algorithm">
-        {Object.entries(algoList).map(([name, node], i) => (
-          <AlgoNodeComponentRecursive
-            name={name}
-            node={node}
-            onAddAlgoNode={onAddAlgoNode}
-            key={i.toFixed()}
-          />
-        ))}
+        {Object.entries(algoList)
+          .filter(([, node]) => node !== undefined)
+          .map(([name, node], i) => (
+            <AlgoNodeComponentRecursive
+              name={name}
+              node={node}
+              onAddAlgoNode={onAddAlgoNode}
+              key={i.toFixed()}
+            />
+          ))}
       </TreeItem>
     </TreeView>
   )
@@ -217,6 +219,11 @@ const AlgoNodeComponentRecursive = memo(function AlgoNodeComponentRecursive({
   node,
   onAddAlgoNode,
 }: AlgoNodeComponentRecursiveProps) {
+  // Guard against undefined nodes
+  if (!node) {
+    return null
+  }
+
   if (isAlgoChild(node)) {
     return (
       <AlgoNodeComponent
@@ -228,14 +235,16 @@ const AlgoNodeComponentRecursive = memo(function AlgoNodeComponentRecursive({
   } else {
     return (
       <TreeItem nodeId={name} label={name}>
-        {Object.entries(node.children).map(([name, node], i) => (
-          <AlgoNodeComponentRecursive
-            name={name}
-            node={node}
-            onAddAlgoNode={onAddAlgoNode}
-            key={i.toFixed()}
-          />
-        ))}
+        {Object.entries(node.children)
+          .filter(([, childNode]) => childNode !== undefined)
+          .map(([childName, childNode], i) => (
+            <AlgoNodeComponentRecursive
+              name={childName}
+              node={childNode}
+              onAddAlgoNode={onAddAlgoNode}
+              key={i.toFixed()}
+            />
+          ))}
       </TreeItem>
     )
   }
