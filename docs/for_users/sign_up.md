@@ -12,23 +12,7 @@ To sign up, you'll provide three pieces of information:
 
 - **Name** — must be at least 2 characters
 - **Email address** — a valid email you can access (you'll need to verify it)
-- **Password** — see requirements below
-
-### Password Requirements
-
-Your password must be **between 6 and 255 characters** and contain at least:
-
-- One **letter** (uppercase or lowercase)
-- One **number**
-- One **special character**
-
-The allowed special characters are:
-
-```
-! # $ % & ( ) * + , - . / @ _ |
-```
-
-> **Tip:** Characters not in the list above (such as spaces, quotes, or brackets) are not accepted.
+- **Password** — must be at least 6 characters (including one letter (uppercase or lowercase), one number, one special character)
 
 ### Step-by-Step Sign-Up
 
