@@ -7,6 +7,7 @@ export type ItemsWorkspace = {
   id: number
   display_number?: number
   name: string
+  type: number
   user: {
     id: number
     name: string
@@ -34,6 +35,7 @@ export type Workspace = {
     workspaceName?: string
     selectedTab: number
     ownerId?: number
+    type?: number
   }
   loading: boolean
   listUserShare?: ListUserShareWorkspaceDTO

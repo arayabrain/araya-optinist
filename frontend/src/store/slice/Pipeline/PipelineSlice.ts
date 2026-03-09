@@ -12,6 +12,7 @@ import {
   pollRunResult,
   run,
   runByCurrentUid,
+  batchRun,
 } from "store/slice/Pipeline/PipelineActions"
 import {
   Pipeline,
@@ -36,6 +37,7 @@ export const initialState: Pipeline = {
     status: RUN_STATUS.START_UNINITIALIZED,
   },
   runBtn: RUN_BTN_OPTIONS.RUN_NEW,
+  isBatchRun: false,
 }
 
 export const pipelineSlice = createSlice({
@@ -137,6 +139,13 @@ export const pipelineSlice = createSlice({
         state.run = {
           status: RUN_STATUS.START_PENDING,
         }
+        state.isBatchRun = false
+      })
+      .addMatcher(isAnyOf(batchRun.pending), (state) => {
+        state.run = {
+          status: RUN_STATUS.START_PENDING,
+        }
+        state.isBatchRun = true
       })
       .addMatcher(
         isAnyOf(run.fulfilled, runByCurrentUid.fulfilled),
@@ -150,15 +159,32 @@ export const pipelineSlice = createSlice({
             runPostData: { name: "", ...runPostData },
           }
           state.currentPipeline = {
-            uid: action.payload,
+            uid: uid,
+          }
+          state.isBatchRun = false
+        },
+      )
+      .addMatcher(isAnyOf(batchRun.fulfilled), (state, action) => {
+        const runPostData = action.meta.arg.runPostData
+        const uid = action.payload
+        state.run = {
+          uid,
+          status: RUN_STATUS.FINISHED,
+          runResult: getInitialRunResult({ ...runPostData }),
+          runPostData: { ...runPostData },
+        }
+        state.currentPipeline = {
+          uid: uid,
+        }
+      })
+      .addMatcher(
+        isAnyOf(run.rejected, runByCurrentUid.rejected, batchRun.rejected),
+        (state) => {
+          state.run = {
+            status: RUN_STATUS.START_ERROR,
           }
         },
       )
-      .addMatcher(isAnyOf(run.rejected, runByCurrentUid.rejected), (state) => {
-        state.run = {
-          status: RUN_STATUS.START_ERROR,
-        }
-      })
       .addMatcher(
         isAnyOf(
           fetchWorkflow.rejected,

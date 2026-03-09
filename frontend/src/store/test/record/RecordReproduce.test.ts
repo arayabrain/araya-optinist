@@ -446,6 +446,7 @@ describe("RecordReproduce", () => {
       },
       runBtn: RUN_BTN_OPTIONS.RUN_ALREADY,
       currentPipeline: { uid: uid },
+      isBatchRun: false,
     },
     workspace: {
       listUserShare: undefined,

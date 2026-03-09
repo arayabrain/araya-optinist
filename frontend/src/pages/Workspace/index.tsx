@@ -17,10 +17,15 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
-  Input,
+  TextField,
   Tooltip,
   IconButton,
   CircularProgress,
+  FormControl,
+  FormLabel,
+  RadioGroup,
+  FormControlLabel,
+  Radio,
 } from "@mui/material"
 import {
   GridEventListener,
@@ -41,6 +46,11 @@ import Loading from "components/common/Loading"
 import PaginationCustom from "components/common/PaginationCustom"
 import StorageUsage from "components/common/StorageUsage"
 import PopupShare from "components/Workspace/PopupShare"
+import {
+  WORKSPACE_TYPE,
+  WORKSPACE_TYPE_LABEL,
+  WORKSPACE_TYPE_OPTIONS,
+} from "const/Workspace"
 import { selectCurrentUser } from "store/slice/User/UserSelector"
 import { resetVisualizeLayout } from "store/slice/VisualizeItem/VisualizeItemSlice"
 import {
@@ -65,8 +75,8 @@ type PopupType = {
   open: boolean
   handleClose: () => void
   handleOkDel?: () => void
-  setNewWorkSpace?: (name: string) => void
-  value?: string
+  setNewWorkSpace?: (workspace: { name: string; type: WORKSPACE_TYPE }) => void
+  value?: { name: string; type: WORKSPACE_TYPE }
   handleOkNew?: () => void
   handleOkSave?: () => void
   error?: string
@@ -156,6 +166,20 @@ const columns = (
           </>
         ) : null}
       </Box>
+    ),
+  },
+  {
+    field: "type",
+    headerName: "Type",
+    filterable: false,
+    sortable: false,
+    flex: 1,
+    minWidth: 80,
+    renderCell: (params: GridRenderCellParams<GridValidRowModel>) => (
+      <span>
+        {WORKSPACE_TYPE_LABEL[params.value as WORKSPACE_TYPE] ||
+          WORKSPACE_TYPE_LABEL[WORKSPACE_TYPE.DEFAULT]}
+      </span>
     ),
   },
   {
@@ -312,7 +336,18 @@ const PopupNew = ({
 }: PopupType) => {
   if (!setNewWorkSpace) return null
   const handleName = (event: ChangeEvent<HTMLInputElement>) => {
-    setNewWorkSpace(event.target.value)
+    setNewWorkSpace({
+      ...value,
+      name: event.target.value,
+      type: value?.type || WORKSPACE_TYPE.NORMAL,
+    })
+  }
+
+  const handleType = (event: ChangeEvent<HTMLInputElement>) => {
+    setNewWorkSpace({
+      name: value?.name || "",
+      type: Number(event.target.value) as WORKSPACE_TYPE,
+    })
   }
 
   return (
@@ -320,14 +355,33 @@ const PopupNew = ({
       <Dialog open={open} onClose={handleClose} sx={{ margin: 0 }}>
         <DialogTitle>New Workspace</DialogTitle>
         <DialogContent sx={{ minWidth: 300 }}>
-          <Input
-            sx={{ width: "80%" }}
-            placeholder={"Workspace Name"}
-            value={value || ""}
+          <TextField
+            sx={{ width: "100%", marginBottom: 3 }}
+            label="Workspace Name"
+            value={value?.name || ""}
             onChange={handleName}
+            required
+            error={!!error && !value?.name}
+            helperText={error && !value?.name ? error : ""}
+            variant="standard"
           />
-          <br />
-          {error ? <span style={{ color: "red" }}>{error}</span> : null}
+          <FormControl component="fieldset" sx={{ width: "100%" }}>
+            <FormLabel component="legend">Type</FormLabel>
+            <RadioGroup
+              row
+              value={value?.type ?? WORKSPACE_TYPE.NORMAL}
+              onChange={handleType}
+            >
+              {WORKSPACE_TYPE_OPTIONS.map((option) => (
+                <FormControlLabel
+                  key={option.value}
+                  value={option.value}
+                  control={<Radio />}
+                  label={option.label}
+                />
+              ))}
+            </RadioGroup>
+          </FormControl>
         </DialogContent>
         <DialogActions>
           <Button variant={"outlined"} onClick={handleClose}>
@@ -360,7 +414,10 @@ const Workspaces = () => {
     name: string
     display_number?: number
   }>()
-  const [newWorkspace, setNewWorkSpace] = useState<string>()
+  const [newWorkspace, setNewWorkSpace] = useState<{
+    name: string
+    type: WORKSPACE_TYPE
+  }>()
   const [error, setError] = useState("")
   const [initName, setInitName] = useState("")
   const [rowModesModel, setRowModesModel] = useState<GridRowModesModel>({})
@@ -472,11 +529,14 @@ const Workspaces = () => {
 
   const handleOpenPopupNew = () => {
     setOpen({ ...open, new: true })
+    setNewWorkSpace(undefined)
+    setError("")
   }
 
   const handleClosePopupNew = () => {
     setOpen({ ...open, new: false })
     setError("")
+    setNewWorkSpace(undefined)
   }
 
   const handleNavWorkflow = (id: number) => {
@@ -502,11 +562,16 @@ const Workspaces = () => {
   }
 
   const handleOkNew = async () => {
-    if (!newWorkspace) {
+    if (!newWorkspace?.name) {
       setError("Workspace Name can't empty")
       return
     }
-    const data = await dispatch(postWorkspace({ name: newWorkspace }))
+    const data = await dispatch(
+      postWorkspace({
+        name: newWorkspace.name,
+        type: newWorkspace.type || WORKSPACE_TYPE.NORMAL,
+      }),
+    )
     if (isRejectedWithValue(data)) {
       handleClickVariant("error", "Workspace creation failed!")
     } else {
@@ -518,7 +583,7 @@ const Workspaces = () => {
     await dispatch(getWorkspaceList(dataParams))
     setOpen({ ...open, new: false })
     setError("")
-    setNewWorkSpace("")
+    setNewWorkSpace(undefined)
   }
 
   const onProcessRowUpdateError = (newRow: unknown) => {
@@ -569,7 +634,11 @@ const Workspaces = () => {
     }
     if (newRow.name === initName) return newRow
     const data = await dispatch(
-      putWorkspace({ name: newRow.name, id: newRow.id }),
+      putWorkspace({
+        name: newRow.name,
+        id: newRow.id,
+        type: newRow.type || WORKSPACE_TYPE.NORMAL,
+      }),
     )
     if (isRejectedWithValue(data)) {
       handleClickVariant("error", "Workspace name edit failed!")
