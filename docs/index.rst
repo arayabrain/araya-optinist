@@ -1,3 +1,6 @@
+.. meta::
+   :description: Araya-OptiNiSt Cloud – a no-code cloud platform for calcium imaging data analysis. Build visual pipelines, ensure reproducibility, and collaborate with NWB-compatible workflows.
+   :keywords: OptiNiSt, Araya, calcium imaging, neuroscience, data analysis, no-code, NWB, Neurodata Without Borders, visual workflow, pipeline builder, ROI analysis, cloud computing, reproducible science, OIST, microscopy, open science
 
 Araya-OptiNiSt Cloud
 ==========================================
