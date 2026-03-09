@@ -44,7 +44,7 @@ export interface BatchFileNodeConfig {
 
 function createBatchConfigAdapter(
   config: BatchFileNodeConfig,
-  filePath: string[] | undefined,
+  _filePath: string[] | undefined,
 ): FileNodeConfig {
   return {
     ...config,
