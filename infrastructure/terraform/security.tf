@@ -472,6 +472,13 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
         ]
         Resource = "*"
       },
+      # S3: Allow listing all buckets (read-only, required by AWS Console and CLI)
+      {
+        Effect   = "Allow"
+        Action   = "s3:ListAllMyBuckets"
+        Resource = "*"
+      },
+      # S3: Allow CRUD only on this environment's buckets
       {
         Effect = "Allow"
         Action = [
@@ -483,6 +490,24 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
           "s3:DeleteBucket"
         ]
         Resource = [
+          "arn:aws:s3:::${local.env_prefix}-*",
+          "arn:aws:s3:::${local.env_prefix}-*/*"
+        ]
+      },
+      # S3: Explicitly deny CRUD on other environments' buckets
+      # This ensures no other attached policy can grant cross-environment S3 access
+      {
+        Sid    = "DenyS3CrossEnvironment"
+        Effect = "Deny"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket",
+          "s3:CreateBucket",
+          "s3:DeleteBucket"
+        ]
+        NotResource = [
           "arn:aws:s3:::${local.env_prefix}-*",
           "arn:aws:s3:::${local.env_prefix}-*/*"
         ]
