@@ -477,7 +477,7 @@ class DataCleanupJob:
                 update(InstanceUsageLog)
                 .where(
                     InstanceUsageLog.user_id == assignment.user_id,
-                    InstanceUsageLog.tier == "free",
+                    InstanceUsageLog.tier == UsageTier.FREE,
                     InstanceUsageLog.ended_at.is_(None),
                 )
                 .values(ended_at=get_current_datetime())
