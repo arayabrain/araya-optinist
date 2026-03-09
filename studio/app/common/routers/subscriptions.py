@@ -509,21 +509,17 @@ async def validate_checkout_session(
             )
 
             # Get customer ID for recovery
-            subscription_account = CheckoutService.get_subscription_account(
-                db, user.id
-            )
+            subscription_account = CheckoutService.get_subscription_account(db, user.id)
             if subscription_account:
                 # Get plan_id from session metadata
                 metadata = session.metadata or {}
                 plan_id = metadata.get("plan_id")
                 if plan_id:
-                    recovered = (
-                        CheckoutService.recover_existing_stripe_subscription(
-                            db,
-                            user.id,
-                            subscription_account.provider_customer_id,
-                            int(plan_id),
-                        )
+                    recovered = CheckoutService.recover_existing_stripe_subscription(
+                        db,
+                        user.id,
+                        subscription_account.provider_customer_id,
+                        int(plan_id),
                     )
                     if recovered:
                         logger.info(

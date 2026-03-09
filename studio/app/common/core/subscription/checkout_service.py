@@ -18,8 +18,8 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionPeriods,
     SyncStatus,
 )
-from studio.app.common.core.utils.datetime_utils import datetime_from_timestamp
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
+from studio.app.common.core.utils.datetime_utils import datetime_from_timestamp
 from studio.app.common.models.subscription import (
     SubscriptionPlans,
     SubscriptionProvider,
@@ -487,16 +487,12 @@ class CheckoutService:
 
                     # Determine expiration from Stripe subscription
                     trial_end = getattr(stripe_sub, "trial_end", None)
-                    current_period_end = getattr(
-                        stripe_sub, "current_period_end", None
-                    )
+                    current_period_end = getattr(stripe_sub, "current_period_end", None)
 
                     if trial_end:
                         expiration_date = datetime_from_timestamp(trial_end)
                     elif current_period_end:
-                        expiration_date = datetime_from_timestamp(
-                            current_period_end
-                        )
+                        expiration_date = datetime_from_timestamp(current_period_end)
                     else:
                         logger.warning(
                             f"No expiration data in Stripe subscription "
@@ -518,9 +514,7 @@ class CheckoutService:
                     )
 
                     # Ensure provider and account are linked
-                    provider_id = CheckoutService.get_or_create_stripe_provider(
-                        db
-                    )
+                    provider_id = CheckoutService.get_or_create_stripe_provider(db)
                     CheckoutService.create_or_update_user_account(
                         db, user_id, provider_id, customer_id
                     )
@@ -530,20 +524,15 @@ class CheckoutService:
                         db.query(SubscriptionUserPurchase)
                         .filter(
                             SubscriptionUserPurchase.user_id == user_id,
-                            SubscriptionUserPurchase.plan_id
-                            == recovered_plan_id,
+                            SubscriptionUserPurchase.plan_id == recovered_plan_id,
                         )
                         .first()
                     )
                     if not existing_purchase:
-                        CheckoutService.record_purchase(
-                            db, recovered_plan_id, user_id
-                        )
+                        CheckoutService.record_purchase(db, recovered_plan_id, user_id)
 
                     # Update storage quota
-                    storage_quota_bytes = StorageQuota.bytes_for_plan(
-                        recovered_plan_id
-                    )
+                    storage_quota_bytes = StorageQuota.bytes_for_plan(recovered_plan_id)
                     rows_updated = db.execute(
                         update(UserStorageUsage)
                         .where(UserStorageUsage.user_id == user_id)
@@ -566,9 +555,7 @@ class CheckoutService:
                             invalidate_user_tier_cache,
                         )
 
-                        user_record = (
-                            db.query(User).filter(User.id == user_id).first()
-                        )
+                        user_record = db.query(User).filter(User.id == user_id).first()
                         if user_record:
                             invalidate_user_tier_cache(user_record.uid)
                     except Exception:
@@ -591,8 +578,7 @@ class CheckoutService:
             return False
         except Exception as e:
             logger.error(
-                f"Error during subscription recovery for "
-                f"user {user_id}: {str(e)}"
+                f"Error during subscription recovery for " f"user {user_id}: {str(e)}"
             )
             db.rollback()
             return False
@@ -659,17 +645,15 @@ class CheckoutService:
                 # that wasn't synced to DB (e.g., server was down during
                 # webhook). If found, recover it to prevent duplicate
                 # subscriptions.
-                existing_db_subscription = (
-                    CheckoutService.get_existing_subscription(db, user.id)
+                existing_db_subscription = CheckoutService.get_existing_subscription(
+                    db, user.id
                 )
                 if not existing_db_subscription:
-                    recovered = (
-                        CheckoutService.recover_existing_stripe_subscription(
-                            db,
-                            user.id,
-                            customer_id,
-                            int(request.plan_id),
-                        )
+                    recovered = CheckoutService.recover_existing_stripe_subscription(
+                        db,
+                        user.id,
+                        customer_id,
+                        int(request.plan_id),
                     )
                     if recovered:
                         raise HTTPException(
