@@ -158,6 +158,20 @@ User → http://<ALB-DNS-NAME>
 
 **Resources NOT created**: No Route53, no ACM certificate, no DNS records, no SSL. The ALB uses plain HTTP only.
 
+### Why HTTPS Is Not Enabled in Development
+
+The reason is operational complexity, not a technical limitation. HTTPS requires a stable domain name, and the dev environment's ALB DNS changes every time it is destroyed and recreated (`development-optinist-lb-XXXXXXXXXX.ap-northeast-1.elb.amazonaws.com`).
+
+Enabling HTTPS would require these additional AWS resources:
+
+| Resource | Cost | Issue |
+|----------|------|-------|
+| **Route53 Hosted Zone** | ~$0.50/month | Requires owning a domain. The dev environment would need either a subdomain of `araya-optinist.com` (e.g., `dev.araya-optinist.com`) — which risks accidental production DNS changes — or a separate purchased domain (ongoing management overhead). |
+| **ACM Certificate** | Free | DNS validation requires Route53 records, which ties back to the domain ownership issue. |
+| **DNS Validation Records** | — | Must remain active for certificate renewal. If the environment is frequently destroyed and recreated, certificate validation must be re-done each time (takes 5–30 minutes). |
+
+The core blocker is domain management, not cost (~$0.50/month is negligible). A custom domain would give the dev environment a stable URL, but that means either sharing the production Route53 zone (adds risk) or purchasing a separate domain (adds management overhead). Neither is justified for a short-lived test environment.
+
 ---
 
 ## Environment Differences
