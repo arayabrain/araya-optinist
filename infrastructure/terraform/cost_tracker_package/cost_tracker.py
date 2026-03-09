@@ -273,6 +273,103 @@ def query_usage_hours() -> Dict[str, Any]:
         }
 
 
+def generate_usage_report() -> Dict[str, Any]:
+    """Generate per-user usage breakdown for the current month.
+
+    Returns a dict with per-user rows and tier-level averages, suitable for
+    the monthly maintenance report.
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        month_start = now.strftime("%Y-%m-01 00:00:00")
+        month_label = now.strftime("%Y-%m")
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """SELECT user_id, tier,
+                              COUNT(*) AS sessions,
+                              SUM(TIMESTAMPDIFF(SECOND, started_at,
+                                  COALESCE(ended_at, NOW())) / 3600.0) AS hours
+                       FROM instance_usage_log
+                       WHERE started_at >= %s
+                       GROUP BY user_id, tier
+                       ORDER BY hours DESC""",
+                    (month_start,),
+                )
+                rows = cursor.fetchall()
+
+        users = []
+        premium_hours_total = 0.0
+        free_hours_total = 0.0
+        premium_user_count = 0
+        free_user_count = 0
+
+        for row in rows:
+            hours = float(row["hours"] or 0.0)
+            tier = row["tier"]
+            rate = PREMIUM_HOURLY_RATE if tier == "premium" else FREE_HOURLY_RATE
+            cost = hours * rate
+
+            users.append(
+                {
+                    "user_id": row["user_id"],
+                    "tier": tier,
+                    "sessions": int(row["sessions"]),
+                    "hours": round(hours, 2),
+                    "cost": round(cost, 2),
+                }
+            )
+
+            if tier == "premium":
+                premium_hours_total += hours
+                premium_user_count += 1
+            else:
+                free_hours_total += hours
+                free_user_count += 1
+
+        premium_cost_total = premium_hours_total * PREMIUM_HOURLY_RATE
+        free_cost_total = free_hours_total * FREE_HOURLY_RATE
+
+        summary = {
+            "month": month_label,
+            "premium": {
+                "users": premium_user_count,
+                "total_hours": round(premium_hours_total, 2),
+                "total_cost": round(premium_cost_total, 2),
+                "avg_hours": round(premium_hours_total / premium_user_count, 2)
+                if premium_user_count > 0
+                else 0.0,
+                "avg_cost": round(premium_cost_total / premium_user_count, 2)
+                if premium_user_count > 0
+                else 0.0,
+            },
+            "free": {
+                "users": free_user_count,
+                "total_hours": round(free_hours_total, 2),
+                "total_cost": round(free_cost_total, 2),
+                "avg_hours": round(free_hours_total / free_user_count, 2)
+                if free_user_count > 0
+                else 0.0,
+                "avg_cost": round(free_cost_total / free_user_count, 2)
+                if free_user_count > 0
+                else 0.0,
+            },
+        }
+
+        logger.info(
+            f"Usage report — {len(users)} users, "
+            f"premium: {premium_user_count} ({premium_hours_total:.1f}h), "
+            f"free: {free_user_count} ({free_hours_total:.1f}h)"
+        )
+
+        return {"summary": summary, "users": users}
+
+    except Exception as e:
+        logger.error(f"Error generating usage report: {e}")
+        return {"summary": {}, "users": [], "error": str(e)}
+
+
 def calculate_metrics(
     premium_instances: Dict[str, Any],
     free_instances: Dict[str, Any],
@@ -426,8 +523,29 @@ def publish_metrics(
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    """Cost tracking Lambda handler — orchestrates all tracking steps."""
+    """Cost tracking Lambda handler — orchestrates all tracking steps.
+
+    Supports two modes via event["mode"]:
+      - (default): hourly metrics collection and CloudWatch publish
+      - "usage_report": on-demand per-user usage breakdown for reports
+    """
     logger.info("Cost tracking Lambda invoked")
+
+    mode = event.get("mode", "metrics")
+
+    if mode == "usage_report":
+        try:
+            report = generate_usage_report()
+            return {
+                "statusCode": 200,
+                "body": json.dumps(report, default=str),
+            }
+        except Exception as e:
+            logger.error(f"Error generating usage report: {e}")
+            return {
+                "statusCode": 500,
+                "body": json.dumps({"error": str(e)}),
+            }
 
     try:
         region = os.environ.get("REGION", "ap-northeast-1")

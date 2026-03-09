@@ -347,6 +347,92 @@ $cost_tracker_table
 
 EOF
 
+# 1c. Per-User Usage Breakdown (via cost-tracker Lambda)
+echo "  Querying per-user usage breakdown..."
+USAGE_REPORT_TMP=$(mktemp)
+usage_invoke_ok=true
+aws lambda invoke \
+  --function-name "subscr-cost-tracker" \
+  --payload '{"mode":"usage_report"}' \
+  --region "$REGION" \
+  "$USAGE_REPORT_TMP" >/dev/null 2>&1 || usage_invoke_ok=false
+
+usage_summary=""
+usage_detail_table=""
+
+if [ "$usage_invoke_ok" = true ] && [ -f "$USAGE_REPORT_TMP" ]; then
+  # Lambda response wraps data in {"statusCode":200,"body":"..."}
+  usage_body=$(python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    resp = json.load(f)
+body = resp.get('body', '{}')
+if isinstance(body, str):
+    body = json.loads(body)
+print(json.dumps(body))
+" "$USAGE_REPORT_TMP" 2>/dev/null || echo "{}")
+
+  usage_summary=$(echo "$usage_body" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+s = data.get('summary', {})
+if not s:
+    print('*(No usage data available — instance_usage_log may be empty)*')
+    sys.exit(0)
+
+month = s.get('month', 'N/A')
+p = s.get('premium', {})
+f = s.get('free', {})
+
+print(f'**Month: {month}**')
+print()
+print('| Tier | Users | Total Hours | Total Cost | Avg Hours/User | Avg Cost/User |')
+print('|---|---|---|---|---|---|')
+if p.get('users', 0) > 0:
+    print(f'| Premium | {p[\"users\"]} | {p[\"total_hours\"]:.1f}h | \${p[\"total_cost\"]:.2f} | {p[\"avg_hours\"]:.1f}h | \${p[\"avg_cost\"]:.2f} |')
+else:
+    print('| Premium | 0 | — | — | — | — |')
+if f.get('users', 0) > 0:
+    print(f'| Free | {f[\"users\"]} | {f[\"total_hours\"]:.1f}h | \${f[\"total_cost\"]:.2f} | {f[\"avg_hours\"]:.1f}h | \${f[\"avg_cost\"]:.2f} |')
+else:
+    print('| Free | 0 | — | — | — | — |')
+grand_hours = p.get('total_hours', 0) + f.get('total_hours', 0)
+grand_cost = p.get('total_cost', 0) + f.get('total_cost', 0)
+grand_users = p.get('users', 0) + f.get('users', 0)
+print(f'| **Total** | **{grand_users}** | **{grand_hours:.1f}h** | **\${grand_cost:.2f}** | | |')
+" 2>/dev/null || echo "*(Failed to parse usage summary)*")
+
+  usage_detail_table=$(echo "$usage_body" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+users = data.get('users', [])
+if not users:
+    print('*(No per-user data available)*')
+    sys.exit(0)
+
+print('| User | Tier | Sessions | Hours | Cost |')
+print('|---|---|---|---|---|')
+for u in users:
+    print(f'| \`{u[\"user_id\"]}\` | {u[\"tier\"]} | {u[\"sessions\"]} | {u[\"hours\"]:.1f}h | \${u[\"cost\"]:.2f} |')
+" 2>/dev/null || echo "*(Failed to parse per-user data)*")
+else
+  usage_summary="*(Failed to invoke cost-tracker Lambda — is it deployed?)*"
+  usage_detail_table="*(No data)*"
+fi
+
+# Store detail table for appendix
+echo "$usage_detail_table" > "$APPENDIX_TMP/usage_detail.txt"
+rm -f "$USAGE_REPORT_TMP"
+
+cat >> "$REPORT" <<EOF
+### Per-User Usage Summary
+
+$usage_summary
+
+> Per-user detail in [Appendix C](#appendix-c-per-user-usage-breakdown). Source: \`instance_usage_log\` table via \`subscr-cost-tracker\` Lambda.
+
+EOF
+
 # ---------------------------------------------------------------------------
 # 2. RDS Health Check
 # ---------------------------------------------------------------------------
@@ -790,6 +876,17 @@ echo "  Writing appendices..."
   echo '```'
   cat "$APPENDIX_TMP/alarm_history.txt" 2>/dev/null || echo "(no data)"
   echo '```'
+  echo ""
+} >> "$REPORT"
+
+# ---------------------------------------------------------------------------
+# Appendix C: Per-User Usage Breakdown
+# ---------------------------------------------------------------------------
+{
+  echo "## Appendix C: Per-User Usage Breakdown"
+  echo ""
+  cat "$APPENDIX_TMP/usage_detail.txt" 2>/dev/null || echo "*(No data)*"
+  echo ""
 } >> "$REPORT"
 
 echo ""
