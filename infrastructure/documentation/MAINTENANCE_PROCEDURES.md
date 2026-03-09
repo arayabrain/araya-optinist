@@ -454,11 +454,16 @@ When an alarm fires, follow the procedure for that alarm category.
 | `subscr-background-cpu-high` | CPU > 400 units (3 periods) | Background jobs are overloaded. Check for stuck or excessively large jobs. |
 | `subscr-background-memory-high` | Memory > 600 MB (3 periods) | Check for memory leaks in background job code. |
 
+### Account Cost Alarm
+
+| Alarm | Threshold | Action |
+|---|---|---|
+| `subscr-monthly-cost-high` | Projected monthly spend > `var.monthly_budget_usd` | Review cost trend. Check for orphaned or idle resources. |
+
 ### Premium Alarms
 
 | Alarm | Threshold | Action |
 |---|---|---|
-| `subscr-premium-monthly-cost-high` | Monthly cost > $500 | Review premium instance utilization. Check for orphaned instances. |
 | `subscr-premium-cpu-high` | CPU > 80% (2 periods) | Check premium user workload. May need larger instance type. |
 | `subscr-premium-memory-high` | Memory > 85% (3 periods) | Check for memory-intensive workflows. Review premium task definition limits. |
 
@@ -483,7 +488,7 @@ Critical CloudWatch alarms send email notifications to `support@araya-optinist.c
 | `subscr-optinist-alb-5xx-errors` | `monitoring.tf` | Users are seeing server errors |
 | `subscr-optinist-alb-response-time-high` | `monitoring.tf` | Users experiencing >5s response times |
 | `subscr-optinist-load-average-high` | `monitoring.tf` | EC2 hosts saturated, all services degrade |
-| `subscr-premium-monthly-cost-high` | `premium_manager.tf` | Unexpected cost spike |
+| `subscr-monthly-cost-high` | `monitoring.tf` | Unexpected cost spike |
 
 **High — degraded service:**
 
@@ -527,7 +532,7 @@ Critical CloudWatch alarms send email notifications to `support@araya-optinist.c
 | ACM | SSL/TLS certificate | Free |
 | Secrets Manager | 5 secrets | ~$2 |
 
-**Cost alerts:** The `subscr-premium-monthly-cost-high` alarm triggers at $500/month.
+**Cost alerts:** The `subscr-monthly-cost-high` alarm triggers when projected monthly spend exceeds `var.monthly_budget_usd` (set in `terraform.tfvars`).
 
 ---
 
