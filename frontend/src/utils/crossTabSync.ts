@@ -304,6 +304,7 @@ export class TabSyncService {
         try {
           handler(message)
         } catch (error) {
+          // eslint-disable-next-line no-console
           console.error(
             `TabSyncService: Error in handler for ${message.type}:`,
             error,
@@ -317,6 +318,7 @@ export class TabSyncService {
       try {
         handler(message)
       } catch (error) {
+        // eslint-disable-next-line no-console
         console.error("TabSyncService: Error in global handler:", error)
       }
     })

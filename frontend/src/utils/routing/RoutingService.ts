@@ -196,6 +196,7 @@ export class RoutingService {
         this.routingToken = token
       }
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.warn("Failed to load routing ID from localStorage:", e)
     }
   }
@@ -207,6 +208,7 @@ export class RoutingService {
     try {
       localStorage.setItem(this.STORAGE_KEY, token)
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.warn("Failed to save routing ID to localStorage:", e)
     }
   }
@@ -218,6 +220,7 @@ export class RoutingService {
     try {
       localStorage.removeItem(this.STORAGE_KEY)
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.warn("Failed to clear routing ID from localStorage:", e)
     }
   }
@@ -232,6 +235,7 @@ export class RoutingService {
         this.storedTier = tier as UserTier
       }
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.warn("Failed to load user tier from localStorage:", e)
     }
   }
@@ -243,6 +247,7 @@ export class RoutingService {
     try {
       localStorage.setItem(this.TIER_STORAGE_KEY, tier)
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.warn("Failed to save user tier to localStorage:", e)
     }
   }
@@ -254,6 +259,7 @@ export class RoutingService {
     try {
       localStorage.removeItem(this.TIER_STORAGE_KEY)
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.warn("Failed to clear user tier from localStorage:", e)
     }
   }
@@ -273,6 +279,7 @@ export class RoutingService {
       const value = localStorage.getItem(this.PREMIUM_ASSIGNED_KEY)
       this.premiumAssigned = value === "true"
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.warn("Failed to load premium assigned from localStorage:", e)
     }
   }
@@ -284,6 +291,7 @@ export class RoutingService {
     try {
       localStorage.setItem(this.PREMIUM_ASSIGNED_KEY, String(assigned))
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.warn("Failed to save premium assigned to localStorage:", e)
     }
   }
@@ -295,6 +303,7 @@ export class RoutingService {
     try {
       localStorage.removeItem(this.PREMIUM_ASSIGNED_KEY)
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.warn("Failed to clear premium assigned from localStorage:", e)
     }
   }

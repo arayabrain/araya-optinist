@@ -417,6 +417,7 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
           "elasticloadbalancing:CreateRule",
           "elasticloadbalancing:DeleteRule",
           "elasticloadbalancing:ModifyRule",
+          "elasticloadbalancing:ModifyTargetGroupAttributes",
           "elasticloadbalancing:RegisterTargets",
           "elasticloadbalancing:DeregisterTargets",
           "elasticloadbalancing:AddTags",

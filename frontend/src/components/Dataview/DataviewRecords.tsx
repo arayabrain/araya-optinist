@@ -53,14 +53,8 @@ import InputsView from "components/Dataview/InputsView"
 import OutputsView from "components/Dataview/OutputsView"
 import { ThumbnailImage } from "components/Dataview/ThumbnailImage"
 import { WorkflowDetailsView } from "components/Dataview/WorkflowDetailsView"
-import {
-  ImagePlotSimple,
-  ImagePlotSimpleWithLoading,
-} from "components/Workspace/Visualize/Plot/ImagePlotSimple"
-import {
-  RoiPlotSimple,
-  RoiPlotSimpleWithLoading,
-} from "components/Workspace/Visualize/Plot/RoiPlotSimple"
+import { ImagePlotSimpleWithLoading } from "components/Workspace/Visualize/Plot/ImagePlotSimple"
+import { RoiPlotSimpleWithLoading } from "components/Workspace/Visualize/Plot/RoiPlotSimple"
 import { DELAY_TIME_INPUT_CONFIRMED } from "const/Form"
 import {
   getDataviewRecords,
