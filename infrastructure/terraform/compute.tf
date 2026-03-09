@@ -232,6 +232,18 @@ resource "aws_autoscaling_group" "main" {
     propagate_at_launch = true
   }
 
+  tag {
+    key                 = "Project"
+    value               = "subscr-optinist"
+    propagate_at_launch = true
+  }
+
+  tag {
+    key                 = "ManagedBy"
+    value               = "Terraform"
+    propagate_at_launch = true
+  }
+
   instance_refresh {
     strategy = "Rolling"
     preferences {

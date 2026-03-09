@@ -529,8 +529,7 @@ resource "aws_db_instance" "main" {
   skip_final_snapshot             = false
   final_snapshot_identifier       = "${var.mysql_database}-final-snapshot"
   backup_retention_period         = 35
-  monitoring_interval             = 60
-  monitoring_role_arn             = aws_iam_role.rds_monitoring.arn
+  monitoring_interval             = 0
   publicly_accessible             = false
   enabled_cloudwatch_logs_exports = ["error", "general", "slowquery"]
   network_type                    = "IPV4"
@@ -542,6 +541,26 @@ resource "aws_db_instance" "main" {
 
   tags = {
     Name = "subscr-optinist-cloud-rds"
+  }
+}
+
+# CloudWatch Log Group for RDS Proxy
+resource "aws_cloudwatch_log_group" "rds_proxy_logs" {
+  name              = "/aws/rds/proxy/subscr-optinist-rds-proxy"
+  retention_in_days = 30
+
+  tags = {
+    Name = "RDS Proxy Logs"
+  }
+}
+
+# CloudWatch Log Group for RDS Error Logs
+resource "aws_cloudwatch_log_group" "rds_error_logs" {
+  name              = "/aws/rds/instance/subscr-optinist-cloud-rds/error"
+  retention_in_days = 90
+
+  tags = {
+    Name = "RDS Error Logs"
   }
 }
 

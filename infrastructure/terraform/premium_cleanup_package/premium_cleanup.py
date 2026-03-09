@@ -286,6 +286,14 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
                             f"target group: {target_group_arn}"
                         )
 
+                    # Close usage log before deleting assignment
+                    cursor.execute(
+                        """UPDATE instance_usage_log SET ended_at = NOW()
+                           WHERE user_id = %s AND tier = 'premium'
+                           AND ended_at IS NULL""",
+                        (user_id,),
+                    )
+
                     # Remove from database
                     cursor.execute(
                         "DELETE FROM premium_user_assignments WHERE user_id = %s",
@@ -723,25 +731,68 @@ def get_standby_pool_status() -> Dict[str, Any]:
 
 
 def ensure_standby_pool_capacity() -> Dict[str, Any]:
-    """Ensure standby pool maintains required capacity and handle failed instances"""
+    """Ensure standby pool maintains required capacity and handle failed instances.
+
+    When more instances are flagged as standby than the target pool size,
+    clears excess is_standby flags so those instances become eligible for
+    normal idle cleanup/termination in subsequent runs.
+    """
     try:
         status = get_standby_pool_status()
 
         if "error" in status:
             return {"success": False, "error": status["error"]}
 
-        target_stopped = 1
+        target_stopped = int(os.environ.get("PREMIUM_STANDBY_POOL_SIZE", "1"))
         actions_taken = []
 
         # Log current status
         print(
             f"Standby pool status: {status['running']} running, "
-            f"{status['stopped']} stopped, {status['failed']} failed"
+            f"{status['stopped']} stopped, {status['failed']} failed "
+            f"(target standby: {target_stopped})"
         )
 
         # Check for capacity issues
         if status["stopped"] < target_stopped and status["idle_running"] == 0:
             actions_taken.append("Low standby capacity detected")
+
+        # Enforce pool size: clear excess standby flags
+        if status["stopped"] > target_stopped:
+            excess = status["stopped"] - target_stopped
+            print(
+                f"Excess standby instances: {excess} "
+                f"(have {status['stopped']}, target {target_stopped}). "
+                f"Clearing excess is_standby flags."
+            )
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        # Keep the newest target_stopped standby instances,
+                        # clear is_standby on the rest (oldest first)
+                        cursor.execute(
+                            """UPDATE premium_user_assignments
+                               SET is_standby = 0
+                               WHERE is_standby = 1
+                               AND id NOT IN (
+                                   SELECT id FROM (
+                                       SELECT id FROM premium_user_assignments
+                                       WHERE is_standby = 1
+                                       ORDER BY last_activity DESC
+                                       LIMIT %s
+                                   ) AS keep_rows
+                               )""",
+                            (target_stopped,),
+                        )
+                        cleared = cursor.rowcount
+                    conn.commit()
+                actions_taken.append(
+                    f"Cleared is_standby flag on {cleared} excess instances"
+                )
+                print(f"Cleared is_standby flag on {cleared} excess instances")
+            except Exception as e:
+                actions_taken.append(f"Failed to clear excess standby flags: {e}")
+                print(f"Error clearing excess standby flags: {e}")
 
         if status["failed"] > 0:
             actions_taken.append(f"Found {status['failed']} failed instances")
@@ -1024,6 +1075,14 @@ def cleanup_test_user_assignments(connection, user_emails: List[str]) -> Dict[st
                             print(f"Deleted target group for user {user_id}")
                         except Exception as e:
                             print(f"Warning: Failed to delete target group: {e}")
+
+                    # Close usage log before deleting assignment
+                    cursor.execute(
+                        """UPDATE instance_usage_log SET ended_at = NOW()
+                           WHERE user_id = %s AND tier = 'premium'
+                           AND ended_at IS NULL""",
+                        (user_id,),
+                    )
 
                     # Remove from database
                     cursor.execute(
@@ -1378,7 +1437,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         print("Step 4: Reconciling instance states...")
         results["reconciliation_stats"] = reconcile_instance_states()
 
-        # 5. Monitor standby pool capacity (read-only check)
+        # 5. Monitor and enforce standby pool capacity
         print("Step 5: Checking standby pool capacity...")
         results["capacity_check"] = ensure_standby_pool_capacity()
 
