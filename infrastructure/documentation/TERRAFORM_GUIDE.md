@@ -416,19 +416,20 @@ Each environment has its own S3 backend (state bucket). When you run `terraform 
 
 ### S3 Bucket Isolation (IAM Policy)
 
-Each environment's IAM user has a **three-layer** S3 permission model:
+Each environment's IAM user has a **two-layer** S3 permission model:
 
 | Layer | Action | Scope | Purpose |
 |-------|--------|-------|---------|
-| **Allow** | `s3:ListAllMyBuckets` | `*` (all buckets) | Allows listing bucket names (read-only metadata, required by AWS Console/CLI). Cannot read contents. |
 | **Allow** | `s3:GetObject`, `PutObject`, `DeleteObject`, `ListBucket`, `CreateBucket`, `DeleteBucket` | `${env}-optinist-*` only | CRUD operations scoped to this environment's buckets only |
 | **Deny** | Same CRUD actions | `NotResource: ${env}-optinist-*` | **Explicit deny** on all buckets outside this environment. Even if another policy grants access, this deny overrides it. |
+
+`s3:ListAllMyBuckets` is intentionally **not granted**. This means the dev IAM user cannot see production bucket names at all — not even as metadata. The AWS Console S3 page will show an empty list, and `aws s3 ls` will return nothing. Users must access their environment's buckets by direct name (e.g., `aws s3 ls s3://development-optinist-app-storage/`).
 
 **Result for the development IAM user:**
 
 | Operation | `development-optinist-app-storage` | `subscr-optinist-app-storage` |
 |-----------|-----------------------------------|-------------------------------|
-| List bucket names (`aws s3 ls`) | Visible (name only) | Visible (name only) |
+| List all bucket names (`aws s3 ls`) | **Not visible** | **Not visible** |
 | List bucket contents (`aws s3 ls s3://...`) | Allowed | **Denied** |
 | Read objects (`s3:GetObject`) | Allowed | **Denied** |
 | Write objects (`s3:PutObject`) | Allowed | **Denied** |
@@ -449,28 +450,28 @@ export AWS_DEFAULT_REGION=ap-northeast-1
 
 # --- Tests that SHOULD succeed ---
 
-# 1. List all bucket names (metadata only)
-aws s3 ls
-# Expected: Shows all bucket names including subscr-optinist-* (names only, no contents)
-
-# 2. List development bucket contents
+# 1. List development bucket contents (by direct name)
 aws s3 ls s3://development-optinist-app-storage/
 # Expected: Success — shows objects in dev bucket
 
-# 3. Upload to development bucket
+# 2. Upload to development bucket
 echo "test" > /tmp/test-s3-isolation.txt
 aws s3 cp /tmp/test-s3-isolation.txt s3://development-optinist-app-storage/test-s3-isolation.txt
 # Expected: Success — upload completed
 
-# 4. Download from development bucket
+# 3. Download from development bucket
 aws s3 cp s3://development-optinist-app-storage/test-s3-isolation.txt /tmp/test-s3-download.txt
 # Expected: Success — download completed
 
-# 5. Delete from development bucket
+# 4. Delete from development bucket
 aws s3 rm s3://development-optinist-app-storage/test-s3-isolation.txt
 # Expected: Success — delete completed
 
-# --- Tests that SHOULD fail (Access Denied) ---
+# --- Tests that SHOULD fail (Access Denied / empty) ---
+
+# 5. List all bucket names (not granted)
+aws s3 ls
+# Expected: Empty output (s3:ListAllMyBuckets not granted)
 
 # 6. List production bucket contents
 aws s3 ls s3://subscr-optinist-app-storage/

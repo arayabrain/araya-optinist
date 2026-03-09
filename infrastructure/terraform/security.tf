@@ -472,12 +472,6 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
         ]
         Resource = "*"
       },
-      # S3: Allow listing all buckets (read-only, required by AWS Console and CLI)
-      {
-        Effect   = "Allow"
-        Action   = "s3:ListAllMyBuckets"
-        Resource = "*"
-      },
       # S3: Allow CRUD only on this environment's buckets
       {
         Effect = "Allow"
