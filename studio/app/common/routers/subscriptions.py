@@ -497,12 +497,47 @@ async def validate_checkout_session(
         # Verify database was updated by webhook - check if user has
         # active premium subscription
         subscription = SubscriptionService.get_user_subscription(db, user.id)
-        if not subscription:
+        if not subscription or (
+            subscription and subscription[1].id == SubscriptionPlanIds.FREE
+        ):
+            # Webhook may have failed (server was down). Attempt recovery
+            # by checking Stripe for an active subscription and syncing it.
             logger.warning(
                 f"Checkout session {request.session_id} is complete but no "
-                f"subscription found in database for user {user.id}. "
-                f"Webhook may have failed."
+                f"premium subscription found in database for user {user.id}. "
+                f"Attempting subscription recovery."
             )
+
+            # Get customer ID for recovery
+            subscription_account = CheckoutService.get_subscription_account(
+                db, user.id
+            )
+            if subscription_account:
+                # Get plan_id from session metadata
+                metadata = session.metadata or {}
+                plan_id = metadata.get("plan_id")
+                if plan_id:
+                    recovered = (
+                        CheckoutService.recover_existing_stripe_subscription(
+                            db,
+                            user.id,
+                            subscription_account.provider_customer_id,
+                            int(plan_id),
+                        )
+                    )
+                    if recovered:
+                        logger.info(
+                            f"Successfully recovered subscription for user "
+                            f"{user.id} during checkout validation."
+                        )
+                        return CheckoutValidationResponse(
+                            status=CheckoutValidationStatus.SUCCESS,
+                            message=(
+                                "Payment successful! Your premium "
+                                "subscription is now active."
+                            ),
+                        )
+
             return CheckoutValidationResponse(
                 status=CheckoutValidationStatus.WEBHOOK_FAILED,
                 message=(
@@ -511,22 +546,7 @@ async def validate_checkout_session(
                 ),
             )
 
-        # Verify it's a premium subscription (not free)
         sub_data, plan_data = subscription
-        if plan_data.id == SubscriptionPlanIds.FREE:
-            logger.warning(
-                f"Checkout session {request.session_id} is complete but user "
-                f"{user.id} only has free subscription (plan_id={plan_data.id}). "
-                f"Webhook may have failed."
-            )
-            return CheckoutValidationResponse(
-                status=CheckoutValidationStatus.WEBHOOK_FAILED,
-                message=(
-                    "Payment was successful, but subscription activation "
-                    "is pending. Please contact support if this persists."
-                ),
-            )
-
         logger.info(
             f"Checkout session {request.session_id} is valid and database is updated "
             f"with premium subscription (plan_id={plan_data.id}) for user {user.id}"
