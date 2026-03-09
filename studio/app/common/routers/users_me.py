@@ -27,7 +27,7 @@ from studio.app.common.core.users import crud_users
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import get_db
 from studio.app.common.models import FreeUserAssignment
-from studio.app.common.models.instance_usage import InstanceUsageLog
+from studio.app.common.models.instance_usage import InstanceUsageLog, UsageTier
 from studio.app.common.schemas.users import SelfUserUpdate, User, UserPasswordUpdate
 
 router = APIRouter(prefix="/users/me", tags=["users/me"])
@@ -270,7 +270,7 @@ async def logout_free_user(
             update(InstanceUsageLog)
             .where(
                 InstanceUsageLog.user_id == current_user.id,
-                InstanceUsageLog.tier == "free",
+                InstanceUsageLog.tier == UsageTier.FREE,
                 InstanceUsageLog.ended_at.is_(None),
             )
             .values(ended_at=now)

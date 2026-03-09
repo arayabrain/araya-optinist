@@ -35,6 +35,7 @@ from studio.app.common.models import (
     User,
     Workspace,
 )
+from studio.app.common.models.instance_usage import UsageTier
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -422,7 +423,7 @@ class DataCleanupJob:
                     update(InstanceUsageLog)
                     .where(
                         InstanceUsageLog.user_id == user_id,
-                        InstanceUsageLog.tier == "free",
+                        InstanceUsageLog.tier == UsageTier.FREE,
                         InstanceUsageLog.ended_at.is_(None),
                     )
                     .values(ended_at=get_current_datetime())

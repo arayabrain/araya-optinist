@@ -442,7 +442,7 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
                 usage_entry = InstanceUsageLog(
                     user_id=user_id,
                     instance_id=instance_id,
-                    tier="free",
+                    tier=TIER_FREE,
                     started_at=now,
                 )
                 session.add(usage_entry)
