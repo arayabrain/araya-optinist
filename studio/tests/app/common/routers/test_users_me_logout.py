@@ -28,7 +28,7 @@ class TestLogoutFreeUser:
 
         assert result["logged_out"] is True
         assert result["cleanup_after_minutes"] == 60
-        mock_db.execute.assert_called_once()
+        assert mock_db.execute.call_count == 2
         mock_db.commit.assert_called_once()
 
     @pytest.mark.asyncio
@@ -70,7 +70,7 @@ class TestLogoutFreeUser:
         result = await logout_free_user(current_user=mock_free_user, db=mock_db)
 
         assert result["logged_out"] is True
-        mock_db.execute.assert_called_once()
+        assert mock_db.execute.call_count == 2
         mock_db.commit.assert_called_once()
 
     @pytest.mark.asyncio

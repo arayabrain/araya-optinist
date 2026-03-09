@@ -20,7 +20,7 @@ import shutil
 from datetime import timedelta
 from typing import List, Tuple
 
-from sqlalchemy import func
+from sqlalchemy import func, update
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
@@ -29,7 +29,13 @@ from studio.app.common.core.subscription.constants import SyncStatusConstants
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.db.database import session_scope
-from studio.app.common.models import FreeUserAssignment, User, Workspace
+from studio.app.common.models import (
+    FreeUserAssignment,
+    InstanceUsageLog,
+    User,
+    Workspace,
+)
+from studio.app.common.models.instance_usage import UsageTier
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -412,6 +418,16 @@ class DataCleanupJob:
             assignment = result_row[0] if result_row else None
 
             if assignment:
+                # Close usage log before deleting assignment
+                db.execute(
+                    update(InstanceUsageLog)
+                    .where(
+                        InstanceUsageLog.user_id == user_id,
+                        InstanceUsageLog.tier == UsageTier.FREE,
+                        InstanceUsageLog.ended_at.is_(None),
+                    )
+                    .values(ended_at=get_current_datetime())
+                )
                 db.delete(assignment)
                 db.commit()
 
@@ -455,6 +471,17 @@ class DataCleanupJob:
 
             workspace_ids = [str(row[0].id) for row in workspaces_result]
             cls._cleanup_user_data(assignment.user_id, workspace_ids)
+
+            # Close usage log before deleting assignment
+            db.execute(
+                update(InstanceUsageLog)
+                .where(
+                    InstanceUsageLog.user_id == assignment.user_id,
+                    InstanceUsageLog.tier == UsageTier.FREE,
+                    InstanceUsageLog.ended_at.is_(None),
+                )
+                .values(ended_at=get_current_datetime())
+            )
 
             # Remove assignment
             db.delete(assignment)

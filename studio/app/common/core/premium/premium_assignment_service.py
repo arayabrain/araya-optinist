@@ -26,6 +26,11 @@ logger = AppLogger.get_logger()
 _assignment_attempts = {}
 _RATE_LIMIT_SECONDS = 30
 
+
+class PremiumStatusCheckError(Exception):
+    pass
+
+
 # Timeout and retry configuration for Lambda calls
 LAMBDA_TIMEOUT_SECONDS = 60
 LAMBDA_MAX_RETRIES = 2
@@ -472,11 +477,17 @@ class PremiumAssignmentService:
                     f"Failed to get status for premium user"
                     f"{user_id}: {response_payload}"
                 )
-                return None
+                raise PremiumStatusCheckError(
+                    f"Lambda returned {status_code} for user {user_id}"
+                )
 
+        except PremiumStatusCheckError:
+            raise
         except Exception as e:
             logger.error(f"Error getting status for premium user {user_id}: {str(e)}")
-            return None
+            raise PremiumStatusCheckError(
+                f"Status check failed for user {user_id}: {e}"
+            ) from e
 
     async def update_user_activity(self, user_id: int, user_uid: str) -> Dict[str, any]:
         """

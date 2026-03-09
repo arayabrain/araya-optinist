@@ -13,6 +13,7 @@ import React, {
   useCallback,
   useRef,
 } from "react"
+import { flushSync } from "react-dom"
 import { useSelector } from "react-redux"
 
 import {
@@ -51,6 +52,35 @@ const MAX_POLL_INTERVAL_MS = 60000
 const MAX_POLL_ATTEMPTS = 40
 const BACKOFF_MULTIPLIER = 1.5
 const ERROR_BACKOFF_MULTIPLIER = 2
+
+// sessionStorage keys — per-tab persistence across page refreshes.
+// Clears automatically when the tab closes.
+const SS_HAS_ATTEMPTED = "premium_hasAttempted"
+const SS_POLL_ATTEMPTS = "premium_pollAttempts"
+
+function ssRead(key: string): string | null {
+  try {
+    return sessionStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function ssWrite(key: string, value: string): void {
+  try {
+    sessionStorage.setItem(key, value)
+  } catch {
+    // sessionStorage unavailable (e.g., some private browsing modes)
+  }
+}
+
+function ssRemove(key: string): void {
+  try {
+    sessionStorage.removeItem(key)
+  } catch {
+    // sessionStorage unavailable
+  }
+}
 
 // Heartbeat retry configuration (Case 49)
 const HEARTBEAT_MAX_RETRIES = 3
@@ -114,13 +144,27 @@ export const PremiumAssignmentProvider: React.FC<{
     heartbeatFailing: false,
   })
 
-  // Flag to prevent multiple auto-assignment attempts per session
-  const [hasAttemptedAutoAssignment, setHasAttemptedAutoAssignment] =
-    useState(false)
+  // Ref guard to prevent multiple auto-assignment attempts per mount.
+  // useRef (not useState) so the flag is set synchronously and survives
+  // StrictMode double-invocations without triggering extra renders.
+  const hasAttemptedRef = useRef(ssRead(SS_HAS_ATTEMPTED) === "true")
 
   // Polling state with backoff
   const [pollInterval, setPollInterval] = useState(INITIAL_POLL_INTERVAL_MS)
-  const [pollAttempts, setPollAttempts] = useState(0)
+  const [pollAttempts, setPollAttempts] = useState(() => {
+    const stored = ssRead(SS_POLL_ATTEMPTS)
+    const n = Number(stored)
+    return Number.isNaN(n) ? 0 : n
+  })
+
+  // Sync pollAttempts to sessionStorage so the cap survives page refreshes
+  useEffect(() => {
+    if (pollAttempts > 0) {
+      ssWrite(SS_POLL_ATTEMPTS, String(pollAttempts))
+    } else if (ssRead(SS_POLL_ATTEMPTS) !== null) {
+      ssRemove(SS_POLL_ATTEMPTS)
+    }
+  }, [pollAttempts])
 
   // Cross-tab leader election for coordinating polling
   const [isTabLeader, setIsTabLeader] = useState(false)
@@ -144,7 +188,9 @@ export const PremiumAssignmentProvider: React.FC<{
 
   // Reset flag when user changes
   useEffect(() => {
-    setHasAttemptedAutoAssignment(false)
+    hasAttemptedRef.current = false
+    ssRemove(SS_HAS_ATTEMPTED)
+    ssRemove(SS_POLL_ATTEMPTS)
   }, [currentUser?.id])
 
   // Reset state when logout generation changes to prevent stale closures
@@ -164,7 +210,9 @@ export const PremiumAssignmentProvider: React.FC<{
         lastActivityTime: Date.now(),
         heartbeatFailing: false,
       })
-      setHasAttemptedAutoAssignment(false)
+      hasAttemptedRef.current = false
+      ssRemove(SS_HAS_ATTEMPTED)
+      ssRemove(SS_POLL_ATTEMPTS)
     }
     // Only run on logoutGeneration change, not initial mount
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -409,14 +457,19 @@ export const PremiumAssignmentProvider: React.FC<{
    * Auto-assign on premium user login (fully isolated to prevent loops)
    */
   const autoAssignOnLogin = useCallback(async () => {
-    if (!isPremiumUser || hasAttemptedAutoAssignment) return
+    if (!isPremiumUser || hasAttemptedRef.current) return
 
     // Set flag immediately to prevent duplicate calls
-    setHasAttemptedAutoAssignment(true)
+    hasAttemptedRef.current = true
 
     try {
       // Check current status first (inline to avoid dependency issues)
       const statusResponse = await getPremiumStatus()
+      if (statusResponse?.error) {
+        // Lambda failed transiently — don't trigger assignment flow.
+        // Not persisted to sessionStorage, so page refresh retries.
+        return
+      }
       if (statusResponse?.assignment) {
         // User already has an assignment - update state immediately so notifications trigger
         // Convert PremiumAssignment to PremiumAssignmentResult format
@@ -439,9 +492,13 @@ export const PremiumAssignmentProvider: React.FC<{
         } catch {
           // Non-critical; beacon will fail gracefully
         }
+        ssWrite(SS_HAS_ATTEMPTED, "true") // duplicated in assign path below — both exits must persist
         return
       }
-      setState((prev) => ({ ...prev, isAssigning: true }))
+
+      flushSync(() => {
+        setState((prev) => ({ ...prev, isAssigning: true }))
+      })
 
       // Attempt assignment directly (inline to avoid dependency issues)
       const assignmentResponse = await assignPremiumInstance()
@@ -476,7 +533,12 @@ export const PremiumAssignmentProvider: React.FC<{
           isRetryableError: isRetryable,
         }))
       }
+      // Persist only after a successful status/assign round-trip.
+      // On network error (catch below), leave unpersisted so refresh retries.
+      ssWrite(SS_HAS_ATTEMPTED, "true") // duplicated in already-assigned path above — both exits must persist
     } catch (error) {
+      // hasAttemptedRef stays true to prevent rapid-fire retries on this mount.
+      // sessionStorage is NOT written, so a page refresh will retry.
       // Set error state so the error notification fires
       const errorMessage =
         error instanceof Error ? error.message : "Assignment failed"
@@ -490,7 +552,7 @@ export const PremiumAssignmentProvider: React.FC<{
       }))
       routingService.clearRoutingInfo()
     }
-  }, [isPremiumUser, hasAttemptedAutoAssignment])
+  }, [isPremiumUser]) // refs and setState are stable — no other deps needed
 
   /**
    * Auto-release on logout via sendBeacon.
@@ -616,15 +678,9 @@ export const PremiumAssignmentProvider: React.FC<{
       console.log("Conditions not met for auto-assignment:", {
         isPremiumUser,
         hasCurrentUser: !!currentUser,
-        hasAttemptedAutoAssignment,
       })
     }
-  }, [
-    isPremiumUser,
-    currentUser,
-    hasAttemptedAutoAssignment,
-    autoAssignOnLogin,
-  ])
+  }, [isPremiumUser, currentUser, autoAssignOnLogin])
 
   // Reset polling state when user changes or gets a dedicated instance
   useEffect(() => {
@@ -711,8 +767,7 @@ export const PremiumAssignmentProvider: React.FC<{
   }, [
     isPremiumUser,
     isTabLeader,
-    state.assignmentResult?.assigned,
-    state.assignmentResult?.is_shared,
+    state.assignmentResult,
     pollInterval,
     pollAttempts,
   ])
