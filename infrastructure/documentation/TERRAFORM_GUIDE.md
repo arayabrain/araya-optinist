@@ -46,14 +46,14 @@ infrastructure/terraform/
 
 The following resources are **pre-existing** and shared across environments. They are **not created or destroyed** by `terraform apply` / `terraform destroy`:
 
-| Resource | Status | Location / Notes |
-|----------|--------|-----------------|
-| **S3 state buckets** | Already created | `subscr-optinist-for-cloud-tfstate` (prod), `development-optinist-for-cloud-tfstate` (dev). These persist across all testing rounds to preserve Terraform state. |
-| **ECR repository** | Already created | `637423646530.dkr.ecr.ap-northeast-1.amazonaws.com/optinist-for-cloud` — shared between prod and dev |
-| **Firebase project (prod)** | Already created | Production Firebase project in [Firebase Console](https://console.firebase.google.com/) |
-| **Firebase project (dev)** | Already created | Separate development Firebase project. Config stored in `development.tfvars` |
-| **Stripe account** | Already created | Test mode keys for dev, live mode keys for prod. Keys in [Stripe Dashboard](https://dashboard.stripe.com/) |
-| **tfvars files** | Already created | Stored in Google Drive: [TODO: Add Google Drive link here]. Download to `environments/` before running Terraform |
+| Resource                    | Status          | Location / Notes                                                                                                                                                 |
+| --------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **S3 state buckets**        | Already created | `subscr-optinist-for-cloud-tfstate` (prod), `development-optinist-for-cloud-tfstate` (dev). These persist across all testing rounds to preserve Terraform state. |
+| **ECR repository**          | Already created | `637423646530.dkr.ecr.ap-northeast-1.amazonaws.com/optinist-for-cloud` — shared between prod and dev                                                             |
+| **Firebase project (prod)** | Already created | Production Firebase project in [Firebase Console](https://console.firebase.google.com/)                                                                          |
+| **Firebase project (dev)**  | Already created | Separate development Firebase project. Config stored in `development.tfvars`                                                                                     |
+| **Stripe account**          | Already created | Test mode keys for dev, live mode keys for prod. Keys in [Stripe Dashboard](https://dashboard.stripe.com/)                                                       |
+| **tfvars files**            | Already created | Stored in Google Drive: [https://drive.google.com/drive/folders/1FBIAqBjIdzkXCvNKKGgKu17J4-O3dX-F]. Download to `environments/` before running Terraform         |
 
 ---
 
@@ -61,21 +61,21 @@ The following resources are **pre-existing** and shared across environments. The
 
 When you run `terraform destroy`, only the AWS resources managed by Terraform are removed. External dependencies and configuration files persist:
 
-| Destroyed by `terraform destroy` | NOT destroyed (persists) |
-|----------------------------------|--------------------------|
-| VPC, subnets, route tables | S3 tfstate bucket (keeps your state history) |
-| EC2 instances (NAT, ASG, premium) | ECR repository and Docker images |
-| RDS instance and RDS Proxy | Firebase project and user accounts |
-| ALB, target groups, listeners | Stripe products, prices, and webhook configs |
-| ECS cluster, services, task definitions | `*.tfvars` files (local files on your machine / Google Drive) |
-| S3 app storage bucket | `backends/*.hcl` files (checked into git) |
-| EFS filesystem | `*.tfvars.example` files (checked into git) |
-| Lambda functions and layers | AWS IAM user credentials (if saved locally) |
-| Secrets Manager secrets | |
-| CloudWatch log groups, alarms, dashboard | |
-| IAM roles, policies, user | |
-| Security groups | |
-| Route53/ACM (production only) | |
+| Destroyed by `terraform destroy`         | NOT destroyed (persists)                                      |
+| ---------------------------------------- | ------------------------------------------------------------- |
+| VPC, subnets, route tables               | S3 tfstate bucket (keeps your state history)                  |
+| EC2 instances (NAT, ASG, premium)        | ECR repository and Docker images                              |
+| RDS instance and RDS Proxy               | Firebase project and user accounts                            |
+| ALB, target groups, listeners            | Stripe products, prices, and webhook configs                  |
+| ECS cluster, services, task definitions  | `*.tfvars` files (local files on your machine / Google Drive) |
+| S3 app storage bucket                    | `backends/*.hcl` files (checked into git)                     |
+| EFS filesystem                           | `*.tfvars.example` files (checked into git)                   |
+| Lambda functions and layers              | AWS IAM user credentials (if saved locally)                   |
+| Secrets Manager secrets                  |                                                               |
+| CloudWatch log groups, alarms, dashboard |                                                               |
+| IAM roles, policies, user                |                                                               |
+| Security groups                          |                                                               |
+| Route53/ACM (production only)            |                                                               |
 
 **Important**: The S3 tfstate bucket is **never destroyed** by `terraform destroy`. It is kept permanently so you can track state history and re-create the environment. If you ever need to remove it, do so manually with `aws s3 rb s3://development-optinist-for-cloud-tfstate --force`.
 
@@ -85,16 +85,16 @@ When you run `terraform destroy`, only the AWS resources managed by Terraform ar
 
 These variables control environment-specific behavior:
 
-| Variable | Type | Description | Production | Development |
-|----------|------|-------------|------------|-------------|
-| `environment` | string | Resource name prefix | `"subscr"` | `"development"` |
-| `enable_custom_domain` | bool | Toggle Route53/ACM/HTTPS | `true` | `false` |
-| `vpc_cidr` | string | VPC CIDR block | `"10.1.0.0/16"` | `"10.2.0.0/16"` |
-| `s3_user_bucket_prefix` | string | Per-user S3 bucket IAM wildcard | `"optinist-user"` | `"development-optinist-user"` |
-| `frontend_domain` | string | Custom domain | `"araya-optinist.com"` | `""` (uses ALB DNS) |
-| `frontend_protocol` | string | HTTP or HTTPS | `"https"` | `"http"` |
-| `frontend_port` | string | Listener port | `"443"` | `"80"` |
-| `asg_max_size` | number | Max ASG instances | `3` | `2` |
+| Variable                | Type   | Description                     | Production             | Development                   |
+| ----------------------- | ------ | ------------------------------- | ---------------------- | ----------------------------- |
+| `environment`           | string | Resource name prefix            | `"subscr"`             | `"development"`               |
+| `enable_custom_domain`  | bool   | Toggle Route53/ACM/HTTPS        | `true`                 | `false`                       |
+| `vpc_cidr`              | string | VPC CIDR block                  | `"10.1.0.0/16"`        | `"10.2.0.0/16"`               |
+| `s3_user_bucket_prefix` | string | Per-user S3 bucket IAM wildcard | `"optinist-user"`      | `"development-optinist-user"` |
+| `frontend_domain`       | string | Custom domain                   | `"araya-optinist.com"` | `""` (uses ALB DNS)           |
+| `frontend_protocol`     | string | HTTP or HTTPS                   | `"https"`              | `"http"`                      |
+| `frontend_port`         | string | Listener port                   | `"443"`                | `"80"`                        |
+| `asg_max_size`          | number | Max ASG instances               | `3`                    | `2`                           |
 
 ### How Resource Names Are Generated
 
@@ -222,6 +222,7 @@ aws s3api create-bucket \
 > **Note**: The development Firebase project already exists. Config is stored in the shared `development.tfvars` on Google Drive.
 
 If creating from scratch:
+
 1. Create a new Firebase project in the [Firebase Console](https://console.firebase.google.com/)
 2. Enable Authentication (Email/Password provider)
 3. Generate a service account key (Project Settings → Service Accounts → Generate new private key)
@@ -232,6 +233,7 @@ If creating from scratch:
 > **Note**: Stripe test mode is already configured. Keys are stored in the shared `development.tfvars` on Google Drive.
 
 If creating from scratch:
+
 1. In the [Stripe Dashboard](https://dashboard.stripe.com/), toggle to "Test mode"
 2. Create test products and prices matching the production structure
 3. Create a test webhook endpoint pointing to the test ALB
@@ -242,7 +244,7 @@ If creating from scratch:
 Download the tfvars files from Google Drive and place them in the `environments/` directory:
 
 ```bash
-# Download from Google Drive: [TODO: Add Google Drive link]
+# Download from Google Drive: [https://drive.google.com/drive/folders/1FBIAqBjIdzkXCvNKKGgKu17J4-O3dX-F]
 # Place files at:
 #   infrastructure/terraform/environments/production.tfvars
 #   infrastructure/terraform/environments/development.tfvars
@@ -339,29 +341,29 @@ terraform destroy -var-file=environments/production.tfvars
 
 ### What Changes Between Production and Development
 
-| Aspect | Production (`subscr`) | Development (`development`) |
-|--------|----------------------|----------------------------|
-| **Access URL** | `https://araya-optinist.com` | `http://<ALB-DNS-NAME>` (see `terraform output alb_dns_name`) |
-| **VPC CIDR** | `10.1.0.0/16` | `10.2.0.0/16` |
-| **Custom domain** | `araya-optinist.com` (HTTPS) | ALB DNS name (HTTP) |
-| **Route53 / ACM** | Created | Not created (`enable_custom_domain = false`) |
-| **ALB HTTP listener (port 80)** | Redirects to HTTPS (301) | Forwards directly to target group |
-| **ALB HTTPS listener** | Port 443, TLS 1.3, ACM cert | Port 8080, plain HTTP, no cert |
-| **ASG max instances** | 3 | 2 |
-| **S3 state bucket** | `subscr-optinist-for-cloud-tfstate` | `development-optinist-for-cloud-tfstate` |
-| **Stripe keys** | Live mode | Test mode |
-| **Firebase project** | Production project | Separate dev project |
-| **Resource name prefix** | `subscr-optinist-*` | `development-optinist-*` |
+| Aspect                          | Production (`subscr`)               | Development (`development`)                                   |
+| ------------------------------- | ----------------------------------- | ------------------------------------------------------------- |
+| **Access URL**                  | `https://araya-optinist.com`        | `http://<ALB-DNS-NAME>` (see `terraform output alb_dns_name`) |
+| **VPC CIDR**                    | `10.1.0.0/16`                       | `10.2.0.0/16`                                                 |
+| **Custom domain**               | `araya-optinist.com` (HTTPS)        | ALB DNS name (HTTP)                                           |
+| **Route53 / ACM**               | Created                             | Not created (`enable_custom_domain = false`)                  |
+| **ALB HTTP listener (port 80)** | Redirects to HTTPS (301)            | Forwards directly to target group                             |
+| **ALB HTTPS listener**          | Port 443, TLS 1.3, ACM cert         | Port 8080, plain HTTP, no cert                                |
+| **ASG max instances**           | 3                                   | 2                                                             |
+| **S3 state bucket**             | `subscr-optinist-for-cloud-tfstate` | `development-optinist-for-cloud-tfstate`                      |
+| **Stripe keys**                 | Live mode                           | Test mode                                                     |
+| **Firebase project**            | Production project                  | Separate dev project                                          |
+| **Resource name prefix**        | `subscr-optinist-*`                 | `development-optinist-*`                                      |
 
 ### Subnet CIDRs
 
 Subnets are derived automatically via `cidrsubnet(var.vpc_cidr, 4, N)`:
 
-| Subnet | Production | Development |
-|--------|-----------|-------------|
-| VPC | `10.1.0.0/16` | `10.2.0.0/16` |
-| Public 1 | `10.1.0.0/20` | `10.2.0.0/20` |
-| Public 2 | `10.1.16.0/20` | `10.2.16.0/20` |
+| Subnet    | Production      | Development     |
+| --------- | --------------- | --------------- |
+| VPC       | `10.1.0.0/16`   | `10.2.0.0/16`   |
+| Public 1  | `10.1.0.0/20`   | `10.2.0.0/20`   |
+| Public 2  | `10.1.16.0/20`  | `10.2.16.0/20`  |
 | Private 1 | `10.1.128.0/20` | `10.2.128.0/20` |
 | Private 2 | `10.1.144.0/20` | `10.2.144.0/20` |
 
@@ -416,15 +418,16 @@ Each environment has its own S3 backend (state bucket). When you run `terraform 
 
 All resources are tagged automatically via `default_tags`:
 
-| Tag | Value | Purpose |
-|-----|-------|---------|
-| `Environment` | `subscr` or `development` | Identify which environment owns the resource |
-| `ManagedBy` | `terraform` | Distinguish Terraform-managed vs manually-created resources |
-| `Project` | `optinist-cloud` | Filter across all OptiNiSt resources |
+| Tag           | Value                     | Purpose                                                     |
+| ------------- | ------------------------- | ----------------------------------------------------------- |
+| `Environment` | `subscr` or `development` | Identify which environment owns the resource                |
+| `ManagedBy`   | `terraform`               | Distinguish Terraform-managed vs manually-created resources |
+| `Project`     | `optinist-cloud`          | Filter across all OptiNiSt resources                        |
 
 **Filter in AWS Console**: Use `Environment = development` to see only dev resources.
 
 **Filter via CLI**:
+
 ```bash
 # List only development EC2 instances
 aws ec2 describe-instances \
@@ -530,33 +533,33 @@ terraform validate
 
 Before first `terraform apply` on development, replace all `<PLACEHOLDER>` values in `environments/development.tfvars`:
 
-| Placeholder | How to Generate |
-|-------------|-----------------|
-| MySQL passwords | `openssl rand -base64 24` |
-| `optinist_secret_key` | `openssl rand -hex 32` |
-| `routing_secret_key` | `openssl rand -hex 32` |
-| Stripe TEST keys | From Stripe Dashboard → Developers → API Keys (test mode) |
-| Firebase config | From Firebase Console → Project Settings → Web app config |
-| Firebase private key | From Firebase Console → Service Accounts → Generate new private key |
-| `optinist_admin_uid` | Create a test user in Firebase Auth, copy their UID |
+| Placeholder           | How to Generate                                                     |
+| --------------------- | ------------------------------------------------------------------- |
+| MySQL passwords       | `openssl rand -base64 24`                                           |
+| `optinist_secret_key` | `openssl rand -hex 32`                                              |
+| `routing_secret_key`  | `openssl rand -hex 32`                                              |
+| Stripe TEST keys      | From Stripe Dashboard → Developers → API Keys (test mode)           |
+| Firebase config       | From Firebase Console → Project Settings → Web app config           |
+| Firebase private key  | From Firebase Console → Service Accounts → Generate new private key |
+| `optinist_admin_uid`  | Create a test user in Firebase Auth, copy their UID                 |
 
 ---
 
 ## AWS Resources Created Per Environment
 
-| Category | Resources | Named As |
-|----------|-----------|----------|
-| **Networking** | VPC, 2 public + 2 private subnets, IGW, NAT instances, route tables | `${env}-optinist-cloud-*` |
-| **Compute** | ECS cluster, ASG, launch template, 2 ECS services (free + premium), EC2 premium instances | `${env}-optinist-cloud-*` |
-| **Load Balancing** | ALB, target groups, listeners | `${env}-optinist-lb`, `${env}-optinist-tg` |
-| **Database** | RDS MySQL, RDS Proxy, subnet group | `${env}-optinist-rds-*` |
-| **Storage** | S3 bucket, EFS filesystem | `${env}-optinist-app-storage`, `${env}-optinist-cloud-snmk-volume` |
-| **Lambda** | 5 functions (premium-manager, free-manager, common-user-manager, free-cleanup, cost-tracker) | `${env}-premium-manager`, `${env}-free-manager`, etc. |
-| **Secrets** | 5 Secrets Manager secrets (firebase, database, app, stripe config) | `${env}-optinist/firebase/config`, etc. |
-| **Monitoring** | CloudWatch log groups, alarms, dashboard | `${env}-optinist-*` |
-| **DNS/SSL** | Route53 zone, ACM certificate (production only) | `araya-optinist.com` |
-| **IAM** | Task execution role, task role, instance role, IAM user, Lambda roles | `${env}-optinist-*`, `${env}-*` |
-| **Background** | Background ECS service, launch template, ASG | `${env}-optinist-background-*` |
+| Category           | Resources                                                                                    | Named As                                                           |
+| ------------------ | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| **Networking**     | VPC, 2 public + 2 private subnets, IGW, NAT instances, route tables                          | `${env}-optinist-cloud-*`                                          |
+| **Compute**        | ECS cluster, ASG, launch template, 2 ECS services (free + premium), EC2 premium instances    | `${env}-optinist-cloud-*`                                          |
+| **Load Balancing** | ALB, target groups, listeners                                                                | `${env}-optinist-lb`, `${env}-optinist-tg`                         |
+| **Database**       | RDS MySQL, RDS Proxy, subnet group                                                           | `${env}-optinist-rds-*`                                            |
+| **Storage**        | S3 bucket, EFS filesystem                                                                    | `${env}-optinist-app-storage`, `${env}-optinist-cloud-snmk-volume` |
+| **Lambda**         | 5 functions (premium-manager, free-manager, common-user-manager, free-cleanup, cost-tracker) | `${env}-premium-manager`, `${env}-free-manager`, etc.              |
+| **Secrets**        | 5 Secrets Manager secrets (firebase, database, app, stripe config)                           | `${env}-optinist/firebase/config`, etc.                            |
+| **Monitoring**     | CloudWatch log groups, alarms, dashboard                                                     | `${env}-optinist-*`                                                |
+| **DNS/SSL**        | Route53 zone, ACM certificate (production only)                                              | `araya-optinist.com`                                               |
+| **IAM**            | Task execution role, task role, instance role, IAM user, Lambda roles                        | `${env}-optinist-*`, `${env}-*`                                    |
+| **Background**     | Background ECS service, launch template, ASG                                                 | `${env}-optinist-background-*`                                     |
 
 ---
 
@@ -564,12 +567,12 @@ Before first `terraform apply` on development, replace all `<PLACEHOLDER>` value
 
 ### When to Create / Destroy
 
-| Scenario | Action |
-|----------|--------|
-| Testing a new release | `terraform apply` → test → `terraform destroy` |
-| PR review with infra changes | Create, test, destroy |
-| Long-running QA | Keep alive, destroy when done |
-| Cost concern | Always destroy when not in use |
+| Scenario                     | Action                                         |
+| ---------------------------- | ---------------------------------------------- |
+| Testing a new release        | `terraform apply` → test → `terraform destroy` |
+| PR review with infra changes | Create, test, destroy                          |
+| Long-running QA              | Keep alive, destroy when done                  |
+| Cost concern                 | Always destroy when not in use                 |
 
 ### Cost Considerations
 
