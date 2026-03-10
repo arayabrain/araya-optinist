@@ -3,12 +3,12 @@
 # =================
 
 resource "aws_vpc" "main" {
-  cidr_block           = "10.1.0.0/16"
+  cidr_block           = var.vpc_cidr
   enable_dns_hostnames = true
   enable_dns_support   = true
 
   tags = {
-    Name = "subscr-optinist-cloud-vpc"
+    Name = "${local.env_prefix}-cloud-vpc"
   }
 }
 
@@ -17,51 +17,51 @@ resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
   tags = {
-    Name = "subscr-optinist-cloud-igw"
+    Name = "${local.env_prefix}-cloud-igw"
   }
 }
 
 # Public Subnets
 resource "aws_subnet" "public1" {
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.1.0.0/20"
-  availability_zone       = "ap-northeast-1a"
+  cidr_block              = cidrsubnet(var.vpc_cidr, 4, 0)
+  availability_zone       = "${var.aws_region}a"
   map_public_ip_on_launch = true
 
   tags = {
-    Name = "subscr-optinist-cloud-subnet-public1-ap-northeast-1a"
+    Name = "${local.env_prefix}-cloud-subnet-public1-${var.aws_region}a"
   }
 }
 
 resource "aws_subnet" "public2" {
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.1.16.0/20"
-  availability_zone       = "ap-northeast-1c"
+  cidr_block              = cidrsubnet(var.vpc_cidr, 4, 1)
+  availability_zone       = "${var.aws_region}c"
   map_public_ip_on_launch = true
 
   tags = {
-    Name = "subscr-optinist-cloud-subnet-public2-ap-northeast-1c"
+    Name = "${local.env_prefix}-cloud-subnet-public2-${var.aws_region}c"
   }
 }
 
 # Private Subnets
 resource "aws_subnet" "private1" {
   vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.1.128.0/20"
-  availability_zone = "ap-northeast-1a"
+  cidr_block        = cidrsubnet(var.vpc_cidr, 4, 8)
+  availability_zone = "${var.aws_region}a"
 
   tags = {
-    Name = "subscr-optinist-cloud-subnet-private1-ap-northeast-1a"
+    Name = "${local.env_prefix}-cloud-subnet-private1-${var.aws_region}a"
   }
 }
 
 resource "aws_subnet" "private2" {
   vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.1.144.0/20"
-  availability_zone = "ap-northeast-1c"
+  cidr_block        = cidrsubnet(var.vpc_cidr, 4, 9)
+  availability_zone = "${var.aws_region}c"
 
   tags = {
-    Name = "subscr-optinist-cloud-subnet-private2-ap-northeast-1c"
+    Name = "${local.env_prefix}-cloud-subnet-private2-${var.aws_region}c"
   }
 }
 
@@ -103,12 +103,13 @@ resource "aws_instance" "nat" {
               EOF
 
   tags = {
-    Name = "subscr-optinist-nat-instance"
+    Name = "${local.env_prefix}-nat-instance"
   }
 }
 
-# Second NAT Instance in AZ 1c
+# Second NAT Instance in AZ 1c (optional, for HA)
 resource "aws_instance" "nat2" {
+  count                  = var.enable_second_nat ? 1 : 0
   ami                    = data.aws_ami.nat_instance.id
   instance_type          = "t3.nano"
   subnet_id              = aws_subnet.public2.id
@@ -143,7 +144,7 @@ resource "aws_instance" "nat2" {
               EOF
 
   tags = {
-    Name = "subscr-optinist-nat-instance-2"
+    Name = "${local.env_prefix}-nat-instance-2"
   }
 }
 
@@ -153,17 +154,18 @@ resource "aws_eip" "nat_instance" {
   instance = aws_instance.nat.id
 
   tags = {
-    Name = "subscr-optinist-nat-instance-eip"
+    Name = "${local.env_prefix}-nat-instance-eip"
   }
 }
 
-# Elastic IP for NAT Instance 2
+# Elastic IP for NAT Instance 2 (optional)
 resource "aws_eip" "nat_instance2" {
+  count    = var.enable_second_nat ? 1 : 0
   domain   = "vpc"
-  instance = aws_instance.nat2.id
+  instance = aws_instance.nat2[0].id
 
   tags = {
-    Name = "subscr-optinist-nat-instance-2-eip"
+    Name = "${local.env_prefix}-nat-instance-2-eip"
   }
 }
 
@@ -203,11 +205,12 @@ data "aws_network_interface" "nat" {
 }
 
 data "aws_network_interface" "nat2" {
+  count      = var.enable_second_nat ? 1 : 0
   depends_on = [aws_instance.nat2]
 
   filter {
     name   = "attachment.instance-id"
-    values = [aws_instance.nat2.id]
+    values = [aws_instance.nat2[0].id]
   }
 
   filter {
@@ -228,7 +231,7 @@ resource "aws_route_table" "public" {
   }
 
   tags = {
-    Name = "subscr-optinist-cloud-rtb-public"
+    Name = "${local.env_prefix}-cloud-rtb-public"
   }
 }
 
@@ -241,7 +244,7 @@ resource "aws_route_table" "private1" {
   }
 
   tags = {
-    Name = "subscr-optinist-cloud-rtb-private1-ap-northeast-1a"
+    Name = "${local.env_prefix}-cloud-rtb-private1-${var.aws_region}a"
   }
 }
 
@@ -250,11 +253,11 @@ resource "aws_route_table" "private2" {
 
   route {
     cidr_block           = "0.0.0.0/0"
-    network_interface_id = data.aws_network_interface.nat2.id
+    network_interface_id = var.enable_second_nat ? data.aws_network_interface.nat2[0].id : data.aws_network_interface.nat.id
   }
 
   tags = {
-    Name = "subscr-optinist-cloud-rtb-private2-ap-northeast-1c"
+    Name = "${local.env_prefix}-cloud-rtb-private2-${var.aws_region}c"
   }
 }
 
@@ -292,10 +295,10 @@ resource "aws_vpc_endpoint_route_table_association" "private2_s3" {
 # S3 VPC Endpoint
 resource "aws_vpc_endpoint" "s3" {
   vpc_id       = aws_vpc.main.id
-  service_name = "com.amazonaws.ap-northeast-1.s3"
+  service_name = "com.amazonaws.${var.aws_region}.s3"
 
   tags = {
-    Name = "subscr-optinist-cloud-vpce-s3"
+    Name = "${local.env_prefix}-cloud-vpce-s3"
   }
 }
 
@@ -303,52 +306,52 @@ resource "aws_vpc_endpoint" "s3" {
 # ECR API endpoint
 resource "aws_vpc_endpoint" "ecr_api" {
   vpc_id             = aws_vpc.main.id
-  service_name       = "com.amazonaws.ap-northeast-1.ecr.api"
+  service_name       = "com.amazonaws.${var.aws_region}.ecr.api"
   vpc_endpoint_type  = "Interface"
   subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id]
   security_group_ids = [aws_security_group.vpc_endpoints.id]
 
   tags = {
-    Name = "subscr-optinist-ecr-api-endpoint"
+    Name = "${local.env_prefix}-ecr-api-endpoint"
   }
 }
 
 # ECR Docker endpoint
 resource "aws_vpc_endpoint" "ecr_dkr" {
   vpc_id             = aws_vpc.main.id
-  service_name       = "com.amazonaws.ap-northeast-1.ecr.dkr"
+  service_name       = "com.amazonaws.${var.aws_region}.ecr.dkr"
   vpc_endpoint_type  = "Interface"
   subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id]
   security_group_ids = [aws_security_group.vpc_endpoints.id]
 
   tags = {
-    Name = "subscr-optinist-ecr-dkr-endpoint"
+    Name = "${local.env_prefix}-ecr-dkr-endpoint"
   }
 }
 
 # CloudWatch Logs endpoint
 resource "aws_vpc_endpoint" "logs" {
   vpc_id             = aws_vpc.main.id
-  service_name       = "com.amazonaws.ap-northeast-1.logs"
+  service_name       = "com.amazonaws.${var.aws_region}.logs"
   vpc_endpoint_type  = "Interface"
   subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id]
   security_group_ids = [aws_security_group.vpc_endpoints.id]
 
   tags = {
-    Name = "subscr-optinist-logs-endpoint"
+    Name = "${local.env_prefix}-logs-endpoint"
   }
 }
 
 # Secrets Manager VPC Endpoint (required for RDS Proxy)
 resource "aws_vpc_endpoint" "secretsmanager" {
   vpc_id             = aws_vpc.main.id
-  service_name       = "com.amazonaws.ap-northeast-1.secretsmanager"
+  service_name       = "com.amazonaws.${var.aws_region}.secretsmanager"
   vpc_endpoint_type  = "Interface"
   subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id]
   security_group_ids = [aws_security_group.vpc_endpoints.id]
 
   tags = {
-    Name = "subscr-optinist-secretsmanager-endpoint"
+    Name = "${local.env_prefix}-secretsmanager-endpoint"
   }
 }
 
@@ -358,12 +361,12 @@ resource "aws_vpc_endpoint" "secretsmanager" {
 # =================================
 
 resource "aws_s3_bucket" "app_storage" {
-  bucket        = "subscr-optinist-app-storage"
+  bucket        = "${local.env_prefix}-app-storage"
   force_destroy = true
 
   tags = {
-    Name        = "Subscr OptiNiSt Application Storage"
-    Environment = "Production"
+    Name            = "${local.env_prefix} Application Storage"
+    EnvironmentType = var.environment == "subscr" ? "Production" : "Development"
   }
 }
 
@@ -412,13 +415,13 @@ resource "aws_s3_bucket_public_access_block" "app_storage" {
 # EFS File System
 # ===============
 resource "aws_efs_file_system" "snmk" {
-  creation_token = "subscr-optinist-cloud-snmk-volume"
+  creation_token = "${local.env_prefix}-cloud-snmk-volume"
 
   performance_mode = "generalPurpose"
   throughput_mode  = "bursting"
 
   tags = {
-    Name = "subscr-optinist-cloud-snmk-volume"
+    Name = "${local.env_prefix}-cloud-snmk-volume"
   }
 }
 
@@ -449,7 +452,7 @@ resource "aws_efs_access_point" "snmk" {
   }
 
   tags = {
-    Name = "subscr-optinist-cloud-efs-ap"
+    Name = "${local.env_prefix}-cloud-efs-ap"
   }
 }
 
@@ -460,7 +463,7 @@ resource "aws_efs_access_point" "snmk" {
 # DynamoDB Table for Terraform State Locking
 # This table must be created first before enabling locking in the backend config above
 resource "aws_dynamodb_table" "terraform_state_lock" {
-  name         = "terraform-state-lock"
+  name         = "${var.environment}-terraform-state-lock"
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "LockID"
 
@@ -471,7 +474,6 @@ resource "aws_dynamodb_table" "terraform_state_lock" {
 
   tags = {
     Name        = "Terraform State Lock Table"
-    ManagedBy   = "Terraform"
     Description = "Prevents concurrent terraform operations"
   }
 }
@@ -480,21 +482,21 @@ resource "aws_dynamodb_table" "terraform_state_lock" {
 # RDS
 # ===
 resource "aws_db_subnet_group" "main" {
-  name = "subscr-optinist-rds-subnet-group"
+  name = "${local.env_prefix}-rds-subnet-group"
   subnet_ids = [
     aws_subnet.private1.id,
     aws_subnet.private2.id
   ]
 
   tags = {
-    Name = "subscr-optinist-rds-subnet-group"
+    Name = "${local.env_prefix}-rds-subnet-group"
   }
 }
 
 # RDS Parameter Group (Custom)
 resource "aws_db_parameter_group" "main" {
   family = "mysql8.0"
-  name   = "subscr-optinist-ssl"
+  name   = "${local.env_prefix}-ssl"
 
   parameter {
     name  = "require_secure_transport"
@@ -511,12 +513,12 @@ resource "aws_db_parameter_group" "main" {
   }
 
   tags = {
-    Name = "subscr-optinist-ssl"
+    Name = "${local.env_prefix}-ssl"
   }
 }
 
 resource "aws_db_instance" "main" {
-  identifier                      = "subscr-optinist-cloud-rds"
+  identifier                      = "${local.env_prefix}-cloud-rds"
   allocated_storage               = 20
   storage_type                    = "gp3"
   engine                          = "mysql"
@@ -540,13 +542,13 @@ resource "aws_db_instance" "main" {
   storage_encrypted               = true
 
   tags = {
-    Name = "subscr-optinist-cloud-rds"
+    Name = "${local.env_prefix}-cloud-rds"
   }
 }
 
 # CloudWatch Log Group for RDS Proxy
 resource "aws_cloudwatch_log_group" "rds_proxy_logs" {
-  name              = "/aws/rds/proxy/subscr-optinist-rds-proxy"
+  name              = "/aws/rds/proxy/${local.env_prefix}-rds-proxy"
   retention_in_days = 30
 
   tags = {
@@ -556,7 +558,7 @@ resource "aws_cloudwatch_log_group" "rds_proxy_logs" {
 
 # CloudWatch Log Group for RDS Error Logs
 resource "aws_cloudwatch_log_group" "rds_error_logs" {
-  name              = "/aws/rds/instance/subscr-optinist-cloud-rds/error"
+  name              = "/aws/rds/instance/${local.env_prefix}-cloud-rds/error"
   retention_in_days = 90
 
   tags = {
@@ -565,7 +567,7 @@ resource "aws_cloudwatch_log_group" "rds_error_logs" {
 }
 
 resource "aws_db_proxy" "main" {
-  name          = "subscr-optinist-rds-proxy"
+  name          = "${local.env_prefix}-rds-proxy"
   engine_family = "MYSQL"
   auth {
     auth_scheme               = "SECRETS"
@@ -579,7 +581,7 @@ resource "aws_db_proxy" "main" {
   require_tls            = true
 
   tags = {
-    Name = "subscr-optinist-rds-proxy"
+    Name = "${local.env_prefix}-rds-proxy"
   }
 }
 
@@ -601,7 +603,7 @@ resource "aws_db_proxy_target" "main" {
 
 # IAM role for RDS Proxy
 resource "aws_iam_role" "rds_proxy" {
-  name = "subscr-rds-proxy-role"
+  name = "${var.environment}-rds-proxy-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

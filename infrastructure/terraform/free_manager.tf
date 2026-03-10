@@ -44,7 +44,7 @@ data "archive_file" "free_manager_zip" {
 
 resource "aws_lambda_function" "free_manager" {
   filename      = "${path.module}/free_manager.py.zip"
-  function_name = "subscr-free-manager"
+  function_name = "${var.environment}-free-manager"
   role          = aws_iam_role.free_manager_lambda.arn
   handler       = "free_manager.handler"
   runtime       = "python3.11"
@@ -102,7 +102,7 @@ resource "aws_lambda_function" "free_manager" {
 # ===========================
 
 resource "aws_iam_role" "free_manager_lambda" {
-  name = "subscr-free-manager-lambda-role"
+  name = "${var.environment}-free-manager-lambda-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -131,7 +131,7 @@ resource "aws_iam_role_policy_attachment" "free_manager_lambda_basic" {
 
 # Custom policy for ECS, CloudWatch, and EC2 access
 resource "aws_iam_role_policy" "free_manager_lambda_policy" {
-  name = "subscr-free-manager-lambda-policy"
+  name = "${var.environment}-free-manager-lambda-policy"
   role = aws_iam_role.free_manager_lambda.id
 
   policy = jsonencode({
@@ -208,7 +208,7 @@ resource "aws_iam_role_policy" "free_manager_lambda_policy" {
 # ===========================
 
 resource "aws_cloudwatch_log_group" "free_manager_logs" {
-  name              = "/aws/lambda/subscr-free-manager"
+  name              = "/aws/lambda/${var.environment}-free-manager"
   retention_in_days = 30
 
   tags = {
@@ -223,7 +223,7 @@ resource "aws_cloudwatch_log_group" "free_manager_logs" {
 
 # CloudWatch Events Rule (every 5 minutes)
 resource "aws_cloudwatch_event_rule" "free_manager_schedule" {
-  name                = "subscr-free-manager-schedule"
+  name                = "${var.environment}-free-manager-schedule"
   description         = "Trigger free manager every 5 minutes for monitoring"
   schedule_expression = "rate(5 minutes)"
   state               = "ENABLED"
@@ -265,7 +265,7 @@ resource "aws_lambda_permission" "allow_cloudwatch_free_manager" {
 
 # EventBridge rule for ASG scaling events
 resource "aws_cloudwatch_event_rule" "free_manager_asg_events" {
-  name        = "subscr-free-manager-asg-events"
+  name        = "${var.environment}-free-manager-asg-events"
   description = "Trigger free manager on ASG lifecycle events for immediate ECS sync"
 
   event_pattern = jsonencode({
@@ -339,7 +339,7 @@ data "archive_file" "free_cleanup_zip" {
 
 resource "aws_lambda_function" "free_cleanup" {
   filename      = "${path.module}/free_cleanup.py.zip"
-  function_name = "subscr-free-cleanup"
+  function_name = "${var.environment}-free-cleanup"
   role          = aws_iam_role.free_manager_lambda.arn
   handler       = "free_cleanup.handler"
   runtime       = "python3.11"
@@ -378,7 +378,7 @@ resource "aws_lambda_function" "free_cleanup" {
 
 # CloudWatch Log Group for Free Cleanup
 resource "aws_cloudwatch_log_group" "free_cleanup_logs" {
-  name              = "/aws/lambda/subscr-free-cleanup"
+  name              = "/aws/lambda/${var.environment}-free-cleanup"
   retention_in_days = 30
 
   tags = {
