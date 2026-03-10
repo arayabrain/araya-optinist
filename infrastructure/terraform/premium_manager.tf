@@ -641,7 +641,7 @@ resource "aws_iam_role_policy_attachment" "cost_controller_lambda_vpc" {
 }
 
 resource "aws_iam_role_policy" "cost_tracker_permissions" {
-  name = "subscr-cost-tracker-permissions"
+  name = "${var.environment}-cost-tracker-permissions"
   role = aws_iam_role.cost_controller_lambda.id
 
   policy = jsonencode({

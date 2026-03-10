@@ -103,6 +103,23 @@ if ! alembic upgrade head 2>&1; then
 fi
 echo "Database migrations completed successfully"
 
+# Seed subscription plans from SUBSCRIPTION_PLANS_CONFIG env var
+if [ -n "$SUBSCRIPTION_PLANS_CONFIG" ]; then
+    echo "Seeding subscription plans..."
+    python3 /app/scripts/seed_subscription_plans.py || echo "WARNING: Subscription plan seeding failed (non-fatal)"
+else
+    echo "SUBSCRIPTION_PLANS_CONFIG not set, skipping subscription plan seeding"
+fi
+
+# Create test users from TEST_USERS_CONFIG env var
+if [ -n "$TEST_USERS_CONFIG" ]; then
+    echo "Creating test users..."
+    cd /app/scripts && python3 create_test_users.py || echo "WARNING: Test user creation failed (non-fatal)"
+    cd /app
+else
+    echo "TEST_USERS_CONFIG not set, skipping test user creation"
+fi
+
 # Verify backend configuration
 # Ensures required environment variables are set before starting the application
 echo "Host: $BACKEND_HOST"
