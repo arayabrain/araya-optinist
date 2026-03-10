@@ -24,11 +24,11 @@ class WorkflowBatchRunner:
         self.unique_id = unique_id
         self.runItem = runItem
 
-    def run_batch_workflow(self, background_tasks: BackgroundTasks):
+    async def run_batch_workflow(self, background_tasks: BackgroundTasks):
         # ------------------------------------------------------------
         # Save Batch Run Template Workflow
         # ------------------------------------------------------------
-        WorkflowRunner(
+        await WorkflowRunner(
             self.remote_bucket_name, self.workspace_id, self.unique_id, self.runItem
         ).finish_workflow_without_run()
 

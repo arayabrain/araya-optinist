@@ -288,7 +288,7 @@ async def batch_run(
 ):
     try:
         new_unique_id = WorkflowRunner.create_workflow_unique_id()
-        WorkflowBatchRunner(
+        await WorkflowBatchRunner(
             remote_bucket_name, workspace_id, new_unique_id, runItem
         ).run_batch_workflow(background_tasks)
 

@@ -1,6 +1,8 @@
 import os
 import shutil
 
+import pytest
+
 from studio.app.common.core.auth.auth_dependencies import _get_user_remote_bucket_name
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.workflow.workflow import (
@@ -52,7 +54,8 @@ edgeDict = {
 dirpath = f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}"
 
 
-def test_finish_workflow_without_run():
+@pytest.mark.asyncio
+async def test_finish_workflow_without_run():
     if os.path.exists(dirpath):
         shutil.rmtree(dirpath)
 
@@ -65,7 +68,7 @@ def test_finish_workflow_without_run():
         forceRunList=[],
     )
 
-    WorkflowRunner(
+    await WorkflowRunner(
         remote_bucket_name, workspace_id, unique_id, runItem
     ).finish_workflow_without_run()
 

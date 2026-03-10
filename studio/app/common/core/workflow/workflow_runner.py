@@ -26,6 +26,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageSimpleReader,
     RemoteStorageSimpleWriter,
+    RemoteStorageWriter,
     RemoteSyncAction,
     RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
@@ -319,7 +320,7 @@ class WorkflowRunner:
             self.user_id,
         )
 
-    def finish_workflow_without_run(
+    async def finish_workflow_without_run(
         self, status: WorkflowRunStatus = WorkflowRunStatus.SUCCESS
     ):
         """
@@ -368,6 +369,16 @@ class WorkflowRunner:
             ExperimentRecordService.regist_record_on_workflow_completed(
                 self.workspace_id, self.unique_id
             )
+
+        # Operate remote storage.
+        if RemoteStorageController.is_available():
+            # Transfer of processing result data to remote storage
+            async with RemoteStorageWriter(
+                self.remote_bucket_name, self.workspace_id, self.unique_id
+            ) as remote_storage_controller:
+                await remote_storage_controller.upload_experiment(
+                    self.workspace_id, self.unique_id
+                )
 
     def set_smk_config(self):
         rules, last_output = self.rulefile()
