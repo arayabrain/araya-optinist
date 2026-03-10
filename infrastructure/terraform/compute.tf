@@ -544,6 +544,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
 
       environment = [
         {
+          name  = "ENV_PREFIX"
+          value = var.environment
+        },
+        {
           name  = "CLOUDWATCH_LOG_GROUP"
           value = "/ecs/${local.env_prefix}-cloud-taskdef"
         },
@@ -622,6 +626,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
         {
           name  = "S3_DEFAULT_BUCKET_NAME"
           value = aws_s3_bucket.app_storage.id
+        },
+        {
+          name  = "S3_USER_BUCKET_PREFIX"
+          value = var.s3_user_bucket_prefix
         },
         {
           name  = "REMOTE_STORAGE_TYPE"
@@ -790,6 +798,10 @@ resource "aws_ecs_task_definition" "premium" {
 
       environment = [
         {
+          name  = "ENV_PREFIX"
+          value = var.environment
+        },
+        {
           name  = "CLOUDWATCH_LOG_GROUP"
           value = "/ecs/${var.environment}-premium-optinist-cloud-taskdef"
         },
@@ -872,6 +884,10 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "S3_DEFAULT_BUCKET_NAME"
           value = aws_s3_bucket.app_storage.id
+        },
+        {
+          name  = "S3_USER_BUCKET_PREFIX"
+          value = var.s3_user_bucket_prefix
         },
         {
           name  = "REMOTE_STORAGE_TYPE"

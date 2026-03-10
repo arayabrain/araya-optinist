@@ -557,6 +557,15 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
         Effect   = "Allow"
         Action   = "iam:PassRole"
         Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.environment}-*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${var.environment}-optinist/*"
+        ]
       }
     ]
   })
@@ -694,6 +703,27 @@ resource "aws_iam_role_policy" "ecs_task_metadata" {
   })
 }
 
+# Secrets Manager access for ECS tasks (cloud-startup.sh fetches Firebase config)
+resource "aws_iam_role_policy" "ecs_task_secrets_access" {
+  name = "${var.environment}-ecs-task-secrets-access"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          aws_secretsmanager_secret.firebase_config.arn,
+          aws_secretsmanager_secret.firebase_private_key.arn
+        ]
+      }
+    ]
+  })
+}
 
 # ===============
 # Security groups

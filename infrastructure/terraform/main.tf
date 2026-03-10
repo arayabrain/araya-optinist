@@ -232,6 +232,12 @@ variable "admin_storage_quota_bytes" {
   default     = 214748364800 # 200 GB
 }
 
+variable "enable_second_nat" {
+  description = "Whether to create a second NAT instance for AZ redundancy"
+  type        = bool
+  default     = true
+}
+
 variable "monthly_budget_usd" {
   description = "Monthly cost budget in USD. Alert fires when projected spend exceeds this."
   type        = number
@@ -248,6 +254,11 @@ locals {
 # =======
 # Outputs
 # =======
+output "environment" {
+  description = "Current environment name"
+  value       = var.environment
+}
+
 output "vpc_id" {
   description = "ID of the VPC"
   value       = aws_vpc.main.id

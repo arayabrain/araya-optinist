@@ -119,6 +119,10 @@ resource "aws_ecs_task_definition" "background" {
 
       environment = [
         {
+          name  = "ENV_PREFIX"
+          value = var.environment
+        },
+        {
           name  = "CLOUDWATCH_LOG_GROUP"
           value = "/ecs/${var.environment}-background-optinist-cloud-taskdef"
         },
@@ -197,6 +201,10 @@ resource "aws_ecs_task_definition" "background" {
         {
           name  = "S3_DEFAULT_BUCKET_NAME"
           value = aws_s3_bucket.app_storage.id
+        },
+        {
+          name  = "S3_USER_BUCKET_PREFIX"
+          value = var.s3_user_bucket_prefix
         },
         {
           name  = "REMOTE_STORAGE_TYPE"
@@ -388,8 +396,8 @@ resource "aws_cloudwatch_metric_alarm" "background_task_stopped" {
   statistic           = "Average"
   threshold           = "1"
   alarm_description   = "Background service task count dropped below 1 - background jobs not running"
-  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
-  ok_actions          = [aws_sns_topic.critical_alerts.arn]
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
 
   dimensions = {
     ClusterName = aws_ecs_cluster.main.name
@@ -413,8 +421,8 @@ resource "aws_cloudwatch_metric_alarm" "background_cpu_high" {
   statistic           = "Average"
   threshold           = "400" # 80% of 512 CPU units
   alarm_description   = "Background service CPU utilization is high - jobs may be delayed"
-  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
-  ok_actions          = [aws_sns_topic.critical_alerts.arn]
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
 
   dimensions = {
     ClusterName = aws_ecs_cluster.main.name
@@ -438,8 +446,8 @@ resource "aws_cloudwatch_metric_alarm" "background_memory_high" {
   statistic           = "Average"
   threshold           = "600" # ~80% of 768 MB
   alarm_description   = "Background service memory utilization is high"
-  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
-  ok_actions          = [aws_sns_topic.critical_alerts.arn]
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
 
   dimensions = {
     ClusterName = aws_ecs_cluster.main.name

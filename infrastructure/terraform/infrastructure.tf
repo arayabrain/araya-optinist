@@ -107,8 +107,9 @@ resource "aws_instance" "nat" {
   }
 }
 
-# Second NAT Instance in AZ 1c
+# Second NAT Instance in AZ 1c (optional, for HA)
 resource "aws_instance" "nat2" {
+  count                  = var.enable_second_nat ? 1 : 0
   ami                    = data.aws_ami.nat_instance.id
   instance_type          = "t3.nano"
   subnet_id              = aws_subnet.public2.id
@@ -157,10 +158,11 @@ resource "aws_eip" "nat_instance" {
   }
 }
 
-# Elastic IP for NAT Instance 2
+# Elastic IP for NAT Instance 2 (optional)
 resource "aws_eip" "nat_instance2" {
+  count    = var.enable_second_nat ? 1 : 0
   domain   = "vpc"
-  instance = aws_instance.nat2.id
+  instance = aws_instance.nat2[0].id
 
   tags = {
     Name = "${local.env_prefix}-nat-instance-2-eip"
@@ -203,11 +205,12 @@ data "aws_network_interface" "nat" {
 }
 
 data "aws_network_interface" "nat2" {
+  count      = var.enable_second_nat ? 1 : 0
   depends_on = [aws_instance.nat2]
 
   filter {
     name   = "attachment.instance-id"
-    values = [aws_instance.nat2.id]
+    values = [aws_instance.nat2[0].id]
   }
 
   filter {
@@ -250,7 +253,7 @@ resource "aws_route_table" "private2" {
 
   route {
     cidr_block           = "0.0.0.0/0"
-    network_interface_id = data.aws_network_interface.nat2.id
+    network_interface_id = var.enable_second_nat ? data.aws_network_interface.nat2[0].id : data.aws_network_interface.nat.id
   }
 
   tags = {
@@ -460,7 +463,7 @@ resource "aws_efs_access_point" "snmk" {
 # DynamoDB Table for Terraform State Locking
 # This table must be created first before enabling locking in the backend config above
 resource "aws_dynamodb_table" "terraform_state_lock" {
-  name         = "terraform-state-lock"
+  name         = "${var.environment}-terraform-state-lock"
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "LockID"
 
@@ -545,7 +548,7 @@ resource "aws_db_instance" "main" {
 
 # CloudWatch Log Group for RDS Proxy
 resource "aws_cloudwatch_log_group" "rds_proxy_logs" {
-  name              = "/aws/rds/proxy/subscr-optinist-rds-proxy"
+  name              = "/aws/rds/proxy/${local.env_prefix}-rds-proxy"
   retention_in_days = 30
 
   tags = {
@@ -555,7 +558,7 @@ resource "aws_cloudwatch_log_group" "rds_proxy_logs" {
 
 # CloudWatch Log Group for RDS Error Logs
 resource "aws_cloudwatch_log_group" "rds_error_logs" {
-  name              = "/aws/rds/instance/subscr-optinist-cloud-rds/error"
+  name              = "/aws/rds/instance/${local.env_prefix}-cloud-rds/error"
   retention_in_days = 90
 
   tags = {

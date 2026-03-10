@@ -608,7 +608,7 @@ resource "aws_lambda_function" "cost_tracker" {
 
 # CloudWatch Log Group for Cost Tracker
 resource "aws_cloudwatch_log_group" "cost_tracker_logs" {
-  name              = "/aws/lambda/subscr-cost-tracker"
+  name              = "/aws/lambda/${var.environment}-cost-tracker"
   retention_in_days = 30
 
   tags = {
@@ -715,8 +715,8 @@ resource "aws_cloudwatch_metric_alarm" "monthly_cost_high" {
   statistic           = "Maximum"
   threshold           = var.monthly_budget_usd
   alarm_description   = "Projected monthly spend exceeds budget ($${var.monthly_budget_usd})"
-  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
-  ok_actions          = [aws_sns_topic.critical_alerts.arn]
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
 
   tags = {
     Name    = "Monthly Cost Budget Alarm"
@@ -734,8 +734,8 @@ resource "aws_cloudwatch_metric_alarm" "premium_cpu_high" {
   statistic           = "Average"
   threshold           = "80"
   alarm_description   = "Premium ECS service CPU utilization is high"
-  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
-  ok_actions          = [aws_sns_topic.critical_alerts.arn]
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
 
   dimensions = {
     ServiceName = aws_ecs_service.premium.name
@@ -758,8 +758,8 @@ resource "aws_cloudwatch_metric_alarm" "premium_memory_high" {
   statistic           = "Average"
   threshold           = "85"
   alarm_description   = "Premium ECS service memory utilization is high"
-  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
-  ok_actions          = [aws_sns_topic.critical_alerts.arn]
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
 
   dimensions = {
     ServiceName = aws_ecs_service.premium.name

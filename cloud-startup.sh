@@ -9,6 +9,33 @@ export MYSQL_USER="${DB_USER}"
 export MYSQL_PASSWORD="${DB_PASSWORD}"
 export MYSQL_DATABASE="${DB_NAME}"
 
+# Fetch Firebase config from Secrets Manager (overrides files baked into Docker image)
+if [ -n "$ENV_PREFIX" ]; then
+    echo "Fetching Firebase config from Secrets Manager for environment: ${ENV_PREFIX}"
+    FIREBASE_CONFIG_DIR="/app/studio/config/auth"
+    mkdir -p "$FIREBASE_CONFIG_DIR"
+
+    FIREBASE_CONFIG=$(aws secretsmanager get-secret-value \
+        --secret-id "${ENV_PREFIX}-optinist/firebase/config" \
+        --query "SecretString" --output text --region "${AWS_DEFAULT_REGION:-ap-northeast-1}" 2>/dev/null || echo "")
+    if [ -n "$FIREBASE_CONFIG" ]; then
+        echo "$FIREBASE_CONFIG" > "$FIREBASE_CONFIG_DIR/firebase_config.json"
+        echo "Firebase config written from Secrets Manager"
+    else
+        echo "WARNING: Could not fetch Firebase config from Secrets Manager. Using defaults."
+    fi
+
+    FIREBASE_PRIVATE=$(aws secretsmanager get-secret-value \
+        --secret-id "${ENV_PREFIX}-optinist/firebase/private-key" \
+        --query "SecretString" --output text --region "${AWS_DEFAULT_REGION:-ap-northeast-1}" 2>/dev/null || echo "")
+    if [ -n "$FIREBASE_PRIVATE" ]; then
+        echo "$FIREBASE_PRIVATE" > "$FIREBASE_CONFIG_DIR/firebase_private.json"
+        echo "Firebase private key written from Secrets Manager"
+    else
+        echo "WARNING: Could not fetch Firebase private key from Secrets Manager. Using defaults."
+    fi
+fi
+
 echo 'Starting container'
 echo 'Attempting to connect to RDS'
 # Log environment variables for debugging

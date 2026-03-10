@@ -174,6 +174,54 @@ The core blocker is domain management, not cost (~$0.50/month is negligible). A 
 
 ---
 
+## How Firebase Configuration Flows
+
+Firebase config must reach both the **frontend** (React app, build-time) and **backend** (Python API, runtime). The source of truth is the `firebase_config_json` and `firebase_private_json` variables in each environment's `.tfvars` file, which Terraform stores in AWS Secrets Manager.
+
+### Config Flow Diagram
+
+```
+tfvars (firebase_config_json / firebase_private_json)
+    │
+    ▼
+Secrets Manager
+    ├── ${env}-optinist/firebase/config        (web config JSON)
+    └── ${env}-optinist/firebase/private-key   (service account JSON)
+    │
+    ├──────────────────────────┐
+    │  BUILD TIME (frontend)   │  RUNTIME (backend)
+    │                          │
+    ▼                          ▼
+ecr_build_push.sh          cloud-startup.sh
+    │                          │
+    │  Reads from Secrets      │  Reads from Secrets
+    │  Manager, injects into   │  Manager, writes to
+    │  .env.production as      │  /app/studio/config/auth/
+    │  REACT_APP_FIREBASE_*    │  firebase_config.json
+    │                          │  firebase_private.json
+    ▼                          ▼
+React app (baked into JS)  Python API (loaded at startup)
+```
+
+### Why This Is Necessary
+
+The Docker image is shared across environments (single ECR repository). Without Secrets Manager injection:
+
+- **Frontend**: The React build would use `frontend/.env` defaults, which may point to the wrong Firebase project. Since React env vars are baked into the JS bundle at build time, there is no way to change them at runtime.
+- **Backend**: The Docker image contains `studio/config/auth/firebase_config.json` and `firebase_private.json` from the source repo. `cloud-startup.sh` overwrites these files at container startup with the correct environment's config from Secrets Manager.
+
+### IAM Permissions
+
+The ECS containers use IAM user credentials (injected as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` env vars), not the ECS task role. The IAM user policy grants:
+
+```hcl
+secretsmanager:GetSecretValue → ${var.environment}-optinist/*
+```
+
+This scoping ensures the development IAM user can only read development secrets, not production secrets.
+
+---
+
 ## Environment Differences
 
 ### What Changes Between Production and Development
