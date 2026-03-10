@@ -34,7 +34,7 @@ import Popper from "@mui/material/Popper"
 import TextField from "@mui/material/TextField"
 
 import { getMyStorageAlertApi } from "api/storage/StorageAlerts"
-import { WORKSPACE_TYPE } from "const/Workspace"
+import { ENABLE_BATCH_RUN_FEATURE, WORKSPACE_TYPE } from "const/Workspace"
 import { selectFlowNodes } from "store/slice/FlowElement/FlowElementSelectors"
 import { selectInputNode } from "store/slice/InputNode/InputNodeSelectors"
 import { isBatchAnyInputNode } from "store/slice/InputNode/InputNodeUtils"
@@ -403,7 +403,7 @@ export const RunButtons = memo(function RunButtons(
       )}
 
       {/* Show Batch Run button only for batch workspaces */}
-      {isBatchWorkspace && (
+      {ENABLE_BATCH_RUN_FEATURE && isBatchWorkspace && (
         <Button
           variant="contained"
           sx={{ margin: 1 }}

@@ -47,6 +47,7 @@ import PaginationCustom from "components/common/PaginationCustom"
 import StorageUsage from "components/common/StorageUsage"
 import PopupShare from "components/Workspace/PopupShare"
 import {
+  ENABLE_BATCH_RUN_FEATURE,
   WORKSPACE_TYPE,
   WORKSPACE_TYPE_LABEL,
   WORKSPACE_TYPE_OPTIONS,
@@ -365,23 +366,25 @@ const PopupNew = ({
             helperText={error && !value?.name ? error : ""}
             variant="standard"
           />
-          <FormControl component="fieldset" sx={{ width: "100%" }}>
-            <FormLabel component="legend">Type</FormLabel>
-            <RadioGroup
-              row
-              value={value?.type ?? WORKSPACE_TYPE.NORMAL}
-              onChange={handleType}
-            >
-              {WORKSPACE_TYPE_OPTIONS.map((option) => (
-                <FormControlLabel
-                  key={option.value}
-                  value={option.value}
-                  control={<Radio />}
-                  label={option.label}
-                />
-              ))}
-            </RadioGroup>
-          </FormControl>
+          {ENABLE_BATCH_RUN_FEATURE && (
+            <FormControl component="fieldset" sx={{ width: "100%" }}>
+              <FormLabel component="legend">Type</FormLabel>
+              <RadioGroup
+                row
+                value={value?.type ?? WORKSPACE_TYPE.NORMAL}
+                onChange={handleType}
+              >
+                {WORKSPACE_TYPE_OPTIONS.map((option) => (
+                  <FormControlLabel
+                    key={option.value}
+                    value={option.value}
+                    control={<Radio />}
+                    label={option.label}
+                  />
+                ))}
+              </RadioGroup>
+            </FormControl>
+          )}
         </DialogContent>
         <DialogActions>
           <Button variant={"outlined"} onClick={handleClose}>

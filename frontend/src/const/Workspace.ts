@@ -10,6 +10,9 @@ export const WORKSPACE_TYPE_LABEL: Record<WORKSPACE_TYPE, string> = {
   [WORKSPACE_TYPE.BATCH]: "Batch",
 }
 
+export const ENABLE_BATCH_RUN_FEATURE =
+  process.env.REACT_APP_ENABLE_BATCH_RUN_FEATURE === "true"
+
 export const WORKSPACE_TYPE_OPTIONS = [
   {
     value: WORKSPACE_TYPE.NORMAL,
