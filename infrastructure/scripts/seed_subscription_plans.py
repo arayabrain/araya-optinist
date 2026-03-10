@@ -108,7 +108,7 @@ def main():
             # Check if plan already exists
             existing = db.query(SubscriptionPlans).filter_by(id=plan_id).first()
 
-            # Map tfvars fields to DB model fields (skip storage_quota_gb - not in DB model)
+            # Map tfvars fields to DB model fields
             plan_fields = {
                 "name": plan_data.get("name"),
                 "price": plan_data.get("price", 0),
