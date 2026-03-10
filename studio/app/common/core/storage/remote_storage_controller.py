@@ -766,11 +766,16 @@ class RemoteStorageController(BaseRemoteStorageController):
             # Only download input data and mark success for full syncs
             if is_full_sync:
                 # Download the input data related to the experiment data as well.
-                input_filenames = SmkUtils.get_datatypes_inputs(
-                    workspace_id, unique_id, apply_basename=True
-                )
-                for input_filename in input_filenames:
-                    await self.download_input_data(workspace_id, input_filename)
+                try:
+                    input_filenames = SmkUtils.get_datatypes_inputs(
+                        workspace_id, unique_id, apply_basename=True
+                    )
+                    for input_filename in input_filenames:
+                        await self.download_input_data(workspace_id, input_filename)
+                except (AssertionError, KeyError) as e:
+                    # snakemake.yaml may be empty or missing required keys
+                    logger.warning(f"snakemake yaml read error: {e}")
+                    pass
 
                 # update sync status file
                 RemoteSyncStatusFileUtil.create_sync_status_file_for_success(

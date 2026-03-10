@@ -388,6 +388,8 @@ resource "aws_cloudwatch_metric_alarm" "background_task_stopped" {
   statistic           = "Average"
   threshold           = "1"
   alarm_description   = "Background service task count dropped below 1 - background jobs not running"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     ClusterName = aws_ecs_cluster.main.name
@@ -411,6 +413,8 @@ resource "aws_cloudwatch_metric_alarm" "background_cpu_high" {
   statistic           = "Average"
   threshold           = "400" # 80% of 512 CPU units
   alarm_description   = "Background service CPU utilization is high - jobs may be delayed"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     ClusterName = aws_ecs_cluster.main.name
@@ -434,6 +438,8 @@ resource "aws_cloudwatch_metric_alarm" "background_memory_high" {
   statistic           = "Average"
   threshold           = "600" # ~80% of 768 MB
   alarm_description   = "Background service memory utilization is high"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     ClusterName = aws_ecs_cluster.main.name

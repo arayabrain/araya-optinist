@@ -1,6 +1,13 @@
 # Provider configuration
 provider "aws" {
   region = var.aws_region
+
+  default_tags {
+    tags = {
+      Project   = "subscr-optinist"
+      ManagedBy = "Terraform"
+    }
+  }
 }
 
 terraform {
@@ -196,6 +203,11 @@ variable "admin_storage_quota_bytes" {
   description = "Storage quota for admin user in bytes"
   type        = number
   default     = 214748364800 # 200 GB
+}
+
+variable "monthly_budget_usd" {
+  description = "Monthly cost budget in USD. Alert fires when projected spend exceeds this."
+  type        = number
 }
 
 # Data sources

@@ -3,7 +3,7 @@
 # ==================================================
 resource "aws_cloudwatch_log_group" "ecs" {
   name              = "/ecs/subscr-optinist-cloud-taskdef"
-  retention_in_days = 365
+  retention_in_days = 120
 
   tags = {
     Name = "subscr-optinist-cloud-logs"
@@ -12,11 +12,28 @@ resource "aws_cloudwatch_log_group" "ecs" {
 
 resource "aws_cloudwatch_log_group" "premium_ecs" {
   name              = "/ecs/subscr-premium-optinist-cloud-taskdef"
-  retention_in_days = 365
+  retention_in_days = 120
 
   tags = {
     Name = "subscr-premium-optinist-cloud-logs"
   }
+}
+
+# ==================================================
+# SNS Topic for Critical Alert Notifications
+# ==================================================
+resource "aws_sns_topic" "critical_alerts" {
+  name = "subscr-optinist-critical-alerts"
+
+  tags = {
+    Name = "OptiNiSt Critical Alerts"
+  }
+}
+
+resource "aws_sns_topic_subscription" "critical_alerts_email" {
+  topic_arn = aws_sns_topic.critical_alerts.arn
+  protocol  = "email"
+  endpoint  = "support@araya-optinist.com"
 }
 
 resource "aws_cloudwatch_metric_alarm" "cpu_high" {
@@ -113,6 +130,8 @@ resource "aws_cloudwatch_metric_alarm" "load_average_high" {
   statistic           = "Average"
   threshold           = "80"
   alarm_description   = "EC2 CPU utilization is high"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.main.name
@@ -132,6 +151,8 @@ resource "aws_cloudwatch_metric_alarm" "high_iowait" {
   statistic           = "Average"
   threshold           = "30"
   alarm_description   = "High I/O wait time detected"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.main.name
@@ -151,6 +172,8 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
   statistic           = "Average"
   threshold           = "80"
   alarm_description   = "RDS CPU utilization is high"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     DBInstanceIdentifier = aws_db_instance.main.id
@@ -167,6 +190,8 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
   statistic           = "Average"
   threshold           = "80"
   alarm_description   = "RDS connection count is high"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     DBInstanceIdentifier = aws_db_instance.main.id
@@ -183,6 +208,8 @@ resource "aws_cloudwatch_metric_alarm" "rds_storage_low" {
   statistic           = "Average"
   threshold           = "10737418240"
   alarm_description   = "RDS free storage space is low"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     DBInstanceIdentifier = aws_db_instance.main.id
@@ -202,6 +229,8 @@ resource "aws_cloudwatch_metric_alarm" "efs_burst_credit_balance" {
   statistic           = "Average"
   threshold           = "1000000000000"
   alarm_description   = "EFS burst credits running low"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     FileSystemId = aws_efs_file_system.snmk.id
@@ -218,6 +247,8 @@ resource "aws_cloudwatch_metric_alarm" "efs_throughput_high" {
   statistic           = "Average"
   threshold           = "80"
   alarm_description   = "EFS approaching I/O limit"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     FileSystemId = aws_efs_file_system.snmk.id
@@ -237,6 +268,8 @@ resource "aws_cloudwatch_metric_alarm" "alb_5xx_errors" {
   statistic           = "Sum"
   threshold           = "10"
   alarm_description   = "ALB target 5XX errors exceeded threshold"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     LoadBalancer = aws_lb.autoscaling.arn_suffix
@@ -253,6 +286,8 @@ resource "aws_cloudwatch_metric_alarm" "alb_response_time_high" {
   statistic           = "Average"
   threshold           = "5"
   alarm_description   = "ALB response time is too high"
+  alarm_actions       = [aws_sns_topic.critical_alerts.arn]
+  ok_actions          = [aws_sns_topic.critical_alerts.arn]
 
   dimensions = {
     LoadBalancer = aws_lb.autoscaling.arn_suffix
@@ -355,12 +390,12 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["AWS/Billing", "EstimatedCharges", "Currency", "USD", "ServiceName", "AmazonEC2", { "label" : "EC2 Costs" }],
-            ["AWS/Billing", "EstimatedCharges", "Currency", "USD", "ServiceName", "AmazonECS", { "label" : "ECS Costs" }],
-            ["AWS/Billing", "EstimatedCharges", "Currency", "USD", "ServiceName", "AmazonElasticLoadBalancing", { "label" : "ALB Costs" }],
+            ["Optinist/CostTracking", "ActualMonthToDateSpend", { "label" : "Actual MTD Spend ($)", "yAxis" : "left" }],
+            ["Optinist/CostTracking", "ExpectedMonthlyBudget", { "label" : "Expected Budget ($)", "yAxis" : "left" }],
             ["Optinist/CostTracking", "PremiumInstanceCount", { "label" : "Premium Instances", "yAxis" : "right" }],
             ["Optinist/CostTracking", "FreeInstanceCount", { "label" : "Free Tier Instances", "yAxis" : "right" }],
-            ["Optinist/CostTracking", "PremiumUtilization", { "label" : "Premium Utilization %", "yAxis" : "right" }]
+            ["Optinist/CostTracking", "ActivePremiumUsers", { "label" : "Active Premium Users", "yAxis" : "right" }],
+            ["Optinist/CostTracking", "ActiveFreeUsers", { "label" : "Active Free Users", "yAxis" : "right" }]
           ]
           view    = "timeSeries"
           stacked = false
@@ -368,6 +403,16 @@ resource "aws_cloudwatch_dashboard" "main" {
           title   = "Cost Tracking & Instance Counts"
           period  = 3600
           stat    = "Maximum"
+          yAxis = {
+            left = {
+              label = "USD"
+              min   = 0
+            }
+            right = {
+              label = "Count"
+              min   = 0
+            }
+          }
         }
       },
       # Row 3: Load Balancer Performance
@@ -659,7 +704,7 @@ resource "aws_cloudwatch_dashboard" "main" {
             aws_cloudwatch_metric_alarm.background_cpu_high.arn,
             aws_cloudwatch_metric_alarm.background_memory_high.arn,
             # Premium Tier Alarms
-            aws_cloudwatch_metric_alarm.premium_cost_high.arn,
+            aws_cloudwatch_metric_alarm.monthly_cost_high.arn,
             aws_cloudwatch_metric_alarm.premium_cpu_high.arn,
             aws_cloudwatch_metric_alarm.premium_memory_high.arn,
             # Autoscaling Alarms
