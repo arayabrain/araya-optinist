@@ -349,10 +349,12 @@ class MockStorageController(BaseRemoteStorageController):
 
             create_directory(experiment_remote_path)
 
-            # copy target files
+            # copy target files (preserving subdirectory structure)
             for target_file in target_files:
-                target_file = f"{experiment_local_path}/{target_file}"
-                shutil.copy(target_file, experiment_remote_path)
+                source_path = f"{experiment_local_path}/{target_file}"
+                dest_path = f"{experiment_remote_path}/{target_file}"
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                shutil.copy(source_path, dest_path)
 
         else:  # Target all files.
             logger.debug(
