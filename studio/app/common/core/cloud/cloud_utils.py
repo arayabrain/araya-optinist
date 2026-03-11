@@ -1,6 +1,7 @@
 """
 Cloud utilities for user context and subscription management.
 """
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -97,7 +98,10 @@ async def _ensure_user_bucket_exists_impl(
 
     # Generate new bucket name if not exists
     if not bucket_name:
-        bucket_name = RemoteStorageController.create_user_bucket_name(id=user_id)
+        prefix = os.environ.get("S3_USER_BUCKET_PREFIX", "optinist-user")
+        bucket_name = RemoteStorageController.create_user_bucket_name(
+            id=user_id, prefix=prefix
+        )
         logger.info(f"Generated new bucket name for user {user_id}: {bucket_name}")
 
     # Create bucket (idempotent - will succeed if already exists)

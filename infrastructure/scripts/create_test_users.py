@@ -18,7 +18,11 @@ from datetime import timedelta
 from pathlib import Path
 
 # Add the project root directory to the Python path
-project_root = Path(__file__).parent.parent.parent
+# In Docker: /app/scripts/ -> parent.parent = /app
+# Locally: <repo>/infrastructure/scripts/ -> parent.parent.parent = <repo>
+project_root = Path(__file__).parent.parent
+if not (project_root / "studio").exists():
+    project_root = project_root.parent
 sys.path.insert(0, str(project_root))
 
 # Import after path modification to avoid E402 linting errors
@@ -139,7 +143,10 @@ async def create_test_user_in_db(db, user_data, organization_id):
 
     # Create remote storage bucket (S3 folder) - same as in create_user
     if RemoteStorageController.is_available():
-        new_bucket_name = RemoteStorageController.create_user_bucket_name(id=user_db.id)
+        prefix = os.environ.get("S3_USER_BUCKET_PREFIX", "optinist-user")
+        new_bucket_name = RemoteStorageController.create_user_bucket_name(
+            id=user_db.id, prefix=prefix
+        )
 
         async with RemoteStorageSimpleWriter(
             new_bucket_name

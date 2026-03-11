@@ -77,7 +77,7 @@ resource "aws_s3_object" "app_setup_script" {
 
 # SSM document to run setup script
 resource "aws_ssm_document" "app_setup" {
-  name            = "subscr-optinist-app-setup"
+  name            = "${local.env_prefix}-app-setup"
   document_type   = "Command"
   document_format = "YAML"
 
@@ -106,7 +106,7 @@ resource "aws_ssm_document" "app_setup" {
           timeoutSeconds = "3600"
           runCommand = [
             "chmod +x /tmp/app_setup.sh",
-            "/tmp/app_setup.sh"
+            "ENV_PREFIX=${var.environment} /tmp/app_setup.sh"
           ]
         }
       }
