@@ -549,6 +549,53 @@ class CheckoutService:
 
                     db.commit()
 
+                    # Set default payment method from the recovered subscription
+                    try:
+                        payment_method_id = None
+
+                        # Try getting payment method from the subscription
+                        if stripe_sub.default_payment_method:
+                            payment_method_id = stripe_sub.default_payment_method
+                        else:
+                            # Fallback: get the most recent payment method
+                            # attached to the customer
+                            for pm_type in [
+                                PAYMENT_METHOD_TYPE_CARD,
+                                PAYMENT_METHOD_TYPE_LINK,
+                            ]:
+                                payment_methods = stripe.PaymentMethod.list(
+                                    customer=customer_id, type=pm_type, limit=1
+                                )
+                                if payment_methods.data:
+                                    payment_method_id = (
+                                        payment_methods.data[0].id
+                                    )
+                                    break
+
+                        if payment_method_id:
+                            stripe.Customer.modify(
+                                customer_id,
+                                invoice_settings={
+                                    "default_payment_method": payment_method_id
+                                },
+                            )
+                            logger.info(
+                                f"Recovery: Set payment method "
+                                f"{payment_method_id} as default "
+                                f"for customer {customer_id}"
+                            )
+                        else:
+                            logger.warning(
+                                f"Recovery: No payment method found for "
+                                f"customer {customer_id}"
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"Recovery: Failed to set default payment "
+                            f"method for customer {customer_id}: {str(e)}"
+                        )
+                        # Non-critical, continue with recovery
+
                     # Invalidate cache
                     try:
                         from studio.app.common.core.middleware.secure_routing_middleware import (  # noqa: E501
@@ -659,8 +706,10 @@ class CheckoutService:
                         raise HTTPException(
                             status_code=409,
                             detail=(
-                                "You already have an active subscription. "
-                                "It has been synced to your account."
+                                "You are already a premium user. "
+                                "Due to a temporary system issue, your "
+                                "subscription was not reflected in your "
+                                "account. It has now been restored."
                             ),
                         )
 
@@ -738,10 +787,7 @@ class CheckoutService:
                 )
 
         except HTTPException:
-            raise HTTPException(
-                status_code=500,
-                detail=("Error processing handle chekckout session request"),
-            )
+            raise
         except Exception as e:
             raise HTTPException(
                 status_code=500, detail=f"Internal server error: {str(e)}"
