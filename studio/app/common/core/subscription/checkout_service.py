@@ -567,9 +567,7 @@ class CheckoutService:
                                     customer=customer_id, type=pm_type, limit=1
                                 )
                                 if payment_methods.data:
-                                    payment_method_id = (
-                                        payment_methods.data[0].id
-                                    )
+                                    payment_method_id = payment_methods.data[0].id
                                     break
 
                         if payment_method_id:
