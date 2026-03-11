@@ -12,6 +12,7 @@ from studio.app.common.schemas.users import (
     UserCreate,
     UserCreateResponse,
     UserSearchOptions,
+    UserSubscriptionUpdate,
     UserUpdate,
 )
 
@@ -64,6 +65,18 @@ async def update_user(
     current_admin: User = Depends(get_admin_user),
 ):
     return await crud_users.update_user(
+        db, user_id, data, organization_id=current_admin.organization.id
+    )
+
+
+@router.put("/{user_id}/subscription", response_model=User)
+async def update_user_subscription(
+    user_id: int,
+    data: UserSubscriptionUpdate,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_admin_user),
+):
+    return await crud_users.update_user_subscription_admin(
         db, user_id, data, organization_id=current_admin.organization.id
     )
 

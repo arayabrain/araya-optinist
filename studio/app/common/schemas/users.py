@@ -47,6 +47,7 @@ class User(BaseModel):
     storage_usage_bytes: Optional[int] = None
     storage_quota_bytes: Optional[int] = None
     storage_usage_percent: Optional[float] = None
+    subscription_expiration: Optional[datetime] = None
 
     @property
     def is_admin(self) -> bool:
@@ -92,6 +93,12 @@ class UserUpdate(BaseModel):
     email: Optional[EmailStr]
     name: str
     role_id: int
+
+
+class UserSubscriptionUpdate(BaseModel):
+    plan_id: int
+    expiration: datetime
+    storage_quota_bytes: int
 
 
 class SelfUserUpdate(BaseModel):

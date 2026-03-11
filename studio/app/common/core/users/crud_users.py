@@ -51,6 +51,7 @@ from studio.app.common.schemas.users import (
     UserPasswordUpdate,
     UserRole,
     UserSearchOptions,
+    UserSubscriptionUpdate,
     UserUpdate,
 )
 
@@ -107,6 +108,8 @@ def _transform_user_row(item) -> UserModel:
     user.__dict__["storage_usage_percent"] = round(
         (storage_usage_bytes or 0) / (storage_quota_bytes or 1) * 100, 2
     )
+
+    user.__dict__["subscription_expiration"] = subscription_expiration
 
     # Calculate subscription status and days remaining
     now = get_current_datetime()
@@ -517,6 +520,65 @@ async def update_user(
     except AssertionError as e:
         logger.error(e, exc_info=True)
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(e, exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+async def update_user_subscription_admin(
+    db: Session,
+    user_id: int,
+    data: UserSubscriptionUpdate,
+    organization_id: int,
+) -> User:
+    """Admin-only: directly update a user's subscription plan, expiration, and storage quota.
+    This bypasses Stripe and modifies the database directly."""
+    try:
+        user_db = (
+            db.query(UserModel)
+            .filter(
+                UserModel.active.is_(True),
+                UserModel.id == user_id,
+                UserModel.organization_id == organization_id,
+            )
+            .first()
+        )
+        if user_db is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        if data.plan_id not in (SubscriptionPlanIds.FREE, SubscriptionPlanIds.PREMIUM):
+            raise HTTPException(
+                status_code=400, detail=f"Invalid plan_id: {data.plan_id}"
+            )
+
+        subscription = (
+            db.query(UserSubscription)
+            .filter(UserSubscription.user_id == user_id)
+            .first()
+        )
+        if subscription is None:
+            raise HTTPException(
+                status_code=400, detail="User has no subscription record"
+            )
+        subscription.plan_id = data.plan_id
+        subscription.expiration = data.expiration
+
+        storage = (
+            db.query(UserStorageUsage)
+            .filter(UserStorageUsage.user_id == user_id)
+            .first()
+        )
+        if storage is None:
+            raise HTTPException(
+                status_code=400, detail="User has no storage record"
+            )
+        storage.storage_quota_bytes = data.storage_quota_bytes
+
+        db.commit()
+        return await get_user_with_context(db, user_id)
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
