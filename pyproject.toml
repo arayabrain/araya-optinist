@@ -163,5 +163,5 @@ markers = [
 ]
 
 [tool.codespell]
-skip = './frontend/build,./frontend/node_modules,./docs/_build,*.lock,*log,*.egg-info'
+skip = './dist,./node_modules,./frontend/build,./frontend/node_modules,./frontend/package-lock.json,./frontend/playwright-report,./infrastructure/terraform/*_package,./docs/_build,*.lock,*log,*.egg-info'
 ignore-words = '.codespellignore'

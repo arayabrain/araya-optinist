@@ -8,5 +8,3 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: codespell-project/actions-codespell@v2
-        with:
-          skip: "./dist,./frontend/node_modules,./frontend/package-lock.json,./frontend/playwright-report,./logs"

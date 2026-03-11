@@ -94,7 +94,7 @@ format:
 	black studio *.py
 	isort studio *.py
 	flake8 studio *.py
-	codespell --skip="./dist,./frontend/node_modules,./frontend/package-lock.json,./frontend/playwright-report,./logs"
+	codespell
 
 .PHONY: docs
 docs:
