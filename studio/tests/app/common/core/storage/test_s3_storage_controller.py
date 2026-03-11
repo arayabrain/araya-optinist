@@ -8,6 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentNotFoundError,
+    RemoteExperimentSyncMode,
+)
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 
 
@@ -72,8 +76,8 @@ class TestS3StorageControllerDownloadExperiment:
         self.controller = S3StorageController("test-bucket")
 
     @pytest.mark.asyncio
-    async def test_download_experiment_empty_s3_returns_false(self):
-        """Returns False when S3 prefix has no objects"""
+    async def test_download_experiment_empty_s3_raises_not_found(self):
+        """Raises RemoteExperimentNotFoundError when S3 prefix has no objects"""
         mock_client = AsyncMock()
         mock_client.list_objects_v2.return_value = {"KeyCount": 0}
         mock_client.__aenter__.return_value = mock_client
@@ -84,9 +88,8 @@ class TestS3StorageControllerDownloadExperiment:
             "_S3StorageController__get_s3_client",
             return_value=mock_client,
         ):
-            result = await self.controller.download_experiment("1", "exp123")
-
-        assert result is False
+            with pytest.raises(RemoteExperimentNotFoundError):
+                await self.controller.download_experiment("1", "exp123")
 
     @pytest.mark.asyncio
     async def test_download_experiment_all_mode(self):
@@ -126,7 +129,7 @@ class TestS3StorageControllerDownloadExperiment:
             mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
 
             result = await self.controller.download_experiment(
-                "1", "exp123", sync_mode="all"
+                "1", "exp123", sync_mode=RemoteExperimentSyncMode.ALL
             )
 
         assert result is True
@@ -170,7 +173,7 @@ class TestS3StorageControllerDownloadExperiment:
             mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
 
             result = await self.controller.download_experiment(
-                "1", "exp123", sync_mode="essential_only"
+                "1", "exp123", sync_mode=RemoteExperimentSyncMode.ESSENTIAL_ONLY
             )
 
         assert result is True
@@ -225,7 +228,7 @@ class TestS3StorageControllerDownloadExperiment:
             mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
 
             result = await self.controller.download_experiment(
-                "1", "exp123", sync_mode="thumbnails_only"
+                "1", "exp123", sync_mode=RemoteExperimentSyncMode.THUMBNAILS_ONLY
             )
 
         assert result is True
@@ -273,7 +276,7 @@ class TestS3StorageControllerDownloadExperiment:
             mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
 
             result = await self.controller.download_experiment(
-                "1", "exp123", sync_mode="visualization"
+                "1", "exp123", sync_mode=RemoteExperimentSyncMode.VISUALIZATION
             )
 
         assert result is True
@@ -587,3 +590,288 @@ class TestDownloadAllExperimentsMetasNoSuchBucket:
                 )
 
         assert "test-bucket" in str(exc_info.value)
+
+
+class TestValidateExperimentInS3:
+    """Tests for validate_experiment_in_s3 method"""
+
+    def setup_method(self):
+        self.controller = S3StorageController("test-bucket")
+        self.prefix = S3StorageController.make_s3_output_prefix("ws1", "uid1")
+
+    def _make_s3_client(self, responses):
+        """Create mock S3 client returning given responses."""
+        mock_client = AsyncMock()
+        if isinstance(responses, list):
+            mock_client.list_objects_v2.side_effect = responses
+        else:
+            mock_client.list_objects_v2.return_value = responses
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        return mock_client
+
+    def _make_obj(self, filename, size=100):
+        """Create an S3 object dict."""
+        return {"Key": f"{self.prefix}{filename}", "Size": size}
+
+    @pytest.mark.asyncio
+    async def test_valid_experiment(self):
+        """Both required files present -> valid"""
+        resp = {
+            "KeyCount": 2,
+            "Contents": [
+                self._make_obj("experiment.yaml"),
+                self._make_obj("workflow.yaml"),
+            ],
+        }
+        mock_client = self._make_s3_client(resp)
+
+        with patch.object(
+            self.controller,
+            "_S3StorageController__get_s3_client",
+            return_value=mock_client,
+        ):
+            result = await self.controller.validate_experiment_in_s3("ws1", "uid1")
+
+        assert result["valid"] is True
+        assert result["error"] is None
+        assert result["has_thumbnails"] is False
+
+    @pytest.mark.asyncio
+    async def test_valid_with_thumbnails(self):
+        """Detects thumbnail files"""
+        resp = {
+            "KeyCount": 3,
+            "Contents": [
+                self._make_obj("experiment.yaml"),
+                self._make_obj("workflow.yaml"),
+                self._make_obj("thumbnails/input_thumb.png"),
+            ],
+        }
+        mock_client = self._make_s3_client(resp)
+
+        with patch.object(
+            self.controller,
+            "_S3StorageController__get_s3_client",
+            return_value=mock_client,
+        ):
+            result = await self.controller.validate_experiment_in_s3("ws1", "uid1")
+
+        assert result["valid"] is True
+        assert result["has_thumbnails"] is True
+
+    @pytest.mark.asyncio
+    async def test_empty_prefix(self):
+        """No objects in S3 -> invalid"""
+        resp = {"KeyCount": 0}
+        mock_client = self._make_s3_client(resp)
+
+        with patch.object(
+            self.controller,
+            "_S3StorageController__get_s3_client",
+            return_value=mock_client,
+        ):
+            result = await self.controller.validate_experiment_in_s3("ws1", "uid1")
+
+        assert result["valid"] is False
+        assert "No objects found" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_missing_workflow_yaml(self):
+        """Only experiment.yaml present -> invalid"""
+        resp = {
+            "KeyCount": 1,
+            "Contents": [
+                self._make_obj("experiment.yaml"),
+            ],
+        }
+        mock_client = self._make_s3_client(resp)
+
+        with patch.object(
+            self.controller,
+            "_S3StorageController__get_s3_client",
+            return_value=mock_client,
+        ):
+            result = await self.controller.validate_experiment_in_s3("ws1", "uid1")
+
+        assert result["valid"] is False
+        assert "workflow.yaml" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_missing_experiment_yaml(self):
+        """Only workflow.yaml present -> invalid"""
+        resp = {
+            "KeyCount": 1,
+            "Contents": [
+                self._make_obj("workflow.yaml"),
+            ],
+        }
+        mock_client = self._make_s3_client(resp)
+
+        with patch.object(
+            self.controller,
+            "_S3StorageController__get_s3_client",
+            return_value=mock_client,
+        ):
+            result = await self.controller.validate_experiment_in_s3("ws1", "uid1")
+
+        assert result["valid"] is False
+        assert "experiment.yaml" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_s3_exception(self):
+        """S3 error -> invalid with error message"""
+        mock_client = AsyncMock()
+        mock_client.list_objects_v2.side_effect = RuntimeError("S3 unavailable")
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+
+        with patch.object(
+            self.controller,
+            "_S3StorageController__get_s3_client",
+            return_value=mock_client,
+        ):
+            result = await self.controller.validate_experiment_in_s3("ws1", "uid1")
+
+        assert result["valid"] is False
+        assert "S3 validation error" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_pagination(self):
+        """Handles paginated responses"""
+        page1 = {
+            "KeyCount": 1,
+            "IsTruncated": True,
+            "NextContinuationToken": "token-abc",
+            "Contents": [
+                self._make_obj("experiment.yaml"),
+            ],
+        }
+        page2 = {
+            "KeyCount": 1,
+            "IsTruncated": False,
+            "Contents": [
+                self._make_obj("workflow.yaml"),
+            ],
+        }
+        mock_client = self._make_s3_client([page1, page2])
+
+        with patch.object(
+            self.controller,
+            "_S3StorageController__get_s3_client",
+            return_value=mock_client,
+        ):
+            result = await self.controller.validate_experiment_in_s3("ws1", "uid1")
+
+        assert result["valid"] is True
+        # Second call should include ContinuationToken
+        second_call = mock_client.list_objects_v2.call_args_list[1]
+        assert second_call[1]["ContinuationToken"] == "token-abc"
+
+    @pytest.mark.asyncio
+    async def test_max_objects_limit(self):
+        """Stops listing after VALIDATION_MAX_OBJECTS=500"""
+        # Single page claiming 500 objects (hits the limit)
+        contents = [self._make_obj(f"file_{i}.dat") for i in range(500)]
+        resp = {
+            "KeyCount": 500,
+            "IsTruncated": True,
+            "NextContinuationToken": "more",
+            "Contents": contents,
+        }
+        mock_client = self._make_s3_client(resp)
+
+        with patch.object(
+            self.controller,
+            "_S3StorageController__get_s3_client",
+            return_value=mock_client,
+        ):
+            result = await self.controller.validate_experiment_in_s3("ws1", "uid1")
+
+        # Should stop after one page (500 >= VALIDATION_MAX_OBJECTS)
+        assert mock_client.list_objects_v2.call_count == 1
+        # No required files in dummy data
+        assert result["valid"] is False
+
+    @pytest.mark.asyncio
+    async def test_none_response(self):
+        """Handles None response from list_objects_v2"""
+        mock_client = self._make_s3_client(None)
+
+        with patch.object(
+            self.controller,
+            "_S3StorageController__get_s3_client",
+            return_value=mock_client,
+        ):
+            result = await self.controller.validate_experiment_in_s3("ws1", "uid1")
+
+        assert result["valid"] is False
+        assert "No objects found" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_has_extra_files_still_valid(self):
+        """Extra files beyond required don't affect validity"""
+        resp = {
+            "KeyCount": 4,
+            "Contents": [
+                self._make_obj("experiment.yaml"),
+                self._make_obj("workflow.yaml"),
+                self._make_obj("cell_roi.json"),
+                self._make_obj("data.pkl"),
+            ],
+        }
+        mock_client = self._make_s3_client(resp)
+
+        with patch.object(
+            self.controller,
+            "_S3StorageController__get_s3_client",
+            return_value=mock_client,
+        ):
+            result = await self.controller.validate_experiment_in_s3("ws1", "uid1")
+
+        assert result["valid"] is True
+
+    @pytest.mark.asyncio
+    async def test_zero_byte_required_file_invalid(self):
+        """Zero-byte required file treated as missing"""
+        resp = {
+            "KeyCount": 2,
+            "Contents": [
+                self._make_obj("experiment.yaml", size=0),
+                self._make_obj("workflow.yaml", size=100),
+            ],
+        }
+        mock_client = self._make_s3_client(resp)
+
+        with patch.object(
+            self.controller,
+            "_S3StorageController__get_s3_client",
+            return_value=mock_client,
+        ):
+            result = await self.controller.validate_experiment_in_s3("ws1", "uid1")
+
+        assert result["valid"] is False
+        assert "experiment.yaml" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_both_zero_byte_files_invalid(self):
+        """Both required files at 0 bytes -> invalid"""
+        resp = {
+            "KeyCount": 2,
+            "Contents": [
+                self._make_obj("experiment.yaml", size=0),
+                self._make_obj("workflow.yaml", size=0),
+            ],
+        }
+        mock_client = self._make_s3_client(resp)
+
+        with patch.object(
+            self.controller,
+            "_S3StorageController__get_s3_client",
+            return_value=mock_client,
+        ):
+            result = await self.controller.validate_experiment_in_s3("ws1", "uid1")
+
+        assert result["valid"] is False
+        # Both 0-byte -> found_files empty -> "No objects found"
+        assert result["error"] is not None

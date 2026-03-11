@@ -26,6 +26,11 @@ logger = AppLogger.get_logger()
 _assignment_attempts = {}
 _RATE_LIMIT_SECONDS = 30
 
+
+class PremiumStatusCheckError(Exception):
+    pass
+
+
 # Timeout and retry configuration for Lambda calls
 LAMBDA_TIMEOUT_SECONDS = 60
 LAMBDA_MAX_RETRIES = 2
@@ -229,9 +234,9 @@ class PremiumAssignmentService:
                     f"Successfully assigned premium user {user_id} to "
                     f"instance {body.get('instance_id')}"
                 )
-                logger.info(f"Lambda response body: {body}")
-                logger.info(f"is_shared from Lambda: {body.get('is_shared')}")
-                logger.info(
+                logger.debug(f"Lambda response body: {body}")
+                logger.debug(f"is_shared from Lambda: {body.get('is_shared')}")
+                logger.debug(
                     f"assignment_source from Lambda: {body.get('assignment_source')}"
                 )
                 result = {
@@ -243,7 +248,7 @@ class PremiumAssignmentService:
                     "is_shared": body.get("is_shared", False),
                     "assignment_source": body.get("assignment_source"),
                 }
-                logger.info(f"Returning result: {result}")
+                logger.debug(f"Returning result: {result}")
                 return result
 
             elif status_code == 202:
@@ -472,11 +477,17 @@ class PremiumAssignmentService:
                     f"Failed to get status for premium user"
                     f"{user_id}: {response_payload}"
                 )
-                return None
+                raise PremiumStatusCheckError(
+                    f"Lambda returned {status_code} for user {user_id}"
+                )
 
+        except PremiumStatusCheckError:
+            raise
         except Exception as e:
             logger.error(f"Error getting status for premium user {user_id}: {str(e)}")
-            return None
+            raise PremiumStatusCheckError(
+                f"Status check failed for user {user_id}: {e}"
+            ) from e
 
     async def update_user_activity(self, user_id: int, user_uid: str) -> Dict[str, any]:
         """

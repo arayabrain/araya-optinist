@@ -20,7 +20,7 @@ def vacant_roi(
     recursive_flatten_params(params, flattened_params)
     params = flattened_params
 
-    logger.info("params: %s", params)
+    logger.debug("params: %s", params)
 
     D = LoadData(mc_images)
     assert len(D.shape) == 3, "input array should have dimensions (width, height, time)"

@@ -2,7 +2,7 @@
 Unit tests for SubscriptionService
 
 Tests for:
-- Case 79: get_users_with_upcoming_quota_drop()
+- get_users_with_upcoming_quota_drop()
 """
 
 from datetime import timedelta
@@ -15,7 +15,7 @@ from studio.app.common.core.utils.datetime_utils import get_current_datetime
 
 
 class TestQuotaDropWarning:
-    """Test suite for Case 79: Quota drop warning."""
+    """Quota drop warning tests."""
 
     @pytest.fixture
     def mock_db(self):

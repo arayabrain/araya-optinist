@@ -1,9 +1,11 @@
+import json
 import os
 import re
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import Request
+from sqlalchemy import func
 from sqlmodel import Session, delete
 
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptOutputPathIds
@@ -30,7 +32,7 @@ from studio.app.common.schemas.dataview import (
     PublishValidationResult,
 )
 from studio.app.common.schemas.workflow import WorkflowConfig
-from studio.app.const import ThumbnailConst, ThumbnailType
+from studio.app.const import ThumbnailType
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -177,13 +179,17 @@ class DataviewService:
     OUTPUTS_IMAGE_URL_PREFIX = r"^/outputs/image/"
 
     @classmethod
-    def find_published_dataview_record(
-        cls, db: Session, workspace_id: int, unique_id: str
+    def find_dataview_record(
+        cls,
+        db: Session,
+        workspace_id: int,
+        unique_id: str,
+        published_only: bool = False,
     ) -> ExperimentRecord:
         """
-        Search for a published experiment_record that matches the specified id
+        Search for a experiment_record that matches the specified id
         """
-        record: ExperimentRecord = (
+        query = (
             db.query(ExperimentRecord)
             .join(
                 Workspace,
@@ -193,12 +199,15 @@ class DataviewService:
                 Workspace.deleted.is_(False),
                 ExperimentRecord.workspace_id == int(workspace_id),
                 ExperimentRecord.uid == unique_id,
-                ExperimentRecord.publish_status == PublishStatus.on.value,
             )
-            .first()
         )
 
-        return record
+        if published_only:
+            query = query.filter(
+                ExperimentRecord.publish_status == PublishStatus.on.value,
+            )
+
+        return query.first()
 
     @classmethod
     def find_published_dataview_record_input(
@@ -218,7 +227,9 @@ class DataviewService:
                 Workspace.deleted.is_(False),
                 ExperimentRecord.workspace_id == int(workspace_id),
                 ExperimentRecord.publish_status == PublishStatus.on.value,
-                ExperimentRecord.thumbnails["image_url"].as_string() == input_path,
+                func.JSON_CONTAINS(
+                    ExperimentRecord.input_paths, json.dumps(input_path)
+                ),
                 # > Note: input data does not depend on unique_id (shared within
                 # >   a workspace), so it is determined by workspace_id only.
                 # models.ExperimentRecord.uid == unique_id,
@@ -297,8 +308,8 @@ class DataviewService:
         # Request case for output data
         if workspace_id and unique_id:
             # Check whether the data is in a public record
-            record = DataviewService.find_published_dataview_record(
-                db, int(workspace_id), unique_id
+            record = DataviewService.find_dataview_record(
+                db, int(workspace_id), unique_id, published_only=True
             )
             is_allowed_access = record is not None
 
@@ -307,28 +318,11 @@ class DataviewService:
             query_params = dict(req.query_params)
             workspace_id = query_params.get("workspace_id")
 
-            # For image data
-            if re.match(cls.OUTPUTS_IMAGE_URL_PREFIX, request_url_path):
-                # Check whether the data is in a public record
-                record = cls.find_published_dataview_record_input(
-                    db, workspace_id, data_file_path
-                )
-                is_allowed_access = record is not None
-
-            # For other data
-            else:
-                """
-                Currently (2025-9), this feature does not support validation
-                  of data other than images.
-                - This is because information about input data other than images is not
-                  stored in experiment_records (a specification change is required).
-                - While validation will need to be strengthened in the future,
-                  the initial version will only validate images
-                  (since most preview requests are images).
-                """
-
-                # Force Allow Access
-                is_allowed_access = True
+            # Check whether the data is in a public record
+            record = cls.find_published_dataview_record_input(
+                db, workspace_id, data_file_path
+            )
+            is_allowed_access = record is not None
 
         return is_allowed_access
 
@@ -512,92 +506,51 @@ class DataviewService:
             ThumbnailGenerator,
         )
 
-        thumb_dir = join_filepath(
-            [DIRPATH.OUTPUT_DIR, workspace_id, unique_id, ThumbnailConst.DIRNAME]
-        )
-
         input_thumb_path = None
         roi_thumb_path = None
 
         # Generate input thumbnail
         if image_path:
-            abs_image_path = cls._resolve_image_path(workspace_id, image_path)
+            abs_image_path = ThumbnailGenerator.resolve_source_path(
+                workspace_id, image_path
+            )
+            input_thumb_path = ThumbnailGenerator.get_thumbnail_path(
+                workspace_id, unique_id, ThumbnailType.INPUT
+            )
             try:
-                create_directory(thumb_dir)
-                input_thumb_path = join_filepath(
-                    [thumb_dir, ThumbnailType.INPUT.filename]
+                create_directory(os.path.dirname(input_thumb_path))
+                ThumbnailGenerator.generate_input_thumbnail(
+                    source_path=image_path,
+                    output_path=input_thumb_path,
+                    abs_source_path=abs_image_path,
                 )
-
-                # Check if it's a TIFF file that we can render
-                if ThumbnailGenerator.can_generate_tiff_thumbnail(image_path):
-                    if abs_image_path and os.path.exists(abs_image_path):
-                        ThumbnailGenerator.generate_tiff_thumbnail(
-                            abs_image_path, input_thumb_path
-                        )
-                        logger.info(f"Generated TIFF thumbnail: {input_thumb_path}")
-                    else:
-                        # TIFF file not found locally, generate placeholder
-                        ThumbnailGenerator.generate_placeholder_thumbnail(
-                            input_thumb_path, file_path=image_path
-                        )
-                        logger.info(
-                            f"Generated placeholder thumbnail (TIFF not found): "
-                            f"{input_thumb_path}"
-                        )
-                else:
-                    # Non-TIFF file (HDF5, MAT, microscope, etc.) - generate placeholder
-                    ThumbnailGenerator.generate_placeholder_thumbnail(
-                        input_thumb_path, file_path=image_path
-                    )
-                    logger.info(f"Generated placeholder thumbnail: {input_thumb_path}")
+                logger.debug(f"Generated input thumbnail: {input_thumb_path}")
             except Exception as e:
                 logger.warning(f"Failed to generate input thumbnail: {e}")
                 input_thumb_path = None
 
         # Generate ROI thumbnail from cell_roi.json
         if roi_path:
-            abs_roi_path = roi_path
-            if not os.path.isabs(roi_path):
-                abs_roi_path = join_filepath([DIRPATH.OUTPUT_DIR, roi_path])
-            if os.path.exists(abs_roi_path):
+            abs_roi_path = ThumbnailGenerator.resolve_source_path(
+                workspace_id, roi_path
+            )
+            if abs_roi_path:
+                roi_thumb_path = ThumbnailGenerator.get_thumbnail_path(
+                    workspace_id, unique_id, ThumbnailType.ROI
+                )
                 try:
-                    create_directory(thumb_dir)
-                    roi_thumb_path = join_filepath(
-                        [thumb_dir, ThumbnailType.ROI.filename]
-                    )
+                    create_directory(os.path.dirname(roi_thumb_path))
                     ThumbnailGenerator.generate_roi_thumbnail(
                         abs_roi_path, roi_thumb_path
                     )
-                    logger.info(f"Generated ROI thumbnail: {roi_thumb_path}")
+                    logger.debug(f"Generated ROI thumbnail: {roi_thumb_path}")
                 except Exception as e:
                     logger.warning(f"Failed to generate ROI thumbnail: {e}")
                     roi_thumb_path = None
 
         return DataviewThumbnails(
-            image_url=normalize_output_path(input_thumb_path)
-            if input_thumb_path
-            else None,
+            image_url=(
+                normalize_output_path(input_thumb_path) if input_thumb_path else None
+            ),
             roi_url=normalize_output_path(roi_thumb_path) if roi_thumb_path else None,
         )
-
-    @classmethod
-    def _resolve_image_path(cls, workspace_id: str, image_path: str) -> Optional[str]:
-        """
-        Resolve image path to absolute path.
-        Input images can be in the input directory (just filename) or output directory.
-        """
-        if os.path.isabs(image_path) and os.path.exists(image_path):
-            return image_path
-
-        # Try as relative path from output dir
-        abs_path = join_filepath([DIRPATH.OUTPUT_DIR, image_path])
-        if os.path.exists(abs_path):
-            return abs_path
-
-        # Try as input file (just filename)
-        filename = os.path.basename(image_path)
-        input_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
-        if os.path.exists(input_path):
-            return input_path
-
-        return None

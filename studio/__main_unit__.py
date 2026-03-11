@@ -14,7 +14,7 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
     get_current_user_with_dataview_outputs_check,
 )
-from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.logger import AppLogger, LoggingConfigHelper
 from studio.app.common.core.middleware import (
     ClientIdLoggingMiddleware,
     SecureRoutingMiddleware,
@@ -101,10 +101,27 @@ async def lifespan(app: FastAPI):
     if not MODE.IS_STANDALONE:
         import asyncio
 
+        from studio.app.common.core.storage.startup_leader import (
+            release_startup_leader,
+            try_become_startup_leader,
+        )
+
         async def _startup_sync():
+            """Only one worker out of N should perform startup sync."""
             try:
                 await asyncio.sleep(5)
-                await PublishedExperimentSyncJob.run_startup_sync()
+
+                # Leader election: only 1 worker syncs
+                if not try_become_startup_leader():
+                    logger.info("Startup sync deferred to leader worker")
+                    return
+
+                try:
+                    # Run startup sync
+                    await PublishedExperimentSyncJob.run_startup_sync()
+                finally:
+                    # Always release leader file, even on error
+                    release_startup_leader()
             except Exception as e:
                 logger.error(f"Startup sync error: {e}", exc_info=True)
 
@@ -291,12 +308,28 @@ def main(develop_mode: bool = False):
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--reload", action="store_true")
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default=None,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Override log level (takes precedence over LOG_LEVEL env var)",
+    )
     timeout_keep_alive = 60
     args = parser.parse_args()
 
     logging_config = AppLogger.get_logging_config()
 
-    logger.info(f"Starting Optinist server on {args.host}:{args.port}")
+    if args.log_level:
+        logging_config = LoggingConfigHelper._apply_log_level_override(
+            logging_config, args.log_level
+        )
+
+    effective_level = logging_config.get("root", {}).get("level", "INFO")
+    logger.info(
+        f"Starting Optinist server on {args.host}:{args.port} "
+        f"(log_level={effective_level})"
+    )
 
     if develop_mode:
         if args.workers > 1:

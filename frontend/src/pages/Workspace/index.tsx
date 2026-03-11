@@ -33,11 +33,13 @@ import {
 } from "@mui/x-data-grid"
 import { isRejectedWithValue } from "@reduxjs/toolkit"
 
+import { refreshStorageUsageApi } from "api/storage/StorageAlerts"
 import { UserDTO } from "api/users/UsersApiDTO"
 import { refreshAllWorkspacesStorageApi } from "api/workspace"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
 import PaginationCustom from "components/common/PaginationCustom"
+import StorageUsage from "components/common/StorageUsage"
 import PopupShare from "components/Workspace/PopupShare"
 import { selectCurrentUser } from "store/slice/User/UserSelector"
 import { resetVisualizeLayout } from "store/slice/VisualizeItem/VisualizeItemSlice"
@@ -364,6 +366,7 @@ const Workspaces = () => {
   const [rowModesModel, setRowModesModel] = useState<GridRowModesModel>({})
   const [searchParams, setParams] = useSearchParams()
   const [refreshing, setRefreshing] = useState(false)
+  const [storageRefreshKey, setStorageRefreshKey] = useState(0)
   const [operationWarning, setOperationWarning] = useState<{
     show: boolean
     operation?: string
@@ -587,8 +590,15 @@ const Workspaces = () => {
       // Call API to refresh all workspace storage usage
       const response = await refreshAllWorkspacesStorageApi()
 
+      // Also refresh user-level storage so the StorageAlert updates
+      await refreshStorageUsageApi()
+
       // Refresh the workspace list after storage sync
       await dispatch(getWorkspaceList(dataParams))
+
+      // Trigger StorageAlert to re-fetch with fresh data
+      setStorageRefreshKey((k) => k + 1)
+
       handleClickVariant(
         "success",
         `Storage refreshed for ${response.refreshed_workspaces} workspaces!`,
@@ -632,6 +642,7 @@ const Workspaces = () => {
           New
         </Button>
       </Box>
+      <StorageUsage key={storageRefreshKey} />
       {user ? (
         <Box
           sx={{

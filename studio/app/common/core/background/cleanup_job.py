@@ -20,15 +20,22 @@ import shutil
 from datetime import timedelta
 from typing import List, Tuple
 
-from sqlalchemy import func
+from sqlalchemy import func, update
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.subscription.constants import SyncStatusConstants
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.db.database import session_scope
-from studio.app.common.models import FreeUserAssignment, User, Workspace
+from studio.app.common.models import (
+    FreeUserAssignment,
+    InstanceUsageLog,
+    User,
+    Workspace,
+)
+from studio.app.common.models.instance_usage import UsageTier
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -198,7 +205,10 @@ class DataCleanupJob:
 
             # Check if critical experiment files exist in S3
             critical_files = ["experiment.yaml", "workflow.yaml"]
-            s3_prefix = f"app/studio_data/output/{workspace_id}/{experiment_id}/"
+            s3_prefix = (
+                f"{S3StorageController.S3_BASE_PATH}"
+                f"/output/{workspace_id}/{experiment_id}/"
+            )
 
             for filename in critical_files:
                 s3_key = f"{s3_prefix}{filename}"
@@ -258,7 +268,7 @@ class DataCleanupJob:
                 # Clean input data (always safe to delete - user uploads are in S3)
                 input_dir = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
                 if os.path.exists(input_dir):
-                    logger.info(f"Deleting input directory: {input_dir}")
+                    logger.debug(f"Deleting input directory: {input_dir}")
                     shutil.rmtree(input_dir)
 
                 # Clean output data (with S3 verification)
@@ -295,7 +305,7 @@ class DataCleanupJob:
                     # Delete verified experiments
                     for experiment_id in experiments_to_delete:
                         experiment_path = os.path.join(output_dir, experiment_id)
-                        logger.info(
+                        logger.debug(
                             f"Deleting experiment: {workspace_id}/{experiment_id} "
                             f"(S3 backup verified)"
                         )
@@ -304,12 +314,12 @@ class DataCleanupJob:
                     # If all experiments deleted, remove workspace output dir
                     if experiments_to_delete and not experiments_to_keep:
                         if os.path.exists(output_dir) and not os.listdir(output_dir):
-                            logger.info(
+                            logger.debug(
                                 f"Deleting empty output directory: {output_dir}"
                             )
                             shutil.rmtree(output_dir)
 
-                    logger.info(
+                    logger.debug(
                         f"Cleaned workspace {workspace_id} for user {user_id}: "
                         f"{len(experiments_to_delete)} experiments deleted, "
                         f"{len(experiments_to_keep)} kept"
@@ -408,6 +418,16 @@ class DataCleanupJob:
             assignment = result_row[0] if result_row else None
 
             if assignment:
+                # Close usage log before deleting assignment
+                db.execute(
+                    update(InstanceUsageLog)
+                    .where(
+                        InstanceUsageLog.user_id == user_id,
+                        InstanceUsageLog.tier == UsageTier.FREE,
+                        InstanceUsageLog.ended_at.is_(None),
+                    )
+                    .values(ended_at=get_current_datetime())
+                )
                 db.delete(assignment)
                 db.commit()
 
@@ -451,6 +471,17 @@ class DataCleanupJob:
 
             workspace_ids = [str(row[0].id) for row in workspaces_result]
             cls._cleanup_user_data(assignment.user_id, workspace_ids)
+
+            # Close usage log before deleting assignment
+            db.execute(
+                update(InstanceUsageLog)
+                .where(
+                    InstanceUsageLog.user_id == assignment.user_id,
+                    InstanceUsageLog.tier == UsageTier.FREE,
+                    InstanceUsageLog.ended_at.is_(None),
+                )
+                .values(ended_at=get_current_datetime())
+            )
 
             # Remove assignment
             db.delete(assignment)

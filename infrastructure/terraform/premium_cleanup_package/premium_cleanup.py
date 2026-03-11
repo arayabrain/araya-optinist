@@ -85,7 +85,8 @@ def get_db_connection(auto_commit=False):
                 database=get_required_env_var("RDS_DATABASE"),
                 charset="utf8mb4",
                 cursorclass=pymysql.cursors.DictCursor,
-                autocommit=auto_commit,  # Default False for transactions
+                autocommit=auto_commit,
+                ssl={"check_hostname": False},
             )
             yield conn
         except Exception as e:
@@ -284,6 +285,14 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
                             f"Skipping deletion of shared autoscaling "
                             f"target group: {target_group_arn}"
                         )
+
+                    # Close usage log before deleting assignment
+                    cursor.execute(
+                        """UPDATE instance_usage_log SET ended_at = NOW()
+                           WHERE user_id = %s AND tier = 'premium'
+                           AND ended_at IS NULL""",
+                        (user_id,),
+                    )
 
                     # Remove from database
                     cursor.execute(
@@ -722,25 +731,68 @@ def get_standby_pool_status() -> Dict[str, Any]:
 
 
 def ensure_standby_pool_capacity() -> Dict[str, Any]:
-    """Ensure standby pool maintains required capacity and handle failed instances"""
+    """Ensure standby pool maintains required capacity and handle failed instances.
+
+    When more instances are flagged as standby than the target pool size,
+    clears excess is_standby flags so those instances become eligible for
+    normal idle cleanup/termination in subsequent runs.
+    """
     try:
         status = get_standby_pool_status()
 
         if "error" in status:
             return {"success": False, "error": status["error"]}
 
-        target_stopped = 1
+        target_stopped = int(os.environ.get("PREMIUM_STANDBY_POOL_SIZE", "1"))
         actions_taken = []
 
         # Log current status
         print(
             f"Standby pool status: {status['running']} running, "
-            f"{status['stopped']} stopped, {status['failed']} failed"
+            f"{status['stopped']} stopped, {status['failed']} failed "
+            f"(target standby: {target_stopped})"
         )
 
         # Check for capacity issues
         if status["stopped"] < target_stopped and status["idle_running"] == 0:
             actions_taken.append("Low standby capacity detected")
+
+        # Enforce pool size: clear excess standby flags
+        if status["stopped"] > target_stopped:
+            excess = status["stopped"] - target_stopped
+            print(
+                f"Excess standby instances: {excess} "
+                f"(have {status['stopped']}, target {target_stopped}). "
+                f"Clearing excess is_standby flags."
+            )
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        # Keep the newest target_stopped standby instances,
+                        # clear is_standby on the rest (oldest first)
+                        cursor.execute(
+                            """UPDATE premium_user_assignments
+                               SET is_standby = 0
+                               WHERE is_standby = 1
+                               AND id NOT IN (
+                                   SELECT id FROM (
+                                       SELECT id FROM premium_user_assignments
+                                       WHERE is_standby = 1
+                                       ORDER BY last_activity DESC
+                                       LIMIT %s
+                                   ) AS keep_rows
+                               )""",
+                            (target_stopped,),
+                        )
+                        cleared = cursor.rowcount
+                    conn.commit()
+                actions_taken.append(
+                    f"Cleared is_standby flag on {cleared} excess instances"
+                )
+                print(f"Cleared is_standby flag on {cleared} excess instances")
+            except Exception as e:
+                actions_taken.append(f"Failed to clear excess standby flags: {e}")
+                print(f"Error clearing excess standby flags: {e}")
 
         if status["failed"] > 0:
             actions_taken.append(f"Found {status['failed']} failed instances")
@@ -1024,6 +1076,14 @@ def cleanup_test_user_assignments(connection, user_emails: List[str]) -> Dict[st
                         except Exception as e:
                             print(f"Warning: Failed to delete target group: {e}")
 
+                    # Close usage log before deleting assignment
+                    cursor.execute(
+                        """UPDATE instance_usage_log SET ended_at = NOW()
+                           WHERE user_id = %s AND tier = 'premium'
+                           AND ended_at IS NULL""",
+                        (user_id,),
+                    )
+
                     # Remove from database
                     cursor.execute(
                         "DELETE FROM premium_user_assignments WHERE user_id = %s",
@@ -1053,6 +1113,188 @@ def cleanup_test_user_assignments(connection, user_emails: List[str]) -> Dict[st
         raise e
 
 
+def get_user_assignment(user_email: str) -> Dict[str, Any]:
+    """
+    Get premium_user_assignment for a user by email.
+
+    Args:
+        user_email: The user's email address
+
+    Returns:
+        Dict with assignment info or error
+    """
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id FROM users WHERE email = %s",
+                    (user_email,),
+                )
+                user = cursor.fetchone()
+                if not user:
+                    return {
+                        "success": False,
+                        "message": f"User not found: {user_email}",
+                    }
+
+                user_id = user["id"]
+                cursor.execute(
+                    """SELECT user_id, instance_id, status,
+                              target_group_arn, alb_rule_arn,
+                              instance_state, last_activity,
+                              is_standby
+                       FROM premium_user_assignments
+                       WHERE user_id = %s""",
+                    (user_id,),
+                )
+                assignment = cursor.fetchone()
+                if not assignment:
+                    return {
+                        "success": True,
+                        "message": (f"No assignment for {user_email}"),
+                        "user_id": user_id,
+                        "instance_id": None,
+                    }
+
+                print(
+                    f"User {user_email} (id={user_id}) "
+                    f"assigned to {assignment['instance_id']}"
+                )
+                return {
+                    "success": True,
+                    "user_id": assignment["user_id"],
+                    "instance_id": assignment["instance_id"],
+                    "status": assignment["status"],
+                    "instance_state": assignment["instance_state"],
+                    "target_group_arn": assignment["target_group_arn"],
+                    "alb_rule_arn": assignment["alb_rule_arn"],
+                    "is_standby": assignment["is_standby"],
+                    "last_activity": (
+                        assignment["last_activity"].isoformat()
+                        if assignment["last_activity"]
+                        else None
+                    ),
+                }
+
+    except Exception as e:
+        print(f"Error getting user assignment: {str(e)}")
+        return {"success": False, "error": str(e)}
+
+
+@with_transaction
+def migrate_user(
+    connection,
+    user_email: str,
+    target_instance_id: str,
+) -> Dict[str, Any]:
+    """
+    Migrate a premium user to a different instance by swapping
+    the EC2 instance registered in the user's target group.
+
+    Args:
+        connection: DB connection (provided by @with_transaction)
+        user_email: Email of the user to migrate
+        target_instance_id: EC2 instance to migrate to
+
+    Returns:
+        Dict with migration result
+    """
+    try:
+        elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM users WHERE email = %s",
+                (user_email,),
+            )
+            user = cursor.fetchone()
+            if not user:
+                return {
+                    "success": False,
+                    "message": f"User not found: {user_email}",
+                }
+
+            user_id = user["id"]
+            cursor.execute(
+                """SELECT instance_id, target_group_arn,
+                          status
+                   FROM premium_user_assignments
+                   WHERE user_id = %s""",
+                (user_id,),
+            )
+            assignment = cursor.fetchone()
+            if not assignment:
+                return {
+                    "success": False,
+                    "message": (f"No assignment for {user_email}"),
+                }
+
+            source = assignment["instance_id"]
+            if source == target_instance_id:
+                return {
+                    "success": False,
+                    "message": ("Source and target are the same" f": {source}"),
+                }
+
+            status = assignment["status"]
+            if status != PremiumAssignment.ACTIVE:
+                return {
+                    "success": False,
+                    "message": (
+                        f"Assignment status is '{status}'," " expected 'active'"
+                    ),
+                }
+
+            tg_arn = assignment["target_group_arn"]
+            if not tg_arn or tg_arn.lower() == PremiumAssignment.STANDBY:
+                return {
+                    "success": False,
+                    "message": "No target group for user",
+                }
+
+            # Swap instance in target group
+            try:
+                elbv2.deregister_targets(
+                    TargetGroupArn=tg_arn,
+                    Targets=[{"Id": source, "Port": 8000}],
+                )
+                print(f"Deregistered {source} from {tg_arn}")
+            except Exception as e:
+                print(f"Warning: deregister failed: {e}")
+
+            elbv2.register_targets(
+                TargetGroupArn=tg_arn,
+                Targets=[{"Id": target_instance_id, "Port": 8000}],
+            )
+            print(f"Registered {target_instance_id} in {tg_arn}")
+
+            # Update DB
+            cursor.execute(
+                """UPDATE premium_user_assignments
+                   SET instance_id = %s,
+                       instance_state = 'running',
+                       last_activity = NOW()
+                   WHERE user_id = %s""",
+                (target_instance_id, user_id),
+            )
+
+            print(
+                f"Migrated {user_email} (id={user_id})"
+                f" {source} -> {target_instance_id}"
+            )
+            return {
+                "success": True,
+                "message": "Migration successful",
+                "user_id": user_id,
+                "source_instance": source,
+                "target_instance": target_instance_id,
+            }
+
+    except Exception as e:
+        print(f"Error migrating user: {str(e)}")
+        raise e
+
+
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Premium Cleanup Lambda Handler - Data & Resource Hygiene
@@ -1069,6 +1311,20 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     - cleanup_test_users: Clean up premium assignments for specific test users
       Event format:
       {"action": "cleanup_test_users", "user_emails": ["email1@example.com", ...]}
+
+    - get_user_assignment: Look up a user's premium assignment
+      Event: {"action": "get_user_assignment", "user_email": "u@test.com"}
+
+    - migrate_user: Migrate a user to a different instance
+      Event: {"action": "migrate_user", "user_email": "u@test.com",
+              "target_instance_id": "i-abc123"}
+
+    - get_instance_users: List users assigned to a specific instance
+      Event: {"action": "get_instance_users",
+              "instance_id": "i-abc123"}
+
+    - reconcile: Reconcile DB instance states with AWS reality
+      Event: {"action": "reconcile"}
     """
 
     print(f"Premium cleanup triggered by event: {json.dumps(event)}")
@@ -1086,6 +1342,72 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 "body": json.dumps(
                     {"message": cleanup_result.get("message"), "result": cleanup_result}
                 ),
+            }
+
+        elif action == "get_user_assignment":
+            user_email = event.get("user_email")
+            if not user_email:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps(
+                        {"error": "Missing required parameter: user_email"}
+                    ),
+                }
+            result = get_user_assignment(user_email)
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"result": result}),
+            }
+
+        elif action == "migrate_user":
+            user_email = event.get("user_email")
+            target_instance_id = event.get("target_instance_id")
+            if not user_email or not target_instance_id:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps(
+                        {
+                            "error": (
+                                "Missing required parameters:"
+                                " user_email, target_instance_id"
+                            )
+                        }
+                    ),
+                }
+            result = migrate_user(user_email, target_instance_id)
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"result": result}),
+            }
+
+        elif action == "get_instance_users":
+            instance_id = event.get("instance_id")
+            if not instance_id:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps(
+                        {"error": ("Missing required parameter:" " instance_id")}
+                    ),
+                }
+            user_ids = get_assigned_users_for_instance(instance_id)
+            return {
+                "statusCode": 200,
+                "body": json.dumps(
+                    {
+                        "result": {
+                            "instance_id": instance_id,
+                            "user_ids": user_ids,
+                            "count": len(user_ids),
+                        }
+                    }
+                ),
+            }
+
+        elif action == "reconcile":
+            result = reconcile_instance_states()
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"result": result}),
             }
 
         # Otherwise, proceed with normal scheduled cleanup
@@ -1115,7 +1437,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         print("Step 4: Reconciling instance states...")
         results["reconciliation_stats"] = reconcile_instance_states()
 
-        # 5. Monitor standby pool capacity (read-only check)
+        # 5. Monitor and enforce standby pool capacity
         print("Step 5: Checking standby pool capacity...")
         results["capacity_check"] = ensure_standby_pool_capacity()
 

@@ -387,7 +387,7 @@ class CheckoutService:
             # Check for any successful charges
             charges = stripe.Charge.list(customer=customer_id, limit=1)
             if charges.data:
-                logger.info(
+                logger.debug(
                     f"Found {len(charges.data)} charge(s) for customer {customer_id}"
                 )
                 return True
@@ -395,7 +395,7 @@ class CheckoutService:
             # Check for any subscriptions (past or present)
             subscriptions = stripe.Subscription.list(customer=customer_id, limit=1)
             if subscriptions.data:
-                logger.info(
+                logger.debug(
                     f"Found {len(subscriptions.data)} subscription(s) "
                     f"for customer {customer_id}"
                 )
@@ -404,7 +404,7 @@ class CheckoutService:
             # Check for any invoices that were paid
             invoices = stripe.Invoice.list(customer=customer_id, status="paid", limit=1)
             if invoices.data:
-                logger.info(
+                logger.debug(
                     f"Found {len(invoices.data)} paid invoice(s) "
                     f"for customer {customer_id}"
                 )
@@ -475,7 +475,7 @@ class CheckoutService:
 
             # Create Stripe checkout session using the price ID from the database
             try:
-                logger.info("Initializing Stripe")
+                logger.debug("Initializing Stripe")
                 subscription_account = CheckoutService.get_subscription_account(
                     db, user.id
                 )
@@ -497,7 +497,7 @@ class CheckoutService:
                         db, user.id, provider_id, customer_id
                     )
                     db.commit()
-                    logger.info(
+                    logger.debug(
                         f"Created and saved new Stripe customer {customer_id} "
                         f"for user {user.id}"
                     )
@@ -558,7 +558,7 @@ class CheckoutService:
                     }
                     # Require payment method during trial so it can be charged later
                     subscription_params["payment_method_collection"] = "always"
-                    logger.info(
+                    logger.debug(
                         f"Adding {SubscriptionPeriods.TRIAL_PERIOD_DAYS}-day trial "
                         f"for first-time user {user.id}"
                     )

@@ -1,13 +1,13 @@
 [tool.poetry]
-name = "optinist"
-description = "Calcium Imaging Pipeline Tool"
-version = "2.4.0"
+name = "araya-optinist"
+description = "Cloud-based Calcium Imaging Pipeline Tool"
+version = "1.0.0"
 license = "GPL-3.0"
-authors = ["OIST <email@example.com>"]
+authors = ["ARAYA <optinist-support@araya.org>"]
 readme = "README.md"
-documentation = "https://optinist.readthedocs.io"
-repository = "https://github.com/oist/optinist"
-keywords = ["optinist"]
+documentation = "https://araya-optinist.readthedocs.io"
+repository = "https://github.com/arayabrain/araya-optinist"
+keywords = ["araya", "optinist"]
 classifiers = [
   "Intended Audience :: Developers",
   "Intended Audience :: Education",

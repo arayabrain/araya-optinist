@@ -7,12 +7,14 @@ from typing import Dict, List
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     BaseRemoteStorageController,
+    RemoteExperimentSyncMode,
     StorageDirectoryType,
 )
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
 )
+from studio.app.const import ThumbnailType
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -284,7 +286,10 @@ class MockStorageController(BaseRemoteStorageController):
         return True
 
     async def download_experiment(
-        self, workspace_id: str, unique_id: str, sync_mode: str = "all"
+        self,
+        workspace_id: str,
+        unique_id: str,
+        sync_mode: RemoteExperimentSyncMode = RemoteExperimentSyncMode.ALL,
     ) -> bool:
         # make paths
         experiment_local_path = self._make_experiment_local_path(
@@ -344,10 +349,12 @@ class MockStorageController(BaseRemoteStorageController):
 
             create_directory(experiment_remote_path)
 
-            # copy target files
+            # copy target files (preserving subdirectory structure)
             for target_file in target_files:
-                target_file = f"{experiment_local_path}/{target_file}"
-                shutil.copy(target_file, experiment_remote_path)
+                source_path = f"{experiment_local_path}/{target_file}"
+                dest_path = f"{experiment_remote_path}/{target_file}"
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                shutil.copy(source_path, dest_path)
 
         else:  # Target all files.
             logger.debug(
@@ -388,6 +395,28 @@ class MockStorageController(BaseRemoteStorageController):
             shutil.rmtree(experiment_remote_path)
 
         return True
+
+    async def download_thumbnail_source(
+        self,
+        workspace_id: str,
+        unique_id: str,
+        original_path: str,
+        thumb_type: ThumbnailType,
+    ) -> bool:
+        """
+        Download the source file needed to generate a thumbnail.
+        """
+        # Currently not implemented
+        pass
+
+    async def upload_thumbnail(
+        self, workspace_id: str, unique_id: str, thumbnail_path: str
+    ) -> bool:
+        """
+        Upload a generated thumbnail PNG to S3 for persistence.
+        """
+        # Currently not implemented
+        pass
 
     async def delete_workspace(
         self, workspace_id: str, directory_type: StorageDirectoryType

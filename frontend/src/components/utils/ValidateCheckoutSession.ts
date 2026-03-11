@@ -75,12 +75,14 @@ export const validateSession = async (
     } else {
       // Invalid session_id - redirect without changing loading state
       // Keep showing loading spinner until redirect completes
+      // eslint-disable-next-line no-console
       console.error("Invalid session_id:", sessionId)
       navigate("/subscription", { replace: true })
     }
   } catch (error) {
     // Invalid session_id - redirect without changing loading state
     // Keep showing loading spinner until redirect completes
+    // eslint-disable-next-line no-console
     console.error("Invalid session_id:", sessionId, error)
     navigate("/subscription", { replace: true })
   }

@@ -129,7 +129,7 @@ class StorageReconciliationJob:
                         )
 
                         # Get storage before scan for drift logging
-                        logger.info(
+                        logger.debug(
                             f"Reconciling user {user_id}: "
                             f"current={db_storage:,} bytes, "
                             f"delta={delta:,} bytes, "

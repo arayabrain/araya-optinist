@@ -1,7 +1,7 @@
 from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.cloud.cloud_utils import (
@@ -27,6 +27,7 @@ from studio.app.common.core.users import crud_users
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import get_db
 from studio.app.common.models import FreeUserAssignment
+from studio.app.common.models.instance_usage import InstanceUsageLog, UsageTier
 from studio.app.common.schemas.users import SelfUserUpdate, User, UserPasswordUpdate
 
 router = APIRouter(prefix="/users/me", tags=["users/me"])
@@ -93,9 +94,9 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
             current_user.id, current_user.uid
         )
 
-        logger.info(f"Assignment service result: {result}")
-        logger.info(f"is_shared from service: {result.get('is_shared')}")
-        logger.info(
+        logger.debug(f"Assignment service result: {result}")
+        logger.debug(f"is_shared from service: {result.get('is_shared')}")
+        logger.debug(
             f"assignment_source from service: {result.get('assignment_source')}"
         )
 
@@ -107,7 +108,7 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
                 "is_shared": result.get("is_shared", False),
                 "assignment_source": result.get("assignment_source"),
             }
-            logger.info(f"API response: {response}")
+            logger.debug(f"API response: {response}")
             return response
         elif result.get("requires_retry"):
             # Return 202 for scaling in progress
@@ -252,19 +253,33 @@ async def logout_free_user(
         invalidate_activity_cache(current_user.id)
         mark_user_logged_out(current_user.id)
 
-        # Get the free user assignment
-        statement = select(FreeUserAssignment).where(
-            FreeUserAssignment.user_id == current_user.id
+        # Update logged_out_at timestamp via direct SQL
+        from sqlalchemy import update
+
+        now = get_current_datetime()
+
+        stmt = (
+            update(FreeUserAssignment)
+            .where(FreeUserAssignment.user_id == current_user.id)
+            .values(logged_out_at=now)
         )
-        result_row = db.execute(statement).first()
-        assignment = result_row[0] if result_row else None
+        result = db.execute(stmt)
 
-        if assignment:
-            # Update logged_out_at timestamp
-            assignment.logged_out_at = get_current_datetime()
-            db.add(assignment)
-            db.commit()
+        # Close usage log session
+        usage_stmt = (
+            update(InstanceUsageLog)
+            .where(
+                InstanceUsageLog.user_id == current_user.id,
+                InstanceUsageLog.tier == UsageTier.FREE,
+                InstanceUsageLog.ended_at.is_(None),
+            )
+            .values(ended_at=now)
+        )
+        db.execute(usage_stmt)
 
+        db.commit()
+
+        if result.rowcount > 0:
             logger.info(
                 f"Free user {current_user.id} logged out, data cleanup scheduled"
             )
@@ -387,6 +402,31 @@ async def send_premium_heartbeat(current_user: User = Depends(get_current_user))
             "heartbeat_failures": failure_count,
             "error": str(e),
         }
+
+
+@router.post("/premium/ui-event")
+async def log_premium_ui_event(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Log a frontend premium UI event to backend logs (CloudWatch).
+    Lightweight endpoint for correlating UI timing with backend events.
+    """
+    body = await request.json()
+    event_type = body.get("event_type", "unknown")
+    timestamp_ms = body.get("timestamp_ms")
+    details = body.get("details", {})
+
+    logger.info(
+        "Premium UI event: user=%s (uid: %s) event=%s timestamp_ms=%s details=%s",
+        current_user.id,
+        current_user.uid,
+        event_type,
+        timestamp_ms,
+        details,
+    )
+    return {"logged": True}
 
 
 @router.put("", response_model=User)

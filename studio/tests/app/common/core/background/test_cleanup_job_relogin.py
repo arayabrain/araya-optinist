@@ -1,5 +1,5 @@
 """
-Tests for cleanup job re-login detection (Case 24).
+Tests for cleanup job re-login detection.
 Verifies that the cleanup job properly detects when a user logs back in
 and aborts cleanup to prevent race conditions.
 """

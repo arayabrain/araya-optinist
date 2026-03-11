@@ -118,7 +118,7 @@ async def get_user_subscription(
         user_purchase = SubscriptionService.get_user_subscription_purchase(
             db, current_user.id
         )
-        logger.info(f"Fetched subscription for user {current_user.id}: {subscription}")
+        logger.debug(f"Fetched subscription for user {current_user.id}: {subscription}")
 
         if subscription is None:
             # Check if user has any expired subscriptions
@@ -183,7 +183,7 @@ async def get_user_subscription(
                 "status": subscription_status,
             }
             subscription_response = UserSubscriptionResponse(**subscription_dict)
-            logger.info(f"Subscription response: {subscription_response}")
+            logger.debug(f"Subscription response: {subscription_response}")
             return subscription_response
         except Exception as sub_error:
             logger.error(
@@ -601,9 +601,9 @@ async def get_user_invoices(
             raise HTTPException(status_code=404, detail="User not found")
 
         subscription_user, user = result
-        logger.info(f"Fetched user subscription record: {subscription_user}")
+        logger.debug(f"Fetched user subscription record: {subscription_user}")
 
-        logger.info(f"Fetching invoices for user {user_id} with email {user.email}")
+        logger.debug(f"Fetching invoices for user {user_id} with email {user.email}")
 
         # Find Stripe customer by email
         stripe_customers = stripe.Customer.list(email=user.email, limit=1)
@@ -678,14 +678,16 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         body = await request.body()
         sig_header = request.headers.get("stripe-signature")
 
-        logger.info(f"Webhook received - Body length: {len(body)}")
-        logger.info(f"Signature header: {sig_header[:50] if sig_header else 'None'}...")
+        logger.debug(f"Webhook received - Body length: {len(body)}")
+        logger.debug(
+            f"Signature header: {sig_header[:50] if sig_header else 'None'}..."
+        )
 
         # Your webhook endpoint secret from Stripe Dashboard
         endpoint_secret = WebhookService.get_webhook_secret()
 
         secret_display = "***" + endpoint_secret[-4:] if endpoint_secret else "None"
-        logger.info(f"Using webhook secret: {secret_display}")
+        logger.debug(f"Using webhook secret: {secret_display}")
 
         # Verify the webhook signature
         try:

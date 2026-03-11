@@ -2,16 +2,78 @@
 
 import json
 import os
+from typing import Optional
 
 import imageio.v3 as imageio
 import numpy as np
 import tifffile
 
-from studio.app.const import EXTENSION_LABELS
+from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.const import EXTENSION_LABELS, ThumbnailConst, ThumbnailType
+from studio.app.dir_path import DIRPATH
 
 
 class ThumbnailGenerator:
     """Utility class for generating PNG thumbnails from various sources."""
+
+    @classmethod
+    def get_thumbnail_path(
+        cls, workspace_id: str, unique_id: str, thumb_type: ThumbnailType
+    ) -> str:
+        """
+        Get the absolute path for a thumbnail PNG.
+
+        Args:
+            workspace_id: Workspace identifier
+            unique_id: Experiment unique identifier
+            thumb_type: ThumbnailType.INPUT or ThumbnailType.ROI
+
+        Returns:
+            Absolute path to the thumbnail PNG file
+        """
+        return join_filepath(
+            [
+                DIRPATH.OUTPUT_DIR,
+                workspace_id,
+                unique_id,
+                ThumbnailConst.DIRNAME,
+                thumb_type.filename,
+            ]
+        )
+
+    @classmethod
+    def resolve_source_path(cls, workspace_id: str, file_path: str) -> Optional[str]:
+        """
+        Resolve a source file path to an absolute path.
+
+        Tries in order:
+        1. Already absolute and exists → return as-is
+        2. Relative from OUTPUT_DIR → return if exists
+        3. Basename in INPUT_DIR/workspace_id → return if exists
+        4. None if not found
+
+        Args:
+            workspace_id: Workspace identifier
+            file_path: File path (absolute, relative, or just filename)
+
+        Returns:
+            Absolute path if found, None otherwise
+        """
+        if os.path.isabs(file_path) and os.path.exists(file_path):
+            return file_path
+
+        # Try as relative path from output dir
+        abs_path = join_filepath([DIRPATH.OUTPUT_DIR, file_path])
+        if os.path.exists(abs_path):
+            return abs_path
+
+        # Try as input file (just filename)
+        filename = os.path.basename(file_path)
+        input_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
+        if os.path.exists(input_path):
+            return input_path
+
+        return None
 
     @classmethod
     def generate_tiff_thumbnail(
@@ -182,7 +244,7 @@ class ThumbnailGenerator:
         output_path: str,
         file_path: str = None,
         label: str = None,
-        size: int = 512,
+        size: int = 256,
     ) -> None:
         """
         Generate a placeholder PNG thumbnail with text label.
@@ -195,7 +257,7 @@ class ThumbnailGenerator:
             output_path: Path to save PNG thumbnail
             file_path: Optional source file path (used to detect type from extension)
             label: Optional explicit label text (overrides file_path detection)
-            size: Thumbnail size in pixels (default 512px)
+            size: Thumbnail size in pixels (default 256px)
         """
         # Determine label from file extension if not provided
         if label is None and file_path:
@@ -300,6 +362,33 @@ class ThumbnailGenerator:
                             for dx in range(scale):
                                 if 0 <= py + dy < h and 0 <= px + dx < w:
                                     img[py + dy, px + dx] = text_color
+
+    @classmethod
+    def generate_input_thumbnail(
+        cls, source_path: str, output_path: str, abs_source_path: str = None
+    ) -> None:
+        """
+        Generate an input thumbnail, choosing the right strategy automatically.
+
+        - TIFF file exists locally → render first frame as grayscale
+        - TIFF file not found locally → placeholder with file type label
+        - Non-TIFF file (HDF5, MAT, etc.) → placeholder with file type label
+
+        Args:
+            source_path: Original file path (used for extension detection and label)
+            output_path: Path to save the PNG thumbnail
+            abs_source_path: Absolute path to the source file for reading.
+                If None, uses source_path directly.
+        """
+        resolved = abs_source_path or source_path
+
+        if cls.can_generate_tiff_thumbnail(source_path):
+            if resolved and os.path.exists(resolved):
+                cls.generate_tiff_thumbnail(resolved, output_path)
+            else:
+                cls.generate_placeholder_thumbnail(output_path, file_path=source_path)
+        else:
+            cls.generate_placeholder_thumbnail(output_path, file_path=source_path)
 
     @classmethod
     def can_generate_tiff_thumbnail(cls, file_path: str) -> bool:

@@ -8,12 +8,18 @@ import { FC, useEffect, useRef, useState } from "react"
 
 import { useSnackbar } from "notistack"
 
+import { logPremiumUiEvent } from "api/premium/PremiumAssignmentApi"
 import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 
 const PremiumNotificationManager: FC = () => {
   const { enqueueSnackbar, closeSnackbar } = useSnackbar()
-  const { isPremiumUser, assignmentResult, error, isAssigning } =
-    usePremiumAssignment()
+  const {
+    isPremiumUser,
+    assignmentResult,
+    error,
+    isAssigning,
+    isRetryableError,
+  } = usePremiumAssignment()
 
   const [hasShownAssignmentSuccess, setHasShownAssignmentSuccess] =
     useState(false)
@@ -35,7 +41,8 @@ const PremiumNotificationManager: FC = () => {
       isPremiumUser &&
       hasDedicatedInstance &&
       assignmentResult.instance_id &&
-      (hasNewInstance || wasWaiting)
+      hasNewInstance &&
+      wasWaiting
     ) {
       enqueueSnackbar(
         "Premium instance assigned successfully! " +
@@ -45,6 +52,9 @@ const PremiumNotificationManager: FC = () => {
           autoHideDuration: 5000,
         },
       )
+      logPremiumUiEvent("dedicated_instance_ready", {
+        instance_id: assignmentResult.instance_id,
+      })
 
       setHasShownAssignmentSuccess(true)
       setLastAssignmentId(assignmentResult.instance_id)
@@ -58,10 +68,13 @@ const PremiumNotificationManager: FC = () => {
     enqueueSnackbar,
   ])
 
-  // Show waiting snackbar when premium user does not have
-  // a dedicated instance (covers shared, scaling, not-yet-assigned)
+  // Show waiting snackbar when premium user does not have a dedicated instance.
+  // Two triggers: isAssigning (assignment API in flight) or assignmentResult
+  // shows a shared instance. Gate prevents flash on refresh before status check.
   useEffect(() => {
-    if (isPremiumUser && !hasDedicatedInstance && !isAssigning) {
+    const needsWaiting =
+      isAssigning || (assignmentResult && !hasDedicatedInstance)
+    if (isPremiumUser && needsWaiting) {
       if (!waitingKeyRef.current) {
         const key = enqueueSnackbar(
           "Please wait while your dedicated premium " +
@@ -72,17 +85,32 @@ const PremiumNotificationManager: FC = () => {
           },
         )
         waitingKeyRef.current = key
+        logPremiumUiEvent("waiting_popup_shown", {
+          is_assigning: isAssigning,
+          has_assignment: !!assignmentResult,
+          is_shared: assignmentResult?.is_shared ?? null,
+          instance_id: assignmentResult?.instance_id ?? null,
+        })
       }
     }
 
-    if (hasDedicatedInstance && waitingKeyRef.current) {
+    // Dismiss when: dedicated instance ready, OR assignment released/cleared
+    if (
+      waitingKeyRef.current &&
+      (hasDedicatedInstance || (!isAssigning && !assignmentResult))
+    ) {
+      logPremiumUiEvent("waiting_popup_dismissed", {
+        instance_id: assignmentResult?.instance_id ?? null,
+        reason: hasDedicatedInstance ? "dedicated_ready" : "assignment_cleared",
+      })
       closeSnackbar(waitingKeyRef.current)
       waitingKeyRef.current = null
     }
   }, [
     isPremiumUser,
-    hasDedicatedInstance,
     isAssigning,
+    hasDedicatedInstance,
+    assignmentResult,
     enqueueSnackbar,
     closeSnackbar,
   ])
@@ -90,7 +118,17 @@ const PremiumNotificationManager: FC = () => {
   // Show error notification for assignment failures
   useEffect(() => {
     if (isPremiumUser && error && !hasShownError) {
-      if (!error.includes("scaling") && !error.includes("retry")) {
+      if (!isRetryableError) {
+        // Dismiss waiting popup before showing error so they don't overlap
+        if (waitingKeyRef.current) {
+          logPremiumUiEvent("waiting_popup_dismissed", {
+            instance_id: assignmentResult?.instance_id ?? null,
+            reason: "error_shown",
+          })
+          closeSnackbar(waitingKeyRef.current)
+          waitingKeyRef.current = null
+        }
+
         enqueueSnackbar(
           "Premium assignment issue: " +
             `${error}. Falling back to shared resources.`,
@@ -103,7 +141,15 @@ const PremiumNotificationManager: FC = () => {
         setHasShownError(true)
       }
     }
-  }, [isPremiumUser, error, hasShownError, enqueueSnackbar])
+  }, [
+    isPremiumUser,
+    error,
+    isRetryableError,
+    hasShownError,
+    assignmentResult,
+    enqueueSnackbar,
+    closeSnackbar,
+  ])
 
   // Reset notification flags when user changes or errors clear
   useEffect(() => {

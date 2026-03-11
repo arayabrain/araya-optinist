@@ -1,4 +1,4 @@
-import { useEffect, ReactElement, memo, useState } from "react"
+import { useCallback, useEffect, memo, ReactElement } from "react"
 import { useDispatch, useSelector } from "react-redux"
 
 import CloseIcon from "@mui/icons-material/Close"
@@ -22,9 +22,14 @@ import {
   CircularProgress,
 } from "@mui/material"
 
+import { SyncStatusView } from "components/Dataview/SyncStatusView"
+import { useSyncRetry } from "components/Dataview/useSyncRetry"
 import { DisplayDataItem } from "components/Workspace/Visualize/DisplayDataItem"
 import { WORKSPACE_TYPE } from "const/Workspace"
-import { publicDataviewReproduceWorkflow } from "store/slice/Dataview/DataviewActions"
+import {
+  privateDataviewReproduceWorkflow,
+  publicDataviewReproduceWorkflow,
+} from "store/slice/Dataview/DataviewActions"
 import { DATA_TYPE } from "store/slice/DisplayData/DisplayDataType"
 import { clearFlowElements } from "store/slice/FlowElement/FlowElementSlice"
 import { clearCurrentPipeline } from "store/slice/Pipeline/PipelineSlice"
@@ -33,7 +38,6 @@ import {
   addItemForWorkflowDialog,
   deleteAllItemForWorkflowDialog,
 } from "store/slice/VisualizeItem/VisualizeItemSlice"
-import { reproduceWorkflow } from "store/slice/Workflow/WorkflowActions"
 import { AppDispatch } from "store/store"
 
 export type NodesViewProps = {
@@ -148,22 +152,21 @@ const BaseNodesView = ({
   emptyMessage,
 }: NodesViewProps) => {
   const dispatch = useDispatch<AppDispatch>()
-  const [isSyncing, setIsSyncing] = useState(false)
 
-  useEffect(() => {
-    if (open && uid && workspaceId) {
-      // Show syncing overlay while loading visualization data
-      setIsSyncing(true)
-      const api = is_public
-        ? publicDataviewReproduceWorkflow
-        : reproduceWorkflow
-      dispatch(api({ workspaceId, uid })).finally(() => {
-        setIsSyncing(false)
-      })
-    } else {
-      setIsSyncing(false)
-    }
-  }, [open, is_public, uid, workspaceId, dispatch])
+  const fetchFn = useCallback(() => {
+    const api = is_public
+      ? publicDataviewReproduceWorkflow
+      : privateDataviewReproduceWorkflow
+    return dispatch(api({ workspaceId: workspaceId!, uid: uid! })).unwrap()
+  }, [dispatch, is_public, workspaceId, uid])
+
+  const { loading, syncStatus, handleRetry } = useSyncRetry({
+    is_public,
+    fetchFn,
+    shouldFetch: open && !!uid && !!workspaceId,
+  })
+
+  const hasSyncStatus = syncStatus.pending || syncStatus.error
 
   useEffect(() => {
     const handleClosePopup = (event: KeyboardEvent) => {
@@ -207,7 +210,7 @@ const BaseNodesView = ({
         }}
       >
         {/* Loading overlay while syncing visualization data */}
-        {isSyncing && (
+        {loading && !hasSyncStatus && (
           <SyncOverlay>
             <CircularProgress size={48} />
             <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 2 }}>
@@ -237,7 +240,9 @@ const BaseNodesView = ({
               />
             )}
           </TitleHeader>
-          {data.length > 0 ? (
+          {hasSyncStatus ? (
+            <SyncStatusView syncStatus={syncStatus} onRetry={handleRetry} />
+          ) : data.length > 0 ? (
             <List>{renderData()}</List>
           ) : (
             <EmptyMessage>{emptyMessage}</EmptyMessage>

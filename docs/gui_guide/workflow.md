@@ -73,8 +73,8 @@ The left side of the window displays all available analysis methods. ROI detecti
   1. Click on the check list icon on the Image node.
   2. Select a file or a folder. Choosing a folder makes all the TIFF files in the shown sequence an input set of continuous frames.
 
-  You can select files in `input` directory under `OPTINIST_DIR`.
-  To add files to the directory, see [](DirectorySettings) section.
+  You can select files that have been uploaded to your cloud storage.
+  To add files, see [](DirectorySettings) section.
 
   <p align="center">
   <img width="400px" src="../_static/workflow/imageList.png" alt="Image file selection" />
@@ -319,11 +319,6 @@ There are 2 types of execution. You can select the type by clicking the dropdown
    With RUN, results will be overwritten. To avoid this, use RUN ALL.
 ```
 
-```{eval-rst}
-.. note::
-   If you want to set up the Conda Environment for each node first, check :ref:`Setup Conda Environment <setup_conda_environment>`
-```
-
 ### Filtering Data
 
 #### Overview
@@ -391,93 +386,11 @@ Filtered data will be saved to the output NWB file once `RUN` has been performed
   - **filtered_caiman_cnmf_xxxx_filter_time_ind**
 
 (DirectorySettings)=
-## Directory Settings
+## Cloud Storage
 
-OptiNiSt uses `OPTINIST_DIR` for retrieving data and saving results. OptiNiSt searches for input data in the 'input' directory within `OPTINIST_DIR`. The default `OPTINIST_DIR` is `/tmp/studio` on your computer.
+Araya-OptiNiSt Cloud stores your data in S3-backed cloud storage. You do not need to manage local directories.
 
-Choosing a folder makes all the TIFF files in the shown sequence an input set of continuous frames.
-
-You may not want to modify your original data folder, or you may want to make your data folder visible and accessible to OptiNiSt because imaging data can be large and take time to copy. You can take either strategy in assigning your data path:
-
-1. **Upload from GUI**
-
-   Click on the image icon on the node. The LOAD button copies the selected file to your `OPTINIST_DIR/input`.
-
-   <p align="center">
-   <img width="300px" src="../_static/workflow/image_node_upload_from_gui.png" alt="upload file" />
-   </p>
-
-   **By this method, you cannot upload multiple files or folder at once**.
-
-   - If you want to upload multiple files or folder at once, use the next method.
-
-2. **Copy Files to `OPTINIST_DIR`**
-
-   Copy your raw data to `OPTINIST_DIR/input/1/` by your OS's file manager or command lines.
-
-   ```{eval-rst}
-   .. warning::
-       Be sure to copy under ``input/1/``. ``1`` is the default workspace id for :ref:`standalone mode <about-multiuser-mode>`.
-       If you copy under ``input/`` directly, the file cannot be found from GUI.
-   ```
-
-   You can copy folder into the input directory.
-
-   - If you put folder, you can see the folder from GUI, SELECT IMAGE dialog like this.
-     <br>
-     <p align="center">
-     <img width="400px" src="../_static/workflow/put_folder_to_input_dir.png" alt="Put folder to input dir" />
-     </p>
-
-3. **Get file via URL**
-
-   Click on the link icon on the node.
-
-   <p align="center">
-   <img width="300px" src="../_static/workflow/image_node_from_cloud.png" alt="Get File from Cloud" />
-   </p>
-
-   Then input dialog will be shown. You can input the URL of the file you want to use.
-
-   <p align="center">
-   <img width="450px" src="../_static/workflow/image_node_from_cloud_input.png" alt="Input FILE URL" />
-   </p>
-
-   ```{eval-rst}
-   .. note::
-       The URL should be direct link to the one file.
-       It should be
-
-         - started with ``http://`` or ``https://``.
-         - ended with the file name with extension.
-
-       And more, download links require authentication are not supported.
-   ```
-
-4. **Change the Setting of `OPTINIST_DIR`**
-
-   This requires modifying source codes. See [](native_platforms_developer) installation guide section.
-   `OPTINIST_DIR` is defined in `optinist/studio/app/dir_path.py`. Change line for `OPTINIST_DIR`, `INPUT_DIR`, and `OUTPUT_DIR` according to your demand. Changing `dir_path.py` may also be necessary when running the pipeline on your cluster computers. Also, you can quickly change `OPTINIST_DIR` by changing the environment variable before launching. The change is effective after relaunching.
-
-## SNAKEMAKE Settings
-
-OptiNiSt's pipeline construction is based on [Snakemake](https://snakemake.readthedocs.io/en/stable/), a pipeline controlling tool for Python scripts.
-
-<br>
-<p align="center">
-<img width="600px" src="../_static/workflow/snakemake_settings.png" alt="Snakemake settings" />
-</p>
-<br/>
-
-The Snakemake parameter setting is following.
-
-- use_conda: If this is on, snakemake uses conda environment.
-- cores: Specifies the number of cores to use. If not specified, snakemake uses number of available cores in the machine.
-- forceall: Flag to indicate the execution of the target regardless of already created output.
-- forcetargets: Users may not want to change this.
-- lock: Users may not want to change this.
-
-For details about snakemake parameters please refer to [snakemake official page](https://snakemake.readthedocs.io/en/stable/executing/cli.html).
+To add data, upload files via the GUI by clicking the image icon on a data node. Choosing a folder makes all the TIFF files in the shown sequence an input set of continuous frames.
 
 ## NWB Settings
 
@@ -499,7 +412,7 @@ The details of NWB setting in OptiNiSt are following.
 - device: device used to acquire the data (information such as manufacturer, firmware version, model etc.)
 - optical_channel: information about the optical channel used to acquire the data
 - imaging_plane: information about imaging such as sampling rate, excitation wave length, calcium indicator.
-- image_serises: information about imaing time
+- image_series: information about imaging time
 - ophys: general information about imaging
 
 For general information about NWB, refer to [NWB official page](https://www.nwb.org/getting-started/).

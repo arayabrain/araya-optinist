@@ -141,8 +141,8 @@ def _snakemake_execute_process(
             ),
         )
 
-        logger.info("Workflow API created successfully")
-        logger.info("Creating DAG...")
+        logger.debug("Workflow API created successfully")
+        logger.debug("Creating DAG...")
 
         forceall = getattr(params, "forceall", False)
 

@@ -13,7 +13,6 @@ logic changes here, the following Lambda packages should also be updated:
   - premium_manager_package/premium_manager.py
   - cost_tracker_package/cost_tracker.py
   - common_user_manager_package/common_user_manager.py
-  - storage_reconciliation_package/storage_reconciliation.py
 """
 
 import logging

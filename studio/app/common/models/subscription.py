@@ -330,7 +330,7 @@ class StorageOperation(SQLModel, table=True):
         default=None,
         description="Error message if operation failed",
     )
-    # Retry tracking for Case 72
+    # Retry tracking for failed storage operations
     retry_count: int = Field(
         sa_column=Column(INTEGER, nullable=False, default=0),
         default=0,
@@ -346,7 +346,7 @@ class StorageOperation(SQLModel, table=True):
     )
 
 
-# Constants for storage operation retry (Case 72)
+# Constants for storage operation retry
 STORAGE_OPERATION_MAX_RETRIES = 5
 
 

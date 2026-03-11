@@ -5,8 +5,7 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
 import os
-
-from studio.app.common.core.utils.datetime_utils import get_current_datetime
+from datetime import datetime
 
 # -- Path setup --------------------------------------------------------------
 
@@ -17,10 +16,10 @@ from studio.app.common.core.utils.datetime_utils import get_current_datetime
 
 
 # -- Project information -----------------------------------------------------
-project = "OptiNiSt"
-copyright = f"{get_current_datetime().year}, OIST"
-author = ""
-release = "2.4.0"
+project = "Araya-OptiNiSt Cloud"
+copyright = f"{datetime.now().year}, Araya Inc., OIST"
+author = "Araya Inc."
+release = "1.0.0"
 
 # -- readthedocs -------------------------------------------------------------
 on_rtd = os.environ.get("READTHEDOCS", None) == "True"

@@ -1,5 +1,6 @@
 from studio.app.common.models.experiment import ExperimentRecord
 from studio.app.common.models.free_user import FreeUserAssignment
+from studio.app.common.models.instance_usage import InstanceUsageLog
 from studio.app.common.models.premium_user import PremiumUserAssignment
 from studio.app.common.models.subscription import (
     SubscriptionPlans,
@@ -12,6 +13,7 @@ from studio.app.common.models.workspace import Workspace, WorkspacesShareUser
 __all__ = [
     "ExperimentRecord",
     "FreeUserAssignment",
+    "InstanceUsageLog",
     "PremiumUserAssignment",
     "Organization",
     "Role",

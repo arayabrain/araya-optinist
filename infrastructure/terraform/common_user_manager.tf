@@ -42,7 +42,7 @@ data "archive_file" "common_user_manager_zip" {
 
 resource "aws_lambda_function" "common_user_manager" {
   filename      = "${path.module}/common_user_manager.py.zip"
-  function_name = "subscr-common-user-manager"
+  function_name = "${var.environment}-common-user-manager"
   role          = aws_iam_role.common_user_manager_lambda.arn
   handler       = "common_user_manager.handler"
   runtime       = "python3.11"
@@ -88,7 +88,7 @@ resource "aws_lambda_function" "common_user_manager" {
 # ===========================
 
 resource "aws_iam_role" "common_user_manager_lambda" {
-  name = "subscr-common-user-manager-lambda-role"
+  name = "${var.environment}-common-user-manager-lambda-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -117,7 +117,7 @@ resource "aws_iam_role_policy_attachment" "common_user_manager_lambda_basic" {
 
 # Custom policy for RDS access
 resource "aws_iam_role_policy" "common_user_manager_lambda_policy" {
-  name = "subscr-common-user-manager-lambda-policy"
+  name = "${var.environment}-common-user-manager-lambda-policy"
   role = aws_iam_role.common_user_manager_lambda.id
 
   policy = jsonencode({
@@ -142,8 +142,8 @@ resource "aws_iam_role_policy" "common_user_manager_lambda_policy" {
 # ===========================
 
 resource "aws_cloudwatch_log_group" "common_user_manager_logs" {
-  name              = "/aws/lambda/subscr-common-user-manager"
-  retention_in_days = 14
+  name              = "/aws/lambda/${var.environment}-common-user-manager"
+  retention_in_days = 30
 
   tags = {
     Name = "Common User Manager Logs"
@@ -157,7 +157,7 @@ resource "aws_cloudwatch_log_group" "common_user_manager_logs" {
 
 # CloudWatch Events Rule (every 10 minutes)
 resource "aws_cloudwatch_event_rule" "common_user_manager_schedule" {
-  name                = "subscr-common-user-manager-schedule"
+  name                = "${var.environment}-common-user-manager-schedule"
   description         = "Trigger common user manager every 10 minutes for user lifecycle management"
   schedule_expression = "rate(10 minutes)"
   state               = "ENABLED"

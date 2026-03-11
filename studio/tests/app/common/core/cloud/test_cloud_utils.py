@@ -513,9 +513,9 @@ async def test_calculate_limit_warning_premium_active_storage_exceeded():
 @pytest.mark.asyncio
 async def test_calculate_limit_warning_premium_warning_storage_ok():
     """
-    Case 4: Premium user in WARNING period, storage OK -> No warning.
-    When storage is under the free tier limit, no data deletion
-    warning is needed.
+    Case 4: Premium user in WARNING period, storage OK -> Grace warning.
+    Even when storage is under the free tier limit, a subscription
+    expiration warning is shown.
     """
     user_id = 1
     grace_period = SubscriptionPeriods.GRACE_PERIOD_DAYS
@@ -545,8 +545,12 @@ async def test_calculate_limit_warning_premium_warning_storage_ok():
 
                 result = await calculate_limit_warning(user_id)
 
-                # No warning when storage is under free tier limit
-                assert result is None
+                # Grace warning shown for expired premium users
+                assert result is not None
+                assert result.has_alert is True
+                assert result.alert_type == AlertType.GRACE.value
+                assert result.days_remaining >= 0
+                assert "expired" in result.message.lower()
 
 
 @pytest.mark.asyncio
@@ -691,7 +695,7 @@ async def test_calculate_limit_warning_premium_active_no_storage_issue():
 async def test_calculate_limit_warning_premium_in_grace_period():
     """
     Case 6: Premium user in GRACE period with storage within FREE
-    quota limits -> No warning needed (storage under free limit).
+    quota limits -> Grace warning shown (subscription expired).
     """
     user_id = 1
 
@@ -719,8 +723,12 @@ async def test_calculate_limit_warning_premium_in_grace_period():
 
                 result = await calculate_limit_warning(user_id)
 
-                # No warning when storage is under free tier limit
-                assert result is None
+                # Grace period warning always shown for expired premium users
+                assert result is not None
+                assert result.has_alert is True
+                assert result.alert_type == AlertType.GRACE.value
+                assert result.days_remaining >= 0
+                assert "expired" in result.message.lower()
 
 
 @pytest.mark.asyncio
@@ -864,7 +872,7 @@ async def test_calculate_limit_warning_free_plan_no_premium_warning():
 async def test_calculate_limit_warning_just_expired_grace_period():
     """
     Premium subscription JUST expired (day 1 of grace period)
-    with storage under free limit should NOT show warning.
+    with storage under free limit should show grace warning.
     """
     user_id = 1
 
@@ -892,14 +900,17 @@ async def test_calculate_limit_warning_just_expired_grace_period():
 
                 result = await calculate_limit_warning(user_id)
 
-                assert result is None
+                assert result is not None
+                assert result.has_alert is True
+                assert result.alert_type == AlertType.GRACE.value
+                assert "expired" in result.message.lower()
 
 
 @pytest.mark.asyncio
 async def test_calculate_limit_warning_last_day_of_grace():
     """
     Premium subscription on last day of grace period with storage
-    under free limit should NOT show warning.
+    under free limit should show grace warning.
     """
     user_id = 1
     grace_period = SubscriptionPeriods.GRACE_PERIOD_DAYS
@@ -928,7 +939,10 @@ async def test_calculate_limit_warning_last_day_of_grace():
 
                 result = await calculate_limit_warning(user_id)
 
-                assert result is None
+                assert result is not None
+                assert result.has_alert is True
+                assert result.alert_type == AlertType.GRACE.value
+                assert "expired" in result.message.lower()
 
 
 @pytest.mark.asyncio
@@ -1137,13 +1151,11 @@ async def test_calculate_limit_warning_expired_premium_high_storage():
                 )
 
 
-# ============================================================================
-# Case 72: Failed Storage Operations Retry Tests
-# ============================================================================
+# Failed Storage Operations Retry Tests
 
 
 class TestProcessFailedStorageOperations:
-    """Case 72: Failed storage decrement queue processing."""
+    """Failed storage decrement queue processing."""
 
     def test_process_no_failed_operations(self):
         """Should return 0 when no failed operations exist."""

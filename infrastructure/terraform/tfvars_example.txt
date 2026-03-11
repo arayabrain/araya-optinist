@@ -9,7 +9,7 @@ key_name             = "subscr-optinist-for-cloud-key"
 # s3_mount_dir = "/home/optinist/experiments_datasets"
 
 # Git branch
-git_repo = "https://github.com/arayabrain/optinist-for-cloud.git"
+git_repo = "https://github.com/arayabrain/araya-optinist.git"
 git_branch = "feature/aws-batch-integration"
 
 # ECR repository

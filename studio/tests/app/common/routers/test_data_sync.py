@@ -22,6 +22,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentSyncMode,
+)
+
 # ---------------------------------------------------------------------------
 # Mock aws_constants for Lambda tests (aws_constants is only available in Lambda)
 # Only install if not already loaded (e.g., by infrastructure test conftest)
@@ -430,8 +434,7 @@ class TestLazySync:
             "studio.app.common.core.storage.remote_storage_controller."
             "RemoteStorageController"
         ) as mock_controller_class, patch(
-            "studio.app.common.core.storage.remote_storage_controller."
-            "RemoteStorageSimpleReader"
+            "studio.app.common.core.experiment.experiment_reader." "RemoteStorageReader"
         ) as mock_reader_class:
             mock_controller_class.is_available.return_value = True
 
@@ -486,8 +489,7 @@ class TestLazySync:
             "studio.app.common.core.storage.remote_storage_controller."
             "RemoteStorageController"
         ) as mock_controller_class, patch(
-            "studio.app.common.core.storage.remote_storage_controller."
-            "RemoteStorageSimpleReader"
+            "studio.app.common.core.experiment.experiment_reader." "RemoteStorageReader"
         ) as mock_reader_class:
             mock_controller_class.is_available.return_value = True
 
@@ -946,6 +948,277 @@ class TestInputDataSync:
         # Should return empty list for nonexistent workspace
         assert isinstance(result, list)
         assert len(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# Single Experiment Sync
+# ---------------------------------------------------------------------------
+
+
+class TestSingleExperimentSync:
+    """Tests for /system-internal/sync-experiment endpoint."""
+
+    @pytest.fixture
+    def app_with_internal_router(self):
+        """Create a minimal FastAPI app with internal router."""
+        from fastapi import FastAPI
+
+        app = FastAPI()
+
+        with patch.dict(
+            os.environ,
+            {"INTERNAL_API_SECRET": "test-secret-12345"},
+        ):
+            import importlib
+
+            import studio.app.common.routers.internal as mod
+
+            importlib.reload(mod)
+            app.include_router(mod.router)
+
+        return app
+
+    @pytest.fixture
+    def client(self, app_with_internal_router):
+        """Create test client."""
+        return TestClient(app_with_internal_router)
+
+    def test_sync_single_experiment_success(self, app_with_internal_router):
+        """POST with valid params returns 200."""
+        client = TestClient(app_with_internal_router)
+
+        response = client.post(
+            "/system-internal/sync-experiment" "/1/uid1?bucket_name=my-bucket",
+            headers={"X-Internal-Secret": "test-secret-12345"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "sync_initiated"
+        assert data["workspace_id"] == "1"
+        assert data["unique_id"] == "uid1"
+
+    def test_sync_single_experiment_bad_secret(self, client):
+        """POST with wrong secret returns 403."""
+        response = client.post(
+            "/system-internal/sync-experiment" "/1/uid1?bucket_name=my-bucket",
+            headers={"X-Internal-Secret": "wrong-secret"},
+        )
+
+        assert response.status_code == 403
+
+    def test_sync_single_experiment_missing_secret(self, client):
+        """POST without secret header returns 422."""
+        response = client.post(
+            "/system-internal/sync-experiment" "/1/uid1?bucket_name=my-bucket",
+        )
+
+        assert response.status_code == 422
+
+    def test_sync_single_experiment_missing_bucket(self, client):
+        """POST without bucket_name query param returns 422."""
+        response = client.post(
+            "/system-internal/sync-experiment/1/uid1",
+            headers={"X-Internal-Secret": "test-secret-12345"},
+        )
+
+        assert response.status_code == 422
+
+    def test_sync_single_experiment_bad_bucket(self, client):
+        """Invalid bucket name returns 422."""
+        response = client.post(
+            "/system-internal/sync-experiment" "/1/uid1?bucket_name=AB",
+            headers={"X-Internal-Secret": "test-secret-12345"},
+        )
+        assert response.status_code == 422
+
+    def test_sync_single_experiment_invalid_workspace_id(self, client):
+        """Non-numeric workspace_id returns 422."""
+        response = client.post(
+            "/system-internal/sync-experiment" "/ws1/uid1?bucket_name=my-bucket",
+            headers={"X-Internal-Secret": "test-secret-12345"},
+        )
+        assert response.status_code == 422
+
+    def test_sync_single_experiment_invalid_unique_id(self, client):
+        """unique_id with special chars returns 422."""
+        response = client.post(
+            "/system-internal/sync-experiment"
+            "/1/uid%20with%20spaces?bucket_name=my-bucket",
+            headers={"X-Internal-Secret": "test-secret-12345"},
+        )
+        assert response.status_code == 422
+
+    def test_sync_single_experiment_rate_limited(self, app_with_internal_router):
+        """Rapid calls to same experiment return 429."""
+        client = TestClient(app_with_internal_router)
+
+        resp1 = client.post(
+            "/system-internal/sync-experiment" "/1/uid1?bucket_name=my-bucket",
+            headers={"X-Internal-Secret": "test-secret-12345"},
+        )
+        assert resp1.status_code == 200
+
+        resp2 = client.post(
+            "/system-internal/sync-experiment" "/1/uid1?bucket_name=my-bucket",
+            headers={"X-Internal-Secret": "test-secret-12345"},
+        )
+        assert resp2.status_code == 429
+
+    def test_sync_single_experiment_has_thumbnails(self, client):
+        """has_thumbnails=false is accepted."""
+        import studio.app.common.routers.internal as mod
+
+        mod._sync_rate_limit_cache.clear()
+
+        response = client.post(
+            "/system-internal/sync-experiment"
+            "/1/uid1"
+            "?bucket_name=my-bucket"
+            "&has_thumbnails=false",
+            headers={"X-Internal-Secret": "test-secret-12345"},
+        )
+        assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Download Single Experiment Background Task
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadSingleExperiment:
+    """Tests for _download_single_experiment background task."""
+
+    @pytest.mark.asyncio
+    async def test_skips_when_remote_storage_unavailable(self):
+        """Returns early when remote storage is not available."""
+        with patch(
+            "studio.app.common.routers.internal." "RemoteStorageController"
+        ) as mock_ctrl:
+            mock_ctrl.is_available.return_value = False
+
+            from studio.app.common.routers.internal import _download_single_experiment
+
+            # Should not raise
+            await _download_single_experiment("bucket1", "ws1", "uid1")
+
+            mock_ctrl.is_available.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_downloads_thumbnails_then_essential(self):
+        """Downloads thumbnails_only then essential_only."""
+        mock_reader = AsyncMock()
+        mock_reader.__aenter__.return_value = mock_reader
+        mock_reader.__aexit__.return_value = None
+
+        with patch(
+            "studio.app.common.routers.internal." "RemoteStorageController"
+        ) as mock_ctrl, patch(
+            "studio.app.common.routers.internal." "RemoteStorageReader",
+            return_value=mock_reader,
+        ), patch(
+            "os.path.exists", return_value=False
+        ):
+            mock_ctrl.is_available.return_value = True
+
+            from studio.app.common.routers.internal import _download_single_experiment
+
+            await _download_single_experiment(
+                "bucket1",
+                "ws1",
+                "uid1",
+                has_thumbnails=True,
+            )
+
+        assert mock_reader.download_experiment.call_count == 2
+        calls = mock_reader.download_experiment.call_args_list
+        assert calls[0] == (
+            ("ws1", "uid1"),
+            {"sync_mode": RemoteExperimentSyncMode.THUMBNAILS_ONLY},
+        )
+        assert calls[1] == (
+            ("ws1", "uid1"),
+            {"sync_mode": RemoteExperimentSyncMode.ESSENTIAL_ONLY},
+        )
+
+    @pytest.mark.asyncio
+    async def test_skips_thumbnails_when_not_present(self):
+        """has_thumbnails=False skips thumbnail download."""
+        mock_reader = AsyncMock()
+        mock_reader.__aenter__.return_value = mock_reader
+        mock_reader.__aexit__.return_value = None
+
+        with patch(
+            "studio.app.common.routers.internal." "RemoteStorageController"
+        ) as mock_ctrl, patch(
+            "studio.app.common.routers.internal." "RemoteStorageReader",
+            return_value=mock_reader,
+        ), patch(
+            "os.path.exists", return_value=False
+        ):
+            mock_ctrl.is_available.return_value = True
+
+            from studio.app.common.routers.internal import _download_single_experiment
+
+            await _download_single_experiment(
+                "bucket1",
+                "ws1",
+                "uid1",
+                has_thumbnails=False,
+            )
+
+        assert mock_reader.download_experiment.call_count == 1
+        calls = mock_reader.download_experiment.call_args_list
+        assert calls[0] == (
+            ("ws1", "uid1"),
+            {"sync_mode": RemoteExperimentSyncMode.ESSENTIAL_ONLY},
+        )
+
+    @pytest.mark.asyncio
+    async def test_skips_when_files_exist_locally(self):
+        """Early return when YAML files already present."""
+        mock_reader = AsyncMock()
+        mock_reader.__aenter__.return_value = mock_reader
+        mock_reader.__aexit__.return_value = None
+
+        with patch(
+            "studio.app.common.routers.internal." "RemoteStorageController"
+        ) as mock_ctrl, patch(
+            "studio.app.common.routers.internal." "RemoteStorageReader",
+            return_value=mock_reader,
+        ), patch(
+            "os.path.exists", return_value=True
+        ):
+            mock_ctrl.is_available.return_value = True
+
+            from studio.app.common.routers.internal import _download_single_experiment
+
+            await _download_single_experiment("bucket1", "ws1", "uid1")
+
+        assert mock_reader.download_experiment.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_handles_download_exception(self):
+        """Exception during download is caught, not propagated."""
+        mock_reader = AsyncMock()
+        mock_reader.__aenter__.return_value = mock_reader
+        mock_reader.__aexit__.return_value = None
+        mock_reader.download_experiment.side_effect = RuntimeError("S3 error")
+
+        with patch(
+            "studio.app.common.routers.internal." "RemoteStorageController"
+        ) as mock_ctrl, patch(
+            "studio.app.common.routers.internal." "RemoteStorageReader",
+            return_value=mock_reader,
+        ), patch(
+            "os.path.exists", return_value=False
+        ):
+            mock_ctrl.is_available.return_value = True
+
+            from studio.app.common.routers.internal import _download_single_experiment
+
+            # Should not raise
+            await _download_single_experiment("bucket1", "ws1", "uid1")
 
 
 # ---------------------------------------------------------------------------

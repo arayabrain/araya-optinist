@@ -29,7 +29,12 @@ class LogRecordReader(ContentUnitReader):
         **kwargs,
     ) -> None:
         if LogLevel.ALL in levels:
-            self.levels: list[bytes] = []
+            # ALL excludes DEBUG; DEBUG is only visible via direct CloudWatch access
+            self.levels: list[bytes] = [
+                level.value.encode()
+                for level in LogLevel
+                if level not in (LogLevel.ALL, LogLevel.DEBUG)
+            ]
         else:
             self.levels: list[bytes] = [level.value.encode() for level in levels]
 

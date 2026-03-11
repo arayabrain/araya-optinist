@@ -267,8 +267,12 @@ class TestPublicDataviewReproduceWorkflow:
         mock_record = MagicMock()
         mock_record.local_sync_status = LocalSyncStatus.pending.value
 
-        mock_s3_controller = MagicMock()
-        mock_s3_controller.download_experiment = AsyncMock(return_value=True)
+        mock_remote_controller = MagicMock()
+        mock_remote_controller.download_experiment = AsyncMock(return_value=True)
+
+        mock_remote_reader = AsyncMock()
+        mock_remote_reader.__aenter__ = AsyncMock(return_value=mock_remote_controller)
+        mock_remote_reader.__aexit__ = AsyncMock(return_value=False)
 
         mock_validation = MagicMock()
         mock_validation.is_displayable = False
@@ -276,14 +280,18 @@ class TestPublicDataviewReproduceWorkflow:
 
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
-            "find_published_dataview_record",
+            "find_dataview_record",
             return_value=mock_record,
         ):
-            with patch("os.path.exists", return_value=True):
+            with patch(
+                "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
+                "check_sync_status_unsynced",
+                return_value=False,
+            ):
                 with patch("os.environ.get", return_value="test-bucket"):
                     with patch(
-                        "studio.app.common.routers.dataview.S3StorageController",
-                        return_value=mock_s3_controller,
+                        "studio.app.common.routers.dataview.RemoteStorageReader",
+                        return_value=mock_remote_reader,
                     ):
                         with patch(
                             "studio.app.common.routers.dataview.PublishValidator."
@@ -307,8 +315,12 @@ class TestPublicDataviewReproduceWorkflow:
         mock_record = MagicMock()
         mock_record.local_sync_status = LocalSyncStatus.error.value
 
-        mock_s3_controller = MagicMock()
-        mock_s3_controller.download_experiment = AsyncMock(return_value=True)
+        mock_remote_controller = MagicMock()
+        mock_remote_controller.download_experiment = AsyncMock(return_value=True)
+
+        mock_remote_reader = AsyncMock()
+        mock_remote_reader.__aenter__ = AsyncMock(return_value=mock_remote_controller)
+        mock_remote_reader.__aexit__ = AsyncMock(return_value=False)
 
         mock_validation = MagicMock()
         mock_validation.is_displayable = False
@@ -316,14 +328,18 @@ class TestPublicDataviewReproduceWorkflow:
 
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
-            "find_published_dataview_record",
+            "find_dataview_record",
             return_value=mock_record,
         ):
-            with patch("os.path.exists", return_value=True):
+            with patch(
+                "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
+                "check_sync_status_unsynced",
+                return_value=False,
+            ):
                 with patch("os.environ.get", return_value="test-bucket"):
                     with patch(
-                        "studio.app.common.routers.dataview.S3StorageController",
-                        return_value=mock_s3_controller,
+                        "studio.app.common.routers.dataview.RemoteStorageReader",
+                        return_value=mock_remote_reader,
                     ):
                         with patch(
                             "studio.app.common.routers.dataview.PublishValidator."
@@ -347,23 +363,31 @@ class TestPublicDataviewReproduceWorkflow:
         mock_record = MagicMock()
         mock_record.local_sync_status = LocalSyncStatus.synced.value
 
-        mock_s3_controller = MagicMock()
+        mock_remote_controller = MagicMock()
         # Use AsyncMock for async method
-        mock_s3_controller.download_experiment = AsyncMock(return_value=True)
+        mock_remote_controller.download_experiment = AsyncMock(return_value=True)
+
+        mock_remote_reader = AsyncMock()
+        mock_remote_reader.__aenter__ = AsyncMock(return_value=mock_remote_controller)
+        mock_remote_reader.__aexit__ = AsyncMock(return_value=False)
 
         mock_validation = MagicMock()
         mock_validation.is_displayable = True
 
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
-            "find_published_dataview_record",
+            "find_dataview_record",
             return_value=mock_record,
         ):
-            with patch("os.path.exists", return_value=False):
+            with patch(
+                "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
+                "check_sync_status_unsynced",
+                return_value=True,
+            ):
                 with patch("os.environ.get", return_value="test-bucket"):
                     with patch(
-                        "studio.app.common.routers.dataview.S3StorageController",
-                        return_value=mock_s3_controller,
+                        "studio.app.common.routers.dataview.RemoteStorageReader",
+                        return_value=mock_remote_reader,
                     ):
                         with patch(
                             "studio.app.common.routers.dataview.PublishValidator."
@@ -378,7 +402,7 @@ class TestPublicDataviewReproduceWorkflow:
                                     workspace_id="1", unique_id="exp123", db=MagicMock()
                                 )
 
-        mock_s3_controller.download_experiment.assert_called_once()
+        mock_remote_controller.download_experiment.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_reproduce_auto_updates_sync_status_when_data_available(self):
@@ -390,8 +414,12 @@ class TestPublicDataviewReproduceWorkflow:
         mock_record = MagicMock()
         mock_record.local_sync_status = LocalSyncStatus.error.value
 
-        mock_s3_controller = MagicMock()
-        mock_s3_controller.download_experiment = AsyncMock(return_value=True)
+        mock_remote_controller = MagicMock()
+        mock_remote_controller.download_experiment = AsyncMock(return_value=True)
+
+        mock_remote_reader = AsyncMock()
+        mock_remote_reader.__aenter__ = AsyncMock(return_value=mock_remote_controller)
+        mock_remote_reader.__aexit__ = AsyncMock(return_value=False)
 
         mock_validation = MagicMock()
         mock_validation.is_displayable = True
@@ -400,14 +428,18 @@ class TestPublicDataviewReproduceWorkflow:
 
         with patch(
             "studio.app.common.routers.dataview.DataviewService."
-            "find_published_dataview_record",
+            "find_dataview_record",
             return_value=mock_record,
         ):
-            with patch("os.path.exists", return_value=True):
+            with patch(
+                "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
+                "check_sync_status_unsynced",
+                return_value=False,
+            ):
                 with patch("os.environ.get", return_value="test-bucket"):
                     with patch(
-                        "studio.app.common.routers.dataview.S3StorageController",
-                        return_value=mock_s3_controller,
+                        "studio.app.common.routers.dataview.RemoteStorageReader",
+                        return_value=mock_remote_reader,
                     ):
                         with patch(
                             "studio.app.common.routers.dataview.PublishValidator."

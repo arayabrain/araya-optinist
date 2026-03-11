@@ -1,6 +1,7 @@
 """
 Cloud utilities for user context and subscription management.
 """
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -97,7 +98,10 @@ async def _ensure_user_bucket_exists_impl(
 
     # Generate new bucket name if not exists
     if not bucket_name:
-        bucket_name = RemoteStorageController.create_user_bucket_name(id=user_id)
+        prefix = os.environ.get("S3_USER_BUCKET_PREFIX", "optinist-user")
+        bucket_name = RemoteStorageController.create_user_bucket_name(
+            id=user_id, prefix=prefix
+        )
         logger.info(f"Generated new bucket name for user {user_id}: {bucket_name}")
 
     # Create bucket (idempotent - will succeed if already exists)
@@ -275,11 +279,11 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
                 deletion_date = grace_end + timedelta(days=WARNING_PERIOD_DAYS)
                 now = SubscriptionService.get_current_datetime()
 
-                logger.info(f"User {user_id} subscription details:")
-                logger.info(f"Subscription end: {subscription_end}")
-                logger.info(f"Grace end: {grace_end}")
-                logger.info(f"Deletion date: {deletion_date}")
-                logger.info(f"Current time: {now}")
+                logger.debug(f"User {user_id} subscription details:")
+                logger.debug(f"Subscription end: {subscription_end}")
+                logger.debug(f"Grace end: {grace_end}")
+                logger.debug(f"Deletion date: {deletion_date}")
+                logger.debug(f"Current time: {now}")
 
                 if subscription_end > now:
                     subscription_status = SubscriptionLifecycleStatus.ACTIVE
@@ -323,10 +327,10 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
             current_usage_gb = current_usage_bytes / StorageSize.GB
 
             # Step 3: Apply the 5 cases
-            logger.info(f"User {user_id} warning analysis:")
-            logger.info(f"Subscription status: {subscription_status}")
-            logger.info(f"Storage exceeded: {storage_exceeded}")
-            logger.info(
+            logger.debug(f"User {user_id} warning analysis:")
+            logger.debug(f"Subscription status: {subscription_status}")
+            logger.debug(f"Storage exceeded: {storage_exceeded}")
+            logger.debug(
                 f"Current usage: {current_usage_gb:.2f}GB / {effective_quota_gb:.1f}GB "
                 f"(effective quota for {subscription_status})"
             )
@@ -336,7 +340,7 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
                 subscription_status == SubscriptionLifecycleStatus.FREE
                 and not storage_exceeded
             ):
-                logger.info(
+                logger.debug(
                     f"User {user_id}: No warning needed (free plan, within limits)"
                 )
                 return None
@@ -391,17 +395,17 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
                 )
 
             # Cases 4 & 5: Premium user with subscription issues (grace/warning/overdue)
-            # Only show alert if storage exceeds free tier limit
+            # Always show warning for expired premium users
             match subscription_status:
                 case (
                     SubscriptionLifecycleStatus.GRACE
                     | SubscriptionLifecycleStatus.WARNING
                     | SubscriptionLifecycleStatus.OVERDUE
-                ) if storage_exceeded:
-                    logger.info(
+                ):
+                    logger.debug(
                         f"User {user_id}: Creating limit warning "
                         f"(status: {subscription_status}, "
-                        f"storage_exceeded: True)"
+                        f"storage_exceeded: {storage_exceeded})"
                     )
 
                     # Determine alert type using AlertType enum
@@ -445,18 +449,6 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
                             deletion_date.isoformat() if deletion_date else None
                         ),
                         message=message,
-                    )
-
-                case (
-                    SubscriptionLifecycleStatus.GRACE
-                    | SubscriptionLifecycleStatus.WARNING
-                    | SubscriptionLifecycleStatus.OVERDUE
-                ):
-                    # Storage is under free tier limit, no warning
-                    logger.info(
-                        f"User {user_id}: No warning needed "
-                        f"(status: {subscription_status}, "
-                        f"storage within free limit)"
                     )
                 case _:
                     pass
@@ -629,7 +621,7 @@ class CloudDebug:
         Print details of the admin user for debugging.
         """
         try:
-            logger.info("=== ADMIN USER DETAILS ===")
+            logger.debug("=== ADMIN USER DETAILS ===")
 
             # Get user context using crud_users
             from studio.app.common.core.users import crud_users
@@ -638,26 +630,26 @@ class CloudDebug:
             with session_scope() as db:
                 user_with_details = await crud_users.get_user_with_context(db, user_id)
                 if user_with_details:
-                    logger.info(f"User ID: {user_with_details.id}")
-                    logger.info(f"Name: {user_with_details.name}")
-                    logger.info(f"Email: {user_with_details.email}")
-                    logger.info(f"UID: {user_with_details.uid}")
-                    logger.info(
+                    logger.debug(f"User ID: {user_with_details.id}")
+                    logger.debug(f"Name: {user_with_details.name}")
+                    logger.debug(f"Email: {user_with_details.email}")
+                    logger.debug(f"UID: {user_with_details.uid}")
+                    logger.debug(
                         f"Subscription Type: {user_with_details.subscription_type}"
                     )
-                    logger.info(
+                    logger.debug(
                         f"Has Active Subscription: "
                         f"{user_with_details.has_active_subscription}"
                     )
                     subscription_status = (
                         user_with_details.subscription_status or SubscriptionStatus.FREE
                     )
-                    logger.info(f"Subscription Status: {subscription_status}")
-                    logger.info(
+                    logger.debug(f"Subscription Status: {subscription_status}")
+                    logger.debug(
                         f"Storage Usage: "
                         f"{user_with_details.storage_usage_bytes or 0} bytes"
                     )
-                    logger.info(
+                    logger.debug(
                         f"Storage Quota: "
                         f"{user_with_details.storage_quota_bytes or 0} bytes"
                     )
@@ -683,11 +675,11 @@ class CloudDebug:
                         if user.subscription_status
                         and user.subscription_status != SubscriptionStatus.FREE
                     )
-                    logger.info(f"Total active subscriptions: {active_count}")
+                    logger.debug(f"Total active subscriptions: {active_count}")
                 except Exception as e:
                     logger.warning(f"Failed to count active subscriptions: {e}")
 
-            logger.info("=== END ADMIN USER DETAILS ===")
+            logger.debug("=== END ADMIN USER DETAILS ===")
 
         except Exception as e:
             logger.error(f"Failed to print admin user details: {e}")
