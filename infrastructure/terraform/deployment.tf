@@ -28,7 +28,7 @@ resource "null_resource" "build_and_deploy" {
       echo "Waiting for ECR image to be available..."
       sleep 60
 
-      echo "✅ Build and push completed successfully"
+      echo "Build and push completed successfully"
 
     EOT
   }
@@ -77,7 +77,7 @@ resource "aws_s3_object" "app_setup_script" {
 
 # SSM document to run setup script
 resource "aws_ssm_document" "app_setup" {
-  name            = "subscr-optinist-app-setup"
+  name            = "${local.env_prefix}-app-setup"
   document_type   = "Command"
   document_format = "YAML"
 
@@ -106,7 +106,7 @@ resource "aws_ssm_document" "app_setup" {
           timeoutSeconds = "3600"
           runCommand = [
             "chmod +x /tmp/app_setup.sh",
-            "/tmp/app_setup.sh"
+            "ENV_PREFIX=${var.environment} /tmp/app_setup.sh"
           ]
         }
       }
@@ -184,8 +184,8 @@ resource "null_resource" "deploy_to_ecs" {
             fi
 
       echo "=== DEPLOYMENT COMPLETE ==="
-      echo "✅ Application is ready at: http://${aws_lb.autoscaling.dns_name}"
-      echo "✅ Health check: http://${aws_lb.autoscaling.dns_name}/health"
+      echo "Application is ready at: http://${aws_lb.autoscaling.dns_name}"
+      echo "Health check: http://${aws_lb.autoscaling.dns_name}/health"
     EOT
   }
 }

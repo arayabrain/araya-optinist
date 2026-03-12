@@ -20,7 +20,10 @@ import {
   INITIAL_IMAGE_ELEMENT_NAME,
 } from "const/flowchart"
 import { WORKSPACE_TYPE } from "const/Workspace"
-import { publicDataviewReproduceWorkflow } from "store/slice/Dataview/DataviewActions"
+import {
+  privateDataviewReproduceWorkflow,
+  publicDataviewReproduceWorkflow,
+} from "store/slice/Dataview/DataviewActions"
 import { uploadFile } from "store/slice/FileUploader/FileUploaderActions"
 import {
   addAlgorithmNode,
@@ -272,6 +275,7 @@ export const flowElementSlice = createSlice({
           importWorkflowConfig.fulfilled,
           fetchWorkflow.fulfilled,
           reproduceWorkflow.fulfilled,
+          privateDataviewReproduceWorkflow.fulfilled,
           publicDataviewReproduceWorkflow.fulfilled,
         ),
         (state, action) => {

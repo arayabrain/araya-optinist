@@ -105,16 +105,16 @@ def GLM(
         error_message = f"Error fitting GLM: {str(e)}."
         "Check for NaN or inf values. Ensure your family/link choice is appropriate"
         logger.error(error_message)
-        logger.info(f"X shape: {tX.shape}, Y shape: {tY.shape}")
-        logger.info(
+        logger.debug(f"X shape: {tX.shape}, Y shape: {tY.shape}")
+        logger.debug(
             f"X contains NaN: {np.isnan(tX.values).any()},"
             "X contains inf: {np.isinf(tX.values).any()}"
         )
-        logger.info(
+        logger.debug(
             f"Y contains NaN: {np.isnan(tY.values).any()},"
             "Y contains inf: {np.isinf(tY.values).any()}"
         )
-        logger.info(f"Y min: {np.min(tY.values)}, Y max: {np.max(tY.values)}")
+        logger.debug(f"Y min: {np.min(tY.values)}, Y max: {np.max(tY.values)}")
         raise ValueError(error_message)
 
     # NWB追加

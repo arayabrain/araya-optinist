@@ -1,11 +1,8 @@
-import { useEffect, useState } from "react"
+import { useCallback, useState } from "react"
 import { useDispatch, useSelector } from "react-redux"
 
 import AssignmentOutlinedIcon from "@mui/icons-material/AssignmentOutlined"
-import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline"
-import HourglassEmptyIcon from "@mui/icons-material/HourglassEmpty"
 import {
-  Alert,
   Box,
   Button,
   Chip,
@@ -24,14 +21,18 @@ import {
 } from "@mui/material"
 
 import Loading from "components/common/Loading"
+import { SyncStatusView } from "components/Dataview/SyncStatusView"
+import { useSyncRetry } from "components/Dataview/useSyncRetry"
 import { WORKSPACE_TYPE } from "const/Workspace"
-import { publicDataviewReproduceWorkflow } from "store/slice/Dataview/DataviewActions"
+import {
+  privateDataviewReproduceWorkflow,
+  publicDataviewReproduceWorkflow,
+} from "store/slice/Dataview/DataviewActions"
 import { DataviewType } from "store/slice/Dataview/DataviewType"
 import { selectFlowNodes } from "store/slice/FlowElement/FlowElementSelectors"
 import { clearFlowElements } from "store/slice/FlowElement/FlowElementSlice"
 import { NODE_TYPE_SET } from "store/slice/FlowElement/FlowElementType"
 import { clearCurrentPipeline } from "store/slice/Pipeline/PipelineSlice"
-import { reproduceWorkflow } from "store/slice/Workflow/WorkflowActions"
 import { AppDispatch } from "store/store"
 import { formatParamsForDisplay } from "utils/param/ParamUtils"
 
@@ -63,13 +64,6 @@ export const WorkflowDetailsView = ({
 }: WorkflowDetailsViewProps) => {
   const dispatch = useDispatch<AppDispatch>()
   const flowNodes = useSelector(selectFlowNodes)
-  const [loading, setLoading] = useState(false)
-  const [syncStatus, setSyncStatus] = useState<{
-    pending: boolean
-    error: boolean
-    message: string
-  }>({ pending: false, error: false, message: "" })
-  const [retryCount, setRetryCount] = useState(0)
   const [paramsDialog, setParamsDialog] = useState<{
     open: boolean
     params: Record<string, unknown> | null
@@ -82,59 +76,25 @@ export const WorkflowDetailsView = ({
     functionName: "",
   })
 
-  useEffect(() => {
-    if (open && dataviewRecord) {
-      setLoading(true)
-      setSyncStatus({ pending: false, error: false, message: "" })
-      const api = is_public
-        ? publicDataviewReproduceWorkflow
-        : reproduceWorkflow
-      dispatch(
-        api({
-          workspaceId: dataviewRecord.workspace.id,
-          uid: dataviewRecord.uid,
-        }),
-      )
-        .unwrap()
-        .then(() => {
-          setLoading(false)
-        })
-        .catch((error) => {
-          setLoading(false)
-          // Handle 202 (pending sync) and 503 (sync error) for public dataview
-          if (is_public && error?.response) {
-            const status = error.response.status
-            const data = error.response.data
+  const fetchFn = useCallback(() => {
+    const api = is_public
+      ? publicDataviewReproduceWorkflow
+      : privateDataviewReproduceWorkflow
+    return dispatch(
+      api({
+        workspaceId: dataviewRecord!.workspace.id,
+        uid: dataviewRecord!.uid,
+      }),
+    ).unwrap()
+  }, [dispatch, is_public, dataviewRecord])
 
-            if (status === 202) {
-              // Experiment is published but not yet synced
-              setSyncStatus({
-                pending: true,
-                error: false,
-                message:
-                  data?.message ||
-                  "Publishing in progress, check back in a few minutes.",
-              })
-              // Auto-retry after 30 seconds (max 10 retries = 5 minutes)
-              if (retryCount < 10) {
-                setTimeout(() => {
-                  setRetryCount(retryCount + 1)
-                }, 30000)
-              }
-            } else if (status === 503) {
-              // Sync failed or download error
-              setSyncStatus({
-                pending: false,
-                error: true,
-                message:
-                  data?.message ||
-                  "Experiment temporarily unavailable, please try again later.",
-              })
-            }
-          }
-        })
-    }
-  }, [open, dataviewRecord, is_public, dispatch, retryCount])
+  const { loading, syncStatus, handleRetry } = useSyncRetry({
+    is_public,
+    fetchFn,
+    shouldFetch: open && !!dataviewRecord,
+  })
+
+  const hasSyncStatus = syncStatus.pending || syncStatus.error
 
   // Extract algorithm nodes from flowNodes
   const nodeDetails: NodeDetails[] = flowNodes
@@ -250,53 +210,8 @@ export const WorkflowDetailsView = ({
           </Box>
         </DialogTitle>
         <DialogContent dividers>
-          {syncStatus.pending ? (
-            <Box
-              sx={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                py: 4,
-                gap: 2,
-              }}
-            >
-              <HourglassEmptyIcon
-                sx={{ fontSize: 48, color: "warning.main" }}
-              />
-              <Alert severity="info" sx={{ width: "100%" }}>
-                <Typography variant="body1" gutterBottom>
-                  {syncStatus.message}
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Experiments are typically available within 5 minutes. This
-                  page will auto-retry.
-                </Typography>
-              </Alert>
-            </Box>
-          ) : syncStatus.error ? (
-            <Box
-              sx={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                py: 4,
-                gap: 2,
-              }}
-            >
-              <ErrorOutlineIcon sx={{ fontSize: 48, color: "error.main" }} />
-              <Alert severity="error" sx={{ width: "100%" }}>
-                <Typography variant="body1">{syncStatus.message}</Typography>
-              </Alert>
-              <Button
-                variant="outlined"
-                onClick={() => {
-                  setRetryCount(0)
-                  setSyncStatus({ pending: false, error: false, message: "" })
-                }}
-              >
-                Retry
-              </Button>
-            </Box>
+          {hasSyncStatus ? (
+            <SyncStatusView syncStatus={syncStatus} onRetry={handleRetry} />
           ) : loading || flowNodes.length === 0 ? (
             <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
               <Loading loading={loading} />

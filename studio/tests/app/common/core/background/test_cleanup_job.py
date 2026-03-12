@@ -51,7 +51,8 @@ class TestVerifyS3Backup:
 class TestCleanupUserData:
     """Test user data cleanup"""
 
-    def test_cleanup_user_data_with_s3_verification(self):
+    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
+    def test_cleanup_user_data_with_s3_verification(self, mock_relogin):
         """Test cleanup only deletes data with S3 backup"""
         with patch.object(
             DataCleanupJob, "_verify_s3_backup_exists", return_value=True
@@ -67,7 +68,8 @@ class TestCleanupUserData:
         assert result is True
         assert mock_rmtree.call_count >= 1
 
-    def test_cleanup_user_data_keeps_unverified(self):
+    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
+    def test_cleanup_user_data_keeps_unverified(self, mock_relogin):
         """Test cleanup keeps data without S3 backup"""
         with patch.object(
             DataCleanupJob, "_verify_s3_backup_exists", return_value=False
@@ -191,6 +193,38 @@ class TestHandleOrphanedData:
                     DataCleanupJob._handle_orphaned_data()
 
                 mock_session.delete.assert_not_called()
+
+    def test_handle_orphaned_data_empty_reservations(self):
+        """Test cleanup when EC2 returns empty Reservations"""
+        mock_assignment = MagicMock()
+        mock_assignment.user_id = "123"
+        mock_assignment.instance_id = "i-12345"
+        mock_assignment.active_workflow_count = 0
+
+        with patch("boto3.client") as mock_boto:
+            mock_ec2 = MagicMock()
+            mock_boto.return_value = mock_ec2
+            mock_ec2.describe_instances.return_value = {"Reservations": []}
+
+            with patch(
+                "studio.app.common.core.background" ".cleanup_job.session_scope"
+            ) as mock:
+                mock_session = MagicMock()
+                mock.return_value.__enter__.return_value = mock_session
+                mock_session.execute.return_value.all.return_value = [
+                    (mock_assignment,)
+                ]
+                mock_session.get.return_value = MagicMock(id=123)
+
+                with patch.dict("os.environ", {"INSTANCE_ID": "i-current"}):
+                    with patch.object(
+                        DataCleanupJob,
+                        "_cleanup_user_data",
+                        return_value=True,
+                    ):
+                        DataCleanupJob._handle_orphaned_data()
+
+                mock_session.delete.assert_called_once_with(mock_assignment)
 
     def test_handle_orphaned_data_active_workflows(self):
         """Test no cleanup when workflows are active"""

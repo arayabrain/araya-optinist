@@ -1,7 +1,7 @@
 Tutorials
 =================
 
-This tutorial will walk you through the basic workflow of Optinist. You can read through this tutorial and try running Optinst on our sample dataset. Then you will be ready to start using Optinist on your own data.
+This tutorial will walk you through the basic workflow of OptiNiSt. You can read through this tutorial and try running OptiNiSt on our sample dataset. Then you will be ready to start using OptiNiSt on your own data.
 
 * [Loading Sample Data](#loading-sample-data)
 * [Adding Nodes to your Workflow](#adding-nodes-to-your-workflow)
@@ -11,7 +11,7 @@ This tutorial will walk you through the basic workflow of Optinist. You can read
 * [Tutorial 2](#practice-with-tutorial-2)
 
 ## Loading Sample Data
-Let's begin by loading some sample data. The `Import sample data` button can be found by first selecting the `Documentation` button. This action moves the sample data into your Optinist [working directory](#DirectorySettings).
+Let's begin by loading some sample data. The `Import sample data` button can be found by first selecting the `Documentation` button. This action moves the sample data into your OptiNiSt [cloud storage](#DirectorySettings).
 
 Next, switch to the [Record](#Record) tab. This is where the records of all your workflows will be kept. You can conveniently reload any previous workflow from here. To load the tutorial workflow, select the [Reproduce](#ReproduceButton) icon. Note that you can download the [Workflow, Snakemake, and NWB files](#DownloadButtons) for use later.
 
@@ -66,7 +66,7 @@ By clicking on more than one ROI mask, you can also `Merge ROI`. The selected RO
 </p>
 
 ## Visualising Analysis Algorithms
-Finally, let's check the ETA analysis. Open up a new box and select `mean` under the ETA header of the drop-down menu. Link this box to your data to only see the `cell_roi` data. Then select and ROI from the legend.
+Finally, let's check the ETA analysis. Open up a new box and select `mean` under the ETA header of the drop-down menu. Link this box to your data to only see the `cell_roi` data. Then select an ROI from the legend.
 
 You'll see the mean trace across all of the time points specified by 1s in the `sample_mouse2p_behavior.csv` file. Also std can be displayed by setting `STD` in the left side-bar to True.
 

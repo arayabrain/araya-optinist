@@ -9,6 +9,33 @@ export MYSQL_USER="${DB_USER}"
 export MYSQL_PASSWORD="${DB_PASSWORD}"
 export MYSQL_DATABASE="${DB_NAME}"
 
+# Fetch Firebase config from Secrets Manager (overrides files baked into Docker image)
+if [ -n "$ENV_PREFIX" ]; then
+    echo "Fetching Firebase config from Secrets Manager for environment: ${ENV_PREFIX}"
+    FIREBASE_CONFIG_DIR="/app/studio/config/auth"
+    mkdir -p "$FIREBASE_CONFIG_DIR"
+
+    FIREBASE_CONFIG=$(aws secretsmanager get-secret-value \
+        --secret-id "${ENV_PREFIX}-optinist/firebase/config" \
+        --query "SecretString" --output text --region "${AWS_DEFAULT_REGION:-ap-northeast-1}" 2>/dev/null || echo "")
+    if [ -n "$FIREBASE_CONFIG" ]; then
+        echo "$FIREBASE_CONFIG" > "$FIREBASE_CONFIG_DIR/firebase_config.json"
+        echo "Firebase config written from Secrets Manager"
+    else
+        echo "WARNING: Could not fetch Firebase config from Secrets Manager. Using defaults."
+    fi
+
+    FIREBASE_PRIVATE=$(aws secretsmanager get-secret-value \
+        --secret-id "${ENV_PREFIX}-optinist/firebase/private-key" \
+        --query "SecretString" --output text --region "${AWS_DEFAULT_REGION:-ap-northeast-1}" 2>/dev/null || echo "")
+    if [ -n "$FIREBASE_PRIVATE" ]; then
+        echo "$FIREBASE_PRIVATE" > "$FIREBASE_CONFIG_DIR/firebase_private.json"
+        echo "Firebase private key written from Secrets Manager"
+    else
+        echo "WARNING: Could not fetch Firebase private key from Secrets Manager. Using defaults."
+    fi
+fi
+
 echo 'Starting container'
 echo 'Attempting to connect to RDS'
 # Log environment variables for debugging
@@ -21,7 +48,22 @@ echo "DB_NAME: ${MYSQL_DATABASE}"
 # Tries 30 times with 2 second intervals (total 60 seconds timeout)
 max_tries=30
 counter=0
-until mysql --skip-ssl -h "${MYSQL_SERVER}" -u "${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e 'SELECT 1;'
+
+# Build SSL options based on MYSQL_SSL_MODE
+if [ -n "${MYSQL_SSL_MODE}" ]; then
+    case "${MYSQL_SSL_MODE}" in
+        DISABLED)
+            ssl_opts="--skip-ssl"
+            ;;
+        *)
+            ssl_opts="--ssl"
+            ;;
+    esac
+else
+    ssl_opts=""
+fi
+
+until mysql ${ssl_opts} -h "${MYSQL_SERVER}" -u "${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e 'SELECT 1;'
 do
     sleep 2
     [[ counter -eq $max_tries ]] && echo "Failed to connect to Database" && exit 1
@@ -35,6 +77,21 @@ echo 'Database connection successful'
 # This ensures all database tables and schemas are up to date
 cd /app
 
+# Verify database SSL connection before running migrations
+echo "Verifying database SSL connection..."
+python3 -c "
+from studio.app.common.db.config import DATABASE_CONFIG, get_ssl_creator
+from sqlalchemy import create_engine, text
+creator = get_ssl_creator()
+kwargs = {'creator': creator} if creator else {}
+engine = create_engine(DATABASE_CONFIG.DATABASE_URL, **kwargs)
+with engine.connect() as c:
+    r = c.execute(text('SHOW STATUS LIKE \"Ssl_cipher\"'))
+    cipher = r.fetchone()
+    print(f'SSL: {cipher[1] if cipher and cipher[1] else \"disabled\"}')
+engine.dispose()
+" 2>&1 || echo "WARNING: SSL verification failed (see above)"
+
 # Run Alembic upgrade - if migrations fail, the container will exit
 # This causes ECS to mark the deployment as failed and revert to the previous version
 echo "Running Alembic upgrade..."
@@ -45,6 +102,23 @@ if ! alembic upgrade head 2>&1; then
     exit 1
 fi
 echo "Database migrations completed successfully"
+
+# Seed subscription plans from SUBSCRIPTION_PLANS_CONFIG env var
+if [ -n "$SUBSCRIPTION_PLANS_CONFIG" ]; then
+    echo "Seeding subscription plans..."
+    python3 /app/scripts/seed_subscription_plans.py || echo "WARNING: Subscription plan seeding failed (non-fatal)"
+else
+    echo "SUBSCRIPTION_PLANS_CONFIG not set, skipping subscription plan seeding"
+fi
+
+# Create test users from TEST_USERS_CONFIG env var
+if [ -n "$TEST_USERS_CONFIG" ]; then
+    echo "Creating test users..."
+    cd /app/scripts && python3 create_test_users.py || echo "WARNING: Test user creation failed (non-fatal)"
+    cd /app
+else
+    echo "TEST_USERS_CONFIG not set, skipping test user creation"
+fi
 
 # Verify backend configuration
 # Ensures required environment variables are set before starting the application

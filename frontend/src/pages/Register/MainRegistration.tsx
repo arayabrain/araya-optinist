@@ -1,4 +1,11 @@
-import { ChangeEvent, FormEvent, useEffect, useState } from "react"
+import {
+  ChangeEvent,
+  FormEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react"
 import { useDispatch, useSelector } from "react-redux"
 import { Link, useNavigate } from "react-router-dom"
 
@@ -13,11 +20,16 @@ import {
   CircularProgress,
   Snackbar,
   styled,
+  Tooltip,
   Typography,
 } from "@mui/material"
 
 import PublicHeader from "components/PublicLayout/PublicHeader"
-import { regexIgnoreS, regexPassword } from "const/Auth"
+import {
+  ALLOWED_SPECIAL_CHARACTERS,
+  regexIgnoreS,
+  regexPassword,
+} from "const/Auth"
 import {
   registerUser,
   resendVerificationEmail,
@@ -67,6 +79,20 @@ const RegistrationForm = () => {
   const [validationError, setValidationError] = useState("")
   const [showPassword, setShowPassword] = useState(false)
   const [showResendSnackbar, setShowResendSnackbar] = useState(false)
+  const [fieldErrors, setFieldErrors] = useState<Record<string, boolean>>({})
+  const [resendCooldown, setResendCooldown] = useState(false)
+  const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const startCooldown = useCallback(() => {
+    setResendCooldown(true)
+    if (cooldownTimerRef.current) {
+      clearTimeout(cooldownTimerRef.current)
+    }
+    cooldownTimerRef.current = setTimeout(() => {
+      setResendCooldown(false)
+      cooldownTimerRef.current = null
+    }, 60000)
+  }, [])
 
   // Cleanup on mount/unmount
   useEffect(() => {
@@ -74,6 +100,9 @@ const RegistrationForm = () => {
 
     return () => {
       dispatch(clearAllRegistrationState())
+      if (cooldownTimerRef.current) {
+        clearTimeout(cooldownTimerRef.current)
+      }
     }
   }, [dispatch])
 
@@ -93,6 +122,7 @@ const RegistrationForm = () => {
     // Clear validation error
     if (validationError) {
       setValidationError("")
+      setFieldErrors({})
     }
 
     // Clear server error
@@ -105,16 +135,24 @@ const RegistrationForm = () => {
   const validateForm = (): boolean => {
     if (!formData.email || !formData.password || !formData.name) {
       setValidationError("Please fill in all fields")
+      setFieldErrors({
+        name: !formData.name,
+        email: !formData.email,
+        password: !formData.password,
+        confirmPassword: !formData.confirmPassword,
+      })
       return false
     }
 
     if (formData.name.trim().length < 2) {
       setValidationError("Name must be at least 2 characters")
+      setFieldErrors({ name: true })
       return false
     }
 
     if (formData.password.length > 255) {
       setValidationError("The text may not be longer than 255 characters")
+      setFieldErrors({ password: true })
       return false
     }
 
@@ -122,16 +160,19 @@ const RegistrationForm = () => {
       setValidationError(
         "Your password must be at least 6 characters long and must contain at least one letter, number, and special character",
       )
+      setFieldErrors({ password: true })
       return false
     }
 
     if (regexIgnoreS.test(formData.password)) {
       setValidationError("Allowed special characters (!#$%&()*+,-./@_|)")
+      setFieldErrors({ password: true })
       return false
     }
 
     if (formData.password !== formData.confirmPassword) {
       setValidationError("password is not match")
+      setFieldErrors({ confirmPassword: true })
       return false
     }
 
@@ -158,6 +199,7 @@ const RegistrationForm = () => {
     if (registerUser.fulfilled.match(resultAction)) {
       // eslint-disable-next-line no-console
       console.log("Pre-registration successful! Please verify your email.")
+      startCooldown()
     } else {
       // eslint-disable-next-line no-console
       console.error("Pre-registration failed:", resultAction.payload)
@@ -166,6 +208,7 @@ const RegistrationForm = () => {
 
   // Handle resend email
   const handleResendEmail = async () => {
+    startCooldown()
     const resultAction = await dispatch(resendVerificationEmail(formData.email))
 
     if (resendVerificationEmail.fulfilled.match(resultAction)) {
@@ -202,9 +245,16 @@ const RegistrationForm = () => {
                 </Typography>
               </Alert>
 
+              {resendCooldown && (
+                <Alert severity="warning" sx={{ mb: 2, fontSize: 12 }}>
+                  Please wait a while before requesting another verification
+                  email.
+                </Alert>
+              )}
+
               <ResendButton
                 onClick={handleResendEmail}
-                disabled={resendingEmail}
+                disabled={resendingEmail || resendCooldown}
               >
                 {resendingEmail ? (
                   <>
@@ -279,6 +329,7 @@ const RegistrationForm = () => {
                   placeholder="John Doe"
                   disabled={loading}
                   autoFocus
+                  className={fieldErrors.name ? "error" : ""}
                 />
               </InputWrapper>
             </Box>
@@ -298,6 +349,7 @@ const RegistrationForm = () => {
                   onChange={handleChange}
                   placeholder="name@example.com"
                   disabled={loading}
+                  className={fieldErrors.email ? "error" : ""}
                 />
               </InputWrapper>
             </Box>
@@ -317,11 +369,14 @@ const RegistrationForm = () => {
                   onChange={handleChange}
                   placeholder="••••••••"
                   disabled={loading}
+                  className={fieldErrors.password ? "error" : ""}
                 />
               </InputWrapper>
               <HelperText>
-                At least 6 characters including letters, numbers, and special
-                characters
+                At least 6 characters including letters, numbers, and{" "}
+                <Tooltip title={ALLOWED_SPECIAL_CHARACTERS} arrow>
+                  <SpecialCharsLink>special characters</SpecialCharsLink>
+                </Tooltip>
               </HelperText>
             </Box>
 
@@ -340,6 +395,7 @@ const RegistrationForm = () => {
                   onChange={handleChange}
                   placeholder="••••••••"
                   disabled={loading}
+                  className={fieldErrors.confirmPassword ? "error" : ""}
                 />
               </InputWrapper>
             </Box>
@@ -348,10 +404,13 @@ const RegistrationForm = () => {
             <CheckboxWrapper>
               <Checkbox
                 type="checkbox"
+                id="show-password"
                 checked={showPassword}
                 onChange={(e) => setShowPassword(e.target.checked)}
               />
-              <CheckboxLabel>Show Password</CheckboxLabel>
+              <CheckboxLabel htmlFor="show-password">
+                Show Password
+              </CheckboxLabel>
             </CheckboxWrapper>
 
             {/* Submit button */}
@@ -393,10 +452,7 @@ const FormCard = styled(Box)({
     "0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)",
 })
 
-const CardHeader = styled(Box)({
-  marginBottom: 32,
-  textAlign: "center",
-})
+const CardHeader = styled(Box)({ marginBottom: 32, textAlign: "center" })
 
 const LogoWrapper = styled(Box)({
   display: "flex",
@@ -404,10 +460,7 @@ const LogoWrapper = styled(Box)({
   marginBottom: 24,
 })
 
-const Logo = styled("img")({
-  height: 60,
-  width: "auto",
-})
+const Logo = styled("img")({ height: 60, width: "auto" })
 
 const Title = styled(Typography)({
   fontSize: 24,
@@ -457,16 +510,19 @@ const Input = styled("input")({
   transition: "all 0.2s",
   outline: "none",
   boxSizing: "border-box",
-  "::placeholder": {
-    color: "#9ca3af",
-  },
+  "::placeholder": { color: "#9ca3af" },
   ":focus": {
     borderColor: "#000000",
     boxShadow: "0 0 0 3px rgba(0, 0, 0, 0.1)",
   },
-  ":disabled": {
-    backgroundColor: "#f3f4f6",
-    cursor: "not-allowed",
+  ":disabled": { backgroundColor: "#f3f4f6", cursor: "not-allowed" },
+  "&.error": {
+    borderColor: "#ef4444",
+    boxShadow: "0 0 0 3px rgba(239, 68, 68, 0.1)",
+  },
+  "&.error:focus": {
+    borderColor: "#ef4444",
+    boxShadow: "0 0 0 3px rgba(239, 68, 68, 0.2)",
   },
 })
 
@@ -474,6 +530,13 @@ const HelperText = styled(Typography)({
   fontSize: 12,
   color: "#6b7280",
   marginTop: 4,
+})
+
+const SpecialCharsLink = styled("span")({
+  color: "#1e2125",
+  textDecoration: "underline solid",
+  fontWeight: 500,
+  cursor: "help",
 })
 
 const CheckboxWrapper = styled(Box)({
@@ -507,13 +570,8 @@ const SubmitButton = styled("button")({
   fontWeight: 500,
   cursor: "pointer",
   transition: "background-color 0.2s",
-  ":hover": {
-    backgroundColor: "#1f2937",
-  },
-  ":disabled": {
-    backgroundColor: "#9ca3af",
-    cursor: "not-allowed",
-  },
+  ":hover": { backgroundColor: "#1f2937" },
+  ":disabled": { backgroundColor: "#9ca3af", cursor: "not-allowed" },
   marginBottom: 16,
 })
 
@@ -530,13 +588,8 @@ const ResendButton = styled("button")({
   cursor: "pointer",
   transition: "all 0.2s",
   marginBottom: 16,
-  ":hover": {
-    backgroundColor: "#f9fafb",
-  },
-  ":disabled": {
-    opacity: 0.6,
-    cursor: "not-allowed",
-  },
+  ":hover": { backgroundColor: "#f9fafb" },
+  ":disabled": { opacity: 0.6, cursor: "not-allowed" },
 })
 
 const LoginWrapper = styled(Typography)({
@@ -549,13 +602,9 @@ const LoginLink = styled(Link)({
   color: "#000000",
   textDecoration: "none",
   fontWeight: 500,
-  ":hover": {
-    textDecoration: "underline",
-  },
+  ":hover": { textDecoration: "underline" },
 })
 
-const SuccessContent = styled(Box)({
-  textAlign: "center",
-})
+const SuccessContent = styled(Box)({ textAlign: "center" })
 
 export default RegistrationForm

@@ -82,13 +82,15 @@ export const experimentsSlice = createSlice({
         if (state.status === "fulfilled") {
           const uid = action.meta.arg.uid
           const target = state.experimentList[uid]
-          Object.entries(action.payload).forEach(([nodeId, value]) => {
-            if (value.status === "success") {
-              target.functions[nodeId].status = "success"
-            } else if (value.status === "error") {
-              target.functions[nodeId].status = "error"
-            }
-          })
+          Object.entries(action.payload.nodeResults).forEach(
+            ([nodeId, value]) => {
+              if (value.status === "success") {
+                target.functions[nodeId].status = "success"
+              } else if (value.status === "error") {
+                target.functions[nodeId].status = "error"
+              }
+            },
+          )
         }
       })
       .addCase(importSampleData.pending, (state) => {

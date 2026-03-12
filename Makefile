@@ -52,6 +52,23 @@ test_frontend:
 	docker compose -f docker-compose.test.yml build test_studio_frontend
 	docker compose -f docker-compose.test.yml run test_studio_frontend
 
+.PHONY: test_lambda
+test_lambda:
+	docker compose -f docker-compose.test.yml build test_studio_backend
+	docker compose -f docker-compose.test.yml run test_studio_backend \
+		$(PYTEST) studio/tests/infrastructure/ -v
+
+.PHONY: contract-test
+contract-test:
+	# API contract tests - validates backend responses match frontend TypeScript interfaces
+	# cleanup
+	docker compose -f docker-compose.test.yml down
+	docker compose -f docker-compose.test.yml rm -f
+	@$(call rm_unused_docker_containers, test_studio_backend)
+	# build/run
+	docker compose -f docker-compose.test.yml build test_studio_backend
+	docker compose -f docker-compose.test.yml run test_studio_backend $(PYTEST) studio/tests/app/common/routers/test_*_contract.py -v
+
 
 ############################## For Building ##############################
 

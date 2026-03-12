@@ -13,3 +13,17 @@ export type SubscriptionPlanDTO = {
   stripe_product_id?: string
   stripe_price_id?: string
 }
+
+export const CheckoutValidationStatus = {
+  SUCCESS: "success",
+  PAYMENT_FAILED: "payment_failed",
+  WEBHOOK_FAILED: "webhook_failed",
+} as const
+
+export type CheckoutValidationStatus =
+  (typeof CheckoutValidationStatus)[keyof typeof CheckoutValidationStatus]
+
+export type CheckoutValidationResponse = {
+  status: CheckoutValidationStatus
+  message?: string
+}

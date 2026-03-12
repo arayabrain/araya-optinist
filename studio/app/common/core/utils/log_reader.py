@@ -29,7 +29,12 @@ class LogRecordReader(ContentUnitReader):
         **kwargs,
     ) -> None:
         if LogLevel.ALL in levels:
-            self.levels: list[bytes] = []
+            # ALL excludes DEBUG; DEBUG is only visible via direct CloudWatch access
+            self.levels: list[bytes] = [
+                level.value.encode()
+                for level in LogLevel
+                if level not in (LogLevel.ALL, LogLevel.DEBUG)
+            ]
         else:
             self.levels: list[bytes] = [level.value.encode() for level in levels]
 
@@ -53,6 +58,7 @@ class LogRecordReader(ContentUnitReader):
             rb"(?:\x1b\[\d+m)?(?P<levelprefix>\w+)(?:\x1b\[0m)?:?\s+"
             rb"\[(?P<name>[^\]]+)\] "
             rb"\(pid:(?P<process>\w+)\) "
+            rb"\(task:(?P<ecs_task_id>[^\)]*)\) "
             rb"\(client:(?P<client_id>[^\)]*)\) "
             rb"(?P<funcName>\w+)\(\):(?P<lineno>\d+) - "
             rb"(?P<message>.*)",

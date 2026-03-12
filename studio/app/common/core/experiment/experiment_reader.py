@@ -10,7 +10,12 @@ from studio.app.common.core.experiment.experiment import (
     ExptOutputPathIds,
 )
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentSyncMode,
+    RemoteStorageReader,
+)
 from studio.app.common.core.utils.config_handler import ConfigReader
+from studio.app.common.core.utils.datetime_utils import TIMEZONE_KEY
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.workflow.workflow import (
     NodeRunStatus,
@@ -38,6 +43,25 @@ class ExptConfigReader:
         return path
 
     @classmethod
+    def get_local_experiment_uids(cls, workspace_id: str) -> set:
+        """Return set of experiment UIDs that exist locally on filesystem.
+
+        Uses glob to find experiment.yaml files and extracts UIDs from paths.
+        """
+        from glob import glob
+
+        config_paths = glob(cls.get_config_yaml_wild_path(workspace_id))
+        uids = set()
+        for path in config_paths:
+            try:
+                ids = ExptOutputPathIds(os.path.dirname(path))
+                if ids.unique_id:
+                    uids.add(ids.unique_id)
+            except Exception:
+                pass
+        return uids
+
+    @classmethod
     async def ensure_synced_async(
         cls,
         workspace_id: str,
@@ -60,7 +84,6 @@ class ExptConfigReader:
         """
         from studio.app.common.core.storage.remote_storage_controller import (
             RemoteStorageController,
-            RemoteStorageSimpleReader,
         )
 
         config_path = cls.get_config_yaml_path(workspace_id, unique_id)
@@ -79,7 +102,12 @@ class ExptConfigReader:
         )
 
         try:
-            async with RemoteStorageSimpleReader(remote_bucket_name) as controller:
+            async with RemoteStorageReader(
+                remote_bucket_name,
+                workspace_id,
+                unique_id,
+                sync_mode=RemoteExperimentSyncMode.METADATA_ONLY,
+            ) as controller:
                 # Download only this specific experiment's metadata (efficient)
                 await controller.download_experiment_meta(workspace_id, unique_id)
             return os.path.exists(config_path)
@@ -115,6 +143,7 @@ class ExptConfigReader:
             nwb=None,
             snakemake=None,
             data_usage=None,
+            timezone=None,
         )
 
     @classmethod
@@ -132,6 +161,7 @@ class ExptConfigReader:
             nwb=config.get("nwb"),
             snakemake=config.get("snakemake"),
             data_usage=config.get("data_usage"),
+            timezone=config.get(TIMEZONE_KEY),
         )
 
     @classmethod

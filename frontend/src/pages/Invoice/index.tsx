@@ -407,7 +407,7 @@ const InvoicesPage: FC = () => {
   const handleManageBilling = async (): Promise<void> => {
     if (!shouldShowLoader) {
       window.open(
-        "https://billing.stripe.com/p/login/test_5kQ9ATdaS2TbdknghI2wU00",
+        "https://billing.stripe.com/p/login/5kQ9ATdaS2TbdknghI2wU00",
         "_blank",
       )
     }
@@ -552,12 +552,26 @@ const InvoicesPage: FC = () => {
                   </FlexRow>
                 ) : paymentMethod ? (
                   <FlexRow>
-                    <CardIcon brand={paymentMethod.brand}>
-                      <CardBrandIcon brand={paymentMethod.brand} size={32} />
+                    <CardIcon
+                      brand={
+                        paymentMethod.type === "link"
+                          ? "link"
+                          : paymentMethod.brand
+                      }
+                    >
+                      <CardBrandIcon
+                        brand={
+                          paymentMethod.type === "link"
+                            ? "link"
+                            : paymentMethod.brand
+                        }
+                        size={32}
+                      />
                     </CardIcon>
                     <CardNumber>
-                      {formatCardBrand(paymentMethod.brand)} ••••••
-                      {paymentMethod.last4}
+                      {paymentMethod.type === "link"
+                        ? `Stripe Link${paymentMethod.email ? ` (${paymentMethod.email})` : ""}`
+                        : `${formatCardBrand(paymentMethod.brand)} ••••••${paymentMethod.last4}`}
                     </CardNumber>
                   </FlexRow>
                 ) : (

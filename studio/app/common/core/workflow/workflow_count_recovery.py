@@ -12,15 +12,16 @@ USAGE:
 - Can also be manually triggered for immediate recovery
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import List, Tuple
 
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import session_scope
-from studio.app.common.models import FreeUserAssignment
+from studio.app.common.models import FreeUserAssignment, PremiumUserAssignment
 
 logger = AppLogger.get_logger()
 
@@ -32,7 +33,8 @@ def recover_stale_workflow_counts(
     stale_threshold_minutes: int = STALE_WORKFLOW_THRESHOLD_MINUTES,
 ) -> Tuple[int, List[int]]:
     """
-    Reset active_workflow_count to 0 for users with stale workflows.
+    Reset active_workflow_count to 0 for users with stale workflows in both
+    free and premium tier tables.
 
     A workflow is considered stale if:
     - active_workflow_count > 0
@@ -52,25 +54,20 @@ def recover_stale_workflow_counts(
     try:
         from sqlalchemy import update
 
-        stale_cutoff = datetime.now(timezone.utc) - timedelta(
+        stale_cutoff = get_current_datetime() - timedelta(
             minutes=stale_threshold_minutes
         )
         recovered_users = []
 
         with session_scope() as session:
-            # Find users with stale workflows
-            stmt = select(FreeUserAssignment).where(
+            # Recover free tier users
+            free_stmt = select(FreeUserAssignment).where(
                 FreeUserAssignment.active_workflow_count > 0,
                 FreeUserAssignment.last_workflow_start < stale_cutoff,
             )
-            stale_assignments_result = session.execute(stmt).all()
+            stale_free_assignments = session.execute(free_stmt).all()
 
-            if not stale_assignments_result:
-                logger.info("No stale workflow counts found")
-                return 0, []
-
-            # Reset counts for stale workflows
-            for row in stale_assignments_result:
+            for row in stale_free_assignments:
                 assignment = row[0]
                 update_stmt = (
                     update(FreeUserAssignment)
@@ -81,16 +78,46 @@ def recover_stale_workflow_counts(
                 recovered_users.append(assignment.user_id)
 
                 logger.warning(
-                    f"Recovered stale workflow count for user {assignment.user_id}: "
-                    f"count={assignment.active_workflow_count}, "
+                    f"Recovered stale workflow count for FREE user "
+                    f"{assignment.user_id}: count={assignment.active_workflow_count}, "
+                    f"last_start={assignment.last_workflow_start}"
+                )
+
+            # Recover premium tier users
+            premium_stmt = select(PremiumUserAssignment).where(
+                PremiumUserAssignment.active_workflow_count > 0,
+                PremiumUserAssignment.last_workflow_start < stale_cutoff,
+                PremiumUserAssignment.is_standby == False,  # noqa: E712
+            )
+            stale_premium_assignments = session.execute(premium_stmt).all()
+
+            for row in stale_premium_assignments:
+                assignment = row[0]
+                update_stmt = (
+                    update(PremiumUserAssignment)
+                    .where(PremiumUserAssignment.user_id == assignment.user_id)
+                    .values(active_workflow_count=0)
+                )
+                session.execute(update_stmt)
+                # Don't double-count if user is in both tables (shouldn't happen)
+                if assignment.user_id not in recovered_users:
+                    recovered_users.append(assignment.user_id)
+
+                logger.warning(
+                    f"Recovered stale workflow count for PREMIUM user "
+                    f"{assignment.user_id}: count={assignment.active_workflow_count}, "
                     f"last_start={assignment.last_workflow_start}"
                 )
 
             session.commit()
 
-            logger.info(
-                f"Recovered {len(recovered_users)} users with stale workflow counts"
-            )
+            if not recovered_users:
+                logger.info("No stale workflow counts found")
+            else:
+                logger.info(
+                    f"Recovered {len(recovered_users)} users with stale workflow counts"
+                )
+
             return len(recovered_users), recovered_users
 
     except Exception as e:

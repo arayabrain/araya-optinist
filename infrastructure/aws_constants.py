@@ -25,6 +25,30 @@ class ECSTaskStatus:
     STOPPED = "STOPPED"
 
 
+class InstanceState:
+    """
+    Instance state constants for premium EC2 instances.
+
+    Includes both AWS EC2 states (returned by describe_instances API)
+    and DB-tracked states used in the premium_user_assignments table.
+
+    AWS EC2 states: pending, running, stopping, stopped, shutting-down, terminated
+    DB-tracked states: starting, launching (transitional states tracked in DB)
+    """
+
+    # AWS EC2 states
+    PENDING = "pending"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+    SHUTTING_DOWN = "shutting-down"
+    TERMINATED = "terminated"
+
+    # DB-tracked transitional states (not AWS states)
+    STARTING = "starting"
+    LAUNCHING = "launching"
+
+
 class BatchJobStatus:
     """
     AWS Batch job status constants.
@@ -72,6 +96,36 @@ class RoutingHeaders:
     ROUTING_ID = "X-Routing-ID"
     # User subscription tier indicator
     USER_TIER = "X-User-Tier"
+
+
+class PremiumAssignment:
+    """
+    Premium user assignment constants.
+
+    These values are used in the premium_user_assignments table
+    to track assignment states and special markers.
+
+    Status values:
+        ACTIVE, MIGRATING, TERMINATING - lifecycle states
+
+    Marker values:
+        STANDBY, RESERVING - placeholder values for special entries
+    """
+
+    # Status: Active assignment - user is assigned and can access the instance
+    ACTIVE = "active"
+    # Status: Assignment is being migrated to a new instance
+    MIGRATING = "migrating"
+    # Status: Assignment is being terminated
+    TERMINATING = "terminating"
+
+    # Marker: Standby pool entries (no real ALB rule/target group yet)
+    STANDBY = "standby"
+    # Marker: Instances being reserved for a user
+    RESERVING = "reserving"
+    # Marker: User temporarily assigned to shared autoscaling pool
+    # (awaiting migration to dedicated instance)
+    AUTOSCALING_POOL = "autoscaling-pool"
 
 
 class DatabaseConfig:

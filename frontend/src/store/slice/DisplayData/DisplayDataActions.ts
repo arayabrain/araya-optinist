@@ -121,13 +121,20 @@ export const getHeatMapData = createAsyncThunk<
 
 export const getImageData = createAsyncThunk<
   { data: ImageData; meta?: PlotMetaData },
-  { path: string; workspaceId: number; startIndex?: number; endIndex?: number }
+  {
+    path: string
+    workspaceId: number
+    uniqueId?: string
+    startIndex?: number
+    endIndex?: number
+  }
 >(
   `${DISPLAY_DATA_SLICE_NAME}/getImageData`,
-  async ({ path, startIndex, endIndex, workspaceId }, thunkAPI) => {
+  async ({ path, startIndex, endIndex, workspaceId, uniqueId }, thunkAPI) => {
     try {
       const response = await getImageDataApi(path, {
         workspaceId,
+        uniqueId,
         startIndex,
         endIndex,
       })
@@ -170,12 +177,16 @@ export const getMatlabData = createAsyncThunk<
 
 export const getRoiData = createAsyncThunk<
   { data: RoiData; meta?: PlotMetaData },
-  { path: string; workspaceId: number; isFull?: boolean }
+  { path: string; workspaceId: number; uniqueId?: string; isFull?: boolean }
 >(
   `${DISPLAY_DATA_SLICE_NAME}/getRoiData`,
-  async ({ path, workspaceId, isFull }, thunkAPI) => {
+  async ({ path, workspaceId, uniqueId, isFull }, thunkAPI) => {
     try {
-      const response = await getRoiDataApi(path, { workspaceId }, isFull)
+      const response = await getRoiDataApi(
+        path,
+        { workspaceId, uniqueId },
+        isFull,
+      )
       return response
     } catch (e) {
       return thunkAPI.rejectWithValue(e)

@@ -46,6 +46,13 @@ HOW TO RUN:
 EXPECTED RESULT:
   All 9 functional tests should pass
   Cost savings analysis should show true standby pool benefits
+
+PERFORMANCE IMPACT:
+  Light - All AWS and database operations are mocked
+  - Tests standby pool logic with mock data
+  - No impact on other users
+  - Safe to run anytime
+
 """
 
 import json
@@ -187,7 +194,7 @@ def test_standby_pool_logic():
 
         # Set environment variables for testing
         os.environ["PREMIUM_STANDBY_POOL_SIZE"] = "1"
-        os.environ["PREMIUM_SAFETY_BUFFER"] = "1"
+        os.environ["PREMIUM_EXTRA_CAPACITY"] = "1"
         os.environ["ABSOLUTE_MAX"] = "10"
         os.environ["PREMIUM_IDLE_TIMEOUT_HOURS"] = "3"
         os.environ["PREMIUM_INSTANCE_IDS"] = "i-test123,i-test456"
@@ -290,7 +297,7 @@ def test_standby_pool_logic():
             "PREMIUM_STANDBY_POOL_SIZE": os.environ.get(
                 "PREMIUM_STANDBY_POOL_SIZE", "1"
             ),
-            "PREMIUM_SAFETY_BUFFER": os.environ.get("PREMIUM_SAFETY_BUFFER", "1"),
+            "PREMIUM_EXTRA_CAPACITY": os.environ.get("PREMIUM_EXTRA_CAPACITY", "1"),
             "ABSOLUTE_MAX": os.environ.get("ABSOLUTE_MAX", "10"),
             "PREMIUM_IDLE_TIMEOUT_HOURS": os.environ.get(
                 "PREMIUM_IDLE_TIMEOUT_HOURS", "3"

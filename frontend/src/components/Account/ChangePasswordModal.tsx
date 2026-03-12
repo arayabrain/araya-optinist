@@ -8,11 +8,16 @@ import {
   DialogContent,
   DialogTitle,
   styled,
+  Tooltip,
   Typography,
 } from "@mui/material"
 
 import InputPassword from "components/Account/InputPassword"
-import { regexIgnoreS, regexPassword } from "const/Auth"
+import {
+  ALLOWED_SPECIAL_CHARACTERS,
+  regexIgnoreS,
+  regexPassword,
+} from "const/Auth"
 
 type ChangePasswordModalProps = {
   onClose: () => void
@@ -158,6 +163,13 @@ const ChangePasswordModal: FC<ChangePasswordModalProps> = ({
               onBlur={(e) => onChangeValue(e, validateReEnter)}
             />
           </FormInline>
+
+          <HelperText>
+            At least 6 characters including letters, numbers, and{" "}
+            <Tooltip title={ALLOWED_SPECIAL_CHARACTERS} arrow>
+              <SpecialCharsLink>special characters</SpecialCharsLink>
+            </Tooltip>
+          </HelperText>
         </BoxConfirm>
       </DialogContent>
       <DialogActions>
@@ -177,9 +189,7 @@ const BoxTitle = styled(Box)({
   justifyContent: "space-between",
 })
 
-const BoxConfirm = styled(Box)({
-  margin: "20px 0",
-})
+const BoxConfirm = styled(Box)({ margin: "20px 0" })
 
 const FormInline = styled(Box)({
   display: "flex",
@@ -188,10 +198,19 @@ const FormInline = styled(Box)({
   gap: 30,
 })
 
-const Label = styled(Typography)({
-  fontSize: 14,
-  marginTop: 7,
-  width: "100%",
+const Label = styled(Typography)({ fontSize: 14, marginTop: 7, width: "100%" })
+
+const HelperText = styled(Typography)({
+  fontSize: 12,
+  color: "#6b7280",
+  marginTop: 4,
+})
+
+const SpecialCharsLink = styled("span")({
+  color: "#1e2125",
+  textDecoration: "underline solid",
+  fontWeight: 500,
+  cursor: "help",
 })
 
 export default ChangePasswordModal

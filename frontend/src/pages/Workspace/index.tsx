@@ -33,11 +33,13 @@ import {
 } from "@mui/x-data-grid"
 import { isRejectedWithValue } from "@reduxjs/toolkit"
 
+import { refreshStorageUsageApi } from "api/storage/StorageAlerts"
 import { UserDTO } from "api/users/UsersApiDTO"
 import { refreshAllWorkspacesStorageApi } from "api/workspace"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
 import PaginationCustom from "components/common/PaginationCustom"
+import StorageUsage from "components/common/StorageUsage"
 import PopupShare from "components/Workspace/PopupShare"
 import { selectCurrentUser } from "store/slice/User/UserSelector"
 import { resetVisualizeLayout } from "store/slice/VisualizeItem/VisualizeItemSlice"
@@ -57,6 +59,7 @@ import { ItemsWorkspace } from "store/slice/Workspace/WorkspaceType"
 import { isMine } from "store/slice/Workspace/WorkspaceUtils"
 import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
+import { getWorkspaceLock } from "utils/operationLock"
 
 type PopupType = {
   open: boolean
@@ -363,6 +366,12 @@ const Workspaces = () => {
   const [rowModesModel, setRowModesModel] = useState<GridRowModesModel>({})
   const [searchParams, setParams] = useSearchParams()
   const [refreshing, setRefreshing] = useState(false)
+  const [storageRefreshKey, setStorageRefreshKey] = useState(0)
+  const [operationWarning, setOperationWarning] = useState<{
+    show: boolean
+    operation?: string
+    workspaceId?: number
+  }>({ show: false })
 
   const { enqueueSnackbar } = useSnackbar()
 
@@ -407,8 +416,38 @@ const Workspaces = () => {
     name: string,
     display_number?: number,
   ) => {
+    const lock = getWorkspaceLock(String(id))
+    if (lock) {
+      setOperationWarning({
+        show: true,
+        operation: lock.operation,
+        workspaceId: id,
+      })
+      return
+    }
     setWorkspaceDel({ id, name, display_number })
     setOpen({ ...open, del: true })
+  }
+
+  const handleCloseOperationWarning = () => {
+    setOperationWarning({ show: false })
+  }
+
+  const handleProceedDespiteOperation = () => {
+    if (operationWarning.workspaceId) {
+      const ws = data?.items?.find(
+        (w: ItemsWorkspace) => w.id === operationWarning.workspaceId,
+      )
+      if (ws) {
+        setWorkspaceDel({
+          id: ws.id,
+          name: ws.name,
+          display_number: ws.display_number,
+        })
+        setOpen({ ...open, del: true })
+      }
+    }
+    setOperationWarning({ show: false })
   }
 
   const handleOkDel = async () => {
@@ -551,8 +590,15 @@ const Workspaces = () => {
       // Call API to refresh all workspace storage usage
       const response = await refreshAllWorkspacesStorageApi()
 
+      // Also refresh user-level storage so the StorageAlert updates
+      await refreshStorageUsageApi()
+
       // Refresh the workspace list after storage sync
       await dispatch(getWorkspaceList(dataParams))
+
+      // Trigger StorageAlert to re-fetch with fresh data
+      setStorageRefreshKey((k) => k + 1)
+
       handleClickVariant(
         "success",
         `Storage refreshed for ${response.refreshed_workspaces} workspaces!`,
@@ -596,6 +642,7 @@ const Workspaces = () => {
           New
         </Button>
       </Box>
+      <StorageUsage key={storageRefreshKey} />
       {user ? (
         <Box
           sx={{
@@ -662,6 +709,32 @@ const Workspaces = () => {
         }
         iconType="warning"
       />
+      <Dialog
+        open={operationWarning.show}
+        onClose={handleCloseOperationWarning}
+      >
+        <DialogTitle>Operation In Progress</DialogTitle>
+        <DialogContent>
+          <Box sx={{ mb: 2 }}>
+            Another tab has an active{" "}
+            <strong>{operationWarning.operation}</strong> operation on this
+            workspace. Deleting now may cause data loss.
+          </Box>
+          <Box>Do you want to proceed anyway?</Box>
+        </DialogContent>
+        <DialogActions>
+          <Button variant="outlined" onClick={handleCloseOperationWarning}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={handleProceedDespiteOperation}
+          >
+            Delete Anyway
+          </Button>
+        </DialogActions>
+      </Dialog>
       <PopupNew
         open={open.new}
         handleClose={handleClosePopupNew}

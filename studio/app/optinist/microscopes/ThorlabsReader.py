@@ -3,12 +3,12 @@ import re
 import shutil
 import sys
 import zipfile
-from datetime import datetime
 from glob import glob
 
 import tifffile
 import xmltodict
 
+from studio.app.common.core.utils.datetime_utils import get_current_datetime_formatted
 from studio.app.optinist.microscopes.MicroscopeDataReaderBase import (
     MicroscopeDataReaderBase,
     OMEDataModel,
@@ -91,7 +91,7 @@ class ThorlabsReader(MicroscopeDataReaderBase):
             path = "{}/{}_extracted-{}".format(
                 os.path.dirname(data_file_path),
                 os.path.splitext(os.path.basename(data_file_path))[0],
-                datetime.now().strftime("%Y%m%d%H%M%S"),
+                get_current_datetime_formatted("%Y%m%d%H%M%S"),
             )
             return path
         else:

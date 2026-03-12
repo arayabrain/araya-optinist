@@ -22,11 +22,17 @@ This document describes how to deploy OptiNiSt to AWS infrastructure. There are 
      - Discovers infrastructure (RDS endpoint, S3 buckets) via AWS CLI
      - Configures the application with correct settings
 
-
 ## Table of Contents
-- Method 1: Deployment with Terraform Access
-- Method 2: Deployment without Terraform Access
-- Post-Deployment Verification
+
+- [Method 1: Deployment with Terraform Access](#method-1-deployment-with-terraform-access-full-access)
+- [Method 2: Deployment without Terraform Access](#method-2-deployment-without-terraform-access)
+- [Post-Deployment Verification](#post-deployment-verification)
+- [Release Preparation](#release-preparation)
+- [Git Workflow and Release Tags](#git-workflow-and-release-tags)
+- [Documentation Updates (Readthedocs)](#documentation-updates-readthedocs)
+- [Wiki Documentation](#wiki-documentation)
+- [Hotfix Procedure](#hotfix-procedure)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -50,6 +56,7 @@ aws configure
 Use this method if you have access to `infrastructure/terraform/terraform.tfvars`.
 
 ### Prerequisites for Method 1
+
 - Access to `infrastructure/terraform/terraform.tfvars`
 - Terraform installed (v1.0+)
 - Firebase credentials (already configured in terraform.tfvars)
@@ -64,40 +71,40 @@ cd infrastructure/scripts
 ```
 
 This script will:
+
 1. Read configuration from Terraform outputs (domain, port, protocol)
 2. Build the frontend with the correct environment variables
 3. Build and tag the Docker image
 4. Push the image to ECR
-5. ECS will automatically deploy the new image
 
-**Note:** ECS service is configured to automatically pull the `:latest` tag, so the deployment happens automatically after the push.
+**Note:** Pushing to ECR alone does NOT trigger ECS redeployment. To deploy the new image, run `terraform apply` (which calls `aws ecs update-service --force-new-deployment`) or manually force a new deployment via the AWS console/CLI.
 
 ### 1.2 Deployment with Infrastructure Changes
 
 Use this when you need to update AWS infrastructure (VPC, ALB, RDS, etc.) in addition to the application.
 
 ```bash
+# From the repository root:
 cd infrastructure/terraform
 
 # Review planned changes
 terraform plan
 
-# Apply infrastructure changes
+# Apply infrastructure changes (automatically builds and pushes image)
 terraform apply
-
-# The deployment script runs automatically via terraform provisioners
-# But you can manually trigger image build and deployment if needed:
-cd ../scripts
-./ecr_build_push.sh
 ```
 
+**Note:** `terraform apply` automatically runs `ecr_build_push.sh` via the `null_resource.build_and_deploy` provisioner. There is no need to run it manually first.
+
 **What gets updated:**
+
 - VPC, subnets, security groups (if modified)
 - Load balancers and target groups
 - ECS services and task definitions
 - RDS database configuration
 - Auto Scaling Groups
 - Route53 and ACM certificates
+
 ---
 
 ## Method 2: Deployment without Terraform Access
@@ -107,6 +114,7 @@ cd ../scripts
 Use this method for routine deployments after the initial infrastructure setup has been completed.
 
 ### Prerequisites for Method 2
+
 - AWS CLI configured with valid credentials
 - Docker installed and running
 - AWS credentials with permissions for:
@@ -137,13 +145,15 @@ cd infrastructure/scripts
 ```
 
 **Script automatically:**
-1. ✅ Gets infrastructure configuration (tries Terraform outputs first, then prompts if unavailable)
-2. ✅ Builds frontend with correct environment variables
-3. ✅ Builds and tags Docker image
-4. ✅ Pushes to ECR
-5. ✅ ECS automatically deploys the new image
+
+1. - Gets infrastructure configuration (tries Terraform outputs first, then prompts if unavailable)
+2. - Builds frontend with correct environment variables
+3. - Builds and tags Docker image
+4. - Pushes to ECR
+5. - ECS automatically deploys the new image
 
 **If Terraform outputs aren't available, you'll be prompted for:**
+
 - Frontend Host: `araya-optinist.com` (or ALB DNS)
 - Frontend Protocol: `https`
 - Frontend Port: `443`
@@ -252,10 +262,12 @@ Expected: HTTP 200 response
 ### 5. Access the Application
 
 Open in browser:
+
 - Production: `https://araya-optinist.com`
 - ALB (direct): `http://$ALB_DNS`
 
 Verify:
+
 - Login page appears
 - Application loads without errors
 - Can create and run workflows
@@ -306,3 +318,327 @@ aws logs tail $LOG_GROUP \
 ```
 
 **Tip:** You can also view logs in AWS Console → CloudWatch → Log Groups → `/ecs/subscr-optinist-*`
+
+---
+
+## Release Preparation
+
+Before deploying a new release, complete the following preparation steps.
+
+### 1. Version File Updates
+
+Update version numbers in the following files before building:
+
+| File                    | Field to Update         |
+| ----------------------- | ----------------------- |
+| `pyproject.toml`        | `[tool.poetry] version` |
+| `frontend/package.json` | `version`               |
+
+**Version Format:** Use semantic versioning `X.Y.Z` (e.g., `2.4.0`)
+
+```bash
+# Example: Update from 2.4.0 to 2.5.0
+# Edit pyproject.toml line: version = "2.5.0"
+# Edit frontend/package.json line: "version": "2.5.0"
+```
+
+### 2. Pre-Release Testing
+
+**Timeline:** Complete testing at least 1 week before the planned release date.
+
+**Manual Test Cases:** [Test Case Spreadsheet](https://docs.google.com/spreadsheets/d/1bq0ySUQCnmSc9Lh5PUnfIKcS00fFCvpbDs_e797Z8W4/edit?usp=sharing)
+
+**Automated Tests:**
+
+```bash
+# Run the test suite
+cd /path/to/optinist-for-cloud
+pytest studio/tests/
+```
+
+### 3. Staging Environment Testing (test-optinist-for-cloud) TODO
+
+**Status:** Not yet set up
+
+A parallel test infrastructure (`test-optinist-for-cloud`) will be available for pre-release testing. This is an exact copy of the production infrastructure with `test-` prefix on all resources.
+
+**Workflow:**
+
+1. **Create test environment:**
+
+   ```bash
+   cd infrastructure/terraform
+   # Use test workspace/configuration
+   terraform workspace select test
+   terraform apply
+   ```
+
+2. **Deploy and test:**
+   - Build and push Docker image to test ECR
+   - Run manual test cases against test environment
+   - Verify all functionality works as expected
+
+3. **Destroy after testing:**
+   ```bash
+   terraform destroy
+   ```
+
+**Test Environment Resources:**
+
+- `test-subscr-optinist-cluster` (ECS)
+- `test-subscr-optinist-*` (ALB, RDS, S3, etc.)
+- Separate Secrets Manager secrets
+- Isolated from production data
+
+**Benefits:**
+
+- Safe testing without affecting production users
+- Full infrastructure validation before release
+- Cost-effective (only runs during testing periods)
+
+### 4. CloudWatch Monitoring
+
+Before and after releases, monitor the CloudWatch Dashboard for issues:
+
+```bash
+# Quick check via AWS CLI
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/ECS \
+  --metric-name CPUUtilization \
+  --dimensions Name=ClusterName,Value=subscr-optinist-cloud-cluster \
+  --start-time $(date -u -v-1H +%Y-%m-%dT%H:%M:%SZ) \
+  --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  --period 300 \
+  --statistics Average \
+  --region ap-northeast-1
+```
+
+**TODO:** Register an Araya team email address to receive CloudWatch Alarm notifications for crash reports and errors.
+
+---
+
+## Git Workflow and Release Tags
+
+### Standard Release Flow
+
+```
+feature-branch → develop-main → main → release tag (vX.Y.Z)
+```
+
+### Creating a Release
+
+1. **Ensure all changes are merged to develop-main**
+
+   ```bash
+   git checkout develop-main
+   git pull origin develop-main
+   ```
+
+2. **Create Pull Request: develop-main → main**
+   - Open GitHub: https://github.com/arayabrain/araya-optinist/pulls
+   - Create PR from `develop-main` to `main`
+   - Ensure all CI tests pass
+   - Get code review approval
+
+3. **Merge and Create Release Tag**
+
+   After merging to main:
+   1. Go to [Releases page](https://github.com/arayabrain/araya-optinist/releases)
+   2. Click "Draft a new release"
+   3. **Choose a tag:** Create new tag in `vX.Y.Z` format (e.g., `v2.5.0`)
+   4. **Target:** `main` branch
+   5. **Release title:** `YYYY/MM Release` (e.g., `2024/12 Release`)
+   6. **Description:** Include:
+      - Summary of changes
+      - New features
+      - Bug fixes
+      - Breaking changes (if any)
+   7. Check "Set as the latest release"
+   8. Click "Publish release"
+
+### Release Notes Template
+
+```markdown
+## What's Changed
+
+### New Features
+
+- Feature description (#PR_NUMBER)
+
+### Bug Fixes
+
+- Fix description (#PR_NUMBER)
+
+### Improvements
+
+- Improvement description (#PR_NUMBER)
+
+**Full Changelog:** https://github.com/arayabrain/araya-optinist/compare/vX.Y.Z-1...vX.Y.Z
+```
+
+---
+
+## Documentation Updates (Readthedocs) TODO
+
+**Documentation URL:** https://optinist-for-cloud.readthedocs.io
+
+### Updating Documentation
+
+1. Documentation source files are located in the `docs/` directory
+
+2. **Build and preview locally:**
+
+   ```bash
+   cd docs
+   make html
+   # Preview at docs/_build/html/index.html
+   ```
+
+3. **Trigger Readthedocs build:**
+   - Login to [Readthedocs Dashboard](https://readthedocs.org/dashboard/)
+   - Navigate to the optinist-for-cloud project
+   - Click "Build Version"
+   - Wait for build to complete
+
+4. **Verify the update:**
+   - Visit https://optinist-for-cloud.readthedocs.io
+   - Confirm changes are reflected
+
+---
+
+## Wiki Documentation TODO
+
+**Wiki URL:** https://github.com/oist/optinist/wiki
+
+The project wiki contains additional documentation including:
+
+- Architecture diagrams
+- Troubleshooting guides
+- FAQ
+
+_Note: Update wiki documentation as needed when making significant changes._
+
+---
+
+## Hotfix Procedure
+
+Use the hotfix procedure for urgent fixes that cannot wait for the regular release cycle.
+
+### When to Use Hotfix
+
+A hotfix is required when:
+
+- **Security vulnerabilities** are discovered
+- **Critical bugs** causing data loss or corruption
+- **Application fails to start** or crashes frequently
+- **Core functionality is completely broken**
+
+### Hotfix Workflow
+
+```
+main → hotfix/vX.Y.Z → main → release tag
+         ↓
+    develop-main (sync after release)
+```
+
+### Expedited Hotfix Process
+
+#### 1. Create Hotfix Branch from Main
+
+```bash
+git checkout main
+git pull origin main
+git checkout -b hotfix/vX.Y.Z
+```
+
+#### 2. Implement the Fix
+
+- Make minimal changes to fix the issue
+- Update version number (increment patch version Z)
+  - `pyproject.toml`: version = "X.Y.Z"
+  - `frontend/package.json`: "version": "X.Y.Z"
+
+#### 3. Expedited Testing
+
+For hotfixes, perform focused testing:
+
+1. **Verify the fix:** Test that the specific issue is resolved
+2. **Smoke test:** Basic application functionality
+   - Application starts successfully
+   - User can login
+   - Basic workflow execution works
+3. **Run automated tests:**
+   ```bash
+   pytest studio/tests/ -x  # Stop on first failure for faster feedback
+   ```
+
+#### 4. Deploy Hotfix
+
+```bash
+# Merge hotfix to main
+git checkout main
+git merge hotfix/vX.Y.Z
+git push origin main
+
+# Create release tag
+# Follow "Creating a Release" section above
+# Use title format: "Hotfix vX.Y.Z"
+
+# Deploy to production
+cd infrastructure/scripts
+./ecr_build_push.sh
+```
+
+#### 5. Sync Hotfix to develop-main
+
+**Important:** After the hotfix is released, sync changes back to prevent future conflicts:
+
+```bash
+git checkout develop-main
+git pull origin develop-main
+git merge main
+git push origin develop-main
+```
+
+Or create a PR: `main → develop-main` with title "Sync hotfix vX.Y.Z to develop-main"
+
+---
+
+## Edge Case Handling
+
+---
+
+## Monitoring and Metrics
+
+---
+
+## Key Functions Reference
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+**ECS service not updating after push:**
+
+```bash
+# Force new deployment
+aws ecs update-service \
+  --cluster $CLUSTER_NAME \
+  --service $SERVICE_NAME \
+  --force-new-deployment \
+  --region ap-northeast-1
+```
+
+**Health check failing:**
+
+- Check CloudWatch logs for application errors
+- Verify database connectivity
+- Check Secrets Manager access
+
+**Build script fails:**
+
+- Ensure AWS credentials are valid: `aws sts get-caller-identity`
+- Verify Docker is running
+- Check ECR repository exists

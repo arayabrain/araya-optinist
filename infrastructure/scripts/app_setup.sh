@@ -77,6 +77,9 @@ ADMIN_SUBSCRIPTION_DAYS=365
 ADMIN_STORAGE_USAGE_BYTES=0
 ADMIN_STORAGE_QUOTA_BYTES=214748364800  # 200 GB
 
+# Environment prefix (allows reuse for test environments)
+ENV_PREFIX="${ENV_PREFIX:-subscr}"
+
 # AWS Region (detect from instance metadata or use default)
 AWS_REGION="${AWS_DEFAULT_REGION:-ap-northeast-1}"
 
@@ -152,19 +155,19 @@ echo "$(date): Fetching secrets from AWS Secrets Manager"
 
 # Firebase Configuration
 echo "$(date): Fetching Firebase configuration..."
-FIREBASE_CONFIG_JSON=$(get_secret "subscr-optinist/firebase/config")
-FIREBASE_PRIVATE_JSON=$(get_secret "subscr-optinist/firebase/private-key")
+FIREBASE_CONFIG_JSON=$(get_secret "${ENV_PREFIX}-optinist/firebase/config")
+FIREBASE_PRIVATE_JSON=$(get_secret "${ENV_PREFIX}-optinist/firebase/private-key")
 
 # Database Configuration
 echo "$(date): Fetching database configuration..."
-DB_CONFIG_JSON=$(get_secret "subscr-optinist/database/config")
+DB_CONFIG_JSON=$(get_secret "${ENV_PREFIX}-optinist/database/config")
 MYSQL_USER=$(get_json_value "$DB_CONFIG_JSON" "username")
 MYSQL_PASSWORD=$(get_json_value "$DB_CONFIG_JSON" "password")
 MYSQL_DATABASE=$(get_json_value "$DB_CONFIG_JSON" "database")
 
 # Application Configuration
 echo "$(date): Fetching application configuration..."
-APP_CONFIG_JSON=$(get_secret "subscr-optinist/app/config")
+APP_CONFIG_JSON=$(get_secret "${ENV_PREFIX}-optinist/app/config")
 OPTINIST_SECRET_KEY=$(get_json_value "$APP_CONFIG_JSON" "secret_key")
 OPTINIST_ORG_NAME=$(get_json_value "$APP_CONFIG_JSON" "org_name")
 OPTINIST_ADMIN_NAME=$(get_json_value "$APP_CONFIG_JSON" "admin_name")
@@ -181,26 +184,26 @@ echo "$(date): Discovering AWS infrastructure..."
 echo "$(date): Finding RDS Proxy..."
 RDS_PROXY_ENDPOINT=$(aws rds describe-db-proxies \
     --region "$AWS_REGION" \
-    --query "DBProxies[?contains(DBProxyName, 'subscr-optinist')].Endpoint" \
+    --query "DBProxies[?contains(DBProxyName, '${ENV_PREFIX}-optinist')].Endpoint" \
     --output text 2>/dev/null | head -1)
 
 if [ -z "$RDS_PROXY_ENDPOINT" ]; then
     echo "$(date): WARNING: RDS Proxy not found, trying direct RDS endpoint..."
     RDS_PROXY_ENDPOINT=$(aws rds describe-db-instances \
         --region "$AWS_REGION" \
-        --query "DBInstances[?contains(DBInstanceIdentifier, 'subscr-optinist')].Endpoint.Address" \
+        --query "DBInstances[?contains(DBInstanceIdentifier, '${ENV_PREFIX}-optinist')].Endpoint.Address" \
         --output text 2>/dev/null | head -1)
 fi
 
 # Find S3 bucket
 echo "$(date): Finding S3 bucket..."
 S3_BUCKET=$(aws s3api list-buckets \
-    --query "Buckets[?contains(Name, 'subscr-optinist-app-storage')].Name" \
+    --query "Buckets[?contains(Name, '${ENV_PREFIX}-optinist-app-storage')].Name" \
     --output text 2>/dev/null | head -1)
 
 if [ -z "$S3_BUCKET" ]; then
     echo "$(date): WARNING: Could not find S3 bucket with expected naming pattern"
-    # Try to find any bucket with subscr-optinist tag
+    # Try to find any bucket with optinist tag
     S3_BUCKET=$(aws resourcegroupstaggingapi get-resources \
         --resource-type-filters s3:bucket \
         --tag-filters "Key=Name,Values=*optinist*" \
@@ -227,6 +230,7 @@ MYSQL_SERVER=${RDS_PROXY_ENDPOINT}
 MYSQL_DATABASE=${MYSQL_DATABASE}
 MYSQL_USER=${MYSQL_USER}
 MYSQL_PASSWORD=${MYSQL_PASSWORD}
+MYSQL_SSL_MODE=REQUIRED
 S3_DEFAULT_BUCKET_NAME=${S3_BUCKET}
 EOF
 

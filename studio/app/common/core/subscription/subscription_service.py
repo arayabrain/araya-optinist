@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 import stripe
@@ -14,6 +14,7 @@ from studio.app.common.core.subscription.constants import (
     SyncStatus,
 )
 from studio.app.common.core.utils.config_handler import get_env_var
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.models.subscription import (
     SubscriptionCancellation,
     SubscriptionPlans,
@@ -143,6 +144,9 @@ class SubscriptionService:
         """
         Check if a user's current active subscription is cancelled.
 
+        This method uses a single optimized query with JOINs instead of
+        3 sequential queries, reducing database round trips by 66%.
+
         Args:
             db: Database session
             user_id: The user's ID
@@ -150,50 +154,54 @@ class SubscriptionService:
         Returns:
             bool: True if the user has an active cancelled subscription, False otherwise
         """
-        # Get the user's current active subscription (not expired)
-        active_subscription = (
-            db.query(UserSubscription)
+        current_time = __class__.get_current_datetime()
+
+        # Single query with LEFT JOINs to check subscription cancellation status
+        # This replaces 3 separate queries:
+        # 1. Get active subscription
+        # 2. Get matching purchase
+        # 3. Check for cancellation record
+        result = (
+            db.query(
+                UserSubscription.id.label("subscription_id"),
+                SubscriptionCancellation.id.label("cancellation_id"),
+            )
+            .outerjoin(
+                SubscriptionUserPurchase,
+                and_(
+                    SubscriptionUserPurchase.user_id == UserSubscription.user_id,
+                    SubscriptionUserPurchase.plan_id == UserSubscription.plan_id,
+                    SubscriptionUserPurchase.created_at <= UserSubscription.created_at,
+                ),
+            )
+            .outerjoin(
+                SubscriptionCancellation,
+                SubscriptionCancellation.purchases_id == SubscriptionUserPurchase.id,
+            )
             .filter(
                 UserSubscription.user_id == user_id,
-                UserSubscription.expiration > __class__.get_current_datetime(),
+                UserSubscription.expiration > current_time,
             )
-            .order_by(UserSubscription.expiration.desc())
+            .order_by(
+                UserSubscription.expiration.desc(),
+                SubscriptionUserPurchase.created_at.desc(),
+            )
             .first()
         )
 
-        logger.info(f"Active subscription for user {user_id}: {active_subscription}")
-
-        # If no active subscription, it's not cancelled (it's expired or doesn't exist)
-        if not active_subscription:
+        if not result:
+            # No active subscription found
+            logger.debug(f"No active subscription for user {user_id}")
             return False
 
-        # Find the most recent purchase that matches or came before this subscription
-        latest_purchase = (
-            db.query(SubscriptionUserPurchase)
-            .filter(
-                SubscriptionUserPurchase.user_id == user_id,
-                SubscriptionUserPurchase.plan_id == active_subscription.plan_id,
-                SubscriptionUserPurchase.created_at <= active_subscription.created_at,
-            )
-            .order_by(SubscriptionUserPurchase.created_at.desc())
-            .first()
+        subscription_id, cancellation_id = result
+
+        logger.debug(
+            f"Subscription check for user {user_id}: "
+            f"subscription_id={subscription_id}, cancellation_id={cancellation_id}"
         )
 
-        logger.info(f"Latest purchase for user {user_id}: {latest_purchase}")
-
-        if not latest_purchase:
-            return False
-
-        # Check if this purchase has a cancellation record
-        cancellation = (
-            db.query(SubscriptionCancellation)
-            .filter(SubscriptionCancellation.purchases_id == latest_purchase.id)
-            .first()
-        )
-
-        logger.info(f"Cancellation record for user {user_id}: {cancellation}")
-
-        return cancellation is not None
+        return cancellation_id is not None
 
     @staticmethod
     def get_subscription_status(
@@ -388,13 +396,12 @@ class SubscriptionService:
     @staticmethod
     def get_current_datetime() -> datetime:
         """
-        Get the current UTC date and time
+        Get the current UTC date and time.
+
+        Note: This method delegates to the centralized datetime utility.
+        New code should import directly from datetime_utils instead.
         """
-        try:
-            return datetime.now(timezone.utc)
-        except Exception as e:
-            logger.error(f"Error getting current datetime: {str(e)}")
-            return None
+        return get_current_datetime()
 
     @staticmethod
     def get_user_subscription_by_user_id(
@@ -450,6 +457,87 @@ class SubscriptionService:
             f"returning user without subscription"
         )
         return (None, user)
+
+    @staticmethod
+    def get_users_with_upcoming_quota_drop(db: Session) -> List[dict]:
+        """
+        Get users whose quota will drop soon due to grace period ending.
+
+        This identifies users in grace period whose current storage usage exceeds
+        the FREE tier quota. These users should be warned about impending quota drop.
+
+        Args:
+            db: Database session
+
+        Returns:
+            List of dicts with user info and excess storage data
+        """
+        from datetime import timedelta
+
+        from studio.app.common.core.subscription.constants import (
+            StorageQuota,
+            StorageSize,
+            SubscriptionPeriods,
+            SubscriptionPlanIds,
+        )
+        from studio.app.common.models.subscription import UserStorageUsage
+
+        warning_days = SubscriptionPeriods.QUOTA_DROP_WARNING_DAYS
+        free_quota_bytes = StorageQuota.FREE * StorageSize.GB
+        current_time = SubscriptionService.get_current_datetime()
+
+        users_to_warn = []
+
+        try:
+            # Find expired premium subscriptions (in grace period)
+            grace_period_end = current_time - timedelta(
+                days=SubscriptionPeriods.GRACE_PERIOD_DAYS
+            )
+
+            # Get users with expired premium subscriptions within grace period
+            expired_subs = (
+                db.query(UserSubscription, User, UserStorageUsage)
+                .join(User, UserSubscription.user_id == User.id)
+                .join(UserStorageUsage, UserStorageUsage.user_id == User.id)
+                .filter(
+                    UserSubscription.plan_id == SubscriptionPlanIds.PREMIUM,
+                    UserSubscription.expiration < current_time,
+                    UserSubscription.expiration > grace_period_end,
+                    # Storage exceeds free tier
+                    UserStorageUsage.storage_usage_bytes > free_quota_bytes,
+                )
+                .all()
+            )
+
+            for sub, user, storage in expired_subs:
+                # Calculate days until grace period ends
+                grace_end = sub.expiration + timedelta(
+                    days=SubscriptionPeriods.GRACE_PERIOD_DAYS
+                )
+                days_until_drop = (grace_end - current_time).days
+
+                # Only warn if within warning window
+                if days_until_drop <= warning_days:
+                    excess_bytes = storage.storage_usage_bytes - free_quota_bytes
+                    users_to_warn.append(
+                        {
+                            "user_id": user.id,
+                            "user_uid": user.uid,
+                            "email": user.email,
+                            "current_storage_bytes": storage.storage_usage_bytes,
+                            "future_quota_bytes": free_quota_bytes,
+                            "excess_bytes": excess_bytes,
+                            "days_until_quota_drop": days_until_drop,
+                            "grace_period_end": grace_end,
+                        }
+                    )
+
+            logger.info(f"Found {len(users_to_warn)} users with upcoming quota drops")
+            return users_to_warn
+
+        except Exception as e:
+            logger.error(f"Error getting users with upcoming quota drop: {e}")
+            return []
 
 
 class SyncService:

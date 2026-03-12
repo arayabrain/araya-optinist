@@ -240,8 +240,9 @@ def cleanup_orphaned_instances(dry_run: bool = True) -> Dict:
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 # Get all assignments
+                # (include id for proper deletion of NULL user_id rows)
                 cursor.execute(
-                    "SELECT user_id, instance_id FROM premium_user_assignments "
+                    "SELECT id, user_id, instance_id FROM premium_user_assignments "
                     "WHERE status = 'active'"
                 )
                 db_assignments = cursor.fetchall()
@@ -252,21 +253,22 @@ def cleanup_orphaned_instances(dry_run: bool = True) -> Dict:
                 }
 
                 for assignment in db_assignments:
+                    assignment_id = assignment["id"]
                     user_id = assignment["user_id"]
                     instance_id = assignment["instance_id"]
 
                     # If instance doesn't exist in AWS, clean up database
                     if instance_id not in all_instance_ids:
                         logger.info(
-                            f"Cleaning up database entry for terminated instance "
-                            f"{instance_id} (user {user_id})"
+                            f"Cleaning up database entry id={assignment_id} for "
+                            f"terminated instance {instance_id} (user {user_id})"
                         )
 
                         if not dry_run:
+                            # Use id for deletion (handles NULL user_id for standby)
                             cursor.execute(
-                                "DELETE FROM premium_user_assignments "
-                                "WHERE user_id = %s",
-                                (user_id,),
+                                "DELETE FROM premium_user_assignments " "WHERE id = %s",
+                                (assignment_id,),
                             )
                             cleanup_results["cleaned_db_entries"] += 1
             # Connection automatically closed when exiting 'with' block
@@ -312,12 +314,12 @@ def main():
 
     # Print results
     logger.info("Cleanup Results:")
-    logger.info(f"  Total premium instances: {results['total_premium_instances']}")
-    logger.info(f"  Active premium instances: {results['active_premium_instances']}")
-    logger.info(f"  Orphaned instances: {results['orphaned_instances']}")
-    logger.info(f"  Terminated instances: {results['terminated_instances']}")
-    logger.info(f"  Cleaned target groups: {results['cleaned_target_groups']}")
-    logger.info(f"  Cleaned DB entries: {results['cleaned_db_entries']}")
+    logger.info(f"Total premium instances: {results['total_premium_instances']}")
+    logger.info(f"Active premium instances: {results['active_premium_instances']}")
+    logger.info(f"Orphaned instances: {results['orphaned_instances']}")
+    logger.info(f"Terminated instances: {results['terminated_instances']}")
+    logger.info(f"Cleaned target groups: {results['cleaned_target_groups']}")
+    logger.info(f"Cleaned DB entries: {results['cleaned_db_entries']}")
 
     if dry_run and results["orphaned_instances"] > 0:
         logger.info("\nTo actually perform cleanup, run with --execute flag")

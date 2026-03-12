@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
@@ -6,21 +6,18 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
     get_user_remote_bucket_name,
 )
-from studio.app.common.core.cloud.cloud_utils import (
+from studio.app.common.core.cloud.storage_tracking import (
     get_current_user_storage_usage,
     get_user_storage_usage,
 )
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteStorageController,
     RemoteStorageLockError,
+    RemoteSyncStatusFileUtil,
 )
-from studio.app.common.core.workflow.workflow import (
-    DataFilterParam,
-    Message,
-    NodeItem,
-    RunItem,
-)
+from studio.app.common.core.workflow.workflow import DataFilterParam, NodeItem, RunItem
 from studio.app.common.core.workflow.workflow_filter import WorkflowNodeDataFilter
 from studio.app.common.core.workflow.workflow_result import (
     WorkflowMonitor,
@@ -35,10 +32,29 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_owner,
 )
 from studio.app.common.schemas.users import User
+from studio.app.common.schemas.workflow import CompleteStatus, PollRunResultResponse
 
 router = APIRouter(prefix="/run", tags=["run"])
 
 logger = AppLogger.get_logger()
+
+
+async def _check_storage_quota(user_id: int) -> None:
+    """Raise 403 if user has exceeded their storage quota."""
+    current_usage = await get_current_user_storage_usage(user_id, force_live=False)
+    storage_info = get_user_storage_usage(user_id)
+
+    if storage_info and storage_info["storage_quota_bytes"] > 0:
+        quota_limit = storage_info["storage_quota_bytes"]
+        usage_percent = (current_usage / quota_limit) * 100
+
+        if usage_percent >= 100:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Cannot run job: Storage quota exceeded "
+                f"({usage_percent:.1f}% used). "
+                f"Please free up space before running jobs.",
+            )
 
 
 @router.post(
@@ -54,30 +70,19 @@ async def run(
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     try:
-        # Check storage before running job - works for both S3 and local storage
-        # Use cached data to avoid ALB timeout on large S3 buckets
-        current_usage = await get_current_user_storage_usage(
-            current_user.id, force_live=False
-        )
-        storage_info = get_user_storage_usage(current_user.id)
-
-        if storage_info and storage_info["storage_quota_bytes"] > 0:
-            quota_limit = storage_info["storage_quota_bytes"]
-            storage_usage_percent = (current_usage / quota_limit) * 100
-
-            # Block workflow execution if over quota (100%)
-            if storage_usage_percent >= 100:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Cannot run job: Storage quota exceeded "
-                    f"({storage_usage_percent:.1f}% used). "
-                    f"Please free up space before running jobs.",
-                )
+        await _check_storage_quota(current_user.id)
 
         unique_id = WorkflowRunner.create_workflow_unique_id()
-        WorkflowRunner(
+        runner = WorkflowRunner(
             remote_bucket_name, workspace_id, unique_id, runItem, current_user.id
-        ).run_workflow(background_tasks)
+        )
+
+        # Download any remote-only input files before workflow runs
+        # This ensures migrated users' input data is available locally
+        if RemoteStorageController.is_available():
+            await runner.ensure_input_data_local()
+
+        runner.run_workflow(background_tasks)
 
         # Refresh storage cache in background to keep it up-to-date
         background_tasks.add_task(
@@ -123,9 +128,24 @@ async def run_id(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        WorkflowRunner(
+        await _check_storage_quota(current_user.id)
+
+        runner = WorkflowRunner(
             remote_bucket_name, workspace_id, uid, runItem, current_user.id
-        ).run_workflow(background_tasks)
+        )
+
+        # Download any remote-only input files before workflow runs
+        if RemoteStorageController.is_available():
+            await runner.ensure_input_data_local()
+
+        runner.run_workflow(background_tasks)
+
+        # Refresh storage cache in background
+        background_tasks.add_task(
+            get_current_user_storage_usage,
+            current_user.id,
+            force_live=True,
+        )
 
         logger.info("run snakemake")
         logger.info("forcerun list: %s", runItem.forceRunList)
@@ -155,7 +175,7 @@ async def run_id(
 
 @router.post(
     "/result/{workspace_id}/{uid}",
-    response_model=Dict[str, Message],
+    response_model=PollRunResultResponse,
     dependencies=[Depends(is_workspace_available)],
 )
 async def run_result(
@@ -172,16 +192,30 @@ async def run_result(
             workspace_id, uid, remote_bucket_name
         )
 
-        res = await WorkflowResult(workspace_id, uid).observe(
+        node_results = await WorkflowResult(workspace_id, uid).observe(
             nodeDict.pendingNodeIdList
         )
-        if res:
+        if node_results:
             background_tasks.add_task(
                 WorkspaceDataCapacityService.update_experiment_data_usage,
                 workspace_id,
                 uid,
             )
-        return res
+
+        # Check post-run completion status (e.g. remote storage upload)
+        complete_status = None
+        if RemoteStorageController.is_available():
+            sync_status = RemoteSyncStatusFileUtil.check_sync_status_file(
+                workspace_id, uid
+            )
+            if sync_status:
+                # Create CompleteStatus (converted from RemoteSyncStatus)
+                complete_status = CompleteStatus(sync_status.value)
+
+        return PollRunResultResponse(
+            nodeResults=node_results,
+            completeStatus=(complete_status.value if complete_status else None),
+        )
 
     except RemoteStorageLockError as e:
         logger.error(e)

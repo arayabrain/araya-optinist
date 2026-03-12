@@ -50,6 +50,12 @@ HOW TO RUN:
 
 EXPECTED RESULT:
   All 7 tests should pass
+
+PERFORMANCE IMPACT:
+  Light - All tests use mocks, no real AWS services or database
+  - No impact on other users
+  - Safe to run anytime
+
 """
 
 import os
@@ -58,6 +64,16 @@ from unittest.mock import MagicMock, patch
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Add aws_constants Lambda layer path (required by premium_manager imports)
+aws_constants_layer_path = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "terraform",
+    "aws_constants_layer",
+    "python",
+)
+if aws_constants_layer_path not in sys.path:
+    sys.path.insert(0, aws_constants_layer_path)
 
 
 class TestSafeEnvironmentVariables:
@@ -157,7 +173,8 @@ class TestSafeEnvironmentVariables:
                 from premium_manager import get_db_connection
 
                 try:
-                    get_db_connection()
+                    with get_db_connection():
+                        pass
                     assert False, "Should have raised ValueError for missing RDS_HOST"
                 except ValueError as e:
                     assert "RDS_HOST" in str(e)
@@ -176,12 +193,14 @@ class TestSafeEnvironmentVariables:
                 "RDS_DATABASE": "test_db",
             },
         ):
-            with patch("pymysql.connect") as mock_connect:
-                mock_connect.return_value = MagicMock()
+            # Patch pymysql.connect where it's actually used (in premium_manager module)
+            with patch("premium_manager.pymysql.connect") as mock_connect:
+                mock_connection = MagicMock()
+                mock_connect.return_value = mock_connection
 
                 try:
-                    get_db_connection()
-                    print("Database connection works with valid env vars")
+                    with get_db_connection() as _conn:  # noqa: F841
+                        print("Database connection works with valid env vars")
 
                     # Verify the connection was called with correct parameters
                     assert (

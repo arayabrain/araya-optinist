@@ -1,10 +1,11 @@
 import os
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any, Dict
 
 import stripe
 from dateutil.relativedelta import relativedelta
 from fastapi import HTTPException
+from sqlalchemy import update
 from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
@@ -18,16 +19,21 @@ from studio.app.common.core.subscription.constants import (
     CancellationReason,
     InvoiceStatus,
     PaymentStatus,
+    StorageQuota,
+    StorageSize,
     StripeWebhookEvent,
     SubscriptionCurrencyType,
+    SubscriptionPlanIds,
     SyncStatus,
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
+from studio.app.common.core.utils.datetime_utils import datetime_from_timestamp
 from studio.app.common.models.subscription import (
     SubscriptionCancellation,
     SubscriptionPlans,
     SubscriptionUserAccount,
     SubscriptionUserPurchase,
+    UserStorageUsage,
     UserSubscription,
 )
 from studio.app.common.models.user import User
@@ -260,7 +266,7 @@ class WebhookService:
                 elif current_period_start:
                     # Fallback: calculate expiration as 1 month from start
                     # This handles edge case where subscription is just created
-                    start_date = datetime.fromtimestamp(current_period_start)
+                    start_date = datetime_from_timestamp(current_period_start)
                     expiration_date = start_date + relativedelta(months=1)
                     expiration_timestamp = int(expiration_date.timestamp())
                     logger.warning(
@@ -286,7 +292,7 @@ class WebhookService:
                                     expiration_timestamp = period_end
                                     logger.info(
                                         f"Webhook: Got expiration from invoice: "
-                                        f"{datetime.fromtimestamp(period_end)}"
+                                        f"{datetime_from_timestamp(period_end)}"
                                     )
                                 else:
                                     raise HTTPException(
@@ -320,7 +326,7 @@ class WebhookService:
                         )
 
                 # Convert Unix timestamp to datetime
-                expiration_date = datetime.fromtimestamp(expiration_timestamp)
+                expiration_date = datetime_from_timestamp(expiration_timestamp)
                 logger.info(
                     f"Webhook: Using expiration date from Stripe: {expiration_date} "
                     f"(Unix timestamp: {expiration_timestamp})"
@@ -343,10 +349,30 @@ class WebhookService:
             # 9. Record purchase (optionally store session_id for reference)
             purchase = CheckoutService.record_purchase(db, plan_id, user_id)
 
-            # 10. Commit all changes
-            db.commit()
+            # 10. Update storage quota based on new subscription plan
+            storage_quota_bytes = StorageQuota.bytes_for_plan(plan_id)
+            rows_updated = db.execute(
+                update(UserStorageUsage)
+                .where(UserStorageUsage.user_id == user_id)
+                .values(storage_quota_bytes=storage_quota_bytes)
+            ).rowcount
+            if not rows_updated:
+                db.add(
+                    UserStorageUsage(
+                        user_id=user_id,
+                        storage_usage_bytes=0,
+                        storage_quota_bytes=storage_quota_bytes,
+                    )
+                )
 
-            # 11. Invalidate tier cache for immediate routing update
+            # 11. Commit all changes atomically
+            db.commit()
+            logger.info(
+                f"Webhook: Updated storage quota for user {user_id} to "
+                f"{storage_quota_bytes / StorageSize.GB:.0f}GB (plan_id={plan_id})"
+            )
+
+            # 12. Invalidate tier cache for immediate routing update
             user = db.query(User).filter(User.id == user_id).first()
             if user:
                 invalidate_user_tier_cache(user.uid)
@@ -424,8 +450,15 @@ class WebhookService:
                 subscription.updated_at = SubscriptionService.get_current_datetime()
                 db.commit()
                 logger.info(
-                    f"Marked subscription as failed for user {user_account.user_id}"
+                    "Marked subscription as failed for user %s",
+                    user_account.user_id,
                 )
+
+                # Invalidate cache so user sees payment failure warning immediately
+                user = db.query(User).filter(User.id == user_account.user_id).first()
+                if user:
+                    invalidate_user_tier_cache(user.uid)
+                    logger.info("Invalidated tier cache after payment failure")
 
     @staticmethod
     def handle_subscription_cancelled(
@@ -507,6 +540,32 @@ class WebhookService:
                     )
 
                 db.commit()
+
+                # Update storage quota to free tier
+                storage_quota_bytes = StorageQuota.FREE * StorageSize.GB
+                storage_record = (
+                    db.query(UserStorageUsage)
+                    .filter(UserStorageUsage.user_id == user_account.user_id)
+                    .first()
+                )
+                if storage_record:
+                    storage_record.storage_quota_bytes = storage_quota_bytes
+                    db.add(storage_record)
+                else:
+                    db.add(
+                        UserStorageUsage(
+                            user_id=user_account.user_id,
+                            storage_usage_bytes=0,
+                            storage_quota_bytes=storage_quota_bytes,
+                        )
+                    )
+                db.commit()
+                logger.info(
+                    f"Webhook: Updated storage quota for user "
+                    f"{user_account.user_id} to "
+                    f"{storage_quota_bytes / StorageSize.GB:.0f}GB "
+                    f"(cancelled)"
+                )
 
                 # Invalidate cache so next request reflects free tier immediately
                 user = db.query(User).filter(User.id == user_account.user_id).first()
@@ -611,7 +670,7 @@ class WebhookService:
                 user_subscription.updated_at = (
                     SubscriptionService.get_current_datetime()
                 )
-                user_subscription.expiration = datetime.fromtimestamp(
+                user_subscription.expiration = datetime_from_timestamp(
                     current_period_end
                 )
             else:
@@ -621,6 +680,35 @@ class WebhookService:
                 )
 
             db.commit()
+
+            # Update storage quota based on new plan
+            storage_quota_bytes = (
+                StorageQuota.PREMIUM * StorageSize.GB
+                if new_plan_id == SubscriptionPlanIds.PREMIUM
+                else StorageQuota.FREE * StorageSize.GB
+            )
+            storage_record = (
+                db.query(UserStorageUsage)
+                .filter(UserStorageUsage.user_id == user.id)
+                .first()
+            )
+            if storage_record:
+                storage_record.storage_quota_bytes = storage_quota_bytes
+                db.add(storage_record)
+            else:
+                db.add(
+                    UserStorageUsage(
+                        user_id=user.id,
+                        storage_usage_bytes=0,
+                        storage_quota_bytes=storage_quota_bytes,
+                    )
+                )
+            db.commit()
+            logger.info(
+                f"Webhook: Updated storage quota for user {user.id} to "
+                f"{storage_quota_bytes / StorageSize.GB:.0f}GB "
+                f"(plan_id={new_plan_id})"
+            )
 
             # Invalidate cache for immediate tier change
             invalidate_user_tier_cache(user.uid)
@@ -724,8 +812,8 @@ class WebhookService:
 
             # 1. Find user by Stripe customer ID
             try:
-                logger.info(f"Webhook: Finding user by customer_id: {customer_id}")
-                logger.info(f"Webhook: Invoice ID: {invoice_id}")
+                logger.debug(f"Webhook: Finding user by customer_id: {customer_id}")
+                logger.debug(f"Webhook: Invoice ID: {invoice_id}")
 
                 user_account = (
                     db.query(SubscriptionUserAccount)
@@ -733,7 +821,7 @@ class WebhookService:
                     .first()
                 )
 
-                logger.info(f"Webhook: User account query result: {user_account}")
+                logger.debug(f"Webhook: User account query result: {user_account}")
 
                 if not user_account:
                     logger.warning(
@@ -756,7 +844,7 @@ class WebhookService:
                     }
 
                 user_id = user_account.user_id
-                logger.info(f"Webhook: Found user_id: {user_id}")
+                logger.debug(f"Webhook: Found user_id: {user_id}")
 
             except HTTPException as http_exc:
                 logger.error(f"Webhook: HTTPException finding user: {http_exc.detail}")
@@ -770,9 +858,9 @@ class WebhookService:
             # 2. Find active or recently expired subscription
             # (for trial to paid conversion, the trial might have just expired)
             try:
-                logger.info(f"Webhook: Finding subscription for user_id: {user_id}")
+                logger.debug(f"Webhook: Finding subscription for user_id: {user_id}")
                 current_time = SubscriptionService.get_current_datetime()
-                logger.info(f"Webhook: Current datetime: {current_time}")
+                logger.debug(f"Webhook: Current datetime: {current_time}")
 
                 # First try to find active subscription
                 user_subscription = (
@@ -786,11 +874,11 @@ class WebhookService:
                 )
 
                 # If no active subscription, check for recently expired ones
-                # (within last 7 days) - this handles trial-to-paid conversion
+                # (within extended lookback window) - handles trial-to-paid conversion
                 if not user_subscription:
-                    logger.info(
-                        "Webhook: No active subscription found, "
-                        "checking for recently expired subscription"
+                    logger.debug(
+                        "Webhook: No active subscription found, checking for "
+                        f"subscription within {RECENT_SUBSCRIPTION_WINDOW_DAYS} days"
                     )
                     user_subscription = (
                         db.query(UserSubscription)
@@ -804,12 +892,28 @@ class WebhookService:
                         .first()
                     )
 
-                logger.info(f"Webhook: Subscription query result: {user_subscription}")
+                # Fallback: Look up any subscription by user regardless of date
+                if not user_subscription:
+                    logger.warning(
+                        "Webhook: No subscription within extended window, "
+                        "trying fallback (any subscription for user)"
+                    )
+                    user_subscription = (
+                        db.query(UserSubscription)
+                        .filter(
+                            UserSubscription.user_id == user_id,
+                            UserSubscription.plan_id != SubscriptionPlanIds.FREE,
+                        )
+                        .order_by(UserSubscription.expiration.desc())
+                        .first()
+                    )
+
+                logger.debug(f"Webhook: Subscription query result: {user_subscription}")
 
                 if not user_subscription:
                     logger.error(f"Webhook: No subscription found for user: {user_id}")
                     logger.error(
-                        "Webhook: No active or recently expired subscription found. "
+                        "Webhook: No subscription found at all for this user. "
                         "This means the subscription wasn't created during checkout."
                     )
                     raise HTTPException(
@@ -818,8 +922,8 @@ class WebhookService:
                     )
 
                 plan_id = user_subscription.plan_id
-                logger.info(f"Webhook: Found subscription plan_id: {plan_id}")
-                logger.info(
+                logger.debug(f"Webhook: Found subscription plan_id: {plan_id}")
+                logger.debug(
                     f"Webhook: Current expiration: {user_subscription.expiration}"
                 )
 
@@ -833,7 +937,7 @@ class WebhookService:
 
             # 3. Get subscription plan details
             try:
-                logger.info(f"Webhook: Getting subscription plan: {plan_id}")
+                logger.debug(f"Webhook: Getting subscription plan: {plan_id}")
                 plan = CheckoutService.get_subscription_plan(db, plan_id)
                 if not plan:
                     raise HTTPException(
@@ -851,7 +955,7 @@ class WebhookService:
 
             # 4. Get expiration date from invoice line items
             try:
-                logger.info("Webhook: Getting expiration date from invoice...")
+                logger.debug("Webhook: Getting expiration date from invoice...")
 
                 current_expiration = user_subscription.expiration
 
@@ -875,13 +979,13 @@ class WebhookService:
                     )
 
                 # Convert Unix timestamp to datetime
-                new_expiration = datetime.fromtimestamp(period_end_timestamp)
+                new_expiration = datetime_from_timestamp(period_end_timestamp)
 
-                logger.info(
+                logger.debug(
                     f"Webhook: Using expiration date from invoice: {new_expiration} "
                     f"(Unix timestamp: {period_end_timestamp})"
                 )
-                logger.info(
+                logger.debug(
                     f"Webhook: Extending expiration from {current_expiration} "
                     f"to {new_expiration}"
                 )
@@ -897,9 +1001,9 @@ class WebhookService:
                     detail=f"Error getting expiration from invoice: {str(e)}",
                 )
 
-            # 5. Update subscription expiration
+            # 5. Update subscription expiration and reset payment failure tracking
             try:
-                logger.info("Webhook: Updating subscription expiration...")
+                logger.debug("Webhook: Updating subscription expiration...")
                 user_subscription.expiration = new_expiration
                 user_subscription.updated_at = (
                     SubscriptionService.get_current_datetime()
@@ -913,7 +1017,7 @@ class WebhookService:
 
             # 6. Record the payment/purchase
             try:
-                logger.info("Webhook: Recording subscription renewal purchase...")
+                logger.debug("Webhook: Recording subscription renewal purchase...")
 
                 # Create purchase record for the renewal
                 purchase = SubscriptionUserPurchase(
@@ -925,7 +1029,7 @@ class WebhookService:
                 db.add(purchase)
                 db.flush()  # Get the purchase ID
 
-                logger.info(f"Webhook: Purchase recorded with ID: {purchase.id}")
+                logger.debug(f"Webhook: Purchase recorded with ID: {purchase.id}")
 
             except Exception as e:
                 logger.error(f"Webhook: Error recording purchase: {str(e)}")
@@ -935,6 +1039,12 @@ class WebhookService:
 
             # 7. Commit all changes
             db.commit()
+
+            # 8. Invalidate tier cache for immediate status update
+            user = db.query(User).filter(User.id == user_id).first()
+            if user:
+                invalidate_user_tier_cache(user.uid)
+                logger.debug("Invalidated tier cache after subscription renewal")
 
             logger.info(
                 f"Webhook: Successfully processed subscription renewal for user "
@@ -1000,7 +1110,7 @@ class WebhookService:
 
             # Check if invoice is in draft status
             if invoice_status == InvoiceStatus.DRAFT:
-                logger.info(f"Webhook: Finalizing draft invoice {invoice_id}")
+                logger.debug(f"Webhook: Finalizing draft invoice {invoice_id}")
 
                 # Ensure payment method is set before finalizing
                 try:
@@ -1013,7 +1123,7 @@ class WebhookService:
                         # First, try to get payment method from the subscription
                         if subscription_id:
                             try:
-                                logger.info(
+                                logger.debug(
                                     f"Webhook: Retrieving subscription "
                                     f"{subscription_id} to get payment method"
                                 )
@@ -1021,12 +1131,12 @@ class WebhookService:
                                     subscription_id
                                 )
                                 default_pm = subscription.get("default_payment_method")
-                                logger.info(
+                                logger.debug(
                                     f"Webhook: Subscription retrieved. "
                                     f"default_payment_method = {default_pm}"
                                 )
                                 if default_pm:
-                                    logger.info(
+                                    logger.debug(
                                         f"Webhook: Found payment method {default_pm} "
                                         f"from subscription {subscription_id}"
                                     )
@@ -1043,7 +1153,7 @@ class WebhookService:
                                 "default_payment_method"
                             )
                             if default_pm:
-                                logger.info(
+                                logger.debug(
                                     f"Webhook: Found payment method {default_pm} "
                                     f"from customer invoice settings"
                                 )
@@ -1053,14 +1163,14 @@ class WebhookService:
                         if default_pm and not invoice_data.get(
                             "default_payment_method"
                         ):
-                            logger.info(
+                            logger.debug(
                                 f"Webhook: Setting default payment method {default_pm} "
                                 f"on invoice {invoice_id}"
                             )
                             updated_invoice = stripe.Invoice.modify(
                                 invoice_id, default_payment_method=default_pm
                             )
-                            logger.info(
+                            logger.debug(
                                 f"Webhook: Payment method successfully attached to "
                                 f"invoice. Updated invoice default_payment_method: "
                                 f"{updated_invoice.get('default_payment_method')}"
@@ -1071,7 +1181,7 @@ class WebhookService:
                                 f"{customer_id} or subscription {subscription_id}"
                             )
                         elif invoice_data.get("default_payment_method"):
-                            logger.info(
+                            logger.debug(
                                 f"Webhook: Invoice {invoice_id} already has payment "
                                 f"method {invoice_data.get('default_payment_method')}"
                             )
@@ -1089,7 +1199,7 @@ class WebhookService:
                         invoice_id,
                         auto_advance=True,  # Enable automatic payment attempts
                     )
-                    logger.info(
+                    logger.debug(
                         f"Webhook: Successfully finalized invoice {invoice_id}. "
                         f"New status: {finalized_invoice.get('status')}, "
                         f"auto_advance: {finalized_invoice.get('auto_advance')}"
@@ -1103,12 +1213,12 @@ class WebhookService:
                         and finalized_invoice.get("status") == InvoiceStatus.OPEN
                     ):
                         try:
-                            logger.info(
+                            logger.debug(
                                 f"Webhook: Attempting immediate payment for invoice "
                                 f"{invoice_id}"
                             )
                             paid_invoice = stripe.Invoice.pay(invoice_id)
-                            logger.info(
+                            logger.debug(
                                 f"Webhook: Payment attempt completed for invoice "
                                 f"{invoice_id}. Status: {paid_invoice.get('status')}"
                             )
@@ -1150,7 +1260,7 @@ class WebhookService:
                         detail=f"Error finalizing invoice: {str(e)}",
                     )
             else:
-                logger.info(
+                logger.debug(
                     f"Webhook: Invoice {invoice_id} is not in draft status "
                     f"(status: {invoice_status}), skipping finalization"
                 )
@@ -1198,7 +1308,7 @@ class WebhookService:
             default_pm = invoice_data.get("default_payment_method")
             amount_due = invoice_data.get("amount_due", 0)
 
-            logger.info(
+            logger.debug(
                 f"Webhook: Processing invoice.finalized event for invoice {invoice_id} "
                 f"with status: {invoice_status}, payment_method: {default_pm}, "
                 f"amount_due: {amount_due}"
@@ -1223,12 +1333,12 @@ class WebhookService:
 
                 # Attempt to pay the invoice
                 try:
-                    logger.info(
+                    logger.debug(
                         f"Webhook: Attempting immediate payment for invoice "
                         f"{invoice_id}"
                     )
                     paid_invoice = stripe.Invoice.pay(invoice_id)
-                    logger.info(
+                    logger.debug(
                         f"Webhook: Payment attempt completed for invoice {invoice_id}. "
                         f"Status: {paid_invoice.get('status')}"
                     )
@@ -1258,7 +1368,7 @@ class WebhookService:
                     }
 
             else:
-                logger.info(
+                logger.debug(
                     f"Webhook: Invoice {invoice_id} does not require immediate payment"
                     f"Status: {invoice_status}, Amount due: {amount_due}"
                 )

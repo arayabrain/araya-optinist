@@ -1,16 +1,20 @@
-from datetime import datetime, timezone
 from typing import Dict
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import Session, select
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.cloud.cloud_utils import (
     CloudDebug,
     get_user_context_with_warnings,
-    get_user_storage_usage,
 )
+from studio.app.common.core.cloud.storage_tracking import get_user_storage_usage
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.middleware.user_activity_middleware import (
+    increment_heartbeat_failures,
+    invalidate_activity_cache,
+    mark_user_logged_out,
+)
 from studio.app.common.core.premium.premium_assignment_service import (
     premium_assignment_service,
 )
@@ -20,11 +24,15 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionType,
 )
 from studio.app.common.core.users import crud_users
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import get_db
 from studio.app.common.models import FreeUserAssignment
+from studio.app.common.models.instance_usage import InstanceUsageLog, UsageTier
 from studio.app.common.schemas.users import SelfUserUpdate, User, UserPasswordUpdate
 
 router = APIRouter(prefix="/users/me", tags=["users/me"])
+
+beacon_router = APIRouter(prefix="/users/me", tags=["users/me"])
 logger = AppLogger.get_logger()
 
 
@@ -86,9 +94,9 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
             current_user.id, current_user.uid
         )
 
-        logger.info(f"Assignment service result: {result}")
-        logger.info(f"is_shared from service: {result.get('is_shared')}")
-        logger.info(
+        logger.debug(f"Assignment service result: {result}")
+        logger.debug(f"is_shared from service: {result.get('is_shared')}")
+        logger.debug(
             f"assignment_source from service: {result.get('assignment_source')}"
         )
 
@@ -100,7 +108,7 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
                 "is_shared": result.get("is_shared", False),
                 "assignment_source": result.get("assignment_source"),
             }
-            logger.info(f"API response: {response}")
+            logger.debug(f"API response: {response}")
             return response
         elif result.get("requires_retry"):
             # Return 202 for scaling in progress
@@ -136,6 +144,9 @@ async def release_premium_instance(current_user: User = Depends(get_current_user
     This endpoint should be called on logout for premium users.
     """
     try:
+        invalidate_activity_cache(current_user.id)
+        mark_user_logged_out(current_user.id)
+
         # Call the premium assignment service
         result = await premium_assignment_service.release_premium_user(
             current_user.id, current_user.uid
@@ -166,6 +177,61 @@ async def release_premium_instance(current_user: User = Depends(get_current_user
         return {"message": "Release completed with warnings", "released": True}
 
 
+@router.get("/premium/beacon-token", response_model=Dict)
+async def get_beacon_token(
+    current_user: User = Depends(get_current_user),
+):
+    from studio.app.common.core.auth.security import create_beacon_token
+
+    token = create_beacon_token(current_user.uid)
+    return {"token": token}
+
+
+@beacon_router.post("/premium/release-beacon", response_model=Dict)
+async def release_premium_beacon(request: Request, db: Session = Depends(get_db)):
+    """
+    Beacon endpoint for reliable cleanup on browser close.
+    Authenticated via HMAC-signed token (sendBeacon cannot
+    carry Authorization headers).
+    """
+    from studio.app.common.core.auth.security import validate_beacon_token
+    from studio.app.common.models.user import User as UserModel
+
+    try:
+        body = await request.json()
+        token = body.get("token")
+        if not token:
+            return {"success": False, "message": "Missing token"}
+
+        user_uid = validate_beacon_token(token)
+        if not user_uid:
+            return {"success": False, "message": "Invalid token"}
+
+        user = db.query(UserModel).filter(UserModel.uid == user_uid).first()
+        if not user:
+            return {
+                "success": False,
+                "message": "User not found",
+            }
+
+        invalidate_activity_cache(user.id)
+        mark_user_logged_out(user.id)
+
+        result = await premium_assignment_service.release_premium_user(
+            user_id=user.id, user_uid=user_uid
+        )
+
+        logger.info(f"Beacon release for user {user.id}: " f"{result.get('message')}")
+        return {
+            "success": True,
+            "message": result.get("message", "Release processed"),
+        }
+
+    except Exception as e:
+        logger.warning(f"Beacon release failed: {e}")
+        return {"success": False, "message": str(e)}
+
+
 @router.post("/free/logout", response_model=Dict)
 async def logout_free_user(
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
@@ -184,19 +250,36 @@ async def logout_free_user(
         }
 
     try:
-        # Get the free user assignment
-        statement = select(FreeUserAssignment).where(
-            FreeUserAssignment.user_id == current_user.id
+        invalidate_activity_cache(current_user.id)
+        mark_user_logged_out(current_user.id)
+
+        # Update logged_out_at timestamp via direct SQL
+        from sqlalchemy import update
+
+        now = get_current_datetime()
+
+        stmt = (
+            update(FreeUserAssignment)
+            .where(FreeUserAssignment.user_id == current_user.id)
+            .values(logged_out_at=now)
         )
-        result_row = db.execute(statement).first()
-        assignment = result_row[0] if result_row else None
+        result = db.execute(stmt)
 
-        if assignment:
-            # Update logged_out_at timestamp
-            assignment.logged_out_at = datetime.now(timezone.utc)
-            db.add(assignment)
-            db.commit()
+        # Close usage log session
+        usage_stmt = (
+            update(InstanceUsageLog)
+            .where(
+                InstanceUsageLog.user_id == current_user.id,
+                InstanceUsageLog.tier == UsageTier.FREE,
+                InstanceUsageLog.ended_at.is_(None),
+            )
+            .values(ended_at=now)
+        )
+        db.execute(usage_stmt)
 
+        db.commit()
+
+        if result.rowcount > 0:
             logger.info(
                 f"Free user {current_user.id} logged out, data cleanup scheduled"
             )
@@ -233,6 +316,14 @@ async def get_premium_assignment_status(current_user: User = Depends(get_current
         # Get assignment status
         status_info = await premium_assignment_service.get_premium_user_status(
             current_user.id, current_user.uid
+        )
+
+        logger.debug(
+            "Premium status for user %s: " "assigned=%s, is_shared=%s, instance=%s",
+            current_user.id,
+            status_info is not None,
+            status_info.get("is_shared") if status_info else None,
+            status_info.get("instance_id") if status_info else None,
         )
 
         return {
@@ -279,28 +370,63 @@ async def send_premium_heartbeat(current_user: User = Depends(get_current_user))
             current_user.id, current_user.uid
         )
 
-        return {
-            "message": "Activity updated successfully"
-            if result["success"]
-            else "No active assignment found",
-            "updated": result["success"],
-            "user_id": current_user.uid,
-            "user_tier": SubscriptionType.PREMIUM.value,
-            "assignment_active": result["success"],
-            "activity_update": result.get("timestamp"),
-        }
+        if result["success"]:
+            return {
+                "message": "Activity updated successfully",
+                "updated": True,
+                "user_id": current_user.uid,
+                "user_tier": SubscriptionType.PREMIUM.value,
+                "assignment_active": True,
+                "activity_update": result.get("timestamp"),
+            }
+        else:
+            failure_count = increment_heartbeat_failures(current_user.id)
+            return {
+                "message": "No active assignment found",
+                "updated": False,
+                "user_id": current_user.uid,
+                "user_tier": SubscriptionType.PREMIUM.value,
+                "assignment_active": False,
+                "heartbeat_failures": failure_count,
+            }
 
     except Exception as e:
-        logger.error(f"Error processing heartbeat for user {current_user.id}: {e}")
-        # Don't fail heartbeats - they should always succeed
+        logger.error(f"Error processing heartbeat for user " f"{current_user.id}: {e}")
+        failure_count = increment_heartbeat_failures(current_user.id)
         return {
             "message": f"Heartbeat processed with warnings: {str(e)}",
             "updated": False,
             "user_id": current_user.uid,
             "user_tier": SubscriptionType.PREMIUM.value,
             "assignment_active": False,
+            "heartbeat_failures": failure_count,
             "error": str(e),
         }
+
+
+@router.post("/premium/ui-event")
+async def log_premium_ui_event(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Log a frontend premium UI event to backend logs (CloudWatch).
+    Lightweight endpoint for correlating UI timing with backend events.
+    """
+    body = await request.json()
+    event_type = body.get("event_type", "unknown")
+    timestamp_ms = body.get("timestamp_ms")
+    details = body.get("details", {})
+
+    logger.info(
+        "Premium UI event: user=%s (uid: %s) event=%s timestamp_ms=%s details=%s",
+        current_user.id,
+        current_user.uid,
+        event_type,
+        timestamp_ms,
+        details,
+    )
+    return {"logged": True}
 
 
 @router.put("", response_model=User)

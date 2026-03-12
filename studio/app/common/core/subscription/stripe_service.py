@@ -1,4 +1,3 @@
-from datetime import datetime
 from typing import Optional
 
 import stripe
@@ -8,11 +7,16 @@ from sqlmodel import Session
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.constants import (
     PAYMENT_METHOD_TYPE_CARD,
+    PAYMENT_METHOD_TYPE_LINK,
     SETUP_INTENT_USAGE_OFF_SESSION,
     StripeSubscriptionStatus,
     SubscriptionCurrencyType,
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
+from studio.app.common.core.utils.datetime_utils import (
+    datetime_from_timestamp,
+    format_date_for_display,
+)
 from studio.app.common.schemas.subscriptions import (
     CancelSubscriptionResponse,
     CreateSetupIntentResponse,
@@ -120,19 +124,31 @@ class StripeService:
             # Retrieve the payment method details
             payment_method = stripe.PaymentMethod.retrieve(default_pm_id)
 
-            if payment_method.type != PAYMENT_METHOD_TYPE_CARD:
-                logger.info(f"Default payment method is not a card for user {user.id}")
+            if payment_method.type == PAYMENT_METHOD_TYPE_CARD:
+                card = payment_method.card
+                return PaymentMethodResponse(
+                    id=payment_method.id,
+                    type=PAYMENT_METHOD_TYPE_CARD,
+                    last4=card.last4,
+                    brand=card.brand,
+                    exp_month=card.exp_month,
+                    exp_year=card.exp_year,
+                    is_default=True,
+                )
+            elif payment_method.type == PAYMENT_METHOD_TYPE_LINK:
+                link = payment_method.link
+                return PaymentMethodResponse(
+                    id=payment_method.id,
+                    type=PAYMENT_METHOD_TYPE_LINK,
+                    email=getattr(link, "email", None) if link else None,
+                    is_default=True,
+                )
+            else:
+                logger.info(
+                    f"Unsupported payment method type '{payment_method.type}' "
+                    f"for user {user.id}"
+                )
                 return None
-
-            card = payment_method.card
-            return PaymentMethodResponse(
-                id=payment_method.id,
-                last4=card.last4,
-                brand=card.brand,
-                exp_month=card.exp_month,
-                exp_year=card.exp_year,
-                is_default=True,
-            )
 
         except stripe.error.StripeError as e:
             logger.error(
@@ -357,24 +373,41 @@ class StripeService:
 
             customer = stripe_customers.data[0]
 
-            # Get all payment methods for this customer
-            payment_methods = stripe.PaymentMethod.list(
+            # Get all payment methods for this customer (cards and link)
+            result = []
+
+            card_payment_methods = stripe.PaymentMethod.list(
                 customer=customer.id, type=PAYMENT_METHOD_TYPE_CARD
             )
-
-            result = []
-            for pm in payment_methods.data:
+            for pm in card_payment_methods.data:
                 card = pm.card
-                payment_method_response = PaymentMethodResponse(
-                    id=pm.id,
-                    last4=card.last4,
-                    brand=card.brand,
-                    exp_month=card.exp_month,
-                    exp_year=card.exp_year,
-                    is_default=pm.id
-                    == customer.invoice_settings.default_payment_method,
+                result.append(
+                    PaymentMethodResponse(
+                        id=pm.id,
+                        type=PAYMENT_METHOD_TYPE_CARD,
+                        last4=card.last4,
+                        brand=card.brand,
+                        exp_month=card.exp_month,
+                        exp_year=card.exp_year,
+                        is_default=pm.id
+                        == customer.invoice_settings.default_payment_method,
+                    )
                 )
-                result.append(payment_method_response)
+
+            link_payment_methods = stripe.PaymentMethod.list(
+                customer=customer.id, type=PAYMENT_METHOD_TYPE_LINK
+            )
+            for pm in link_payment_methods.data:
+                link = pm.link
+                result.append(
+                    PaymentMethodResponse(
+                        id=pm.id,
+                        type=PAYMENT_METHOD_TYPE_LINK,
+                        email=getattr(link, "email", None) if link else None,
+                        is_default=pm.id
+                        == customer.invoice_settings.default_payment_method,
+                    )
+                )
 
             return result
 
@@ -480,10 +513,9 @@ class StripeService:
                 "current_period_end"
             ]
 
-            logger.info(f"Current period end timestamp: {current_period_end}")
-            logger.info(
-                f"Current period end date: {datetime.fromtimestamp(current_period_end)}"
-            )
+            logger.debug(f"Current period end timestamp: {current_period_end}")
+            period_end_dt = datetime_from_timestamp(current_period_end)
+            logger.debug(f"Current period end date: {period_end_dt}")
 
             # Schedule change at period end using proper Stripe schedules
             current_period_end = stripe_subscription["items"]["data"][0][
@@ -519,10 +551,10 @@ class StripeService:
                 },
             )
 
-            change_date = datetime.fromtimestamp(current_period_end)
+            change_date = datetime_from_timestamp(current_period_end)
             message = (
                 f"Subscription will change to {new_plan.name} on "
-                f"{change_date.strftime('%Y-%m-%d')}"
+                f"{format_date_for_display(change_date)}"
             )
             effective_date = int(current_period_end)
 
@@ -642,10 +674,10 @@ class StripeService:
 
         # Database will be updated via customer.subscription.updated webhook
 
-        access_until_date = datetime.fromtimestamp(current_period_end)
+        access_until_date = datetime_from_timestamp(current_period_end)
         message = (
             f"Subscription will be cancelled on "
-            f"{access_until_date.strftime('%Y-%m-%d')}. "
+            f"{format_date_for_display(access_until_date)}. "
             f"You will retain access until then."
         )
 

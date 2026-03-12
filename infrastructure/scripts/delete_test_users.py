@@ -41,27 +41,28 @@ except ImportError as e:
 
 def get_database_url():
     """Get database URL from environment variables."""
+    from studio.app.common.db.config import build_mysql_url
+
     db_url = (
         os.getenv("DATABASE_URL")
         or os.getenv("DB_URL")
         or os.getenv("SQLALCHEMY_DATABASE_URL")
     )
+    if db_url:
+        return db_url
 
-    if not db_url:
-        host = os.getenv("DB_HOST", "localhost")
-        port = os.getenv("DB_PORT", "3306")
-        user = os.getenv("DB_USER", "root")
-        password = os.getenv("DB_PASSWORD", "")
-        database = os.getenv("DB_NAME", "optinist")
-
-        db_url = f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}"
-
-    return db_url
+    return build_mysql_url(
+        user=os.getenv("DB_USER", "root"),
+        password=os.getenv("DB_PASSWORD", ""),
+        host=os.getenv("DB_HOST", "localhost"),
+        database=os.getenv("DB_NAME", "optinist"),
+        port=int(os.getenv("DB_PORT", "3306")),
+    )
 
 
 def get_test_users():
     """Get test user data from unified configuration loader."""
-    from test_user_config import load_test_users_for_db, print_configuration_help
+    from testuser_config import load_test_users_for_db, print_configuration_help
 
     test_users = load_test_users_for_db()
 
@@ -113,7 +114,7 @@ async def delete_test_user_from_db(db, user_email):
         if workspace_ids:
             for workspace_id in workspace_ids:
                 try:
-                    await WorkspaceService.process_workspace_deletion(
+                    await WorkspaceService.initiate_workspace_deletion(
                         db, remote_bucket_name, workspace_id, user_id
                     )
                     workspace_count += 1
@@ -125,7 +126,7 @@ async def delete_test_user_from_db(db, user_email):
         # ----------------------------------------
         # Delete remaining database records
         # ----------------------------------------
-        # Note: WorkspaceService.process_workspace_deletion above should have handled
+        # Note: WorkspaceService.initiate_workspace_deletion above should have handled
         # most workspace-related cleanup, but we clean up any remaining records here
 
         # 1. Delete any remaining experiment records (references workspaces)
@@ -267,10 +268,16 @@ async def main():
         print("Error: Could not determine database URL.")
         return
 
-    print("📦 Connecting to database...")
+    print("Connecting to database...")
 
     try:
-        engine = create_engine(db_url)
+        from studio.app.common.db.config import get_ssl_creator
+
+        kwargs = {}
+        creator = get_ssl_creator()
+        if creator:
+            kwargs["creator"] = creator
+        engine = create_engine(db_url, **kwargs)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         db = SessionLocal()
 

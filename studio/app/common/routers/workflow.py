@@ -7,19 +7,23 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 
-from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
+from studio.app.common.core.auth.auth_dependencies import (
+    get_current_user,
+    get_user_remote_bucket_name,
+)
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_services import ExperimentService
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteStorageBucketNotFoundError,
     RemoteStorageController,
     RemoteStorageLockError,
     RemoteStorageReader,
     RemoteStorageSimpleReader,
+    RemoteStorageSimpleWriter,
     RemoteSyncStatusFileUtil,
     upload_experiment_wrapper,
 )
-from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
@@ -28,7 +32,14 @@ from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
 )
+from studio.app.common.routers.files import (
+    update_hdf5_structure,
+    update_image_shape,
+    update_mat_structure,
+)
+from studio.app.common.schemas.users import User
 from studio.app.common.schemas.workflow import WorkflowWithResults
+from studio.app.const import ACCEPT_FILE_EXT, MetadataCacheFile
 from studio.app.dir_path import DIRPATH
 
 router = APIRouter(prefix="/workflow", tags=["workflow"])
@@ -44,6 +55,7 @@ logger = AppLogger.get_logger()
 async def fetch_last_experiment(
     workspace_id: str,
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         last_expt_config = ExperimentService.get_last_experiment(workspace_id)
@@ -89,11 +101,18 @@ async def fetch_last_experiment(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     except HTTPException as e:
-        logger.error(e)
+        logger.error(e, exc_info=True)
         raise e
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+    except RemoteStorageBucketNotFoundError as e:
+        logger.error(f"User bucket not found for user {current_user.id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Storage bucket not found. "
+            "Please sign out and sign in again to recover.",
+        )
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(
@@ -142,11 +161,18 @@ async def reproduce_experiment(
             )
 
     except HTTPException as e:
-        logger.error(e)
+        logger.error(e, exc_info=True)
         raise e
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+    except RemoteStorageBucketNotFoundError as e:
+        # Bucket is gone, so experiment data is lost - can't recover
+        logger.error(f"User bucket not found, experiment data unavailable: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Experiment data not available. Storage may have been deleted.",
+        )
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(
@@ -217,51 +243,97 @@ async def import_sample_data(
         # ------------------------------------------------------------
         # Upload the input sample data to remote storage process.
         # ------------------------------------------------------------
+        async with RemoteStorageSimpleWriter(
+            remote_bucket_name,
+        ) as remote_storage_controller:
+            sample_data_dir = Path(
+                join_filepath(
+                    [DIRPATH.ROOT_DIR, sample_data_dir_name, category, "input"]
+                )
+            )
 
-        s3_controller = S3StorageController(remote_bucket_name)
-        sample_data_dir = Path(
-            join_filepath([DIRPATH.ROOT_DIR, sample_data_dir_name, category, "input"])
-        )
+            sample_data_subdir = sorted(
+                [
+                    p
+                    for p in sample_data_dir.iterdir()
+                    if p.is_file() and p.name.startswith("sample_")
+                ]
+            )
 
-        sample_data_subdir = sorted(
-            [
-                p
-                for p in sample_data_dir.iterdir()
-                if p.is_file() and p.name.startswith("sample_")
+            logger.info(f"Found {len(sample_data_subdir)} sample input subdirectories.")
+
+            if not sample_data_subdir:
+                logger.warning("No valid sample input subdirectories found for upload.")
+
+            tasks = [
+                remote_storage_controller.upload_input_data(workspace_id, filename.name)
+                for filename in sample_data_subdir
             ]
-        )
+            await asyncio.gather(*tasks)
 
-        logger.info(f"Found {len(sample_data_subdir)} sample input subdirectories.")
+            # Generate metadata files for various file types and upload to S3
 
-        if not sample_data_subdir:
-            logger.warning("No valid sample input subdirectories found for upload.")
+            # TIFF files: .image_shape.json
+            tiff_files = [
+                p
+                for p in sample_data_subdir
+                if p.name.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value))
+            ]
+            if tiff_files:
+                for tiff_file in tiff_files:
+                    update_image_shape(workspace_id, tiff_file.name)
+                await remote_storage_controller.upload_input_data(
+                    workspace_id, MetadataCacheFile.IMAGE_SHAPE
+                )
 
-        tasks = [
-            s3_controller.upload_input_data(workspace_id, filename.name)
-            for filename in sample_data_subdir
-        ]
-        await asyncio.gather(*tasks)
+            # HDF5 files: .hdf5_structure.json
+            hdf5_files = [
+                p
+                for p in sample_data_subdir
+                if p.name.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value))
+            ]
+            if hdf5_files:
+                for hdf5_file in hdf5_files:
+                    update_hdf5_structure(workspace_id, hdf5_file.name)
+                await remote_storage_controller.upload_input_data(
+                    workspace_id, MetadataCacheFile.HDF5_STRUCTURE
+                )
 
-        # ------------------------------------------------------------
-        # Upload the output sample data to remote storage process.
-        # ------------------------------------------------------------
+            # MATLAB files: .mat_structure.json
+            mat_files = [
+                p
+                for p in sample_data_subdir
+                if p.name.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value))
+            ]
+            if mat_files:
+                for mat_file in mat_files:
+                    update_mat_structure(workspace_id, mat_file.name)
+                await remote_storage_controller.upload_input_data(
+                    workspace_id, MetadataCacheFile.MAT_STRUCTURE
+                )
 
-        sample_data_output_dir = Path(
-            join_filepath([DIRPATH.ROOT_DIR, sample_data_dir_name, category, "output"])
-        )
+            # ------------------------------------------------------------
+            # Upload the output sample data to remote storage process.
+            # ------------------------------------------------------------
 
-        sample_data_output_subdirs = sorted(
-            [p for p in sample_data_output_dir.iterdir() if p.is_dir()]
-        )
+            sample_data_output_dir = Path(
+                join_filepath(
+                    [DIRPATH.ROOT_DIR, sample_data_dir_name, category, "output"]
+                )
+            )
 
-        if not sample_data_output_subdirs:
-            logger.warning("No valid sample output directories found for upload.")
+            sample_data_output_subdirs = sorted(
+                [p for p in sample_data_output_dir.iterdir() if p.is_dir()]
+            )
 
-        tasks = [
-            upload_experiment_wrapper(remote_bucket_name, workspace_id, p.name)
-            for p in sample_data_output_subdirs
-        ]
-        await asyncio.gather(*tasks)
+            if not sample_data_output_subdirs:
+                logger.warning("No valid sample output directories found for upload.")
+
+            tasks = [
+                upload_experiment_wrapper(remote_bucket_name, workspace_id, p.name)
+                for p in sample_data_output_subdirs
+            ]
+            await asyncio.gather(*tasks)
 
     return True
 
@@ -288,17 +360,21 @@ async def force_sync_unsynced_experiment(
     )
 
     if is_remote_unsynced:
-        async with RemoteStorageReader(
-            remote_bucket_name, workspace_id, unique_id
-        ) as remote_storage_controller:
-            result = await remote_storage_controller.download_experiment(
-                workspace_id, unique_id
-            )
-
-            if not result:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="sync remote experiment failed",
+        try:
+            async with RemoteStorageReader(
+                remote_bucket_name, workspace_id, unique_id
+            ) as remote_storage_controller:
+                result = await remote_storage_controller.download_experiment(
+                    workspace_id, unique_id
                 )
+
+                if not result:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="sync remote experiment failed",
+                    )
+        except RemoteStorageLockError as e:
+            logger.warning(e)
+            raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
 
     return True

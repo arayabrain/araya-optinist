@@ -5,7 +5,8 @@ import axiosLibrary, {
 } from "axios"
 
 import { refreshTokenApi } from "api/auth/Auth"
-import { BASE_URL } from "const/API"
+import { API_TIMEOUT, BASE_URL } from "const/API"
+import { RoutingHeaders } from "const/Subscription"
 import { getExToken, getToken, logout, saveToken } from "utils/auth/AuthUtils"
 import {
   isDataviewPublicOutputsRequest,
@@ -21,7 +22,7 @@ interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
 
 const axios = axiosLibrary.create({
   baseURL: BASE_URL,
-  timeout: 600000,
+  timeout: API_TIMEOUT.DEFAULT,
   headers: {
     Accept: "application/json",
     "Content-Type": "application/json",
@@ -30,18 +31,23 @@ const axios = axiosLibrary.create({
 
 axios.interceptors.request.use(
   async (config) => {
-    // Add authentication headers
+    // Add authentication headers (skip if null to avoid "Bearer null")
     const token = getToken()
     const exToken = getExToken()
 
-    config.headers!.Authorization = `Bearer ${token}`
+    if (token) {
+      config.headers!.Authorization = `Bearer ${token}`
+    }
     if (exToken) {
       config.headers!.ExToken = exToken
     }
 
     // Add premium routing headers for ALB-based routing
-    const routingHeaders = routingService.getRoutingHeaders()
-    Object.assign(config.headers!, routingHeaders)
+    // Skip if this is a free-tier fallback retry
+    if (!(config as CustomAxiosRequestConfig)._retryWithoutPremium) {
+      const routingHeaders = routingService.getRoutingHeaders()
+      Object.assign(config.headers!, routingHeaders)
+    }
 
     // Check whether the access is to public output data (HTTP header setting)
     if (config.url && isDataviewPublicOutputsRequest(config.url)) {
@@ -207,39 +213,44 @@ const handlePremiumRoutingError = async (
     return Promise.reject(error)
   }
 
-  // Premium instance not ready, falling back to free tier
+  // Premium instance not ready, falling back to free tier.
   const retryConfig = { ...originalRequest }
-
-  // Remove premium routing headers for free tier fallback
-  delete retryConfig.headers["X-User-Tier"]
-  delete retryConfig.headers["X-Routing-ID"]
-
-  // Mark as retry to prevent infinite loops
+  delete retryConfig.headers[RoutingHeaders.USER_TIER]
+  delete retryConfig.headers[RoutingHeaders.ROUTING_ID]
   retryConfig._retryWithoutPremium = true
 
   try {
     // eslint-disable-next-line no-console
     console.log("Using free tier while premium instance provisions")
-    return await axiosLibrary(retryConfig)
+    return await axios(retryConfig)
   } catch (retryError) {
     // eslint-disable-next-line no-console
     console.error("Free tier fallback also failed:", retryError)
-    // Let the original error bubble up
     return Promise.reject(error)
   }
 }
 
 axios.interceptors.response.use(
-  async (res) => res,
+  async (res) => {
+    // Extract routing headers from backend response
+    // Note: axios normalizes response header names to lowercase
+    const routingIdHeader = RoutingHeaders.ROUTING_ID.toLowerCase()
+    const routingId = res.headers[routingIdHeader]
+    if (routingId) {
+      routingService.updateRoutingToken(routingId)
+    }
+    return res
+  },
   async (error) => {
     if (error?.response?.status === 401) {
       return handleUnauthorizedError(error)
     }
 
-    if (
-      error?.response?.status === 503 &&
-      routingService.requiresPremiumRouting()
-    ) {
+    // ALB 503 when premium instance is unavailable.
+    // Also handle network errors (ERR_FAILED / no response)
+    const is503 = error?.response?.status === 503
+    const isNetworkError = !error?.response && !!error?.config
+    if ((is503 || isNetworkError) && routingService.requiresPremiumRouting()) {
       return handlePremiumRoutingError(error)
     }
 

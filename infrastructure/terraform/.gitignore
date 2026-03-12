@@ -1,1 +1,24 @@
-# Ignore pymysql packages
+# Ignore old Terraform-generated app_setup.sh
+# The static version is now in infrastructure/scripts/app_setup.sh
+app_setup.sh
+
+# Terraform state files and directories
+terraform.*
+.terraform*
+*.tfstate
+*.tfstate.backup
+
+# Secrets — never commit tfvars with real values
+*.tfvars
+!*.tfvars.example
+
+# SSH private keys
+*.pem
+
+# Lambda deployment packages
+**/*.py.zip
+**/*_package/*
+
+# AWS constants layer build artifacts
+**/aws_constants_layer/
+**/aws_constants_layer.zip

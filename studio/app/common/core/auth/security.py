@@ -1,11 +1,14 @@
-import logging
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any, Dict, Optional, Tuple, Union
 
 from jose import ExpiredSignatureError, JWTError, jwt
 from pydantic import ValidationError
 
 from studio.app.common.core.auth.auth_config import AUTH_CONFIG
+from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
+
+logger = AppLogger.get_logger()
 
 
 def _create_token(
@@ -17,7 +20,7 @@ def _create_token(
     token_data = {"sub": subject, "token_type": token_type}
 
     token_data.update(
-        {"exp": datetime.now(timezone.utc) + expires_delta} if expires_delta else {}
+        {"exp": get_current_datetime() + expires_delta} if expires_delta else {}
     )
     token_data.update(user_claims if user_claims else {})
 
@@ -71,13 +74,13 @@ def _validate_token(
         if payload.get("token_type") != token_type:
             err = "Invalid token type"
     except ExpiredSignatureError as e:
-        logging.getLogger().error(e)
+        logger.warning(e)
         err = "Credentials has expired"
     except (JWTError, ValidationError) as e:
-        logging.getLogger().error(e)
+        logger.warning(e)
         err = "Could not validate credentials"
     except Exception as e:
-        logging.getLogger().error(e)
+        logger.warning(e)
         err = "Bad token"
 
     return payload, err
@@ -89,3 +92,22 @@ def validate_access_token(token: str) -> Tuple[Dict[str, Any], Optional[str]]:
 
 def validate_refresh_token(token: str) -> Tuple[Dict[str, Any], Optional[str]]:
     return _validate_token(token, "refresh_token")
+
+
+BEACON_TOKEN_TTL = timedelta(hours=24)
+
+
+def create_beacon_token(user_uid: str) -> str:
+    return _create_token(
+        subject=user_uid,
+        token_type="beacon_token",
+        expires_delta=BEACON_TOKEN_TTL,
+    )
+
+
+def validate_beacon_token(token: str) -> Optional[str]:
+    """Returns user_uid if valid, None otherwise."""
+    payload, err = _validate_token(token, "beacon_token")
+    if err or not payload:
+        return None
+    return payload.get("sub")

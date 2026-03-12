@@ -8,18 +8,7 @@ ease of maintenance.
 
 from enum import IntEnum
 
-# StrEnum was added in Python 3.11, provide fallback for older versions
-try:
-    from enum import StrEnum
-except ImportError:
-    from enum import Enum
-
-    class StrEnum(str, Enum):
-        """String enum compatible with Python < 3.11.
-
-        Inheriting from (str, Enum) makes members behave as strings
-        while retaining enum functionality.
-        """
+from studio.app.common.core.compat import StrEnum
 
 
 # ============================================================================
@@ -215,6 +204,15 @@ class StorageQuota:
     CRITICAL_THRESHOLD_PERCENT = 90  # 90% usage threshold for critical warning
     DANGER_THRESHOLD_PERCENT = 100  # 100% usage threshold for danger warning
 
+    @classmethod
+    def bytes_for_plan(cls, plan_id: int) -> int:
+        """Return storage quota in bytes for a given SubscriptionPlanIds value."""
+        _PLAN_QUOTA_GB = {
+            SubscriptionPlanIds.PREMIUM: cls.PREMIUM,
+            SubscriptionPlanIds.FREE: cls.FREE,
+        }
+        return _PLAN_QUOTA_GB.get(plan_id, cls.FREE) * StorageSize.GB
+
 
 class SubscriptionPeriods:
     """
@@ -226,6 +224,8 @@ class SubscriptionPeriods:
     TRIAL_PERIOD_DAYS = 30
     GRACE_PERIOD_DAYS = 30
     WARNING_PERIOD_DAYS = 30
+    # Days before grace period end to warn about quota drop
+    QUOTA_DROP_WARNING_DAYS = 3
     STORAGE_WARNING_DAYS = 30  # Days to remove excess storage for free users
 
     # Cache age for storage usage (in minutes)
@@ -317,6 +317,24 @@ class SubscriptionLifecycleStatus(StrEnum):
     FREE = "free"  # Never had premium subscription
 
 
+class AlertType(StrEnum):
+    """
+    Frontend-facing alert types for limit warnings.
+
+    Usage: API response field 'alert_type' in limit warning payloads
+    Note: Frontend expects exactly these values: "storage", "grace", "overdue"
+
+    Mapping from SubscriptionLifecycleStatus:
+    - GRACE, WARNING -> AlertType.GRACE (both are grace period warnings)
+    - OVERDUE -> AlertType.OVERDUE
+    - Storage exceeded -> AlertType.STORAGE
+    """
+
+    STORAGE = "storage"  # Storage quota exceeded
+    GRACE = "grace"  # In grace or warning period (premium features expiring)
+    OVERDUE = "overdue"  # Past all grace periods, data deletion imminent
+
+
 class SyncStatusConstants:
     """
     Configuration constants for background sync and cleanup jobs.
@@ -373,7 +391,8 @@ STRIPE_PROVIDER_NAME = "stripe"
 
 # Timeouts and limits
 DUPLICATE_PURCHASE_WINDOW_MINUTES = 30  # Window for detecting duplicate purchases
-RECENT_SUBSCRIPTION_WINDOW_DAYS = 7  # Window for finding recently expired subscriptions
+# Extended from 7 to 30 days to handle trial-to-paid with 8+ day gap
+RECENT_SUBSCRIPTION_WINDOW_DAYS = 30
 INVOICE_LIST_LIMIT = 100  # Maximum number of invoices to retrieve
 
 # Payment method types

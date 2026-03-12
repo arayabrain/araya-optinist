@@ -1,16 +1,20 @@
 import os
 import shutil
+from datetime import datetime
 from glob import glob
+from typing import Dict, List
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     BaseRemoteStorageController,
+    RemoteExperimentSyncMode,
     StorageDirectoryType,
 )
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
 )
+from studio.app.const import ThumbnailType
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -151,6 +155,29 @@ class MockStorageController(BaseRemoteStorageController):
 
         return True
 
+    async def list_input_data_objects(self, workspace_id: str) -> List[Dict]:
+        """List all input data objects in mock storage for a workspace."""
+        workspace_input_path = self._make_workspace_input_path(workspace_id)
+
+        if not os.path.isdir(workspace_input_path):
+            return []
+
+        objects = []
+        for filename in os.listdir(workspace_input_path):
+            file_path = os.path.join(workspace_input_path, filename)
+            if os.path.isfile(file_path):
+                stat = os.stat(file_path)
+                objects.append(
+                    {
+                        "filename": filename,
+                        "size": stat.st_size,
+                        "last_modified": datetime.fromtimestamp(
+                            stat.st_mtime
+                        ).isoformat(),
+                    }
+                )
+        return objects
+
     async def download_all_experiments_metas(self, workspace_ids: list = None) -> bool:
         # ----------------------------------------
         # make paths
@@ -259,7 +286,10 @@ class MockStorageController(BaseRemoteStorageController):
         return True
 
     async def download_experiment(
-        self, workspace_id: str, unique_id: str, sync_mode: str = "all"
+        self,
+        workspace_id: str,
+        unique_id: str,
+        sync_mode: RemoteExperimentSyncMode = RemoteExperimentSyncMode.ALL,
     ) -> bool:
         # make paths
         experiment_local_path = self._make_experiment_local_path(
@@ -319,10 +349,12 @@ class MockStorageController(BaseRemoteStorageController):
 
             create_directory(experiment_remote_path)
 
-            # copy target files
+            # copy target files (preserving subdirectory structure)
             for target_file in target_files:
-                target_file = f"{experiment_local_path}/{target_file}"
-                shutil.copy(target_file, experiment_remote_path)
+                source_path = f"{experiment_local_path}/{target_file}"
+                dest_path = f"{experiment_remote_path}/{target_file}"
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                shutil.copy(source_path, dest_path)
 
         else:  # Target all files.
             logger.debug(
@@ -335,7 +367,10 @@ class MockStorageController(BaseRemoteStorageController):
 
             # copy all files
             shutil.copytree(
-                experiment_local_path, experiment_remote_path, dirs_exist_ok=True
+                experiment_local_path,
+                experiment_remote_path,
+                dirs_exist_ok=True,
+                ignore=self.create_upload_experiment_ignore_function(),
             )
 
         return True
@@ -360,6 +395,28 @@ class MockStorageController(BaseRemoteStorageController):
             shutil.rmtree(experiment_remote_path)
 
         return True
+
+    async def download_thumbnail_source(
+        self,
+        workspace_id: str,
+        unique_id: str,
+        original_path: str,
+        thumb_type: ThumbnailType,
+    ) -> bool:
+        """
+        Download the source file needed to generate a thumbnail.
+        """
+        # Currently not implemented
+        pass
+
+    async def upload_thumbnail(
+        self, workspace_id: str, unique_id: str, thumbnail_path: str
+    ) -> bool:
+        """
+        Upload a generated thumbnail PNG to S3 for persistence.
+        """
+        # Currently not implemented
+        pass
 
     async def delete_workspace(
         self, workspace_id: str, directory_type: StorageDirectoryType

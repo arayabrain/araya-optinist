@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 
+from studio.app.common.core.compat import StrEnum
 from studio.app.common.core.utils.config_handler import get_env_var
 
 
@@ -38,7 +39,51 @@ FRONTEND_URL = get_env_var("FRONTEND_URL", default="http://localhost:3000")
 
 # File sync patterns for selective sync
 ESSENTIAL_SYNC_PATTERNS = (".yaml", ".yml", ".json")
-LARGE_FILE_PATTERNS = tuple(ACCEPT_FILE_EXT.ALL_EXT.value + [".pkl"])
+LARGE_FILE_PATTERNS = tuple(ACCEPT_FILE_EXT.ALL_EXT.value + [".pkl", ".bin", ".npy"])
 # Visualization mode: JSON for timeseries data, TIFF for images,
 # YAML for snakemake config
 VISUALIZATION_SYNC_PATTERNS = (".json", ".tif", ".tiff", ".yaml")
+
+
+# Thumbnail type identifiers
+class ThumbnailType(StrEnum):
+    INPUT = "input"  # First frame of input TIFF
+    ROI = "roi"  # Rendered ROI overlay from cell_roi.json
+
+    @property
+    def filename(self) -> str:
+        """Get the thumbnail filename for this type."""
+        return f"{self.value}_thumb.png"
+
+
+@dataclass(frozen=True)
+class ThumbnailConst:
+    """Constants related to thumbnail storage and file patterns."""
+
+    DIRNAME: str = "thumbnails"
+    FILE_PATTERNS: tuple = ("_thumb.png",)
+
+
+# Metadata cache filenames for input data
+class MetadataCacheFile(StrEnum):
+    IMAGE_SHAPE = ".image_shape.json"
+    HDF5_STRUCTURE = ".hdf5_structure.json"
+    MAT_STRUCTURE = ".mat_structure.json"
+
+
+# Map file extensions to display labels for placeholder thumbnails
+EXTENSION_LABELS = {
+    # HDF5 formats
+    ".hdf5": "HDF5",
+    ".h5": "HDF5",
+    ".nwb": "NWB",
+    # MATLAB
+    ".mat": "MATLAB",
+    # Microscope formats
+    ".nd2": "Nikon ND2",
+    ".oir": "Olympus OIR",
+    ".isxd": "Inscopix ISXD",
+    ".thor.zip": "ThorLabs",
+    # CSV
+    ".csv": "CSV",
+}

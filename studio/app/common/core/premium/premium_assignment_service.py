@@ -27,6 +27,16 @@ _assignment_attempts = {}
 _RATE_LIMIT_SECONDS = 30
 
 
+class PremiumStatusCheckError(Exception):
+    pass
+
+
+# Timeout and retry configuration for Lambda calls
+LAMBDA_TIMEOUT_SECONDS = 60
+LAMBDA_MAX_RETRIES = 2
+LAMBDA_RETRY_BASE_DELAY_SECONDS = 2
+
+
 class PremiumAssignmentService:
     """Service for handling premium user assignments to dedicated instances."""
 
@@ -44,28 +54,32 @@ class PremiumAssignmentService:
 
     def _check_rate_limit(self, user_id: int) -> bool:
         """Check if user is within rate limit for assignment attempts"""
+        can_assign, _ = self.can_assign_premium(user_id)
+        if can_assign:
+            _assignment_attempts[user_id] = time.time()
+            logger.info(f"User {user_id} rate limit check passed, recording timestamp")
+        return can_assign
+
+    def can_assign_premium(self, user_id: int) -> tuple:
+        """
+        Check if user can request premium assignment.
+
+        Returns:
+            tuple: (can_assign: bool, seconds_remaining: int)
+        """
         current_time = time.time()
         last_attempt = _assignment_attempts.get(user_id, 0)
+        elapsed = current_time - last_attempt
 
-        # Debug logging
-        logger.info(
-            f"Rate limit check for user {user_id}: current_time={current_time}, "
-            f"last_attempt={last_attempt}, diff={current_time - last_attempt}"
-        )
-
-        if current_time - last_attempt < _RATE_LIMIT_SECONDS:
+        if elapsed < _RATE_LIMIT_SECONDS:
+            remaining = int(_RATE_LIMIT_SECONDS - elapsed)
             logger.warning(
-                f"User {user_id} rate limited: {current_time - last_attempt}s < "
-                f"{_RATE_LIMIT_SECONDS}s"
+                f"User {user_id} rate limited: {elapsed:.1f}s < "
+                f"{_RATE_LIMIT_SECONDS}s, {remaining}s remaining"
             )
-            return False  # Rate limited
+            return False, remaining
 
-        _assignment_attempts[user_id] = current_time
-        logger.info(
-            f"User {user_id} rate limit check passed, recording timestamp "
-            f"{current_time}"
-        )
-        return True
+        return True, 0
 
     def _cleanup_old_attempts(self):
         """Clean up old assignment attempts from memory"""
@@ -111,26 +125,19 @@ class PremiumAssignmentService:
             # Clean up old attempts periodically
             self._cleanup_old_attempts()
 
-            # TEMPORARY: For debugging, clear any existing rate limit for this user
-            # if they were rate limited more than 5 seconds ago
-            current_time = time.time()
-            last_attempt = _assignment_attempts.get(user_id, 0)
-            if last_attempt > 0 and current_time - last_attempt > 5:
-                logger.info(
-                    f"Clearing stale rate limit for user {user_id} (last attempt "
-                    f"was {current_time - last_attempt}s ago)"
-                )
-                del _assignment_attempts[user_id]
-
             # Check rate limiting to prevent concurrent calls
-            if not self._check_rate_limit(user_id):
+            can_assign, seconds_remaining = self.can_assign_premium(user_id)
+            if not can_assign:
                 logger.warning(f"Rate limited assignment attempt for user {user_id}")
                 return {
                     "success": False,
                     "message": f"Assignment request too frequent. "
-                    f"Please wait {_RATE_LIMIT_SECONDS} seconds.",
+                    f"Please wait {seconds_remaining} seconds.",
                     "requires_retry": False,
+                    "retry_after": seconds_remaining,
                 }
+            # Record the attempt timestamp
+            _assignment_attempts[user_id] = time.time()
 
             # Local development mode - skip Lambda call if running on localhost
             if is_local_environment():
@@ -161,10 +168,9 @@ class PremiumAssignmentService:
                 ),
             }
 
-            # Call the premium manager Lambda function
+            # Call the premium manager Lambda with timeout and retry
             lambda_client = self._get_lambda_client()
 
-            # Use asyncio to run the synchronous boto3 call
             def invoke_lambda():
                 response = lambda_client.invoke(
                     FunctionName=self.premium_manager_function_name,
@@ -173,9 +179,49 @@ class PremiumAssignmentService:
                 )
                 return response
 
-            # Run in thread pool to avoid blocking
+            # Retry loop with exponential backoff for transient failures
             loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(None, invoke_lambda)
+
+            for attempt in range(LAMBDA_MAX_RETRIES + 1):
+                try:
+                    # Run with timeout to prevent hanging indefinitely
+                    response = await asyncio.wait_for(
+                        loop.run_in_executor(None, invoke_lambda),
+                        timeout=LAMBDA_TIMEOUT_SECONDS,
+                    )
+                    break  # Success - exit retry loop
+                except asyncio.TimeoutError:
+                    if attempt < LAMBDA_MAX_RETRIES:
+                        delay = LAMBDA_RETRY_BASE_DELAY_SECONDS * (2**attempt)
+                        logger.warning(
+                            f"Assignment timeout for user {user_id}, "
+                            f"attempt {attempt + 1}/{LAMBDA_MAX_RETRIES + 1}, "
+                            f"retrying in {delay}s"
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(
+                            f"Assignment timed out for user {user_id} "
+                            f"after {LAMBDA_MAX_RETRIES + 1} attempts"
+                        )
+                        return {
+                            "success": False,
+                            "message": "Premium assignment timed out. Please try "
+                            "again in a few moments.",
+                            "requires_retry": True,
+                            "retry_after": 30,
+                        }
+                except Exception as e:
+                    if attempt < LAMBDA_MAX_RETRIES:
+                        delay = LAMBDA_RETRY_BASE_DELAY_SECONDS * (2**attempt)
+                        logger.warning(
+                            f"Assignment error for user {user_id}: {e}, "
+                            f"attempt {attempt + 1}/{LAMBDA_MAX_RETRIES + 1}, "
+                            f"retrying in {delay}s"
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        raise
 
             # Parse the response
             response_payload = json.loads(response["Payload"].read())
@@ -188,9 +234,9 @@ class PremiumAssignmentService:
                     f"Successfully assigned premium user {user_id} to "
                     f"instance {body.get('instance_id')}"
                 )
-                logger.info(f"Lambda response body: {body}")
-                logger.info(f"is_shared from Lambda: {body.get('is_shared')}")
-                logger.info(
+                logger.debug(f"Lambda response body: {body}")
+                logger.debug(f"is_shared from Lambda: {body.get('is_shared')}")
+                logger.debug(
                     f"assignment_source from Lambda: {body.get('assignment_source')}"
                 )
                 result = {
@@ -202,7 +248,7 @@ class PremiumAssignmentService:
                     "is_shared": body.get("is_shared", False),
                     "assignment_source": body.get("assignment_source"),
                 }
-                logger.info(f"Returning result: {result}")
+                logger.debug(f"Returning result: {result}")
                 return result
 
             elif status_code == 202:
@@ -269,10 +315,9 @@ class PremiumAssignmentService:
                 f"{user_id} (uid: {user_uid}) from assigned instance"
             )
 
-            # Clear rate limiting for this user on release/logout
-            if user_id in _assignment_attempts:
-                del _assignment_attempts[user_id]
-                logger.info(f"Cleared rate limiting cache for user {user_id}")
+            # NOTE: Rate limit cache is NOT cleared on release/logout.
+            # This prevents rapid re-login attempts. The cache expires naturally
+            # after _RATE_LIMIT_SECONDS (30s).
 
             # Prepare the release request
             # Format as Lambda expects from API Gateway (with body field)
@@ -318,13 +363,21 @@ class PremiumAssignmentService:
                 error = body.get("error")
 
                 if lambda_success:
-                    logger.info(
-                        f"Successfully released premium user {user_id} from "
-                        f"instance {body.get('released_instance')}"
-                    )
+                    released = body.get("released_instance")
+                    if released:
+                        logger.info(
+                            f"Released premium user {user_id} "
+                            f"from instance {released}"
+                        )
+                    else:
+                        logger.info(
+                            f"Release for premium user {user_id}: "
+                            f"no assignment found (already released)"
+                        )
                     if warnings:
                         logger.warning(
-                            f"Release completed with {len(warnings)} warnings: "
+                            f"Release completed with "
+                            f"{len(warnings)} warnings: "
                             f"{warnings}"
                         )
                 else:
@@ -410,6 +463,11 @@ class PremiumAssignmentService:
 
             if status_code == 200:
                 body = json.loads(response_payload.get("body", "{}"))
+                logger.debug(
+                    "Premium status result for user %s: %s",
+                    user_id,
+                    body,
+                )
                 return body
             elif status_code == 404:
                 # User not assigned
@@ -419,11 +477,17 @@ class PremiumAssignmentService:
                     f"Failed to get status for premium user"
                     f"{user_id}: {response_payload}"
                 )
-                return None
+                raise PremiumStatusCheckError(
+                    f"Lambda returned {status_code} for user {user_id}"
+                )
 
+        except PremiumStatusCheckError:
+            raise
         except Exception as e:
             logger.error(f"Error getting status for premium user {user_id}: {str(e)}")
-            return None
+            raise PremiumStatusCheckError(
+                f"Status check failed for user {user_id}: {e}"
+            ) from e
 
     async def update_user_activity(self, user_id: int, user_uid: str) -> Dict[str, any]:
         """

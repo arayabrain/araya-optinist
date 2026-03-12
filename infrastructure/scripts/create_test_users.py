@@ -14,13 +14,15 @@ Prerequisites:
 import asyncio
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 
-from studio.app.common.core.subscription.constants import StorageSize
-
 # Add the project root directory to the Python path
-project_root = Path(__file__).parent.parent.parent
+# In Docker: /app/scripts/ -> parent.parent = /app
+# Locally: <repo>/infrastructure/scripts/ -> parent.parent.parent = <repo>
+project_root = Path(__file__).parent.parent
+if not (project_root / "studio").exists():
+    project_root = project_root.parent
 sys.path.insert(0, str(project_root))
 
 # Import after path modification to avoid E402 linting errors
@@ -29,7 +31,9 @@ try:
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
+    from studio.app.common.core.subscription.constants import StorageSize
     from studio.app.common.core.users.crud_users import set_role
+    from studio.app.common.core.utils.datetime_utils import get_current_datetime
     from studio.app.common.models.subscription import UserStorageUsage, UserSubscription
     from studio.app.common.models.user import Organization
 except ImportError as e:
@@ -40,7 +44,7 @@ except ImportError as e:
 
 def get_test_users():
     """Get test user data from unified configuration loader."""
-    from test_user_config import load_test_users_for_db, print_configuration_help
+    from testuser_config import load_test_users_for_db, print_configuration_help
 
     test_users = load_test_users_for_db()
 
@@ -54,24 +58,23 @@ def get_test_users():
 
 def get_database_url():
     """Get database URL from environment variables."""
-    # Try common environment variable names
+    from studio.app.common.db.config import build_mysql_url
+
     db_url = (
         os.getenv("DATABASE_URL")
         or os.getenv("DB_URL")
         or os.getenv("SQLALCHEMY_DATABASE_URL")
     )
+    if db_url:
+        return db_url
 
-    if not db_url:
-        # Construct from individual components if available
-        host = os.getenv("DB_HOST", "localhost")
-        port = os.getenv("DB_PORT", "3306")
-        user = os.getenv("DB_USER", "root")
-        password = os.getenv("DB_PASSWORD", "")
-        database = os.getenv("DB_NAME", "optinist")
-
-        db_url = f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}"
-
-    return db_url
+    return build_mysql_url(
+        user=os.getenv("DB_USER", "root"),
+        password=os.getenv("DB_PASSWORD", ""),
+        host=os.getenv("DB_HOST", "localhost"),
+        database=os.getenv("DB_NAME", "optinist"),
+        port=int(os.getenv("DB_PORT", "3306")),
+    )
 
 
 async def create_test_user_in_db(db, user_data, organization_id):
@@ -108,16 +111,16 @@ async def create_test_user_in_db(db, user_data, organization_id):
                 or "grace_over" in user_data["email"]
             ):
                 # Grace period users: expired 15 days ago (within 30-day grace period)
-                expiration_date = datetime.now(timezone.utc) - timedelta(days=15)
+                expiration_date = get_current_datetime() - timedelta(days=15)
             elif "expire" in user_data["email"]:
                 # Overdue user: expired 50 days ago (past grace, in warning period)
-                expiration_date = datetime.now(timezone.utc) - timedelta(days=50)
+                expiration_date = get_current_datetime() - timedelta(days=50)
             else:
                 # Other premium users get active subscriptions for priority testing
-                expiration_date = datetime.now(timezone.utc) + timedelta(days=365)
+                expiration_date = get_current_datetime() + timedelta(days=365)
         else:
             # For other paid plans, set future expiration
-            expiration_date = datetime.now(timezone.utc) + timedelta(days=365)
+            expiration_date = get_current_datetime() + timedelta(days=365)
 
         subscription = UserSubscription(
             plan_id=user_data["subscription_plan_id"],
@@ -140,7 +143,10 @@ async def create_test_user_in_db(db, user_data, organization_id):
 
     # Create remote storage bucket (S3 folder) - same as in create_user
     if RemoteStorageController.is_available():
-        new_bucket_name = RemoteStorageController.create_user_bucket_name(id=user_db.id)
+        prefix = os.environ.get("S3_USER_BUCKET_PREFIX", "optinist-user")
+        new_bucket_name = RemoteStorageController.create_user_bucket_name(
+            id=user_db.id, prefix=prefix
+        )
 
         async with RemoteStorageSimpleWriter(
             new_bucket_name
@@ -192,10 +198,16 @@ async def main():
         )
         return
 
-    print("📦 Connecting to database...")
+    print("Connecting to database...")
 
     try:
-        engine = create_engine(db_url)
+        from studio.app.common.db.config import get_ssl_creator
+
+        kwargs = {}
+        creator = get_ssl_creator()
+        if creator:
+            kwargs["creator"] = creator
+        engine = create_engine(db_url, **kwargs)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         db = SessionLocal()
 

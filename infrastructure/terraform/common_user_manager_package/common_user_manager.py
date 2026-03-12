@@ -12,6 +12,7 @@ premium_manager and free_manager lambdas.
 
 import json
 import os
+import traceback
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict
@@ -20,7 +21,7 @@ import boto3
 import pymysql
 
 # Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
-from aws_constants import DatabaseConfig, SubscriptionType
+from aws_constants import DatabaseConfig, PremiumAssignment, SubscriptionType
 
 if TYPE_CHECKING:
     from mypy_boto3_elbv2 import ElasticLoadBalancingv2Client
@@ -86,35 +87,59 @@ def get_required_env_var(var_name: str, default_value: str = None) -> str:
     return value
 
 
-def get_db_connection():
-    """
-    Get pymysql connection (legacy).
+SSL_ARGS = {"check_hostname": False}
 
-    Note: This function uses pymysql directly for backward compatibility with
-    existing inactivity check functions. New code should use get_sqlalchemy_session().
-    """
+
+def _get_db_params():
+    """Parse RDS connection params from environment."""
+    rds_host = get_required_env_var("RDS_HOST")
+    if ":" in rds_host:
+        host, port_str = rds_host.split(":", 1)
+        port = int(port_str)
+    else:
+        host = rds_host
+        port = DatabaseConfig.DEFAULT_PORT
+    return {
+        "host": host,
+        "port": port,
+        "user": get_required_env_var("RDS_USER"),
+        "password": get_required_env_var("RDS_PASSWORD"),
+        "database": get_required_env_var("RDS_DATABASE"),
+    }
+
+
+def _build_mysql_url(params):
+    """Build SQLAlchemy MySQL connection URL."""
+    return (
+        f"mysql+pymysql://{params['user']}:"
+        f"{params['password']}@{params['host']}:"
+        f"{params['port']}/{params['database']}"
+        f"?charset=utf8mb4"
+    )
+
+
+def _create_ssl_connection(params):
+    """Create a pymysql connection with SSL enforcement."""
+    return pymysql.connect(
+        host=params["host"],
+        port=params["port"],
+        user=params["user"],
+        password=params["password"],
+        database=params["database"],
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.DictCursor,
+        ssl=SSL_ARGS,
+    )
+
+
+def get_db_connection():
+    """Get pymysql connection for direct SQL queries."""
 
     @contextmanager
     def connection_context():
         conn = None
         try:
-            rds_host = get_required_env_var("RDS_HOST")
-            # Parse host and port from RDS_HOST (format: "host:port" or "host")
-            if ":" in rds_host:
-                host, port_str = rds_host.split(":", 1)
-                port = int(port_str)
-            else:
-                host = rds_host
-                port = DatabaseConfig.DEFAULT_PORT
-
-            conn = pymysql.connect(
-                host=host,
-                port=port,
-                user=get_required_env_var("RDS_USER"),
-                password=get_required_env_var("RDS_PASSWORD"),
-                database=get_required_env_var("RDS_DATABASE"),
-                cursorclass=pymysql.cursors.DictCursor,
-            )
+            conn = _create_ssl_connection(_get_db_params())
             yield conn
         finally:
             if conn:
@@ -128,27 +153,15 @@ def get_sqlalchemy_session():
     """
     Get SQLAlchemy session for type-safe database operations.
 
-    Note: Creates a new engine per call for Lambda compatibility.
-    Lambda functions should not maintain persistent connections across invocations.
+    Uses creator= bypass because SQLAlchemy's normal SSL
+    params cause Access denied with RDS Proxy.
     """
-    rds_host = get_required_env_var("RDS_HOST")
-    # Parse host and port from RDS_HOST (format: "host:port" or "host")
-    if ":" in rds_host:
-        host, port_str = rds_host.split(":", 1)
-        port = int(port_str)
-    else:
-        host = rds_host
-        port = DatabaseConfig.DEFAULT_PORT
-
-    user = get_required_env_var("RDS_USER")
-    password = get_required_env_var("RDS_PASSWORD")
-    database = get_required_env_var("RDS_DATABASE")
-
-    # Create SQLAlchemy engine (disposed after use for Lambda)
-    connection_string = (
-        f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}" "?charset=utf8mb4"
+    params = _get_db_params()
+    engine = create_engine(
+        _build_mysql_url(params),
+        pool_pre_ping=True,
+        creator=lambda: _create_ssl_connection(params),
     )
-    engine = create_engine(connection_string, pool_pre_ping=True)
 
     session = Session(engine)
     try:
@@ -308,8 +321,8 @@ def check_free_user_inactivity() -> Dict[str, int]:
                 user_ids = [u["user_id"] for u in inactive_users]
                 placeholders = ",".join(["%s"] * len(user_ids))
                 cursor.execute(
-                    f"DELETE FROM free_user_assignments "
-                    f"WHERE user_id IN ({placeholders})",
+                    "DELETE FROM free_user_assignments "
+                    "WHERE user_id IN (" + placeholders + ")",
                     user_ids,
                 )
                 conn.commit()
@@ -321,6 +334,7 @@ def check_free_user_inactivity() -> Dict[str, int]:
 
     except Exception as e:
         print(f"Failed to check free user inactivity: {e}")
+        traceback.print_exc()
         return {"logged_out": 0, "error": str(e)}
 
 
@@ -359,11 +373,22 @@ def check_premium_user_inactivity() -> Dict[str, int]:
                 for user in inactive_users:
                     user_id = user["user_id"]
                     try:
-                        # Clean up ALB resources first (before DB deletion)
-                        if user["alb_rule_arn"] and user["alb_rule_arn"] not in [
-                            "STANDBY",
-                            "standby",
-                            "reserving",
+                        # Delete from database FIRST
+                        # This ensures user appears "not assigned" immediately
+                        # If ALB cleanup fails later, orphaned resources are cleaned
+                        # by hourly cleanup job
+                        cursor.execute(
+                            "DELETE FROM premium_user_assignments WHERE user_id = %s",
+                            (user_id,),
+                        )
+
+                        # Clean up ALB resources (after DB deletion)
+                        # Skip marker values (standby/reserving placeholders)
+                        if user["alb_rule_arn"] and user[
+                            "alb_rule_arn"
+                        ].lower() not in [
+                            PremiumAssignment.STANDBY,
+                            PremiumAssignment.RESERVING,
                         ]:
                             try:
                                 elbv2.delete_rule(RuleArn=user["alb_rule_arn"])
@@ -375,8 +400,11 @@ def check_premium_user_inactivity() -> Dict[str, int]:
                         )
                         if (
                             user["target_group_arn"]
-                            and user["target_group_arn"]
-                            not in ["STANDBY", "standby", "reserving"]
+                            and user["target_group_arn"].lower()
+                            not in [
+                                PremiumAssignment.STANDBY,
+                                PremiumAssignment.RESERVING,
+                            ]
                             and user["target_group_arn"] != autoscaling_tg
                         ):
                             try:
@@ -388,11 +416,6 @@ def check_premium_user_inactivity() -> Dict[str, int]:
                                     f"Target group already deleted for user {user_id}"
                                 )
 
-                        # Delete assignment from database
-                        cursor.execute(
-                            "DELETE FROM premium_user_assignments WHERE user_id = %s",
-                            (user_id,),
-                        )
                         logged_out += 1
 
                     except Exception as e:
@@ -415,6 +438,7 @@ def check_premium_user_inactivity() -> Dict[str, int]:
 
     except Exception as e:
         print(f"Failed to check premium user inactivity: {e}")
+        traceback.print_exc()
         return {"logged_out": 0, "error": str(e)}
 
 
@@ -427,7 +451,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     2. Check and logout inactive users (both tiers)
     """
     print(f"Common user manager triggered: {json.dumps(event)}")
-    print(f"Lambda request ID: {context.request_id if context else 'N/A'}")
+    print(f"Lambda request ID: {context.aws_request_id if context else 'N/A'}")
 
     try:
         results = {}
@@ -475,8 +499,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     except Exception as e:
         print(f"Error in common user manager: {str(e)}")
-        import traceback
-
         traceback.print_exc()
         return {
             "statusCode": 500,

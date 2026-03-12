@@ -12,7 +12,7 @@ for use in load testing. This module provides the missing dependency for load_te
 
 REQUIREMENTS:
 - Firebase service account credentials (from Terraform or environment)
-- Test users with Firebase UIDs (from Terraform outputs or test_user_config)
+- Test users with Firebase UIDs (from Terraform outputs or testuser_config)
 - firebase_admin and pyrebase4 Python packages
 """
 
@@ -180,16 +180,16 @@ def get_test_users_from_terraform(terraform_dir: str) -> Optional[list]:
 
 
 def get_test_users_from_config() -> Optional[list]:
-    """Fallback: Get test users from test_user_config module"""
+    """Fallback: Get test users from testuser_config module"""
     try:
-        from test_user_config import load_test_users_for_db
+        from testuser_config import load_test_users_for_db
 
         users = load_test_users_for_db()
         if users:
-            print(f"Found {len(users)} test users from test_user_config")
+            print(f"Found {len(users)} test users from testuser_config")
             return users
     except ImportError:
-        print("Warning: Could not import test_user_config")
+        print("Warning: Could not import testuser_config")
     except Exception as e:
         print(f"Warning: Error loading test users from config: {e}")
 
@@ -291,7 +291,7 @@ def generate_jwt_tokens(
     # Get test users
     test_users = get_test_users_from_terraform(terraform_dir)
     if not test_users:
-        print("Warning: Trying fallback: test_user_config module...")
+        print("Warning: Trying fallback: testuser_config module...")
         test_users = get_test_users_from_config()
 
     if not test_users:

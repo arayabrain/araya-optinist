@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import timezone
 from typing import List, Optional
 
 import stripe
@@ -12,6 +12,7 @@ from studio.app.common.core.subscription.constants import (
     INVOICE_LIST_LIMIT,
     StripeCheckoutPaymentStatus,
     StripeCheckoutSessionStatus,
+    SubscriptionPlanIds,
     SubscriptionUserStatus,
 )
 from studio.app.common.core.subscription.stripe_service import (
@@ -20,9 +21,19 @@ from studio.app.common.core.subscription.stripe_service import (
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.webhook_service import WebhookService
+from studio.app.common.core.utils.datetime_utils import (
+    datetime_from_timestamp,
+    get_current_datetime,
+    get_current_timestamp,
+)
 from studio.app.common.db.database import get_db
 from studio.app.common.models.subscription import SubscriptionPlans
-from studio.app.common.schemas.checkouts import CheckoutSessionRequest
+from studio.app.common.models.user import User as UserModel
+from studio.app.common.schemas.checkouts import (
+    CheckoutSessionRequest,
+    CheckoutValidationResponse,
+    CheckoutValidationStatus,
+)
 from studio.app.common.schemas.subscriptions import (
     CancelSubscriptionResponse,
     CreateCheckoutSessionRequest,
@@ -107,7 +118,7 @@ async def get_user_subscription(
         user_purchase = SubscriptionService.get_user_subscription_purchase(
             db, current_user.id
         )
-        logger.info(f"Fetched subscription for user {current_user.id}: {subscription}")
+        logger.debug(f"Fetched subscription for user {current_user.id}: {subscription}")
 
         if subscription is None:
             # Check if user has any expired subscriptions
@@ -172,7 +183,7 @@ async def get_user_subscription(
                 "status": subscription_status,
             }
             subscription_response = UserSubscriptionResponse(**subscription_dict)
-            logger.info(f"Subscription response: {subscription_response}")
+            logger.debug(f"Subscription response: {subscription_response}")
             return subscription_response
         except Exception as sub_error:
             logger.error(
@@ -208,7 +219,7 @@ async def update_user_subscription(
 
 @router.get("/mgmts/server-time")
 async def get_server_time():
-    utc_time = datetime.now(timezone.utc)
+    utc_time = get_current_datetime()
     return {"server_time": utc_time.isoformat()}
 
 
@@ -311,9 +322,7 @@ async def reactivate_user_subscription(
             metadata={
                 **stripe_subscription.metadata,
                 "cancellation_requested": "false",
-                "reactivation_requested_at": str(
-                    int(datetime.now(timezone.utc).timestamp())
-                ),
+                "reactivation_requested_at": str(int(get_current_timestamp())),
             },
         )
 
@@ -426,12 +435,23 @@ async def create_checkout_session(
     return await CheckoutService.handle_checkout_session(db, request, user)
 
 
-@router.post("/checkout/validate-checkout-session", response_model=bool)
+@router.post(
+    "/checkout/validate-checkout-session", response_model=CheckoutValidationResponse
+)
 async def validate_checkout_session(
     request: CheckoutSessionRequest,
+    db: Session = Depends(get_db),
 ):
     """
-    Validate a Stripe checkout session ID
+    Validate a Stripe checkout session ID and verify database was
+    updated with premium subscription
+
+    Returns detailed status:
+    - "success": Payment succeeded and webhook updated database
+    - "payment_failed": Payment itself failed
+      (card declined, insufficient funds, etc.)
+    - "webhook_failed": Payment succeeded but webhook didn't update
+      database (internal error)
     """
     try:
         # Retrieve the session from Stripe
@@ -439,15 +459,82 @@ async def validate_checkout_session(
         session = stripe.checkout.Session.retrieve(request.session_id)
 
         # Check if the session is complete and paid
-        if (
+        if not (
             session.payment_status == StripeCheckoutPaymentStatus.PAID
             and session.status == StripeCheckoutSessionStatus.COMPLETE
         ):
-            logger.info(f"Checkout session {request.session_id} is valid")
-            return True
-        else:
-            logger.warning(f"Checkout session {request.session_id} is invalid")
-            return False
+            logger.warning(
+                f"Checkout session {request.session_id} is not complete/paid"
+            )
+            return CheckoutValidationResponse(
+                status=CheckoutValidationStatus.PAYMENT_FAILED,
+                message=(
+                    "Payment was not completed. Please check your payment "
+                    "information and try again."
+                ),
+            )
+
+        # Get customer email from session
+        customer_email = (
+            session.customer_details.email if session.customer_details else None
+        )
+        if not customer_email:
+            logger.error(f"No customer email found in session {request.session_id}")
+            return CheckoutValidationResponse(
+                status=CheckoutValidationStatus.WEBHOOK_FAILED,
+                message="An internal error occurred. Please contact support.",
+            )
+
+        # Find user by email
+        user = db.query(UserModel).filter(UserModel.email == customer_email).first()
+        if not user:
+            logger.error(f"No user found with email {customer_email}")
+            return CheckoutValidationResponse(
+                status=CheckoutValidationStatus.WEBHOOK_FAILED,
+                message="An internal error occurred. Please contact support.",
+            )
+
+        # Verify database was updated by webhook - check if user has
+        # active premium subscription
+        subscription = SubscriptionService.get_user_subscription(db, user.id)
+        if not subscription:
+            logger.warning(
+                f"Checkout session {request.session_id} is complete but no "
+                f"subscription found in database for user {user.id}. "
+                f"Webhook may have failed."
+            )
+            return CheckoutValidationResponse(
+                status=CheckoutValidationStatus.WEBHOOK_FAILED,
+                message=(
+                    "Payment was successful, but subscription activation "
+                    "is pending. Please contact support if this persists."
+                ),
+            )
+
+        # Verify it's a premium subscription (not free)
+        sub_data, plan_data = subscription
+        if plan_data.id == SubscriptionPlanIds.FREE:
+            logger.warning(
+                f"Checkout session {request.session_id} is complete but user "
+                f"{user.id} only has free subscription (plan_id={plan_data.id}). "
+                f"Webhook may have failed."
+            )
+            return CheckoutValidationResponse(
+                status=CheckoutValidationStatus.WEBHOOK_FAILED,
+                message=(
+                    "Payment was successful, but subscription activation "
+                    "is pending. Please contact support if this persists."
+                ),
+            )
+
+        logger.info(
+            f"Checkout session {request.session_id} is valid and database is updated "
+            f"with premium subscription (plan_id={plan_data.id}) for user {user.id}"
+        )
+        return CheckoutValidationResponse(
+            status=CheckoutValidationStatus.SUCCESS,
+            message="Payment successful! Your premium subscription is now active.",
+        )
 
     except stripe.error.StripeError as e:
         logger.error(f"Stripe error validating checkout session: {str(e)}")
@@ -514,9 +601,9 @@ async def get_user_invoices(
             raise HTTPException(status_code=404, detail="User not found")
 
         subscription_user, user = result
-        logger.info(f"Fetched user subscription record: {subscription_user}")
+        logger.debug(f"Fetched user subscription record: {subscription_user}")
 
-        logger.info(f"Fetching invoices for user {user_id} with email {user.email}")
+        logger.debug(f"Fetching invoices for user {user_id} with email {user.email}")
 
         # Find Stripe customer by email
         stripe_customers = stripe.Customer.list(email=user.email, limit=1)
@@ -539,7 +626,7 @@ async def get_user_invoices(
             # Convert Stripe invoice to our response format
             invoice_response = InvoiceResponse(
                 id=invoice.id,
-                date=datetime.fromtimestamp(invoice.created).isoformat(),
+                date=datetime_from_timestamp(invoice.created).isoformat(),
                 total=f"${(invoice.total / 100):.2f}",  # Convert cents to dollars
                 status=invoice.status.title(),  # Capitalize status
                 invoice_url=invoice.hosted_invoice_url or invoice.invoice_pdf or "",
@@ -548,12 +635,12 @@ async def get_user_invoices(
                 currency=invoice.currency.upper(),
                 description=invoice.description or "Subscription payment",
                 period_start=(
-                    datetime.fromtimestamp(invoice.period_start).isoformat()
+                    datetime_from_timestamp(invoice.period_start).isoformat()
                     if invoice.period_start
                     else None
                 ),
                 period_end=(
-                    datetime.fromtimestamp(invoice.period_end).isoformat()
+                    datetime_from_timestamp(invoice.period_end).isoformat()
                     if invoice.period_end
                     else None
                 ),
@@ -591,14 +678,16 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         body = await request.body()
         sig_header = request.headers.get("stripe-signature")
 
-        logger.info(f"Webhook received - Body length: {len(body)}")
-        logger.info(f"Signature header: {sig_header[:50] if sig_header else 'None'}...")
+        logger.debug(f"Webhook received - Body length: {len(body)}")
+        logger.debug(
+            f"Signature header: {sig_header[:50] if sig_header else 'None'}..."
+        )
 
         # Your webhook endpoint secret from Stripe Dashboard
         endpoint_secret = WebhookService.get_webhook_secret()
 
         secret_display = "***" + endpoint_secret[-4:] if endpoint_secret else "None"
-        logger.info(f"Using webhook secret: {secret_display}")
+        logger.debug(f"Using webhook secret: {secret_display}")
 
         # Verify the webhook signature
         try:

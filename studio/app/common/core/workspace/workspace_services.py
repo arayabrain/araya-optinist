@@ -1,11 +1,15 @@
 import os
 import shutil
-from typing import List
+from typing import List, Tuple
 
 from fastapi import HTTPException, status
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, or_, select
 
 from studio.app.common import models as common_model
+from studio.app.common.core.experiment.background_task_service import (
+    BackgroundTaskService,
+)
 from studio.app.common.core.experiment.experiment_services import ExperimentService
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
@@ -13,6 +17,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     StorageDirectoryType,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.models.experiment import ExperimentRecord
 from studio.app.common.models.workspace import Workspace
 from studio.app.dir_path import DIRPATH
 
@@ -26,60 +31,88 @@ class WorkspaceService:
         db: Session,
         ws: Workspace,
         remote_bucket_name: str,
-    ):
+    ) -> List[str]:
+        """
+        Delete workspace contents. Returns failed experiment UIDs.
+
+        Returns:
+            Empty list on full success, or list of failed UIDs.
+        """
         workspace_id = str(ws.id)
-        logger.info(f"Deleting workspace data for workspace '{workspace_id}'")
+        logger.info(f"Deleting workspace data for workspace " f"'{workspace_id}'")
 
-        workspace_dir = join_filepath([DIRPATH.OUTPUT_DIR, workspace_id])
         deleted_statuses = []
+        failed_experiments = []
 
-        # Delete experiment folders under workspace
-        if os.path.exists(workspace_dir):
-            for experiment_id in os.listdir(workspace_dir):
-                # Skip hidden files and directories
-                if experiment_id.startswith("."):
-                    continue
+        experiment_records = (
+            db.query(ExperimentRecord)
+            .filter(ExperimentRecord.workspace_id == ws.id)
+            .all()
+        )
 
+        logger.info(
+            f"Found {len(experiment_records)} experiment records "
+            f"for workspace '{workspace_id}'"
+        )
+
+        for record in experiment_records:
+            try:
                 deleted_status = await ExperimentService.delete_experiment(
                     db,
                     remote_bucket_name,
                     workspace_id,
-                    experiment_id,
+                    record.uid,
                     auto_commit=False,
                 )
-
                 deleted_statuses.append(deleted_status)
-        else:
-            logger.warning(f"Workspace directory '{workspace_dir}' does not exist")
+                if not deleted_status:
+                    failed_experiments.append(record.uid)
+            except Exception as e:
+                logger.error(
+                    f"Error deleting experiment {record.uid} "
+                    f"in workspace {workspace_id}: {e}"
+                )
+                deleted_statuses.append(False)
+                failed_experiments.append(record.uid)
 
-        if all(deleted_statuses):
-            # Delete the workspace directory itself
-            await cls.delete_workspace_files(
-                workspace_id=workspace_id, remote_bucket_name=remote_bucket_name
+        if failed_experiments:
+            failed_count = len(failed_experiments)
+            total_count = len(deleted_statuses)
+            logger.warning(
+                f"Partial experiment deletion for '{workspace_id}': "
+                f"{failed_count}/{total_count} experiments failed. "
+                f"Proceeding with workspace-level cleanup."
             )
 
-            # Delete input directory
+        # Workspace-level S3 prefix delete covers all experiment data
+        try:
+            await cls.delete_workspace_files(
+                workspace_id=workspace_id,
+                remote_bucket_name=remote_bucket_name,
+            )
             await cls.delete_workspace_files(
                 workspace_id=workspace_id,
                 remote_bucket_name=remote_bucket_name,
                 is_input_dir=True,
             )
-
-            # Soft delete the workspace
-            ws.deleted = True
-        else:
-            # Throw Exception if data was not deleted
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to delete workspace '{workspace_id}'",
+        except Exception as e:
+            logger.error(
+                f"Workspace file cleanup failed for "
+                f"'{workspace_id}': {e}. "
+                f"Marking workspace as deleted anyway."
             )
+
+        ws.deleted = True
+        return []
 
     @classmethod
     async def delete_workspace_files(
-        cls, workspace_id: str, remote_bucket_name, is_input_dir: bool = False
+        cls,
+        workspace_id: str,
+        remote_bucket_name,
+        is_input_dir: bool = False,
     ):
         if RemoteStorageController.is_available():
-            # delete remote data
             remote_storage_controller = RemoteStorageController(remote_bucket_name)
             if is_input_dir:
                 await remote_storage_controller.delete_workspace(
@@ -88,7 +121,8 @@ class WorkspaceService:
                 )
             else:
                 await remote_storage_controller.delete_workspace(
-                    workspace_id, directory_type=StorageDirectoryType.OUTPUT
+                    workspace_id,
+                    directory_type=StorageDirectoryType.OUTPUT,
                 )
 
         if is_input_dir:
@@ -100,7 +134,7 @@ class WorkspaceService:
                 shutil.rmtree(directory)
                 logger.info(f"Deleted directory: {directory}")
             else:
-                logger.warning(f"'{directory}' already deleted or never existed")
+                logger.debug(f"'{directory}' already deleted or never existed")
         except Exception as e:
             logger.error(
                 f"Failed to delete directory '{directory}': {e}",
@@ -108,29 +142,90 @@ class WorkspaceService:
             )
 
     @classmethod
-    async def process_workspace_deletion(
-        cls, db: Session, remote_bucket_name: str, workspace_id: str, user_id: str
-    ):
+    async def initiate_workspace_deletion(
+        cls,
+        db: Session,
+        remote_bucket_name: str,
+        workspace_id: str,
+        user_id: str,
+    ) -> Tuple[bool, str]:
+        """
+        API entry point for workspace deletion.
+        Creates a background task and processes deletion.
+
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
         try:
-            # Search for workspace
-            ws: Workspace = (
-                db.query(Workspace)
-                .filter(
+            # Check for active task before acquiring row lock
+            if BackgroundTaskService.has_active_workspace_task(int(workspace_id)):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Workspace deletion already in progress",
+                )
+
+            stmt = (
+                select(Workspace)
+                .where(
                     Workspace.id == workspace_id,
                     Workspace.user_id == user_id,
                     Workspace.deleted.is_(False),
                 )
-                .first()
+                .with_for_update(nowait=True)
             )
 
+            result = db.execute(stmt)
+            ws = result.scalar_one_or_none()
+
             if not ws:
-                raise HTTPException(status_code=404, detail="Workspace not found")
+                raise HTTPException(
+                    status_code=404,
+                    detail="Workspace not found or already deleted",
+                )
 
-            # Delete workspace storage files
-            await cls.delete_workspace_contents(db, ws, remote_bucket_name)
-
-            # Commit all DB changes before doing anything irreversible
+            task_id = BackgroundTaskService.queue_workspace_deletion(
+                user_id=int(user_id),
+                workspace_id=int(workspace_id),
+            )
+            if task_id:
+                BackgroundTaskService.mark_in_progress(task_id)
+            else:
+                logger.warning(
+                    f"Failed to create background task " f"for workspace {workspace_id}"
+                )
             db.commit()
+
+            try:
+                await cls.delete_workspace_contents(db, ws, remote_bucket_name)
+                db.commit()
+                BackgroundTaskService.mark_completed(task_id)
+                return True, "Workspace deleted successfully"
+
+            except Exception as e:
+                BackgroundTaskService.mark_failed(task_id, str(e)[:500])
+                raise
+
+        except OperationalError as e:
+            db.rollback()
+            if (
+                "could not obtain lock" in str(e).lower()
+                or "lock wait" in str(e).lower()
+            ):
+                logger.warning(
+                    "Workspace %s is being modified by " "another request",
+                    workspace_id,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=("Workspace is being modified by " "another request"),
+                )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=("Database error during workspace " f"deletion: {workspace_id}"),
+            )
+        except HTTPException:
+            db.rollback()
+            raise
         except Exception as e:
             db.rollback()
             logger.error(
@@ -141,24 +236,66 @@ class WorkspaceService:
             )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to delete or update workspace {workspace_id}.",
+                detail=(f"Failed to delete or update " f"workspace {workspace_id}."),
             )
+
+    @classmethod
+    async def execute_workspace_deletion(
+        cls,
+        db: Session,
+        remote_bucket_name: str,
+        workspace_id: int,
+        user_id: int,
+    ) -> Tuple[bool, str]:
+        """
+        Worker entry point for workspace deletion.
+        Task already exists and is marked in_progress by worker.
+
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        try:
+            stmt = (
+                select(Workspace)
+                .where(
+                    Workspace.id == workspace_id,
+                    Workspace.user_id == user_id,
+                    Workspace.deleted.is_(False),
+                )
+                .with_for_update(nowait=True)
+            )
+
+            result = db.execute(stmt)
+            ws = result.scalar_one_or_none()
+
+            if not ws:
+                return True, "Already deleted"
+
+            await cls.delete_workspace_contents(db, ws, remote_bucket_name)
+            db.commit()
+            return True, "Workspace deleted successfully"
+
+        except OperationalError as e:
+            db.rollback()
+            if "could not obtain lock" in str(e).lower():
+                return (
+                    False,
+                    "Workspace is being modified by " "another request",
+                )
+            return False, f"Database error: {e}"
+        except Exception as e:
+            db.rollback()
+            logger.error(
+                f"Worker workspace deletion failed: {e}",
+                exc_info=True,
+            )
+            return False, f"Error: {e}"
 
     @staticmethod
     def get_user_accessible_workspace_ids(db: Session, user_id: int) -> List[int]:
         """
-        Get all workspace IDs that a user has access to (owned or shared).
-
-        This function centralizes the workspace access query logic that was
-        duplicated across cloud_utils.py, workspace.py router,
-        and s3_storage_monitor.py.
-
-        Args:
-            db: Database session
-            user_id: User ID to get accessible workspaces for
-
-        Returns:
-            List of workspace IDs the user can access
+        Get all workspace IDs that a user has access to
+        (owned or shared).
         """
         try:
             workspaces_query = (
@@ -183,6 +320,6 @@ class WorkspaceService:
 
         except Exception as e:
             logger.error(
-                f"Failed to get accessible workspace IDs for user {user_id}: {e}"
+                "Failed to get accessible workspace IDs " f"for user {user_id}: {e}"
             )
             return []

@@ -17,17 +17,25 @@ This ensures:
 
 import os
 import shutil
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import List, Tuple
 
-from sqlalchemy import func
+from sqlalchemy import func, update
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.core.subscription.constants import SyncStatusConstants
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.db.database import session_scope
-from studio.app.common.models import FreeUserAssignment, User, Workspace
+from studio.app.common.models import (
+    FreeUserAssignment,
+    InstanceUsageLog,
+    User,
+    Workspace,
+)
+from studio.app.common.models.instance_usage import UsageTier
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -66,12 +74,25 @@ class DataCleanupJob:
 
             for user_id, workspace_ids in users_to_cleanup:
                 try:
+                    if cls._check_user_relogin(user_id):
+                        logger.info(
+                            f"Skipping cleanup for user {user_id}: "
+                            f"user logged back in"
+                        )
+                        continue
+
                     success = cls._cleanup_user_data(user_id, workspace_ids)
 
                     if success:
-                        # Re-check workflow count before marking as cleaned
-                        # Prevents race condition where workflow starts during cleanup
-                        if cls._verify_no_active_workflows(user_id):
+                        # Re-check workflow count and re-login before marking cleaned
+                        # Prevents race condition where workflow/login during cleanup
+                        if cls._check_user_relogin(user_id):
+                            logger.warning(
+                                f"Skipping cleanup completion for user {user_id}: "
+                                f"user logged back in during cleanup"
+                            )
+                            error_count += 1
+                        elif cls._verify_no_active_workflows(user_id):
                             cls._mark_cleaned(user_id)
                             cleaned_count += 1
                         else:
@@ -114,7 +135,7 @@ class DataCleanupJob:
         """
         with session_scope() as db:
             # Calculate cutoff time (1 hour ago)
-            cutoff_time = datetime.now(timezone.utc) - timedelta(
+            cutoff_time = get_current_datetime() - timedelta(
                 minutes=SyncStatusConstants.LOGOUT_GRACE_PERIOD_MINUTES
             )
 
@@ -184,7 +205,10 @@ class DataCleanupJob:
 
             # Check if critical experiment files exist in S3
             critical_files = ["experiment.yaml", "workflow.yaml"]
-            s3_prefix = f"app/studio_data/output/{workspace_id}/{experiment_id}/"
+            s3_prefix = (
+                f"{S3StorageController.S3_BASE_PATH}"
+                f"/output/{workspace_id}/{experiment_id}/"
+            )
 
             for filename in critical_files:
                 s3_key = f"{s3_prefix}{filename}"
@@ -220,6 +244,7 @@ class DataCleanupJob:
         SAFETY CHECKS:
         1. Verifies data exists in S3 before deletion (for experiment outputs)
         2. Only deletes if no active workflows running (checked in query)
+        3. Checks if user logged back in before each workspace
 
         Args:
             user_id: User ID
@@ -235,11 +260,15 @@ class DataCleanupJob:
         total_experiments_kept = 0
 
         for workspace_id in workspace_ids:
+            # Check if user logged back in before processing workspace
+            if cls._check_user_relogin(user_id):
+                logger.info(f"Aborting cleanup for user {user_id}: user logged back in")
+                return False
             try:
                 # Clean input data (always safe to delete - user uploads are in S3)
                 input_dir = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
                 if os.path.exists(input_dir):
-                    logger.info(f"Deleting input directory: {input_dir}")
+                    logger.debug(f"Deleting input directory: {input_dir}")
                     shutil.rmtree(input_dir)
 
                 # Clean output data (with S3 verification)
@@ -276,7 +305,7 @@ class DataCleanupJob:
                     # Delete verified experiments
                     for experiment_id in experiments_to_delete:
                         experiment_path = os.path.join(output_dir, experiment_id)
-                        logger.info(
+                        logger.debug(
                             f"Deleting experiment: {workspace_id}/{experiment_id} "
                             f"(S3 backup verified)"
                         )
@@ -285,12 +314,12 @@ class DataCleanupJob:
                     # If all experiments deleted, remove workspace output dir
                     if experiments_to_delete and not experiments_to_keep:
                         if os.path.exists(output_dir) and not os.listdir(output_dir):
-                            logger.info(
+                            logger.debug(
                                 f"Deleting empty output directory: {output_dir}"
                             )
                             shutil.rmtree(output_dir)
 
-                    logger.info(
+                    logger.debug(
                         f"Cleaned workspace {workspace_id} for user {user_id}: "
                         f"{len(experiments_to_delete)} experiments deleted, "
                         f"{len(experiments_to_keep)} kept"
@@ -341,6 +370,35 @@ class DataCleanupJob:
             return True
 
     @classmethod
+    def _check_user_relogin(cls, user_id: str) -> bool:
+        """
+        Check if user has logged back in during cleanup.
+        If logged_out_at is NULL, user has logged back in.
+
+        Returns:
+            True if user has logged back in (abort cleanup), False if still logged out
+        """
+        with session_scope() as db:
+            statement = select(FreeUserAssignment).where(
+                FreeUserAssignment.user_id == user_id
+            )
+            result_row = db.execute(statement).first()
+            assignment = result_row[0] if result_row else None
+
+            if not assignment:
+                # Assignment removed, safe to proceed with cleanup
+                return False
+
+            if assignment.logged_out_at is None:
+                logger.warning(
+                    f"User {user_id} has logged back in during cleanup "
+                    f"(logged_out_at is NULL) - aborting cleanup"
+                )
+                return True
+
+            return False
+
+    @classmethod
     def _mark_cleaned(cls, user_id: str):
         """
         Mark user data as cleaned by removing the assignment record.
@@ -360,6 +418,16 @@ class DataCleanupJob:
             assignment = result_row[0] if result_row else None
 
             if assignment:
+                # Close usage log before deleting assignment
+                db.execute(
+                    update(InstanceUsageLog)
+                    .where(
+                        InstanceUsageLog.user_id == user_id,
+                        InstanceUsageLog.tier == UsageTier.FREE,
+                        InstanceUsageLog.ended_at.is_(None),
+                    )
+                    .values(ended_at=get_current_datetime())
+                )
                 db.delete(assignment)
                 db.commit()
 
@@ -403,6 +471,17 @@ class DataCleanupJob:
 
             workspace_ids = [str(row[0].id) for row in workspaces_result]
             cls._cleanup_user_data(assignment.user_id, workspace_ids)
+
+            # Close usage log before deleting assignment
+            db.execute(
+                update(InstanceUsageLog)
+                .where(
+                    InstanceUsageLog.user_id == assignment.user_id,
+                    InstanceUsageLog.tier == UsageTier.FREE,
+                    InstanceUsageLog.ended_at.is_(None),
+                )
+                .values(ended_at=get_current_datetime())
+            )
 
             # Remove assignment
             db.delete(assignment)
@@ -452,8 +531,20 @@ class DataCleanupJob:
                         response = ec2.describe_instances(
                             InstanceIds=[assignment.instance_id]
                         )
-                        instances = response["Reservations"][0]["Instances"]
-                        instance_state = instances[0]["State"]["Name"]
+                        reservations = response.get("Reservations", [])
+                        if not reservations or not reservations[0].get("Instances"):
+                            logger.warning(
+                                f"Instance "
+                                f"{assignment.instance_id} has "
+                                f"no reservation data, "
+                                f"treating as terminated"
+                            )
+                            cls._cleanup_orphaned_assignment(db, assignment)
+                            continue
+
+                        instance_state = reservations[0]["Instances"][0]["State"][
+                            "Name"
+                        ]
 
                         # If instance is terminated, clean up user data
                         if instance_state in ["terminated", "terminating"]:
@@ -491,13 +582,13 @@ class DataCleanupJob:
                         "MetricName": "DataCleanupCount",
                         "Value": cleaned_count,
                         "Unit": "Count",
-                        "Timestamp": datetime.now(),
+                        "Timestamp": get_current_datetime(),
                     },
                     {
                         "MetricName": "CleanupErrors",
                         "Value": error_count,
                         "Unit": "Count",
-                        "Timestamp": datetime.now(),
+                        "Timestamp": get_current_datetime(),
                     },
                 ],
             )

@@ -5,7 +5,6 @@ Monitors S3 storage usage and generates alerts when thresholds are exceeded.
 
 import asyncio
 import os
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 import boto3
@@ -13,7 +12,7 @@ import boto3
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
 
-from studio.app.common.core.cloud.cloud_utils import (
+from studio.app.common.core.cloud.storage_tracking import (
     get_user_storage_usage,
     update_user_storage_usage,
 )
@@ -28,6 +27,7 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionType,
 )
 from studio.app.common.core.users import crud_users
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import session_scope
 
 logger = AppLogger.get_logger()
@@ -100,9 +100,9 @@ class S3StorageMonitor:
             # Check both input and output directories for each workspace
             for workspace_id in workspace_ids:
                 prefixes = [
-                    f"app/studio_data/"
+                    f"{S3StorageController.S3_BASE_PATH}/"
                     f"{S3StorageController.S3_INPUT_DIR}/{workspace_id}/",
-                    f"app/studio_data/"
+                    f"{S3StorageController.S3_BASE_PATH}/"
                     f"{S3StorageController.S3_OUTPUT_DIR}/{workspace_id}/",
                 ]
 
@@ -243,9 +243,9 @@ class S3StorageMonitor:
             # Check both input and output directories for each workspace
             for workspace_id in workspace_ids:
                 prefixes = [
-                    f"app/studio_data/"
+                    f"{S3StorageController.S3_BASE_PATH}/"
                     f"{S3StorageController.S3_INPUT_DIR}/{workspace_id}/",
-                    f"app/studio_data/"
+                    f"{S3StorageController.S3_BASE_PATH}/"
                     f"{S3StorageController.S3_OUTPUT_DIR}/{workspace_id}/",
                 ]
 
@@ -404,7 +404,7 @@ class S3StorageMonitor:
                     "storage_usage_bytes": current_s3_usage,
                     "storage_quota_bytes": storage_quota,
                     "storage_usage_percent": round(storage_usage_percent, 2),
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": get_current_datetime().isoformat(),
                 }
 
         except Exception as e:

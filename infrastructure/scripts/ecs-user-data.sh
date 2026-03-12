@@ -10,9 +10,52 @@ echo ECS_ENABLE_CONTAINER_METADATA=true >> /etc/ecs/ecs.config
 echo ECS_ENABLE_TASK_IAM_ROLE=true >> /etc/ecs/ecs.config
 echo ECS_INSTANCE_ATTRIBUTES='{"tier":"${tier}"}' >> /etc/ecs/ecs.config
 
+# Systemd service to clear stale ECS agent checkpoint on every boot.
+cat > /etc/systemd/system/ecs-clear-checkpoint.service << 'UNIT_EOF'
+[Unit]
+Description=Clear stale ECS agent checkpoint before startup
+Before=ecs.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/bin/rm -f /var/lib/ecs/data/agent.db
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+
+systemctl daemon-reload
+systemctl enable ecs-clear-checkpoint.service
+
 # Install packages
 yum update -y
 yum install -y amazon-ssm-agent mysql amazon-efs-utils nc mysql-client git docker amazon-cloudwatch-agent awscli
+
+# Setup swap as memory safety net (defense-in-depth for OOM prevention)
+# This provides a buffer before OOM killer activates, giving workflows
+# a chance to complete during temporary memory spikes
+SWAP_SIZE_MB=${swap_size_mb}  # Configurable per instance type (0 to skip)
+SWAP_FILE=/swapfile
+if [ "$SWAP_SIZE_MB" -gt 0 ]; then
+    echo "$(date): Setting up swap space ($${SWAP_SIZE_MB}MB)"
+    if [ ! -f "$SWAP_FILE" ]; then
+        dd if=/dev/zero of=$SWAP_FILE bs=1M count=$SWAP_SIZE_MB status=progress
+        chmod 600 $SWAP_FILE
+        mkswap $SWAP_FILE
+        swapon $SWAP_FILE
+        echo "$SWAP_FILE swap swap defaults 0 0" >> /etc/fstab
+        # Set low swappiness - only use swap under real memory pressure
+        echo "vm.swappiness=20" >> /etc/sysctl.conf
+        sysctl vm.swappiness=20
+        echo "$(date): Swap setup complete ($${SWAP_SIZE_MB}MB, swappiness=20)"
+    else
+        echo "$(date): Swap file already exists"
+    fi
+else
+    echo "$(date): Skipping swap setup (swap_size_mb=0)"
+fi
 
 # Start SSM agent
 if ! systemctl is-active --quiet amazon-ssm-agent; then
@@ -37,17 +80,7 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CW_C
                     "cpu_usage_iowait"
                 ],
                 "totalcpu": true
-            },
-            "procstat": [
-                {
-                    "pattern": ".*",
-                    "measurement": [
-                        "cpu_usage",
-                        "memory_rss"
-                    ],
-                    "metrics_collection_interval": 60
-                }
-            ]
+            }
         }
     },
     "logs": {

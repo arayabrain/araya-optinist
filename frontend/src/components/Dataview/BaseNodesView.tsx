@@ -1,7 +1,8 @@
-import { useEffect, ReactElement, memo } from "react"
+import { useCallback, useEffect, memo, ReactElement } from "react"
 import { useDispatch, useSelector } from "react-redux"
 
 import CloseIcon from "@mui/icons-material/Close"
+import CloudSyncIcon from "@mui/icons-material/CloudSync"
 import {
   Box,
   styled,
@@ -18,11 +19,17 @@ import {
   DialogContent,
   IconButton,
   Fade,
+  CircularProgress,
 } from "@mui/material"
 
+import { SyncStatusView } from "components/Dataview/SyncStatusView"
+import { useSyncRetry } from "components/Dataview/useSyncRetry"
 import { DisplayDataItem } from "components/Workspace/Visualize/DisplayDataItem"
 import { WORKSPACE_TYPE } from "const/Workspace"
-import { publicDataviewReproduceWorkflow } from "store/slice/Dataview/DataviewActions"
+import {
+  privateDataviewReproduceWorkflow,
+  publicDataviewReproduceWorkflow,
+} from "store/slice/Dataview/DataviewActions"
 import { DATA_TYPE } from "store/slice/DisplayData/DisplayDataType"
 import { clearFlowElements } from "store/slice/FlowElement/FlowElementSlice"
 import { clearCurrentPipeline } from "store/slice/Pipeline/PipelineSlice"
@@ -31,7 +38,6 @@ import {
   addItemForWorkflowDialog,
   deleteAllItemForWorkflowDialog,
 } from "store/slice/VisualizeItem/VisualizeItemSlice"
-import { reproduceWorkflow } from "store/slice/Workflow/WorkflowActions"
 import { AppDispatch } from "store/store"
 
 export type NodesViewProps = {
@@ -147,14 +153,20 @@ const BaseNodesView = ({
 }: NodesViewProps) => {
   const dispatch = useDispatch<AppDispatch>()
 
-  useEffect(() => {
-    if (open && uid && workspaceId) {
-      const api = is_public
-        ? publicDataviewReproduceWorkflow
-        : reproduceWorkflow
-      dispatch(api({ workspaceId, uid }))
-    }
-  }, [open, is_public, uid, workspaceId, dispatch])
+  const fetchFn = useCallback(() => {
+    const api = is_public
+      ? publicDataviewReproduceWorkflow
+      : privateDataviewReproduceWorkflow
+    return dispatch(api({ workspaceId: workspaceId!, uid: uid! })).unwrap()
+  }, [dispatch, is_public, workspaceId, uid])
+
+  const { loading, syncStatus, handleRetry } = useSyncRetry({
+    is_public,
+    fetchFn,
+    shouldFetch: open && !!uid && !!workspaceId,
+  })
+
+  const hasSyncStatus = syncStatus.pending || syncStatus.error
 
   useEffect(() => {
     const handleClosePopup = (event: KeyboardEvent) => {
@@ -197,6 +209,18 @@ const BaseNodesView = ({
           overflow: "hidden",
         }}
       >
+        {/* Loading overlay while syncing visualization data */}
+        {loading && !hasSyncStatus && (
+          <SyncOverlay>
+            <CircularProgress size={48} />
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 2 }}>
+              <CloudSyncIcon color="primary" />
+              <Typography variant="body1" color="textSecondary">
+                Loading visualization data...
+              </Typography>
+            </Box>
+          </SyncOverlay>
+        )}
         <ContentArea>
           <TitleHeader>
             <Typography
@@ -216,7 +240,9 @@ const BaseNodesView = ({
               />
             )}
           </TitleHeader>
-          {data.length > 0 ? (
+          {hasSyncStatus ? (
+            <SyncStatusView syncStatus={syncStatus} onRetry={handleRetry} />
+          ) : data.length > 0 ? (
             <List>{renderData()}</List>
           ) : (
             <EmptyMessage>{emptyMessage}</EmptyMessage>
@@ -235,6 +261,7 @@ const BaseNodesView = ({
             "&:hover": {
               backgroundColor: "action.hover",
             },
+            zIndex: 1, // Ensure close button is above sync overlay
           }}
         >
           <CloseIcon />
@@ -266,6 +293,20 @@ const TitleHeader = styled(Box)(() => ({
 const EmptyMessage = styled(Box)(() => ({
   textAlign: "center",
   color: "gray",
+}))
+
+const SyncOverlay = styled(Box)(({ theme }) => ({
+  position: "absolute",
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  justifyContent: "center",
+  backgroundColor: "rgba(255, 255, 255, 0.9)",
+  zIndex: theme.zIndex.modal - 1,
 }))
 
 const LoadingContainer = styled(Box)(() => ({

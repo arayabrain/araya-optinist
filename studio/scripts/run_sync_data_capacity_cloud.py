@@ -6,6 +6,8 @@ from pathlib import Path
 
 import boto3
 
+from studio.app.common.core.storage.s3_storage_controller import S3StorageController
+
 # Add the project root directory to the Python path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -59,8 +61,8 @@ class CloudWorkspaceDataCapacityService:
 
             # Check both input and output directories for the workspace
             prefixes = [
-                f"app/studio_data/input/{workspace_id}/",
-                f"app/studio_data/output/{workspace_id}/",
+                f"{S3StorageController.S3_BASE_PATH}/input/{workspace_id}/",
+                f"{S3StorageController.S3_BASE_PATH}/output/{workspace_id}/",
             ]
 
             logger.info(f"Calculating S3 usage for workspace {workspace_id}")
@@ -123,7 +125,9 @@ class CloudWorkspaceDataCapacityService:
 
         try:
             s3_client = boto3.client("s3")
-            prefix = f"app/studio_data/output/{workspace_id}/{unique_id}/"
+            prefix = (
+                f"{S3StorageController.S3_BASE_PATH}/output/{workspace_id}/{unique_id}/"
+            )
 
             # logger.debug(
             #     f"Calculating S3 usage for experiment {workspace_id}/{unique_id}"
@@ -205,7 +209,7 @@ class CloudWorkspaceDataCapacityService:
         # Get S3 input storage size
         try:
             s3_client = boto3.client("s3")
-            prefix = f"app/studio_data/input/{workspace_id}/"
+            prefix = f"{S3StorageController.S3_BASE_PATH}input/{workspace_id}/"
 
             paginator = s3_client.get_paginator("list_objects_v2")
             page_iterator = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
@@ -265,7 +269,7 @@ class CloudWorkspaceDataCapacityService:
         s3_experiments = set()
         try:
             s3_client = boto3.client("s3")
-            prefix = f"app/studio_data/output/{workspace_id}/"
+            prefix = f"{S3StorageController.S3_BASE_PATH}/output/{workspace_id}/"
 
             response = s3_client.list_objects_v2(
                 Bucket=bucket_name, Prefix=prefix, Delimiter="/"
@@ -274,7 +278,7 @@ class CloudWorkspaceDataCapacityService:
             if "CommonPrefixes" in response:
                 for exp_prefix in response["CommonPrefixes"]:
                     # Extract experiment ID from prefix like
-                    # "app/studio_data/output/1/exp123/"
+                    # "{S3_BASE_PATH}/output/1/exp123/"
                     exp_id = exp_prefix["Prefix"].rstrip("/").split("/")[-1]
                     s3_experiments.add(exp_id)
 
@@ -315,11 +319,22 @@ class CloudWorkspaceDataCapacityService:
                 #     f"total={total_data_usage:,}"
                 # )
 
-                # Update yaml file
-                WorkspaceDataCapacityService._update_exp_data_usage_yaml(
-                    workspace_id, unique_id, total_data_usage
-                )
+                # Update yaml file - skip if experiment.yaml is invalid/corrupted
+                try:
+                    WorkspaceDataCapacityService._update_exp_data_usage_yaml(
+                        workspace_id, unique_id, total_data_usage
+                    )
+                except (AssertionError, ValueError) as yaml_error:
+                    # Log warning if experiment.yaml is invalid but continue processing
+                    logger.warning(
+                        f"Skipping YAML update for experiment "
+                        f"{workspace_id}/{unique_id}: "
+                        f"Invalid or corrupted experiment.yaml file ({yaml_error}). "
+                        f"Data usage will still be tracked in database."
+                    )
 
+                # Add experiment record even if YAML update failed
+                # This ensures data usage is tracked in the database
                 exp_records.append(
                     ExperimentRecord(
                         workspace_id=workspace_id,
@@ -330,7 +345,7 @@ class CloudWorkspaceDataCapacityService:
 
             except Exception as e:
                 logger.error(
-                    f"Failed to update experiment {workspace_id}/{unique_id}: {e}"
+                    f"Failed to process experiment {workspace_id}/{unique_id}: {e}"
                 )
 
         # Update database records
@@ -398,9 +413,9 @@ async def main(args):
     Main function to sync workspace data capacity including S3 storage.
     """
     # Get S3 bucket name from environment
-    bucket_name = os.environ.get("S3_BUCKET_NAME")
+    bucket_name = os.environ.get("S3_DEFAULT_BUCKET_NAME")
     if not bucket_name:
-        logger.error("S3_BUCKET_NAME environment variable not set")
+        logger.error("S3_DEFAULT_BUCKET_NAME environment variable not set")
         sys.exit(1)
 
     logger.info(f"Using S3 bucket: {bucket_name}")

@@ -16,7 +16,9 @@ from studio.app.common.core.cloud.s3_storage_monitor import (
     monitor_storage_and_generate_alerts,
 )
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import get_db
+from studio.app.common.schemas.storage import LimitWarning, LimitWarningStatus
 from studio.app.common.schemas.users import User
 
 router = APIRouter(prefix="/storage-limit-alerts", tags=["storage-limit-alerts"])
@@ -45,7 +47,7 @@ async def get_my_storage_alert(
     """
     try:
         # Use the new unified storage calculation function
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_tracking import (
             get_current_user_storage_usage,
         )
 
@@ -53,7 +55,7 @@ async def get_my_storage_alert(
         current_usage = await get_current_user_storage_usage(current_user.id)
 
         # Get user's quota and calculate alert
-        from studio.app.common.core.cloud.cloud_utils import get_user_storage_usage
+        from studio.app.common.core.cloud.storage_tracking import get_user_storage_usage
 
         storage_info = get_user_storage_usage(current_user.id)
 
@@ -67,15 +69,13 @@ async def get_my_storage_alert(
             alert_level = monitor.calculate_storage_alert_level(storage_usage_percent)
 
             if alert_level:
-                from datetime import datetime, timezone
-
                 alert = {
-                    "user_id": current_user.uid,
+                    "user_id": current_user.id,
                     "alert_level": alert_level,
                     "storage_usage_bytes": current_usage,
                     "storage_quota_bytes": storage_quota,
                     "storage_usage_percent": round(storage_usage_percent, 2),
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": get_current_datetime().isoformat(),
                 }
 
         if alert:
@@ -120,7 +120,7 @@ async def get_my_storage_usage(
     """
     try:
         # Use the new unified storage calculation function
-        from studio.app.common.core.cloud.cloud_utils import (
+        from studio.app.common.core.cloud.storage_tracking import (
             get_current_user_storage_usage,
             get_user_storage_usage,
         )
@@ -245,7 +245,9 @@ async def refresh_storage_usage(
         current_usage = await monitor.get_user_s3_storage_size(current_user.id)
 
         # Update database
-        from studio.app.common.core.cloud.cloud_utils import update_user_storage_usage
+        from studio.app.common.core.cloud.storage_tracking import (
+            update_user_storage_usage,
+        )
 
         success = update_user_storage_usage(current_user.id, current_usage)
 
@@ -269,7 +271,7 @@ async def refresh_storage_usage(
         )
 
 
-@router.get("/limit-warning", response_model=Optional[Dict])
+@router.get("/limit-warning", response_model=Optional[LimitWarning])
 async def get_my_limit_warning(
     current_user: User = Depends(get_current_user),
 ):
@@ -288,10 +290,10 @@ async def get_my_limit_warning(
         if warning:
             logger.info(
                 f"Limit warning for user {current_user.id}: "
-                f"{warning['warning_type']}-{warning['days_remaining']} days remaining"
+                f"{warning.alert_type}-{warning.days_remaining} days remaining"
             )
         else:
-            logger.warning(f"No limit warning for user {current_user.id}")
+            logger.debug(f"No limit warning for user {current_user.id}")
 
         return warning
 
@@ -303,7 +305,7 @@ async def get_my_limit_warning(
         )
 
 
-@router.get("/limit-warning/check", response_model=Dict)
+@router.get("/limit-warning/check", response_model=LimitWarningStatus)
 async def check_limit_warning_status(
     current_user: User = Depends(get_current_user),
 ):
@@ -317,12 +319,12 @@ async def check_limit_warning_status(
 
         warning = await calculate_limit_warning(current_user.id)
 
-        return {
-            "has_warning": warning is not None,
-            "warning_type": warning.get("warning_type") if warning else None,
-            "days_remaining": warning.get("days_remaining") if warning else None,
-            "user_id": current_user.uid,
-        }
+        return LimitWarningStatus(
+            has_alert=warning is not None,
+            alert_type=warning.alert_type if warning else None,
+            days_remaining=warning.days_remaining if warning else None,
+            user_id=current_user.uid,
+        )
 
     except Exception as e:
         logger.error(

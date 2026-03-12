@@ -4,23 +4,46 @@ import { Provider } from "react-redux"
 import { SnackbarProvider } from "notistack"
 import configureStore from "redux-mock-store"
 
-import { describe, it, beforeEach, jest, expect } from "@jest/globals"
+import {
+  describe,
+  it,
+  beforeEach,
+  jest,
+  expect,
+  afterEach,
+} from "@jest/globals"
+import "@testing-library/jest-dom"
 import { render, screen, waitFor } from "@testing-library/react"
 import { userEvent } from "@testing-library/user-event"
 
+import * as StorageAlertsApi from "api/storage/StorageAlerts"
 import { RunButtons } from "components/Workspace/FlowChart/Buttons/RunButtons"
 import { RUN_BTN_OPTIONS } from "store/slice/Pipeline/PipelineType"
 
 // Mock the storage alert API
-jest.mock("api/storage/StorageAlerts", () => ({
-  getMyStorageAlertApi: () =>
-    Promise.resolve({
-      has_alert: false,
-      alert: null,
-    }),
-}))
+jest.mock("api/storage/StorageAlerts")
+const mockGetMyStorageAlertApi =
+  StorageAlertsApi.getMyStorageAlertApi as jest.MockedFunction<
+    typeof StorageAlertsApi.getMyStorageAlertApi
+  >
 
 const mockStore = configureStore([])
+
+const createMockStorageAlert = (
+  overrides: Partial<StorageAlertsApi.StorageAlert> = {},
+): StorageAlertsApi.StorageAlert => ({
+  user_id: 1,
+  user_name: "Test User",
+  user_email: "test@example.com",
+  alert_level: "critical",
+  storage_usage_bytes: 5000000000,
+  storage_quota_bytes: 5368709120,
+  storage_usage_percent: 93,
+  timestamp: new Date().toISOString(),
+  message: "Storage usage high",
+  subscription_plan: "free",
+  ...overrides,
+})
 
 describe("RunButtons component", () => {
   let store: ReturnType<typeof mockStore>
@@ -36,6 +59,12 @@ describe("RunButtons component", () => {
   }
 
   beforeEach(() => {
+    jest.clearAllMocks()
+    mockGetMyStorageAlertApi.mockResolvedValue({
+      has_alert: false,
+      alert: null,
+    })
+
     store = mockStore({
       pipeline: {
         run: {
@@ -47,6 +76,10 @@ describe("RunButtons component", () => {
       },
       runBtn: RUN_BTN_OPTIONS.RUN_ALREADY,
     })
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
   })
 
   it("renders correctly and triggers handleRunPipelineByUid on Run button click", async () => {
@@ -118,5 +151,158 @@ describe("RunButtons component", () => {
     } else {
       throw new Error("Run button not found")
     }
+  })
+
+  describe("Case 39: Pre-flight Storage Check Confirmation", () => {
+    it("should show confirmation dialog when storage check fails", async () => {
+      mockGetMyStorageAlertApi.mockRejectedValue(new Error("Network error"))
+
+      render(
+        <Provider store={store}>
+          <SnackbarProvider>
+            <RunButtons status={"StartUninitialized"} {...mockProps} />
+          </SnackbarProvider>
+        </Provider>,
+      )
+
+      const runButtonIcon = screen.getByTestId("PlayArrowIcon")
+      const runButton = runButtonIcon.closest("button")
+
+      if (runButton) {
+        await userEvent.click(runButton)
+
+        await waitFor(() => {
+          expect(screen.getByText("Storage Check Failed")).toBeTruthy()
+        })
+
+        expect(
+          screen.getByText(/Unable to verify your storage quota/),
+        ).toBeTruthy()
+      }
+    })
+
+    it("should not run job if user cancels confirmation", async () => {
+      mockGetMyStorageAlertApi.mockRejectedValue(new Error("Network error"))
+
+      render(
+        <Provider store={store}>
+          <SnackbarProvider>
+            <RunButtons status={"StartUninitialized"} {...mockProps} />
+          </SnackbarProvider>
+        </Provider>,
+      )
+
+      const runButtonIcon = screen.getByTestId("PlayArrowIcon")
+      const runButton = runButtonIcon.closest("button")
+
+      if (runButton) {
+        await userEvent.click(runButton)
+
+        await waitFor(() => {
+          expect(screen.getByText("Storage Check Failed")).toBeTruthy()
+        })
+
+        const cancelButton = screen.getByRole("button", { name: /Cancel/i })
+        await userEvent.click(cancelButton)
+
+        expect(mockProps.handleRunPipelineByUid).not.toHaveBeenCalled()
+      }
+    })
+
+    it("should run job if user proceeds despite failed check", async () => {
+      mockGetMyStorageAlertApi.mockRejectedValue(new Error("Network error"))
+
+      render(
+        <Provider store={store}>
+          <SnackbarProvider>
+            <RunButtons status={"StartUninitialized"} {...mockProps} />
+          </SnackbarProvider>
+        </Provider>,
+      )
+
+      const runButtonIcon = screen.getByTestId("PlayArrowIcon")
+      const runButton = runButtonIcon.closest("button")
+
+      if (runButton) {
+        await userEvent.click(runButton)
+
+        await waitFor(() => {
+          expect(screen.getByText("Storage Check Failed")).toBeTruthy()
+        })
+
+        const proceedButton = screen.getByRole("button", {
+          name: /Proceed Anyway/i,
+        })
+        await userEvent.click(proceedButton)
+
+        await waitFor(() => {
+          expect(mockProps.handleRunPipelineByUid).toHaveBeenCalled()
+        })
+      }
+    })
+
+    it("should block job when storage is at danger level", async () => {
+      mockGetMyStorageAlertApi.mockResolvedValue({
+        has_alert: true,
+        alert: createMockStorageAlert({
+          alert_level: "danger",
+          storage_usage_percent: 105,
+        }),
+      })
+
+      render(
+        <Provider store={store}>
+          <SnackbarProvider>
+            <RunButtons status={"StartUninitialized"} {...mockProps} />
+          </SnackbarProvider>
+        </Provider>,
+      )
+
+      const runButtonIcon = screen.getByTestId("PlayArrowIcon")
+      const runButton = runButtonIcon.closest("button")
+
+      if (runButton) {
+        await userEvent.click(runButton)
+
+        await waitFor(() => {
+          expect(mockProps.handleRunPipelineByUid).not.toHaveBeenCalled()
+        })
+
+        // Should not show confirmation dialog for danger level
+        expect(screen.queryByText("Storage Check Failed")).toBeFalsy()
+      }
+    })
+
+    it("should proceed with warning for critical level", async () => {
+      mockGetMyStorageAlertApi.mockResolvedValue({
+        has_alert: true,
+        alert: createMockStorageAlert({
+          alert_level: "critical",
+          storage_usage_percent: 95,
+        }),
+      })
+
+      render(
+        <Provider store={store}>
+          <SnackbarProvider>
+            <RunButtons status={"StartUninitialized"} {...mockProps} />
+          </SnackbarProvider>
+        </Provider>,
+      )
+
+      const runButtonIcon = screen.getByTestId("PlayArrowIcon")
+      const runButton = runButtonIcon.closest("button")
+
+      if (runButton) {
+        await userEvent.click(runButton)
+
+        await waitFor(() => {
+          expect(mockProps.handleRunPipelineByUid).toHaveBeenCalled()
+        })
+
+        // Should not show confirmation dialog for critical level
+        expect(screen.queryByText("Storage Check Failed")).toBeFalsy()
+      }
+    })
   })
 })

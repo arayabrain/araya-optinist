@@ -8,7 +8,7 @@ This module provides utility functions for the Free Manager Lambda to:
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 
 import pymysql
@@ -50,10 +50,11 @@ def get_db_connection(auto_commit=False):
                 charset="utf8mb4",
                 cursorclass=pymysql.cursors.DictCursor,
                 autocommit=auto_commit,
+                ssl={"check_hostname": False},
             )
             yield conn
         except Exception as e:
-            print(f" Database connection failed: {str(e)}")
+            print(f"Database connection failed: {str(e)}")
             raise
         finally:
             # CRITICAL: Always close the connection to prevent leaks
@@ -159,7 +160,7 @@ def count_active_free_users(activity_threshold_minutes: int = 10) -> int:
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                activity_cutoff = datetime.now() - timedelta(
+                activity_cutoff = datetime.now(timezone.utc) - timedelta(
                     minutes=activity_threshold_minutes
                 )
 
@@ -191,7 +192,7 @@ def get_users_per_instance(activity_threshold_minutes: int = 10) -> Dict[str, in
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                activity_cutoff = datetime.now() - timedelta(
+                activity_cutoff = datetime.now(timezone.utc) - timedelta(
                     minutes=activity_threshold_minutes
                 )
 
@@ -243,7 +244,9 @@ def trigger_experiment_sync(user_id: int) -> bool:
     }
 
     try:
-        response = requests.post(url, headers=headers, timeout=10.0, verify=True)
+        # Skip SSL verification for internal VPC traffic;
+        # ALB cert doesn't match AWS-generated hostname
+        response = requests.post(url, headers=headers, timeout=10.0, verify=False)
         if response.status_code == 200:
             print(f"Experiment sync initiated for user {user_id}")
             return True

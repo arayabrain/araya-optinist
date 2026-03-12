@@ -15,7 +15,9 @@ from snakemake.api import (
     StorageSettings,
 )
 
-from studio.app.common.core.cloud.cloud_utils import update_user_storage_after_workflow
+from studio.app.common.core.cloud.storage_tracking import (
+    update_user_storage_after_workflow,
+)
 from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
 )
@@ -139,8 +141,8 @@ def _snakemake_execute_process(
             ),
         )
 
-        logger.info("Workflow API created successfully")
-        logger.info("Creating DAG...")
+        logger.debug("Workflow API created successfully")
+        logger.debug("Creating DAG...")
 
         forceall = getattr(params, "forceall", False)
 
@@ -183,6 +185,10 @@ def _snakemake_execute_process(
     # so that WorkflowResult.observe_overall() can access remote storage
     if not snakemake_result and RemoteStorageController.is_available():
         RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
+
+    # Wait for post_process upload to release the lock
+    if snakemake_result and RemoteStorageController.is_available():
+        RemoteSyncLockFileUtil.wait_for_lock_release(workspace_id, unique_id)
 
     try:
         # Update workflow processing results

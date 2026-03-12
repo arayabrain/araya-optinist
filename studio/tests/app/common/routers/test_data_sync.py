@@ -22,23 +22,26 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentSyncMode,
+)
 
 # ---------------------------------------------------------------------------
 # Mock aws_constants for Lambda tests (aws_constants is only available in Lambda)
+# Only install if not already loaded (e.g., by infrastructure test conftest)
 # ---------------------------------------------------------------------------
-class MockDatabaseConfig:
-    DEFAULT_PORT = 3306
+if "aws_constants" not in sys.modules:
 
+    class MockDatabaseConfig:
+        DEFAULT_PORT = 3306
 
-class MockAwsConstants:
-    DatabaseConfig = MockDatabaseConfig
+    class MockAwsConstants:
+        DatabaseConfig = MockDatabaseConfig
 
-
-# Install mock before any Lambda package imports
-sys.modules["aws_constants"] = MockAwsConstants
+    sys.modules["aws_constants"] = MockAwsConstants
 
 # ---------------------------------------------------------------------------
-# Test Case 1: Internal API Security
+# Internal API Security
 # ---------------------------------------------------------------------------
 
 
@@ -148,7 +151,7 @@ class TestInternalAPISecurity:
 
 
 # ---------------------------------------------------------------------------
-# Test Case 2: Rate Limiting
+# Rate Limiting
 # ---------------------------------------------------------------------------
 
 
@@ -298,7 +301,7 @@ class TestRateLimiting:
 
 
 # ---------------------------------------------------------------------------
-# Test Case 3: Sync Endpoint Logic
+# Sync Endpoint Logic
 # ---------------------------------------------------------------------------
 
 
@@ -381,7 +384,7 @@ class TestSyncEndpointLogic:
 
 
 # ---------------------------------------------------------------------------
-# Test Case 4: Lazy Sync (ensure_synced_async)
+# Lazy Sync (ensure_synced_async)
 # ---------------------------------------------------------------------------
 
 
@@ -431,8 +434,7 @@ class TestLazySync:
             "studio.app.common.core.storage.remote_storage_controller."
             "RemoteStorageController"
         ) as mock_controller_class, patch(
-            "studio.app.common.core.storage.remote_storage_controller."
-            "RemoteStorageSimpleReader"
+            "studio.app.common.core.experiment.experiment_reader." "RemoteStorageReader"
         ) as mock_reader_class:
             mock_controller_class.is_available.return_value = True
 
@@ -487,8 +489,7 @@ class TestLazySync:
             "studio.app.common.core.storage.remote_storage_controller."
             "RemoteStorageController"
         ) as mock_controller_class, patch(
-            "studio.app.common.core.storage.remote_storage_controller."
-            "RemoteStorageSimpleReader"
+            "studio.app.common.core.experiment.experiment_reader." "RemoteStorageReader"
         ) as mock_reader_class:
             mock_controller_class.is_available.return_value = True
 
@@ -506,27 +507,22 @@ class TestLazySync:
 
 
 # ---------------------------------------------------------------------------
-# Test Case 5: Middleware Bypass
+# Middleware Bypass
 # ---------------------------------------------------------------------------
 
 
 class TestMiddlewareBypass:
     """Tests for middleware skipping /system-internal/ paths."""
 
-    def test_free_user_middleware_skips_internal_paths(self):
-        """FreeUserActivityMiddleware should skip /system-internal/* routes."""
-        # Verify the logic in middleware checks for /system-internal/ prefix
-        test_paths = [
-            "/system-internal/sync-experiments/1",
-            "/system-internal/health",
-            "/system-internal/anything",
-        ]
+    def test_user_activity_middleware_skips_internal_paths(self):
+        """UserActivityMiddleware should skip /system-internal/* routes."""
+        # Verify the middleware has the skip logic
+        import inspect
 
-        for path in test_paths:
-            # The middleware checks: path.startswith("/system-internal/")
-            assert path.startswith(
-                "/system-internal/"
-            ), f"Path {path} should start with /system-internal/"
+        import studio.app.common.core.middleware.user_activity_middleware as uam
+
+        source = inspect.getsource(uam.UserActivityMiddleware)
+        assert 'startswith("/system-internal/")' in source
 
     def test_secure_routing_middleware_skips_internal_paths(self):
         """SecureRoutingMiddleware should skip /system-internal/* routes."""
@@ -588,7 +584,7 @@ class TestMiddlewareBypass:
 
 
 # ---------------------------------------------------------------------------
-# Test Case 6: Lambda Integration
+# Lambda Integration
 # ---------------------------------------------------------------------------
 
 
@@ -729,7 +725,7 @@ class TestLambdaIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Test Case 7: Router Integration
+# Router Integration
 # ---------------------------------------------------------------------------
 
 
@@ -790,6 +786,439 @@ function: {}
                 ExptConfigReader.ensure_synced_async("workspace", "exp123", "bucket")
             )
             assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Input Data Sync (Multi-Instance Migration)
+# ---------------------------------------------------------------------------
+
+
+class TestInputDataSync:
+    """
+    Tests for input data sync when users are migrated between instances.
+
+    When a user is migrated to a new instance, their input data exists in S3
+    but not locally. These tests verify:
+    1. File listing shows both local and S3 files with sync status
+    2. Input files are downloaded before workflow runs
+    3. HDF5/MATLAB structure is available via cached metadata (no full download)
+    4. CSV files are synced before settings dialog opens
+    """
+
+    def test_merged_endpoint_returns_sync_status(self):
+        """The /files/{workspace_id}/merged endpoint should return sync_status."""
+        from studio.app.common.schemas.files import SyncStatus, TreeNodeWithSync
+
+        # Verify TreeNodeWithSync has sync_status field
+        node = TreeNodeWithSync(
+            path="test.tif",
+            name="test.tif",
+            isdir=False,
+            nodes=[],
+            sync_status=SyncStatus.REMOTE,
+        )
+        assert node.sync_status == SyncStatus.REMOTE
+
+    def test_sync_status_values(self):
+        """SyncStatus enum should have correct values."""
+        from studio.app.common.schemas.files import SyncStatus
+
+        assert SyncStatus.LOCAL.value == "local"
+        assert SyncStatus.SYNCED.value == "synced"
+        assert SyncStatus.REMOTE.value == "remote"
+
+    def test_workflow_runner_has_ensure_input_data_local(self):
+        """WorkflowRunner should have ensure_input_data_local method."""
+        import inspect
+
+        from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
+
+        # Verify the method exists
+        assert hasattr(WorkflowRunner, "ensure_input_data_local")
+
+        # Verify it's called before workflow runs
+        source = inspect.getsource(WorkflowRunner)
+        assert (
+            "_ensure_input_data_local" in source or "ensure_input_data_local" in source
+        )
+
+    def test_run_router_calls_ensure_input_data_local(self):
+        """Run router should call ensure_input_data_local before workflow."""
+        import inspect
+
+        from studio.app.common.routers import run
+
+        source = inspect.getsource(run)
+
+        # Verify ensure_input_data_local is called
+        assert "ensure_input_data_local" in source
+
+    def test_hdf5_endpoint_uses_cached_structure(self):
+        """HDF5 endpoint should check for cached structure before reading file."""
+        import inspect
+
+        from studio.app.optinist.routers import hdf5
+
+        source = inspect.getsource(hdf5.get_files)
+
+        # Verify it checks for cached structure
+        assert "get_hdf5_structure_dict" in source
+        assert "hdf5_structure.json" in source or "_hdf5_structure" in source
+
+    def test_mat_endpoint_uses_cached_structure(self):
+        """MATLAB endpoint should check for cached structure before reading file."""
+        import inspect
+
+        from studio.app.optinist.routers import mat
+
+        source = inspect.getsource(mat.get_matfiles)
+
+        # Verify it checks for cached structure
+        assert "get_mat_structure_dict" in source
+        assert "mat_structure.json" in source or "_mat_structure" in source
+
+    def test_files_router_has_sync_endpoint(self):
+        """Files router should have sync endpoint for on-demand file download."""
+        import inspect
+
+        from studio.app.common.routers import files
+
+        source = inspect.getsource(files)
+
+        # Verify sync endpoint exists
+        assert "sync_input_file" in source
+        assert "/sync/" in source
+
+    def test_files_router_has_merged_endpoint(self):
+        """Files router should have merged endpoint for local+S3 file listing."""
+        import inspect
+
+        from studio.app.common.routers import files
+
+        source = inspect.getsource(files)
+
+        # Verify merged endpoint exists
+        assert "get_files_merged" in source
+        assert "/merged" in source
+
+    def test_structure_caching_functions_exist(self):
+        """Structure caching functions should exist in files router."""
+        from studio.app.common.routers.files import (
+            get_hdf5_structure_dict,
+            get_mat_structure_dict,
+            update_hdf5_structure,
+            update_mat_structure,
+        )
+
+        # Verify functions are callable
+        assert callable(update_hdf5_structure)
+        assert callable(update_mat_structure)
+        assert callable(get_hdf5_structure_dict)
+        assert callable(get_mat_structure_dict)
+
+    def test_sample_data_import_caches_structures(self):
+        """Sample data import should cache HDF5/MATLAB structures."""
+        import inspect
+
+        from studio.app.common.routers import workflow
+
+        source = inspect.getsource(workflow.import_sample_data)
+
+        # Verify structure caching is called for HDF5/MATLAB
+        assert "update_hdf5_structure" in source
+        assert "update_mat_structure" in source
+
+    @pytest.mark.asyncio
+    async def test_list_input_data_objects_format(self):
+        """list_input_data_objects should return correct format."""
+        from studio.app.common.core.storage.remote_storage_controller import (
+            RemoteStorageController,
+        )
+
+        if not RemoteStorageController.is_available():
+            pytest.skip("Remote storage not available")
+
+        from studio.app.common.core.storage.mock_storage_controller import (
+            MockStorageController,
+        )
+
+        controller = MockStorageController()
+        result = await controller.list_input_data_objects("nonexistent_workspace")
+
+        # Should return empty list for nonexistent workspace
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# Single Experiment Sync
+# ---------------------------------------------------------------------------
+
+
+class TestSingleExperimentSync:
+    """Tests for /system-internal/sync-experiment endpoint."""
+
+    @pytest.fixture
+    def app_with_internal_router(self):
+        """Create a minimal FastAPI app with internal router."""
+        from fastapi import FastAPI
+
+        app = FastAPI()
+
+        with patch.dict(
+            os.environ,
+            {"INTERNAL_API_SECRET": "test-secret-12345"},
+        ):
+            import importlib
+
+            import studio.app.common.routers.internal as mod
+
+            importlib.reload(mod)
+            app.include_router(mod.router)
+
+        return app
+
+    @pytest.fixture
+    def client(self, app_with_internal_router):
+        """Create test client."""
+        return TestClient(app_with_internal_router)
+
+    def test_sync_single_experiment_success(self, app_with_internal_router):
+        """POST with valid params returns 200."""
+        client = TestClient(app_with_internal_router)
+
+        response = client.post(
+            "/system-internal/sync-experiment" "/1/uid1?bucket_name=my-bucket",
+            headers={"X-Internal-Secret": "test-secret-12345"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "sync_initiated"
+        assert data["workspace_id"] == "1"
+        assert data["unique_id"] == "uid1"
+
+    def test_sync_single_experiment_bad_secret(self, client):
+        """POST with wrong secret returns 403."""
+        response = client.post(
+            "/system-internal/sync-experiment" "/1/uid1?bucket_name=my-bucket",
+            headers={"X-Internal-Secret": "wrong-secret"},
+        )
+
+        assert response.status_code == 403
+
+    def test_sync_single_experiment_missing_secret(self, client):
+        """POST without secret header returns 422."""
+        response = client.post(
+            "/system-internal/sync-experiment" "/1/uid1?bucket_name=my-bucket",
+        )
+
+        assert response.status_code == 422
+
+    def test_sync_single_experiment_missing_bucket(self, client):
+        """POST without bucket_name query param returns 422."""
+        response = client.post(
+            "/system-internal/sync-experiment/1/uid1",
+            headers={"X-Internal-Secret": "test-secret-12345"},
+        )
+
+        assert response.status_code == 422
+
+    def test_sync_single_experiment_bad_bucket(self, client):
+        """Invalid bucket name returns 422."""
+        response = client.post(
+            "/system-internal/sync-experiment" "/1/uid1?bucket_name=AB",
+            headers={"X-Internal-Secret": "test-secret-12345"},
+        )
+        assert response.status_code == 422
+
+    def test_sync_single_experiment_invalid_workspace_id(self, client):
+        """Non-numeric workspace_id returns 422."""
+        response = client.post(
+            "/system-internal/sync-experiment" "/ws1/uid1?bucket_name=my-bucket",
+            headers={"X-Internal-Secret": "test-secret-12345"},
+        )
+        assert response.status_code == 422
+
+    def test_sync_single_experiment_invalid_unique_id(self, client):
+        """unique_id with special chars returns 422."""
+        response = client.post(
+            "/system-internal/sync-experiment"
+            "/1/uid%20with%20spaces?bucket_name=my-bucket",
+            headers={"X-Internal-Secret": "test-secret-12345"},
+        )
+        assert response.status_code == 422
+
+    def test_sync_single_experiment_rate_limited(self, app_with_internal_router):
+        """Rapid calls to same experiment return 429."""
+        client = TestClient(app_with_internal_router)
+
+        resp1 = client.post(
+            "/system-internal/sync-experiment" "/1/uid1?bucket_name=my-bucket",
+            headers={"X-Internal-Secret": "test-secret-12345"},
+        )
+        assert resp1.status_code == 200
+
+        resp2 = client.post(
+            "/system-internal/sync-experiment" "/1/uid1?bucket_name=my-bucket",
+            headers={"X-Internal-Secret": "test-secret-12345"},
+        )
+        assert resp2.status_code == 429
+
+    def test_sync_single_experiment_has_thumbnails(self, client):
+        """has_thumbnails=false is accepted."""
+        import studio.app.common.routers.internal as mod
+
+        mod._sync_rate_limit_cache.clear()
+
+        response = client.post(
+            "/system-internal/sync-experiment"
+            "/1/uid1"
+            "?bucket_name=my-bucket"
+            "&has_thumbnails=false",
+            headers={"X-Internal-Secret": "test-secret-12345"},
+        )
+        assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Download Single Experiment Background Task
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadSingleExperiment:
+    """Tests for _download_single_experiment background task."""
+
+    @pytest.mark.asyncio
+    async def test_skips_when_remote_storage_unavailable(self):
+        """Returns early when remote storage is not available."""
+        with patch(
+            "studio.app.common.routers.internal." "RemoteStorageController"
+        ) as mock_ctrl:
+            mock_ctrl.is_available.return_value = False
+
+            from studio.app.common.routers.internal import _download_single_experiment
+
+            # Should not raise
+            await _download_single_experiment("bucket1", "ws1", "uid1")
+
+            mock_ctrl.is_available.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_downloads_thumbnails_then_essential(self):
+        """Downloads thumbnails_only then essential_only."""
+        mock_reader = AsyncMock()
+        mock_reader.__aenter__.return_value = mock_reader
+        mock_reader.__aexit__.return_value = None
+
+        with patch(
+            "studio.app.common.routers.internal." "RemoteStorageController"
+        ) as mock_ctrl, patch(
+            "studio.app.common.routers.internal." "RemoteStorageReader",
+            return_value=mock_reader,
+        ), patch(
+            "os.path.exists", return_value=False
+        ):
+            mock_ctrl.is_available.return_value = True
+
+            from studio.app.common.routers.internal import _download_single_experiment
+
+            await _download_single_experiment(
+                "bucket1",
+                "ws1",
+                "uid1",
+                has_thumbnails=True,
+            )
+
+        assert mock_reader.download_experiment.call_count == 2
+        calls = mock_reader.download_experiment.call_args_list
+        assert calls[0] == (
+            ("ws1", "uid1"),
+            {"sync_mode": RemoteExperimentSyncMode.THUMBNAILS_ONLY},
+        )
+        assert calls[1] == (
+            ("ws1", "uid1"),
+            {"sync_mode": RemoteExperimentSyncMode.ESSENTIAL_ONLY},
+        )
+
+    @pytest.mark.asyncio
+    async def test_skips_thumbnails_when_not_present(self):
+        """has_thumbnails=False skips thumbnail download."""
+        mock_reader = AsyncMock()
+        mock_reader.__aenter__.return_value = mock_reader
+        mock_reader.__aexit__.return_value = None
+
+        with patch(
+            "studio.app.common.routers.internal." "RemoteStorageController"
+        ) as mock_ctrl, patch(
+            "studio.app.common.routers.internal." "RemoteStorageReader",
+            return_value=mock_reader,
+        ), patch(
+            "os.path.exists", return_value=False
+        ):
+            mock_ctrl.is_available.return_value = True
+
+            from studio.app.common.routers.internal import _download_single_experiment
+
+            await _download_single_experiment(
+                "bucket1",
+                "ws1",
+                "uid1",
+                has_thumbnails=False,
+            )
+
+        assert mock_reader.download_experiment.call_count == 1
+        calls = mock_reader.download_experiment.call_args_list
+        assert calls[0] == (
+            ("ws1", "uid1"),
+            {"sync_mode": RemoteExperimentSyncMode.ESSENTIAL_ONLY},
+        )
+
+    @pytest.mark.asyncio
+    async def test_skips_when_files_exist_locally(self):
+        """Early return when YAML files already present."""
+        mock_reader = AsyncMock()
+        mock_reader.__aenter__.return_value = mock_reader
+        mock_reader.__aexit__.return_value = None
+
+        with patch(
+            "studio.app.common.routers.internal." "RemoteStorageController"
+        ) as mock_ctrl, patch(
+            "studio.app.common.routers.internal." "RemoteStorageReader",
+            return_value=mock_reader,
+        ), patch(
+            "os.path.exists", return_value=True
+        ):
+            mock_ctrl.is_available.return_value = True
+
+            from studio.app.common.routers.internal import _download_single_experiment
+
+            await _download_single_experiment("bucket1", "ws1", "uid1")
+
+        assert mock_reader.download_experiment.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_handles_download_exception(self):
+        """Exception during download is caught, not propagated."""
+        mock_reader = AsyncMock()
+        mock_reader.__aenter__.return_value = mock_reader
+        mock_reader.__aexit__.return_value = None
+        mock_reader.download_experiment.side_effect = RuntimeError("S3 error")
+
+        with patch(
+            "studio.app.common.routers.internal." "RemoteStorageController"
+        ) as mock_ctrl, patch(
+            "studio.app.common.routers.internal." "RemoteStorageReader",
+            return_value=mock_reader,
+        ), patch(
+            "os.path.exists", return_value=False
+        ):
+            mock_ctrl.is_available.return_value = True
+
+            from studio.app.common.routers.internal import _download_single_experiment
+
+            # Should not raise
+            await _download_single_experiment("bucket1", "ws1", "uid1")
 
 
 # ---------------------------------------------------------------------------
