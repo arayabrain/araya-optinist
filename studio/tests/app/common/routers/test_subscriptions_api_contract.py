@@ -22,6 +22,7 @@ Tested endpoints:
 
 from datetime import datetime, timezone
 
+from studio.app.common.core.subscription.constants import SubscriptionPlanIds
 from studio.app.common.schemas.checkouts import (
     CheckoutValidationResponse,
     CheckoutValidationStatus,
@@ -274,7 +275,7 @@ def test_contract_user_subscription_serialization_active():
     """
     subscription = UserSubscriptionResponse(
         id=1,
-        plan_id=2,
+        plan_id=SubscriptionPlanIds.PREMIUM,
         user_id=100,
         expiration=datetime.now(timezone.utc),
         is_expired=False,
@@ -302,7 +303,7 @@ def test_contract_user_subscription_serialization_expired():
     """
     subscription = UserSubscriptionResponse(
         id=1,
-        plan_id=1,
+        plan_id=SubscriptionPlanIds.FREE,
         user_id=100,
         expiration=datetime(2024, 1, 1, tzinfo=timezone.utc),
         is_expired=True,
@@ -332,7 +333,7 @@ def test_contract_user_subscription_scheduled_downgrade():
     """
     subscription = UserSubscriptionResponse(
         id=1,
-        plan_id=2,
+        plan_id=SubscriptionPlanIds.PREMIUM,
         user_id=100,
         expiration=datetime.now(timezone.utc),
         is_expired=False,
@@ -630,7 +631,7 @@ def test_contract_no_legacy_subscription_fields():
     """
     subscription = UserSubscriptionResponse(
         id=1,
-        plan_id=2,
+        plan_id=SubscriptionPlanIds.PREMIUM,
         user_id=100,
         expiration=datetime.now(timezone.utc),
         is_expired=False,
@@ -714,7 +715,7 @@ def test_contract_subscription_status_is_integer():
     """
     subscription = UserSubscriptionResponse(
         id=1,
-        plan_id=2,
+        plan_id=SubscriptionPlanIds.PREMIUM,
         user_id=100,
         expiration=datetime.now(timezone.utc),
         is_expired=False,
