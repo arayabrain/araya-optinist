@@ -438,6 +438,30 @@ class StorageScanTriggers:
     SCAN_INTERVAL_MINUTES = 60  # Hourly reconciliation
 
 
+class DeletionPriority(StrEnum):
+    """User preference for which data to preserve during expiration deletion."""
+
+    PRESERVE_OUTPUTS = "preserve_outputs"
+    PRESERVE_INPUTS = "preserve_inputs"
+
+
+class ExpirationDeletion:
+    """Constants for expiration deletion background job"""
+
+    JOB_ID = "expiration_lifecycle"
+    JOB_INTERVAL_MINUTES = 1440  # 24 hours
+    BATCH_SIZE = 10  # Max users per job run
+    RECHECK_SUBSCRIPTION_INTERVAL = 5  # Re-check subscription every N units
+    FREE_QUOTA_BYTES = StorageQuota.FREE * StorageSize.GB  # 5 GB
+    REPROCESS_COOLDOWN_DAYS = 7  # Days before re-processing a user
+    DATA_PURGED_MARKER = "data_purged_by_expiration"
+
+    # CloudWatch metrics
+    METRIC_NAMESPACE = "OptiNiSt/BackgroundJobs"
+    METRIC_PROCESSED = "ExpirationDeletionProcessed"
+    METRIC_ERRORS = "ExpirationDeletionErrors"
+
+
 class S3Pagination:
     """Constants for S3 pagination and streaming"""
 

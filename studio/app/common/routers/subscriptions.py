@@ -39,6 +39,8 @@ from studio.app.common.schemas.subscriptions import (
     CreateCheckoutSessionRequest,
     CreateCheckoutSessionResponse,
     CreateSetupIntentResponse,
+    DeletionPriorityRequest,
+    DeletionPriorityResponse,
     InvoiceResponse,
     PaymentMethodResponse,
     SubscriptionPlanResponse,
@@ -221,6 +223,25 @@ async def update_user_subscription(
 async def get_server_time():
     utc_time = get_current_datetime()
     return {"server_time": utc_time.isoformat()}
+
+
+@router.get("/deletion-priority", response_model=DeletionPriorityResponse)
+async def get_deletion_priority(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    priority = SubscriptionService.get_deletion_priority(db, current_user.id)
+    return DeletionPriorityResponse(priority=priority)
+
+
+@router.put("/deletion-priority", response_model=DeletionPriorityResponse)
+async def update_deletion_priority(
+    request: DeletionPriorityRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    SubscriptionService.update_deletion_priority(db, current_user.id, request.priority)
+    return DeletionPriorityResponse(priority=request.priority)
 
 
 @router.delete("/mgmts/cancel", response_model=CancelSubscriptionResponse)

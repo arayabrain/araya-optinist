@@ -494,37 +494,37 @@ class TestNoSuchBucketErrorHandling:
         from botocore.exceptions import ClientError
 
         from studio.app.common.core.storage.s3_storage_controller import (
-            _is_no_such_bucket_error,
+            is_no_such_bucket_error,
         )
 
         error = ClientError(
             {"Error": {"Code": "NoSuchBucket", "Message": "Bucket does not exist"}},
             "ListObjectsV2",
         )
-        assert _is_no_such_bucket_error(error) is True
+        assert is_no_such_bucket_error(error) is True
 
     def test_is_no_such_bucket_error_with_other_client_error(self):
         """Returns False for other ClientError codes"""
         from botocore.exceptions import ClientError
 
         from studio.app.common.core.storage.s3_storage_controller import (
-            _is_no_such_bucket_error,
+            is_no_such_bucket_error,
         )
 
         error = ClientError(
             {"Error": {"Code": "AccessDenied", "Message": "Access denied"}},
             "ListObjectsV2",
         )
-        assert _is_no_such_bucket_error(error) is False
+        assert is_no_such_bucket_error(error) is False
 
     def test_is_no_such_bucket_error_with_regular_exception(self):
         """Returns False for regular exceptions"""
         from studio.app.common.core.storage.s3_storage_controller import (
-            _is_no_such_bucket_error,
+            is_no_such_bucket_error,
         )
 
         error = Exception("Some other error")
-        assert _is_no_such_bucket_error(error) is False
+        assert is_no_such_bucket_error(error) is False
 
 
 class TestListInputDataObjectsNoSuchBucket:
