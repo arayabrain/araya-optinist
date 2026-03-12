@@ -130,9 +130,9 @@ def _transform_user_row(item) -> UserModel:
                 user.__dict__["subscription_status"] = SubscriptionStatus.PREMIUM.value
                 user.__dict__["subscription_days_remaining"] = days_remaining
             elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
-                user.__dict__[
-                    "subscription_status"
-                ] = SubscriptionStatus.LIMIT_GRACE.value
+                user.__dict__["subscription_status"] = (
+                    SubscriptionStatus.LIMIT_GRACE.value
+                )
                 user.__dict__["subscription_days_remaining"] = (
                     SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
                 )  # Days left in grace period
@@ -531,7 +531,8 @@ async def update_user_subscription_admin(
     data: UserSubscriptionUpdate,
     organization_id: int,
 ) -> User:
-    """Admin-only: directly update a user's subscription plan, expiration, and storage quota.
+    """Admin-only: directly update a user's subscription plan,
+    expiration, and storage quota.
     This bypasses Stripe and modifies the database directly."""
     try:
         user_db = (
@@ -569,9 +570,7 @@ async def update_user_subscription_admin(
             .first()
         )
         if storage is None:
-            raise HTTPException(
-                status_code=400, detail="User has no storage record"
-            )
+            raise HTTPException(status_code=400, detail="User has no storage record")
         storage.storage_quota_bytes = data.storage_quota_bytes
 
         db.commit()
