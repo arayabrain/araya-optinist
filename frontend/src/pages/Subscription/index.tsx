@@ -155,7 +155,16 @@ const SubscriptionPlans = () => {
             setRecoveryMessage(errorMessage)
             // Refresh subscription data to reflect the recovered subscription
             dispatch(getUserSubscription())
+          } else {
+            // Non-recovery rejection — Redux error state handles the UI display
+            // eslint-disable-next-line no-console
+            console.error("Checkout session failed:", errorMessage)
           }
+        } else {
+          // Defensive guard: createAsyncThunk should only produce
+          // fulfilled or rejected, but log if an unexpected state occurs.
+          // eslint-disable-next-line no-console
+          console.warn("Unexpected checkout result action:", resultAction)
         }
       } catch (error) {
         // eslint-disable-next-line no-console

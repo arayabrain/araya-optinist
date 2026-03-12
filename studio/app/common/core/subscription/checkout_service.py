@@ -785,6 +785,9 @@ class CheckoutService:
                 )
 
         except HTTPException:
+            # Re-raise HTTPExceptions as-is (e.g., 404 plan not found, 400
+            # missing Stripe price, 409 subscription recovery) so they are not
+            # caught by the generic Exception handler below and wrapped in a 500.
             raise
         except Exception as e:
             raise HTTPException(
