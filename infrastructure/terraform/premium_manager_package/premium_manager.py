@@ -38,6 +38,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, Optional
@@ -1783,14 +1784,26 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
             # (remove DB entries for terminated instances)
             cleanup_failed_standby_instances()
 
-            # 8. Cleanup ghost ECS container instance registrations
+            # 8. Terminate stopped standby instances older than
+            # PREMIUM_STOPPED_MAX_AGE_HOURS
+            terminate_aged_stopped_instances()
+
+            # 9. Trim standby pool if it exceeds target size
+            standby_count = get_standby_count()
+            standby_pool_size = int(os.environ.get("PREMIUM_STANDBY_POOL_SIZE", "1"))
+            if standby_count > standby_pool_size:
+                excess = standby_count - standby_pool_size
+                print(f"Standby pool has {excess} excess instances, trimming")
+                cleanup_excess_standby_instances(excess)
+
+            # 10. Cleanup ghost ECS container instance registrations
             # (deregister container instances where EC2 is stopped/terminated)
             cleanup_ghost_ecs_registrations()
 
-            # 9. Stop orphaned EC2 instances not in ECS cluster
+            # 11. Stop orphaned EC2 instances not in ECS cluster
             cleanup_orphaned_ec2_instances()
 
-            # 10. Optimize shared instances (safety net)
+            # 12. Optimize shared instances (safety net)
             try:
                 try:
                     fix_result = fix_incorrect_is_shared_flags()
@@ -4090,6 +4103,107 @@ def cleanup_excess_standby_instances(excess_count: int):
 
     except Exception as e:
         print(f"Error cleaning up excess standby instances: {str(e)}")
+        return 0
+
+
+def _parse_stop_time(state_transition_reason: str):
+    """Parse the stop timestamp from EC2 StateTransitionReason.
+
+    EC2 returns reasons like 'User initiated (2024-01-15 10:30:00 GMT)'.
+    Returns a datetime or None if parsing fails.
+    """
+    match = re.search(
+        r"\((\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) GMT\)", state_transition_reason
+    )
+    if match:
+        return datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")
+    return None
+
+
+def terminate_aged_stopped_instances():
+    """Terminate standby instances that have been stoppedlonger than
+    PREMIUM_STOPPED_MAX_AGE_HOURS.
+
+    Uses EC2 StateTransitionReason to determine when each instance was actually
+    stopped. Falls back to standby_created_at when the EC2 timestamp is not
+    parseable (e.g. Server.InternalError, crashes).
+
+    Note: standby_created_at is set when the standby row is created, which
+    roughly coincides with when the instance is stopped via
+    convert_running_instance_to_standby(). It is not a precise "stopped at"
+    timestamp but serves as a conservative fallback.
+    """
+    max_age_hours = int(os.environ.get("PREMIUM_STOPPED_MAX_AGE_HOURS", "4"))
+    ec2: "EC2Client" = boto3.client("ec2")
+
+    try:
+        # Get stopped standby instances with fallback timestamp from the database
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """SELECT instance_id, standby_created_at
+                       FROM premium_user_assignments
+                       WHERE is_standby = 1 AND status = 'active'
+                         AND instance_state = 'stopped'"""
+                )
+                standby_rows = cursor.fetchall()
+
+        if not standby_rows:
+            print("No stopped standby instances to check")
+            return 0
+
+        instance_ids = [row["instance_id"] for row in standby_rows]
+        db_fallback = {
+            row["instance_id"]: row["standby_created_at"] for row in standby_rows
+        }
+
+        # Query EC2 for actual stop times via StateTransitionReason
+        response = ec2.describe_instances(InstanceIds=instance_ids)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        cutoff = timedelta(hours=max_age_hours)
+        aged_instances = []
+
+        for reservation in response["Reservations"]:
+            for instance in reservation["Instances"]:
+                instance_id = instance["InstanceId"]
+                reason = instance.get("StateTransitionReason", "")
+                stop_time = _parse_stop_time(reason)
+                if stop_time is None:
+                    # Fallback to standby_created_at for unparsable reasons
+                    # (e.g. Server.InternalError, crashes, empty string)
+                    fallback = db_fallback.get(instance_id)
+                    if fallback:
+                        stop_time = fallback.replace(tzinfo=None)
+                        print(
+                            f"Using standby_created_at fallback for {instance_id} "
+                            f"(reason: '{reason}')"
+                        )
+                if stop_time and (now - stop_time) > cutoff:
+                    aged_instances.append((instance_id, stop_time))
+
+        if not aged_instances:
+            print(f"No stopped standby instances older than {max_age_hours} hours")
+            return 0
+
+        print(
+            f"Found {len(aged_instances)} stopped standby instances "
+            f"older than {max_age_hours} hours"
+        )
+
+        terminated = 0
+        for instance_id, stop_time in aged_instances:
+            if terminate_standby_instance(instance_id):
+                terminated += 1
+                print(
+                    f"Terminated aged stopped instance {instance_id} "
+                    f"(stopped since: {stop_time})"
+                )
+
+        print(f"Terminated {terminated} aged stopped instances")
+        return terminated
+
+    except Exception as e:
+        print(f"Error terminating aged stopped instances: {str(e)}")
         return 0
 
 
