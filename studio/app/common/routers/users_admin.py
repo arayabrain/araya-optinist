@@ -77,7 +77,11 @@ async def update_user_subscription(
     current_admin: User = Depends(get_admin_user),
 ):
     return await crud_users.update_user_subscription_admin(
-        db, user_id, data, organization_id=current_admin.organization.id
+        db,
+        user_id,
+        data,
+        organization_id=current_admin.organization.id,
+        admin_user_id=current_admin.id,
     )
 
 

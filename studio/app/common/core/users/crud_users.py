@@ -37,6 +37,7 @@ from studio.app.common.models import UserRole as UserRoleModel
 from studio.app.common.models.subscription import (
     DeletionStatus,
     DeletionStep,
+    SubscriptionAuditLog,
     SubscriptionPlans,
     UserDeletionRecord,
     UserStorageUsage,
@@ -530,10 +531,12 @@ async def update_user_subscription_admin(
     user_id: int,
     data: UserSubscriptionUpdate,
     organization_id: int,
+    admin_user_id: int,
 ) -> User:
     """Admin-only: directly update a user's subscription plan,
     expiration, and storage quota.
-    This bypasses Stripe and modifies the database directly."""
+    This bypasses Stripe and modifies the database directly.
+    All changes are recorded in the subscription_audit_log."""
     try:
         user_db = (
             db.query(UserModel)
@@ -561,8 +564,6 @@ async def update_user_subscription_admin(
             raise HTTPException(
                 status_code=400, detail="User has no subscription record"
             )
-        subscription.plan_id = data.plan_id
-        subscription.expiration = data.expiration
 
         storage = (
             db.query(UserStorageUsage)
@@ -571,7 +572,35 @@ async def update_user_subscription_admin(
         )
         if storage is None:
             raise HTTPException(status_code=400, detail="User has no storage record")
+
+        # Capture old values before applying changes
+        old_value = {
+            "plan_id": subscription.plan_id,
+            "expiration": subscription.expiration.isoformat()
+            if subscription.expiration
+            else None,
+            "storage_quota_bytes": storage.storage_quota_bytes,
+        }
+
+        # Apply changes
+        subscription.plan_id = data.plan_id
+        subscription.expiration = data.expiration
         storage.storage_quota_bytes = data.storage_quota_bytes
+
+        # Write audit log
+        new_value = {
+            "plan_id": data.plan_id,
+            "expiration": data.expiration.isoformat(),
+            "storage_quota_bytes": data.storage_quota_bytes,
+        }
+        audit_log = SubscriptionAuditLog(
+            user_id=user_id,
+            changed_by=admin_user_id,
+            old_value=old_value,
+            new_value=new_value,
+            reason=data.reason,
+        )
+        db.add(audit_log)
 
         db.commit()
         return await get_user_with_context(db, user_id)

@@ -99,6 +99,7 @@ class UserSubscriptionUpdate(BaseModel):
     plan_id: int
     expiration: datetime
     storage_quota_bytes: int
+    reason: str
 
 
 class SelfUserUpdate(BaseModel):

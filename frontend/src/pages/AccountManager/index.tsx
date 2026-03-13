@@ -328,6 +328,7 @@ const SubscriptionEditModal = ({
       ? Math.round(user.storage_quota_bytes / GB)
       : 5
   })
+  const [reason, setReason] = useState("")
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const handleSubmit = async () => {
@@ -337,6 +338,7 @@ const SubscriptionEditModal = ({
         plan_id: planId,
         expiration: new Date(expiration).toISOString(),
         storage_quota_bytes: storageQuotaGb * GB,
+        reason,
       })
       onClose()
     } finally {
@@ -387,6 +389,17 @@ const SubscriptionEditModal = ({
             fullWidth
           />
 
+          <TextField
+            label="Reason for manual edit"
+            multiline
+            minRows={2}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="e.g. User requested plan change via support ticket #123"
+            fullWidth
+            required
+          />
+
           <Box sx={{ color: "text.secondary", fontSize: "0.875rem" }}>
             Current usage:{" "}
             {user.storage_usage_bytes
@@ -401,7 +414,7 @@ const SubscriptionEditModal = ({
           </Button>
           <Button
             variant="contained"
-            disabled={isSubmitting || !expiration}
+            disabled={isSubmitting || !expiration || !reason.trim()}
             onClick={handleSubmit}
           >
             Save

@@ -443,3 +443,41 @@ class UserDeletionRecord(SQLModel, table=True):
             onupdate=func.current_timestamp(),
         ),
     )
+
+
+class SubscriptionAuditLog(SQLModel, table=True):
+    """
+    Audit log for admin-initiated subscription changes.
+    Records old/new values and the reason for each manual edit.
+    """
+
+    __tablename__ = "subscription_audit_log"
+
+    id: Optional[int] = Field(
+        sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
+        default=None,
+    )
+    user_id: int = Field(
+        sa_column=Column(BIGINT, nullable=False, index=True),
+        description="The user whose subscription was changed",
+    )
+    changed_by: int = Field(
+        sa_column=Column(BIGINT, nullable=False),
+        description="Admin user ID who made the change",
+    )
+    old_value: Dict[str, Any] = Field(
+        sa_column=Column(JSON, nullable=False),
+        description="Subscription state before the change",
+    )
+    new_value: Dict[str, Any] = Field(
+        sa_column=Column(JSON, nullable=False),
+        description="Subscription state after the change",
+    )
+    reason: str = Field(
+        sa_column=Column(Text, nullable=False),
+        description="Admin-provided reason for the manual edit",
+    )
+    created_at: Optional[datetime] = Field(
+        default_factory=get_current_datetime,
+        sa_column=Column(TIMESTAMP, server_default=func.current_timestamp()),
+    )
