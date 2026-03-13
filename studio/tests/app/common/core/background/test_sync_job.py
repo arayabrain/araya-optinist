@@ -566,3 +566,270 @@ class TestRetryCount:
             mock_boto.return_value = mock_cw
             cls._check_persistent_failure(42, "ws1", "uid1")
             mock_cw.put_metric_data.assert_called_once()
+
+
+class TestValidationLogicMetrics:
+    """Tests that _run_validation_logic always publishes metrics"""
+
+    @pytest.mark.asyncio
+    async def test_publishes_zero_metrics_when_no_pending(self):
+        """Metrics are published even when no experiments are pending"""
+        with patch.object(
+            PublishedExperimentSyncJob,
+            "_get_pending_experiments",
+            return_value=[],
+        ), patch.object(
+            PublishedExperimentSyncJob,
+            "_publish_metrics",
+        ) as mock_publish:
+            await PublishedExperimentSyncJob._run_validation_logic()
+
+            mock_publish.assert_called_once_with(0, 0)
+
+    @pytest.mark.asyncio
+    async def test_publishes_correct_counts_after_validation(self):
+        """Metrics reflect actual sync/error counts from validation"""
+        pending = [
+            ("ws1", "uid1", 1, "bucket1"),
+            ("ws2", "uid2", 2, "bucket1"),
+            ("ws3", "uid3", 3, "bucket1"),
+        ]
+
+        mock_s3 = MagicMock()
+
+        async def mock_validate(s3, ws, uid, eid, bucket):
+            return eid != 2  # exp 2 fails, others succeed
+
+        with patch.object(
+            PublishedExperimentSyncJob,
+            "_get_pending_experiments",
+            return_value=pending,
+        ), patch.object(
+            PublishedExperimentSyncJob,
+            "_get_s3_controller",
+            return_value=mock_s3,
+        ), patch.object(
+            PublishedExperimentSyncJob,
+            "_validate_experiment",
+            side_effect=mock_validate,
+        ), patch.object(
+            PublishedExperimentSyncJob,
+            "_publish_metrics",
+        ) as mock_publish:
+            await PublishedExperimentSyncJob._run_validation_logic()
+
+            mock_publish.assert_called_once_with(2, 1)
+
+    @pytest.mark.asyncio
+    async def test_counts_gather_exceptions_as_errors(self):
+        """Bare exceptions from asyncio.gather are counted as errors"""
+        pending = [
+            ("ws1", "uid1", 1, "bucket1"),
+            ("ws2", "uid2", 2, "bucket1"),
+        ]
+
+        async def mock_validate(s3, ws, uid, eid, bucket):
+            if eid == 1:
+                return True
+            raise RuntimeError("unexpected")
+
+        with patch.object(
+            PublishedExperimentSyncJob,
+            "_get_pending_experiments",
+            return_value=pending,
+        ), patch.object(
+            PublishedExperimentSyncJob,
+            "_get_s3_controller",
+            return_value=MagicMock(),
+        ), patch.object(
+            PublishedExperimentSyncJob,
+            "_validate_experiment",
+            side_effect=mock_validate,
+        ), patch.object(
+            PublishedExperimentSyncJob,
+            "_mark_sync_error",
+        ), patch.object(
+            PublishedExperimentSyncJob,
+            "_publish_metrics",
+        ) as mock_publish:
+            await PublishedExperimentSyncJob._run_validation_logic()
+
+            mock_publish.assert_called_once_with(1, 1)
+
+    @pytest.mark.asyncio
+    async def test_publishes_metrics_when_all_fail(self):
+        """Metrics published correctly when every experiment fails"""
+        pending = [
+            ("ws1", "uid1", 1, "bucket1"),
+            ("ws2", "uid2", 2, "bucket1"),
+        ]
+
+        async def mock_validate(s3, ws, uid, eid, bucket):
+            return False
+
+        with patch.object(
+            PublishedExperimentSyncJob,
+            "_get_pending_experiments",
+            return_value=pending,
+        ), patch.object(
+            PublishedExperimentSyncJob,
+            "_get_s3_controller",
+            return_value=MagicMock(),
+        ), patch.object(
+            PublishedExperimentSyncJob,
+            "_validate_experiment",
+            side_effect=mock_validate,
+        ), patch.object(
+            PublishedExperimentSyncJob,
+            "_publish_metrics",
+        ) as mock_publish:
+            await PublishedExperimentSyncJob._run_validation_logic()
+
+            mock_publish.assert_called_once_with(0, 2)
+
+
+class TestPublishMetrics:
+    """Tests for _publish_metrics CloudWatch publishing"""
+
+    def test_publishes_count_and_percent_metrics(self):
+        """Publishes ExperimentsSynced, SyncErrors, and SyncErrorRate"""
+        with patch("boto3.client") as mock_boto:
+            mock_cw = MagicMock()
+            mock_boto.return_value = mock_cw
+
+            PublishedExperimentSyncJob._publish_metrics(5, 2)
+
+            assert mock_cw.put_metric_data.call_count == 2
+
+            # First call: Count metrics
+            count_call = mock_cw.put_metric_data.call_args_list[0]
+            count_data = count_call[1]["MetricData"]
+            assert len(count_data) == 2
+            assert count_data[0]["MetricName"] == "ExperimentsSynced"
+            assert count_data[0]["Value"] == 5
+            assert count_data[0]["Unit"] == "Count"
+            assert count_data[1]["MetricName"] == "SyncErrors"
+            assert count_data[1]["Value"] == 2
+            assert count_data[1]["Unit"] == "Count"
+
+            # Second call: Percent metric
+            pct_call = mock_cw.put_metric_data.call_args_list[1]
+            pct_data = pct_call[1]["MetricData"]
+            assert len(pct_data) == 1
+            assert pct_data[0]["MetricName"] == "SyncErrorRate"
+            assert pct_data[0]["Unit"] == "Percent"
+            assert abs(pct_data[0]["Value"] - 28.571) < 0.1
+
+    def test_publishes_zero_counts(self):
+        """Zero counts publish 0 values and 0.0 error rate"""
+        with patch("boto3.client") as mock_boto:
+            mock_cw = MagicMock()
+            mock_boto.return_value = mock_cw
+
+            PublishedExperimentSyncJob._publish_metrics(0, 0)
+
+            assert mock_cw.put_metric_data.call_count == 2
+            pct_call = mock_cw.put_metric_data.call_args_list[1]
+            pct_data = pct_call[1]["MetricData"]
+            assert pct_data[0]["Value"] == 0.0
+
+    def test_error_rate_is_float(self):
+        """SyncErrorRate value is always a float"""
+        with patch("boto3.client") as mock_boto:
+            mock_cw = MagicMock()
+            mock_boto.return_value = mock_cw
+
+            PublishedExperimentSyncJob._publish_metrics(10, 0)
+
+            pct_call = mock_cw.put_metric_data.call_args_list[1]
+            pct_data = pct_call[1]["MetricData"]
+            assert isinstance(pct_data[0]["Value"], float)
+
+    def test_hundred_percent_error_rate(self):
+        """100% error rate when all experiments fail"""
+        with patch("boto3.client") as mock_boto:
+            mock_cw = MagicMock()
+            mock_boto.return_value = mock_cw
+
+            PublishedExperimentSyncJob._publish_metrics(0, 5)
+
+            pct_call = mock_cw.put_metric_data.call_args_list[1]
+            pct_data = pct_call[1]["MetricData"]
+            assert pct_data[0]["Value"] == 100.0
+            assert isinstance(pct_data[0]["Value"], float)
+
+    def test_cloudwatch_error_is_logged_with_traceback(self):
+        """CloudWatch errors are logged at error level with traceback"""
+        with patch("boto3.client") as mock_boto:
+            mock_cw = MagicMock()
+            mock_cw.put_metric_data.side_effect = Exception("CloudWatch error")
+            mock_boto.return_value = mock_cw
+
+            with patch(
+                "studio.app.common.core.background.sync_job.logger"
+            ) as mock_logger:
+                PublishedExperimentSyncJob._publish_metrics(1, 0)
+
+                mock_logger.error.assert_called_once()
+                call_kwargs = mock_logger.error.call_args[1]
+                assert call_kwargs.get("exc_info") is True
+
+    def test_does_not_raise_on_cloudwatch_error(self):
+        """_publish_metrics swallows exceptions, never propagates"""
+        with patch("boto3.client") as mock_boto:
+            mock_cw = MagicMock()
+            mock_cw.put_metric_data.side_effect = Exception("CloudWatch down")
+            mock_boto.return_value = mock_cw
+
+            # Should not raise
+            PublishedExperimentSyncJob._publish_metrics(1, 0)
+
+    def test_count_metrics_published_when_percent_fails(self):
+        """Count metrics succeed even if Percent call fails"""
+        with patch("boto3.client") as mock_boto:
+            mock_cw = MagicMock()
+            # First call (Count) succeeds, second call (Percent) fails
+            mock_cw.put_metric_data.side_effect = [
+                None,
+                Exception("Invalid unit"),
+            ]
+            mock_boto.return_value = mock_cw
+
+            with patch("studio.app.common.core.background.sync_job.logger"):
+                PublishedExperimentSyncJob._publish_metrics(5, 1)
+
+            # First call completed successfully with Count metrics
+            first_call = mock_cw.put_metric_data.call_args_list[0]
+            count_data = first_call[1]["MetricData"]
+            assert count_data[0]["MetricName"] == "ExperimentsSynced"
+            assert count_data[0]["Value"] == 5
+            assert count_data[1]["MetricName"] == "SyncErrors"
+            assert count_data[1]["Value"] == 1
+
+    def test_uses_consistent_timestamp(self):
+        """All metrics in a call share the same timestamp"""
+        with patch("boto3.client") as mock_boto:
+            mock_cw = MagicMock()
+            mock_boto.return_value = mock_cw
+
+            PublishedExperimentSyncJob._publish_metrics(3, 1)
+
+            count_call = mock_cw.put_metric_data.call_args_list[0]
+            count_data = count_call[1]["MetricData"]
+            pct_call = mock_cw.put_metric_data.call_args_list[1]
+            pct_data = pct_call[1]["MetricData"]
+
+            ts = count_data[0]["Timestamp"]
+            assert count_data[1]["Timestamp"] == ts
+            assert pct_data[0]["Timestamp"] == ts
+
+    def test_uses_correct_namespace(self):
+        """All calls use the OptiNiSt/BackgroundJobs namespace"""
+        with patch("boto3.client") as mock_boto:
+            mock_cw = MagicMock()
+            mock_boto.return_value = mock_cw
+
+            PublishedExperimentSyncJob._publish_metrics(1, 0)
+
+            for call in mock_cw.put_metric_data.call_args_list:
+                assert call[1]["Namespace"] == "OptiNiSt/BackgroundJobs"
