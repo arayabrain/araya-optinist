@@ -304,7 +304,7 @@ type SubscriptionEditModalProps = {
   open: boolean
   user: UserDTO
   onClose: () => void
-  onSubmit: (data: UpdateUserSubscriptionDTO) => Promise<void>
+  onSubmit: (data: UpdateUserSubscriptionDTO) => Promise<boolean>
 }
 
 const SubscriptionEditModal = ({
@@ -773,8 +773,10 @@ const AccountManager = () => {
     }
   }, [dispatch, filterParams, sortParams, params, handleClickVariant])
 
-  const handleSubscriptionEdit = async (data: UpdateUserSubscriptionDTO) => {
-    if (!subscriptionEditUser?.id) return
+  const handleSubscriptionEdit = async (
+    data: UpdateUserSubscriptionDTO,
+  ): Promise<boolean> => {
+    if (!subscriptionEditUser?.id) return false
     const result = await dispatch(
       updateUserSubscription({
         id: subscriptionEditUser.id,
@@ -784,8 +786,10 @@ const AccountManager = () => {
     )
     if (isRejectedWithValue(result)) {
       handleClickVariant("error", "Subscription update failed!")
+      return false
     } else {
       handleClickVariant("success", "Subscription updated successfully!")
+      return true
     }
   }
 
