@@ -397,17 +397,19 @@ class SubscriptionService:
         return assignment is not None and assignment.active_workflow_count > 0
 
     @staticmethod
-    def get_deletion_priority(db: Session, user_id: int) -> str:
+    def get_deletion_priority(db: Session, user_id: int) -> DeletionPriority:
         """Get user's deletion priority preference, defaulting to preserve_outputs."""
         prefs = (
             db.query(UserPreferences).filter(UserPreferences.user_id == user_id).first()
         )
         if prefs and prefs.deletion_priority:
-            return prefs.deletion_priority
-        return DeletionPriority.PRESERVE_OUTPUTS.value
+            return DeletionPriority(prefs.deletion_priority)
+        return DeletionPriority.PRESERVE_OUTPUTS
 
     @staticmethod
-    def update_deletion_priority(db: Session, user_id: int, priority: str) -> None:
+    def update_deletion_priority(
+        db: Session, user_id: int, priority: DeletionPriority
+    ) -> None:
         """Upsert user's deletion priority preference into UserPreferences."""
         prefs = (
             db.query(UserPreferences).filter(UserPreferences.user_id == user_id).first()

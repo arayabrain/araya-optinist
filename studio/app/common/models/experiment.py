@@ -2,6 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Optional
 
+from sqlalchemy import Boolean
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import Integer, Text
 from sqlalchemy.dialects.mysql import BIGINT
@@ -81,6 +82,51 @@ class ExperimentRecord(Base, TimestampMixin, table=True):
             comment="Version number for optimistic locking",
         ),
         default=0,
+    )
+
+    # Data existence flags — set True on workflow completion, cleared by deletion job
+    has_intermediates: bool = Field(
+        sa_column=Column(
+            Boolean,
+            nullable=False,
+            default=True,
+            server_default="1",
+            comment="Whether intermediate data (function subdirs) exists",
+        ),
+        default=True,
+    )
+    has_outputs: bool = Field(
+        sa_column=Column(
+            Boolean,
+            nullable=False,
+            default=True,
+            server_default="1",
+            comment="Whether output data (root-level non-YAML) exists",
+        ),
+        default=True,
+    )
+    # Note: has_inputs is a workspace-level property stored on each experiment
+    # row for query convenience. The deletion job clears it on all experiments
+    # in a workspace when workspace inputs are deleted.
+    has_inputs: bool = Field(
+        sa_column=Column(
+            Boolean,
+            nullable=False,
+            default=True,
+            server_default="1",
+            comment="Whether input data for this experiment's workspace exists",
+        ),
+        default=True,
+    )
+    has_nwb: bool = Field(
+        sa_column=Column(
+            Boolean,
+            nullable=False,
+            default=False,
+            server_default="0",
+            comment="Whether NWB file exists (DB-authoritative, replaces YAML hasNWB)",
+        ),
+        default=False,
     )
 
     # Deletion error tracking

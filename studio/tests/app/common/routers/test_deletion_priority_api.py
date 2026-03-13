@@ -25,8 +25,10 @@ def mock_db():
 
 @pytest.fixture(autouse=True)
 def cleanup_overrides():
+    original_overrides = app.dependency_overrides.copy()
     yield
     app.dependency_overrides.clear()
+    app.dependency_overrides.update(original_overrides)
 
 
 @pytest.fixture

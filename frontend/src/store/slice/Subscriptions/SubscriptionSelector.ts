@@ -25,6 +25,11 @@ export const selectSubscriptionExpirationDate = (state: RootState) => {
   return userSubscription?.expiration
 }
 
+export const selectDeletionPriority = (state: RootState) =>
+  state.subscription.deletionPriority
+export const selectDeletionPriorityLoading = (state: RootState) =>
+  state.subscription.deletionPriorityLoading
+
 export const selectCurrentPlanId = (state: RootState) => {
   const userSubscription = selectUserSubscription(state)
   const isExpired = selectIsSubscriptionExpired(state)

@@ -85,7 +85,6 @@ class TestProcessUser:
         await ExpirationLifecycleJob._process_user(user_info, "test-bucket")
         mock_mark.assert_called_once()
 
-    @patch.object(ExpirationLifecycleJob, "_mark_experiments_purged")
     @patch(f"{MODULE}.SubscriptionService.mark_deletion_processed")
     @patch.object(ExpirationLifecycleJob, "_execute_deletion", new_callable=AsyncMock)
     @patch(f"{MODULE}.SubscriptionService.has_active_workflows", return_value=False)
@@ -129,7 +128,6 @@ class TestProcessUser:
         mock_workflows,
         mock_execute,
         mock_mark,
-        mock_mark_purged,
     ):
         mock_scope_obj, _ = _mock_session_scope()
         mock_scope.side_effect = mock_scope_obj.side_effect
@@ -140,7 +138,6 @@ class TestProcessUser:
             "failed": 0,
             "bytes_deleted": 5000,
             "aborted": False,
-            "purged_uids": {"abc"},
         }
 
         user_info = {
@@ -264,7 +261,6 @@ class TestProcessUser:
             "failed": 2,
             "bytes_deleted": 1000,
             "aborted": False,
-            "purged_uids": set(),
         }
 
         user_info = {
@@ -274,7 +270,6 @@ class TestProcessUser:
         await ExpirationLifecycleJob._process_user(user_info, "test-bucket")
         mock_mark.assert_not_called()
 
-    @patch.object(ExpirationLifecycleJob, "_mark_experiments_purged")
     @patch(f"{MODULE}.SubscriptionService.mark_deletion_processed")
     @patch.object(ExpirationLifecycleJob, "_execute_deletion", new_callable=AsyncMock)
     @patch(f"{MODULE}.SubscriptionService.has_active_workflows", return_value=False)
@@ -314,7 +309,6 @@ class TestProcessUser:
         mock_workflows,
         mock_execute,
         mock_mark,
-        mock_mark_purged,
     ):
         """Target met despite some failures DOES mark user as processed."""
         mock_scope_obj, _ = _mock_session_scope()
@@ -326,7 +320,6 @@ class TestProcessUser:
             "failed": 2,
             "bytes_deleted": 10000,
             "aborted": False,
-            "purged_uids": {"abc"},
         }
 
         user_info = {
@@ -441,7 +434,7 @@ class TestExecuteDeletion:
 
         call_tiers = []
 
-        async def track_delete(user_id, bucket, tier, item, run_id):
+        async def track_delete(user_id, bucket, tier, item, run_id, remaining_bytes=0):
             call_tiers.append(tier)
             return 100
 
@@ -491,7 +484,7 @@ class TestExecuteDeletion:
 
         call_tiers = []
 
-        async def track_delete(user_id, bucket, tier, item, run_id):
+        async def track_delete(user_id, bucket, tier, item, run_id, remaining_bytes=0):
             call_tiers.append(tier)
             return 100
 
@@ -540,7 +533,7 @@ class TestExecuteDeletion:
 
         deleted_uids = []
 
-        async def track_delete(user_id, bucket, tier, item, run_id):
+        async def track_delete(user_id, bucket, tier, item, run_id, remaining_bytes=0):
             if hasattr(item, "uid"):
                 deleted_uids.append(item.uid)
             return 100
@@ -585,7 +578,9 @@ class TestExecuteDeletion:
 
         call_count = 0
 
-        async def fail_then_succeed(user_id, bucket, tier, item, run_id):
+        async def fail_then_succeed(
+            user_id, bucket, tier, item, run_id, remaining_bytes=0
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -598,6 +593,7 @@ class TestExecuteDeletion:
             patch.object(
                 ExpirationLifecycleJob, "_delete_unit", side_effect=fail_then_succeed
             ),
+            patch.object(ExpirationLifecycleJob, "_update_data_flags"),
             patch(f"{MODULE}.aioboto3.Session", return_value=mock_session),
         ):
             result = await ExpirationLifecycleJob._execute_deletion(
@@ -616,8 +612,8 @@ class TestExecuteDeletion:
         assert result["succeeded"] == 3
 
     @pytest.mark.asyncio
-    async def test_tracks_purged_uids(self):
-        """purged_uids should contain UIDs of successfully deleted experiments."""
+    async def test_calls_update_data_flags(self):
+        """_update_data_flags should be called after successful deletion."""
         experiments = [
             _ExperimentInfo(
                 workspace_id=1,
@@ -636,9 +632,13 @@ class TestExecuteDeletion:
                 new_callable=AsyncMock,
                 return_value=500,
             ),
+            patch.object(
+                ExpirationLifecycleJob,
+                "_update_data_flags",
+            ) as mock_flags,
             patch(f"{MODULE}.aioboto3.Session", return_value=mock_session),
         ):
-            result = await ExpirationLifecycleJob._execute_deletion(
+            await ExpirationLifecycleJob._execute_deletion(
                 user_id=1,
                 bucket_name="test-bucket",
                 experiments=experiments,
@@ -648,13 +648,13 @@ class TestExecuteDeletion:
                 run_id="test_run",
             )
 
-        assert "exp1" in result["purged_uids"]
+        assert mock_flags.call_count > 0
 
 
 class TestDeleteUnit:
     @pytest.mark.asyncio
-    async def test_partial_batch_failure_returns_partial_bytes(self):
-        """Partial S3 batch failure decrements only successfully deleted bytes."""
+    async def test_per_file_failure_continues(self):
+        """Per-file S3 failure should skip that file and continue."""
         mock_bucket = MagicMock()
         call_count = 0
 
@@ -662,12 +662,11 @@ class TestDeleteUnit:
             nonlocal call_count
             call_count += 1
             if call_count == 2:
-                raise RuntimeError("S3 batch error")
+                raise RuntimeError("S3 error on file 2")
 
         mock_bucket.delete_objects = mock_delete_objects
 
-        # 1500 keys across 2 batches
-        keys_with_sizes = [(f"key_{i}", 100) for i in range(1500)]
+        keys_with_sizes = [(f"prefix/key_{i}", 100) for i in range(3)]
 
         with (
             patch.object(
@@ -677,7 +676,9 @@ class TestDeleteUnit:
                 return_value=keys_with_sizes,
             ),
             patch(f"{MODULE}.decrement_storage_idempotent") as mock_decrement,
+            patch(f"{MODULE}.DIRPATH") as mock_dirpath,
         ):
+            mock_dirpath.OUTPUT_DIR = "/app/output"
             exp = _ExperimentInfo(
                 workspace_id=1, uid="exp1", is_published=False, analyzed_at=None
             )
@@ -687,13 +688,12 @@ class TestDeleteUnit:
                 tier=_DeletionTier.INTERMEDIATES,
                 item=exp,
                 run_id="test_run",
+                remaining_bytes=999999,
             )
 
-        # First batch (1000 keys) succeeds, second fails
-        assert result == 100000  # 1000 * 100
-        mock_decrement.assert_called_once_with(
-            1, 100000, pytest.approx(mock_decrement.call_args[0][2])
-        )
+        # File 1 and 3 succeed (200 bytes), file 2 fails
+        assert result == 200
+        mock_decrement.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_no_such_bucket_returns_zero(self):
@@ -704,7 +704,7 @@ class TestDeleteUnit:
             def __init__(self):
                 self.response = {"Error": {"Code": "NoSuchBucket"}}
 
-        keys_with_sizes = [("key1", 100)]
+        keys_with_sizes = [("prefix/key1", 100)]
 
         async def mock_delete_objects(**kwargs):
             raise FakeS3Error()
@@ -720,7 +720,9 @@ class TestDeleteUnit:
             ),
             patch(f"{MODULE}.is_no_such_bucket_error", return_value=True),
             patch(f"{MODULE}.decrement_storage_idempotent") as mock_decrement,
+            patch(f"{MODULE}.DIRPATH") as mock_dirpath,
         ):
+            mock_dirpath.OUTPUT_DIR = "/app/output"
             exp = _ExperimentInfo(
                 workspace_id=1, uid="exp1", is_published=False, analyzed_at=None
             )
@@ -730,6 +732,7 @@ class TestDeleteUnit:
                 tier=_DeletionTier.INTERMEDIATES,
                 item=exp,
                 run_id="test_run",
+                remaining_bytes=999999,
             )
 
         assert result == 0
@@ -812,19 +815,52 @@ class TestHasActiveWorkflows:
         assert SubscriptionService.has_active_workflows(mock_db, 1) is False
 
 
-class TestMarkExperimentsPurged:
-    def test_marks_purged_experiments(self):
-        """data_purged marker should be set on experiment records."""
-        mock_db = MagicMock()
-        mock_query = MagicMock()
-        mock_db.query.return_value.filter.return_value = mock_query
+class TestUpdateDataFlags:
+    @patch(f"{MODULE}.session_scope")
+    def test_clears_intermediates_flag(self, mock_scope):
+        """INTERMEDIATES tier should clear has_intermediates on the experiment."""
+        mock_scope_obj, mock_db = _mock_session_scope()
+        mock_scope.side_effect = mock_scope_obj.side_effect
+        mock_scope.return_value = mock_scope_obj.return_value
 
-        ExpirationLifecycleJob._mark_experiments_purged(mock_db, ["uid1", "uid2"])
+        item = _ExperimentInfo(
+            workspace_id=1, uid="exp1", is_published=False, analyzed_at=None
+        )
+        ExpirationLifecycleJob._update_data_flags(
+            _DeletionTier.INTERMEDIATES, item, 1000
+        )
+        mock_db.query.return_value.filter.return_value.update.assert_called_once()
 
-        mock_query.update.assert_called_once()
-        # No explicit commit — caller's session_scope handles it
+    @patch(f"{MODULE}.session_scope")
+    def test_clears_outputs_and_nwb_flags(self, mock_scope):
+        """OUTPUTS tier should clear has_outputs and has_nwb."""
+        mock_scope_obj, mock_db = _mock_session_scope()
+        mock_scope.side_effect = mock_scope_obj.side_effect
+        mock_scope.return_value = mock_scope_obj.return_value
 
-    def test_skips_empty_list(self):
-        mock_db = MagicMock()
-        ExpirationLifecycleJob._mark_experiments_purged(mock_db, [])
-        mock_db.query.assert_not_called()
+        item = _ExperimentInfo(
+            workspace_id=1, uid="exp1", is_published=False, analyzed_at=None
+        )
+        ExpirationLifecycleJob._update_data_flags(_DeletionTier.OUTPUTS, item, 1000)
+        mock_db.query.return_value.filter.return_value.update.assert_called_once()
+
+    @patch(f"{MODULE}.session_scope")
+    def test_clears_inputs_flag_workspace_wide(self, mock_scope):
+        """INPUTS tier should clear has_inputs on all experiments in workspace."""
+        mock_scope_obj, mock_db = _mock_session_scope()
+        mock_scope.side_effect = mock_scope_obj.side_effect
+        mock_scope.return_value = mock_scope_obj.return_value
+
+        item = _WorkspaceInputInfo(
+            workspace_id=1, has_published_experiments=False, created_at=None
+        )
+        ExpirationLifecycleJob._update_data_flags(_DeletionTier.INPUTS, item, 1000)
+        mock_db.query.return_value.filter.return_value.update.assert_called_once()
+
+    def test_skips_when_no_bytes_deleted(self):
+        """Should not update flags when bytes_deleted is 0."""
+        item = _ExperimentInfo(
+            workspace_id=1, uid="exp1", is_published=False, analyzed_at=None
+        )
+        # Should not raise or open a session
+        ExpirationLifecycleJob._update_data_flags(_DeletionTier.INTERMEDIATES, item, 0)

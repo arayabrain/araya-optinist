@@ -15,8 +15,11 @@ import { Edit } from "@mui/icons-material"
 import {
   Box,
   Button,
+  FormControl,
   IconButton,
   Input,
+  MenuItem,
+  Select,
   styled,
   Typography,
 } from "@mui/material"
@@ -26,9 +29,19 @@ import { isRejectedWithValue } from "@reduxjs/toolkit"
 import ChangePasswordModal from "components/Account/ChangePasswordModal"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
-import { PlanName, SubscriptionUserStatus } from "const/Subscription"
-import { getUserSubscription } from "store/slice/Subscriptions/SubscriptionActions"
 import {
+  DeletionPriority,
+  PlanName,
+  SubscriptionUserStatus,
+} from "const/Subscription"
+import {
+  getDeletionPriority,
+  getUserSubscription,
+  updateDeletionPriority,
+} from "store/slice/Subscriptions/SubscriptionActions"
+import {
+  selectDeletionPriority,
+  selectDeletionPriorityLoading,
   selectUserSubscription,
   selectUserSubscriptionLoading,
 } from "store/slice/Subscriptions/SubscriptionSelector"
@@ -47,6 +60,8 @@ const Account = () => {
   const loading = useSelector(selectLoading)
   const userSubscription = useSelector(selectUserSubscription)
   const subscriptionLoading = useSelector(selectUserSubscriptionLoading)
+  const deletionPriority = useSelector(selectDeletionPriority)
+  const deletionPriorityLoading = useSelector(selectDeletionPriorityLoading)
 
   const dispatch = useDispatch<AppDispatch>()
   const navigate = useNavigate()
@@ -73,9 +88,10 @@ const Account = () => {
     if (!user) return
     setIsName(user.name)
 
-    // Fetch user subscription when user is loaded
+    // Fetch user subscription and deletion priority when user is loaded
     if (user.id) {
       dispatch(getUserSubscription())
+      dispatch(getDeletionPriority())
     }
   }, [user, dispatch])
 
@@ -385,6 +401,38 @@ const Account = () => {
           {getExpirationInfo()}
         </Box>
         {renderSubscriptionButtons()}
+      </BoxFlex>
+      <BoxFlex>
+        <TitleData>Data Deletion Priority</TitleData>
+        <FormControl size="small" sx={{ minWidth: 200 }}>
+          <Select
+            value={deletionPriority || DeletionPriority.PRESERVE_OUTPUTS}
+            disabled={deletionPriorityLoading}
+            onChange={async (e) => {
+              const result = await dispatch(
+                updateDeletionPriority(e.target.value as string),
+              )
+              if (isRejectedWithValue(result)) {
+                handleClickVariant(
+                  "error",
+                  "Failed to update deletion priority",
+                )
+              } else {
+                handleClickVariant(
+                  "success",
+                  "Deletion priority updated successfully",
+                )
+              }
+            }}
+          >
+            <MenuItem value={DeletionPriority.PRESERVE_OUTPUTS}>
+              Preserve Outputs
+            </MenuItem>
+            <MenuItem value={DeletionPriority.PRESERVE_INPUTS}>
+              Preserve Inputs
+            </MenuItem>
+          </Select>
+        </FormControl>
       </BoxFlex>
       <BoxFlex sx={{ justifyContent: "space-between", mt: 10, maxWidth: 600 }}>
         <Button variant="contained" color="primary" onClick={onChangePwClick}>

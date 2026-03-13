@@ -2,14 +2,15 @@
 Background job for expiration lifecycle deletion.
 
 Runs daily. Finds users past the grace period whose storage exceeds
-the free-tier quota, then enumerates and deletes S3 data in priority
-order until storage is within the free-tier quota.
+the free-tier quota, then enumerates and deletes data (both S3 and
+local) in priority order until storage is within the free-tier quota.
 
 Deletion is streamed one unit at a time to limit memory usage.
 """
 
 import asyncio
 import os
+import shutil
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,9 +29,9 @@ from studio.app.common.core.storage.s3_storage_controller import (
 from studio.app.common.core.subscription.constants import (
     DeletionPriority,
     ExpirationDeletion,
-    S3Pagination,
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
+from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.db.database import session_scope
 from studio.app.common.models.experiment import ExperimentRecord
 from studio.app.common.models.workspace import Workspace
@@ -77,7 +78,8 @@ class ExpirationLifecycleJob:
             bucket_name = getattr(DIRPATH, "DATA_BUCKET_NAME", None)
             if not bucket_name:
                 logger.warning(
-                    "No remote bucket configured, skipping expiration lifecycle"
+                    "No remote bucket configured, skipping expiration lifecycle. "
+                    "Local-only cleanup is handled by DataCleanupJob."
                 )
                 return
 
@@ -171,11 +173,8 @@ class ExpirationLifecycleJob:
 
         # Only mark processed if deletion fully succeeded or target met
         if result["failed"] == 0 or result["bytes_deleted"] >= excess_bytes:
-            purged_uids = list(result.get("purged_uids", set()))
             with session_scope() as db:
                 SubscriptionService.mark_deletion_processed(db, user_id)
-                if purged_uids:
-                    cls._mark_experiments_purged(db, purged_uids)
         else:
             logger.warning(
                 f"Partial failure for user {user_id}: "
@@ -193,17 +192,45 @@ class ExpirationLifecycleJob:
         )
 
     @classmethod
-    def _mark_experiments_purged(cls, db, purged_uids: List[str]):
-        """Mark experiments as data-purged after successful S3 deletion.
+    def _update_data_flags(
+        cls,
+        tier: _DeletionTier,
+        item: Union[_ExperimentInfo, _WorkspaceInputInfo],
+        bytes_deleted: int,
+    ):
+        """Clear data-existence flags on experiment records after tier deletion.
 
-        Note: Caller is responsible for committing (e.g. via session_scope).
+        For INPUTS tier, all experiments in the workspace are marked
+        ``has_inputs=False`` even if deletion stopped early (byte target
+        reached).  This is intentional: workspace inputs are shared across
+        experiments, so partial deletion makes the input directory unreliable
+        for every experiment in that workspace.
         """
-        if not purged_uids:
+        if bytes_deleted <= 0:
             return
-        db.query(ExperimentRecord).filter(ExperimentRecord.uid.in_(purged_uids)).update(
-            {"deletion_error": ExpirationDeletion.DATA_PURGED_MARKER},
-            synchronize_session="fetch",
-        )
+
+        with session_scope() as db:
+            if tier == _DeletionTier.INTERMEDIATES:
+                db.query(ExperimentRecord).filter(
+                    ExperimentRecord.uid == item.uid,
+                ).update(
+                    {"has_intermediates": False},
+                    synchronize_session="fetch",
+                )
+            elif tier == _DeletionTier.OUTPUTS:
+                db.query(ExperimentRecord).filter(
+                    ExperimentRecord.uid == item.uid,
+                ).update(
+                    {"has_outputs": False, "has_nwb": False},
+                    synchronize_session="fetch",
+                )
+            elif tier == _DeletionTier.INPUTS:
+                db.query(ExperimentRecord).filter(
+                    ExperimentRecord.workspace_id == item.workspace_id,
+                ).update(
+                    {"has_inputs": False},
+                    synchronize_session="fetch",
+                )
 
     @classmethod
     def _fetch_user_data(
@@ -227,10 +254,11 @@ class ExpirationLifecycleJob:
                 db.query(ExperimentRecord)
                 .filter(
                     ExperimentRecord.workspace_id == ws.id,
+                    # Only consider experiments that still have deletable data
                     db_or(
-                        ExperimentRecord.deletion_error.is_(None),
-                        ExperimentRecord.deletion_error
-                        != ExpirationDeletion.DATA_PURGED_MARKER,
+                        ExperimentRecord.has_intermediates == True,  # noqa: E712
+                        ExperimentRecord.has_outputs == True,  # noqa: E712
+                        ExperimentRecord.has_inputs == True,  # noqa: E712
                     ),
                 )
                 .order_by(ExperimentRecord.analyzed_at.asc().nulls_first())
@@ -268,7 +296,7 @@ class ExpirationLifecycleJob:
         bucket_name: str,
         experiments: List[_ExperimentInfo],
         workspace_inputs: List[_WorkspaceInputInfo],
-        priority: str,
+        priority: DeletionPriority,
         target_bytes: int,
         run_id: str,
     ) -> dict:
@@ -294,24 +322,23 @@ class ExpirationLifecycleJob:
             "failed": 0,
             "bytes_deleted": 0,
             "aborted": False,
-            "purged_uids": set(),
         }
         accumulated = 0
         units_processed = 0
 
         # Determine tier ordering based on priority
-        if priority == DeletionPriority.PRESERVE_INPUTS.value:
+        if priority == DeletionPriority.PRESERVE_INPUTS:
             tier_order = [
-                (_DeletionTier.INTERMEDIATES, experiments),
-                (_DeletionTier.OUTPUTS, experiments),
-                (_DeletionTier.INPUTS, workspace_inputs),
+                _DeletionTier.INTERMEDIATES,
+                _DeletionTier.OUTPUTS,
+                _DeletionTier.INPUTS,
             ]
         else:
             # Default: preserve_outputs
             tier_order = [
-                (_DeletionTier.INTERMEDIATES, experiments),
-                (_DeletionTier.INPUTS, workspace_inputs),
-                (_DeletionTier.OUTPUTS, experiments),
+                _DeletionTier.INTERMEDIATES,
+                _DeletionTier.INPUTS,
+                _DeletionTier.OUTPUTS,
             ]
 
         sorted_experiments = sorted(
@@ -329,7 +356,7 @@ class ExpirationLifecycleJob:
         async with aioboto3.Session().resource("s3") as s3_resource:
             bucket = await s3_resource.Bucket(bucket_name)
 
-            for tier, items in tier_order:
+            for tier in tier_order:
                 if accumulated >= target_bytes:
                     break
 
@@ -361,18 +388,18 @@ class ExpirationLifecycleJob:
 
                     try:
                         bytes_deleted = await cls._delete_unit(
-                            user_id, bucket, tier, item, run_id
+                            user_id,
+                            bucket,
+                            tier,
+                            item,
+                            run_id,
+                            remaining_bytes=target_bytes - accumulated,
                         )
                         result["succeeded"] += 1
                         result["bytes_deleted"] += bytes_deleted
                         accumulated += bytes_deleted
 
-                        if (
-                            tier == _DeletionTier.OUTPUTS
-                            and hasattr(item, "uid")
-                            and bytes_deleted > 0
-                        ):
-                            result["purged_uids"].add(item.uid)
+                        cls._update_data_flags(tier, item, bytes_deleted)
                     except Exception as e:
                         logger.error(
                             f"Deletion failed for user {user_id}, "
@@ -390,21 +417,30 @@ class ExpirationLifecycleJob:
         tier: _DeletionTier,
         item: Union[_ExperimentInfo, _WorkspaceInputInfo],
         run_id: str,
+        remaining_bytes: int,
     ) -> int:
         """
-        Enumerate S3 keys for a single unit and delete them.
+        Enumerate S3 keys for a single unit and delete them one at a time.
 
-        Returns bytes deleted.
+        Each file is deleted from S3, then the corresponding local copy is
+        removed, before moving to the next file. Stops early once
+        remaining_bytes of data has been freed.
+
+        Returns total bytes deleted.
         """
         if tier == _DeletionTier.INPUTS:
             prefix = S3StorageController.make_s3_input_prefix(
                 workspace_id=str(item.workspace_id)
             )
+            local_base = join_filepath([DIRPATH.INPUT_DIR, str(item.workspace_id)])
             keys_with_sizes = await cls._list_all_objects(bucket, prefix)
         else:
             prefix = S3StorageController.make_s3_output_prefix(
                 workspace_id=str(item.workspace_id),
                 unique_id=item.uid,
+            )
+            local_base = join_filepath(
+                [DIRPATH.OUTPUT_DIR, str(item.workspace_id), item.uid]
             )
             keys_with_sizes = await cls._list_experiment_objects(bucket, prefix, tier)
 
@@ -417,27 +453,32 @@ class ExpirationLifecycleJob:
 
         total_deleted_bytes = 0
 
-        for i in range(0, len(keys_with_sizes), S3Pagination.PAGE_SIZE):
-            batch = keys_with_sizes[i : i + S3Pagination.PAGE_SIZE]
-            batch_keys = [{"Key": key} for key, _ in batch]
-            batch_bytes = sum(size for _, size in batch)
-
+        for s3_key, size in keys_with_sizes:
+            # Delete from S3
             try:
                 await bucket.delete_objects(
-                    Delete={"Objects": batch_keys, "Quiet": True}
+                    Delete={"Objects": [{"Key": s3_key}], "Quiet": True}
                 )
-                total_deleted_bytes += batch_bytes
             except Exception as e:
                 if is_no_such_bucket_error(e):
                     logger.warning(
-                        f"Bucket does not exist, skipping deletion for {prefix}"
+                        f"Bucket does not exist, stopping deletion for {prefix}"
                     )
                     break
-                logger.error(
-                    f"Batch deletion failed for {prefix} "
-                    f"(batch {i // S3Pagination.PAGE_SIZE}): {e}"
-                )
-                break  # Stop further batches on failure
+                logger.error(f"S3 deletion failed for key {s3_key}: {e}")
+                continue  # Skip this file, try next
+
+            total_deleted_bytes += size
+
+            # Delete corresponding local file
+            relative_path = s3_key[len(prefix) :]
+            if relative_path:
+                local_path = join_filepath([local_base, relative_path])
+                cls._delete_local_file(local_path, user_id)
+
+            # Check if we've freed enough
+            if total_deleted_bytes >= remaining_bytes:
+                break
 
         if total_deleted_bytes > 0:
             decrement_storage_idempotent(user_id, total_deleted_bytes, idempotency_key)
@@ -448,6 +489,19 @@ class ExpirationLifecycleJob:
         )
 
         return total_deleted_bytes
+
+    @staticmethod
+    def _delete_local_file(local_path: str, user_id: int):
+        """Delete a single local file. Best-effort — logs but does not raise."""
+        try:
+            if os.path.isfile(local_path):
+                os.remove(local_path)
+            elif os.path.isdir(local_path):
+                shutil.rmtree(local_path)
+        except Exception as e:
+            logger.warning(
+                f"Failed to delete local file for user {user_id}: " f"{local_path}: {e}"
+            )
 
     @classmethod
     async def _list_experiment_objects(
