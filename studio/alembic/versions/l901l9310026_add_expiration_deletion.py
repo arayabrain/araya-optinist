@@ -1,13 +1,9 @@
 """add_expiration_deletion
 
-Add user_preferences table for deletion priority and
-deletion_processed_at column to subscription_users for lifecycle management.
-
-Tables created:
-- user_preferences: Stores user deletion priority preference
-
-Columns added to subscription_users:
-- deletion_processed_at: Timestamp when deletion was completed
+Add infrastructure for expiration lifecycle deletion:
+- user_preferences table for deletion priority preference
+- deletion_processed_at column on subscription_users for lifecycle tracking
+- Data existence flag columns on experiment_records for per-tier status
 
 Revision ID: l901l9310026
 Revises: 33e781982125
@@ -25,6 +21,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # --- user_preferences table ---
     op.create_table(
         "user_preferences",
         sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
@@ -58,6 +55,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_user_preferences_user_id", "user_preferences", ["user_id"])
 
+    # --- subscription_users: deletion tracking ---
     op.add_column(
         "subscription_users",
         sa.Column(
@@ -67,8 +65,54 @@ def upgrade() -> None:
         ),
     )
 
+    # --- experiment_records: data existence flags ---
+    op.add_column(
+        "experiment_records",
+        sa.Column(
+            "has_intermediates",
+            sa.Boolean(),
+            nullable=False,
+            server_default="1",
+            comment="Whether intermediate data (function subdirs) exists",
+        ),
+    )
+    op.add_column(
+        "experiment_records",
+        sa.Column(
+            "has_outputs",
+            sa.Boolean(),
+            nullable=False,
+            server_default="1",
+            comment="Whether output data (root-level non-YAML) exists",
+        ),
+    )
+    op.add_column(
+        "experiment_records",
+        sa.Column(
+            "has_inputs",
+            sa.Boolean(),
+            nullable=False,
+            server_default="1",
+            comment="Whether input data for this experiment's workspace exists",
+        ),
+    )
+    op.add_column(
+        "experiment_records",
+        sa.Column(
+            "has_nwb",
+            sa.Boolean(),
+            nullable=False,
+            server_default="0",
+            comment="Whether NWB file exists (DB-authoritative, replaces YAML hasNWB)",
+        ),
+    )
+
 
 def downgrade() -> None:
+    op.drop_column("experiment_records", "has_nwb")
+    op.drop_column("experiment_records", "has_inputs")
+    op.drop_column("experiment_records", "has_outputs")
+    op.drop_column("experiment_records", "has_intermediates")
     op.drop_column("subscription_users", "deletion_processed_at")
     op.drop_index("ix_user_preferences_user_id", table_name="user_preferences")
     op.drop_table("user_preferences")
