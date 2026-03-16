@@ -13,6 +13,7 @@ Create Date: 2026-03-11 10:00:00.000000
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects.mysql import BIGINT
 
 revision = "l901l9310026"
 down_revision = "33e781982125"
@@ -24,8 +25,8 @@ def upgrade() -> None:
     # --- user_preferences table ---
     op.create_table(
         "user_preferences",
-        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
-        sa.Column("user_id", sa.BigInteger(), nullable=False),
+        sa.Column("id", BIGINT(unsigned=True), autoincrement=True, nullable=False),
+        sa.Column("user_id", BIGINT(unsigned=True), nullable=False),
         sa.Column(
             "deletion_priority",
             sa.Enum(

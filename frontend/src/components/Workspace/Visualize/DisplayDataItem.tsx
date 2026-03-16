@@ -68,7 +68,9 @@ export const DisplayDataItem = memo(function DisplayDataItem({
  * Path format: "{nodeId}/{workspaceId}/{uniqueId}/{nodeId}/filename"
  * (set in FilePathSelect, which prepends nodeId to the normalized output path).
  */
-function getExperimentUidFromFilePath(filePath: string | undefined): string {
+function getExperimentUidFromFilePath(
+  filePath: string | null | undefined,
+): string {
   if (!filePath) return ""
   const segments = filePath.split("/")
   return segments.length >= 3 ? segments[2] : ""

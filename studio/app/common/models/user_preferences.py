@@ -1,8 +1,9 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import BIGINT, TIMESTAMP
+from sqlalchemy import TIMESTAMP
 from sqlalchemy import Enum as SQLEnum
+from sqlalchemy.dialects.mysql import BIGINT
 from sqlalchemy.sql import func
 from sqlalchemy.sql.functions import current_timestamp
 from sqlmodel import Column, Field, ForeignKey, SQLModel
@@ -14,12 +15,18 @@ class UserPreferences(SQLModel, table=True):
     __tablename__ = "user_preferences"
 
     id: Optional[int] = Field(
-        sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
+        sa_column=Column(
+            BIGINT(unsigned=True), primary_key=True, nullable=False, autoincrement=True
+        ),
         default=None,
     )
     user_id: int = Field(
         sa_column=Column(
-            BIGINT, ForeignKey("users.id"), nullable=False, unique=True, index=True
+            BIGINT(unsigned=True),
+            ForeignKey("users.id"),
+            nullable=False,
+            unique=True,
+            index=True,
         ),
     )
     deletion_priority: Optional[str] = Field(

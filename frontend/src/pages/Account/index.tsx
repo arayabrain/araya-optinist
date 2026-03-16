@@ -70,6 +70,7 @@ const Account = () => {
     useState(false)
   const [isChangePwModalOpen, setIsChangePwModalOpen] = useState(false)
   const [isEditName, setIsEditName] = useState(false)
+  const [isEditDeletionPriority, setIsEditDeletionPriority] = useState(false)
   const [isName, setIsName] = useState<string>()
 
   const ref = useRef<HTMLInputElement>(null)
@@ -404,36 +405,62 @@ const Account = () => {
       </BoxFlex>
       <BoxFlex>
         <TitleData>Data Deletion Priority</TitleData>
-        <FormControl size="small" sx={{ minWidth: 200 }}>
-          <Select
-            value={deletionPriority || DeletionPriority.PRESERVE_OUTPUTS}
-            disabled={deletionPriorityLoading}
-            onChange={async (e) => {
-              const result = await dispatch(
-                updateDeletionPriority(e.target.value as string),
-              )
-              if (isRejectedWithValue(result)) {
-                handleClickVariant(
-                  "error",
-                  "Failed to update deletion priority",
+        {isEditDeletionPriority ? (
+          <FormControl size="small" sx={{ minWidth: 200 }}>
+            <Select
+              value={deletionPriority || DeletionPriority.PRESERVE_OUTPUTS}
+              disabled={deletionPriorityLoading}
+              autoFocus
+              onBlur={() => setIsEditDeletionPriority(false)}
+              onChange={async (e) => {
+                const result = await dispatch(
+                  updateDeletionPriority(e.target.value as string),
                 )
-              } else {
-                handleClickVariant(
-                  "success",
-                  "Deletion priority updated successfully",
-                )
-              }
-            }}
-          >
-            <MenuItem value={DeletionPriority.PRESERVE_OUTPUTS}>
-              Preserve Outputs
-            </MenuItem>
-            <MenuItem value={DeletionPriority.PRESERVE_INPUTS}>
-              Preserve Inputs
-            </MenuItem>
-          </Select>
-        </FormControl>
+                if (isRejectedWithValue(result)) {
+                  handleClickVariant(
+                    "error",
+                    "Failed to update deletion priority",
+                  )
+                } else {
+                  handleClickVariant(
+                    "success",
+                    "Deletion priority updated successfully",
+                  )
+                }
+                setIsEditDeletionPriority(false)
+              }}
+            >
+              <MenuItem value={DeletionPriority.PRESERVE_OUTPUTS}>
+                Preserve Outputs
+              </MenuItem>
+              <MenuItem value={DeletionPriority.PRESERVE_INPUTS}>
+                Preserve Inputs
+              </MenuItem>
+            </Select>
+          </FormControl>
+        ) : (
+          <>
+            <BoxData>
+              {(deletionPriority || DeletionPriority.PRESERVE_OUTPUTS) ===
+              DeletionPriority.PRESERVE_OUTPUTS
+                ? "Preserve Outputs"
+                : "Preserve Inputs"}
+            </BoxData>
+            <IconButton
+              sx={{ ml: 1 }}
+              onClick={() => setIsEditDeletionPriority(true)}
+              disabled={deletionPriorityLoading}
+            >
+              <Edit />
+            </IconButton>
+          </>
+        )}
       </BoxFlex>
+      <Typography variant="caption" color="text.secondary" sx={{ ml: "250px" }}>
+        Controls which data is kept when expired subscription data is cleaned
+        up. &quot;Preserve Outputs&quot; keeps workflow results; &quot;Preserve
+        Inputs&quot; keeps uploaded source files.
+      </Typography>
       <BoxFlex sx={{ justifyContent: "space-between", mt: 10, maxWidth: 600 }}>
         <Button variant="contained" color="primary" onClick={onChangePwClick}>
           Change Password
