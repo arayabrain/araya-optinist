@@ -1,6 +1,8 @@
 import { memo } from "react"
 import { useSelector } from "react-redux"
 
+import Typography from "@mui/material/Typography"
+
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
 import { BarPlot } from "components/Workspace/Visualize/Plot/BarPlot"
 import { CsvPlot } from "components/Workspace/Visualize/Plot/CsvPlot"
@@ -15,10 +17,12 @@ import { RoiPlot } from "components/Workspace/Visualize/Plot/RoiPlot"
 import { ScatterPlot } from "components/Workspace/Visualize/Plot/ScatterPlot"
 import { StructuredFilePlot } from "components/Workspace/Visualize/Plot/StructuredFilePlot"
 import { TimeSeriesPlot } from "components/Workspace/Visualize/Plot/TimeSeriesPlot"
+import { ExpirationMessages } from "const/Subscription"
 import {
   DATA_TYPE,
   DATA_TYPE_SET,
 } from "store/slice/DisplayData/DisplayDataType"
+import { selectExperimentHasIntermediates } from "store/slice/Experiments/ExperimentsSelectors"
 import {
   selectVisualizeDataFilePath,
   selectVisualizeDataNodeId,
@@ -35,6 +39,18 @@ export const DisplayDataItem = memo(function DisplayDataItem({
   const filePath = useSelector(selectVisualizeDataFilePath(itemId))
   const nodeId = useSelector(selectVisualizeDataNodeId(itemId))
   const dataType = useSelector(selectVisualizeDataType(itemId))
+  const experimentUid = getExperimentUidFromFilePath(filePath)
+  const hasIntermediates = useSelector(
+    selectExperimentHasIntermediates(experimentUid),
+  )
+
+  if (!hasIntermediates && experimentUid) {
+    return (
+      <Typography color="text.disabled" sx={{ p: 2 }}>
+        {ExpirationMessages.VISUALIZATION_DELETED}
+      </Typography>
+    )
+  }
   if (filePath != null && dataType != null) {
     return (
       <DisplayDataContext.Provider
@@ -47,6 +63,19 @@ export const DisplayDataItem = memo(function DisplayDataItem({
     return <div>Please select item correctly.</div>
   }
 })
+
+/**
+ * Extract experiment UID from a visualize data file path.
+ * Path format: "{nodeId}/{workspaceId}/{uniqueId}/{nodeId}/filename"
+ * (set in FilePathSelect, which prepends nodeId to the normalized output path).
+ */
+function getExperimentUidFromFilePath(
+  filePath: string | null | undefined,
+): string {
+  if (!filePath) return ""
+  const segments = filePath.split("/")
+  return segments.length >= 3 ? segments[2] : ""
+}
 
 interface DataTypeProps {
   dataType: DATA_TYPE

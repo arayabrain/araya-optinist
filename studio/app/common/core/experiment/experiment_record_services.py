@@ -92,6 +92,10 @@ class ExperimentRecordService:
                 exp.thumbnails = dict(thumbnails)
                 exp.success = workflow_success
                 exp.analyzed_at = analyzed_at
+                exp.has_intermediates = True
+                exp.has_outputs = True
+                exp.has_inputs = True
+                exp.has_nwb = experiment_config.hasNWB
 
             except NoResultFound:
                 exp = ExperimentRecord(
@@ -102,6 +106,10 @@ class ExperimentRecordService:
                     thumbnails=dict(thumbnails),
                     success=workflow_success,
                     analyzed_at=analyzed_at,
+                    has_intermediates=True,
+                    has_outputs=True,
+                    has_inputs=True,
+                    has_nwb=experiment_config.hasNWB,
                 )
                 db.add(exp)
 
