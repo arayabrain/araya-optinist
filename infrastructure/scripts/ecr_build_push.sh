@@ -28,7 +28,7 @@ echo "Autoscaling Port: $AUTOSCALING_PORT"
 # 1. Build Autoscaling Image with Frontend
 # ===========================================
 REPO_NAME="optinist-for-cloud"
-IMAGE_TAG="latest"
+IMAGE_TAG=$(terraform -chdir=../terraform output -raw docker_image_tag 2>/dev/null || echo "latest")
 ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO_NAME}"
 
 echo "Building autoscaling image: $ECR_URI"
@@ -97,6 +97,6 @@ echo "Building autoscaling Docker image..."
 docker build -f studio/config/docker/Dockerfile -t $REPO_NAME:$IMAGE_TAG .
 
 # Tag and push to ECR
-docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:latest
-docker push $ECR_URI:latest
-echo "Successfully pushed autoscaling image: $ECR_URI:latest"
+docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:$IMAGE_TAG
+docker push $ECR_URI:$IMAGE_TAG
+echo "Successfully pushed autoscaling image: $ECR_URI:$IMAGE_TAG"

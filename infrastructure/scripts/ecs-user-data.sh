@@ -161,7 +161,7 @@ fi
 echo "$(date): Logging into ECR and pulling pre-built image"
 aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin ${ecr_registry}
 echo "$(date): Pulling OptiNiSt Docker image from ECR"
-docker pull "${ecr_repository_url}:latest" || {
+docker pull "${ecr_repository_url}:${docker_image_tag}" || {
     echo "ERROR: Docker pull failed!"
     exit 1
 }

@@ -189,6 +189,12 @@ variable "ecr_repository_url" {
   type        = string
 }
 
+variable "docker_image_tag" {
+  description = "Docker image tag to deploy (use env-specific tags to isolate dev from prod)"
+  type        = string
+  default     = "latest"
+}
+
 variable "asg_min_size" {
   description = "Minimum number of instances in ASG"
   type        = number
@@ -241,6 +247,12 @@ variable "enable_second_nat" {
 variable "monthly_budget_usd" {
   description = "Monthly cost budget in USD. Alert fires when projected spend exceeds this."
   type        = number
+}
+
+variable "enable_dev_schedule" {
+  description = "Enable scheduled start/stop for dev environment (09:00-22:00 JST Mon-Fri)"
+  type        = bool
+  default     = false
 }
 
 # Data sources
@@ -317,6 +329,11 @@ output "ecs_security_group_id" {
 output "alb_dns_name" {
   description = "ALB DNS name"
   value       = aws_lb.autoscaling.dns_name
+}
+
+output "docker_image_tag" {
+  description = "Docker image tag used by this environment"
+  value       = var.docker_image_tag
 }
 
 output "ecs_cluster_name" {
