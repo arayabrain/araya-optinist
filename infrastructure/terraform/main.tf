@@ -226,6 +226,31 @@ variable "background_instance_type" {
   default     = "t3.micro"
 }
 
+# Public ASG configuration
+variable "public_instance_type" {
+  description = "Instance type for public instances"
+  type        = string
+  default     = "t3.small"
+}
+
+variable "public_asg_min_size" {
+  description = "Minimum number of public instances in ASG"
+  type        = number
+  default     = 1
+}
+
+variable "public_asg_max_size" {
+  description = "Maximum number of public instances in ASG"
+  type        = number
+  default     = 2
+}
+
+variable "public_asg_desired_capacity" {
+  description = "Desired number of public instances in ASG"
+  type        = number
+  default     = 1
+}
+
 # Frontend domain configuration
 variable "frontend_domain" {
   description = "Custom domain name for the frontend application"

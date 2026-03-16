@@ -36,7 +36,7 @@ resource "aws_lb_listener" "autoscaling" {
 
   default_action {
     type             = var.enable_custom_domain ? "redirect" : "forward"
-    target_group_arn = var.enable_custom_domain ? null : aws_lb_target_group.autoscaling.arn
+    target_group_arn = var.enable_custom_domain ? null : aws_lb_target_group.public.arn
 
     dynamic "redirect" {
       for_each = var.enable_custom_domain ? [1] : []
@@ -60,7 +60,7 @@ resource "aws_lb_listener" "autoscaling_https" {
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.autoscaling.arn
+    target_group_arn = aws_lb_target_group.public.arn
   }
 }
 
@@ -445,7 +445,7 @@ resource "aws_ecs_capacity_provider" "main" {
 resource "aws_ecs_cluster_capacity_providers" "main" {
   cluster_name = aws_ecs_cluster.main.name
 
-  capacity_providers = [aws_ecs_capacity_provider.main.name]
+  capacity_providers = [aws_ecs_capacity_provider.main.name, aws_ecs_capacity_provider.public.name]
 
   default_capacity_provider_strategy {
     capacity_provider = aws_ecs_capacity_provider.main.name
@@ -455,9 +455,12 @@ resource "aws_ecs_cluster_capacity_providers" "main" {
 
   depends_on = [
     aws_ecs_capacity_provider.main,
+    aws_ecs_capacity_provider.public,
     aws_autoscaling_group.main,
+    aws_autoscaling_group.public,
     aws_ecs_cluster.main,
-    aws_launch_template.ecs
+    aws_launch_template.ecs,
+    aws_launch_template.public
   ]
 
   lifecycle {
@@ -1030,8 +1033,10 @@ resource "aws_ecs_service" "autoscaling" {
     aws_lb_listener.autoscaling
   ]
 
+  # Target free tier instances only (prevent scheduling on public tier instances)
   placement_constraints {
-    type = "distinctInstance" # Force different instances
+    type       = "memberOf"
+    expression = "attribute:tier == free"
   }
 
   health_check_grace_period_seconds = 900
