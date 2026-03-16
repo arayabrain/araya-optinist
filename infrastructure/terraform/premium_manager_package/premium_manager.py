@@ -1066,8 +1066,9 @@ def create_running_instance():
     ec2: "EC2Client" = boto3.client("ec2")
 
     try:
-        # Get launch template ID from environment
+        # Get launch template ID and instance type from environment
         launch_template_id = get_required_env_var("PREMIUM_LAUNCH_TEMPLATE_ID")
+        instance_type = get_required_env_var("PREMIUM_INSTANCE_TYPE")
 
         # Get subnet IDs from environment
         subnet_ids = get_required_env_var("SUBNET_IDS").split(",")
@@ -1086,7 +1087,7 @@ def create_running_instance():
                         "LaunchTemplateId": launch_template_id,
                         "Version": "$Latest",
                     },
-                    InstanceType="t3.large",
+                    InstanceType=instance_type,
                     SubnetId=subnet_id,
                     MinCount=1,
                     MaxCount=1,
@@ -1312,6 +1313,7 @@ def create_and_stop_standby_instance():
             )
 
             launch_template_id = get_required_env_var("PREMIUM_LAUNCH_TEMPLATE_ID")
+            instance_type = get_required_env_var("PREMIUM_INSTANCE_TYPE")
             subnet_ids = get_required_env_var("SUBNET_IDS").split(",")
 
             instance_id = None
@@ -1329,7 +1331,7 @@ def create_and_stop_standby_instance():
                             "LaunchTemplateId": (launch_template_id),
                             "Version": "$Latest",
                         },
-                        InstanceType="t3.large",
+                        InstanceType=instance_type,
                         SubnetId=subnet_id,
                         MinCount=1,
                         MaxCount=1,

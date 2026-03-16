@@ -17,7 +17,7 @@
 resource "aws_launch_template" "background" {
   name_prefix   = "${local.env_prefix}-background-"
   image_id      = data.aws_ami.ecs_optimized.id
-  instance_type = "t3.micro" # Minimal instance for background jobs
+  instance_type = var.background_instance_type
 
   vpc_security_group_ids = [aws_security_group.ecs.id]
 
@@ -76,7 +76,7 @@ resource "aws_instance" "background" {
     version = "$Latest"
   }
 
-  instance_type = "t3.micro"
+  instance_type = var.background_instance_type
   subnet_id     = aws_subnet.private1.id
 
   tags = {
