@@ -132,6 +132,7 @@ describe("ExperimentTable", () => {
         line: {},
         pie: {},
         polar: {},
+        structured: {},
         loading: false,
         statusRoi: {
           temp_add_roi: [],

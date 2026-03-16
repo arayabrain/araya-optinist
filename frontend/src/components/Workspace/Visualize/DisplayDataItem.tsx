@@ -13,6 +13,7 @@ import { PiePlot } from "components/Workspace/Visualize/Plot/PiePlot"
 import { PolarPlot } from "components/Workspace/Visualize/Plot/PolarPlot"
 import { RoiPlot } from "components/Workspace/Visualize/Plot/RoiPlot"
 import { ScatterPlot } from "components/Workspace/Visualize/Plot/ScatterPlot"
+import { StructuredFilePlot } from "components/Workspace/Visualize/Plot/StructuredFilePlot"
 import { TimeSeriesPlot } from "components/Workspace/Visualize/Plot/TimeSeriesPlot"
 import {
   DATA_TYPE,
@@ -77,6 +78,9 @@ const DisplayPlot = memo(function DisplayPlot({ dataType }: DataTypeProps) {
       return <PiePlot />
     case DATA_TYPE_SET.POLAR:
       return <PolarPlot />
+    case DATA_TYPE_SET.HDF5:
+    case DATA_TYPE_SET.MATLAB:
+      return <StructuredFilePlot />
     default:
       return null
   }
