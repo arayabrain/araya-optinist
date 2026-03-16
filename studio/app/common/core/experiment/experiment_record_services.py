@@ -44,13 +44,15 @@ class ExperimentRecordService:
         input_paths = WorkflowConfigReader.extract_input_file_paths(workflow_config)
 
         # Get original thumbnail paths (TIFF/JSON references)
-        original_thumbnails, hdf5_path, mat_path = (
-            DataviewService.make_dataview_thumnail_paths(
-                workspace_id,
-                unique_id,
-                experiment_config,
-                workflow_config_=workflow_config,
-            )
+        (
+            original_thumbnails,
+            hdf5_path,
+            mat_path,
+        ) = DataviewService.make_dataview_thumnail_paths(
+            workspace_id,
+            unique_id,
+            experiment_config,
+            workflow_config_=workflow_config,
         )
 
         # Generate PNG thumbnails if requested (for fast DataView loading)

@@ -207,9 +207,7 @@ class ThumbnailGenerator:
             ) from e
         data = np.asarray(raw)
         if data.size == 0:
-            raise ValueError(
-                f"MAT dataset '{mat_path}' in '{file_path}' is empty"
-            )
+            raise ValueError(f"MAT dataset '{mat_path}' in '{file_path}' is empty")
         ndim = data.ndim
         if ndim >= 3:
             frame = data[0]

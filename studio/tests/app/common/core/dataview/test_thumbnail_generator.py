@@ -38,9 +38,7 @@ class TestGenerateHdf5Thumbnail:
         h5_path = str(tmp_path / "test.h5")
         with h5py.File(h5_path, "w") as f:
             f.create_dataset("images", data=np.random.rand(10, 64, 64))
-        ThumbnailGenerator.generate_hdf5_thumbnail(
-            h5_path, output_path, "/images"
-        )
+        ThumbnailGenerator.generate_hdf5_thumbnail(h5_path, output_path, "/images")
         assert os.path.exists(output_path)
         img = imageio.imread(output_path)
         assert img.ndim == 2
@@ -49,9 +47,7 @@ class TestGenerateHdf5Thumbnail:
         h5_path = str(tmp_path / "test.h5")
         with h5py.File(h5_path, "w") as f:
             f.create_dataset("matrix", data=np.random.rand(100, 50))
-        ThumbnailGenerator.generate_hdf5_thumbnail(
-            h5_path, output_path, "/matrix"
-        )
+        ThumbnailGenerator.generate_hdf5_thumbnail(h5_path, output_path, "/matrix")
         assert os.path.exists(output_path)
         img = imageio.imread(output_path)
         assert img.ndim == 2
@@ -61,9 +57,7 @@ class TestGenerateHdf5Thumbnail:
         with h5py.File(h5_path, "w") as f:
             f.create_dataset("vector", data=np.random.rand(100))
         with pytest.raises(ValueError, match="unsupported dimensionality"):
-            ThumbnailGenerator.generate_hdf5_thumbnail(
-                h5_path, output_path, "/vector"
-            )
+            ThumbnailGenerator.generate_hdf5_thumbnail(h5_path, output_path, "/vector")
 
     def test_invalid_path_raises(self, tmp_path, output_path):
         h5_path = str(tmp_path / "test.h5")
@@ -80,9 +74,7 @@ class TestGenerateHdf5Thumbnail:
         with h5py.File(h5_path, "w") as f:
             grp = f.create_group("data")
             grp.create_dataset("images", data=np.random.rand(5, 32, 32))
-        ThumbnailGenerator.generate_hdf5_thumbnail(
-            h5_path, output_path, "/data/images"
-        )
+        ThumbnailGenerator.generate_hdf5_thumbnail(h5_path, output_path, "/data/images")
         assert os.path.exists(output_path)
         img = imageio.imread(output_path)
         assert img.ndim == 2
@@ -92,9 +84,7 @@ class TestGenerateMatThumbnail:
     def test_2d_dataset(self, tmp_path, output_path):
         mat_path_file = str(tmp_path / "test.mat")
         savemat(mat_path_file, {"data": np.random.rand(64, 64)})
-        ThumbnailGenerator.generate_mat_thumbnail(
-            mat_path_file, output_path, "data"
-        )
+        ThumbnailGenerator.generate_mat_thumbnail(mat_path_file, output_path, "data")
         assert os.path.exists(output_path)
         img = imageio.imread(output_path)
         assert img.ndim == 2
@@ -102,18 +92,14 @@ class TestGenerateMatThumbnail:
     def test_3d_dataset(self, tmp_path, output_path):
         mat_path_file = str(tmp_path / "test.mat")
         savemat(mat_path_file, {"images": np.random.rand(5, 32, 32)})
-        ThumbnailGenerator.generate_mat_thumbnail(
-            mat_path_file, output_path, "images"
-        )
+        ThumbnailGenerator.generate_mat_thumbnail(mat_path_file, output_path, "images")
         assert os.path.exists(output_path)
 
     def test_1d_dataset_raises(self, tmp_path, output_path):
         mat_path_file = str(tmp_path / "test.mat")
         savemat(mat_path_file, {"vec": np.random.rand(100)})
         with pytest.raises(ValueError, match="unsupported dimensionality"):
-            ThumbnailGenerator.generate_mat_thumbnail(
-                mat_path_file, output_path, "vec"
-            )
+            ThumbnailGenerator.generate_mat_thumbnail(mat_path_file, output_path, "vec")
 
     def test_nested_mat_path(self, tmp_path, output_path):
         """Nested path like 'data/behavior' works (matches tutorial4 pattern)."""
