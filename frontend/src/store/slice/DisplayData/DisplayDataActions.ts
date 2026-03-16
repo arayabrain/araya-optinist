@@ -13,6 +13,7 @@ import {
   LineData,
   PieData,
   PolarData,
+  StructuredData,
   getTimeSeriesInitDataApi,
   getTimeSeriesDataByIdApi,
   getTimeSeriesAllDataApi,
@@ -29,6 +30,7 @@ import {
   getPolarDataApi,
   getMatlabDataApi,
   MatlabData,
+  getStructuredDataApi,
   cancelRoiApi,
   addRoiApi,
   mergeRoiApi,
@@ -380,3 +382,31 @@ export const getPolarData = createAsyncThunk<
     return thunkAPI.rejectWithValue(e)
   }
 })
+
+export const getStructuredData = createAsyncThunk<
+  StructuredData,
+  {
+    workspaceId: string
+    uniqueId: string
+    nodeId: string
+    itemId: number
+    startIndex?: number
+    endIndex?: number
+  }
+>(
+  `${DISPLAY_DATA_SLICE_NAME}/getStructuredData`,
+  async ({ workspaceId, uniqueId, nodeId, startIndex, endIndex }, thunkAPI) => {
+    try {
+      const response = await getStructuredDataApi(
+        workspaceId,
+        uniqueId,
+        nodeId,
+        startIndex,
+        endIndex,
+      )
+      return response
+    } catch (e) {
+      return thunkAPI.rejectWithValue(e)
+    }
+  },
+)
