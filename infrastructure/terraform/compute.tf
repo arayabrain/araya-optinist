@@ -35,8 +35,10 @@ resource "aws_lb_listener" "autoscaling" {
   protocol          = "HTTP"
 
   default_action {
-    type             = var.enable_custom_domain ? "redirect" : "forward"
-    target_group_arn = var.enable_custom_domain ? null : aws_lb_target_group.public.arn
+    type = var.enable_custom_domain ? "redirect" : "forward"
+    target_group_arn = var.enable_custom_domain ? null : (
+      var.enable_public_tier ? aws_lb_target_group.public[0].arn : aws_lb_target_group.autoscaling.arn
+    )
 
     dynamic "redirect" {
       for_each = var.enable_custom_domain ? [1] : []
@@ -60,7 +62,7 @@ resource "aws_lb_listener" "autoscaling_https" {
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.public.arn
+    target_group_arn = var.enable_public_tier ? aws_lb_target_group.public[0].arn : aws_lb_target_group.autoscaling.arn
   }
 }
 
@@ -445,7 +447,10 @@ resource "aws_ecs_capacity_provider" "main" {
 resource "aws_ecs_cluster_capacity_providers" "main" {
   cluster_name = aws_ecs_cluster.main.name
 
-  capacity_providers = [aws_ecs_capacity_provider.main.name, aws_ecs_capacity_provider.public.name]
+  capacity_providers = var.enable_public_tier ? [
+    aws_ecs_capacity_provider.main.name,
+    aws_ecs_capacity_provider.public[0].name
+  ] : [aws_ecs_capacity_provider.main.name]
 
   default_capacity_provider_strategy {
     capacity_provider = aws_ecs_capacity_provider.main.name

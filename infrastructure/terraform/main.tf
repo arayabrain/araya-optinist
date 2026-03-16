@@ -46,6 +46,12 @@ variable "enable_custom_domain" {
   default     = true
 }
 
+variable "enable_public_tier" {
+  description = "Toggle public tier instances (false to route all traffic to free tier)"
+  type        = bool
+  default     = true
+}
+
 variable "vpc_cidr" {
   description = "VPC CIDR block"
   type        = string

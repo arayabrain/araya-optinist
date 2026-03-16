@@ -9,11 +9,16 @@
 # - Requests WITH Authorization header → Free Tier (via listener rule)
 # - Requests WITHOUT Authorization header → Public Site (via default action)
 # - Premium users → Premium instances (via existing X-Routing-ID rules)
+#
+# All resources are conditional on var.enable_public_tier.
+# When disabled, all traffic routes to free tier (original behavior).
 
 # ===========================
 # Public Site Target Group
 # ===========================
 resource "aws_lb_target_group" "public" {
+  count = var.enable_public_tier ? 1 : 0
+
   name        = "${local.env_prefix}-public-tg"
   port        = 8000
   protocol    = "HTTP"
@@ -54,6 +59,8 @@ resource "aws_lb_target_group" "public" {
 # Unauthenticated requests fall through to default action → Public Site TG.
 
 resource "aws_lb_listener_rule" "authenticated_to_free_tier" {
+  count = var.enable_public_tier ? 1 : 0
+
   listener_arn = aws_lb_listener.autoscaling_https.arn
   priority     = 50 # After Premium rules (dynamically created, higher priority)
 
@@ -74,9 +81,9 @@ resource "aws_lb_listener_rule" "authenticated_to_free_tier" {
   }
 }
 
-# Dev environment HTTP listener rule (only when custom domain is disabled)
+# Dev environment HTTP listener rule (only when public tier AND no custom domain)
 resource "aws_lb_listener_rule" "authenticated_to_free_tier_http" {
-  count        = var.enable_custom_domain ? 0 : 1
+  count        = var.enable_public_tier && !var.enable_custom_domain ? 1 : 0
   listener_arn = aws_lb_listener.autoscaling.arn
   priority     = 50
 
@@ -101,6 +108,8 @@ resource "aws_lb_listener_rule" "authenticated_to_free_tier_http" {
 # Public Site Launch Template
 # ===========================
 resource "aws_launch_template" "public" {
+  count = var.enable_public_tier ? 1 : 0
+
   name_prefix   = "${local.env_prefix}-public-"
   image_id      = data.aws_ami.ecs_optimized.id
   instance_type = var.public_instance_type
@@ -158,9 +167,11 @@ resource "aws_launch_template" "public" {
 # Public Site Auto Scaling Group
 # ===========================
 resource "aws_autoscaling_group" "public" {
+  count = var.enable_public_tier ? 1 : 0
+
   name                      = "${local.env_prefix}-public-asg"
   vpc_zone_identifier       = [aws_subnet.private1.id, aws_subnet.private2.id]
-  target_group_arns         = [aws_lb_target_group.public.arn]
+  target_group_arns         = [aws_lb_target_group.public[0].arn]
   health_check_type         = "ELB"
   health_check_grace_period = 900
   default_cooldown          = 300
@@ -170,7 +181,7 @@ resource "aws_autoscaling_group" "public" {
   desired_capacity = var.public_asg_desired_capacity
 
   launch_template {
-    id      = aws_launch_template.public.id
+    id      = aws_launch_template.public[0].id
     version = "$Latest"
   }
 
@@ -207,7 +218,7 @@ resource "aws_autoscaling_group" "public" {
 
   tag {
     key                 = "LaunchTemplateVersion"
-    value               = aws_launch_template.public.latest_version
+    value               = aws_launch_template.public[0].latest_version
     propagate_at_launch = true
   }
 
@@ -246,10 +257,12 @@ resource "aws_autoscaling_group" "public" {
 # Public Site Capacity Provider
 # ===========================
 resource "aws_ecs_capacity_provider" "public" {
+  count = var.enable_public_tier ? 1 : 0
+
   name = "${local.env_prefix}-public-capacity-provider"
 
   auto_scaling_group_provider {
-    auto_scaling_group_arn         = aws_autoscaling_group.public.arn
+    auto_scaling_group_arn         = aws_autoscaling_group.public[0].arn
     managed_termination_protection = "DISABLED"
 
     managed_scaling {
@@ -281,6 +294,8 @@ resource "aws_ecs_capacity_provider" "public" {
 # Dedicated lightweight task definition for t3.small (2GB RAM).
 # Public site only serves SPA pages and lightweight public APIs.
 resource "aws_ecs_task_definition" "public" {
+  count = var.enable_public_tier ? 1 : 0
+
   family                   = "${local.env_prefix}-public-taskdef"
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
@@ -531,15 +546,17 @@ resource "aws_ecs_task_definition" "public" {
 # Public Site ECS Service
 # ===========================
 resource "aws_ecs_service" "public" {
+  count = var.enable_public_tier ? 1 : 0
+
   name                               = "${local.env_prefix}-public-service"
   cluster                            = aws_ecs_cluster.main.id
-  task_definition                    = aws_ecs_task_definition.public.arn
+  task_definition                    = aws_ecs_task_definition.public[0].arn
   desired_count                      = 1
   deployment_maximum_percent         = 200
   deployment_minimum_healthy_percent = 0
 
   capacity_provider_strategy {
-    capacity_provider = aws_ecs_capacity_provider.public.name
+    capacity_provider = aws_ecs_capacity_provider.public[0].name
     weight            = 1
     base              = 0
   }
@@ -547,7 +564,7 @@ resource "aws_ecs_service" "public" {
   enable_execute_command = true
 
   load_balancer {
-    target_group_arn = aws_lb_target_group.public.arn
+    target_group_arn = aws_lb_target_group.public[0].arn
     container_name   = "${local.env_prefix}-public-container"
     container_port   = 8000
   }
@@ -577,6 +594,8 @@ resource "aws_ecs_service" "public" {
 # CloudWatch Log Group
 # ===========================
 resource "aws_cloudwatch_log_group" "public_logs" {
+  count = var.enable_public_tier ? 1 : 0
+
   name              = "/ecs/${local.env_prefix}-public-taskdef"
   retention_in_days = 14
 
@@ -592,6 +611,8 @@ resource "aws_cloudwatch_log_group" "public_logs" {
 
 # Alarm for public site task stopped (service count drops to 0)
 resource "aws_cloudwatch_metric_alarm" "public_task_stopped" {
+  count = var.enable_public_tier ? 1 : 0
+
   alarm_name          = "${var.environment}-public-task-stopped"
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = "2"
@@ -606,7 +627,7 @@ resource "aws_cloudwatch_metric_alarm" "public_task_stopped" {
 
   dimensions = {
     ClusterName = aws_ecs_cluster.main.name
-    ServiceName = aws_ecs_service.public.name
+    ServiceName = aws_ecs_service.public[0].name
   }
 
   tags = {
@@ -620,10 +641,10 @@ resource "aws_cloudwatch_metric_alarm" "public_task_stopped" {
 # ===========================
 output "public_service_name" {
   description = "Name of the public site ECS service"
-  value       = aws_ecs_service.public.name
+  value       = var.enable_public_tier ? aws_ecs_service.public[0].name : null
 }
 
 output "public_asg_name" {
   description = "Name of the public site Auto Scaling Group"
-  value       = aws_autoscaling_group.public.name
+  value       = var.enable_public_tier ? aws_autoscaling_group.public[0].name : null
 }

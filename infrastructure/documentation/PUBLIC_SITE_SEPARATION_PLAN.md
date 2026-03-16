@@ -554,6 +554,12 @@ t3.small provides ~1.7 GB usable RAM after the ECS agent. With `memoryReservatio
 #### G. New Variables
 
 ```hcl
+variable "enable_public_tier" {
+  description = "Toggle public tier instances (false to route all traffic to free tier)"
+  type        = bool
+  default     = true
+}
+
 variable "public_instance_type" {
   description = "Instance type for public site instances"
   type        = string
@@ -610,6 +616,56 @@ infrastructure/terraform/
 | `aws_lb_listener.autoscaling` | `compute.tf` | `default_action.target_group_arn` → `public` TG (when `enable_custom_domain = false`) |
 | `aws_ecs_cluster_capacity_providers.main` | `compute.tf` | Add `public` capacity provider to the list |
 | `aws_ecs_service.autoscaling` | `compute.tf` | Placement constraint changed from `distinctInstance` to `attribute:tier == free` (prevents free tier tasks from being scheduled on public instances) |
+
+### 3.6 `enable_public_tier` Toggle
+
+All public tier resources are conditional on `var.enable_public_tier` (default: `true`). This allows disabling public tier instances to save costs in environments where traffic isolation is not needed (e.g., dev).
+
+#### Mechanism
+
+All resources in `compute_public.tf` use `count = var.enable_public_tier ? 1 : 0`. When disabled:
+
+- No public instances, ASG, capacity provider, ECS service, or task definition are created
+- No JWT-based ALB listener rules are created (no routing separation)
+- ALB listener default actions revert to the free tier target group (`aws_lb_target_group.autoscaling.arn`)
+- The system operates with the original architecture: all traffic goes to free tier instances
+
+#### Conditional references
+
+Resources with `count` become lists in Terraform, requiring `[0]` indexing for references:
+
+```hcl
+# In compute.tf — ALB listener default action
+target_group_arn = var.enable_public_tier ? aws_lb_target_group.public[0].arn : aws_lb_target_group.autoscaling.arn
+
+# In compute.tf — capacity providers
+capacity_providers = var.enable_public_tier ? [
+  aws_ecs_capacity_provider.main.name,
+  aws_ecs_capacity_provider.public[0].name
+] : [aws_ecs_capacity_provider.main.name]
+
+# In compute_public.tf — HTTP listener rule (combined condition)
+count = var.enable_public_tier && !var.enable_custom_domain ? 1 : 0
+```
+
+#### Resource behavior on toggle
+
+| Resource | `true → false` | `false → true` |
+|----------|---------------|----------------|
+| EC2 instances (ASG) | Terminated | Created |
+| ECS Service, Task Definition | Deleted | Created |
+| Target Group, Listener Rules | Deleted | Created |
+| Capacity Provider | Removed | Added |
+| CloudWatch Log Group | **Deleted (logs lost)** | Created |
+| CloudWatch Alarm | Deleted | Created |
+
+**Note**: CloudWatch Log Group is deleted when toggled off, which destroys past logs. Since the log retention is 14 days, this is acceptable. If log preservation is required, the log group can be excluded from the `count` condition.
+
+#### Unchanged resources when toggled off
+
+- Free tier placement constraint (`attribute:tier == free`) remains — harmless when no public tier instances exist
+- Free Manager Lambda and Premium Manager Lambda — no interaction with public tier
+- Background service — independent
 
 ---
 
@@ -734,19 +790,22 @@ infrastructure/terraform/
 | CloudWatch Log Group | ~$1 |
 | **Total** | **~$19** |
 
+Set `enable_public_tier = false` to eliminate all public tier costs ($0 additional).
+
 ---
 
 ## 8. Implementation Steps
 
 ### Phase 1: Terraform Code (Completed)
 1. Created `compute_public.tf` with all new resources (target group, listener rules, launch template, ASG, capacity provider, task definition, ECS service, CloudWatch log group, CloudWatch alarm, outputs)
-2. Added 4 new variables to `main.tf` (`public_instance_type`, `public_asg_min_size`, `public_asg_max_size`, `public_asg_desired_capacity`)
-3. Modified existing listener default actions in `compute.tf` (both HTTP and HTTPS listeners)
-4. Updated `aws_ecs_cluster_capacity_providers` in `compute.tf` to include the public site capacity provider
+2. Added 5 new variables to `main.tf` (`enable_public_tier`, `public_instance_type`, `public_asg_min_size`, `public_asg_max_size`, `public_asg_desired_capacity`)
+3. Modified existing listener default actions in `compute.tf` (both HTTP and HTTPS listeners) — conditional on `enable_public_tier`
+4. Updated `aws_ecs_cluster_capacity_providers` in `compute.tf` to conditionally include the public site capacity provider
 5. Changed free tier ECS service placement constraint from `distinctInstance` to `attribute:tier == free` in `compute.tf`
-6. Verified `ecs-user-data.sh` handles `tier=public` correctly — no changes needed (passes through any tier value)
-7. Ran `terraform fmt` — all files formatted correctly
-8. Note: `terraform validate` requires `terraform init` with backend config (`.terraform/` is gitignored)
+6. Added `count = var.enable_public_tier ? 1 : 0` to all public tier resources for ON/OFF toggle
+7. Verified `ecs-user-data.sh` handles `tier=public` correctly — no changes needed (passes through any tier value)
+8. Ran `terraform fmt` — all files formatted correctly
+9. Note: `terraform validate` requires `terraform init` with backend config (`.terraform/` is gitignored)
 
 ### Phase 2: Development Environment Validation
 1. Run `terraform plan` to review diff
