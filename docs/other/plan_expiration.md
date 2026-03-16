@@ -2,71 +2,80 @@
 
 ## Overview
 
-When a premium subscription ends, users enter a **30-day grace period**. During this period, all data remains intact (up to the 200 GB premium limit). After the grace period, data is automatically reduced to fit within the **5 GB free-tier limit**.
+When a premium subscription ends, users enter a **30-day grace period**. During this period, all data remains intact. After the grace period, if storage exceeds the **5 GB free-tier limit**, data is automatically deleted to bring usage within the limit.
 
 **Deleted data cannot be recovered.**
 
-## Grace Period Timeline
+## Grace Period
 
-### Day 1 — Subscription Ends
-
-- Email notification: *"Your subscription has ended. You have 30 days to download or manage your data."*
-- Include link to storage management page
-- Include link to download tool
-
-### Day 20 — Reminder
-
-- Email with **storage usage breakdown** by workspace
-- Link to manually delete or download data
-- Reminder of the deletion date and current deletion priority setting
-
-### Day 30 — Auto-Deletion
-
-- All-at-once deletion using the user's chosen priority order
-- Stops as soon as usage is at or below 5 GB
-- Workflow YAML files are **never deleted**
-
-### Post-Deletion — Confirmation
-
-- Email summary of what was removed (workspace names, data types, total size freed)
+- **Duration:** 30 days from the date the subscription ends.
+- **During the grace period:** All data remains accessible. Users should download or manually delete any data they want to manage before auto-deletion begins.
+- **After the grace period:** The system runs a daily background job that checks expired users and deletes data until storage is at or below 5 GB.
 
 ## Deletion Priority Setting
 
-Users can configure their preferred deletion order in account settings. Within each tier, **oldest data is deleted first**, and **published workspaces are deleted last** (after all unpublished data in that tier has been removed).
+Users can choose which types of data to preserve during auto-deletion. This setting is available on the **Account** page under **Data Deletion Priority**.
 
-| Setting | Order | Best For |
-|---------|-------|----------|
-| **Preserve Outputs** (default) | Intermediates → Inputs → Outputs | Users who can re-upload raw data |
-| **Preserve Inputs** | Intermediates → Outputs → Inputs | Users who can re-run workflows but can't easily re-obtain source data |
+| Setting | Deletion Order | Best For |
+|---------|---------------|----------|
+| **Preserve Outputs** (default) | Intermediates → Inputs → Outputs | Users who can re-upload raw data but want to keep results |
+| **Preserve Inputs** | Intermediates → Outputs → Inputs | Users who cannot easily re-obtain source data |
 
-In both modes:
+### How to change
 
-- Workflow YAML files are **never deleted**
-- **Published workspaces are prioritized for preservation** — within each data tier, unpublished workspace data is deleted before published workspace data
-- Deletion proceeds oldest-first within each tier
-- Deletion stops as soon as storage is at or below 5 GB
+1. Go to **Account** settings.
+2. Find the **Data Deletion Priority** section.
+3. Click the edit icon next to the current setting.
+4. Select your preferred option from the dropdown.
 
-Data deletion order (default)
-  1. Intermediates (unpublished, oldest first)
-  2. Intermediates (published, oldest first)
-  3. Inputs (unpublished, oldest first)
-  4. Outputs (unpublished, oldest first)
-  5. Inputs (published, oldest first)
-  6. Outputs (published, oldest first)
-  7. YAMLs — never
+The setting takes effect immediately and applies to any future auto-deletion.
+
+## How Auto-Deletion Works
+
+The system processes data in **tiers**. Each tier is fully exhausted before moving to the next. Within each tier:
+
+- **Unpublished** workspace data is deleted before **published** workspace data.
+- **Oldest** data (by analysis date) is deleted first.
+
+### Deletion order — Preserve Outputs (default)
+
+| Step | What is deleted |
+|------|----------------|
+| 1 | Intermediates — unpublished workspaces, oldest first |
+| 2 | Intermediates — published workspaces, oldest first |
+| 3 | Inputs — unpublished workspaces, oldest first |
+| 4 | Inputs — published workspaces, oldest first |
+| 5 | Outputs — unpublished workspaces, oldest first |
+| 6 | Outputs — published workspaces, oldest first |
+
+### Deletion order — Preserve Inputs
+
+| Step | What is deleted |
+|------|----------------|
+| 1 | Intermediates — unpublished workspaces, oldest first |
+| 2 | Intermediates — published workspaces, oldest first |
+| 3 | Outputs — unpublished workspaces, oldest first |
+| 4 | Outputs — published workspaces, oldest first |
+| 5 | Inputs — unpublished workspaces, oldest first |
+| 6 | Inputs — published workspaces, oldest first |
+
+Deletion **stops** as soon as storage is at or below 5 GB. Not all tiers may be reached.
+
+## What Is Never Deleted
+
+- **Workflow YAML files** — workflow definitions (`.yaml` / `.yml`) are always preserved, regardless of storage status. This allows users to re-run workflows if they re-subscribe or re-upload data.
+
+## Additional Details
+
+- **Re-subscribing does not restore deleted data.** Once data is removed, it is permanently gone.
+- **Re-subscription halts deletion.** If a user re-subscribes while deletion is in progress, the process stops immediately.
 
 ## Data Download
 
-Before the grace period ends, users can download data per-workspace with selectable checkboxes:
+Before the grace period ends, users can download data per workspace:
 
-- Input data
-- Output data (NWB files)
-- Workflow YAML files
+- **Input data** — original uploaded files
+- **Output data** — result files (NWB format)
+- **Workflow YAML files** — workflow definitions
 
-Intermediate/node outputs are **not offered for download** (they are regenerable by re-running the workflow).
-
-## Key Policy Statements
-
-1. **Deleted data is permanently gone.** Re-subscribing does not restore deleted data.
-2. **No workspace-level protection.** Users cannot exempt specific workspaces from auto-deletion — they must download what they want to keep.
-3. **YAMLs are always preserved.** Workflow definitions remain available regardless of storage status, enabling users to re-run workflows if they re-subscribe or re-upload data.
+Intermediate outputs are not available for download, as they can be regenerated by re-running the workflow.
