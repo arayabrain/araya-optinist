@@ -260,6 +260,7 @@ export type StructuredData = {
   columns?: string[]
   index?: (string | number)[]
   total_frames?: number
+  dataset_path?: string
 }
 
 export async function getStructuredDataApi(

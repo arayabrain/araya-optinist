@@ -218,6 +218,7 @@ def test_structured_hdf5_2d_returns_timeseries(client):
     assert len(data["data"][0]) == 5
     assert isinstance(data["columns"], list)
     assert isinstance(data["index"], list)
+    assert data["dataset_path"] == "recording/traces"
 
 
 def test_structured_hdf5_3d_returns_images(client):
@@ -234,6 +235,7 @@ def test_structured_hdf5_3d_returns_images(client):
     assert len(data["data"][0]) == 64
     assert len(data["data"][0][0]) == 64
     assert data["total_frames"] == 10
+    assert data["dataset_path"] == "recording/frames"
 
 
 def test_structured_hdf5_3d_pagination(client):
@@ -261,6 +263,7 @@ def test_structured_hdf5_1d_returns_bar(client):
     assert len(data["data"]) == 50
     assert isinstance(data["index"], list)
     assert len(data["index"]) == 50
+    assert data["dataset_path"] == "values"
 
 
 def test_structured_missing_workflow(client):
@@ -295,6 +298,7 @@ def test_structured_mat_2d_returns_timeseries(client):
     assert len(data["data"]) == 80
     assert len(data["data"][0]) == 4
     assert isinstance(data["columns"], list)
+    assert data["dataset_path"] == "data/behavior"
     assert isinstance(data["index"], list)
 
 

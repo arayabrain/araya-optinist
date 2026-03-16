@@ -303,29 +303,34 @@ async def get_structured_data(
         raise HTTPException(status_code=404, detail=f"Dataset not found: {e}")
 
     data = np.asarray(data)
+    dataset_path = hdf5_path or mat_path
 
-    if ndim == 3:
-        return {
-            "data": data.tolist(),
-            "data_type": "images",
-            "total_frames": int(shape[0]),
-        }
-    elif ndim == 2:
-        df = pd.DataFrame(data)
-        return {
-            "data": df.to_dict(orient="split")["data"],
-            "columns": [str(c) for c in df.columns.tolist()],
-            "index": [str(i) for i in df.index.tolist()],
-            "data_type": "timeseries",
-        }
-    elif ndim == 1:
-        return {
-            "data": data.tolist(),
-            "index": list(range(len(data))),
-            "data_type": "bar",
-        }
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported data dimensionality: {ndim}",
-        )
+    match ndim:
+        case 3:
+            return {
+                "data": data.tolist(),
+                "data_type": "images",
+                "total_frames": int(shape[0]),
+                "dataset_path": dataset_path,
+            }
+        case 2:
+            df = pd.DataFrame(data)
+            return {
+                "data": df.to_dict(orient="split")["data"],
+                "columns": [str(c) for c in df.columns.tolist()],
+                "index": [str(i) for i in df.index.tolist()],
+                "data_type": "timeseries",
+                "dataset_path": dataset_path,
+            }
+        case 1:
+            return {
+                "data": data.tolist(),
+                "index": list(range(len(data))),
+                "data_type": "bar",
+                "dataset_path": dataset_path,
+            }
+        case _:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported data dimensionality: {ndim}",
+            )

@@ -1,8 +1,23 @@
-import { memo, useContext, useEffect, useState } from "react"
+import {
+  ChangeEvent,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react"
 import PlotlyChart from "react-plotlyjs-ts"
 import { useDispatch, useSelector } from "react-redux"
 
-import { Box, LinearProgress, Slider, Typography } from "@mui/material"
+import {
+  Box,
+  Button,
+  LinearProgress,
+  Slider,
+  TextField,
+  Typography,
+} from "@mui/material"
 
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
 import { getStructuredData } from "store/slice/DisplayData/DisplayDataActions"
@@ -66,6 +81,33 @@ export const StructuredFilePlot = memo(function StructuredFilePlot() {
   const result = structuredState.data
   if (!result) return null
 
+  return (
+    <Box>
+      {result.dataset_path && (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          title={result.dataset_path}
+          noWrap
+          sx={{ px: 1, display: "block", maxWidth: "100%" }}
+        >
+          {result.dataset_path}
+        </Typography>
+      )}
+      <DataView result={result} />
+    </Box>
+  )
+})
+
+const DataView = memo(function DataView({
+  result,
+}: {
+  result: {
+    data_type: string
+    data: number[] | number[][] | number[][][]
+    total_frames?: number
+  }
+}) {
   switch (result.data_type) {
     case "timeseries":
       return <TimeSeriesView data={result.data as number[][]} />
@@ -120,8 +162,54 @@ const ImageView = memo(function ImageView({
   data: number[][][]
   totalFrames: number
 }) {
-  const [frameIndex, setFrameIndex] = useState(0)
-  const frame = data[frameIndex] || []
+  const [activeIndex, setActiveIndex] = useState(0)
+  const [duration, setDuration] = useState(500)
+  const intervalRef = useRef<null | NodeJS.Timeout>(null)
+  const maxIndex = data.length - 1
+
+  const frame = data[activeIndex] || []
+
+  useEffect(() => {
+    if (intervalRef.current !== null && activeIndex >= maxIndex) {
+      clearInterval(intervalRef.current)
+      intervalRef.current = null
+    }
+  }, [activeIndex, maxIndex])
+
+  const onPlayClick = useCallback(() => {
+    if (activeIndex >= maxIndex) {
+      setActiveIndex(0)
+    }
+    if (maxIndex > 0 && intervalRef.current === null) {
+      intervalRef.current = setInterval(() => {
+        setActiveIndex((prev) => Math.min(prev + 1, maxIndex))
+      }, duration)
+    }
+  }, [activeIndex, maxIndex, duration])
+
+  const onPauseClick = () => {
+    if (intervalRef.current !== null) {
+      clearInterval(intervalRef.current)
+      intervalRef.current = null
+    }
+  }
+
+  const onDurationChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const newValue =
+        event.target?.value === "" ? "" : Number(event.target?.value)
+      if (typeof newValue === "number") {
+        setDuration(newValue)
+      }
+    },
+    [],
+  )
+
+  const onSliderChange = (_: Event, value: number | number[]) => {
+    if (typeof value === "number") {
+      setActiveIndex(value)
+    }
+  }
 
   const plotData = [
     {
@@ -133,7 +221,7 @@ const ImageView = memo(function ImageView({
   ]
 
   const layout = {
-    title: `Frame ${frameIndex + 1} / ${data.length} (of ${totalFrames} total)`,
+    title: `Frame ${activeIndex + 1} / ${data.length} (of ${totalFrames} total)`,
     yaxis: { autorange: "reversed" as const },
     autosize: true,
   }
@@ -142,16 +230,43 @@ const ImageView = memo(function ImageView({
     <Box>
       <PlotlyChart data={plotData} layout={layout} />
       {data.length > 1 && (
-        <Box px={2}>
-          <Slider
-            value={frameIndex}
-            min={0}
-            max={data.length - 1}
-            onChange={(_, value) => setFrameIndex(value as number)}
-            valueLabelDisplay="auto"
-            valueLabelFormat={(v) => `Frame ${v + 1}`}
+        <>
+          <Button sx={{ mt: 1.5 }} variant="outlined" onClick={onPlayClick}>
+            Play
+          </Button>
+          <Button
+            sx={{ mt: 1.5, ml: 1 }}
+            variant="outlined"
+            onClick={onPauseClick}
+          >
+            Pause
+          </Button>
+          <TextField
+            sx={{ width: 100, ml: 2 }}
+            label="msec/frame"
+            type="number"
+            inputProps={{
+              step: 100,
+              min: 0,
+              max: 1000,
+            }}
+            InputLabelProps={{
+              shrink: true,
+            }}
+            onChange={onDurationChange}
+            value={duration}
           />
-        </Box>
+          <Slider
+            aria-label="Custom marks"
+            value={activeIndex}
+            valueLabelDisplay="auto"
+            step={1}
+            marks
+            min={0}
+            max={maxIndex}
+            onChange={onSliderChange}
+          />
+        </>
       )}
     </Box>
   )
