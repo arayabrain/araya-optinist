@@ -134,8 +134,16 @@ describe("DeletionPriority dropdown", () => {
       expect(screen.getByText("Preserve Outputs")).toBeTruthy()
     })
 
+    // Click the Edit button to enter edit mode
+    const editButtons = screen.getAllByTestId("EditIcon")
+    const deletionPriorityEdit = editButtons[editButtons.length - 1]
+    fireEvent.click(deletionPriorityEdit.closest("button")!)
+
     // Open the select dropdown
-    const selectEl = screen.getByText("Preserve Outputs")
+    await waitFor(() => {
+      expect(screen.getByRole("combobox")).toBeTruthy()
+    })
+    const selectEl = screen.getByRole("combobox")
     fireEvent.mouseDown(selectEl)
 
     // Click the "Preserve Inputs" option in the dropdown menu
