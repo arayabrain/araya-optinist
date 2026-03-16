@@ -122,7 +122,7 @@ data "aws_ami" "ecs_optimized" {
 resource "aws_launch_template" "ecs" {
   name_prefix   = "${local.env_prefix}-ecs-"
   image_id      = data.aws_ami.ecs_optimized.id
-  instance_type = "t3.large"
+  instance_type = var.free_instance_type
   key_name      = aws_key_pair.subscr_optinist_cloud_key_pair.key_name
 
   vpc_security_group_ids = [aws_security_group.ecs.id]
@@ -333,7 +333,7 @@ resource "aws_ecs_service" "premium" {
 resource "aws_launch_template" "premium" {
   name_prefix   = "${local.env_prefix}-premium-"
   image_id      = data.aws_ami.ecs_optimized.id
-  instance_type = "t3.large"
+  instance_type = var.premium_instance_type
   key_name      = aws_key_pair.subscr_optinist_cloud_key_pair.key_name
 
   vpc_security_group_ids = [aws_security_group.ecs.id]
@@ -475,7 +475,7 @@ resource "aws_instance" "premium" {
     version = "$Latest"
   }
 
-  instance_type = "t3.large"
+  instance_type = var.premium_instance_type
   subnet_id     = aws_subnet.private1.id
 
   # On shutdown, stop instance instead of terminating

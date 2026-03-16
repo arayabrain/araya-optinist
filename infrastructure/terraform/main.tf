@@ -207,6 +207,25 @@ variable "asg_desired_capacity" {
   default     = 1
 }
 
+# Instance type configuration
+variable "free_instance_type" {
+  description = "Instance type for free tier instances"
+  type        = string
+  default     = "t3.large"
+}
+
+variable "premium_instance_type" {
+  description = "Instance type for premium tier instances"
+  type        = string
+  default     = "t3.large"
+}
+
+variable "background_instance_type" {
+  description = "Instance type for background service instance"
+  type        = string
+  default     = "t3.micro"
+}
+
 # Frontend domain configuration
 variable "frontend_domain" {
   description = "Custom domain name for the frontend application"
