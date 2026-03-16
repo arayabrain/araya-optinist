@@ -114,6 +114,10 @@ describe("Experiments", () => {
           frameRate: 30,
           name: "record test",
           hasNWB: true,
+          hasIntermediates: true,
+          hasOutputs: true,
+          hasInputs: true,
+          isRemoteSynced: undefined,
           status: "success",
           functions: {
             dummy_image2image8time_4mrz8h7hyk: {
@@ -143,6 +147,10 @@ describe("Experiments", () => {
           frameRate: 30,
           name: "New flow",
           hasNWB: true,
+          hasIntermediates: true,
+          hasOutputs: true,
+          hasInputs: true,
+          isRemoteSynced: undefined,
           status: "success",
           functions: {
             dummy_image2image8time_4mrz8h7hyk: {

@@ -53,6 +53,9 @@ class ExptConfig:
 @dataclass
 class ExptExtConfig(ExptConfig):
     is_remote_synced: Optional[bool] = None
+    has_intermediates: Optional[bool] = None
+    has_outputs: Optional[bool] = None
+    has_inputs: Optional[bool] = None
 
 
 @dataclass
