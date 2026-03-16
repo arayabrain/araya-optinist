@@ -66,6 +66,7 @@ const SubscriptionPlans = () => {
 
   // State for data storage info dialog
   const [showDataStorageDialog, setShowDataStorageDialog] = useState(false)
+  const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null)
 
   // Fetch data on component mount
   useEffect(() => {
@@ -146,14 +147,24 @@ const SubscriptionPlans = () => {
 
           // Redirect to Stripe checkout
           window.location.href = checkout_url
+        } else if (createCheckoutSession.rejected.match(resultAction)) {
+          const errorMessage = resultAction.payload || ""
+          // Check if this is a subscription recovery case (409)
+          if (errorMessage.includes("already a premium user")) {
+            dispatch(clearError())
+            setRecoveryMessage(errorMessage)
+            // Refresh subscription data to reflect the recovered subscription
+            dispatch(getUserSubscription())
+          } else {
+            // Non-recovery rejection — Redux error state handles the UI display
+            // eslint-disable-next-line no-console
+            console.error("Checkout session failed:", errorMessage)
+          }
         } else {
-          // Handle error case
+          // Defensive guard: createAsyncThunk should only produce
+          // fulfilled or rejected, but log if an unexpected state occurs.
           // eslint-disable-next-line no-console
-          console.error(
-            "Failed to create checkout session:",
-            resultAction.error,
-          )
-          // You might want to show an error message to the user here
+          console.warn("Unexpected checkout result action:", resultAction)
         }
       } catch (error) {
         // eslint-disable-next-line no-console
@@ -286,6 +297,13 @@ const SubscriptionPlans = () => {
             <strong>{getExpirationDate()}</strong>. You can renew your
             subscription after this date.
           </Typography>
+        </Alert>
+      )}
+
+      {/* Subscription recovery notification */}
+      {recoveryMessage && (
+        <Alert severity="success" sx={{ mb: 3, maxWidth: "600px" }}>
+          <Typography variant="body2">{recoveryMessage}</Typography>
         </Alert>
       )}
 

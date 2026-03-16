@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 import stripe
 from dateutil.relativedelta import relativedelta
 from fastapi import HTTPException
+from sqlalchemy import update
 from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
@@ -11,16 +12,20 @@ from studio.app.common.core.subscription.constants import (
     PAYMENT_METHOD_TYPE_CARD,
     PAYMENT_METHOD_TYPE_LINK,
     STRIPE_PROVIDER_NAME,
+    StorageQuota,
+    StripeSubscriptionStatus,
     SubscriptionActiveStatus,
     SubscriptionPeriods,
     SyncStatus,
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
+from studio.app.common.core.utils.datetime_utils import datetime_from_timestamp
 from studio.app.common.models.subscription import (
     SubscriptionPlans,
     SubscriptionProvider,
     SubscriptionUserAccount,
     SubscriptionUserPurchase,
+    UserStorageUsage,
     UserSubscription,
 )
 from studio.app.common.models.user import User
@@ -445,6 +450,185 @@ class CheckoutService:
         return purchase
 
     @staticmethod
+    def recover_existing_stripe_subscription(
+        db: Session, user_id: int, customer_id: str, plan_id: int
+    ) -> bool:
+        """
+        Check if the user already has an active/trialing subscription in Stripe
+        that was not synced to the database (e.g., server was down when webhook
+        was sent). If found, sync it to the database to prevent duplicate
+        subscriptions.
+
+        Args:
+            db: Database session
+            user_id: Internal user ID
+            customer_id: Stripe customer ID
+            plan_id: Subscription plan ID being requested
+
+        Returns:
+            True if an existing subscription was recovered, False otherwise
+        """
+        try:
+            # Check for active or trialing subscriptions in Stripe
+            for status in [
+                StripeSubscriptionStatus.ACTIVE,
+                StripeSubscriptionStatus.TRIAL,
+            ]:
+                stripe_subscriptions = stripe.Subscription.list(
+                    customer=customer_id, status=status, limit=1
+                )
+                if stripe_subscriptions.data:
+                    stripe_sub = stripe_subscriptions.data[0]
+                    logger.info(
+                        f"Found existing Stripe subscription {stripe_sub.id} "
+                        f"(status={status}) for user {user_id}. "
+                        f"Recovering missed webhook."
+                    )
+
+                    # Determine expiration from Stripe subscription
+                    trial_end = getattr(stripe_sub, "trial_end", None)
+                    current_period_end = getattr(stripe_sub, "current_period_end", None)
+
+                    if trial_end:
+                        expiration_date = datetime_from_timestamp(trial_end)
+                    elif current_period_end:
+                        expiration_date = datetime_from_timestamp(current_period_end)
+                    else:
+                        logger.warning(
+                            f"No expiration data in Stripe subscription "
+                            f"{stripe_sub.id}, skipping recovery"
+                        )
+                        return False
+
+                    # Determine the plan from stripe subscription metadata
+                    sub_metadata = getattr(stripe_sub, "metadata", {}) or {}
+                    recovered_plan_id = sub_metadata.get("plan_id")
+                    if recovered_plan_id:
+                        recovered_plan_id = int(recovered_plan_id)
+                    else:
+                        recovered_plan_id = plan_id
+
+                    # Sync to database: create/update subscription
+                    CheckoutService.create_or_update_subscription(
+                        db, user_id, recovered_plan_id, expiration_date
+                    )
+
+                    # Ensure provider and account are linked
+                    provider_id = CheckoutService.get_or_create_stripe_provider(db)
+                    CheckoutService.create_or_update_user_account(
+                        db, user_id, provider_id, customer_id
+                    )
+
+                    # Record purchase if not already recorded
+                    existing_purchase = (
+                        db.query(SubscriptionUserPurchase)
+                        .filter(
+                            SubscriptionUserPurchase.user_id == user_id,
+                            SubscriptionUserPurchase.plan_id == recovered_plan_id,
+                        )
+                        .first()
+                    )
+                    if not existing_purchase:
+                        CheckoutService.record_purchase(db, recovered_plan_id, user_id)
+
+                    # Update storage quota
+                    storage_quota_bytes = StorageQuota.bytes_for_plan(recovered_plan_id)
+                    rows_updated = db.execute(
+                        update(UserStorageUsage)
+                        .where(UserStorageUsage.user_id == user_id)
+                        .values(storage_quota_bytes=storage_quota_bytes)
+                    ).rowcount
+                    if not rows_updated:
+                        db.add(
+                            UserStorageUsage(
+                                user_id=user_id,
+                                storage_usage_bytes=0,
+                                storage_quota_bytes=storage_quota_bytes,
+                            )
+                        )
+
+                    db.commit()
+
+                    # Set default payment method from the recovered subscription
+                    try:
+                        payment_method_id = None
+
+                        # Try getting payment method from the subscription
+                        if stripe_sub.default_payment_method:
+                            payment_method_id = stripe_sub.default_payment_method
+                        else:
+                            # Fallback: get the most recent payment method
+                            # attached to the customer
+                            for pm_type in [
+                                PAYMENT_METHOD_TYPE_CARD,
+                                PAYMENT_METHOD_TYPE_LINK,
+                            ]:
+                                payment_methods = stripe.PaymentMethod.list(
+                                    customer=customer_id, type=pm_type, limit=1
+                                )
+                                if payment_methods.data:
+                                    payment_method_id = payment_methods.data[0].id
+                                    break
+
+                        if payment_method_id:
+                            stripe.Customer.modify(
+                                customer_id,
+                                invoice_settings={
+                                    "default_payment_method": payment_method_id
+                                },
+                            )
+                            logger.info(
+                                f"Recovery: Set payment method "
+                                f"{payment_method_id} as default "
+                                f"for customer {customer_id}"
+                            )
+                        else:
+                            logger.warning(
+                                f"Recovery: No payment method found for "
+                                f"customer {customer_id}"
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"Recovery: Failed to set default payment "
+                            f"method for customer {customer_id}: {str(e)}"
+                        )
+                        # Non-critical, continue with recovery
+
+                    # Invalidate cache
+                    try:
+                        from studio.app.common.core.middleware.secure_routing_middleware import (  # noqa: E501
+                            invalidate_user_tier_cache,
+                        )
+
+                        user_record = db.query(User).filter(User.id == user_id).first()
+                        if user_record:
+                            invalidate_user_tier_cache(user_record.uid)
+                    except Exception:
+                        pass  # Cache invalidation is best-effort
+
+                    logger.info(
+                        f"Successfully recovered Stripe subscription "
+                        f"{stripe_sub.id} for user {user_id}. "
+                        f"Expiration: {expiration_date}"
+                    )
+                    return True
+
+            return False
+
+        except stripe.error.StripeError as e:
+            logger.error(
+                f"Stripe API error during subscription recovery for "
+                f"user {user_id}: {str(e)}"
+            )
+            return False
+        except Exception as e:
+            logger.error(
+                f"Error during subscription recovery for " f"user {user_id}: {str(e)}"
+            )
+            db.rollback()
+            return False
+
+    @staticmethod
     async def handle_checkout_session(
         db: Session, request: CreateCheckoutSessionRequest, user: User
     ) -> CreateCheckoutSessionResponse:
@@ -501,6 +685,31 @@ class CheckoutService:
                         f"Created and saved new Stripe customer {customer_id} "
                         f"for user {user.id}"
                     )
+
+                # Check if user already has an active subscription in Stripe
+                # that wasn't synced to DB (e.g., server was down during
+                # webhook). If found, recover it to prevent duplicate
+                # subscriptions.
+                existing_db_subscription = CheckoutService.get_existing_subscription(
+                    db, user.id
+                )
+                if not existing_db_subscription:
+                    recovered = CheckoutService.recover_existing_stripe_subscription(
+                        db,
+                        user.id,
+                        customer_id,
+                        int(request.plan_id),
+                    )
+                    if recovered:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                "You are already a premium user. "
+                                "Due to a temporary system issue, your "
+                                "subscription was not reflected in your "
+                                "account. It has now been restored."
+                            ),
+                        )
 
                 # Check if user has any previous purchase history
                 # Check both database and Stripe to ensure we don't miss any purchases
@@ -576,10 +785,10 @@ class CheckoutService:
                 )
 
         except HTTPException:
-            raise HTTPException(
-                status_code=500,
-                detail=("Error processing handle chekckout session request"),
-            )
+            # Re-raise HTTPExceptions as-is (e.g., 404 plan not found, 400
+            # missing Stripe price, 409 subscription recovery) so they are not
+            # caught by the generic Exception handler below and wrapped in a 500.
+            raise
         except Exception as e:
             raise HTTPException(
                 status_code=500, detail=f"Internal server error: {str(e)}"

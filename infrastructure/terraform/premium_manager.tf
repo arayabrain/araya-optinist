@@ -24,6 +24,7 @@ resource "aws_lambda_function" "premium_manager" {
       AUTOSCALING_TARGET_GROUP_ARN = aws_lb_target_group.autoscaling.arn
       PREMIUM_INSTANCE_IDS         = join(",", aws_instance.premium[*].id)
       PREMIUM_LAUNCH_TEMPLATE_ID   = aws_launch_template.premium.id
+      PREMIUM_INSTANCE_TYPE        = var.premium_instance_type
       CLUSTER_NAME                 = aws_ecs_cluster.main.name
       PREMIUM_SERVICE_NAME         = aws_ecs_service.premium.name
       RDS_HOST                     = aws_db_proxy.main.endpoint
@@ -32,9 +33,10 @@ resource "aws_lambda_function" "premium_manager" {
       RDS_DATABASE                 = var.mysql_database
       ROUTING_SECRET_KEY           = var.routing_secret_key
       # Dynamic capacity settings (use existing ABSOLUTE_MAX + minimal new ones)
-      PREMIUM_EXTRA_CAPACITY     = "1" # Extra instances for quick response
-      PREMIUM_STANDBY_POOL_SIZE  = "1" # Number of stopped instances to maintain
-      PREMIUM_IDLE_TIMEOUT_HOURS = "3" # Hours before idle instances are converted to standby
+      PREMIUM_EXTRA_CAPACITY        = "1" # Extra instances for quick response
+      PREMIUM_STANDBY_POOL_SIZE     = "1" # Number of stopped instances to maintain
+      PREMIUM_IDLE_TIMEOUT_HOURS    = "3" # Hours before idle instances are converted to standby
+      PREMIUM_STOPPED_MAX_AGE_HOURS = "4" # Terminate stopped standby instances older than this
 
       # Internal API configuration for experiment sync after migration
       ALB_DNS_NAME        = aws_lb.autoscaling.dns_name
@@ -578,14 +580,14 @@ resource "aws_lambda_function" "cost_tracker" {
 
   environment {
     variables = {
-      ASG_NAME               = aws_autoscaling_group.main.name
-      REGION                 = var.aws_region
-      RDS_HOST               = aws_db_proxy.main.endpoint
-      RDS_USER               = var.mysql_user
-      RDS_PASSWORD           = var.mysql_password
-      RDS_DATABASE           = var.mysql_database
-      PREMIUM_HOURLY_RATE    = "0.1088"
-      FREE_HOURLY_RATE       = "0.1088"
+      ASG_NAME            = aws_autoscaling_group.main.name
+      REGION              = var.aws_region
+      RDS_HOST            = aws_db_proxy.main.endpoint
+      RDS_USER            = var.mysql_user
+      RDS_PASSWORD        = var.mysql_password
+      RDS_DATABASE        = var.mysql_database
+      PREMIUM_HOURLY_RATE = "0.1088"
+      FREE_HOURLY_RATE    = "0.1088"
     }
   }
 
