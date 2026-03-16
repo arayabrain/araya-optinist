@@ -11,7 +11,7 @@ import { useNavigate } from "react-router-dom"
 
 import { useSnackbar, VariantType } from "notistack"
 
-import { Edit } from "@mui/icons-material"
+import { Edit, HelpOutline } from "@mui/icons-material"
 import {
   Box,
   Button,
@@ -21,6 +21,7 @@ import {
   MenuItem,
   Select,
   styled,
+  Tooltip,
   Typography,
 } from "@mui/material"
 import { isRejectedWithValue } from "@reduxjs/toolkit"
@@ -404,7 +405,32 @@ const Account = () => {
         {renderSubscriptionButtons()}
       </BoxFlex>
       <BoxFlex>
-        <TitleData>Data Deletion Priority</TitleData>
+        <TitleData sx={{ display: "flex", alignItems: "center" }}>
+          Data Deletion Priority
+          <Tooltip
+            title={
+              <Box>
+                <Box>
+                  Controls which data is kept when expired subscription data is
+                  cleaned up.
+                </Box>
+                <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2 }}>
+                  <li>&quot;Preserve Outputs&quot;: keeps workflow results.</li>
+                  <li>
+                    &quot;Preserve Inputs&quot;: keeps uploaded source files.
+                  </li>
+                </Box>
+              </Box>
+            }
+            arrow
+          >
+            <HelpOutline
+              fontSize="small"
+              color="action"
+              sx={{ ml: 1, cursor: "pointer" }}
+            />
+          </Tooltip>
+        </TitleData>
         {isEditDeletionPriority ? (
           <FormControl size="small" sx={{ minWidth: 200 }}>
             <Select
@@ -456,11 +482,6 @@ const Account = () => {
           </>
         )}
       </BoxFlex>
-      <Typography variant="caption" color="text.secondary" sx={{ ml: "250px" }}>
-        Controls which data is kept when expired subscription data is cleaned
-        up. &quot;Preserve Outputs&quot; keeps workflow results; &quot;Preserve
-        Inputs&quot; keeps uploaded source files.
-      </Typography>
       <BoxFlex sx={{ justifyContent: "space-between", mt: 10, maxWidth: 600 }}>
         <Button variant="contained" color="primary" onClick={onChangePwClick}>
           Change Password
