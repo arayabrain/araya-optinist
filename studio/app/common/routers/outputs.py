@@ -50,6 +50,8 @@ async def get_or_generate_thumbnail(
     original_path: str,
     remote_bucket_name: str,
     thumb_type: ThumbnailType,
+    hdf5_path: str = None,
+    mat_path: str = None,
 ) -> str:
     """
     Get thumbnail path, generating if needed (lazy migration).
@@ -69,6 +71,8 @@ async def get_or_generate_thumbnail(
         remote_bucket_name: remote storage bucket name for remote storage
         thumb_type: ThumbnailType.INPUT (for TIFF) or ThumbnailType.ROI
             (for cell_roi.json)
+        hdf5_path: Internal HDF5 dataset path (optional)
+        mat_path: Internal MAT dataset path (optional)
 
     Returns:
         Path to the thumbnail PNG file (may be newly generated)
@@ -120,6 +124,8 @@ async def get_or_generate_thumbnail(
                     source_path=original_path,
                     output_path=thumb_path,
                     abs_source_path=abs_original_path,
+                    hdf5_path=hdf5_path,
+                    mat_path=mat_path,
                 )
             else:
                 ThumbnailGenerator.generate_roi_thumbnail(abs_original_path, thumb_path)
@@ -353,8 +359,10 @@ async def get_thumbnail(
                 pass  # Continue processing
 
         # Get the original file path for generation
+        hdf5_path = None
+        mat_path = None
         if thumb_type == ThumbnailType.INPUT:
-            # Need to find the input TIFF file
+            # Need to find the input file and dataset paths
             try:
                 input_filenames = SmkUtils.get_datatypes_inputs(
                     workspace_id, unique_id, apply_basename=True
@@ -369,6 +377,29 @@ async def get_thumbnail(
                 raise HTTPException(
                     status_code=404, detail="Could not determine input file"
                 )
+
+            # Extract hdf5Path/matPath from workflow config, preferring the
+            # node that will produce the best thumbnail (HDF5 > MAT).
+            try:
+                from studio.app.common.core.workflow.workflow import NodeType
+
+                wf_config = WorkflowConfigReader.read(workspace_id, unique_id)
+                best_priority = -1
+                for _, node in wf_config.nodeDict.items():
+                    if not node.data.path:
+                        continue
+                    if node.type == NodeType.HDF5 and node.data.hdf5Path:
+                        priority = 2
+                    elif node.type == NodeType.MATLAB and node.data.matPath:
+                        priority = 1
+                    else:
+                        continue
+                    if priority > best_priority:
+                        best_priority = priority
+                        hdf5_path = node.data.hdf5Path
+                        mat_path = node.data.matPath
+            except Exception:
+                pass  # Dataset paths are optional enhancement
         else:
             # ROI thumbnail uses cell_roi.json - need to find actual path from config
             from studio.app.common.core.dataview.dataview_services import (
@@ -376,7 +407,7 @@ async def get_thumbnail(
             )
 
             try:
-                thumbnails = DataviewService.make_dataview_thumnail_paths(
+                thumbnails, _, _ = DataviewService.make_dataview_thumnail_paths(
                     workspace_id, unique_id
                 )
                 if thumbnails.roi_url:
@@ -394,7 +425,13 @@ async def get_thumbnail(
         # Generate thumbnail (may download source from remote storage if needed)
         # Note: get_or_generate_thumbnail returns a normalized (relative) path
         await get_or_generate_thumbnail(
-            workspace_id, unique_id, original_path, remote_bucket_name, thumb_type
+            workspace_id,
+            unique_id,
+            original_path,
+            remote_bucket_name,
+            thumb_type,
+            hdf5_path=hdf5_path,
+            mat_path=mat_path,
         )
         # Re-get the absolute path since generation should have created the file
         thumb_path = ThumbnailGenerator.get_thumbnail_path(

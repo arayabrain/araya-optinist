@@ -4,13 +4,17 @@ import json
 import os
 from typing import Optional
 
+import h5py
 import imageio.v3 as imageio
 import numpy as np
 import tifffile
 
+from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.const import EXTENSION_LABELS, ThumbnailConst, ThumbnailType
 from studio.app.dir_path import DIRPATH
+
+logger = AppLogger.get_logger()
 
 
 class ThumbnailGenerator:
@@ -76,20 +80,18 @@ class ThumbnailGenerator:
         return None
 
     @classmethod
-    def generate_tiff_thumbnail(
-        cls, tiff_path: str, output_path: str, max_size: int = 512
+    def _render_array_as_thumbnail(
+        cls, frame: np.ndarray, output_path: str, max_size: int = 512
     ) -> None:
         """
-        Generate a PNG thumbnail from the first frame of a TIFF file.
+        Normalize a 2D numeric array to uint8, resize, and save as PNG.
 
         Args:
-            tiff_path: Path to source TIFF file
+            frame: 2D numpy array (grayscale image or heatmap)
             output_path: Path to save PNG thumbnail
             max_size: Maximum dimension for thumbnail (default 512px)
         """
-        # Read only the first frame to minimize memory usage
-        img = tifffile.imread(tiff_path, key=0)
-
+        img = frame
         # Handle multi-channel images (take first channel or average)
         if img.ndim > 2:
             img = img[..., 0] if img.shape[-1] <= 4 else img[0]
@@ -117,6 +119,108 @@ class ThumbnailGenerator:
 
         # Save as PNG
         imageio.imwrite(output_path, img_normalized)
+
+    @classmethod
+    def generate_tiff_thumbnail(
+        cls, tiff_path: str, output_path: str, max_size: int = 512
+    ) -> None:
+        """
+        Generate a PNG thumbnail from the first frame of a TIFF file.
+
+        Args:
+            tiff_path: Path to source TIFF file
+            output_path: Path to save PNG thumbnail
+            max_size: Maximum dimension for thumbnail (default 512px)
+        """
+        # Read only the first frame to minimize memory usage
+        img = tifffile.imread(tiff_path, key=0)
+        cls._render_array_as_thumbnail(img, output_path, max_size)
+
+    @classmethod
+    def generate_hdf5_thumbnail(
+        cls,
+        file_path: str,
+        output_path: str,
+        hdf5_path: str,
+        max_size: int = 512,
+    ) -> None:
+        """
+        Generate a PNG thumbnail from an HDF5 dataset.
+
+        3D → first frame, 2D → heatmap, 1D or error → raises ValueError.
+
+        Args:
+            file_path: Path to HDF5 file
+            output_path: Path to save PNG thumbnail
+            hdf5_path: Internal dataset path (e.g. "/data/images")
+            max_size: Maximum dimension for thumbnail (default 512px)
+        """
+        with h5py.File(file_path, "r") as f:
+            obj = f[hdf5_path]
+            if not isinstance(obj, h5py.Dataset):
+                raise ValueError(
+                    f"HDF5 path '{hdf5_path}' in '{file_path}' is a "
+                    f"{type(obj).__name__}, not a dataset"
+                )
+            if obj.size == 0:
+                raise ValueError(
+                    f"HDF5 dataset '{hdf5_path}' in '{file_path}' is empty"
+                )
+            ndim = obj.ndim
+            if ndim >= 3:
+                frame = obj[0]
+            elif ndim == 2:
+                frame = obj[:]
+            else:
+                raise ValueError(
+                    f"HDF5 dataset '{hdf5_path}' in '{file_path}' has "
+                    f"unsupported dimensionality: {ndim}"
+                )
+        cls._render_array_as_thumbnail(np.asarray(frame), output_path, max_size)
+
+    @classmethod
+    def generate_mat_thumbnail(
+        cls,
+        file_path: str,
+        output_path: str,
+        mat_path: str,
+        max_size: int = 512,
+    ) -> None:
+        """
+        Generate a PNG thumbnail from a MAT file dataset.
+
+        3D → first frame, 2D → heatmap, 1D or error → raises ValueError.
+
+        Args:
+            file_path: Path to MAT file
+            output_path: Path to save PNG thumbnail
+            mat_path: Internal dataset path (e.g. "data/images")
+            max_size: Maximum dimension for thumbnail (default 512px)
+        """
+        from studio.app.optinist.routers.mat import MatGetter
+
+        try:
+            raw = MatGetter.data(file_path, mat_path)
+        except (KeyError, TypeError) as e:
+            raise ValueError(
+                f"MAT path '{mat_path}' not found in '{file_path}': {e}"
+            ) from e
+        data = np.asarray(raw)
+        if data.size == 0:
+            raise ValueError(
+                f"MAT dataset '{mat_path}' in '{file_path}' is empty"
+            )
+        ndim = data.ndim
+        if ndim >= 3:
+            frame = data[0]
+        elif ndim == 2:
+            frame = data
+        else:
+            raise ValueError(
+                f"MAT dataset '{mat_path}' in '{file_path}' has "
+                f"unsupported dimensionality: {ndim}"
+            )
+        cls._render_array_as_thumbnail(frame, output_path, max_size)
 
     @classmethod
     def generate_roi_thumbnail(
@@ -365,20 +469,28 @@ class ThumbnailGenerator:
 
     @classmethod
     def generate_input_thumbnail(
-        cls, source_path: str, output_path: str, abs_source_path: str = None
+        cls,
+        source_path: str,
+        output_path: str,
+        abs_source_path: str = None,
+        hdf5_path: str = None,
+        mat_path: str = None,
     ) -> None:
         """
         Generate an input thumbnail, choosing the right strategy automatically.
 
         - TIFF file exists locally → render first frame as grayscale
-        - TIFF file not found locally → placeholder with file type label
-        - Non-TIFF file (HDF5, MAT, etc.) → placeholder with file type label
+        - HDF5 file + hdf5_path → render dataset preview
+        - MAT file + mat_path → render dataset preview
+        - Otherwise → placeholder with file type label
 
         Args:
             source_path: Original file path (used for extension detection and label)
             output_path: Path to save the PNG thumbnail
             abs_source_path: Absolute path to the source file for reading.
                 If None, uses source_path directly.
+            hdf5_path: Internal HDF5 dataset path (e.g. "/data/images")
+            mat_path: Internal MAT dataset path (e.g. "data/images")
         """
         resolved = abs_source_path or source_path
 
@@ -386,6 +498,18 @@ class ThumbnailGenerator:
             if resolved and os.path.exists(resolved):
                 cls.generate_tiff_thumbnail(resolved, output_path)
             else:
+                cls.generate_placeholder_thumbnail(output_path, file_path=source_path)
+        elif hdf5_path and resolved and os.path.exists(resolved):
+            try:
+                cls.generate_hdf5_thumbnail(resolved, output_path, hdf5_path)
+            except Exception as e:
+                logger.warning(f"HDF5 thumbnail failed, using placeholder: {e}")
+                cls.generate_placeholder_thumbnail(output_path, file_path=source_path)
+        elif mat_path and resolved and os.path.exists(resolved):
+            try:
+                cls.generate_mat_thumbnail(resolved, output_path, mat_path)
+            except Exception as e:
+                logger.warning(f"MAT thumbnail failed, using placeholder: {e}")
                 cls.generate_placeholder_thumbnail(output_path, file_path=source_path)
         else:
             cls.generate_placeholder_thumbnail(output_path, file_path=source_path)

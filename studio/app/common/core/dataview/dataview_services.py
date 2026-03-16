@@ -426,14 +426,21 @@ class DataviewService:
         unique_id: str,
         experiment_config_: ExptConfig = None,
         workflow_config_: WorkflowConfig = None,
-    ) -> DataviewThumbnails:
+    ) -> tuple:
         """
         Create values to set in DataviewThumbnails
         *Constructed from ExptConfig and WorkflowConfig
+
+        Returns:
+            Tuple of (DataviewThumbnails, hdf5_path, mat_path)
         """
 
         # Make input data (image) thumbnails path (from WorkflowConfig)
-        # Check all input node types, not just IMAGE
+        # Select the input node that will produce the best thumbnail.
+        # Priority: IMAGE (TIFF) > HDF5 with dataset path > MAT with dataset
+        # path > any other input node.  This ensures that in multi-input
+        # workflows (e.g. tutorial4: HDF5 imaging + MAT behavior) we always
+        # pick the most visually informative source regardless of dict order.
         image_url = None
         workflow_config = (
             workflow_config_
@@ -449,10 +456,26 @@ class DataviewService:
             NodeType.FLUO,
             NodeType.BEHAVIOR,
         ]
+        hdf5_path = None
+        mat_path = None
+        best_priority = -1
         for _, node in workflow_config.nodeDict.items():
-            if node.type in input_node_types and node.data.path:
+            if node.type not in input_node_types or not node.data.path:
+                continue
+            # Assign priority: renderable image data first
+            if node.type == NodeType.IMAGE:
+                priority = 3
+            elif node.type == NodeType.HDF5 and node.data.hdf5Path:
+                priority = 2
+            elif node.type == NodeType.MATLAB and node.data.matPath:
+                priority = 1
+            else:
+                priority = 0
+            if priority > best_priority:
+                best_priority = priority
                 image_url = normalize_output_path(node.data.path[0])
-                break
+                hdf5_path = node.data.hdf5Path
+                mat_path = node.data.matPath
 
         # Make output data (roi) thumbnails path (from ExptConfig)
         roi_url = None
@@ -466,10 +489,11 @@ class DataviewService:
                 roi_url = normalize_output_path(function.outputPaths["cell_roi"].path)
                 break
 
-        return DataviewThumbnails(
+        thumbnails = DataviewThumbnails(
             image_url=image_url,
             roi_url=roi_url,
         )
+        return thumbnails, hdf5_path, mat_path
 
     @classmethod
     def generate_thumbnail_images(
@@ -478,6 +502,8 @@ class DataviewService:
         unique_id: str,
         image_path: Optional[str] = None,
         roi_path: Optional[str] = None,
+        hdf5_path: Optional[str] = None,
+        mat_path: Optional[str] = None,
     ) -> DataviewThumbnails:
         """
         Generate PNG thumbnails for DataView.
@@ -486,8 +512,8 @@ class DataviewService:
         in DataView. These are ~50-100KB vs full data files which can be 100MB+.
 
         For TIFF files: renders first frame as grayscale image
-        For other formats (HDF5, MAT, microscope, etc.): generates placeholder
-        with file type label
+        For HDF5/MAT files: renders dataset preview if hdf5_path/mat_path provided
+        For other formats (microscope, etc.): generates placeholder with file type label
 
         Stores in: {output_dir}/{workspace_id}/{unique_id}/thumbnails/
         - input_thumb.png (first frame of input TIFF or placeholder)
@@ -498,6 +524,8 @@ class DataviewService:
             unique_id: Experiment unique identifier
             image_path: Path to input file (TIFF, HDF5, MAT, etc.) (optional)
             roi_path: Path to cell_roi.json file (optional)
+            hdf5_path: Internal HDF5 dataset path (optional)
+            mat_path: Internal MAT dataset path (optional)
 
         Returns:
             DataviewThumbnails with paths to generated PNG thumbnails
@@ -523,6 +551,8 @@ class DataviewService:
                     source_path=image_path,
                     output_path=input_thumb_path,
                     abs_source_path=abs_image_path,
+                    hdf5_path=hdf5_path,
+                    mat_path=mat_path,
                 )
                 logger.debug(f"Generated input thumbnail: {input_thumb_path}")
             except Exception as e:
