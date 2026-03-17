@@ -83,17 +83,6 @@ export const StructuredFilePlot = memo(function StructuredFilePlot() {
 
   return (
     <Box>
-      {result.dataset_path && (
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          title={result.dataset_path}
-          noWrap
-          sx={{ px: 1, display: "block", maxWidth: "100%" }}
-        >
-          {result.dataset_path}
-        </Typography>
-      )}
       <DataView result={result} />
     </Box>
   )

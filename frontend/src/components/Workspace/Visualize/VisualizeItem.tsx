@@ -9,7 +9,7 @@ import {
 import { useDispatch, useSelector } from "react-redux"
 
 import { Close, Numbers } from "@mui/icons-material"
-import { Chip, IconButton } from "@mui/material"
+import { Chip, IconButton, Typography } from "@mui/material"
 import Box from "@mui/material/Box"
 import FormControl from "@mui/material/FormControl"
 import InputLabel from "@mui/material/InputLabel"
@@ -175,6 +175,10 @@ const ItemHeader = memo(function ItemHeader({
   const dataType = useSelector(selectVisualizeDataType(itemId))
   const filePath = useSelector(selectVisualizeDataFilePath(itemId))
   const isSingleData = useSelector(selectDisplayDataIsSingle(itemId))
+  const datasetPath = useSelector(
+    (state: RootState) =>
+      state.displayData.structured[itemId]?.data?.dataset_path,
+  )
   const dispatch = useDispatch<AppDispatch>()
   const handleClose = (e: MouseEvent) => {
     e.stopPropagation()
@@ -199,6 +203,23 @@ const ItemHeader = memo(function ItemHeader({
           sx={{ marginRight: 2 }}
         />
         <FilePathSelectItem itemId={itemId} />
+
+        {/** Display the dataset path for structured data */}
+        {(dataType === DATA_TYPE_SET.MATLAB ||
+          dataType === DATA_TYPE_SET.HDF5) &&
+          datasetPath && (
+            <FormControl variant="standard" sx={{ ml: 2, minWidth: 120 }}>
+              <InputLabel shrink>dataset path</InputLabel>
+              <Typography
+                variant="body2"
+                title={datasetPath}
+                noWrap
+                sx={{ mt: 2.5, maxWidth: 200 }}
+              >
+                {datasetPath}
+              </Typography>
+            </FormControl>
+          )}
       </Box>
       {dataType === DATA_TYPE_SET.TIME_SERIES && (
         <Box flexGrow={1}>
