@@ -10,7 +10,7 @@ resource "aws_ecr_repository" "app" {
 
   name                 = "${var.environment}-optinist-for-cloud"
   image_tag_mutability = "MUTABLE"
-  force_delete         = false
+  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
