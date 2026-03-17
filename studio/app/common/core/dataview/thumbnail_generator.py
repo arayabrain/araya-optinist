@@ -9,9 +9,9 @@ import imageio.v3 as imageio
 import numpy as np
 import tifffile
 
+from studio.app.common.core.dataview.dataview import DatasetPaths
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.utils.filepath_creater import join_filepath
-from studio.app.common.core.dataview.dataview import DatasetPaths
 from studio.app.const import EXTENSION_LABELS, ThumbnailConst, ThumbnailType
 from studio.app.dir_path import DIRPATH
 

@@ -8,6 +8,7 @@ from fastapi import Request
 from sqlalchemy import func
 from sqlmodel import Session, delete
 
+from studio.app.common.core.dataview.dataview import DatasetPaths
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptOutputPathIds
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_record_services import (
@@ -19,7 +20,6 @@ from studio.app.common.core.utils.filepath_creater import (
     join_filepath,
     normalize_output_path,
 )
-from studio.app.common.core.dataview.dataview import DatasetPaths
 from studio.app.common.core.workflow.workflow import NodeType
 from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.db.database import session_scope
