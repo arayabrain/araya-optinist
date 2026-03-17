@@ -46,8 +46,7 @@ class ExperimentRecordService:
         # Get original thumbnail paths (TIFF/JSON references)
         (
             original_thumbnails,
-            hdf5_path,
-            mat_path,
+            dataset_paths,
         ) = DataviewService.make_dataview_thumnail_paths(
             workspace_id,
             unique_id,
@@ -63,8 +62,7 @@ class ExperimentRecordService:
                 unique_id,
                 image_path=original_thumbnails.image_url,
                 roi_path=original_thumbnails.roi_url,
-                hdf5_path=hdf5_path,
-                mat_path=mat_path,
+                dataset_paths=dataset_paths,
             )
             # Use generated PNG paths if available, fall back to originals
             thumbnails = DataviewThumbnails(
