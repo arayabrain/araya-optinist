@@ -23,14 +23,14 @@ import {
   Annotations,
 } from "plotly.js"
 
-import { Button, LinearProgress, TextField, Typography } from "@mui/material"
+import { LinearProgress, Typography } from "@mui/material"
 import Box from "@mui/material/Box"
 import FormControlLabel from "@mui/material/FormControlLabel"
-import Slider from "@mui/material/Slider"
 import { styled } from "@mui/material/styles"
 import Switch from "@mui/material/Switch"
 
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
+import { MoviePlayerControls } from "components/Workspace/Visualize/Plot/MoviePlayerControls"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
 import {
   addRoi,
@@ -969,40 +969,16 @@ const PlayBack = memo(function PlayBack({ activeIndex }: ActiveIndexProps) {
     [dispatch, itemId],
   )
   return (
-    <>
-      <Button sx={{ mt: 1.5 }} variant="outlined" onClick={onPlayClick}>
-        Play
-      </Button>
-      <Button sx={{ mt: 1.5, ml: 1 }} variant="outlined" onClick={onPauseClick}>
-        Pause
-      </Button>
-      <TextField
-        sx={{ width: 100, ml: 2 }}
-        label="msec/frame"
-        type="number"
-        inputProps={{
-          step: 100,
-          min: 0,
-          max: 1000,
-        }}
-        InputLabelProps={{
-          shrink: true,
-        }}
-        onChange={onDurationChange}
-        value={duration}
-      />
-      <Slider
-        aria-label="Custom marks"
-        defaultValue={20}
-        value={startIndex + activeIndex}
-        valueLabelDisplay="auto"
-        step={1}
-        marks
-        min={startIndex}
-        max={maxSize === 0 ? 0 : endIndex}
-        onChange={onSliderChange}
-      />
-    </>
+    <MoviePlayerControls
+      activeIndex={startIndex + activeIndex}
+      minIndex={startIndex}
+      maxIndex={maxSize === 0 ? 0 : endIndex}
+      duration={duration}
+      onPlayClick={onPlayClick}
+      onPauseClick={onPauseClick}
+      onDurationChange={onDurationChange}
+      onSliderChange={onSliderChange}
+    />
   )
 })
 

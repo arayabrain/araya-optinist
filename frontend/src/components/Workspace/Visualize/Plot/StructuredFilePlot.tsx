@@ -10,16 +10,10 @@ import {
 import PlotlyChart from "react-plotlyjs-ts"
 import { useDispatch, useSelector } from "react-redux"
 
-import {
-  Box,
-  Button,
-  LinearProgress,
-  Slider,
-  TextField,
-  Typography,
-} from "@mui/material"
+import { Box, LinearProgress, Typography } from "@mui/material"
 
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
+import { MoviePlayerControls } from "components/Workspace/Visualize/Plot/MoviePlayerControls"
 import { getStructuredData } from "store/slice/DisplayData/DisplayDataActions"
 import { selectPipelineLatestUid } from "store/slice/Pipeline/PipelineSelectors"
 import { selectCurrentWorkspaceId } from "store/slice/Workspace/WorkspaceSelector"
@@ -83,17 +77,6 @@ export const StructuredFilePlot = memo(function StructuredFilePlot() {
 
   return (
     <Box>
-      {result.dataset_path && (
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          title={result.dataset_path}
-          noWrap
-          sx={{ px: 1, display: "block", maxWidth: "100%" }}
-        >
-          {result.dataset_path}
-        </Typography>
-      )}
       <DataView result={result} />
     </Box>
   )
@@ -228,46 +211,19 @@ const ImageView = memo(function ImageView({
 
   return (
     <Box>
-      <PlotlyChart data={plotData} layout={layout} />
       {data.length > 1 && (
-        <>
-          <Button sx={{ mt: 1.5 }} variant="outlined" onClick={onPlayClick}>
-            Play
-          </Button>
-          <Button
-            sx={{ mt: 1.5, ml: 1 }}
-            variant="outlined"
-            onClick={onPauseClick}
-          >
-            Pause
-          </Button>
-          <TextField
-            sx={{ width: 100, ml: 2 }}
-            label="msec/frame"
-            type="number"
-            inputProps={{
-              step: 100,
-              min: 0,
-              max: 1000,
-            }}
-            InputLabelProps={{
-              shrink: true,
-            }}
-            onChange={onDurationChange}
-            value={duration}
-          />
-          <Slider
-            aria-label="Custom marks"
-            value={activeIndex}
-            valueLabelDisplay="auto"
-            step={1}
-            marks
-            min={0}
-            max={maxIndex}
-            onChange={onSliderChange}
-          />
-        </>
+        <MoviePlayerControls
+          sx={{ mt: 1 }}
+          activeIndex={activeIndex}
+          maxIndex={maxIndex}
+          duration={duration}
+          onPlayClick={onPlayClick}
+          onPauseClick={onPauseClick}
+          onDurationChange={onDurationChange}
+          onSliderChange={onSliderChange}
+        />
       )}
+      <PlotlyChart data={plotData} layout={layout} />
     </Box>
   )
 })
