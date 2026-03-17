@@ -3,7 +3,6 @@ set -e
 
 # Common Configuration
 REGION="ap-northeast-1"
-AWS_ACCOUNT_ID="637423646530"
 
 # ===========================================
 # Parse arguments
@@ -78,7 +77,9 @@ echo "  Git commit  : ${GIT_SHA}"
 echo "============================================"
 echo ""
 
-if [ "$ENVIRONMENT" = "subscr" ] || echo "$ENVIRONMENT" | grep -qi "prod"; then
+# Production environment uses environment="subscr" (see environments/production.tfvars)
+PRODUCTION_ENV="subscr"
+if [ "$ENVIRONMENT" = "$PRODUCTION_ENV" ]; then
     echo "  *** WARNING: You are pushing to PRODUCTION! ***"
     echo ""
 fi
@@ -113,13 +114,11 @@ echo "Building image for repo: $ECR_URI (repo: $REPO_NAME)"
 ECR_REGISTRY=$(echo "$ECR_URI" | sed 's|/.*||')
 aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_REGISTRY 2>&1 | grep -v "error storing credentials" || true
 
-# Check if ECR repository exists, create if it doesn't
+# Verify ECR repository exists (must be created by Terraform, not this script)
 if ! aws ecr describe-repositories --repository-names $REPO_NAME --region $REGION >/dev/null 2>&1; then
-    echo "Repository $REPO_NAME does not exist. Creating..."
-    aws ecr create-repository --repository-name $REPO_NAME --region $REGION
-    echo "Repository $REPO_NAME created successfully."
-else
-    echo "Repository $REPO_NAME already exists."
+    echo "ERROR: ECR repository '$REPO_NAME' does not exist."
+    echo "The repository must be created by Terraform. Run 'terraform apply' first."
+    exit 1
 fi
 
 # Get Firebase config from Secrets Manager (matches the environment's tfvars)

@@ -25,7 +25,8 @@ resource "aws_ecr_repository" "app" {
 # Lifecycle policy:
 #   - Remove untagged images after 7 days
 #   - Keep only the last 10 versioned images (YYYYMMDD-HHMMSS-<sha> tags)
-#   - :latest is always kept (not matched by tagPrefixList)
+#   - tagPrefixList ["20"] matches date-based tags from 2000-2099 (e.g. 20260317-143022-a1b2c3d)
+#   - :latest is always kept (does not start with "20")
 resource "aws_ecr_lifecycle_policy" "app" {
   count = var.ecr_repository_url == "" ? 1 : 0
 

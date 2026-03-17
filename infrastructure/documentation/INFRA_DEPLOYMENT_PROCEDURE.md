@@ -159,7 +159,7 @@ terraform destroy -var-file=environments/development.tfvars
 
 This destroys all AWS resources but **preserves**: S3 tfstate bucket, Firebase project, Stripe config, tfvars files.
 
-> **Note**: The development ECR repository (`development-optinist-for-cloud`) is managed by Terraform but has `force_delete = false`, so `terraform destroy` will fail if it still contains images. To fully destroy, either delete images first or remove the ECR resource from state with `terraform state rm aws_ecr_repository.app[0]`.
+> **Note**: The development ECR repository (`development-optinist-for-cloud`) is managed by Terraform with `force_delete = true`, so `terraform destroy` will delete the repository and all images inside it. If you need to preserve images before destroying, push them to another repository first.
 
 To recreate later, simply run `terraform apply` again — no first-time setup needed.
 
@@ -178,7 +178,7 @@ Production and development use **separate ECR repositories** to ensure complete 
 | Environment | ECR Repository | Managed by |
 |---|---|---|
 | Production | `optinist-for-cloud` | Pre-existing (outside Terraform) |
-| Development | `development-optinist-for-cloud` | Terraform (`manage_ecr_repository = true`) |
+| Development | `development-optinist-for-cloud` | Terraform (created when `ecr_repository_url` is empty) |
 
 Both environments push to `:latest` within their own repo. A Docker push for dev testing **cannot** affect production.
 
