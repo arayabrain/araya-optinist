@@ -25,8 +25,10 @@ resource "aws_ecr_repository" "app" {
   }
 }
 
-# Lifecycle policy: keep only the last 10 untagged images to control storage costs.
-# Tagged images (like :latest) are kept indefinitely.
+# Lifecycle policy:
+#   - Remove untagged images after 7 days
+#   - Keep only the last 10 versioned images (YYYYMMDD-HHMMSS-<sha> tags)
+#   - :latest is always kept (not matched by tagPrefixList)
 resource "aws_ecr_lifecycle_policy" "app" {
   count = var.manage_ecr_repository ? 1 : 0
 
@@ -42,6 +44,19 @@ resource "aws_ecr_lifecycle_policy" "app" {
           countType   = "sinceImagePushed"
           countUnit   = "days"
           countNumber = 7
+        }
+        action = {
+          type = "expire"
+        }
+      },
+      {
+        rulePriority = 2
+        description  = "Keep only last 10 versioned images"
+        selection = {
+          tagStatus     = "tagged"
+          tagPrefixList = ["20"]
+          countType     = "imageCountMoreThan"
+          countNumber   = 10
         }
         action = {
           type = "expire"

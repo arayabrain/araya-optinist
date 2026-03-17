@@ -184,17 +184,42 @@ Both environments push to `:latest` within their own repo. A Docker push for dev
 
 ### Building and Pushing Images
 
-The build script automatically reads the correct ECR URL from Terraform output:
+The build script reads the target environment from Terraform output, displays a confirmation prompt, and requires explicit approval before pushing:
 
 ```bash
 cd infrastructure/scripts
 
-# Ensure you're initialized to the correct environment first!
+# Standard usage — auto-generates version tag, asks for confirmation
 ./ecr_build_push.sh
+
+# Custom version tag
+./ecr_build_push.sh --tag v1.2.3
+
+# Skip confirmation (for CI/CD pipelines)
+./ecr_build_push.sh --yes
 ```
+
+The script will display:
+```
+============================================
+  BUILD AND PUSH CONFIRMATION
+============================================
+  Environment : development
+  ECR Repo    : development-optinist-for-cloud
+  Tags        : latest, 20260317-143022-a1b2c3d
+============================================
+
+Proceed with build and push? (y/N):
+```
+
+For production, an additional **WARNING** banner is shown.
 
 - If initialized to **development** → pushes to `development-optinist-for-cloud:latest`
 - If initialized to **production** → pushes to `optinist-for-cloud:latest`
+
+Every push creates **two tags**:
+- `:latest` — used by ECS task definitions (always current)
+- `:YYYYMMDD-HHMMSS-<git-sha>` — immutable version for history and rollback (e.g., `20260317-143022-a1b2c3d`)
 
 ### Safe Deployment Workflow
 
@@ -204,9 +229,49 @@ cd infrastructure/scripts
 4. Verify in development
 5. When ready for production: switch backend, rebuild, push, and redeploy
 
+### Rollback to a Previous Image
+
+List available image versions:
+
+```bash
+aws ecr list-images \
+  --repository-name development-optinist-for-cloud \
+  --region ap-northeast-1 \
+  --query 'imageIds[?imageTag!=`latest`].imageTag' \
+  --output table
+```
+
+Retag a previous version as `:latest` and redeploy:
+
+```bash
+# 1. Get the manifest of the version you want to roll back to
+MANIFEST=$(aws ecr batch-get-image \
+  --repository-name development-optinist-for-cloud \
+  --image-ids imageTag=20260316-091500-f4e5d6a \
+  --query 'images[0].imageManifest' --output text \
+  --region ap-northeast-1)
+
+# 2. Retag it as :latest
+aws ecr put-image \
+  --repository-name development-optinist-for-cloud \
+  --image-tag latest \
+  --image-manifest "$MANIFEST" \
+  --region ap-northeast-1
+
+# 3. Force ECS to pull the rolled-back image
+aws ecs update-service \
+  --cluster development-optinist-cloud \
+  --service <service-name> \
+  --force-new-deployment \
+  --region ap-northeast-1
+```
+
 ### Image Cleanup
 
-The development ECR repo has an automatic lifecycle policy that removes untagged images after 7 days to keep storage costs minimal.
+The ECR lifecycle policy automatically manages storage:
+- **Untagged images**: removed after 7 days
+- **Versioned images**: only the last 10 are kept
+- **`:latest`**: always retained
 
 ---
 
