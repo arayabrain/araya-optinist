@@ -578,14 +578,14 @@ resource "aws_lambda_function" "cost_tracker" {
 
   environment {
     variables = {
-      ASG_NAME               = aws_autoscaling_group.main.name
-      REGION                 = var.aws_region
-      RDS_HOST               = aws_db_proxy.main.endpoint
-      RDS_USER               = var.mysql_user
-      RDS_PASSWORD           = var.mysql_password
-      RDS_DATABASE           = var.mysql_database
-      PREMIUM_HOURLY_RATE    = "0.1088"
-      FREE_HOURLY_RATE       = "0.1088"
+      ASG_NAME            = aws_autoscaling_group.main.name
+      REGION              = var.aws_region
+      RDS_HOST            = aws_db_proxy.main.endpoint
+      RDS_USER            = var.mysql_user
+      RDS_PASSWORD        = var.mysql_password
+      RDS_DATABASE        = var.mysql_database
+      PREMIUM_HOURLY_RATE = "0.1088"
+      FREE_HOURLY_RATE    = "0.1088"
     }
   }
 

@@ -10,7 +10,7 @@ resource "null_resource" "build_and_deploy" {
     # Force rebuild when git branch changes
     git_branch = var.git_branch
     # Force rebuild when ECR repo changes
-    ecr_repo = var.ecr_repository_url
+    ecr_repo = local.ecr_repository_url
     # Force rebuild when code changes
   }
 

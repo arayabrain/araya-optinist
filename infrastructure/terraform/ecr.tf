@@ -1,15 +1,12 @@
 # ===========================
 # ECR Repository (optional)
 # ===========================
-# Creates an ECR repository when manage_ecr_repository = true.
-# This is used by the development environment to have its own
-# isolated ECR repo, separate from production.
-#
-# Production uses an existing ECR repo (optinist-for-cloud) that
-# was created outside Terraform, so manage_ecr_repository = false.
+# Creates an ECR repository when ecr_repository_url is not set.
+# Development: ecr_repository_url is omitted → Terraform creates a new repo.
+# Production:  ecr_repository_url is set    → uses the pre-existing repo.
 
 resource "aws_ecr_repository" "app" {
-  count = var.manage_ecr_repository ? 1 : 0
+  count = var.ecr_repository_url == "" ? 1 : 0
 
   name                 = "${var.environment}-optinist-for-cloud"
   image_tag_mutability = "MUTABLE"
@@ -30,7 +27,7 @@ resource "aws_ecr_repository" "app" {
 #   - Keep only the last 10 versioned images (YYYYMMDD-HHMMSS-<sha> tags)
 #   - :latest is always kept (not matched by tagPrefixList)
 resource "aws_ecr_lifecycle_policy" "app" {
-  count = var.manage_ecr_repository ? 1 : 0
+  count = var.ecr_repository_url == "" ? 1 : 0
 
   repository = aws_ecr_repository.app[0].name
 
@@ -67,14 +64,23 @@ resource "aws_ecr_lifecycle_policy" "app" {
 }
 
 # ===========================
+# Single source of truth for ECR URL
+# ===========================
+# When ecr_repository_url is empty -> use the Terraform-created repo URL
+# When ecr_repository_url is set   -> use the pre-existing repo URL
+locals {
+  ecr_repository_url = var.ecr_repository_url == "" ? aws_ecr_repository.app[0].repository_url : var.ecr_repository_url
+}
+
+# ===========================
 # Outputs
 # ===========================
 output "ecr_repository_url" {
   description = "ECR repository URL used by this environment"
-  value       = var.ecr_repository_url
+  value       = local.ecr_repository_url
 }
 
 output "ecr_repository_name" {
   description = "ECR repository name (if managed by Terraform)"
-  value       = var.manage_ecr_repository ? aws_ecr_repository.app[0].name : null
+  value       = var.ecr_repository_url == "" ? aws_ecr_repository.app[0].name : null
 }
