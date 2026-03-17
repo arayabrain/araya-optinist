@@ -1,6 +1,8 @@
 import os
 from typing import Optional
 
+import h5py
+import numpy as np
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import FileResponse
@@ -30,10 +32,12 @@ from studio.app.common.core.utils.json_writer import JsonWriter, save_tiff2json
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
 )
+from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.dataclass.timeseries_chunk_handler import TimeSeriesChunkHandler
 from studio.app.common.schemas.outputs import JsonTimeSeriesData, OutputData
 from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT, ThumbnailType
 from studio.app.dir_path import DIRPATH
+from studio.app.optinist.routers.mat import MatGetter
 
 router = APIRouter(prefix="/outputs", tags=["outputs"])
 
@@ -815,3 +819,96 @@ async def get_csv(
 
     JsonWriter.write_as_split(json_filepath, pd.read_csv(filepath, header=None))
     return JsonReader.read_as_output(json_filepath)
+
+
+@router.get("/structured/{workspace_id}/{unique_id}/{node_id}")
+async def get_structured_data(
+    workspace_id: str,
+    unique_id: str,
+    node_id: str,
+    start_index: Optional[int] = 0,
+    end_index: Optional[int] = 10,
+):
+    try:
+        config = WorkflowConfigReader.read(workspace_id, unique_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Workflow config not found")
+
+    node = config.nodeDict.get(node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+
+    file_path = node.data.path
+    if isinstance(file_path, list):
+        file_path = file_path[0] if file_path else None
+    if not file_path:
+        raise HTTPException(status_code=400, detail="Node has no file path")
+
+    full_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_path])
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+    hdf5_path = node.data.hdf5Path
+    mat_path = node.data.matPath
+
+    try:
+        if hdf5_path is not None:
+            with h5py.File(full_path, "r") as f:
+                dataset = f[hdf5_path]
+                shape = dataset.shape
+                ndim = dataset.ndim
+                if ndim == 3:
+                    si = max(0, start_index)
+                    ei = min(shape[0], end_index)
+                    data = dataset[si:ei]
+                else:
+                    data = dataset[:]
+        elif mat_path is not None:
+            raw = MatGetter.data(full_path, mat_path)
+            data = np.asarray(raw)
+            shape = data.shape
+            ndim = data.ndim
+            if ndim == 3:
+                si = max(0, start_index)
+                ei = min(shape[0], end_index)
+                data = data[si:ei]
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Node has no hdf5Path or matPath",
+            )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=f"Dataset not found: {e}")
+
+    data = np.asarray(data)
+    dataset_path = hdf5_path or mat_path
+
+    match ndim:
+        case 3:
+            return {
+                "data": data.tolist(),
+                "data_type": "images",
+                "total_frames": int(shape[0]),
+                "dataset_path": dataset_path,
+            }
+        case 2:
+            df = pd.DataFrame(data)
+            return {
+                "data": df.to_dict(orient="split")["data"],
+                "columns": [str(c) for c in df.columns.tolist()],
+                "index": [str(i) for i in df.index.tolist()],
+                "data_type": "timeseries",
+                "dataset_path": dataset_path,
+            }
+        case 1:
+            return {
+                "data": data.tolist(),
+                "index": list(range(len(data))),
+                "data_type": "bar",
+                "dataset_path": dataset_path,
+            }
+        case _:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported data dimensionality: {ndim}",
+            )
