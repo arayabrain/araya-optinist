@@ -157,7 +157,9 @@ terraform init -backend-config=backends/development.hcl -reconfigure
 terraform destroy -var-file=environments/development.tfvars
 ```
 
-This destroys all AWS resources but **preserves**: S3 tfstate bucket, Firebase project, Stripe config, tfvars files, ECR images.
+This destroys all AWS resources but **preserves**: S3 tfstate bucket, Firebase project, Stripe config, tfvars files.
+
+> **Note**: The development ECR repository (`development-optinist-for-cloud`) is managed by Terraform but has `force_delete = false`, so `terraform destroy` will fail if it still contains images. To fully destroy, either delete images first or remove the ECR resource from state with `terraform state rm aws_ecr_repository.app[0]`.
 
 To recreate later, simply run `terraform apply` again — no first-time setup needed.
 
@@ -166,6 +168,45 @@ To recreate later, simply run `terraform apply` again — no first-time setup ne
 terraform init -backend-config=backends/production.hcl -reconfigure
 terraform destroy -var-file=environments/production.tfvars
 ```
+
+---
+
+## ECR Repository Isolation
+
+Production and development use **separate ECR repositories** to ensure complete image isolation:
+
+| Environment | ECR Repository | Managed by |
+|---|---|---|
+| Production | `optinist-for-cloud` | Pre-existing (outside Terraform) |
+| Development | `development-optinist-for-cloud` | Terraform (`manage_ecr_repository = true`) |
+
+Both environments push to `:latest` within their own repo. A Docker push for dev testing **cannot** affect production.
+
+### Building and Pushing Images
+
+The build script automatically reads the correct ECR URL from Terraform output:
+
+```bash
+cd infrastructure/scripts
+
+# Ensure you're initialized to the correct environment first!
+./ecr_build_push.sh
+```
+
+- If initialized to **development** → pushes to `development-optinist-for-cloud:latest`
+- If initialized to **production** → pushes to `optinist-for-cloud:latest`
+
+### Safe Deployment Workflow
+
+1. Switch to dev backend: `terraform init -backend-config=backends/development.hcl -reconfigure`
+2. Build and push dev image: `cd ../scripts && ./ecr_build_push.sh`
+3. Force ECS redeployment: `aws ecs update-service --cluster development-optinist-cloud --service <service-name> --force-new-deployment --region ap-northeast-1`
+4. Verify in development
+5. When ready for production: switch backend, rebuild, push, and redeploy
+
+### Image Cleanup
+
+The development ECR repo has an automatic lifecycle policy that removes untagged images after 7 days to keep storage costs minimal.
 
 ---
 

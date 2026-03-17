@@ -27,14 +27,21 @@ echo "Autoscaling Port: $AUTOSCALING_PORT"
 # ===========================================
 # 1. Build Autoscaling Image with Frontend
 # ===========================================
-REPO_NAME="optinist-for-cloud"
+# Read ECR URL from Terraform output (supports per-environment ECR repos)
+ECR_URI=$(terraform -chdir=../terraform output -raw ecr_repository_url 2>/dev/null || echo "")
+if [ -z "$ECR_URI" ]; then
+    # Fallback to default production repo if terraform output is not available
+    ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/optinist-for-cloud"
+    echo "WARNING: Could not read ecr_repository_url from Terraform output, using default: $ECR_URI"
+fi
+REPO_NAME=$(echo "$ECR_URI" | sed 's|.*/||')
 IMAGE_TAG="latest"
-ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO_NAME}"
 
-echo "Building autoscaling image: $ECR_URI"
+echo "Building image for repo: $ECR_URI (repo: $REPO_NAME)"
 
 # Authenticate Docker to ECR (ignore keychain errors on macOS)
-aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_URI 2>&1 | grep -v "error storing credentials" || true
+ECR_REGISTRY=$(echo "$ECR_URI" | sed 's|/.*||')
+aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_REGISTRY 2>&1 | grep -v "error storing credentials" || true
 
 # Check if ECR repository exists, create if it doesn't
 if ! aws ecr describe-repositories --repository-names $REPO_NAME --region $REGION >/dev/null 2>&1; then

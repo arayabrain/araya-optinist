@@ -185,8 +185,14 @@ variable "git_branch" {
 }
 
 variable "ecr_repository_url" {
-  description = "ECR repository URL for OptiNiSt Docker image"
+  description = "ECR repository URL for OptiNiSt Docker image (set per environment for isolation)"
   type        = string
+}
+
+variable "manage_ecr_repository" {
+  description = "Whether Terraform should create and manage the ECR repository (true for dev, false for prod if repo already exists)"
+  type        = bool
+  default     = false
 }
 
 variable "asg_min_size" {
