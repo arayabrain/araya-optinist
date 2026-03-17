@@ -1,10 +1,19 @@
-import { memo, useContext, useEffect, useState } from "react"
+import {
+  ChangeEvent,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react"
 import PlotlyChart from "react-plotlyjs-ts"
 import { useDispatch, useSelector } from "react-redux"
 
-import { Box, LinearProgress, Slider, Typography } from "@mui/material"
+import { Box, LinearProgress, Typography } from "@mui/material"
 
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
+import { MoviePlayerControls } from "components/Workspace/Visualize/Plot/MoviePlayerControls"
 import { getStructuredData } from "store/slice/DisplayData/DisplayDataActions"
 import { selectPipelineLatestUid } from "store/slice/Pipeline/PipelineSelectors"
 import { selectCurrentWorkspaceId } from "store/slice/Workspace/WorkspaceSelector"
@@ -66,6 +75,22 @@ export const StructuredFilePlot = memo(function StructuredFilePlot() {
   const result = structuredState.data
   if (!result) return null
 
+  return (
+    <Box>
+      <DataView result={result} />
+    </Box>
+  )
+})
+
+const DataView = memo(function DataView({
+  result,
+}: {
+  result: {
+    data_type: string
+    data: number[] | number[][] | number[][][]
+    total_frames?: number
+  }
+}) {
   switch (result.data_type) {
     case "timeseries":
       return <TimeSeriesView data={result.data as number[][]} />
@@ -120,8 +145,54 @@ const ImageView = memo(function ImageView({
   data: number[][][]
   totalFrames: number
 }) {
-  const [frameIndex, setFrameIndex] = useState(0)
-  const frame = data[frameIndex] || []
+  const [activeIndex, setActiveIndex] = useState(0)
+  const [duration, setDuration] = useState(500)
+  const intervalRef = useRef<null | NodeJS.Timeout>(null)
+  const maxIndex = data.length - 1
+
+  const frame = data[activeIndex] || []
+
+  useEffect(() => {
+    if (intervalRef.current !== null && activeIndex >= maxIndex) {
+      clearInterval(intervalRef.current)
+      intervalRef.current = null
+    }
+  }, [activeIndex, maxIndex])
+
+  const onPlayClick = useCallback(() => {
+    if (activeIndex >= maxIndex) {
+      setActiveIndex(0)
+    }
+    if (maxIndex > 0 && intervalRef.current === null) {
+      intervalRef.current = setInterval(() => {
+        setActiveIndex((prev) => Math.min(prev + 1, maxIndex))
+      }, duration)
+    }
+  }, [activeIndex, maxIndex, duration])
+
+  const onPauseClick = () => {
+    if (intervalRef.current !== null) {
+      clearInterval(intervalRef.current)
+      intervalRef.current = null
+    }
+  }
+
+  const onDurationChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const newValue =
+        event.target?.value === "" ? "" : Number(event.target?.value)
+      if (typeof newValue === "number") {
+        setDuration(newValue)
+      }
+    },
+    [],
+  )
+
+  const onSliderChange = (_: Event, value: number | number[]) => {
+    if (typeof value === "number") {
+      setActiveIndex(value)
+    }
+  }
 
   const plotData = [
     {
@@ -133,26 +204,26 @@ const ImageView = memo(function ImageView({
   ]
 
   const layout = {
-    title: `Frame ${frameIndex + 1} / ${data.length} (of ${totalFrames} total)`,
+    title: `Frame ${activeIndex + 1} / ${data.length} (of ${totalFrames} total)`,
     yaxis: { autorange: "reversed" as const },
     autosize: true,
   }
 
   return (
     <Box>
-      <PlotlyChart data={plotData} layout={layout} />
       {data.length > 1 && (
-        <Box px={2}>
-          <Slider
-            value={frameIndex}
-            min={0}
-            max={data.length - 1}
-            onChange={(_, value) => setFrameIndex(value as number)}
-            valueLabelDisplay="auto"
-            valueLabelFormat={(v) => `Frame ${v + 1}`}
-          />
-        </Box>
+        <MoviePlayerControls
+          sx={{ mt: 1 }}
+          activeIndex={activeIndex}
+          maxIndex={maxIndex}
+          duration={duration}
+          onPlayClick={onPlayClick}
+          onPauseClick={onPauseClick}
+          onDurationChange={onDurationChange}
+          onSliderChange={onSliderChange}
+        />
       )}
+      <PlotlyChart data={plotData} layout={layout} />
     </Box>
   )
 })
