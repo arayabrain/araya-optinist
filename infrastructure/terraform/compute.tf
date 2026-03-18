@@ -28,23 +28,19 @@ resource "aws_lb" "autoscaling" {
   }
 }
 
-# Load Balancer Listener - HTTP (redirect to HTTPS when custom domain, forward when not)
+# Load Balancer Listener - HTTP (redirects to main listener)
 resource "aws_lb_listener" "autoscaling" {
   load_balancer_arn = aws_lb.autoscaling.arn
   port              = "80"
   protocol          = "HTTP"
 
   default_action {
-    type             = var.enable_custom_domain ? "redirect" : "forward"
-    target_group_arn = var.enable_custom_domain ? null : aws_lb_target_group.autoscaling.arn
+    type = "redirect"
 
-    dynamic "redirect" {
-      for_each = var.enable_custom_domain ? [1] : []
-      content {
-        port        = "443"
-        protocol    = "HTTPS"
-        status_code = "HTTP_301"
-      }
+    redirect {
+      port        = var.enable_custom_domain ? "443" : "8080"
+      protocol    = var.enable_custom_domain ? "HTTPS" : "HTTP"
+      status_code = "HTTP_301"
     }
   }
 }
@@ -593,11 +589,11 @@ resource "aws_ecs_task_definition" "autoscaling" {
         },
         {
           name  = "FRONTEND_SERVER_HOST"
-          value = var.frontend_domain
+          value = local.effective_frontend_domain
         },
         {
           name  = "FRONTEND_SERVER_PORT"
-          value = var.frontend_port
+          value = local.effective_frontend_port
         },
         {
           name  = "FRONTEND_SERVER_PROTO"
@@ -665,7 +661,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
         },
         {
           name  = "STRIPE_CALLBACK_URL"
-          value = "${var.frontend_protocol}://${var.frontend_domain}"
+          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
         },
         {
           name  = "STRIPE_SECRET_KEY"
@@ -691,6 +687,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
         {
           name  = "DISABLE_BACKGROUND_SCHEDULER"
           value = "1"
+        },
+        {
+          name  = "PREMIUM_MANAGER_FUNCTION_NAME"
+          value = "${var.environment}-premium-manager"
         },
       ]
       secrets = [
@@ -851,11 +851,11 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "FRONTEND_SERVER_HOST"
-          value = var.frontend_domain
+          value = local.effective_frontend_domain
         },
         {
           name  = "FRONTEND_SERVER_PORT"
-          value = var.frontend_port
+          value = local.effective_frontend_port
         },
         {
           name  = "FRONTEND_SERVER_PROTO"
@@ -919,7 +919,7 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "STRIPE_CALLBACK_URL"
-          value = "${var.frontend_protocol}://${var.frontend_domain}"
+          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
         },
         {
           name  = "STRIPE_SECRET_KEY"
