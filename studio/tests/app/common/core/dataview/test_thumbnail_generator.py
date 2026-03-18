@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 from scipy.io import savemat
 
+from studio.app.common.core.dataview.dataview import DatasetPaths
 from studio.app.common.core.dataview.thumbnail_generator import ThumbnailGenerator
 
 
@@ -137,7 +138,7 @@ class TestGenerateInputThumbnailDispatch:
             source_path=h5_path,
             output_path=output_path,
             abs_source_path=h5_path,
-            hdf5_path="/images",
+            dataset_paths=DatasetPaths(hdf5_path="/images"),
         )
         assert os.path.exists(output_path)
         img = imageio.imread(output_path)
@@ -152,7 +153,7 @@ class TestGenerateInputThumbnailDispatch:
             source_path=h5_path,
             output_path=output_path,
             abs_source_path=h5_path,
-            hdf5_path="/nonexistent",
+            dataset_paths=DatasetPaths(hdf5_path="/nonexistent"),
         )
         assert os.path.exists(output_path)
         img = imageio.imread(output_path)
@@ -165,7 +166,7 @@ class TestGenerateInputThumbnailDispatch:
             source_path=mat_file,
             output_path=output_path,
             abs_source_path=mat_file,
-            mat_path="matrix",
+            dataset_paths=DatasetPaths(mat_path="matrix"),
         )
         assert os.path.exists(output_path)
         img = imageio.imread(output_path)
@@ -180,8 +181,7 @@ class TestGenerateInputThumbnailDispatch:
             source_path=h5_path,
             output_path=output_path,
             abs_source_path=h5_path,
-            hdf5_path="/images",
-            mat_path="ignored",
+            dataset_paths=DatasetPaths(hdf5_path="/images", mat_path="ignored"),
         )
         assert os.path.exists(output_path)
         img = imageio.imread(output_path)
@@ -209,7 +209,7 @@ class TestEdgeCases:
             source_path=mat_file,
             output_path=output,
             abs_source_path=mat_file,
-            mat_path="nonexistent",
+            dataset_paths=DatasetPaths(mat_path="nonexistent"),
         )
         assert os.path.exists(output)
         img = imageio.imread(output)

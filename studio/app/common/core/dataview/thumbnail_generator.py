@@ -9,6 +9,7 @@ import imageio.v3 as imageio
 import numpy as np
 import tifffile
 
+from studio.app.common.core.dataview.dataview import DatasetPaths
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.const import EXTENSION_LABELS, ThumbnailConst, ThumbnailType
@@ -471,15 +472,14 @@ class ThumbnailGenerator:
         source_path: str,
         output_path: str,
         abs_source_path: str = None,
-        hdf5_path: str = None,
-        mat_path: str = None,
+        dataset_paths: DatasetPaths = None,
     ) -> None:
         """
         Generate an input thumbnail, choosing the right strategy automatically.
 
         - TIFF file exists locally → render first frame as grayscale
-        - HDF5 file + hdf5_path → render dataset preview
-        - MAT file + mat_path → render dataset preview
+        - HDF5 file + dataset_paths.hdf5_path → render dataset preview
+        - MAT file + dataset_paths.mat_path → render dataset preview
         - Otherwise → placeholder with file type label
 
         Args:
@@ -487,10 +487,11 @@ class ThumbnailGenerator:
             output_path: Path to save the PNG thumbnail
             abs_source_path: Absolute path to the source file for reading.
                 If None, uses source_path directly.
-            hdf5_path: Internal HDF5 dataset path (e.g. "/data/images")
-            mat_path: Internal MAT dataset path (e.g. "data/images")
+            dataset_paths: Internal dataset paths for structured data formats
         """
         resolved = abs_source_path or source_path
+        hdf5_path = dataset_paths.hdf5_path if dataset_paths else None
+        mat_path = dataset_paths.mat_path if dataset_paths else None
 
         if cls.can_generate_tiff_thumbnail(source_path):
             if resolved and os.path.exists(resolved):
