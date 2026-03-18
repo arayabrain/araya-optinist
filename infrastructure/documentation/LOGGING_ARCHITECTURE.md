@@ -768,11 +768,30 @@ The free manager also triggers on ASG lifecycle events (instance launch/terminat
 
 **Guarantee:** All workers get the same log level.
 
-### 6. Frontend Logs Are Not Collected
+### 6. Frontend Error Forwarding
 
-**Problem:** Frontend `console.log`/`console.error` calls are browser-only. Client-side errors are invisible to backend monitoring.
+Frontend `console.error` and `console.warn` calls are automatically intercepted and forwarded to the backend via `POST /users/me/frontend-errors`.
 
-**Solution:** Consider adding a frontend error reporting endpoint or integrating a browser error tracking service.
+**Pipeline:**
+1. `initErrorReporter()` in `frontend/src/index.tsx` overrides `console.error`/`console.warn` globally
+2. Errors are queued in memory (max 20 items, 2000 char truncation)
+3. Every 5 seconds, the queue is flushed to the backend via `fetch` (not axios, to avoid interceptor loops)
+4. `beforeunload` listener flushes on page close using `keepalive: true`
+5. Backend logs each error via `logger.warning()` with `[FRONTEND]` prefix
+
+**Log format:**
+```
+[FRONTEND] [ERROR|WARN] user=<uid> url=<page_url> source=<js_source>: <message>
+```
+
+**Rate limiting:** 10 errors per 60s per user (in-memory sliding window, per-process).
+
+**CloudWatch query:**
+```
+filter @message like "[FRONTEND]"
+```
+
+**Log viewer:** The FRONTEND filter button in the log modal filters for lines containing `[FRONTEND]` in the message body. It is orthogonal to severity-based filters (INFO/WARNING/etc).
 
 ---
 

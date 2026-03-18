@@ -241,16 +241,8 @@ export const PremiumAssignmentProvider: React.FC<{
 
     // Create leader election instance
     leaderElectionRef.current = new CrossTabLeaderElection(
-      () => {
-        // eslint-disable-next-line no-console
-        console.log("This tab became the leader for premium polling")
-        setIsTabLeader(true)
-      },
-      () => {
-        // eslint-disable-next-line no-console
-        console.log("This tab lost leadership for premium polling")
-        setIsTabLeader(false)
-      },
+      () => setIsTabLeader(true),
+      () => setIsTabLeader(false),
     )
 
     // Check initial leadership state
@@ -606,7 +598,7 @@ export const PremiumAssignmentProvider: React.FC<{
 
       if (timeSinceLastActivity >= twoHoursMs) {
         // eslint-disable-next-line no-console
-        console.log(
+        console.warn(
           "2 hours of inactivity detected - auto-releasing premium instance",
         )
         setState((prev) => ({ ...prev, showInactivityWarning: false }))
@@ -616,7 +608,7 @@ export const PremiumAssignmentProvider: React.FC<{
         !showInactivityWarningRef.current
       ) {
         // eslint-disable-next-line no-console
-        console.log("1 hour of inactivity detected - showing warning")
+        console.warn("1 hour of inactivity detected - showing warning")
         setState((prev) => ({ ...prev, showInactivityWarning: true }))
       }
     }
@@ -644,8 +636,6 @@ export const PremiumAssignmentProvider: React.FC<{
   // Sleep/wake detection callback (Cases 50-51)
   const handleDeviceWake = useCallback(() => {
     if (!isPremiumUser || !state.assignmentResult) return
-    // eslint-disable-next-line no-console
-    console.log("Device wake detected - checking activity status")
     recordActivity().catch((error) => {
       // eslint-disable-next-line no-console
       console.warn("Failed to record activity after wake:", error)
@@ -675,7 +665,7 @@ export const PremiumAssignmentProvider: React.FC<{
       autoAssignOnLogin()
     } else {
       // eslint-disable-next-line no-console
-      console.log("Conditions not met for auto-assignment:", {
+      console.warn("Conditions not met for auto-assignment:", {
         isPremiumUser,
         hasCurrentUser: !!currentUser,
       })
@@ -708,7 +698,7 @@ export const PremiumAssignmentProvider: React.FC<{
     // Check if we've exceeded max attempts
     if (pollAttempts >= MAX_POLL_ATTEMPTS) {
       // eslint-disable-next-line no-console
-      console.log(
+      console.warn(
         `Max poll attempts (${MAX_POLL_ATTEMPTS}) reached. Stopping polling.`,
       )
       setState((prev) => ({
@@ -720,12 +710,6 @@ export const PremiumAssignmentProvider: React.FC<{
       }))
       return
     }
-
-    // eslint-disable-next-line no-console
-    console.log(
-      `Polling for premium instance (attempt ${pollAttempts + 1}/${MAX_POLL_ATTEMPTS}, ` +
-        `interval ${pollInterval}ms)...`,
-    )
 
     const timeoutId = setTimeout(async () => {
       try {
@@ -745,7 +729,9 @@ export const PremiumAssignmentProvider: React.FC<{
           setPollAttempts(0)
         } else {
           // eslint-disable-next-line no-console
-          console.log("Still on temporary instance, will retry with backoff...")
+          console.warn(
+            "Still on temporary instance, will retry with backoff...",
+          )
           setPollAttempts((prev) => prev + 1)
           // Exponential backoff capped at MAX_POLL_INTERVAL_MS
           setPollInterval((prev) =>

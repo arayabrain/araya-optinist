@@ -9,6 +9,8 @@ from studio.app.common.core.utils.file_reader import (
 )
 from studio.app.dir_path import DIRPATH
 
+FRONTEND_LOG_PREFIX = "[FRONTEND]"
+
 
 class LogLevel(str, Enum):
     ALL = "ALL"
@@ -17,6 +19,7 @@ class LogLevel(str, Enum):
     DEBUG = "DEBUG"
     WARNING = "WARNING"
     CRITICAL = "CRITICAL"
+    FRONTEND = "FRONTEND"
 
 
 class LogRecordReader(ContentUnitReader):
@@ -28,15 +31,20 @@ class LogRecordReader(ContentUnitReader):
         filter_user_id: str = None,
         **kwargs,
     ) -> None:
-        if LogLevel.ALL in levels:
+        self.filter_frontend = LogLevel.FRONTEND in levels
+        non_frontend_levels = [lv for lv in levels if lv != LogLevel.FRONTEND]
+
+        if LogLevel.ALL in non_frontend_levels:
             # ALL excludes DEBUG; DEBUG is only visible via direct CloudWatch access
             self.levels: list[bytes] = [
                 level.value.encode()
                 for level in LogLevel
-                if level not in (LogLevel.ALL, LogLevel.DEBUG)
+                if level not in (LogLevel.ALL, LogLevel.DEBUG, LogLevel.FRONTEND)
             ]
         else:
-            self.levels: list[bytes] = [level.value.encode() for level in levels]
+            self.levels: list[bytes] = [
+                level.value.encode() for level in non_frontend_levels
+            ]
 
         # client_id filter (None means no filtering)
         client_id = (
@@ -99,8 +107,20 @@ class LogRecordReader(ContentUnitReader):
         if not unit_dict["parsed"]:
             return False
 
-        # Filter by log level
-        if self.levels:
+        has_frontend_prefix = unit_dict.get("message", b"").startswith(
+            FRONTEND_LOG_PREFIX.encode()
+        )
+
+        # When FRONTEND filter is active alone, only show frontend lines
+        if self.filter_frontend and not self.levels:
+            if not has_frontend_prefix:
+                return False
+        # When FRONTEND + severity filters active, match either
+        elif self.filter_frontend and self.levels:
+            if unit_dict["level"] not in self.levels and not has_frontend_prefix:
+                return False
+        # Standard severity filter (no FRONTEND filter)
+        elif self.levels:
             if unit_dict["level"] not in self.levels:
                 return False
 
