@@ -124,11 +124,7 @@ terraform apply -var-file=environments/development.tfvars
 
 # 5. Get the development site URL:
 terraform output alb_dns_name
-# Access at: http://<ALB-DNS-NAME>
-
-# 6. After first apply — update frontend_domain in development.tfvars
-#    with the ALB DNS name, then apply again for correct CORS/callback URLs:
-terraform apply -var-file=environments/development.tfvars
+# Access at: http://<ALB-DNS-NAME> (redirects to port 8080)
 ```
 
 ---
@@ -157,7 +153,9 @@ terraform init -backend-config=backends/development.hcl -reconfigure
 terraform destroy -var-file=environments/development.tfvars
 ```
 
-This destroys all AWS resources but **preserves**: S3 tfstate bucket, Firebase project, Stripe config, tfvars files, ECR images.
+This destroys all AWS resources but **preserves**: S3 tfstate bucket, Firebase project, Stripe config, tfvars files.
+
+> **Note**: The development ECR repository (`development-optinist-for-cloud`) is managed by Terraform with `force_delete = true`, so `terraform destroy` will delete the repository and all images inside it. If you need to preserve images before destroying, push them to another repository first.
 
 To recreate later, simply run `terraform apply` again — no first-time setup needed.
 
@@ -166,6 +164,110 @@ To recreate later, simply run `terraform apply` again — no first-time setup ne
 terraform init -backend-config=backends/production.hcl -reconfigure
 terraform destroy -var-file=environments/production.tfvars
 ```
+
+---
+
+## ECR Repository Isolation
+
+Production and development use **separate ECR repositories** to ensure complete image isolation:
+
+| Environment | ECR Repository | Managed by |
+|---|---|---|
+| Production | `optinist-for-cloud` | Pre-existing (outside Terraform) |
+| Development | `development-optinist-for-cloud` | Terraform (created when `ecr_repository_url` is empty) |
+
+Both environments push to `:latest` within their own repo. A Docker push for dev testing **cannot** affect production.
+
+### Building and Pushing Images
+
+The build script reads the target environment from Terraform output, displays a confirmation prompt, and requires explicit approval before pushing:
+
+```bash
+cd infrastructure/scripts
+
+# Standard usage — auto-generates version tag, asks for confirmation
+./ecr_build_push.sh
+
+# Custom version tag
+./ecr_build_push.sh --tag v1.2.3
+
+# Skip confirmation (for CI/CD pipelines)
+./ecr_build_push.sh --yes
+```
+
+The script will display:
+```
+============================================
+  BUILD AND PUSH CONFIRMATION
+============================================
+  Environment : development
+  ECR Repo    : development-optinist-for-cloud
+  Tags        : latest, 20260317-143022-a1b2c3d
+============================================
+
+Proceed with build and push? (y/N):
+```
+
+For production, an additional **WARNING** banner is shown.
+
+- If initialized to **development** → pushes to `development-optinist-for-cloud:latest`
+- If initialized to **production** → pushes to `optinist-for-cloud:latest`
+
+Every push creates **two tags**:
+- `:latest` — used by ECS task definitions (always current)
+- `:YYYYMMDD-HHMMSS-<git-sha>` — immutable version for history and rollback (e.g., `20260317-143022-a1b2c3d`)
+
+### Safe Deployment Workflow
+
+1. Switch to dev backend: `terraform init -backend-config=backends/development.hcl -reconfigure`
+2. Build and push dev image: `cd ../scripts && ./ecr_build_push.sh`
+3. Force ECS redeployment: `aws ecs update-service --cluster development-optinist-cloud --service <service-name> --force-new-deployment --region ap-northeast-1`
+4. Verify in development
+5. When ready for production: switch backend, rebuild, push, and redeploy
+
+### Rollback to a Previous Image
+
+List available image versions:
+
+```bash
+aws ecr list-images \
+  --repository-name development-optinist-for-cloud \
+  --region ap-northeast-1 \
+  --query 'imageIds[?imageTag!=`latest`].imageTag' \
+  --output table
+```
+
+Retag a previous version as `:latest` and redeploy:
+
+```bash
+# 1. Get the manifest of the version you want to roll back to
+MANIFEST=$(aws ecr batch-get-image \
+  --repository-name development-optinist-for-cloud \
+  --image-ids imageTag=20260316-091500-f4e5d6a \
+  --query 'images[0].imageManifest' --output text \
+  --region ap-northeast-1)
+
+# 2. Retag it as :latest
+aws ecr put-image \
+  --repository-name development-optinist-for-cloud \
+  --image-tag latest \
+  --image-manifest "$MANIFEST" \
+  --region ap-northeast-1
+
+# 3. Force ECS to pull the rolled-back image
+aws ecs update-service \
+  --cluster development-optinist-cloud \
+  --service <service-name> \
+  --force-new-deployment \
+  --region ap-northeast-1
+```
+
+### Image Cleanup
+
+The ECR lifecycle policy automatically manages storage:
+- **Untagged images**: removed after 7 days
+- **Versioned images**: only the last 10 are kept
+- **`:latest`**: always retained
 
 ---
 
@@ -187,7 +289,7 @@ Access the development site at:
 http://<ALB-DNS-NAME>
 ```
 
-This URL is auto-generated by AWS and changes if you destroy and recreate the environment. After first apply, update `frontend_domain` in your `development.tfvars` with this value, then run `terraform apply` again so the ECS task definitions have the correct `FRONTEND_SERVER_HOST` for Stripe callbacks and CORS.
+This URL is auto-generated by AWS and changes if you destroy and recreate the environment. Port 80 redirects to port 8080 (the main listener). `FRONTEND_SERVER_HOST` and `FRONTEND_SERVER_PORT` are auto-resolved from the ALB DNS name when `enable_custom_domain = false`.
 
 ---
 

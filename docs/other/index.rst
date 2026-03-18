@@ -6,5 +6,6 @@ Other
   :maxdepth: 2
   :caption: OTHER:
 
+  plan_expiration
   debugging
   contact

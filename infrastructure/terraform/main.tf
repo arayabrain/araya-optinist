@@ -185,8 +185,9 @@ variable "git_branch" {
 }
 
 variable "ecr_repository_url" {
-  description = "ECR repository URL for OptiNiSt Docker image"
+  description = "ECR repository URL for a pre-existing repo (production). If empty, Terraform creates a new repo named <environment>-optinist-for-cloud."
   type        = string
+  default     = ""
 }
 
 variable "asg_min_size" {
@@ -205,6 +206,25 @@ variable "asg_desired_capacity" {
   description = "Desired number of instances in ASG"
   type        = number
   default     = 1
+}
+
+# Instance type configuration
+variable "free_instance_type" {
+  description = "Instance type for free tier instances"
+  type        = string
+  default     = "t3.large"
+}
+
+variable "premium_instance_type" {
+  description = "Instance type for premium tier instances"
+  type        = string
+  default     = "t3.large"
+}
+
+variable "background_instance_type" {
+  description = "Instance type for background service instance"
+  type        = string
+  default     = "t3.micro"
 }
 
 # Frontend domain configuration
@@ -249,6 +269,12 @@ data "aws_elb_service_account" "main" {}
 
 locals {
   env_prefix = "${var.environment}-optinist"
+
+  # Resolve frontend host/port from ALB DNS when no custom domain is configured
+  # - Production: uses custom domain on port 443
+  # - Development: uses ALB DNS name on port 8080
+  effective_frontend_domain = var.enable_custom_domain ? var.frontend_domain : aws_lb.autoscaling.dns_name
+  effective_frontend_port   = var.enable_custom_domain ? var.frontend_port : "8080"
 }
 
 # =======

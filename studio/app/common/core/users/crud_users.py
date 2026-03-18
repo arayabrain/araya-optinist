@@ -43,6 +43,7 @@ from studio.app.common.models.subscription import (
     UserStorageUsage,
     UserSubscription,
 )
+from studio.app.common.models.user_preferences import UserPreferences
 from studio.app.common.models.workspace import Workspace
 from studio.app.common.schemas.auth import UserAuth
 from studio.app.common.schemas.base import SortOptions
@@ -758,6 +759,11 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
         deletion_record.step = DeletionStep.WORKSPACES_DELETED.value
         db.commit()
 
+        # Clean up user preferences
+        db.query(UserPreferences).filter(UserPreferences.user_id == user_id).delete(
+            synchronize_session=False
+        )
+
         # ----------------------------------------
         # Step 5: Mark user inactive
         # ----------------------------------------
@@ -913,6 +919,11 @@ async def resume_deletion_from_step(record: UserDeletionRecord, db: Session) -> 
                 logger.warning(f"Workspace deletion in recovery failed: {e}")
         record.step = DeletionStep.WORKSPACES_DELETED.value
         db.commit()
+
+    # Clean up user preferences
+    db.query(UserPreferences).filter(UserPreferences.user_id == record.user_id).delete(
+        synchronize_session=False
+    )
 
     # Final step: mark user inactive
     user_db.active = False

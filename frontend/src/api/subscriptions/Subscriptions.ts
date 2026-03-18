@@ -65,3 +65,17 @@ export const cancelSubscriptionApi = async () => {
   const response = await axios.delete("/api/subsc/mgmts/cancel")
   return response.data
 }
+
+export const getDeletionPriorityApi = async (): Promise<string> => {
+  const response = await axios.get("/api/subsc/deletion-priority")
+  return response.data.priority
+}
+
+export const updateDeletionPriorityApi = async (
+  priority: string,
+): Promise<string> => {
+  const response = await axios.put("/api/subsc/deletion-priority", {
+    priority,
+  })
+  return response.data.priority
+}
