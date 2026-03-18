@@ -38,6 +38,9 @@ resource "aws_lambda_function" "premium_manager" {
       PREMIUM_IDLE_TIMEOUT_HOURS    = "3" # Hours before idle instances are converted to standby
       PREMIUM_STOPPED_MAX_AGE_HOURS = "4" # Terminate stopped standby instances older than this
 
+      # Environment prefix for dynamic resource naming
+      ENV_PREFIX = var.environment
+
       # Internal API configuration for experiment sync after migration
       ALB_DNS_NAME        = aws_lb.autoscaling.dns_name
       INTERNAL_API_SECRET = random_password.internal_api_secret.result
