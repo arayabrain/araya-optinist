@@ -42,9 +42,8 @@ class PremiumAssignmentService:
 
     def __init__(self):
         self.lambda_client: "LambdaClient | None" = None
-        env_prefix = os.environ.get("ENV_PREFIX", "subscr")
         self.premium_manager_function_name = os.environ.get(
-            "PREMIUM_MANAGER_FUNCTION_NAME", f"{env_prefix}-premium-manager"
+            "PREMIUM_MANAGER_FUNCTION_NAME", "subscr-premium-manager"
         )
 
     def _get_lambda_client(self):

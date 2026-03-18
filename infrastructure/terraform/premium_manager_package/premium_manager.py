@@ -1095,13 +1095,7 @@ def create_running_instance():
                         {
                             "ResourceType": "instance",
                             "Tags": [
-                                {
-                                    "Key": "Name",
-                                    "Value": (
-                                        f"{os.environ.get('ENV_PREFIX', 'subscr')}"
-                                        "-premium-running"
-                                    ),
-                                },
+                                {"Key": "Name", "Value": "subscr-premium-running"},
                                 {"Key": "Type", "Value": "Premium-Instance"},
                                 {"Key": "Tier", "Value": "premium"},
                                 {"Key": "Service", "Value": "premium-tier"},
@@ -1347,10 +1341,7 @@ def create_and_stop_standby_instance():
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": (
-                                            f"{os.environ.get('ENV_PREFIX', 'subscr')}"
-                                            "-premium-standby"
-                                        ),
+                                        "Value": ("subscr-premium" "-standby"),
                                     },
                                     {
                                         "Key": "Type",

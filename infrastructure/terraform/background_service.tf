@@ -168,11 +168,11 @@ resource "aws_ecs_task_definition" "background" {
         },
         {
           name  = "FRONTEND_SERVER_HOST"
-          value = local.effective_frontend_domain
+          value = var.frontend_domain
         },
         {
           name  = "FRONTEND_SERVER_PORT"
-          value = local.effective_frontend_port
+          value = var.frontend_port
         },
         {
           name  = "FRONTEND_SERVER_PROTO"
@@ -236,7 +236,7 @@ resource "aws_ecs_task_definition" "background" {
         },
         {
           name  = "STRIPE_CALLBACK_URL"
-          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
+          value = "${var.frontend_protocol}://${var.frontend_domain}"
         },
         {
           name  = "STRIPE_SECRET_KEY"
@@ -271,10 +271,6 @@ resource "aws_ecs_task_definition" "background" {
         {
           name  = "UVICORN_WORKERS"
           value = "1"
-        },
-        {
-          name  = "PREMIUM_MANAGER_FUNCTION_NAME"
-          value = "${var.environment}-premium-manager"
         },
       ]
       secrets = [
