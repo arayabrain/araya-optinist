@@ -23,7 +23,7 @@ resource "null_resource" "build_and_deploy" {
       # Build and push image
       echo "Building and pushing Docker image..."
       chmod +x ../scripts/ecr_build_push.sh
-      ../scripts/ecr_build_push.sh
+      ../scripts/ecr_build_push.sh --yes
 
       echo "Waiting for ECR image to be available..."
       sleep 60
@@ -106,7 +106,7 @@ resource "aws_ssm_document" "app_setup" {
           timeoutSeconds = "3600"
           runCommand = [
             "chmod +x /tmp/app_setup.sh",
-            "ENV_PREFIX=${var.environment} /tmp/app_setup.sh"
+            "ENV_PREFIX=${var.environment} S3_BUCKET_NAME=${aws_s3_bucket.app_storage.id} RDS_PROXY_ENDPOINT=${aws_db_proxy.main.endpoint} /tmp/app_setup.sh"
           ]
         }
       }

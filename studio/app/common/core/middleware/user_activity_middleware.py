@@ -34,6 +34,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jwt
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.middleware.constants import SKIP_AUTH_PATHS
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.subscription.constants import SubscriptionPlanIds
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
@@ -44,7 +45,6 @@ from studio.app.common.models.instance_usage import InstanceUsageLog
 # Constants
 BEARER_PREFIX = "Bearer "
 BEARER_PREFIX_LENGTH = len(BEARER_PREFIX)
-SKIP_AUTH_PATHS = ["/health", "/api/auth/login", "/api/auth/refresh"]
 TIER_FREE = "free"
 TIER_PREMIUM = "premium"
 
