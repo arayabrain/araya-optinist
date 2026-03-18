@@ -53,7 +53,7 @@ export type UpdateUserDTO = {
 
 export type UpdateUserSubscriptionDTO = {
   plan_id: number
-  expiration: string
+  expiration?: string
   storage_quota_bytes: number
   reason: string
 }

@@ -95,11 +95,19 @@ class UserUpdate(BaseModel):
     role_id: int
 
 
+class SubscriptionAuditSnapshot(BaseModel):
+    """Typed snapshot of subscription state for audit log old_value/new_value."""
+
+    plan_id: int
+    expiration: Optional[str] = None
+    storage_quota_bytes: int
+
+
 class UserSubscriptionUpdate(BaseModel):
     plan_id: int
-    expiration: datetime
-    storage_quota_bytes: int
-    reason: str
+    expiration: Optional[datetime] = None
+    storage_quota_bytes: int = Field(gt=0)
+    reason: str = Field(min_length=1)
 
 
 class SelfUserUpdate(BaseModel):

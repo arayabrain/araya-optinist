@@ -319,7 +319,7 @@ const SubscriptionEditModal = ({
   const [planId, setPlanId] = useState(currentPlanId)
   const [expiration, setExpiration] = useState(() => {
     if (user.subscription_expiration) {
-      return user.subscription_expiration.slice(0, 16)
+      return user.subscription_expiration.slice(0, 10)
     }
     return ""
   })
@@ -331,14 +331,18 @@ const SubscriptionEditModal = ({
   const [reason, setReason] = useState("")
   const [isSubmitting, setIsSubmitting] = useState(false)
 
+  const isFree = planId === PLAN_FREE
+
   const handleSubmit = async () => {
     setIsSubmitting(true)
     try {
       await onSubmit({
         plan_id: planId,
-        expiration: new Date(expiration).toISOString(),
+        expiration: isFree
+          ? undefined
+          : new Date(expiration + "T23:59:59Z").toISOString(),
         storage_quota_bytes: storageQuotaGb * GB,
-        reason,
+        reason: reason.trim(),
       })
       onClose()
     } finally {
@@ -372,19 +376,27 @@ const SubscriptionEditModal = ({
           </FormControl>
 
           <TextField
-            label="Expiration Date"
-            type="datetime-local"
-            value={expiration}
+            label={
+              isFree
+                ? "Expiration Date (not required for Free)"
+                : "Expiration Date"
+            }
+            type="date"
+            value={isFree ? "" : expiration}
             onChange={(e) => setExpiration(e.target.value)}
             InputLabelProps={{ shrink: true }}
             fullWidth
+            disabled={isFree}
           />
 
           <TextField
             label="Storage Quota (GB)"
             type="number"
             value={storageQuotaGb}
-            onChange={(e) => setStorageQuotaGb(Number(e.target.value))}
+            onChange={(e) => {
+              const val = Math.max(1, Math.floor(Number(e.target.value) || 1))
+              setStorageQuotaGb(val)
+            }}
             inputProps={{ min: 1 }}
             fullWidth
           />
@@ -414,7 +426,9 @@ const SubscriptionEditModal = ({
           </Button>
           <Button
             variant="contained"
-            disabled={isSubmitting || !expiration || !reason.trim()}
+            disabled={
+              isSubmitting || (!isFree && !expiration) || !reason.trim()
+            }
             onClick={handleSubmit}
           >
             Save

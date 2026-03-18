@@ -80,8 +80,7 @@ async def update_user_subscription(
         db,
         user_id,
         data,
-        organization_id=current_admin.organization.id,
-        admin_user_id=current_admin.id,
+        admin_user=current_admin,
     )
 
 

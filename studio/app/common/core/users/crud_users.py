@@ -1,4 +1,4 @@
-from datetime import timezone
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
@@ -48,6 +48,7 @@ from studio.app.common.models.workspace import Workspace
 from studio.app.common.schemas.auth import UserAuth
 from studio.app.common.schemas.base import SortOptions
 from studio.app.common.schemas.users import (
+    SubscriptionAuditSnapshot,
     User,
     UserCreate,
     UserPasswordUpdate,
@@ -531,8 +532,7 @@ async def update_user_subscription_admin(
     db: Session,
     user_id: int,
     data: UserSubscriptionUpdate,
-    organization_id: int,
-    admin_user_id: int,
+    admin_user: User,
 ) -> User:
     """Admin-only: directly update a user's subscription plan,
     expiration, and storage quota.
@@ -544,7 +544,7 @@ async def update_user_subscription_admin(
             .filter(
                 UserModel.active.is_(True),
                 UserModel.id == user_id,
-                UserModel.organization_id == organization_id,
+                UserModel.organization_id == admin_user.organization.id,
             )
             .first()
         )
@@ -575,30 +575,39 @@ async def update_user_subscription_admin(
             raise HTTPException(status_code=400, detail="User has no storage record")
 
         # Capture old values before applying changes
-        old_value = {
-            "plan_id": subscription.plan_id,
-            "expiration": subscription.expiration.isoformat()
-            if subscription.expiration
-            else None,
-            "storage_quota_bytes": storage.storage_quota_bytes,
-        }
+        # Normalize expiration to UTC ISO string for consistent audit format
+        old_expiration_str = None
+        if subscription.expiration:
+            old_exp = subscription.expiration
+            if old_exp.tzinfo is None:
+                old_exp = old_exp.replace(tzinfo=timezone.utc)
+            old_expiration_str = old_exp.isoformat()
+
+        old_value = SubscriptionAuditSnapshot(
+            plan_id=subscription.plan_id,
+            expiration=old_expiration_str,
+            storage_quota_bytes=storage.storage_quota_bytes,
+        )
 
         # Apply changes
+        # For Free plan, expiration is not meaningful — default to now
+        expiration = data.expiration or datetime.now(timezone.utc)
         subscription.plan_id = data.plan_id
-        subscription.expiration = data.expiration
+        subscription.expiration = expiration
+        subscription.scheduled_downgrade = False
         storage.storage_quota_bytes = data.storage_quota_bytes
 
         # Write audit log
-        new_value = {
-            "plan_id": data.plan_id,
-            "expiration": data.expiration.isoformat(),
-            "storage_quota_bytes": data.storage_quota_bytes,
-        }
+        new_value = SubscriptionAuditSnapshot(
+            plan_id=data.plan_id,
+            expiration=expiration.isoformat(),
+            storage_quota_bytes=data.storage_quota_bytes,
+        )
         audit_log = SubscriptionAuditLog(
             user_id=user_id,
-            changed_by=admin_user_id,
-            old_value=old_value,
-            new_value=new_value,
+            changed_by=admin_user.id,
+            old_value=old_value.model_dump(),
+            new_value=new_value.model_dump(),
             reason=data.reason,
         )
         db.add(audit_log)
@@ -606,11 +615,24 @@ async def update_user_subscription_admin(
         db.commit()
         return await get_user_with_context(db, user_id)
 
-    except HTTPException:
+    except HTTPException as e:
+        db.rollback()
+        logger.warning(
+            "Subscription update rejected for user %s: [%s] %s",
+            user_id,
+            e.status_code,
+            e.detail,
+        )
         raise
     except Exception as e:
-        logger.error(e, exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        db.rollback()
+        logger.error(
+            "Unexpected error updating subscription for user %s: %s",
+            user_id,
+            e,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 async def update_password(
