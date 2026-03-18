@@ -606,8 +606,8 @@ async def update_user_subscription_admin(
         audit_log = SubscriptionAuditLog(
             user_id=user_id,
             changed_by=admin_user.id,
-            old_value=old_value.model_dump(),
-            new_value=new_value.model_dump(),
+            old_value=old_value.dict(),
+            new_value=new_value.dict(),
             reason=data.reason,
         )
         db.add(audit_log)

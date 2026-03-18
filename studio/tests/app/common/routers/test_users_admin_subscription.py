@@ -163,14 +163,14 @@ class TestSubscriptionAuditSnapshot:
         )
         assert snapshot.expiration is None
 
-    def test_snapshot_model_dump(self):
+    def test_snapshot_dict_serialization(self):
         """Snapshot serializes to dict for JSON storage."""
         snapshot = SubscriptionAuditSnapshot(
             plan_id=2,
             expiration="2026-12-31T23:59:59+00:00",
             storage_quota_bytes=214748364800,
         )
-        dumped = snapshot.model_dump()
+        dumped = snapshot.dict()
         assert isinstance(dumped, dict)
         assert dumped["plan_id"] == 2
         assert dumped["expiration"] == "2026-12-31T23:59:59+00:00"
