@@ -185,8 +185,9 @@ variable "git_branch" {
 }
 
 variable "ecr_repository_url" {
-  description = "ECR repository URL for OptiNiSt Docker image"
+  description = "ECR repository URL for a pre-existing repo (production). If empty, Terraform creates a new repo named <environment>-optinist-for-cloud."
   type        = string
+  default     = ""
 }
 
 variable "asg_min_size" {
