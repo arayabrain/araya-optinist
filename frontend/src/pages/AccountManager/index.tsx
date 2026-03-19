@@ -336,7 +336,7 @@ const SubscriptionEditModal = ({
   const handleSubmit = async () => {
     setIsSubmitting(true)
     try {
-      await onSubmit({
+      const success = await onSubmit({
         plan_id: planId,
         expiration: isFree
           ? undefined
@@ -344,7 +344,9 @@ const SubscriptionEditModal = ({
         storage_quota_bytes: storageQuotaGb * GB,
         reason: reason.trim(),
       })
-      onClose()
+      if (success) {
+        onClose()
+      }
     } finally {
       setIsSubmitting(false)
     }
@@ -394,10 +396,14 @@ const SubscriptionEditModal = ({
             type="number"
             value={storageQuotaGb}
             onChange={(e) => {
-              const val = Math.max(1, Math.floor(Number(e.target.value) || 1))
+              const val = Math.max(
+                1,
+                Math.min(9999, Math.floor(Number(e.target.value) || 1)),
+              )
               setStorageQuotaGb(val)
             }}
-            inputProps={{ min: 1 }}
+            inputProps={{ min: 1, max: 9999 }}
+            helperText="1 - 9999 GB (max ~10 TB)"
             fullWidth
           />
 

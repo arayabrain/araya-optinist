@@ -463,11 +463,13 @@ class SubscriptionAuditLog(SQLModel, table=True):
     )
     user_id: int = Field(
         sa_column=Column(BIGINT, nullable=False, index=True),
-        description="The user whose subscription was changed",
+        description="The user whose subscription was changed. "
+        "No FK constraint — audit records must survive user deletion.",
     )
     changed_by: int = Field(
         sa_column=Column(BIGINT, nullable=False),
-        description="Admin user ID who made the change",
+        description="Admin user ID who made the change. "
+        "No FK constraint — audit records must survive user deletion.",
     )
     old_value: Dict[str, Any] = Field(
         sa_column=Column(JSON, nullable=False),

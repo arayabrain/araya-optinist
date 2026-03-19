@@ -106,7 +106,7 @@ class SubscriptionAuditSnapshot(BaseModel):
 class UserSubscriptionUpdate(BaseModel):
     plan_id: int
     expiration: Optional[datetime] = None
-    storage_quota_bytes: int = Field(gt=0)
+    storage_quota_bytes: int = Field(gt=0, lt=10 * 1024 * 1024 * 1024 * 1024)
     reason: str = Field(min_length=1)
 
 
