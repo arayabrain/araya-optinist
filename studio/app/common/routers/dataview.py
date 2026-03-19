@@ -233,12 +233,15 @@ async def public_reproduce_experiment(
 
     if not is_unsynced and hasattr(record, "local_sync_status"):
         # Also sync if status indicates data might be incomplete
-        needs_sync = record.local_sync_status in [
-            LocalSyncStatus.pending.value,
-            LocalSyncStatus.error.value,
-        ]
+        needs_sync = RemoteStorageController.is_available() and (
+            record.local_sync_status
+            in [
+                LocalSyncStatus.pending.value,
+                LocalSyncStatus.error.value,
+            ]
+        )
     else:
-        needs_sync = is_unsynced
+        needs_sync = is_unsynced and RemoteStorageController.is_available()
 
     if needs_sync:
         download_error = await _ensure_experiment_downloaded(
@@ -420,7 +423,7 @@ async def private_reproduce_experiment(
     is_unsynced = RemoteSyncStatusFileUtil.check_sync_status_unsynced(
         workspace_id, unique_id
     )
-    needs_sync = is_unsynced
+    needs_sync = is_unsynced and RemoteStorageController.is_available()
 
     if needs_sync:
         download_error = await _ensure_experiment_downloaded(

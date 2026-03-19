@@ -462,7 +462,10 @@ class DataviewService:
                 priority = 0
             if priority > best_priority:
                 best_priority = priority
-                image_url = normalize_output_path(node.data.path[0])
+                path = node.data.path
+                image_url = normalize_output_path(
+                    path[0] if isinstance(path, list) else path
+                )
                 dataset_paths = DatasetPaths(
                     hdf5_path=node.data.hdf5Path,
                     mat_path=node.data.matPath,
