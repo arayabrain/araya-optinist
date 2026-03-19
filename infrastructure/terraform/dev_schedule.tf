@@ -9,7 +9,7 @@
 #   - Background service EC2 instance (stop/start)
 #   - Premium EC2 instances (stop/start)
 #   - NAT instance (stop/start)
-#   - RDS instance (stop/start)
+#   - RDS instance (destroy with snapshot / restore from snapshot)
 #   - Lambda schedule rules (disable/enable)
 #   - CloudWatch alarm actions (disable/enable)
 #
@@ -61,26 +61,34 @@ data "archive_file" "dev_scheduler_zip" {
 resource "aws_lambda_function" "dev_scheduler" {
   count = var.enable_dev_schedule ? 1 : 0
 
-  filename         = "${path.module}/dev_scheduler.py.zip"
-  function_name    = "${var.environment}-dev-scheduler"
-  role             = aws_iam_role.dev_scheduler[0].arn
-  handler          = "dev_scheduler.handler"
-  runtime          = "python3.11"
-  timeout          = 120
-  source_code_hash = data.archive_file.dev_scheduler_zip[0].output_base64sha256
+  filename                       = "${path.module}/dev_scheduler.py.zip"
+  function_name                  = "${var.environment}-dev-scheduler"
+  role                           = aws_iam_role.dev_scheduler[0].arn
+  handler                        = "dev_scheduler.handler"
+  runtime                        = "python3.11"
+  timeout                        = 300
+  reserved_concurrent_executions = 1
+  source_code_hash               = data.archive_file.dev_scheduler_zip[0].output_base64sha256
 
   environment {
     variables = {
-      RDS_INSTANCE_ID        = aws_db_instance.main.identifier
-      NAT_INSTANCE_ID        = aws_instance.nat.id
+      RDS_INSTANCE_ID          = aws_db_instance.main.identifier
+      RDS_SNAPSHOT_ID          = "${aws_db_instance.main.identifier}-dev-scheduler"
+      RDS_INSTANCE_CLASS       = aws_db_instance.main.instance_class
+      RDS_SUBNET_GROUP_NAME    = aws_db_subnet_group.main.name
+      RDS_SECURITY_GROUP_IDS   = aws_security_group.rds.id
+      RDS_PARAMETER_GROUP_NAME = aws_db_parameter_group.main.name
+      NAT_INSTANCE_ID          = aws_instance.nat.id
       BACKGROUND_INSTANCE_ID = aws_instance.background.id
       PREMIUM_INSTANCE_IDS   = join(",", aws_instance.premium[*].id)
       ASG_NAME               = aws_autoscaling_group.main.name
       ASG_MIN_SIZE           = tostring(var.asg_min_size)
+      ASG_MAX_SIZE           = tostring(var.asg_max_size)
       ASG_DESIRED_CAPACITY   = tostring(var.asg_desired_capacity)
       CLUSTER_NAME           = aws_ecs_cluster.main.name
       OVERRIDE_PARAM_NAME    = "/${var.environment}/optinist/schedule-override"
-      ALARM_PREFIX           = "${var.environment}-"
+      ALARM_PREFIX                  = "${var.environment}-"
+      PREMIUM_MANAGER_FUNCTION_NAME = aws_lambda_function.premium_manager.function_name
 
       SCHEDULE_RULE_NAMES = jsonencode([
         aws_cloudwatch_event_rule.free_manager_schedule.name,
@@ -160,14 +168,35 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      # RDS stop/start (scoped to specific instance)
+      # RDS destroy/restore (scoped to specific instance)
       {
         Effect = "Allow"
         Action = [
+          "rds:DeleteDBInstance",
+          "rds:DescribeDBInstances",
+          "rds:RestoreDBInstanceFromDBSnapshot",
+          "rds:AddTagsToResource",
           "rds:StartDBInstance",
-          "rds:StopDBInstance",
         ]
         Resource = aws_db_instance.main.arn
+      },
+      # RDS snapshot management (scoped to environment snapshots)
+      {
+        Effect = "Allow"
+        Action = [
+          "rds:DeleteDBSnapshot",
+          "rds:DescribeDBSnapshots",
+        ]
+        Resource = "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:snapshot:${aws_db_instance.main.identifier}-dev-scheduler"
+      },
+      # RDS read-only describe for subnet/parameter groups (requires wildcard)
+      {
+        Effect = "Allow"
+        Action = [
+          "rds:DescribeDBSubnetGroups",
+          "rds:DescribeDBParameterGroups",
+        ]
+        Resource = "*"
       },
       # EC2 stop/start for NAT and background instances
       {
@@ -239,6 +268,12 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
           "ssm:PutParameter",
         ]
         Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/optinist/schedule-override"
+      },
+      # Invoke premium_manager to clean up dynamic instances before stop
+      {
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = aws_lambda_function.premium_manager.arn
       },
     ]
   })

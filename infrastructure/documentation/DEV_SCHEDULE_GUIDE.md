@@ -19,7 +19,7 @@ start at the same time but are typically ready within 5-10 minutes.
 
 | Resource | Start Action | Stop Action |
 |---|---|---|
-| RDS (MySQL) | `start_db_instance` | `stop_db_instance` |
+| RDS (MySQL) | `restore_db_instance_from_db_snapshot` | `delete_db_instance` (with final snapshot) |
 | NAT instance | `start_instances` | `stop_instances` |
 | Background service instance | `start_instances` | `stop_instances` |
 | Premium instances | `start_instances` | `stop_instances` |
@@ -29,24 +29,47 @@ start at the same time but are typically ready within 5-10 minutes.
 
 The **ALB stays running** at all times (cannot be stopped; fixed cost ~$16-22/month).
 
+### Important: RDS is destroyed during off-hours
+
+Unlike other resources which are simply stopped, the **RDS instance is fully deleted**
+each evening (with a snapshot taken automatically). It is restored from that snapshot
+the next morning. This eliminates AWS's 7-day forced restart, but has implications:
+
+- **Do NOT run `terraform apply` during off-hours or weekends.** Terraform will see the
+  missing RDS instance and try to create a fresh one (empty database). Wait until the
+  scheduler has restored the instance first. If you must apply during off-hours, either
+  start the environment manually first, or use `-target` to exclude the RDS resource.
+- **Do NOT manually delete the snapshot** named `<identifier>-dev-scheduler`. It is the
+  only copy of the database while the instance is destroyed. If deleted, the next
+  morning's restore will fail.
+- **Morning restore takes ~10-15 minutes** (longer than a simple RDS start). The
+  instance may not be ready until ~09:00 even though the Lambda fires at 08:45.
+- **RDS configuration changes** (instance class, parameter group, security groups, etc.)
+  in Terraform also need to be reflected in the Lambda's environment variables, otherwise
+  the restored instance will use stale settings. The env vars are already wired via
+  Terraform references, so a normal `terraform apply` keeps them in sync — but be aware
+  if you change RDS config manually in the console.
+
 ## Working After Hours
 
 ### Option 1: Skip the Next Stop (Working Late)
 
-If you need to keep the environment running past 22:00 JST, set the override
-**before** 22:00:
+If you need to keep the environment running past 22:00 JST, set an override
+with a duration **before** 22:00:
 
 ```bash
-aws ssm put-parameter \
-  --name /development/optinist/schedule-override \
-  --value on \
-  --type String \
-  --overwrite \
-  --region ap-northeast-1
+# Keep running for 3 more hours
+aws lambda invoke \
+  --function-name development-dev-scheduler \
+  --payload '{"action":"override","hours":3}' \
+  --region ap-northeast-1 \
+  /dev/stdout
 ```
 
-The override is automatically cleared by the next morning's start, so the
-normal schedule resumes the following day.
+The override **automatically expires** after the specified hours (max 12h).
+No need to remember to turn it off — it self-clears.
+
+The next morning's start also clears any leftover override.
 
 ### Option 2: Manual Start (Weekends / After Hours)
 
@@ -75,8 +98,8 @@ aws lambda invoke \
   /dev/stdout
 ```
 
-This respects the override parameter -- if it's set to "on", the stop will be
-skipped. Clear it first if you want to force a stop:
+This respects the override — if an active override hasn't expired yet, the
+stop will be skipped. Clear it first if you want to force a stop:
 
 ```bash
 aws ssm put-parameter \
@@ -101,6 +124,9 @@ aws autoscaling describe-auto-scaling-groups \
 ```
 
 ### Is the override active?
+
+The value is a UTC expiry timestamp (e.g., `2026-03-18T16:00:00Z`) or `off`:
+
 
 ```bash
 aws ssm get-parameter \
@@ -151,12 +177,38 @@ Production (`subscr`) is unaffected -- the variable defaults to `false`.
 2. Check the Lambda logs
 3. Try a manual stop (see above)
 
-### RDS won't start (7-day auto-start)
+### RDS 7-day auto-start (solved)
 
-AWS automatically starts RDS instances that have been stopped for 7 days.
-This shouldn't happen with the Mon-Fri schedule (max 2.5 days stopped),
-but if it does, the next scheduled start will find it already running and
-continue normally.
+AWS automatically restarts stopped RDS instances after 7 days. This was a problem
+during extended breaks (Golden Week, year-end holidays). The scheduler now **destroys**
+the RDS instance (with a final snapshot) on stop and **restores** it from that snapshot
+on start. Since the instance doesn't exist while stopped, AWS cannot auto-restart it.
+
+The RDS Proxy target automatically reconnects when the instance is restored with the
+same identifier -- no reconfiguration needed.
+
+### Snapshot not found on start
+
+If the restore fails with `snapshot_not_found`, the snapshot may have been manually
+deleted. Check available snapshots:
+
+```bash
+aws rds describe-db-snapshots \
+  --db-instance-identifier development-cloud-rds \
+  --query 'DBSnapshots[?contains(DBSnapshotIdentifier, `dev-scheduler`)].[DBSnapshotIdentifier,Status]' \
+  --region ap-northeast-1 \
+  --output table
+```
+
+If no scheduler snapshot exists, you can create one manually from a recent automated
+backup, or re-create the RDS instance via Terraform.
+
+### Terraform drift after RDS destroy
+
+While the RDS instance is destroyed (during off-hours), `terraform plan` will show
+the instance as needing to be created. This is expected. Once the scheduler restores
+the instance on the next start, `terraform plan` should show no changes (the instance
+is restored with the same identifier and configuration).
 
 ### Lambda schedules are disabled after a stop
 

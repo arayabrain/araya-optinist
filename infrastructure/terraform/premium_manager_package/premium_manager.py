@@ -1984,6 +1984,14 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             result = fix_incorrect_is_shared_flags()
             return {"statusCode": 200, "body": json.dumps(result)}
 
+        # Handle cleanup_all_dynamic action (called by dev scheduler before stop)
+        if event.get("action") == "cleanup_all_dynamic":
+            print("Cleaning up all dynamic premium instances...")
+            result = cleanup_all_dynamic_instances(
+                base_instance_ids=event.get("base_instance_ids", [])
+            )
+            return {"statusCode": 200, "body": json.dumps(result)}
+
         # Handle scheduled monitoring events
         if (
             event.get("source") == "aws.events"
@@ -4244,6 +4252,79 @@ def terminate_standby_instance(instance_id: str):
     except Exception as e:
         print(f"Error terminating standby instance {instance_id}: {str(e)}")
         return False
+
+
+def cleanup_all_dynamic_instances(base_instance_ids: list) -> dict:
+    """
+    Terminate all dynamic premium instances and clean up their DB entries.
+    Called by the dev scheduler before stopping the environment.
+
+    Dynamic instances are those with tag Service: premium-tier that are NOT
+    in the base_instance_ids list (Terraform-managed base instances).
+
+    Args:
+        base_instance_ids: List of Terraform-managed instance IDs to preserve (stop, not terminate)
+    """
+    ec2_client: "EC2Client" = boto3.client("ec2")
+    base_set = set(base_instance_ids)
+    result = {"terminated": [], "errors": [], "db_cleaned": 0}
+
+    try:
+        # Query all premium-tier instances
+        response = ec2_client.describe_instances(
+            Filters=[
+                {"Name": "tag:Service", "Values": ["premium-tier"]},
+                {
+                    "Name": "instance-state-name",
+                    "Values": ["running", "stopped", "pending", "stopping"],
+                },
+            ]
+        )
+
+        dynamic_ids = []
+        for reservation in response.get("Reservations", []):
+            for instance in reservation.get("Instances", []):
+                instance_id = instance["InstanceId"]
+                if instance_id not in base_set:
+                    dynamic_ids.append(instance_id)
+
+        if not dynamic_ids:
+            print("No dynamic premium instances found")
+            return result
+
+        print(f"Found {len(dynamic_ids)} dynamic premium instances to terminate: {dynamic_ids}")
+
+        # Terminate dynamic instances
+        try:
+            ec2_client.terminate_instances(InstanceIds=dynamic_ids)
+            result["terminated"] = dynamic_ids
+            print(f"Terminated {len(dynamic_ids)} dynamic instances")
+        except Exception as e:
+            print(f"Error terminating dynamic instances: {e}")
+            result["errors"].append(str(e))
+
+        # Clean up DB entries for terminated instances
+        try:
+            with get_db_connection() as connection:
+                with connection.cursor() as cursor:
+                    placeholders = ", ".join(["%s"] * len(dynamic_ids))
+                    cursor.execute(
+                        f"DELETE FROM premium_user_assignments "
+                        f"WHERE instance_id IN ({placeholders})",
+                        tuple(dynamic_ids),
+                    )
+                    result["db_cleaned"] = cursor.rowcount
+                    connection.commit()
+            print(f"Cleaned up {result['db_cleaned']} DB entries")
+        except Exception as e:
+            print(f"Error cleaning up DB entries: {e}")
+            result["errors"].append(f"db_cleanup: {e}")
+
+    except Exception as e:
+        print(f"Error querying dynamic instances: {e}")
+        result["errors"].append(str(e))
+
+    return result
 
 
 def cleanup_failed_standby_instances():
