@@ -57,7 +57,12 @@ from typing import Dict, List, Optional, Union
 
 def get_project_root() -> Path:
     """Get the project root directory."""
-    return Path(__file__).parent.parent.parent
+    # In Docker: /app/scripts/ -> parent.parent = /app
+    # Locally: <repo>/infrastructure/scripts/ -> parent.parent.parent = <repo>
+    root = Path(__file__).parent.parent
+    if not (root / "studio").exists():
+        root = root.parent
+    return root
 
 
 def load_test_users_for_jwt() -> Dict[str, Dict]:

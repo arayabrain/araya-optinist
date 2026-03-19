@@ -386,11 +386,10 @@ class TestPremiumManagerEvents:
 
 
 class TestEarlyCheckAndCleanup:
-    """TC-1, TC-2, TC-4, TC-5: Assignment early check and
-    cleanup tests."""
+    """Assignment early check and cleanup tests."""
 
     def test_early_check_returns_existing_assignment(self, mock_env_vars_premium):
-        """TC-1: assign_premium_user returns existing assignment
+        """assign_premium_user returns existing assignment
         without creating new ALB rules."""
         print("Testing Early Check Returns Existing Assignment")
         print("=" * 50)
@@ -442,7 +441,7 @@ class TestEarlyCheckAndCleanup:
             mock_get_existing.assert_called_once_with(test_user_id)
 
     def test_exception_handler_cleans_up_alb_rule(self, mock_env_vars_premium):
-        """TC-2: Exception handler cleans up ALB rule."""
+        """Exception handler cleans up ALB rule."""
         print("Testing Exception Handler ALB Rule Cleanup")
         print("=" * 50)
 
@@ -563,7 +562,7 @@ class TestEarlyCheckAndCleanup:
             assert mock_elbv2.delete_rule.call_count == 2
 
     def test_cleanup_duplicate_alb_rules_scheduled(self, mock_env_vars_premium):
-        """TC-4: Scheduled duplicate cleanup in
+        """Scheduled duplicate cleanup in
         premium_cleanup Lambda."""
         print("Testing Scheduled Duplicate ALB Rules Cleanup")
         print("=" * 50)
@@ -655,7 +654,7 @@ class TestEarlyCheckAndCleanup:
             assert duplicate_rule_arn in deleted_arns
 
     def test_autoscaling_pool_triggers_migration_retry(self, mock_env_vars_premium):
-        """TC-5: Autoscaling-pool assignment triggers
+        """Autoscaling-pool assignment triggers
         migration retry."""
         print("Testing Autoscaling-Pool Assignment " "Triggers Migration Retry")
         print("=" * 50)
@@ -712,10 +711,10 @@ class TestEarlyCheckAndCleanup:
 
 
 class TestDictCursorFix:
-    """TC-6..8: DictCursor fix tests."""
+    """DictCursor fix tests."""
 
     def test_increment_attempts(self, mock_env_vars_premium):
-        """TC-6: _increment_assignment_attempts_transaction
+        """_increment_assignment_attempts_transaction
         uses dict-style access."""
         print("Testing DictCursor Fix - Increment Attempts")
         print("=" * 50)
@@ -740,7 +739,7 @@ class TestDictCursorFix:
             print(f"Correctly incremented attempts: 3 -> {result}")
 
     def test_store_existing_assignment(self, mock_env_vars_premium):
-        """TC-7: _store_user_assignment_transaction uses
+        """_store_user_assignment_transaction uses
         dict-style access on existing assignment."""
         print("Testing DictCursor Fix - " "Store Existing Assignment")
         print("=" * 50)
@@ -780,7 +779,7 @@ class TestDictCursorFix:
                 print(f"Correctly raised: {e}")
 
     def test_increment_none_attempts(self, mock_env_vars_premium):
-        """TC-8: None assignment_attempts defaults to 1."""
+        """None assignment_attempts defaults to 1."""
         print("Testing DictCursor Fix - None Attempts Default")
         print("=" * 50)
 
@@ -805,10 +804,10 @@ class TestDictCursorFix:
 
 
 class TestGenerateRoutingId:
-    """TC-9..12: generate_routing_id pure function tests."""
+    """generate_routing_id pure function tests."""
 
     def test_deterministic(self):
-        """TC-9: Same uid+key always returns the same ID."""
+        """Same uid+key always returns the same ID."""
         from premium_manager import generate_routing_id
 
         uid = "user_abc_123"
@@ -820,7 +819,7 @@ class TestGenerateRoutingId:
         print(f"Deterministic: '{result1}' == '{result2}'")
 
     def test_length(self):
-        """TC-10: Output is exactly 16 hex characters."""
+        """Output is exactly 16 hex characters."""
         from premium_manager import generate_routing_id
 
         result = generate_routing_id("user_1", "key_1")
@@ -830,7 +829,7 @@ class TestGenerateRoutingId:
         print(f"Valid 16-char hex: '{result}'")
 
     def test_different_keys(self):
-        """TC-11: Different keys produce different IDs."""
+        """Different keys produce different IDs."""
         from premium_manager import generate_routing_id
 
         uid = "same_user"
@@ -841,7 +840,7 @@ class TestGenerateRoutingId:
         print(f"key_alpha -> '{id1}', key_beta -> '{id2}'")
 
     def test_different_uids(self):
-        """TC-12: Different UIDs produce different IDs."""
+        """Different UIDs produce different IDs."""
         from premium_manager import generate_routing_id
 
         key = "same_key"
@@ -853,10 +852,10 @@ class TestGenerateRoutingId:
 
 
 class TestCountTotalPremiumUsers:
-    """TC-13..15: count_total_premium_users tests."""
+    """count_total_premium_users tests."""
 
     def test_subscription_table(self, mock_env_vars_premium):
-        """TC-13: Primary path returns subscriber count."""
+        """Primary path returns subscriber count."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "pymysql.connect"
         ) as mock_pymysql:
@@ -872,7 +871,7 @@ class TestCountTotalPremiumUsers:
             print(f"Subscription table returned: {result}")
 
     def test_fallback(self, mock_env_vars_premium):
-        """TC-14: Subscription query fails, falls back."""
+        """Subscription query fails, falls back."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "pymysql.connect"
         ) as mock_pymysql:
@@ -895,7 +894,7 @@ class TestCountTotalPremiumUsers:
             print(f"Fallback returned: {result}")
 
     def test_all_fail(self, mock_env_vars_premium):
-        """TC-15: Both queries fail, returns default."""
+        """Both queries fail, returns default."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "pymysql.connect"
         ) as mock_pymysql:
@@ -922,10 +921,10 @@ class TestCountTotalPremiumUsers:
 
 
 class TestTryReserveInstance:
-    """TC-16..17: try_reserve_instance tests."""
+    """try_reserve_instance tests."""
 
     def test_success(self, mock_env_vars_premium):
-        """TC-16: No existing assignment, reservation inserted."""
+        """No existing assignment, reservation inserted."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "pymysql.connect"
         ) as mock_pymysql:
@@ -940,7 +939,7 @@ class TestTryReserveInstance:
             assert result is True
 
     def test_already_reserved(self, mock_env_vars_premium):
-        """TC-17: Existing assignment found, returns False."""
+        """Existing assignment found, returns False."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "pymysql.connect"
         ) as mock_pymysql:
@@ -958,10 +957,10 @@ class TestTryReserveInstance:
 
 
 class TestDatabaseCommits:
-    """TC-18..20: Verify commit is called after operations."""
+    """Verify commit is called after operations."""
 
     def test_terminate_standby_instance_commits(self, mock_env_vars_premium):
-        """TC-18: Verify commit is called after DELETE."""
+        """Verify commit is called after DELETE."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
@@ -979,7 +978,7 @@ class TestDatabaseCommits:
             mock_connection.commit.assert_called()
 
     def test_cleanup_failed_standby_commits(self, mock_env_vars_premium):
-        """TC-19: Verify commit is called after cleanup."""
+        """Verify commit is called after cleanup."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "premium_manager" ".get_all_premium_instances_with_states"
         ) as mock_aws, patch("pymysql.connect") as mock_pymysql:
@@ -998,7 +997,7 @@ class TestDatabaseCommits:
             mock_connection.commit.assert_called()
 
     def test_update_user_activity_commits(self, mock_env_vars_premium):
-        """TC-20: Verify commit is called after UPDATE."""
+        """Verify commit is called after UPDATE."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "pymysql.connect"
         ) as mock_pymysql:
@@ -1017,10 +1016,10 @@ class TestDatabaseCommits:
 
 
 class TestGetAllPremiumInstances:
-    """TC-21..22: get_all_premium_instances tests."""
+    """get_all_premium_instances tests."""
 
     def test_filters_by_tags(self, mock_env_vars_premium):
-        """TC-21: Only premium-tagged instances returned."""
+        """Only premium-tagged instances returned."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ) as mock_boto3:
@@ -1070,7 +1069,7 @@ class TestGetAllPremiumInstances:
             assert result[0]["instance_id"] == "i-premium1"
 
     def test_empty(self, mock_env_vars_premium):
-        """TC-22: No instances returns empty list."""
+        """No instances returns empty list."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ) as mock_boto3:
@@ -1085,10 +1084,10 @@ class TestGetAllPremiumInstances:
 
 
 class TestStartStandbyInstance:
-    """TC-23..24: start_standby_instance tests."""
+    """start_standby_instance tests."""
 
     def test_success(self, mock_env_vars_premium):
-        """TC-23: EC2 start + waiter + checkpoint clear + DB update."""
+        """EC2 start + waiter + checkpoint clear + DB update."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ) as mock_boto3, patch("pymysql.connect") as mock_pymysql, patch(
@@ -1114,7 +1113,7 @@ class TestStartStandbyInstance:
             mock_connection.commit.assert_called()
 
     def test_waiter_fails(self, mock_env_vars_premium):
-        """TC-24: EC2 waiter timeout returns False."""
+        """EC2 waiter timeout returns False."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
@@ -1219,7 +1218,7 @@ class TestClearEcsAgentCheckpoint:
 
 
 class TestDesiredCountUsesECS:
-    """RC4: update_premium_service_desired_count uses ECS
+    """update_premium_service_desired_count uses ECS
     container instance count, not EC2 instance count."""
 
     def test_updates_from_ecs_count(self, mock_env_vars_premium):
@@ -1282,7 +1281,7 @@ class TestDesiredCountUsesECS:
             mock_ecs.update_service.assert_not_called()
 
     def test_does_not_use_ec2_describe_instances(self, mock_env_vars_premium):
-        """RC4: update_premium_service_desired_count must not
+        """update_premium_service_desired_count must not
         call ec2.describe_instances (old counting method)."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
@@ -1317,7 +1316,7 @@ class TestDesiredCountUsesECS:
 
 
 class TestRoutingIdContract:
-    """RC2: Lambda and middleware must produce identical
+    """Lambda and middleware must produce identical
     routing IDs for the same Firebase UID + secret."""
 
     def test_handler_passes_firebase_uid_to_assign(self, mock_env_vars_premium):
@@ -1444,7 +1443,7 @@ class TestRoutingIdContract:
 
     def test_numeric_id_differs_from_firebase_uid(self):
         """Numeric DB ID and Firebase UID produce different
-        routing IDs -- the root cause of RC2."""
+        routing IDs -- a routing mismatch root cause."""
         from premium_manager import generate_routing_id
 
         secret = "test-secret"
@@ -1528,7 +1527,7 @@ class TestRoutingIdContract:
 
 
 class TestCleanupOrphanedEC2Instances:
-    """RC4: cleanup_orphaned_ec2_instances stops unregistered
+    """cleanup_orphaned_ec2_instances stops unregistered
     instances past the grace period and skips the rest."""
 
     def test_stops_orphaned_past_grace_period(self, mock_env_vars_premium):
@@ -1691,7 +1690,7 @@ class TestCleanupOrphanedEC2Instances:
 
 
 class TestGetUserUidFromId:
-    """RC4: Reverse UID lookup from numeric DB ID."""
+    """Reverse UID lookup from numeric DB ID."""
 
     def test_returns_firebase_uid(self, mock_env_vars_premium):
         """Returns the Firebase UID for a known user_id."""

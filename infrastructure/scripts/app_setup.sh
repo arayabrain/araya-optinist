@@ -42,7 +42,6 @@ ECS_AGENT_RETRY_DELAY=30
 
 # Default IDs
 DEFAULT_ORG_ID=1
-DEFAULT_USER_ID=1
 ADMIN_ROLE_ID=1
 
 # Role Definitions
@@ -76,6 +75,9 @@ ADMIN_SUBSCRIPTION_DAYS=365
 # Storage Configuration
 ADMIN_STORAGE_USAGE_BYTES=0
 ADMIN_STORAGE_QUOTA_BYTES=214748364800  # 200 GB
+
+# Environment prefix (allows reuse for test environments)
+ENV_PREFIX="${ENV_PREFIX:-subscr}"
 
 # AWS Region (detect from instance metadata or use default)
 AWS_REGION="${AWS_DEFAULT_REGION:-ap-northeast-1}"
@@ -152,19 +154,19 @@ echo "$(date): Fetching secrets from AWS Secrets Manager"
 
 # Firebase Configuration
 echo "$(date): Fetching Firebase configuration..."
-FIREBASE_CONFIG_JSON=$(get_secret "subscr-optinist/firebase/config")
-FIREBASE_PRIVATE_JSON=$(get_secret "subscr-optinist/firebase/private-key")
+FIREBASE_CONFIG_JSON=$(get_secret "${ENV_PREFIX}-optinist/firebase/config")
+FIREBASE_PRIVATE_JSON=$(get_secret "${ENV_PREFIX}-optinist/firebase/private-key")
 
 # Database Configuration
 echo "$(date): Fetching database configuration..."
-DB_CONFIG_JSON=$(get_secret "subscr-optinist/database/config")
+DB_CONFIG_JSON=$(get_secret "${ENV_PREFIX}-optinist/database/config")
 MYSQL_USER=$(get_json_value "$DB_CONFIG_JSON" "username")
 MYSQL_PASSWORD=$(get_json_value "$DB_CONFIG_JSON" "password")
 MYSQL_DATABASE=$(get_json_value "$DB_CONFIG_JSON" "database")
 
 # Application Configuration
 echo "$(date): Fetching application configuration..."
-APP_CONFIG_JSON=$(get_secret "subscr-optinist/app/config")
+APP_CONFIG_JSON=$(get_secret "${ENV_PREFIX}-optinist/app/config")
 OPTINIST_SECRET_KEY=$(get_json_value "$APP_CONFIG_JSON" "secret_key")
 OPTINIST_ORG_NAME=$(get_json_value "$APP_CONFIG_JSON" "org_name")
 OPTINIST_ADMIN_NAME=$(get_json_value "$APP_CONFIG_JSON" "admin_name")
@@ -177,36 +179,44 @@ OPTINIST_ADMIN_UID=$(get_json_value "$APP_CONFIG_JSON" "admin_uid")
 
 echo "$(date): Discovering AWS infrastructure..."
 
-# Find RDS Proxy endpoint
-echo "$(date): Finding RDS Proxy..."
-RDS_PROXY_ENDPOINT=$(aws rds describe-db-proxies \
-    --region "$AWS_REGION" \
-    --query "DBProxies[?contains(DBProxyName, 'subscr-optinist')].Endpoint" \
-    --output text 2>/dev/null | head -1)
-
-if [ -z "$RDS_PROXY_ENDPOINT" ]; then
-    echo "$(date): WARNING: RDS Proxy not found, trying direct RDS endpoint..."
-    RDS_PROXY_ENDPOINT=$(aws rds describe-db-instances \
+# Find RDS Proxy endpoint (use RDS_PROXY_ENDPOINT if passed from Terraform, otherwise discover)
+if [ -n "$RDS_PROXY_ENDPOINT" ]; then
+    echo "$(date): Using RDS Proxy endpoint from environment: $RDS_PROXY_ENDPOINT"
+else
+    echo "$(date): Finding RDS Proxy..."
+    RDS_PROXY_ENDPOINT=$(aws rds describe-db-proxies \
         --region "$AWS_REGION" \
-        --query "DBInstances[?contains(DBInstanceIdentifier, 'subscr-optinist')].Endpoint.Address" \
+        --query "DBProxies[?contains(DBProxyName, '${ENV_PREFIX}-optinist')].Endpoint" \
         --output text 2>/dev/null | head -1)
+
+    if [ -z "$RDS_PROXY_ENDPOINT" ]; then
+        echo "$(date): WARNING: RDS Proxy not found, trying direct RDS endpoint..."
+        RDS_PROXY_ENDPOINT=$(aws rds describe-db-instances \
+            --region "$AWS_REGION" \
+            --query "DBInstances[?contains(DBInstanceIdentifier, '${ENV_PREFIX}-optinist')].Endpoint.Address" \
+            --output text 2>/dev/null | head -1)
+    fi
 fi
 
-# Find S3 bucket
-echo "$(date): Finding S3 bucket..."
-S3_BUCKET=$(aws s3api list-buckets \
-    --query "Buckets[?contains(Name, 'subscr-optinist-app-storage')].Name" \
-    --output text 2>/dev/null | head -1)
+# Find S3 bucket (use S3_BUCKET_NAME if passed from Terraform, otherwise discover)
+if [ -n "$S3_BUCKET_NAME" ]; then
+    echo "$(date): Using S3 bucket from environment: $S3_BUCKET_NAME"
+    S3_BUCKET="$S3_BUCKET_NAME"
+else
+    echo "$(date): Finding S3 bucket..."
+    S3_BUCKET=$(aws s3api list-buckets \
+        --query "Buckets[?contains(Name, '${ENV_PREFIX}-optinist-app-storage')].Name" \
+        --output text 2>/dev/null | head -1)
 
-if [ -z "$S3_BUCKET" ]; then
-    echo "$(date): WARNING: Could not find S3 bucket with expected naming pattern"
-    # Try to find any bucket with subscr-optinist tag
-    S3_BUCKET=$(aws resourcegroupstaggingapi get-resources \
-        --resource-type-filters s3:bucket \
-        --tag-filters "Key=Name,Values=*optinist*" \
-        --region "$AWS_REGION" \
-        --query "ResourceTagMappingList[0].ResourceARN" \
-        --output text 2>/dev/null | cut -d':' -f6)
+    if [ -z "$S3_BUCKET" ]; then
+        echo "$(date): WARNING: Could not find S3 bucket with expected naming pattern"
+        S3_BUCKET=$(aws resourcegroupstaggingapi get-resources \
+            --resource-type-filters s3:bucket \
+            --tag-filters "Key=Name,Values=*optinist*" \
+            --region "$AWS_REGION" \
+            --query "ResourceTagMappingList[0].ResourceARN" \
+            --output text 2>/dev/null | cut -d':' -f6)
+    fi
 fi
 
 echo "$(date): RDS Proxy Endpoint: $RDS_PROXY_ENDPOINT"
@@ -245,8 +255,15 @@ echo "$(date): Starting database initialization"
 
 # Install MySQL client for database initialization
 echo "$(date): Installing MySQL client"
-apt-get update
-apt-get install -y mysql-client-core-8.0 python3-pip
+if command -v yum &>/dev/null; then
+    yum install -y mysql python3-pip
+elif command -v apt-get &>/dev/null; then
+    apt-get update
+    apt-get install -y mysql-client-core-8.0 python3-pip
+else
+    echo "$(date): ERROR: No supported package manager found"
+    exit 1
+fi
 
 # Extract hostname from RDS endpoint (remove port if present)
 RDS_HOST=$(echo "$RDS_PROXY_ENDPOINT" | cut -d':' -f1)
@@ -268,30 +285,32 @@ USE ${MYSQL_DATABASE};
 -- Insert initial data
 INSERT IGNORE INTO organization (name) VALUES ('${OPTINIST_ORG_NAME}');
 INSERT IGNORE INTO roles (id, role) VALUES
-  ($ROLE_ADMIN_ID, '$ROLE_ADMIN_NAME'),
-  ($ROLE_DATA_MANAGER_ID, '$ROLE_DATA_MANAGER_NAME'),
-  ($ROLE_OPERATOR_ID, '$ROLE_OPERATOR_NAME'),
-  ($ROLE_GUEST_OPERATOR_ID, '$ROLE_GUEST_OPERATOR_NAME');
+  (${ROLE_ADMIN_ID}, '${ROLE_ADMIN_NAME}'),
+  (${ROLE_DATA_MANAGER_ID}, '${ROLE_DATA_MANAGER_NAME}'),
+  (${ROLE_OPERATOR_ID}, '${ROLE_OPERATOR_NAME}'),
+  (${ROLE_GUEST_OPERATOR_ID}, '${ROLE_GUEST_OPERATOR_NAME}');
 
 -- Default admin user with S3 bucket info
 INSERT IGNORE INTO users (uid, organization_id, name, email, active, attributes)
-VALUES ('${OPTINIST_ADMIN_UID}', $DEFAULT_ORG_ID, '${OPTINIST_ADMIN_NAME}', '${OPTINIST_ADMIN_EMAIL}', true, '{"remote_bucket_name": "${S3_BUCKET}"}');
+VALUES ('${OPTINIST_ADMIN_UID}', ${DEFAULT_ORG_ID}, '${OPTINIST_ADMIN_NAME}', '${OPTINIST_ADMIN_EMAIL}', true, '{"remote_bucket_name": "${S3_BUCKET}"}');
 
-INSERT IGNORE INTO user_roles (user_id, role_id) VALUES ($DEFAULT_USER_ID, $ADMIN_ROLE_ID);
+INSERT IGNORE INTO user_roles (user_id, role_id)
+SELECT id, ${ADMIN_ROLE_ID} FROM users WHERE uid = '${OPTINIST_ADMIN_UID}';
 
-UPDATE users SET attributes = JSON_MERGE_PATCH(IFNULL(attributes,'{}'), '{"remote_bucket_name": "${S3_BUCKET}"}') WHERE id = $DEFAULT_USER_ID;
+UPDATE users SET attributes = JSON_MERGE_PATCH(IFNULL(attributes,'{}'), '{"remote_bucket_name": "${S3_BUCKET}"}') WHERE uid = '${OPTINIST_ADMIN_UID}';
 
 -- Tax rates initialization
 INSERT IGNORE INTO taxes (tax_type, tax_name, tax_rate, is_active, effective_date)
-VALUES ('$TAX_TYPE', '$TAX_NAME', $TAX_RATE, $TAX_IS_ACTIVE, CURDATE());
+VALUES ('${TAX_TYPE}', '${TAX_NAME}', ${TAX_RATE}, ${TAX_IS_ACTIVE}, CURDATE());
 
 -- Admin user storage quota initialization
 INSERT IGNORE INTO user_storage_usage (user_id, storage_usage_bytes, storage_quota_bytes)
-VALUES ($DEFAULT_USER_ID, $ADMIN_STORAGE_USAGE_BYTES, $ADMIN_STORAGE_QUOTA_BYTES);
+SELECT id, ${ADMIN_STORAGE_USAGE_BYTES}, ${ADMIN_STORAGE_QUOTA_BYTES} FROM users WHERE uid = '${OPTINIST_ADMIN_UID}'
+ON DUPLICATE KEY UPDATE storage_quota_bytes = ${ADMIN_STORAGE_QUOTA_BYTES};
 
 -- Admin user premium subscription
 INSERT IGNORE INTO subscription_users (plan_id, user_id, expiration)
-VALUES ($PREMIUM_PLAN_ID, $DEFAULT_USER_ID, DATE_ADD(NOW(), INTERVAL $ADMIN_SUBSCRIPTION_DAYS DAY));
+SELECT ${PREMIUM_PLAN_ID}, id, DATE_ADD(NOW(), INTERVAL ${ADMIN_SUBSCRIPTION_DAYS} DAY) FROM users WHERE uid = '${OPTINIST_ADMIN_UID}';
 
 INIT_SQL
 
@@ -301,6 +320,12 @@ INIT_SQL
 export MYSQL_USER MYSQL_PASSWORD MYSQL_DATABASE
 export OPTINIST_ORG_NAME OPTINIST_ADMIN_UID OPTINIST_ADMIN_NAME OPTINIST_ADMIN_EMAIL
 export S3_BUCKET DB_INIT_SQL_FILE
+export ROLE_ADMIN_ID ROLE_ADMIN_NAME ROLE_DATA_MANAGER_ID ROLE_DATA_MANAGER_NAME
+export ROLE_OPERATOR_ID ROLE_OPERATOR_NAME ROLE_GUEST_OPERATOR_ID ROLE_GUEST_OPERATOR_NAME
+export DEFAULT_ORG_ID ADMIN_ROLE_ID
+export TAX_TYPE TAX_NAME TAX_RATE TAX_IS_ACTIVE
+export ADMIN_STORAGE_USAGE_BYTES ADMIN_STORAGE_QUOTA_BYTES
+export PREMIUM_PLAN_ID ADMIN_SUBSCRIPTION_DAYS
 
 python3 << 'PYSUBST'
 import os
@@ -324,7 +349,25 @@ var_names = [
     'OPTINIST_ADMIN_UID',
     'OPTINIST_ADMIN_NAME',
     'OPTINIST_ADMIN_EMAIL',
-    'S3_BUCKET'
+    'S3_BUCKET',
+    'ROLE_ADMIN_ID',
+    'ROLE_ADMIN_NAME',
+    'ROLE_DATA_MANAGER_ID',
+    'ROLE_DATA_MANAGER_NAME',
+    'ROLE_OPERATOR_ID',
+    'ROLE_OPERATOR_NAME',
+    'ROLE_GUEST_OPERATOR_ID',
+    'ROLE_GUEST_OPERATOR_NAME',
+    'DEFAULT_ORG_ID',
+    'ADMIN_ROLE_ID',
+    'TAX_TYPE',
+    'TAX_NAME',
+    'TAX_RATE',
+    'TAX_IS_ACTIVE',
+    'ADMIN_STORAGE_USAGE_BYTES',
+    'ADMIN_STORAGE_QUOTA_BYTES',
+    'PREMIUM_PLAN_ID',
+    'ADMIN_SUBSCRIPTION_DAYS',
 ]
 
 # Perform substitutions with proper SQL escaping
@@ -350,7 +393,7 @@ max_attempts=$DB_INIT_MAX_ATTEMPTS
 attempt=1
 while [ $attempt -le $max_attempts ]; do
   echo "$(date): Attempting to initialize database (attempt $attempt/$max_attempts)"
-  if mysql -h "$RDS_HOST" -P $MYSQL_PORT -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" < "$DB_INIT_SQL_FILE"; then
+  if mysql -h "$RDS_HOST" -P $MYSQL_PORT -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" --ssl "$MYSQL_DATABASE" < "$DB_INIT_SQL_FILE"; then
     echo "$(date): Database initialization successful"
     break
   else
@@ -372,7 +415,11 @@ echo "$(date): Verifying admin email in Firebase"
 
 # Install dependencies for Firebase Admin SDK
 echo "$(date): Installing firebase-admin..."
-python3 -m pip install firebase-admin
+python3 -m pip install firebase-admin || {
+    echo "$(date): WARNING: Failed to install firebase-admin. Skipping email verification."
+    echo "$(date): Application setup completed successfully (without Firebase verification)"
+    exit 0
+}
 
 # Run verification script
 echo "$(date): Running Firebase verification script..."

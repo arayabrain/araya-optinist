@@ -3,7 +3,7 @@
 # Application Load Balancer
 # =========================
 resource "aws_lb" "autoscaling" {
-  name               = "subscr-optinist-lb"
+  name               = "${local.env_prefix}-lb"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id, aws_security_group.ecs.id]
@@ -24,11 +24,11 @@ resource "aws_lb" "autoscaling" {
   ]
 
   tags = {
-    Name = "subscr-optinist-load-balancer"
+    Name = "${local.env_prefix}-load-balancer"
   }
 }
 
-# Load Balancer Listener - HTTP to HTTPS Redirect
+# Load Balancer Listener - HTTP (redirects to main listener)
 resource "aws_lb_listener" "autoscaling" {
   load_balancer_arn = aws_lb.autoscaling.arn
   port              = "80"
@@ -38,33 +38,31 @@ resource "aws_lb_listener" "autoscaling" {
     type = "redirect"
 
     redirect {
-      port        = "443"
-      protocol    = "HTTPS"
+      port        = var.enable_custom_domain ? "443" : "8080"
+      protocol    = var.enable_custom_domain ? "HTTPS" : "HTTP"
       status_code = "HTTP_301"
     }
   }
 }
 
 
-# HTTPS listener for autoscaling ALB
+# HTTPS listener (or HTTP on 8080 for dev without custom domain)
 resource "aws_lb_listener" "autoscaling_https" {
   load_balancer_arn = aws_lb.autoscaling.arn
-  port              = "443"
-  protocol          = "HTTPS"
-  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = aws_acm_certificate.main.arn
+  port              = var.enable_custom_domain ? "443" : "8080"
+  protocol          = var.enable_custom_domain ? "HTTPS" : "HTTP"
+  ssl_policy        = var.enable_custom_domain ? "ELBSecurityPolicy-TLS13-1-2-2021-06" : null
+  certificate_arn   = var.enable_custom_domain ? aws_acm_certificate_validation.main[0].certificate_arn : null
 
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.autoscaling.arn
   }
-
-  depends_on = [aws_acm_certificate_validation.main]
 }
 
 # Target Group for ALB
 resource "aws_lb_target_group" "autoscaling" {
-  name        = "subscr-optinist-tg"
+  name        = "${local.env_prefix}-tg"
   port        = 8000
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
@@ -93,7 +91,7 @@ resource "aws_lb_target_group" "autoscaling" {
   }
 
   tags = {
-    Name = "subscr-optinist-cloud-target-group"
+    Name = "${local.env_prefix}-cloud-target-group"
   }
 }
 
@@ -118,9 +116,9 @@ data "aws_ami" "ecs_optimized" {
 }
 
 resource "aws_launch_template" "ecs" {
-  name_prefix   = "subscr-optinist-ecs-"
+  name_prefix   = "${local.env_prefix}-ecs-"
   image_id      = data.aws_ami.ecs_optimized.id
-  instance_type = "t3.large"
+  instance_type = var.free_instance_type
   key_name      = aws_key_pair.subscr_optinist_cloud_key_pair.key_name
 
   vpc_security_group_ids = [aws_security_group.ecs.id]
@@ -149,8 +147,8 @@ resource "aws_launch_template" "ecs" {
     git_repo              = var.git_repo
     firebase_config_json  = var.firebase_config_json
     firebase_private_json = var.firebase_private_json
-    ecr_registry          = split("/", var.ecr_repository_url)[0]
-    ecr_repository_url    = var.ecr_repository_url
+    ecr_registry          = split("/", local.ecr_repository_url)[0]
+    ecr_repository_url    = local.ecr_repository_url
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
     swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
@@ -158,7 +156,7 @@ resource "aws_launch_template" "ecs" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Name    = "subscr-optinist-asg-instance"
+      Name    = "${local.env_prefix}-asg-instance"
       Type    = "ECS-ASG"
       Service = "autoscaling"
     }
@@ -173,7 +171,7 @@ resource "aws_launch_template" "ecs" {
 # Auto Scaling Group
 # ==================
 resource "aws_autoscaling_group" "main" {
-  name                      = "subscr-optinist-asg"
+  name                      = "${local.env_prefix}-asg"
   vpc_zone_identifier       = [aws_subnet.private1.id, aws_subnet.private2.id]
   target_group_arns         = [aws_lb_target_group.autoscaling.arn]
   health_check_type         = "ELB"
@@ -210,7 +208,7 @@ resource "aws_autoscaling_group" "main" {
 
   tag {
     key                 = "Name"
-    value               = "subscr-optinist-asg-instance"
+    value               = "${local.env_prefix}-asg-instance"
     propagate_at_launch = true
   }
 
@@ -232,6 +230,24 @@ resource "aws_autoscaling_group" "main" {
     propagate_at_launch = true
   }
 
+  tag {
+    key                 = "Environment"
+    value               = var.environment
+    propagate_at_launch = true
+  }
+
+  tag {
+    key                 = "ManagedBy"
+    value               = "terraform"
+    propagate_at_launch = true
+  }
+
+  tag {
+    key                 = "Project"
+    value               = "optinist-cloud"
+    propagate_at_launch = true
+  }
+
   instance_refresh {
     strategy = "Rolling"
     preferences {
@@ -250,14 +266,14 @@ resource "aws_autoscaling_group" "main" {
 
   # Lifecycle hooks for logging
   initial_lifecycle_hook {
-    name                 = "subscr-optinist-launch-hook"
+    name                 = "${local.env_prefix}-launch-hook"
     default_result       = "CONTINUE"
     heartbeat_timeout    = 300
     lifecycle_transition = "autoscaling:EC2_INSTANCE_LAUNCHING"
   }
 
   initial_lifecycle_hook {
-    name                 = "subscr-optinist-terminate-hook"
+    name                 = "${local.env_prefix}-terminate-hook"
     default_result       = "CONTINUE"
     heartbeat_timeout    = 300
     lifecycle_transition = "autoscaling:EC2_INSTANCE_TERMINATING"
@@ -266,7 +282,7 @@ resource "aws_autoscaling_group" "main" {
 
 # Auto Scaling Policies
 resource "aws_autoscaling_policy" "scale_up" {
-  name                   = "subscr-optinist-scale-up"
+  name                   = "${local.env_prefix}-scale-up"
   scaling_adjustment     = 1
   adjustment_type        = "ChangeInCapacity"
   cooldown               = 300
@@ -274,7 +290,7 @@ resource "aws_autoscaling_policy" "scale_up" {
 }
 
 resource "aws_autoscaling_policy" "scale_down" {
-  name                   = "subscr-optinist-scale-down"
+  name                   = "${local.env_prefix}-scale-down"
   scaling_adjustment     = -1
   adjustment_type        = "ChangeInCapacity"
   cooldown               = 300
@@ -287,7 +303,7 @@ resource "aws_autoscaling_policy" "scale_down" {
 
 # Premium ECS Service for pre-warmed containers
 resource "aws_ecs_service" "premium" {
-  name                               = "subscr-premium-optinist-cloud-service"
+  name                               = "${var.environment}-premium-optinist-cloud-service"
   cluster                            = aws_ecs_cluster.main.id
   task_definition                    = aws_ecs_task_definition.premium.arn
   desired_count                      = 1
@@ -311,9 +327,9 @@ resource "aws_ecs_service" "premium" {
 
 # Premium Launch Template - Optimized for dedicated premium users
 resource "aws_launch_template" "premium" {
-  name_prefix   = "subscr-optinist-premium-"
+  name_prefix   = "${local.env_prefix}-premium-"
   image_id      = data.aws_ami.ecs_optimized.id
-  instance_type = "t3.large"
+  instance_type = var.premium_instance_type
   key_name      = aws_key_pair.subscr_optinist_cloud_key_pair.key_name
 
   vpc_security_group_ids = [aws_security_group.ecs.id]
@@ -342,8 +358,8 @@ resource "aws_launch_template" "premium" {
     git_repo              = var.git_repo
     firebase_config_json  = var.firebase_config_json
     firebase_private_json = var.firebase_private_json
-    ecr_registry          = split("/", var.ecr_repository_url)[0]
-    ecr_repository_url    = var.ecr_repository_url
+    ecr_registry          = split("/", local.ecr_repository_url)[0]
+    ecr_repository_url    = local.ecr_repository_url
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
     swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
@@ -352,7 +368,7 @@ resource "aws_launch_template" "premium" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Name    = "subscr-optinist-premium-instance"
+      Name    = "${local.env_prefix}-premium-instance"
       Type    = "ECS-Premium"
       Tier    = "premium"
       Service = "premium-spot-fleet"
@@ -364,89 +380,11 @@ resource "aws_launch_template" "premium" {
   }
 }
 
-# =======
-# SSL/TLS
-# =======
-# Reference to existing Route53 hosted zone
-data "aws_route53_zone" "main" {
-  name         = var.frontend_domain
-  private_zone = false
-}
-
-# SSL/TLS certificate for HTTPS support
-resource "aws_acm_certificate" "main" {
-  domain_name       = var.frontend_domain
-  validation_method = "DNS"
-
-  subject_alternative_names = [
-    "*.${var.frontend_domain}" # Support subdomains
-  ]
-
-  lifecycle {
-    create_before_destroy = true
-  }
-
-  tags = {
-    Name = "${var.frontend_domain} certificate"
-  }
-}
-
-# DNS validation record for ACM certificate
-resource "aws_route53_record" "cert_validation" {
-  for_each = {
-    for dvo in aws_acm_certificate.main.domain_validation_options : dvo.domain_name => {
-      name   = dvo.resource_record_name
-      record = dvo.resource_record_value
-      type   = dvo.resource_record_type
-    }
-  }
-
-  allow_overwrite = true
-  name            = each.value.name
-  records         = [each.value.record]
-  ttl             = 60
-  type            = each.value.type
-  zone_id         = data.aws_route53_zone.main.zone_id
-}
-
-# Wait for certificate validation to complete
-resource "aws_acm_certificate_validation" "main" {
-  certificate_arn         = aws_acm_certificate.main.arn
-  validation_record_fqdns = [for record in aws_route53_record.cert_validation : record.fqdn]
-}
-
-
-# Route53 A record pointing to ALB
-resource "aws_route53_record" "main" {
-  zone_id = data.aws_route53_zone.main.zone_id
-  name    = var.frontend_domain
-  type    = "A"
-
-  alias {
-    name                   = aws_lb.autoscaling.dns_name
-    zone_id                = aws_lb.autoscaling.zone_id
-    evaluate_target_health = true
-  }
-}
-
-# Route53 A record for www subdomain (redirects to main domain)
-resource "aws_route53_record" "www" {
-  zone_id = data.aws_route53_zone.main.zone_id
-  name    = "www.${var.frontend_domain}"
-  type    = "A"
-
-  alias {
-    name                   = aws_lb.autoscaling.dns_name
-    zone_id                = aws_lb.autoscaling.zone_id
-    evaluate_target_health = true
-  }
-}
-
 # ===========
 # ECS Cluster
 # ===========
 resource "aws_ecs_cluster" "main" {
-  name = "subscr-optinist-cloud-cluster"
+  name = "${local.env_prefix}-cloud-cluster"
 
   setting {
     name  = "containerInsights"
@@ -458,19 +396,19 @@ resource "aws_ecs_cluster" "main" {
   }
 
   tags = {
-    Name = "subscr-optinist-cloud-cluster"
+    Name = "${local.env_prefix}-cloud-cluster"
   }
 }
 
 # Service Discovery
 resource "aws_service_discovery_private_dns_namespace" "main" {
-  name = "subscr.optinist.local"
+  name = "${var.environment}.optinist.local"
   vpc  = aws_vpc.main.id
 }
 
 # ECS Capacity Provider
 resource "aws_ecs_capacity_provider" "main" {
-  name = "subscr-optinist-capacity-provider"
+  name = "${local.env_prefix}-capacity-provider"
 
   auto_scaling_group_provider {
     auto_scaling_group_arn         = aws_autoscaling_group.main.arn
@@ -495,7 +433,7 @@ resource "aws_ecs_capacity_provider" "main" {
   }
 
   tags = {
-    Name = "subscr-optinist-capacity-provider"
+    Name = "${local.env_prefix}-capacity-provider"
   }
 }
 
@@ -533,7 +471,7 @@ resource "aws_instance" "premium" {
     version = "$Latest"
   }
 
-  instance_type = "t3.large"
+  instance_type = var.premium_instance_type
   subnet_id     = aws_subnet.private1.id
 
   # On shutdown, stop instance instead of terminating
@@ -543,7 +481,7 @@ resource "aws_instance" "premium" {
   disable_api_termination = false
 
   tags = {
-    Name          = "subscr-premium-${count.index + 1}"
+    Name          = "${var.environment}-premium-${count.index + 1}"
     Type          = "Premium-Instance"
     Service       = "premium-tier"
     Tier          = "premium"
@@ -566,7 +504,7 @@ resource "aws_instance" "premium" {
 # ECS Task Definition
 # ===================
 resource "aws_ecs_task_definition" "autoscaling" {
-  family                   = "subscr-optinist-cloud-taskdef"
+  family                   = "${local.env_prefix}-cloud-taskdef"
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
   cpu                      = 2048
@@ -576,8 +514,8 @@ resource "aws_ecs_task_definition" "autoscaling" {
 
   container_definitions = jsonencode([
     {
-      name              = "subscr-optinist-cloud-container"
-      image             = "${var.ecr_repository_url}:latest"
+      name              = "${local.env_prefix}-cloud-container"
+      image             = "${local.ecr_repository_url}:latest"
       cpu               = 1536
       memory            = 6656
       memoryReservation = 4096
@@ -593,7 +531,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
 
       portMappings = [
         {
-          name          = "subscr-optinist-cloud-container-port-8000"
+          name          = "${local.env_prefix}-cloud-container-port-8000"
           containerPort = 8000
           hostPort      = 8000
           protocol      = "tcp"
@@ -602,8 +540,12 @@ resource "aws_ecs_task_definition" "autoscaling" {
 
       environment = [
         {
+          name  = "ENV_PREFIX"
+          value = var.environment
+        },
+        {
           name  = "CLOUDWATCH_LOG_GROUP"
-          value = "/ecs/subscr-optinist-cloud-taskdef"
+          value = "/ecs/${local.env_prefix}-cloud-taskdef"
         },
         {
           name  = "PYTHONPATH"
@@ -647,11 +589,11 @@ resource "aws_ecs_task_definition" "autoscaling" {
         },
         {
           name  = "FRONTEND_SERVER_HOST"
-          value = var.frontend_domain
+          value = local.effective_frontend_domain
         },
         {
           name  = "FRONTEND_SERVER_PORT"
-          value = var.frontend_port
+          value = local.effective_frontend_port
         },
         {
           name  = "FRONTEND_SERVER_PROTO"
@@ -680,6 +622,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
         {
           name  = "S3_DEFAULT_BUCKET_NAME"
           value = aws_s3_bucket.app_storage.id
+        },
+        {
+          name  = "S3_USER_BUCKET_PREFIX"
+          value = var.s3_user_bucket_prefix
         },
         {
           name  = "REMOTE_STORAGE_TYPE"
@@ -715,7 +661,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
         },
         {
           name  = "STRIPE_CALLBACK_URL"
-          value = "${var.frontend_protocol}://${var.frontend_domain}"
+          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
         },
         {
           name  = "STRIPE_SECRET_KEY"
@@ -742,6 +688,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
           name  = "DISABLE_BACKGROUND_SCHEDULER"
           value = "1"
         },
+        {
+          name  = "PREMIUM_MANAGER_FUNCTION_NAME"
+          value = "${var.environment}-premium-manager"
+        },
       ]
       secrets = [
         {
@@ -756,7 +706,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
 
       mountPoints = [
         {
-          sourceVolume  = "subscr-optinist-cloud-snmk-volume"
+          sourceVolume  = "${local.env_prefix}-cloud-snmk-volume"
           containerPath = "/app/.snakemake"
           readOnly      = false
         }
@@ -777,11 +727,11 @@ resource "aws_ecs_task_definition" "autoscaling" {
       logConfiguration = {
         logDriver = "awslogs"
         options = {
-          "awslogs-group"             = "/ecs/subscr-optinist-cloud-taskdef"
+          "awslogs-group"             = "/ecs/${local.env_prefix}-cloud-taskdef"
           "mode"                      = "non-blocking"
           "awslogs-multiline-pattern" = "^\\[\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
           "max-buffer-size"           = "25m"
-          "awslogs-region"            = "ap-northeast-1"
+          "awslogs-region"            = var.aws_region
           "awslogs-create-group"      = "true"
           "awslogs-stream-prefix"     = "ecs"
           "mode"                      = "non-blocking"
@@ -791,7 +741,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
   ])
 
   volume {
-    name = "subscr-optinist-cloud-snmk-volume"
+    name = "${local.env_prefix}-cloud-snmk-volume"
     efs_volume_configuration {
       file_system_id     = aws_efs_file_system.snmk.id
       root_directory     = "/"
@@ -804,14 +754,14 @@ resource "aws_ecs_task_definition" "autoscaling" {
   }
 
   tags = {
-    Name = "subscr-optinist-cloud-taskdef"
+    Name = "${local.env_prefix}-cloud-taskdef"
   }
 }
 
 
 # Premium ECS Task Definition - Pre-warmed containers for instant access
 resource "aws_ecs_task_definition" "premium" {
-  family                   = "subscr-premium-optinist-cloud-taskdef"
+  family                   = "${var.environment}-premium-optinist-cloud-taskdef"
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
   cpu                      = 2048
@@ -821,8 +771,8 @@ resource "aws_ecs_task_definition" "premium" {
 
   container_definitions = jsonencode([
     {
-      name              = "subscr-premium-optinist-cloud-container"
-      image             = "${var.ecr_repository_url}:latest"
+      name              = "${var.environment}-premium-optinist-cloud-container"
+      image             = "${local.ecr_repository_url}:latest"
       cpu               = 1536
       memory            = 6656
       memoryReservation = 4096
@@ -839,7 +789,7 @@ resource "aws_ecs_task_definition" "premium" {
 
       portMappings = [
         {
-          name          = "subscr-premium-optinist-cloud-container-port-8000"
+          name          = "${var.environment}-premium-optinist-cloud-container-port-8000"
           containerPort = 8000
           hostPort      = 8000
           protocol      = "tcp"
@@ -848,8 +798,12 @@ resource "aws_ecs_task_definition" "premium" {
 
       environment = [
         {
+          name  = "ENV_PREFIX"
+          value = var.environment
+        },
+        {
           name  = "CLOUDWATCH_LOG_GROUP"
-          value = "/ecs/subscr-premium-optinist-cloud-taskdef"
+          value = "/ecs/${var.environment}-premium-optinist-cloud-taskdef"
         },
         {
           name  = "PYTHONPATH"
@@ -897,11 +851,11 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "FRONTEND_SERVER_HOST"
-          value = var.frontend_domain
+          value = local.effective_frontend_domain
         },
         {
           name  = "FRONTEND_SERVER_PORT"
-          value = var.frontend_port
+          value = local.effective_frontend_port
         },
         {
           name  = "FRONTEND_SERVER_PROTO"
@@ -930,6 +884,10 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "S3_DEFAULT_BUCKET_NAME"
           value = aws_s3_bucket.app_storage.id
+        },
+        {
+          name  = "S3_USER_BUCKET_PREFIX"
+          value = var.s3_user_bucket_prefix
         },
         {
           name  = "REMOTE_STORAGE_TYPE"
@@ -961,7 +919,7 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "STRIPE_CALLBACK_URL"
-          value = "${var.frontend_protocol}://${var.frontend_domain}"
+          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
         },
         {
           name  = "STRIPE_SECRET_KEY"
@@ -992,7 +950,7 @@ resource "aws_ecs_task_definition" "premium" {
 
       mountPoints = [
         {
-          sourceVolume  = "subscr-premium-optinist-cloud-snmk-volume"
+          sourceVolume  = "${var.environment}-premium-optinist-cloud-snmk-volume"
           containerPath = "/app/.snakemake"
           readOnly      = false
         }
@@ -1009,10 +967,10 @@ resource "aws_ecs_task_definition" "premium" {
       logConfiguration = {
         logDriver = "awslogs"
         options = {
-          "awslogs-group"             = "/ecs/subscr-premium-optinist-cloud-taskdef"
+          "awslogs-group"             = "/ecs/${var.environment}-premium-optinist-cloud-taskdef"
           "awslogs-multiline-pattern" = "^\\[\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
           "max-buffer-size"           = "25m"
-          "awslogs-region"            = "ap-northeast-1"
+          "awslogs-region"            = var.aws_region
           "awslogs-create-group"      = "true"
           "awslogs-stream-prefix"     = "ecs"
           "mode"                      = "non-blocking"
@@ -1022,7 +980,7 @@ resource "aws_ecs_task_definition" "premium" {
   ])
 
   volume {
-    name = "subscr-premium-optinist-cloud-snmk-volume"
+    name = "${var.environment}-premium-optinist-cloud-snmk-volume"
     efs_volume_configuration {
       file_system_id     = aws_efs_file_system.snmk.id
       root_directory     = "/"
@@ -1035,7 +993,7 @@ resource "aws_ecs_task_definition" "premium" {
   }
 
   tags = {
-    Name = "subscr-premium-optinist-cloud-taskdef"
+    Name = "${var.environment}-premium-optinist-cloud-taskdef"
     Tier = "premium"
   }
 }
@@ -1044,7 +1002,7 @@ resource "aws_ecs_task_definition" "premium" {
 # ECS Service
 # ===========
 resource "aws_ecs_service" "autoscaling" {
-  name                               = "subscr-optinist-cloud-service"
+  name                               = "${local.env_prefix}-cloud-service"
   cluster                            = aws_ecs_cluster.main.id
   task_definition                    = aws_ecs_task_definition.autoscaling.arn
   desired_count                      = 1
@@ -1061,7 +1019,7 @@ resource "aws_ecs_service" "autoscaling" {
 
   load_balancer {
     target_group_arn = aws_lb_target_group.autoscaling.arn
-    container_name   = "subscr-optinist-cloud-container"
+    container_name   = "${local.env_prefix}-cloud-container"
     container_port   = 8000
   }
 
@@ -1079,7 +1037,7 @@ resource "aws_ecs_service" "autoscaling" {
   health_check_grace_period_seconds = 900
 
   tags = {
-    Name = "subscr-optinist-cloud-service"
+    Name = "${local.env_prefix}-cloud-service"
   }
 }
 

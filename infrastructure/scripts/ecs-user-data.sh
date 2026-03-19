@@ -80,17 +80,7 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CW_C
                     "cpu_usage_iowait"
                 ],
                 "totalcpu": true
-            },
-            "procstat": [
-                {
-                    "pattern": ".*",
-                    "measurement": [
-                        "cpu_usage",
-                        "memory_rss"
-                    ],
-                    "metrics_collection_interval": 60
-                }
-            ]
+            }
         }
     },
     "logs": {

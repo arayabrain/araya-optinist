@@ -24,6 +24,7 @@ from studio.app.common.core.middleware import (
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
 from studio.app.common.core.subscription.constants import (
+    ExpirationDeletion,
     StorageReconciliation,
     SyncStatusConstants,
 )
@@ -31,6 +32,9 @@ from studio.app.common.core.subscription.constants import (
 # Background job imports (only used in non-standalone mode)
 if not MODE.IS_STANDALONE:
     from studio.app.common.core.background.cleanup_job import DataCleanupJob
+    from studio.app.common.core.background.expiration_lifecycle_job import (
+        ExpirationLifecycleJob,
+    )
     from studio.app.common.core.background.scheduler import BackgroundScheduler
     from studio.app.common.core.background.storage_reconciliation_job import (
         StorageReconciliationJob,
@@ -101,10 +105,27 @@ async def lifespan(app: FastAPI):
     if not MODE.IS_STANDALONE:
         import asyncio
 
+        from studio.app.common.core.storage.startup_leader import (
+            release_startup_leader,
+            try_become_startup_leader,
+        )
+
         async def _startup_sync():
+            """Only one worker out of N should perform startup sync."""
             try:
                 await asyncio.sleep(5)
-                await PublishedExperimentSyncJob.run_startup_sync()
+
+                # Leader election: only 1 worker syncs
+                if not try_become_startup_leader():
+                    logger.info("Startup sync deferred to leader worker")
+                    return
+
+                try:
+                    # Run startup sync
+                    await PublishedExperimentSyncJob.run_startup_sync()
+                finally:
+                    # Always release leader file, even on error
+                    release_startup_leader()
             except Exception as e:
                 logger.error(f"Startup sync error: {e}", exc_info=True)
 
@@ -135,6 +156,12 @@ async def lifespan(app: FastAPI):
             func=StorageReconciliationJob.run,
             interval_minutes=StorageReconciliation.INTERVAL_MINUTES,
             job_id="storage_reconciliation",
+        )
+
+        BackgroundScheduler.add_job(
+            func=ExpirationLifecycleJob.run,
+            interval_minutes=ExpirationDeletion.JOB_INTERVAL_MINUTES,
+            job_id=ExpirationDeletion.JOB_ID,
         )
 
         # Start scheduler

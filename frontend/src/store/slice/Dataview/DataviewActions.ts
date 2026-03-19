@@ -5,6 +5,7 @@ import {
   getPublicDataviewRecordsApi,
   postPublishAllApi,
   postPublishApi,
+  privateDataviewReproduceWorkflowApi,
   publicDataviewReproduceWorkflowApi,
   putAttributesApi,
 } from "api/dataview/Dataview"
@@ -40,6 +41,24 @@ export const getPublicDataviewRecords = createAsyncThunk<
       return response
     } catch (e) {
       return rejectWithValue(e)
+    }
+  },
+)
+
+export const privateDataviewReproduceWorkflow = createAsyncThunk<
+  WorkflowWithResultDTO,
+  { workspaceId: number; uid: string }
+>(
+  `${DATAVIEW_SLICE_NAME}/privateDataviewReproduceWorkflow`,
+  async ({ workspaceId, uid }, thunkAPI) => {
+    try {
+      const response = await privateDataviewReproduceWorkflowApi(
+        workspaceId,
+        uid,
+      )
+      return response
+    } catch (e) {
+      return thunkAPI.rejectWithValue(e)
     }
   },
 )

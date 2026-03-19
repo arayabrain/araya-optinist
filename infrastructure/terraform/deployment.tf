@@ -10,7 +10,7 @@ resource "null_resource" "build_and_deploy" {
     # Force rebuild when git branch changes
     git_branch = var.git_branch
     # Force rebuild when ECR repo changes
-    ecr_repo = var.ecr_repository_url
+    ecr_repo = local.ecr_repository_url
     # Force rebuild when code changes
   }
 
@@ -23,7 +23,7 @@ resource "null_resource" "build_and_deploy" {
       # Build and push image
       echo "Building and pushing Docker image..."
       chmod +x ../scripts/ecr_build_push.sh
-      ../scripts/ecr_build_push.sh
+      ../scripts/ecr_build_push.sh --yes
 
       echo "Waiting for ECR image to be available..."
       sleep 60
@@ -77,7 +77,7 @@ resource "aws_s3_object" "app_setup_script" {
 
 # SSM document to run setup script
 resource "aws_ssm_document" "app_setup" {
-  name            = "subscr-optinist-app-setup"
+  name            = "${local.env_prefix}-app-setup"
   document_type   = "Command"
   document_format = "YAML"
 
@@ -106,7 +106,7 @@ resource "aws_ssm_document" "app_setup" {
           timeoutSeconds = "3600"
           runCommand = [
             "chmod +x /tmp/app_setup.sh",
-            "/tmp/app_setup.sh"
+            "ENV_PREFIX=${var.environment} S3_BUCKET_NAME=${aws_s3_bucket.app_storage.id} RDS_PROXY_ENDPOINT=${aws_db_proxy.main.endpoint} /tmp/app_setup.sh"
           ]
         }
       }

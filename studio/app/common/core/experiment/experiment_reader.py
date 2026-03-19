@@ -10,7 +10,10 @@ from studio.app.common.core.experiment.experiment import (
     ExptOutputPathIds,
 )
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.storage.remote_storage_controller import RemoteStorageReader
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteExperimentSyncMode,
+    RemoteStorageReader,
+)
 from studio.app.common.core.utils.config_handler import ConfigReader
 from studio.app.common.core.utils.datetime_utils import TIMEZONE_KEY
 from studio.app.common.core.utils.filepath_creater import join_filepath
@@ -38,6 +41,25 @@ class ExptConfigReader:
             [DIRPATH.OUTPUT_DIR, workspace_id, "*", DIRPATH.EXPERIMENT_YML]
         )
         return path
+
+    @classmethod
+    def get_local_experiment_uids(cls, workspace_id: str) -> set:
+        """Return set of experiment UIDs that exist locally on filesystem.
+
+        Uses glob to find experiment.yaml files and extracts UIDs from paths.
+        """
+        from glob import glob
+
+        config_paths = glob(cls.get_config_yaml_wild_path(workspace_id))
+        uids = set()
+        for path in config_paths:
+            try:
+                ids = ExptOutputPathIds(os.path.dirname(path))
+                if ids.unique_id:
+                    uids.add(ids.unique_id)
+            except Exception:
+                pass
+        return uids
 
     @classmethod
     async def ensure_synced_async(
@@ -81,7 +103,10 @@ class ExptConfigReader:
 
         try:
             async with RemoteStorageReader(
-                remote_bucket_name, workspace_id, unique_id
+                remote_bucket_name,
+                workspace_id,
+                unique_id,
+                sync_mode=RemoteExperimentSyncMode.METADATA_ONLY,
             ) as controller:
                 # Download only this specific experiment's metadata (efficient)
                 await controller.download_experiment_meta(workspace_id, unique_id)

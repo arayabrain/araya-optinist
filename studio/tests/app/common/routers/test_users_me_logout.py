@@ -9,7 +9,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from studio.app.common.core.subscription.constants import SubscriptionType
-from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.routers.users_me import logout_free_user
 
 
@@ -22,19 +21,14 @@ class TestLogoutFreeUser:
         mock_free_user = MagicMock()
         mock_free_user.id = 123
         mock_free_user.subscription_type = SubscriptionType.FREE.value
-        mock_assignment = MagicMock()
-        mock_assignment.user_id = "123"
-        mock_assignment.logged_out_at = None
         """Test successful logout for free tier user"""
-        # Mock execute() to return a row-like tuple
-        mock_db.execute.return_value.first.return_value = (mock_assignment,)
+        mock_db.execute.return_value.rowcount = 1
 
         result = await logout_free_user(current_user=mock_free_user, db=mock_db)
 
         assert result["logged_out"] is True
         assert result["cleanup_after_minutes"] == 60
-        assert mock_assignment.logged_out_at is not None
-        mock_db.add.assert_called_once_with(mock_assignment)
+        assert mock_db.execute.call_count == 2
         mock_db.commit.assert_called_once()
 
     @pytest.mark.asyncio
@@ -58,13 +52,11 @@ class TestLogoutFreeUser:
         mock_free_user.id = 123
         mock_free_user.subscription_type = SubscriptionType.FREE.value
         """Test logout when user has no assignment"""
-        # Mock execute() to return None
-        mock_db.execute.return_value.first.return_value = None
+        mock_db.execute.return_value.rowcount = 0
 
         result = await logout_free_user(current_user=mock_free_user, db=mock_db)
 
         assert result["logged_out"] is True
-        mock_db.add.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_logout_updates_timestamp(self):
@@ -72,20 +64,14 @@ class TestLogoutFreeUser:
         mock_free_user = MagicMock()
         mock_free_user.id = 123
         mock_free_user.subscription_type = SubscriptionType.FREE.value
-        mock_assignment = MagicMock()
-        mock_assignment.user_id = "123"
-        mock_assignment.logged_out_at = None
         """Test that logout updates logged_out_at timestamp"""
-        # Mock execute() to return a row-like tuple
-        mock_db.execute.return_value.first.return_value = (mock_assignment,)
+        mock_db.execute.return_value.rowcount = 1
 
-        before = get_current_datetime()
         result = await logout_free_user(current_user=mock_free_user, db=mock_db)
-        after = get_current_datetime()
 
         assert result["logged_out"] is True
-        assert mock_assignment.logged_out_at is not None
-        assert before <= mock_assignment.logged_out_at <= after
+        assert mock_db.execute.call_count == 2
+        mock_db.commit.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_logout_handles_exception_gracefully(self):

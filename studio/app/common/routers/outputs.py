@@ -1,11 +1,15 @@
 import os
 from typing import Optional
 
+import h5py
+import numpy as np
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 
 from studio.app.common.core.auth.auth_dependencies import get_outputs_remote_bucket_name
+from studio.app.common.core.dataview.dataview import DatasetPaths
+from studio.app.common.core.dataview.thumbnail_generator import ThumbnailGenerator
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
@@ -25,47 +29,19 @@ from studio.app.common.core.utils.filepath_creater import (
     normalize_output_path,
 )
 from studio.app.common.core.utils.json_writer import JsonWriter, save_tiff2json
+from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
 )
 from studio.app.common.dataclass.timeseries_chunk_handler import TimeSeriesChunkHandler
 from studio.app.common.schemas.outputs import JsonTimeSeriesData, OutputData
-from studio.app.const import (
-    ACCEPT_FILE_EXT,
-    ORIGINAL_DATA_EXT,
-    ThumbnailConst,
-    ThumbnailType,
-)
+from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT, ThumbnailType
 from studio.app.dir_path import DIRPATH
+from studio.app.optinist.routers.mat import MatGetter
 
 router = APIRouter(prefix="/outputs", tags=["outputs"])
 
 logger = AppLogger.get_logger()
-
-
-def _get_thumbnail_png_path(
-    workspace_id: str, unique_id: str, thumb_type: ThumbnailType
-) -> str:
-    """
-    Get the expected path for a thumbnail PNG.
-
-    Args:
-        workspace_id: Workspace identifier
-        unique_id: Experiment unique identifier
-        thumb_type: ThumbnailType.INPUT or ThumbnailType.ROI
-
-    Returns:
-        Absolute path to the thumbnail PNG file
-    """
-    return join_filepath(
-        [
-            DIRPATH.OUTPUT_DIR,
-            workspace_id,
-            unique_id,
-            ThumbnailConst.DIRNAME,
-            thumb_type.filename,
-        ]
-    )
 
 
 async def get_or_generate_thumbnail(
@@ -74,6 +50,7 @@ async def get_or_generate_thumbnail(
     original_path: str,
     remote_bucket_name: str,
     thumb_type: ThumbnailType,
+    dataset_paths: DatasetPaths = None,
 ) -> str:
     """
     Get thumbnail path, generating if needed (lazy migration).
@@ -93,32 +70,27 @@ async def get_or_generate_thumbnail(
         remote_bucket_name: remote storage bucket name for remote storage
         thumb_type: ThumbnailType.INPUT (for TIFF) or ThumbnailType.ROI
             (for cell_roi.json)
+        dataset_paths: Internal dataset paths for structured data
+            (optional)
 
     Returns:
         Path to the thumbnail PNG file (may be newly generated)
     """
-    from studio.app.common.core.dataview.thumbnail_generator import ThumbnailGenerator
-    from studio.app.common.core.utils.filepath_creater import create_directory
-
-    thumb_path = _get_thumbnail_png_path(workspace_id, unique_id, thumb_type)
+    thumb_path = ThumbnailGenerator.get_thumbnail_path(
+        workspace_id, unique_id, thumb_type
+    )
 
     # Check if PNG thumbnail already exists
     if os.path.exists(thumb_path):
         return normalize_output_path(thumb_path)
 
     # Resolve the original file path
-    abs_original_path = original_path
-    if not os.path.isabs(original_path):
-        # Try output directory first
-        abs_original_path = join_filepath([DIRPATH.OUTPUT_DIR, original_path])
-
-    # For input files (TIFFs), the path might be just a filename
-    if thumb_type == ThumbnailType.INPUT and not os.path.exists(abs_original_path):
-        filename = os.path.basename(original_path)
-        abs_original_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
+    abs_original_path = ThumbnailGenerator.resolve_source_path(
+        workspace_id, original_path
+    )
 
     # Download from remote storage if needed
-    if not os.path.exists(abs_original_path) and RemoteStorageController.is_available():
+    if abs_original_path is None and RemoteStorageController.is_available():
         async with RemoteStorageReader(
             remote_bucket_name,
             workspace_id,
@@ -128,16 +100,30 @@ async def get_or_generate_thumbnail(
             await remote_storage_controller.download_thumbnail_source(
                 workspace_id, unique_id, original_path, thumb_type
             )
+        # Re-resolve after download
+        abs_original_path = ThumbnailGenerator.resolve_source_path(
+            workspace_id, original_path
+        )
 
-    # Generate thumbnail if original file now exists
-    if os.path.exists(abs_original_path):
+    # Generate thumbnail
+    # - INPUT: always generates (TIFF render if file exists, placeholder if not)
+    # - ROI: requires the source file to exist
+    can_generate = False
+    if thumb_type == ThumbnailType.INPUT:
+        can_generate = True  # generate_input_thumbnail handles missing files
+    elif abs_original_path is not None:
+        can_generate = True
+
+    if can_generate:
         try:
-            thumb_dir = os.path.dirname(thumb_path)
-            create_directory(thumb_dir)
+            create_directory(os.path.dirname(thumb_path))
 
             if thumb_type == ThumbnailType.INPUT:
-                ThumbnailGenerator.generate_tiff_thumbnail(
-                    abs_original_path, thumb_path
+                ThumbnailGenerator.generate_input_thumbnail(
+                    source_path=original_path,
+                    output_path=thumb_path,
+                    abs_source_path=abs_original_path,
+                    dataset_paths=dataset_paths,
                 )
             else:
                 ThumbnailGenerator.generate_roi_thumbnail(abs_original_path, thumb_path)
@@ -316,7 +302,9 @@ async def get_thumbnail(
     """
 
     # Get the expected thumbnail path
-    thumb_path = _get_thumbnail_png_path(workspace_id, unique_id, thumb_type)
+    thumb_path = ThumbnailGenerator.get_thumbnail_path(
+        workspace_id, unique_id, thumb_type
+    )
 
     # Try to sync thumbnail from remote storage if not available locally
     if not os.path.exists(thumb_path) and RemoteStorageController.is_available():
@@ -369,8 +357,9 @@ async def get_thumbnail(
                 pass  # Continue processing
 
         # Get the original file path for generation
+        dataset_paths = None
         if thumb_type == ThumbnailType.INPUT:
-            # Need to find the input TIFF file
+            # Need to find the input file and dataset paths
             try:
                 input_filenames = SmkUtils.get_datatypes_inputs(
                     workspace_id, unique_id, apply_basename=True
@@ -379,41 +368,66 @@ async def get_thumbnail(
                     original_path = input_filenames[0]
                 else:
                     raise HTTPException(
-                        status_code=404, detail="No input files found for thumbnail"
+                        status_code=404,
+                        detail="No input files found for thumbnail",
                     )
             except (AssertionError, KeyError):
                 raise HTTPException(
-                    status_code=404, detail="Could not determine input file"
+                    status_code=404,
+                    detail="Could not determine input file",
                 )
+
+            # Extract dataset paths from workflow config
+            try:
+                from studio.app.common.core.dataview.dataview_services import (
+                    DataviewService,
+                )
+
+                wf_config = WorkflowConfigReader.read(workspace_id, unique_id)
+                _, dataset_paths = DataviewService.select_best_thumbnail_input(
+                    wf_config
+                )
+            except Exception:
+                pass  # Dataset paths are optional enhancement
         else:
-            # ROI thumbnail uses cell_roi.json - need to find actual path from config
+            # ROI thumbnail uses cell_roi.json
             from studio.app.common.core.dataview.dataview_services import (
                 DataviewService,
             )
 
             try:
-                thumbnails = DataviewService.make_dataview_thumnail_paths(
+                thumbnails, _ = DataviewService.make_dataview_thumnail_paths(
                     workspace_id, unique_id
                 )
                 if thumbnails.roi_url:
                     original_path = thumbnails.roi_url
                 else:
                     raise HTTPException(
-                        status_code=404, detail="No ROI data found for thumbnail"
+                        status_code=404,
+                        detail="No ROI data found for thumbnail",
                     )
             except Exception as e:
                 logger.warning(f"Could not determine ROI path: {e}")
                 raise HTTPException(
-                    status_code=404, detail="Could not determine ROI file path"
+                    status_code=404,
+                    detail="Could not determine ROI file path",
                 )
 
-        # Generate thumbnail (may download source from remote storage if needed)
-        # Note: get_or_generate_thumbnail returns a normalized (relative) path
+        # Generate thumbnail (may download source from remote
+        # storage if needed). get_or_generate_thumbnail returns
+        # a normalized (relative) path.
         await get_or_generate_thumbnail(
-            workspace_id, unique_id, original_path, remote_bucket_name, thumb_type
+            workspace_id,
+            unique_id,
+            original_path,
+            remote_bucket_name,
+            thumb_type,
+            dataset_paths=dataset_paths,
         )
         # Re-get the absolute path since generation should have created the file
-        thumb_path = _get_thumbnail_png_path(workspace_id, unique_id, thumb_type)
+        thumb_path = ThumbnailGenerator.get_thumbnail_path(
+            workspace_id, unique_id, thumb_type
+        )
 
     # Check if thumbnail exists after all attempts
     if not os.path.exists(thumb_path):
@@ -894,3 +908,96 @@ async def get_csv(
 
     JsonWriter.write_as_split(json_filepath, pd.read_csv(abs_filepath, header=None))
     return JsonReader.read_as_output(json_filepath)
+
+
+@router.get("/structured/{workspace_id}/{unique_id}/{node_id}")
+async def get_structured_data(
+    workspace_id: str,
+    unique_id: str,
+    node_id: str,
+    start_index: Optional[int] = 0,
+    end_index: Optional[int] = 10,
+):
+    try:
+        config = WorkflowConfigReader.read(workspace_id, unique_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Workflow config not found")
+
+    node = config.nodeDict.get(node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+
+    file_path = node.data.path
+    if isinstance(file_path, list):
+        file_path = file_path[0] if file_path else None
+    if not file_path:
+        raise HTTPException(status_code=400, detail="Node has no file path")
+
+    full_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_path])
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+    hdf5_path = node.data.hdf5Path
+    mat_path = node.data.matPath
+
+    try:
+        if hdf5_path is not None:
+            with h5py.File(full_path, "r") as f:
+                dataset = f[hdf5_path]
+                shape = dataset.shape
+                ndim = dataset.ndim
+                if ndim == 3:
+                    si = max(0, start_index)
+                    ei = min(shape[0], end_index)
+                    data = dataset[si:ei]
+                else:
+                    data = dataset[:]
+        elif mat_path is not None:
+            raw = MatGetter.data(full_path, mat_path)
+            data = np.asarray(raw)
+            shape = data.shape
+            ndim = data.ndim
+            if ndim == 3:
+                si = max(0, start_index)
+                ei = min(shape[0], end_index)
+                data = data[si:ei]
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Node has no hdf5Path or matPath",
+            )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=f"Dataset not found: {e}")
+
+    data = np.asarray(data)
+    dataset_path = hdf5_path or mat_path
+
+    match ndim:
+        case 3:
+            return {
+                "data": data.tolist(),
+                "data_type": "images",
+                "total_frames": int(shape[0]),
+                "dataset_path": dataset_path,
+            }
+        case 2:
+            df = pd.DataFrame(data)
+            return {
+                "data": df.to_dict(orient="split")["data"],
+                "columns": [str(c) for c in df.columns.tolist()],
+                "index": [str(i) for i in df.index.tolist()],
+                "data_type": "timeseries",
+                "dataset_path": dataset_path,
+            }
+        case 1:
+            return {
+                "data": data.tolist(),
+                "index": list(range(len(data))),
+                "data_type": "bar",
+                "dataset_path": dataset_path,
+            }
+        case _:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported data dimensionality: {ndim}",
+            )

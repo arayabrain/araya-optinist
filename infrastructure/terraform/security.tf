@@ -6,7 +6,7 @@
 # ECS Task Execution Role (for ECS agent to pull images, etc.)
 # --------------------------------------------------------------
 resource "aws_iam_role" "ecs_task_execution" {
-  name = "subscr-optinist-cloud-task-execution-role"
+  name = "${local.env_prefix}-cloud-task-execution-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -50,7 +50,7 @@ resource "aws_iam_role_policy" "ecs_secrets_policy" {
 # ECS Task Role (for containers to call AWS services)
 # ------------------------------------------------------
 resource "aws_iam_role" "ecs_task" {
-  name = "subscr-optinist-cloud-task-role"
+  name = "${local.env_prefix}-cloud-task-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -68,7 +68,7 @@ resource "aws_iam_role" "ecs_task" {
 
 # Custom scoped policies for ECS Task Role
 resource "aws_iam_role_policy" "ecs_task_efs" {
-  name = "subscr-ecs-task-efs-access"
+  name = "${var.environment}-ecs-task-efs-access"
   role = aws_iam_role.ecs_task.id
 
   policy = jsonencode({
@@ -91,7 +91,7 @@ resource "aws_iam_role_policy" "ecs_task_efs" {
 }
 
 resource "aws_iam_role_policy" "ecs_task_cloudwatch" {
-  name = "subscr-ecs-task-cloudwatch-access"
+  name = "${var.environment}-ecs-task-cloudwatch-access"
   role = aws_iam_role.ecs_task.id
 
   policy = jsonencode({
@@ -112,7 +112,7 @@ resource "aws_iam_role_policy" "ecs_task_cloudwatch" {
 }
 
 resource "aws_iam_role_policy" "ecs_task_ecr" {
-  name = "subscr-ecs-task-ecr-access"
+  name = "${var.environment}-ecs-task-ecr-access"
   role = aws_iam_role.ecs_task.id
 
   policy = jsonencode({
@@ -144,7 +144,7 @@ resource "aws_iam_role_policy_attachment" "ecs_instance_ecr" {
 
 # Custom policy for ECS Exec (SSM)
 resource "aws_iam_role_policy" "ecs_task_ssm_exec" {
-  name = "subscr-ecs-task-ssm-exec"
+  name = "${var.environment}-ecs-task-ssm-exec"
   role = aws_iam_role.ecs_task.id
 
   policy = jsonencode({
@@ -167,7 +167,7 @@ resource "aws_iam_role_policy" "ecs_task_ssm_exec" {
 # ECS Instance Role (for EC2 instances running ECS tasks)
 # -------------------------------------------------------
 resource "aws_iam_role" "ecs_instance_role" {
-  name = "subscr-optinist-ecs-instance-role"
+  name = "${local.env_prefix}-ecs-instance-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -184,7 +184,7 @@ resource "aws_iam_role" "ecs_instance_role" {
 }
 
 resource "aws_iam_instance_profile" "ecs_instance_profile" {
-  name = "subscr-optinist-ecs-instance-profile"
+  name = "${local.env_prefix}-ecs-instance-profile"
   role = aws_iam_role.ecs_instance_role.name
 }
 
@@ -206,7 +206,7 @@ resource "aws_iam_role_policy_attachment" "ecs_instance_ssm" {
 
 # Custom policies for ECS instances
 resource "aws_iam_role_policy" "ecs_instance_enhanced_monitoring" {
-  name = "subscr-ecs-instance-enhanced-monitoring"
+  name = "${var.environment}-ecs-instance-enhanced-monitoring"
   role = aws_iam_role.ecs_instance_role.id
 
   policy = jsonencode({
@@ -237,7 +237,7 @@ resource "aws_iam_role_policy" "ecs_instance_enhanced_monitoring" {
 }
 
 resource "aws_iam_role_policy" "ecs_instance_ssm_complex" {
-  name = "subscr-ecs-instance-ssm-complex"
+  name = "${var.environment}-ecs-instance-ssm-complex"
   role = aws_iam_role.ecs_instance_role.id
 
   policy = jsonencode({
@@ -257,7 +257,7 @@ resource "aws_iam_role_policy" "ecs_instance_ssm_complex" {
 }
 
 resource "aws_iam_role_policy" "ecs_instance_s3_access" {
-  name = "subscr-ecs-instance-s3-access"
+  name = "${var.environment}-ecs-instance-s3-access"
   role = aws_iam_role.ecs_instance_role.id
 
   policy = jsonencode({
@@ -283,7 +283,7 @@ resource "aws_iam_role_policy" "ecs_instance_s3_access" {
 # NAT Instance Role (for NAT gateway instances)
 # -----------------------------------------------
 resource "aws_iam_role" "nat_instance" {
-  name = "subscr-nat-instance-role"
+  name = "${var.environment}-nat-instance-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -300,14 +300,15 @@ resource "aws_iam_role" "nat_instance" {
 }
 
 resource "aws_iam_instance_profile" "nat_instance" {
-  name = "subscr-nat-instance-profile"
+  name = "${var.environment}-nat-instance-profile"
   role = aws_iam_role.nat_instance.name
 }
 
-# RDS monitoring role
+# RDS Enhanced Monitoring role (kept for easy re-enablement)
+# To re-enable: set monitoring_interval = 60 and monitoring_role_arn in infrastructure.tf
 # -------------------
 resource "aws_iam_role" "rds_monitoring" {
-  name = "subscr-rds-monitoring-role"
+  name = "${var.environment}-rds-monitoring-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -358,7 +359,7 @@ resource "aws_s3_bucket_policy" "app_storage" {
         Sid    = "AllowALBLogsAccess"
         Effect = "Allow"
         Principal = {
-          AWS = "arn:aws:iam::582318560864:root" # ALB service account for ap-northeast-1
+          AWS = data.aws_elb_service_account.main.arn
         }
         Action   = "s3:PutObject"
         Resource = "${aws_s3_bucket.app_storage.arn}/alb-logs/AWSLogs/${data.aws_caller_identity.current.account_id}/*"
@@ -395,7 +396,7 @@ resource "aws_s3_bucket_policy" "app_storage" {
 # Cloudwatch
 # ----------
 resource "aws_iam_role_policy" "ecs_task_execution_cloudwatch" {
-  name = "subscr-cloudwatch-logs"
+  name = "${var.environment}-cloudwatch-logs"
   role = aws_iam_role.ecs_task_execution.id
 
   policy = jsonencode({
@@ -416,7 +417,7 @@ resource "aws_iam_role_policy" "ecs_task_execution_cloudwatch" {
 
 # Cloudwatch agent monitoring of ECS
 resource "aws_iam_role_policy" "ecs_instance_detailed_monitoring" {
-  name = "subscr-ecs-instance-detailed-monitoring"
+  name = "${var.environment}-ecs-instance-detailed-monitoring"
   role = aws_iam_role.ecs_instance_role.id
 
   policy = jsonencode({
@@ -440,13 +441,13 @@ resource "aws_iam_role_policy" "ecs_instance_detailed_monitoring" {
 
 # IAM User for this OptiNiSt Cloud project (separate from other webapps)
 resource "aws_iam_user" "subscr_optinist_cloud_user" {
-  name = "subscr-optinist-cloud-user"
+  name = "${local.env_prefix}-cloud-user"
   path = "/"
 }
 
 # IAM Policy for this OptiNiSt Cloud User
 resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
-  name        = "subscr-optinist-cloud-user-policy"
+  name        = "${local.env_prefix}-cloud-user-policy"
   description = "Policy for this OptiNiSt Cloud project"
 
   policy = jsonencode({
@@ -455,26 +456,7 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
       {
         Effect = "Allow"
         Action = [
-          "logs:GetLogEvents",
-          "logs:FilterLogEvents",
-          "logs:DescribeLogGroups",
-          "logs:DescribeLogStreams",
-          "iam:PassRole",
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject",
-          "s3:ListBucket",
-          "s3:CreateBucket",
-          "s3:DeleteBucket",
           "ec2:DescribeInstances",
-          "ecs:DescribeTasks",
-          "ecs:DescribeContainerInstances",
-          "ecs:ListTasks",
-          "ecs:ListClusters",
-          "ecs:DescribeClusters",
-          "ecs:ListContainerInstances",
-          "ecs:DescribeServices",
-          "ecs:UpdateService",
           "ecr:GetAuthorizationToken",
           "ecr:DescribeRepositories",
           "ecr:BatchCheckLayerAvailability",
@@ -486,12 +468,104 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
           "cloudwatch:GetMetricStatistics",
           "cloudwatch:DescribeAlarms",
           "autoscaling:DescribeAutoScalingGroups",
-          "autoscaling:SetDesiredCapacity",
-          "autoscaling:SuspendProcesses",
-          "autoscaling:ResumeProcesses",
-          "lambda:InvokeFunction"
+          "ecs:ListClusters",
+          "ecs:ListContainerInstances"
         ]
         Resource = "*"
+      },
+      # S3: Allow CRUD only on this environment's buckets
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket",
+          "s3:CreateBucket",
+          "s3:DeleteBucket"
+        ]
+        Resource = [
+          "arn:aws:s3:::${local.env_prefix}-*",
+          "arn:aws:s3:::${local.env_prefix}-*/*"
+        ]
+      },
+      # S3: Explicitly deny CRUD on other environments' buckets
+      # This ensures no other attached policy can grant cross-environment S3 access
+      {
+        Sid    = "DenyS3CrossEnvironment"
+        Effect = "Deny"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket",
+          "s3:CreateBucket",
+          "s3:DeleteBucket"
+        ]
+        NotResource = [
+          "arn:aws:s3:::${local.env_prefix}-*",
+          "arn:aws:s3:::${local.env_prefix}-*/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeTasks",
+          "ecs:DescribeContainerInstances",
+          "ecs:ListTasks",
+          "ecs:DescribeClusters",
+          "ecs:DescribeServices",
+          "ecs:UpdateService"
+        ]
+        Resource = [
+          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:cluster/${local.env_prefix}-*",
+          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:service/${local.env_prefix}-*/*",
+          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:task/${local.env_prefix}-*/*",
+          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:container-instance/${local.env_prefix}-*/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:GetLogEvents",
+          "logs:FilterLogEvents",
+          "logs:DescribeLogGroups",
+          "logs:DescribeLogStreams"
+        ]
+        Resource = [
+          "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/${var.environment}-*",
+          "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/${var.environment}-*:*",
+          "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.environment}-*",
+          "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.environment}-*:*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "autoscaling:SetDesiredCapacity",
+          "autoscaling:SuspendProcesses",
+          "autoscaling:ResumeProcesses"
+        ]
+        Resource = "arn:aws:autoscaling:${var.aws_region}:${data.aws_caller_identity.current.account_id}:autoScalingGroup:*:autoScalingGroupName/${local.env_prefix}-*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.environment}-*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "iam:PassRole"
+        Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.environment}-*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${var.environment}-optinist/*"
+        ]
       }
     ]
   })
@@ -510,7 +584,7 @@ resource "aws_iam_access_key" "subscr_optinist_cloud_user_access_key" {
 
 # S3 access for ECS tasks (scoped to app storage bucket)
 resource "aws_iam_role_policy" "ecs_task_s3_access" {
-  name = "subscr-ecs-task-s3-access"
+  name = "${var.environment}-ecs-task-s3-access"
   role = aws_iam_role.ecs_task.id
 
   policy = jsonencode({
@@ -531,8 +605,8 @@ resource "aws_iam_role_policy" "ecs_task_s3_access" {
         Resource = [
           aws_s3_bucket.app_storage.arn,
           "${aws_s3_bucket.app_storage.arn}/*",
-          "arn:aws:s3:::optinist-user-*",
-          "arn:aws:s3:::optinist-user-*/*"
+          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*",
+          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*/*"
         ]
       }
     ]
@@ -541,7 +615,7 @@ resource "aws_iam_role_policy" "ecs_task_s3_access" {
 
 # Lambda invocation for premium assignment
 resource "aws_iam_role_policy" "ecs_task_lambda_invoke" {
-  name = "subscr-ecs-task-lambda-invoke"
+  name = "${var.environment}-ecs-task-lambda-invoke"
   role = aws_iam_role.ecs_task.id
 
   policy = jsonencode({
@@ -551,8 +625,8 @@ resource "aws_iam_role_policy" "ecs_task_lambda_invoke" {
         Effect = "Allow"
         Action = "lambda:InvokeFunction"
         Resource = [
-          "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:subscr-premium-manager",
-          "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:subscr-free-manager"
+          aws_lambda_function.premium_manager.arn,
+          aws_lambda_function.free_manager.arn
         ]
       }
     ]
@@ -561,7 +635,7 @@ resource "aws_iam_role_policy" "ecs_task_lambda_invoke" {
 
 # Secrets Manager access for routing HMAC key
 resource "aws_iam_role_policy" "ecs_task_routing_secret" {
-  name = "subscr-ecs-task-routing-secret"
+  name = "${var.environment}-ecs-task-routing-secret"
   role = aws_iam_role.ecs_task.id
 
   policy = jsonencode({
@@ -583,7 +657,7 @@ resource "aws_iam_role_policy" "ecs_task_routing_secret" {
 # Secrets Manager access for all OptiNiSt application secrets
 # This allows ECS instances to read secrets for app_setup.sh
 resource "aws_iam_role_policy" "ecs_instance_secrets_access" {
-  name = "subscr-ecs-instance-secrets-access"
+  name = "${var.environment}-ecs-instance-secrets-access"
   role = aws_iam_role.ecs_instance_role.id
 
   policy = jsonencode({
@@ -611,7 +685,7 @@ resource "aws_iam_role_policy" "ecs_instance_secrets_access" {
 # Required by cloud-startup.sh to get EC2 instance ID via ECS API fallback
 # when EC2 metadata service is unavailable
 resource "aws_iam_role_policy" "ecs_task_metadata" {
-  name = "subscr-ecs-task-metadata-access"
+  name = "${var.environment}-ecs-task-metadata-access"
   role = aws_iam_role.ecs_task.id
 
   policy = jsonencode({
@@ -629,17 +703,38 @@ resource "aws_iam_role_policy" "ecs_task_metadata" {
   })
 }
 
+# Secrets Manager access for ECS tasks (cloud-startup.sh fetches Firebase config)
+resource "aws_iam_role_policy" "ecs_task_secrets_access" {
+  name = "${var.environment}-ecs-task-secrets-access"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          aws_secretsmanager_secret.firebase_config.arn,
+          aws_secretsmanager_secret.firebase_private_key.arn
+        ]
+      }
+    ]
+  })
+}
 
 # ===============
 # Security groups
 # ===============
 resource "aws_security_group" "ecs" {
-  name        = "subscr-ecs-optinist-cloud-security-group"
+  name        = "${var.environment}-ecs-optinist-cloud-security-group"
   description = "Created by Terraform for ECS"
   vpc_id      = aws_vpc.main.id
 
   tags = {
-    Name = "subscr-optinist-cloud-sg-ecs"
+    Name = "${local.env_prefix}-cloud-sg-ecs"
   }
 }
 
@@ -676,7 +771,7 @@ resource "aws_security_group_rule" "ecs_egress_all" {
 }
 
 resource "aws_security_group" "alb" {
-  name        = "subscr-optinist-alb-security-group"
+  name        = "${local.env_prefix}-alb-security-group"
   description = "Security group for ALB"
   vpc_id      = aws_vpc.main.id
 
@@ -704,7 +799,7 @@ resource "aws_security_group" "alb" {
   }
 
   tags = {
-    Name = "subscr-optinist-alb-sg"
+    Name = "${local.env_prefix}-alb-sg"
   }
 
   lifecycle {
@@ -743,7 +838,7 @@ resource "aws_security_group_rule" "alb_to_ecs" {
 }
 
 resource "aws_security_group" "rds" {
-  name        = "subscr-optinist-rds-security-group"
+  name        = "${local.env_prefix}-rds-security-group"
   description = "Security group for RDS"
   vpc_id      = aws_vpc.main.id
 
@@ -770,7 +865,7 @@ resource "aws_security_group" "rds" {
   }
 
   tags = {
-    Name = "subscr-optinist-cloud-sg-rds"
+    Name = "${local.env_prefix}-cloud-sg-rds"
   }
 
   lifecycle {
@@ -779,7 +874,7 @@ resource "aws_security_group" "rds" {
 }
 
 resource "aws_security_group" "efs" {
-  name        = "subscr-optinist-cloud-efs-sg"
+  name        = "${local.env_prefix}-cloud-efs-sg"
   description = "Security group for EFS mount targets"
   vpc_id      = aws_vpc.main.id
 
@@ -791,12 +886,12 @@ resource "aws_security_group" "efs" {
   }
 
   tags = {
-    Name = "subscr-optinist-cloud-efs-sg"
+    Name = "${local.env_prefix}-cloud-efs-sg"
   }
 }
 
 resource "aws_security_group" "nat_instance" {
-  name        = "subscr-nat-instance-sg"
+  name        = "${var.environment}-nat-instance-sg"
   description = "Security group for NAT Instance"
   vpc_id      = aws_vpc.main.id
 
@@ -815,13 +910,13 @@ resource "aws_security_group" "nat_instance" {
   }
 
   tags = {
-    Name = "subscr-optinist-nat-instance-sg"
+    Name = "${local.env_prefix}-nat-instance-sg"
   }
 }
 
 # Security Group for VPC Endpoints
 resource "aws_security_group" "vpc_endpoints" {
-  name        = "subscr-optinist-vpc-endpoints-sg"
+  name        = "${local.env_prefix}-vpc-endpoints-sg"
   description = "Security group for VPC endpoints"
   vpc_id      = aws_vpc.main.id
 
@@ -833,7 +928,7 @@ resource "aws_security_group" "vpc_endpoints" {
   }
 
   tags = {
-    Name = "subscr-optinist-vpc-endpoints-sg"
+    Name = "${local.env_prefix}-vpc-endpoints-sg"
   }
 }
 
@@ -843,7 +938,7 @@ resource "aws_security_group" "vpc_endpoints" {
 # ==============================
 # Store AWS credentials in Secrets Manager
 resource "aws_secretsmanager_secret" "aws_credentials" {
-  name        = "subscr-optinist-cloud-credentials"
+  name        = "${local.env_prefix}-cloud-credentials"
   description = "AWS credentials for optinist cloud user"
 }
 
@@ -857,7 +952,7 @@ resource "aws_secretsmanager_secret_version" "aws_credentials" {
 
 # Store RDS credentials in Secrets Manager
 resource "aws_secretsmanager_secret" "rds_credentials" {
-  name = "subscr-rds-credentials"
+  name = "${var.environment}-rds-credentials"
 }
 
 resource "aws_secretsmanager_secret_version" "rds_credentials" {
@@ -875,7 +970,7 @@ resource "random_password" "routing_hmac_key" {
 }
 
 resource "aws_secretsmanager_secret" "routing_hmac_key" {
-  name        = "subscr-premium-routing-hmac-key"
+  name        = "${var.environment}-premium-routing-hmac-key"
   description = "HMAC secret key for premium routing token verification"
 }
 
@@ -894,7 +989,7 @@ resource "random_password" "internal_api_secret" {
 }
 
 resource "aws_secretsmanager_secret" "internal_api_secret" {
-  name        = "subscr-internal-api-secret"
+  name        = "${var.environment}-internal-api-secret"
   description = "Secret for internal API authentication between Lambda and backend"
 }
 
@@ -913,13 +1008,11 @@ resource "aws_secretsmanager_secret_version" "internal_api_secret" {
 
 # Firebase web application configuration
 resource "aws_secretsmanager_secret" "firebase_config" {
-  name        = "subscr-optinist/firebase/config"
+  name        = "${local.env_prefix}/firebase/config"
   description = "Firebase web application configuration for OptiNiSt"
 
   tags = {
-    Name        = "OptiNiSt Firebase Config"
-    Environment = "production"
-    ManagedBy   = "terraform"
+    Name = "OptiNiSt Firebase Config"
   }
 }
 
@@ -930,13 +1023,11 @@ resource "aws_secretsmanager_secret_version" "firebase_config" {
 
 # Firebase service account private key
 resource "aws_secretsmanager_secret" "firebase_private_key" {
-  name        = "subscr-optinist/firebase/private-key"
+  name        = "${local.env_prefix}/firebase/private-key"
   description = "Firebase service account private key for OptiNiSt"
 
   tags = {
-    Name        = "OptiNiSt Firebase Private Key"
-    Environment = "production"
-    ManagedBy   = "terraform"
+    Name = "OptiNiSt Firebase Private Key"
   }
 }
 
@@ -947,13 +1038,11 @@ resource "aws_secretsmanager_secret_version" "firebase_private_key" {
 
 # Database credentials (consolidated for app_setup.sh)
 resource "aws_secretsmanager_secret" "database_config" {
-  name        = "subscr-optinist/database/config"
+  name        = "${local.env_prefix}/database/config"
   description = "MySQL/MariaDB database configuration for OptiNiSt"
 
   tags = {
-    Name        = "OptiNiSt Database Config"
-    Environment = "production"
-    ManagedBy   = "terraform"
+    Name = "OptiNiSt Database Config"
   }
 }
 
@@ -968,13 +1057,11 @@ resource "aws_secretsmanager_secret_version" "database_config" {
 
 # Application configuration secrets
 resource "aws_secretsmanager_secret" "app_config" {
-  name        = "subscr-optinist/app/config"
+  name        = "${local.env_prefix}/app/config"
   description = "OptiNiSt application configuration secrets"
 
   tags = {
-    Name        = "OptiNiSt App Config"
-    Environment = "production"
-    ManagedBy   = "terraform"
+    Name = "OptiNiSt App Config"
   }
 }
 
@@ -992,13 +1079,11 @@ resource "aws_secretsmanager_secret_version" "app_config" {
 
 # Stripe configuration
 resource "aws_secretsmanager_secret" "stripe_config" {
-  name        = "subscr-optinist/stripe/config"
+  name        = "${local.env_prefix}/stripe/config"
   description = "Stripe API keys and webhook secrets for OptiNiSt"
 
   tags = {
-    Name        = "OptiNiSt Stripe Config"
-    Environment = "production"
-    ManagedBy   = "terraform"
+    Name = "OptiNiSt Stripe Config"
   }
 }
 
@@ -1025,7 +1110,7 @@ resource "random_id" "key_suffix" {
 
 # Generate a unique key pair name
 locals {
-  key_name = var.key_name != "" ? var.key_name : "subscr-optinist-cloud-${random_id.key_suffix.hex}"
+  key_name = var.key_name != "" ? var.key_name : "${local.env_prefix}-cloud-${random_id.key_suffix.hex}"
 }
 
 # Generate SSH key pair
@@ -1040,14 +1125,14 @@ resource "aws_key_pair" "subscr_optinist_cloud_key_pair" {
   public_key = tls_private_key.subscr_optinist_cloud_key.public_key_openssh # Fixed reference
 
   tags = {
-    Name = "subscr-optinist-cloud-key"
+    Name = "${local.env_prefix}-cloud-key"
   }
 }
 
 # Save private key to local file
 resource "local_file" "private_key" {
   content         = tls_private_key.subscr_optinist_cloud_key.private_key_pem # Fixed reference
-  filename        = "${path.module}/subscr-optinist-cloud-private-key.pem"
+  filename        = "${path.module}/${local.env_prefix}-cloud-private-key.pem"
   file_permission = "0400"
 }
 

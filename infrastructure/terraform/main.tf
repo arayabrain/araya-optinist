@@ -1,13 +1,19 @@
 # Provider configuration
 provider "aws" {
   region = var.aws_region
+
+  default_tags {
+    tags = {
+      Environment = var.environment
+      ManagedBy   = "terraform"
+      Project     = "optinist-cloud"
+    }
+  }
 }
 
 terraform {
   backend "s3" {
-    bucket = "subscr-optinist-for-cloud-tfstate"
-    key    = "terraform.tfstate"
-    region = "ap-northeast-1"
+    # Backend configuration is provided via -backend-config=backends/<env>.hcl
     # dynamodb_table = "terraform-state-lock"  # Uncomment after initial bootstrap
     # encrypt        = true                     # Uncomment after initial bootstrap
   }
@@ -22,6 +28,34 @@ variable "aws_region" {
 variable "availability_zone" {
   description = "Availability zone for the subnet"
   default     = ""
+}
+
+variable "environment" {
+  description = "Environment name prefix for resource naming (e.g. subscr, development)"
+  type        = string
+
+  validation {
+    condition     = length(var.environment) > 0
+    error_message = "The environment variable must not be empty. Use 'subscr' for production or 'development' for development."
+  }
+}
+
+variable "enable_custom_domain" {
+  description = "Toggle Route53/ACM/HTTPS resources (false for dev environments)"
+  type        = bool
+  default     = true
+}
+
+variable "vpc_cidr" {
+  description = "VPC CIDR block"
+  type        = string
+  default     = "10.1.0.0/16"
+}
+
+variable "s3_user_bucket_prefix" {
+  description = "Prefix for per-user S3 bucket wildcard in IAM policies"
+  type        = string
+  default     = "optinist-user"
 }
 
 # Database configuration
@@ -151,8 +185,9 @@ variable "git_branch" {
 }
 
 variable "ecr_repository_url" {
-  description = "ECR repository URL for OptiNiSt Docker image"
+  description = "ECR repository URL for a pre-existing repo (production). If empty, Terraform creates a new repo named <environment>-optinist-for-cloud."
   type        = string
+  default     = ""
 }
 
 variable "asg_min_size" {
@@ -171,6 +206,25 @@ variable "asg_desired_capacity" {
   description = "Desired number of instances in ASG"
   type        = number
   default     = 1
+}
+
+# Instance type configuration
+variable "free_instance_type" {
+  description = "Instance type for free tier instances"
+  type        = string
+  default     = "t3.large"
+}
+
+variable "premium_instance_type" {
+  description = "Instance type for premium tier instances"
+  type        = string
+  default     = "t3.large"
+}
+
+variable "background_instance_type" {
+  description = "Instance type for background service instance"
+  type        = string
+  default     = "t3.micro"
 }
 
 # Frontend domain configuration
@@ -198,14 +252,39 @@ variable "admin_storage_quota_bytes" {
   default     = 214748364800 # 200 GB
 }
 
+variable "enable_second_nat" {
+  description = "Whether to create a second NAT instance for AZ redundancy"
+  type        = bool
+  default     = true
+}
+
+variable "monthly_budget_usd" {
+  description = "Monthly cost budget in USD. Alert fires when projected spend exceeds this."
+  type        = number
+}
+
 # Data sources
 data "aws_caller_identity" "current" {}
+data "aws_elb_service_account" "main" {}
 
+locals {
+  env_prefix = "${var.environment}-optinist"
 
+  # Resolve frontend host/port from ALB DNS when no custom domain is configured
+  # - Production: uses custom domain on port 443
+  # - Development: uses ALB DNS name on port 8080
+  effective_frontend_domain = var.enable_custom_domain ? var.frontend_domain : aws_lb.autoscaling.dns_name
+  effective_frontend_port   = var.enable_custom_domain ? var.frontend_port : "8080"
+}
 
 # =======
 # Outputs
 # =======
+output "environment" {
+  description = "Current environment name"
+  value       = var.environment
+}
+
 output "vpc_id" {
   description = "ID of the VPC"
   value       = aws_vpc.main.id
@@ -392,17 +471,17 @@ output "domain_port" {
 
 output "acm_certificate_arn" {
   description = "ARN of the ACM certificate for HTTPS"
-  value       = aws_acm_certificate.main.arn
+  value       = var.enable_custom_domain ? aws_acm_certificate.main[0].arn : null
 }
 
 output "acm_certificate_status" {
   description = "Validation status of the ACM certificate"
-  value       = aws_acm_certificate.main.status
+  value       = var.enable_custom_domain ? aws_acm_certificate.main[0].status : null
 }
 
 output "route53_zone_id" {
-  description = "Route53 hosted zone ID for araya-optinist.com"
-  value       = data.aws_route53_zone.main.zone_id
+  description = "Route53 hosted zone ID"
+  value       = var.enable_custom_domain ? data.aws_route53_zone.main[0].zone_id : null
 }
 
 output "alb_listener_https_arn" {

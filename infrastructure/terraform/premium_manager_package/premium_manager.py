@@ -38,6 +38,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, Optional
@@ -66,6 +67,7 @@ if TYPE_CHECKING:
 # Constants
 DEFAULT_DEVELOPMENT_CAPACITY = 3  # Fallback capacity for dev/testing
 DEFAULT_IDLE_TIMEOUT_HOURS = 3  # Hours before idle instances become standby
+STICKY_SESSION_DURATION_SECONDS = 300  # Match ALB target group stickiness settings
 
 # MySQL GET_LOCK names for preventing concurrent instance creation
 CREATE_STANDBY_LOCK = "create_standby_lock"
@@ -439,6 +441,15 @@ def _store_user_assignment_transaction(
                         f"workflows - will preserve count in premium assignment"
                     )
 
+            # Close free-tier usage log before deleting assignment
+            if user_id is not None:
+                cursor.execute(
+                    """UPDATE instance_usage_log SET ended_at = NOW()
+                       WHERE user_id = %s AND tier = 'free'
+                       AND ended_at IS NULL""",
+                    (user_id,),
+                )
+
             cursor.execute(
                 """DELETE FROM free_user_assignments WHERE user_id = %s""",
                 (user_id,),
@@ -477,6 +488,15 @@ def _store_user_assignment_transaction(
                 preserved_workflow_count,  # Preserve workflow count from free tier
             ),
         )
+
+        # Log premium usage session (skip standby — no real user)
+        if user_id is not None and not is_standby:
+            cursor.execute(
+                """INSERT INTO instance_usage_log
+                   (user_id, instance_id, tier, started_at)
+                   VALUES (%s, %s, 'premium', NOW())""",
+                (user_id, instance_id),
+            )
 
     print(
         f"Stored assignment in RDS: user {user_id} -> instance {instance_id} "
@@ -520,6 +540,15 @@ def _remove_user_assignment_transaction(connection, user_id: int):
 
         if not assignment:
             raise Exception(f"No assignment found for user {user_id}")
+
+        # Close usage log BEFORE delete (crash-safe: orphan assignment
+        # is recoverable, missing ended_at is not)
+        cursor.execute(
+            """UPDATE instance_usage_log SET ended_at = NOW()
+               WHERE user_id = %s AND tier = 'premium'
+               AND ended_at IS NULL""",
+            (user_id,),
+        )
 
         # Delete assignment
         cursor.execute(
@@ -1037,8 +1066,9 @@ def create_running_instance():
     ec2: "EC2Client" = boto3.client("ec2")
 
     try:
-        # Get launch template ID from environment
+        # Get launch template ID and instance type from environment
         launch_template_id = get_required_env_var("PREMIUM_LAUNCH_TEMPLATE_ID")
+        instance_type = get_required_env_var("PREMIUM_INSTANCE_TYPE")
 
         # Get subnet IDs from environment
         subnet_ids = get_required_env_var("SUBNET_IDS").split(",")
@@ -1057,7 +1087,7 @@ def create_running_instance():
                         "LaunchTemplateId": launch_template_id,
                         "Version": "$Latest",
                     },
-                    InstanceType="t3.large",
+                    InstanceType=instance_type,
                     SubnetId=subnet_id,
                     MinCount=1,
                     MaxCount=1,
@@ -1065,7 +1095,13 @@ def create_running_instance():
                         {
                             "ResourceType": "instance",
                             "Tags": [
-                                {"Key": "Name", "Value": "subscr-premium-running"},
+                                {
+                                    "Key": "Name",
+                                    "Value": (
+                                        f"{os.environ.get('ENV_PREFIX', 'subscr')}"
+                                        "-premium-running"
+                                    ),
+                                },
                                 {"Key": "Type", "Value": "Premium-Instance"},
                                 {"Key": "Tier", "Value": "premium"},
                                 {"Key": "Service", "Value": "premium-tier"},
@@ -1283,6 +1319,7 @@ def create_and_stop_standby_instance():
             )
 
             launch_template_id = get_required_env_var("PREMIUM_LAUNCH_TEMPLATE_ID")
+            instance_type = get_required_env_var("PREMIUM_INSTANCE_TYPE")
             subnet_ids = get_required_env_var("SUBNET_IDS").split(",")
 
             instance_id = None
@@ -1300,7 +1337,7 @@ def create_and_stop_standby_instance():
                             "LaunchTemplateId": (launch_template_id),
                             "Version": "$Latest",
                         },
-                        InstanceType="t3.large",
+                        InstanceType=instance_type,
                         SubnetId=subnet_id,
                         MinCount=1,
                         MaxCount=1,
@@ -1310,7 +1347,10 @@ def create_and_stop_standby_instance():
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": ("subscr-premium" "-standby"),
+                                        "Value": (
+                                            f"{os.environ.get('ENV_PREFIX', 'subscr')}"
+                                            "-premium-standby"
+                                        ),
                                     },
                                     {
                                         "Key": "Type",
@@ -1755,15 +1795,39 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
             # (remove DB entries for terminated instances)
             cleanup_failed_standby_instances()
 
-            # 8. Cleanup ghost ECS container instance registrations
+            # 8. Terminate stopped standby instances older than
+            # PREMIUM_STOPPED_MAX_AGE_HOURS
+            terminate_aged_stopped_instances()
+
+            # 9. Trim standby pool if it exceeds target size
+            standby_count = get_standby_count()
+            standby_pool_size = int(os.environ.get("PREMIUM_STANDBY_POOL_SIZE", "1"))
+            if standby_count > standby_pool_size:
+                excess = standby_count - standby_pool_size
+                print(f"Standby pool has {excess} excess instances, trimming")
+                cleanup_excess_standby_instances(excess)
+
+            # 10. Cleanup ghost ECS container instance registrations
             # (deregister container instances where EC2 is stopped/terminated)
             cleanup_ghost_ecs_registrations()
 
-            # 9. Stop orphaned EC2 instances not in ECS cluster
+            # 11. Stop orphaned EC2 instances not in ECS cluster
             cleanup_orphaned_ec2_instances()
 
-            # 10. Optimize shared instances (safety net)
+            # 12. Optimize shared instances (safety net)
             try:
+                try:
+                    fix_result = fix_incorrect_is_shared_flags()
+                    if fix_result.get("fixed_count", 0) > 0:
+                        print(
+                            f"Fixed {fix_result['fixed_count']} stale is_shared flags"
+                        )
+                except Exception:
+                    print("WARNING: fix_incorrect_is_shared_flags() failed")
+                    import traceback
+
+                    traceback.print_exc()
+
                 shared_result = process_shared_instance_optimization()
                 shared_migrations = shared_result.get("migrations_performed", 0)
                 shared_found = shared_result.get("shared_instances_found", 0)
@@ -2116,6 +2180,26 @@ def target_group_exists(target_group_arn: str) -> bool:
         raise
 
 
+def _enable_sticky_sessions(
+    elbv2: "ElasticLoadBalancingv2Client", target_group_arn: str
+) -> None:
+    """Enable ALB sticky sessions on a target group (matches compute.tf main TG)."""
+    try:
+        elbv2.modify_target_group_attributes(
+            TargetGroupArn=target_group_arn,
+            Attributes=[
+                {"Key": "stickiness.enabled", "Value": "true"},
+                {"Key": "stickiness.type", "Value": "lb_cookie"},
+                {
+                    "Key": "stickiness.lb_cookie.duration_seconds",
+                    "Value": str(STICKY_SESSION_DURATION_SECONDS),
+                },
+            ],
+        )
+    except Exception as e:
+        print(f"WARNING: Failed to enable sticky sessions on {target_group_arn}: {e}")
+
+
 def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
     """
     Create a new target group for a premium user, or return existing one if
@@ -2151,7 +2235,9 @@ def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
                 {"Key": "Service", "Value": "optinist-premium"},
             ],
         )
-        return response["TargetGroups"][0]["TargetGroupArn"]
+        tg_arn = response["TargetGroups"][0]["TargetGroupArn"]
+        _enable_sticky_sessions(elbv2, tg_arn)
+        return tg_arn
 
     except Exception as e:
         if "DuplicateTargetGroupName" in str(e):
@@ -2162,6 +2248,7 @@ def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
             try:
                 response = elbv2.describe_target_groups(Names=[target_group_name])
                 existing_arn = response["TargetGroups"][0]["TargetGroupArn"]
+                _enable_sticky_sessions(elbv2, existing_arn)
                 print(f"Found existing target group: {existing_arn}")
                 return existing_arn
             except Exception as describe_error:
@@ -2748,6 +2835,7 @@ def assign_premium_user(
             target_group_arn = target_group_response["TargetGroups"][0][
                 "TargetGroupArn"
             ]
+            _enable_sticky_sessions(elbv2, target_group_arn)
 
             # 8. Register instance to target group
             elbv2.register_targets(
@@ -4026,6 +4114,107 @@ def cleanup_excess_standby_instances(excess_count: int):
 
     except Exception as e:
         print(f"Error cleaning up excess standby instances: {str(e)}")
+        return 0
+
+
+def _parse_stop_time(state_transition_reason: str):
+    """Parse the stop timestamp from EC2 StateTransitionReason.
+
+    EC2 returns reasons like 'User initiated (2024-01-15 10:30:00 GMT)'.
+    Returns a datetime or None if parsing fails.
+    """
+    match = re.search(
+        r"\((\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) GMT\)", state_transition_reason
+    )
+    if match:
+        return datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")
+    return None
+
+
+def terminate_aged_stopped_instances():
+    """Terminate standby instances that have been stoppedlonger than
+    PREMIUM_STOPPED_MAX_AGE_HOURS.
+
+    Uses EC2 StateTransitionReason to determine when each instance was actually
+    stopped. Falls back to standby_created_at when the EC2 timestamp is not
+    parseable (e.g. Server.InternalError, crashes).
+
+    Note: standby_created_at is set when the standby row is created, which
+    roughly coincides with when the instance is stopped via
+    convert_running_instance_to_standby(). It is not a precise "stopped at"
+    timestamp but serves as a conservative fallback.
+    """
+    max_age_hours = int(os.environ.get("PREMIUM_STOPPED_MAX_AGE_HOURS", "4"))
+    ec2: "EC2Client" = boto3.client("ec2")
+
+    try:
+        # Get stopped standby instances with fallback timestamp from the database
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """SELECT instance_id, standby_created_at
+                       FROM premium_user_assignments
+                       WHERE is_standby = 1 AND status = 'active'
+                         AND instance_state = 'stopped'"""
+                )
+                standby_rows = cursor.fetchall()
+
+        if not standby_rows:
+            print("No stopped standby instances to check")
+            return 0
+
+        instance_ids = [row["instance_id"] for row in standby_rows]
+        db_fallback = {
+            row["instance_id"]: row["standby_created_at"] for row in standby_rows
+        }
+
+        # Query EC2 for actual stop times via StateTransitionReason
+        response = ec2.describe_instances(InstanceIds=instance_ids)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        cutoff = timedelta(hours=max_age_hours)
+        aged_instances = []
+
+        for reservation in response["Reservations"]:
+            for instance in reservation["Instances"]:
+                instance_id = instance["InstanceId"]
+                reason = instance.get("StateTransitionReason", "")
+                stop_time = _parse_stop_time(reason)
+                if stop_time is None:
+                    # Fallback to standby_created_at for unparsable reasons
+                    # (e.g. Server.InternalError, crashes, empty string)
+                    fallback = db_fallback.get(instance_id)
+                    if fallback:
+                        stop_time = fallback.replace(tzinfo=None)
+                        print(
+                            f"Using standby_created_at fallback for {instance_id} "
+                            f"(reason: '{reason}')"
+                        )
+                if stop_time and (now - stop_time) > cutoff:
+                    aged_instances.append((instance_id, stop_time))
+
+        if not aged_instances:
+            print(f"No stopped standby instances older than {max_age_hours} hours")
+            return 0
+
+        print(
+            f"Found {len(aged_instances)} stopped standby instances "
+            f"older than {max_age_hours} hours"
+        )
+
+        terminated = 0
+        for instance_id, stop_time in aged_instances:
+            if terminate_standby_instance(instance_id):
+                terminated += 1
+                print(
+                    f"Terminated aged stopped instance {instance_id} "
+                    f"(stopped since: {stop_time})"
+                )
+
+        print(f"Terminated {terminated} aged stopped instances")
+        return terminated
+
+    except Exception as e:
+        print(f"Error terminating aged stopped instances: {str(e)}")
         return 0
 
 

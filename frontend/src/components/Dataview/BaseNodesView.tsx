@@ -26,7 +26,10 @@ import { SyncStatusView } from "components/Dataview/SyncStatusView"
 import { useSyncRetry } from "components/Dataview/useSyncRetry"
 import { DisplayDataItem } from "components/Workspace/Visualize/DisplayDataItem"
 import { WORKSPACE_TYPE } from "const/Workspace"
-import { publicDataviewReproduceWorkflow } from "store/slice/Dataview/DataviewActions"
+import {
+  privateDataviewReproduceWorkflow,
+  publicDataviewReproduceWorkflow,
+} from "store/slice/Dataview/DataviewActions"
 import { DATA_TYPE } from "store/slice/DisplayData/DisplayDataType"
 import { clearFlowElements } from "store/slice/FlowElement/FlowElementSlice"
 import { clearCurrentPipeline } from "store/slice/Pipeline/PipelineSlice"
@@ -35,7 +38,6 @@ import {
   addItemForWorkflowDialog,
   deleteAllItemForWorkflowDialog,
 } from "store/slice/VisualizeItem/VisualizeItemSlice"
-import { reproduceWorkflow } from "store/slice/Workflow/WorkflowActions"
 import { AppDispatch } from "store/store"
 
 export type NodesViewProps = {
@@ -152,7 +154,9 @@ const BaseNodesView = ({
   const dispatch = useDispatch<AppDispatch>()
 
   const fetchFn = useCallback(() => {
-    const api = is_public ? publicDataviewReproduceWorkflow : reproduceWorkflow
+    const api = is_public
+      ? publicDataviewReproduceWorkflow
+      : privateDataviewReproduceWorkflow
     return dispatch(api({ workspaceId: workspaceId!, uid: uid! })).unwrap()
   }, [dispatch, is_public, workspaceId, uid])
 

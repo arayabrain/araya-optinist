@@ -2,7 +2,7 @@
 Unit tests for user deletion functionality.
 
 Tests cover:
-- Case 25: Firebase deletion ordering with two-phase commit
+- Firebase deletion ordering with two-phase commit
 - DeletionStep tracking
 - UserDeletionRecord state management
 - Recovery from incomplete deletions
@@ -697,11 +697,11 @@ async def test_resume_deletion_skips_completed_steps(mock_db, mock_user):
 
 
 class TestUserDeletionContract:
-    """Contract tests for user deletion guarantees (Cases 26-27)."""
+    """Contract tests for user deletion guarantees."""
 
     @pytest.mark.asyncio
     async def test_contract_firebase_deleted_blocks_login(self, mock_db, mock_user):
-        """If Firebase deleted, user cannot authenticate (Case 26-27 guarantee)."""
+        """If Firebase deleted, user cannot authenticate."""
         mock_query_result = Mock()
         mock_query_result.filter.return_value = mock_query_result
         mock_query_result.first.return_value = mock_user
@@ -737,7 +737,7 @@ class TestUserDeletionContract:
     async def test_contract_stripe_failure_does_not_resurrect_user(
         self, mock_db, mock_user
     ):
-        """Stripe failure should not prevent user from being deleted (Case 26)."""
+        """Stripe failure should not prevent user from being deleted."""
         mock_query_result = Mock()
         mock_query_result.filter.return_value = mock_query_result
         mock_query_result.first.return_value = mock_user
@@ -766,7 +766,7 @@ class TestUserDeletionContract:
     async def test_contract_s3_failure_does_not_resurrect_user(
         self, mock_db, mock_user
     ):
-        """S3 failure should not prevent user from being deleted (Case 27)."""
+        """S3 failure should not prevent user from being deleted."""
         mock_query_result = Mock()
         mock_query_result.filter.return_value = mock_query_result
         mock_query_result.first.return_value = mock_user
@@ -801,7 +801,7 @@ class TestUserDeletionContract:
     async def test_contract_incomplete_deletion_recoverable_from_any_step(
         self, mock_db, mock_user
     ):
-        """Incomplete deletion must be recoverable from any step (Case 26-27)."""
+        """Incomplete deletion must be recoverable from any step."""
         # Test recovery from each deletion step
         recoverable_steps = [
             DeletionStep.FIREBASE_DELETED,  # After Firebase deleted
@@ -840,7 +840,7 @@ class TestUserDeletionContract:
 
     @pytest.mark.asyncio
     async def test_contract_deletion_order_is_firebase_first(self, mock_db, mock_user):
-        """Firebase must be deleted before any other cleanup (Case 26-27)."""
+        """Firebase must be deleted before any other cleanup."""
         mock_query_result = Mock()
         mock_query_result.filter.return_value = mock_query_result
         mock_query_result.first.return_value = mock_user
@@ -890,7 +890,7 @@ class TestUserDeletionContract:
 
     @pytest.mark.asyncio
     async def test_contract_no_orphaned_state_on_failure(self, mock_db, mock_user):
-        """User should not be in orphaned state on any failure path (Case 26-27)."""
+        """User should not be in orphaned state on any failure path."""
         mock_query_result = Mock()
         mock_query_result.filter.return_value = mock_query_result
         mock_query_result.first.return_value = mock_user

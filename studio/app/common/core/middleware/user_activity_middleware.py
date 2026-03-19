@@ -29,20 +29,22 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jwt
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.middleware.constants import SKIP_AUTH_PATHS
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.subscription.constants import SubscriptionPlanIds
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import session_scope
 from studio.app.common.models import FreeUserAssignment
+from studio.app.common.models.instance_usage import InstanceUsageLog
 
 # Constants
 BEARER_PREFIX = "Bearer "
 BEARER_PREFIX_LENGTH = len(BEARER_PREFIX)
-SKIP_AUTH_PATHS = ["/health", "/api/auth/login", "/api/auth/refresh"]
 TIER_FREE = "free"
 TIER_PREMIUM = "premium"
 
@@ -301,17 +303,21 @@ def clear_free_user_logged_out_at(user_id: int) -> bool:
     they log back in.
     """
     try:
-        with session_scope() as session:
-            assignment = (
-                session.query(FreeUserAssignment)
-                .filter(FreeUserAssignment.user_id == user_id)
-                .first()
-            )
+        from sqlalchemy import update
 
-            if assignment and assignment.logged_out_at is not None:
-                assignment.logged_out_at = None
-                assignment.last_activity = get_current_datetime()
-                session.commit()
+        with session_scope() as session:
+            stmt = (
+                update(FreeUserAssignment)
+                .where(FreeUserAssignment.user_id == user_id)
+                .where(FreeUserAssignment.logged_out_at.isnot(None))
+                .values(
+                    logged_out_at=None,
+                    last_activity=get_current_datetime(),
+                )
+            )
+            result = session.execute(stmt)
+            session.commit()
+            if result.rowcount > 0:
                 logger.debug(f"Cleared logged_out_at for user {user_id} on re-login")
 
         return True
@@ -405,23 +411,25 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
         if not instance_id or instance_id == "local":
             return False
 
-        # Update database - query first, then update or insert
+        # Update database with direct SQL to avoid StaleDataError
+        # across concurrent workers
+        from sqlalchemy import update
+
         with session_scope() as session:
             now = get_current_datetime()
 
-            # Check if assignment already exists
-            existing = (
-                session.query(FreeUserAssignment)
-                .filter(FreeUserAssignment.user_id == user_id)
-                .first()
+            # Try UPDATE first (common path for existing users)
+            stmt = (
+                update(FreeUserAssignment)
+                .where(FreeUserAssignment.user_id == user_id)
+                .values(
+                    last_activity=now,
+                    instance_id=instance_id,
+                )
             )
-
-            if existing:
-                # Update existing record
-                existing.last_activity = now
-                existing.instance_id = instance_id
-            else:
-                # Insert new record
+            result = session.execute(stmt)
+            if result.rowcount == 0:
+                # No existing row — insert new record
                 assignment = FreeUserAssignment(
                     user_id=user_id,
                     instance_id=instance_id,
@@ -430,8 +438,26 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
                 )
                 session.add(assignment)
 
+                # Log usage session for cost tracking
+                usage_entry = InstanceUsageLog(
+                    user_id=user_id,
+                    instance_id=instance_id,
+                    tier=TIER_FREE,
+                    started_at=now,
+                )
+                session.add(usage_entry)
+
             session.commit()
             return True
+
+    except IntegrityError:
+        # Race condition: another worker inserted the row between our
+        # UPDATE (rowcount==0) and INSERT. Row exists — treat as success.
+        logger.debug(
+            f"Concurrent insert for free user {user_id}, "
+            f"row already exists (benign race)"
+        )
+        return True
 
     except Exception as e:
         logger.error(f"Error updating free user activity for user {user_id}: {e}")

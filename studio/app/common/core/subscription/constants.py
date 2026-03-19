@@ -204,6 +204,15 @@ class StorageQuota:
     CRITICAL_THRESHOLD_PERCENT = 90  # 90% usage threshold for critical warning
     DANGER_THRESHOLD_PERCENT = 100  # 100% usage threshold for danger warning
 
+    @classmethod
+    def bytes_for_plan(cls, plan_id: int) -> int:
+        """Return storage quota in bytes for a given SubscriptionPlanIds value."""
+        _PLAN_QUOTA_GB = {
+            SubscriptionPlanIds.PREMIUM: cls.PREMIUM,
+            SubscriptionPlanIds.FREE: cls.FREE,
+        }
+        return _PLAN_QUOTA_GB.get(plan_id, cls.FREE) * StorageSize.GB
+
 
 class SubscriptionPeriods:
     """
@@ -215,7 +224,7 @@ class SubscriptionPeriods:
     TRIAL_PERIOD_DAYS = 30
     GRACE_PERIOD_DAYS = 30
     WARNING_PERIOD_DAYS = 30
-    # Days before grace period end to warn about quota drop (Case 79)
+    # Days before grace period end to warn about quota drop
     QUOTA_DROP_WARNING_DAYS = 3
     STORAGE_WARNING_DAYS = 30  # Days to remove excess storage for free users
 
@@ -382,7 +391,7 @@ STRIPE_PROVIDER_NAME = "stripe"
 
 # Timeouts and limits
 DUPLICATE_PURCHASE_WINDOW_MINUTES = 30  # Window for detecting duplicate purchases
-# Extended from 7 to 30 days for Case 77 - handles trial-to-paid with 8+ day gap
+# Extended from 7 to 30 days to handle trial-to-paid with 8+ day gap
 RECENT_SUBSCRIPTION_WINDOW_DAYS = 30
 INVOICE_LIST_LIMIT = 100  # Maximum number of invoices to retrieve
 
@@ -427,6 +436,28 @@ class StorageScanTriggers:
 
     # Time-based scan interval
     SCAN_INTERVAL_MINUTES = 60  # Hourly reconciliation
+
+
+class DeletionPriority(StrEnum):
+    """User preference for which data to preserve during expiration deletion."""
+
+    PRESERVE_OUTPUTS = "preserve_outputs"
+    PRESERVE_INPUTS = "preserve_inputs"
+
+
+class ExpirationDeletion:
+    """Constants for expiration deletion background job"""
+
+    JOB_ID = "expiration_lifecycle"
+    JOB_INTERVAL_MINUTES = 1440  # 24 hours
+    BATCH_SIZE = 10  # Max users per job run
+    RECHECK_SUBSCRIPTION_INTERVAL = 5  # Re-check subscription every N units
+    FREE_QUOTA_BYTES = StorageQuota.FREE * StorageSize.GB  # 5 GB
+    REPROCESS_COOLDOWN_DAYS = 7  # Days before re-processing a user
+    # CloudWatch metrics
+    METRIC_NAMESPACE = "OptiNiSt/BackgroundJobs"
+    METRIC_PROCESSED = "ExpirationDeletionProcessed"
+    METRIC_ERRORS = "ExpirationDeletionErrors"
 
 
 class S3Pagination:
