@@ -269,6 +269,12 @@ data "aws_elb_service_account" "main" {}
 
 locals {
   env_prefix = "${var.environment}-optinist"
+
+  # Resolve frontend host/port from ALB DNS when no custom domain is configured
+  # - Production: uses custom domain on port 443
+  # - Development: uses ALB DNS name on port 8080
+  effective_frontend_domain = var.enable_custom_domain ? var.frontend_domain : aws_lb.autoscaling.dns_name
+  effective_frontend_port   = var.enable_custom_domain ? var.frontend_port : "8080"
 }
 
 # =======
