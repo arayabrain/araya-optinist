@@ -100,7 +100,8 @@ class TestLogFrontendErrors:
         with patch("studio.app.common.routers.users_me.logger") as mock_logger:
             await log_frontend_errors(batch=batch, current_user=mock_user)
             call_args = mock_logger.error.call_args
-            assert FRONTEND_LOG_PREFIX in call_args[0][0]
+            full_message = call_args[0][0] % call_args[0][1:]
+            assert FRONTEND_LOG_PREFIX in full_message
 
     @pytest.mark.asyncio
     async def test_logs_warn_uses_logger_warning(self, mock_user):

@@ -416,7 +416,7 @@ _MAX_MESSAGE_LENGTH = 2100
 
 
 class FrontendErrorItem(BaseModel):
-    level: str = Field(..., pattern=_FRONTEND_LEVEL_PATTERN)
+    level: str = Field(..., regex=_FRONTEND_LEVEL_PATTERN)
     message: str = Field(..., max_length=_MAX_MESSAGE_LENGTH)
     source: Optional[str] = None
     url: Optional[str] = None
