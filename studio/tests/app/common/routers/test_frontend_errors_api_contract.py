@@ -24,9 +24,9 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from studio.__main_unit__ import app
 from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.routers.users_me import _frontend_error_timestamps
-from studio.app.main import app
 
 # ============================================================================
 # Frontend Contract Definitions
