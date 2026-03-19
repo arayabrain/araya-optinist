@@ -237,10 +237,11 @@ async def public_reproduce_experiment(
             LocalSyncStatus.pending.value,
             LocalSyncStatus.error.value,
         ]
+
     else:
         needs_sync = is_unsynced
 
-    if needs_sync:
+    if needs_sync and RemoteStorageController.is_available():
         download_error = await _ensure_experiment_downloaded(
             db, workspace_id, unique_id
         )
@@ -422,7 +423,7 @@ async def private_reproduce_experiment(
     )
     needs_sync = is_unsynced
 
-    if needs_sync:
+    if needs_sync and RemoteStorageController.is_available():
         download_error = await _ensure_experiment_downloaded(
             db, workspace_id, unique_id
         )
