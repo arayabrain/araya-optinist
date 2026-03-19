@@ -18,7 +18,6 @@ from studio.app.common.schemas.users import (
     UserSubscriptionUpdate,
 )
 
-
 # ============================================================================
 # Schema Validation Tests (UserSubscriptionUpdate)
 # ============================================================================
