@@ -14,10 +14,7 @@ aws_region        = "ap-northeast-1"
 availability_zone = "ap-northeast-1a"
 key_name          = "development-optinist-for-cloud-key"
 
-# Frontend — use ALB DNS directly (no custom domain for dev)
-# After first `terraform apply`, update this with the ALB DNS name from output,
-# then run `terraform apply` again so STRIPE_CALLBACK_URL and FRONTEND_SERVER_HOST
-# are set correctly in ECS task definitions.
+# Frontend — auto-resolved from ALB DNS when enable_custom_domain = false
 frontend_domain   = ""
 frontend_protocol = "http"
 frontend_port     = "80"
@@ -26,8 +23,8 @@ frontend_port     = "80"
 git_repo   = "https://github.com/arayabrain/optinist-for-cloud.git"
 git_branch = "test-environment"
 
-# Share ECR repo with production
-ecr_repository_url = "637423646530.dkr.ecr.ap-northeast-1.amazonaws.com/optinist-for-cloud"
+# ECR: leave empty to let Terraform create a dev-specific repo (development-optinist-for-cloud)
+# ecr_repository_url = ""
 
 # Database configuration (use new credentials for dev)
 mysql_root_password = "<PLACEHOLDER-generate-new>"

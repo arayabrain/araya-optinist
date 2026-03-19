@@ -36,6 +36,9 @@ export type ExperimentDTO = {
   unique_id: string
   hasNWB: boolean
   is_remote_synced?: boolean
+  has_intermediates?: boolean
+  has_outputs?: boolean
+  has_inputs?: boolean
   nwb: NWBType
   data_usage: number
 }

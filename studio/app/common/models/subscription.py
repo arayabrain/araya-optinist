@@ -99,6 +99,10 @@ class UserSubscription(SQLModel, table=True):
             onupdate=func.current_timestamp(),
         ),
     )
+    deletion_processed_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime, nullable=True),
+        default=None,
+    )
 
 
 class SubscriptionProvider(SQLModel, table=True):

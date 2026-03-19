@@ -5,10 +5,12 @@ import { createAsyncThunk } from "@reduxjs/toolkit"
 import {
   cancelSubscriptionApi,
   createCheckoutSessionApi,
+  getDeletionPriorityApi,
   getServerTimeApi as getUTCServerTimeApi,
   getSubscriptionPlansApi,
   getUserSubscriptionApi,
   reactivateSubscriptionApi,
+  updateDeletionPriorityApi,
   validateCheckoutSessionApi,
 } from "api/subscriptions/Subscriptions"
 import {
@@ -156,6 +158,30 @@ export const cancelSubscription = createAsyncThunk(
       // eslint-disable-next-line no-console
       console.error("Error cancelling subscription:", error)
       // Extract clean error message instead of passing entire error object
+      const errorMessage = extractErrorMessage(error)
+      return thunkAPI.rejectWithValue(errorMessage)
+    }
+  },
+)
+
+export const getDeletionPriority = createAsyncThunk(
+  `${SUBSCRIPTION_SLICE_NAME}/getDeletionPriority`,
+  async (_, thunkAPI) => {
+    try {
+      return await getDeletionPriorityApi()
+    } catch (error) {
+      const errorMessage = extractErrorMessage(error)
+      return thunkAPI.rejectWithValue(errorMessage)
+    }
+  },
+)
+
+export const updateDeletionPriority = createAsyncThunk(
+  `${SUBSCRIPTION_SLICE_NAME}/updateDeletionPriority`,
+  async (priority: string, thunkAPI) => {
+    try {
+      return await updateDeletionPriorityApi(priority)
+    } catch (error) {
       const errorMessage = extractErrorMessage(error)
       return thunkAPI.rejectWithValue(errorMessage)
     }

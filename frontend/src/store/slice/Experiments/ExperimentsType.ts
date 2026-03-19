@@ -37,6 +37,9 @@ export type ExperimentType = {
   frameRate?: number
   data_usage: number
   isRemoteSynced?: boolean
+  hasIntermediates: boolean
+  hasOutputs: boolean
+  hasInputs: boolean
 }
 
 export type ExperimentFunction = {

@@ -28,23 +28,19 @@ resource "aws_lb" "autoscaling" {
   }
 }
 
-# Load Balancer Listener - HTTP (redirect to HTTPS when custom domain, forward when not)
+# Load Balancer Listener - HTTP (redirects to main listener)
 resource "aws_lb_listener" "autoscaling" {
   load_balancer_arn = aws_lb.autoscaling.arn
   port              = "80"
   protocol          = "HTTP"
 
   default_action {
-    type             = var.enable_custom_domain ? "redirect" : "forward"
-    target_group_arn = var.enable_custom_domain ? null : aws_lb_target_group.autoscaling.arn
+    type = "redirect"
 
-    dynamic "redirect" {
-      for_each = var.enable_custom_domain ? [1] : []
-      content {
-        port        = "443"
-        protocol    = "HTTPS"
-        status_code = "HTTP_301"
-      }
+    redirect {
+      port        = var.enable_custom_domain ? "443" : "8080"
+      protocol    = var.enable_custom_domain ? "HTTPS" : "HTTP"
+      status_code = "HTTP_301"
     }
   }
 }
@@ -122,7 +118,7 @@ data "aws_ami" "ecs_optimized" {
 resource "aws_launch_template" "ecs" {
   name_prefix   = "${local.env_prefix}-ecs-"
   image_id      = data.aws_ami.ecs_optimized.id
-  instance_type = "t3.large"
+  instance_type = var.free_instance_type
   key_name      = aws_key_pair.subscr_optinist_cloud_key_pair.key_name
 
   vpc_security_group_ids = [aws_security_group.ecs.id]
@@ -151,9 +147,8 @@ resource "aws_launch_template" "ecs" {
     git_repo              = var.git_repo
     firebase_config_json  = var.firebase_config_json
     firebase_private_json = var.firebase_private_json
-    ecr_registry          = split("/", var.ecr_repository_url)[0]
-    ecr_repository_url    = var.ecr_repository_url
-    docker_image_tag      = var.docker_image_tag
+    ecr_registry          = split("/", local.ecr_repository_url)[0]
+    ecr_repository_url    = local.ecr_repository_url
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
     swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
@@ -334,7 +329,7 @@ resource "aws_ecs_service" "premium" {
 resource "aws_launch_template" "premium" {
   name_prefix   = "${local.env_prefix}-premium-"
   image_id      = data.aws_ami.ecs_optimized.id
-  instance_type = "t3.large"
+  instance_type = var.premium_instance_type
   key_name      = aws_key_pair.subscr_optinist_cloud_key_pair.key_name
 
   vpc_security_group_ids = [aws_security_group.ecs.id]
@@ -363,9 +358,8 @@ resource "aws_launch_template" "premium" {
     git_repo              = var.git_repo
     firebase_config_json  = var.firebase_config_json
     firebase_private_json = var.firebase_private_json
-    ecr_registry          = split("/", var.ecr_repository_url)[0]
-    ecr_repository_url    = var.ecr_repository_url
-    docker_image_tag      = var.docker_image_tag
+    ecr_registry          = split("/", local.ecr_repository_url)[0]
+    ecr_repository_url    = local.ecr_repository_url
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
     swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
@@ -477,7 +471,7 @@ resource "aws_instance" "premium" {
     version = "$Latest"
   }
 
-  instance_type = "t3.large"
+  instance_type = var.premium_instance_type
   subnet_id     = aws_subnet.private1.id
 
   # On shutdown, stop instance instead of terminating
@@ -521,7 +515,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
   container_definitions = jsonencode([
     {
       name              = "${local.env_prefix}-cloud-container"
-      image             = "${var.ecr_repository_url}:${var.docker_image_tag}"
+      image             = "${local.ecr_repository_url}:latest"
       cpu               = 1536
       memory            = 6656
       memoryReservation = 4096
@@ -595,11 +589,11 @@ resource "aws_ecs_task_definition" "autoscaling" {
         },
         {
           name  = "FRONTEND_SERVER_HOST"
-          value = var.frontend_domain
+          value = local.effective_frontend_domain
         },
         {
           name  = "FRONTEND_SERVER_PORT"
-          value = var.frontend_port
+          value = local.effective_frontend_port
         },
         {
           name  = "FRONTEND_SERVER_PROTO"
@@ -667,7 +661,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
         },
         {
           name  = "STRIPE_CALLBACK_URL"
-          value = "${var.frontend_protocol}://${var.frontend_domain}"
+          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
         },
         {
           name  = "STRIPE_SECRET_KEY"
@@ -693,6 +687,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
         {
           name  = "DISABLE_BACKGROUND_SCHEDULER"
           value = "1"
+        },
+        {
+          name  = "PREMIUM_MANAGER_FUNCTION_NAME"
+          value = "${var.environment}-premium-manager"
         },
       ]
       secrets = [
@@ -774,7 +772,7 @@ resource "aws_ecs_task_definition" "premium" {
   container_definitions = jsonencode([
     {
       name              = "${var.environment}-premium-optinist-cloud-container"
-      image             = "${var.ecr_repository_url}:${var.docker_image_tag}"
+      image             = "${local.ecr_repository_url}:latest"
       cpu               = 1536
       memory            = 6656
       memoryReservation = 4096
@@ -853,11 +851,11 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "FRONTEND_SERVER_HOST"
-          value = var.frontend_domain
+          value = local.effective_frontend_domain
         },
         {
           name  = "FRONTEND_SERVER_PORT"
-          value = var.frontend_port
+          value = local.effective_frontend_port
         },
         {
           name  = "FRONTEND_SERVER_PROTO"
@@ -921,7 +919,7 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "STRIPE_CALLBACK_URL"
-          value = "${var.frontend_protocol}://${var.frontend_domain}"
+          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
         },
         {
           name  = "STRIPE_SECRET_KEY"
