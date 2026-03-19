@@ -552,7 +552,7 @@ class BaseRemoteStorageController(metaclass=ABCMeta):
         self, workspace_id: str, unique_id: str, thumbnail_path: str
     ) -> bool:
         """
-        Upload a generated thumbnail PNG to S3 for persistence.
+        Upload a generated thumbnail PNG to remote storage for persistence.
         """
 
     @abstractmethod
@@ -880,7 +880,7 @@ class RemoteStorageController(BaseRemoteStorageController):
         self, workspace_id: str, unique_id: str, thumbnail_path: str
     ) -> bool:
         """
-        Upload a generated thumbnail PNG to S3 for persistence.
+        Upload a generated thumbnail PNG to remote storage for persistence.
         """
         return await self.__controller.upload_thumbnail(
             workspace_id, unique_id, thumbnail_path
@@ -1075,3 +1075,89 @@ async def upload_input_data_wrapper(
         remote_bucket_name
     ) as remote_storage_controller:
         await remote_storage_controller.upload_input_data(workspace_id, input_data_name)
+
+
+class RemoteStorageDownloadUtils:
+    """Utility class for downloading input files from remote storage.
+
+    Exclusive control:
+        This class does NOT implement exclusive locking.
+        Input files are workspace-scoped (INPUT_DIR/{workspace_id}/), so the
+        experiment-level lock in BaseRemoteStorageReaderWriter does not apply.
+
+        Concurrent downloads of the same file may occur, but input files are
+        immutable, so the practical risk is limited to redundant API calls.
+        Both methods use os.path.exists() to skip already-downloaded files.
+
+        Ideally, workspace-level locking should be introduced in the future.
+    """
+
+    @staticmethod
+    async def sync_experiment_input_files(
+        workspace_id: str, unique_id: str, remote_bucket_name: str
+    ) -> None:
+        """Sync input files (TIFF/CSV) for an experiment to local storage.
+
+        Input files live in a separate directory from experiment outputs and are
+        not covered by download_experiment(sync_mode="visualization"). This must
+        be called after the visualization tier download completes.
+
+        Files that already exist locally are skipped.
+        """
+        if not RemoteStorageController.is_available():
+            return
+
+        try:
+            input_filenames = SmkUtils.get_datatypes_inputs(
+                workspace_id, unique_id, apply_basename=True
+            )
+            if not input_filenames:
+                return
+
+            controller = RemoteStorageController(remote_bucket_name)
+            for input_filename in input_filenames:
+                input_path = join_filepath(
+                    [DIRPATH.INPUT_DIR, workspace_id, input_filename]
+                )
+                if not os.path.exists(input_path):
+                    await controller.download_input_data(workspace_id, input_filename)
+        except (AssertionError, KeyError):
+            # snakemake_config.yaml missing or incomplete -- skip silently
+            pass
+        except Exception as e:
+            logger.warning(
+                f"Input file download failed for {workspace_id}/{unique_id}: {e}"
+            )
+
+    @staticmethod
+    async def ensure_input_file_synced(
+        workspace_id: str,
+        filename: str,
+        remote_bucket_name: str,
+    ) -> bool:
+        """On-demand sync for a single input file from remote storage.
+
+        Returns True if file exists locally after sync attempt.
+        Raises Exception for remote storage errors
+        (caller should handle HTTP response).
+        """
+        input_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
+
+        # Already exists locally
+        if os.path.exists(input_path):
+            return True
+
+        # Check if remote storage is available
+        if not RemoteStorageController.is_available():
+            return False
+
+        logger.info(f"On-demand sync for input file: {workspace_id}/{filename}")
+
+        controller = RemoteStorageController(remote_bucket_name)
+        downloaded = await controller.download_input_data(workspace_id, filename)
+        if not downloaded:
+            logger.warning(
+                f"Input file not found in remote storage: {workspace_id}/{filename}"
+            )
+            return False
+        return os.path.exists(input_path)
