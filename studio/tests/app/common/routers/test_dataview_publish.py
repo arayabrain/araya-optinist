@@ -384,23 +384,30 @@ class TestPublicDataviewReproduceWorkflow:
                 "check_sync_status_unsynced",
                 return_value=True,
             ):
-                with patch("os.environ.get", return_value="test-bucket"):
-                    with patch(
-                        "studio.app.common.routers.dataview.RemoteStorageReader",
-                        return_value=mock_remote_reader,
-                    ):
+                with patch(
+                    "studio.app.common.routers.dataview."
+                    "RemoteStorageController.is_available",
+                    return_value=True,
+                ):
+                    with patch("os.environ.get", return_value="test-bucket"):
                         with patch(
-                            "studio.app.common.routers.dataview.PublishValidator."
-                            "validate_for_display",
-                            return_value=mock_validation,
+                            "studio.app.common.routers.dataview.RemoteStorageReader",
+                            return_value=mock_remote_reader,
                         ):
                             with patch(
-                                "studio.app.common.routers.dataview."
-                                "reproduce_experiment"
+                                "studio.app.common.routers.dataview.PublishValidator."
+                                "validate_for_display",
+                                return_value=mock_validation,
                             ):
-                                await public_reproduce_experiment(
-                                    workspace_id="1", unique_id="exp123", db=MagicMock()
-                                )
+                                with patch(
+                                    "studio.app.common.routers.dataview."
+                                    "reproduce_experiment"
+                                ):
+                                    await public_reproduce_experiment(
+                                        workspace_id="1",
+                                        unique_id="exp123",
+                                        db=MagicMock(),
+                                    )
 
         mock_remote_controller.download_experiment.assert_called_once()
 
