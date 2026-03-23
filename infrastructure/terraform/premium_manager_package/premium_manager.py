@@ -1580,9 +1580,11 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
                             "target_group_arn": assignment["target_group_arn"],
                             "alb_rule_arn": assignment["alb_rule_arn"],
                             "status": assignment["status"],
-                            "assigned_at": assignment["assigned_at"].isoformat()
-                            if assignment["assigned_at"]
-                            else None,
+                            "assigned_at": (
+                                assignment["assigned_at"].isoformat()
+                                if assignment["assigned_at"]
+                                else None
+                            ),
                             "is_shared": bool(assignment["is_shared"]),
                         }
                     ),
@@ -2783,9 +2785,9 @@ def assign_premium_user(
                     ],
                     "failure_reasons": failure_reasons,
                     "has_least_loaded": least_loaded_instance is not None,
-                    "min_users_on_least_loaded": min_users
-                    if least_loaded_instance
-                    else None,
+                    "min_users_on_least_loaded": (
+                        min_users if least_loaded_instance else None
+                    ),
                 },
             }
             print(f" Final assignment failure details: {error_details}")
@@ -4263,7 +4265,8 @@ def cleanup_all_dynamic_instances(base_instance_ids: list) -> dict:
     in the base_instance_ids list (Terraform-managed base instances).
 
     Args:
-        base_instance_ids: List of Terraform-managed instance IDs to preserve (stop, not terminate)
+        base_instance_ids: List of Terraform-managed instance IDs to preserve
+        (stop, not terminate)
     """
     ec2_client: "EC2Client" = boto3.client("ec2")
     base_set = set(base_instance_ids)
@@ -4292,7 +4295,10 @@ def cleanup_all_dynamic_instances(base_instance_ids: list) -> dict:
             print("No dynamic premium instances found")
             return result
 
-        print(f"Found {len(dynamic_ids)} dynamic premium instances to terminate: {dynamic_ids}")
+        print(
+            f"Found {len(dynamic_ids)} dynamic premium instances to terminate: "
+            f"{dynamic_ids}"
+        )
 
         # Terminate dynamic instances
         try:
