@@ -89,6 +89,7 @@ resource "aws_lambda_function" "dev_scheduler" {
       OVERRIDE_PARAM_NAME    = "/${var.environment}/optinist/schedule-override"
       ALARM_PREFIX                  = "${var.environment}-"
       PREMIUM_MANAGER_FUNCTION_NAME = aws_lambda_function.premium_manager.function_name
+      DEFAULT_STOP_MODE             = var.dev_schedule_stop_mode
 
       SCHEDULE_RULE_NAMES = jsonencode([
         aws_cloudwatch_event_rule.free_manager_schedule.name,
@@ -168,7 +169,7 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      # RDS destroy/restore (scoped to specific instance)
+      # RDS stop/destroy/restore (scoped to specific instance)
       {
         Effect = "Allow"
         Action = [
@@ -177,6 +178,7 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
           "rds:RestoreDBInstanceFromDBSnapshot",
           "rds:AddTagsToResource",
           "rds:StartDBInstance",
+          "rds:StopDBInstance",
         ]
         Resource = aws_db_instance.main.arn
       },
@@ -345,7 +347,8 @@ resource "aws_cloudwatch_event_target" "dev_schedule_stop" {
   arn       = aws_lambda_function.dev_scheduler[0].arn
 
   input = jsonencode({
-    action = "stop"
+    action    = "stop"
+    stop_mode = var.dev_schedule_stop_mode
   })
 }
 
@@ -429,7 +432,8 @@ resource "aws_cloudwatch_event_target" "dev_schedule_verify_stop" {
   arn       = aws_lambda_function.dev_scheduler[0].arn
 
   input = jsonencode({
-    action = "stop"
+    action    = "stop"
+    stop_mode = var.dev_schedule_stop_mode
   })
 }
 
@@ -459,10 +463,13 @@ output "dev_schedule_override_param" {
 output "dev_schedule_info" {
   description = "Dev schedule configuration"
   value = var.enable_dev_schedule ? {
-    start_time   = "08:00 JST (23:00 UTC) Mon-Fri"
-    stop_time    = "22:00 JST (13:00 UTC) Mon-Fri"
-    weekends     = "Stopped (Fri 22:00 -> Mon 08:00 JST)"
-    override     = "aws ssm put-parameter --name /${var.environment}/optinist/schedule-override --value on --type String --overwrite"
-    manual_start = "aws lambda invoke --function-name ${var.environment}-dev-scheduler --payload '{\"action\":\"start\"}' /dev/stdout"
+    start_time     = "08:00 JST (23:00 UTC) Mon-Fri"
+    stop_time      = "22:00 JST (13:00 UTC) Mon-Fri"
+    stop_mode      = var.dev_schedule_stop_mode
+    weekends       = "Stopped (Fri 22:00 -> Mon 08:00 JST)"
+    override       = "aws ssm put-parameter --name /${var.environment}/optinist/schedule-override --value on --type String --overwrite"
+    manual_start   = "aws lambda invoke --function-name ${var.environment}-dev-scheduler --payload '{\"action\":\"start\"}' /dev/stdout"
+    manual_stop    = "aws lambda invoke --function-name ${var.environment}-dev-scheduler --payload '{\"action\":\"stop\",\"stop_mode\":\"stop\"}' /dev/stdout"
+    manual_destroy = "aws lambda invoke --function-name ${var.environment}-dev-scheduler --payload '{\"action\":\"stop\",\"stop_mode\":\"destroy\"}' /dev/stdout"
   } : null
 }

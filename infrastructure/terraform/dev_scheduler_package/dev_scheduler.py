@@ -17,7 +17,7 @@ Manual start (after-hours):
         --payload '{"action":"start"}' /dev/stdout
 
 Resources managed:
-- RDS instance (destroy with snapshot / restore from snapshot)
+- RDS instance (stop or destroy+snapshot, configurable via stop_mode)
 - NAT instance (stop/start)
 - Background service EC2 instance (stop/start)
 - Premium EC2 instances (stop/start)
@@ -25,13 +25,18 @@ Resources managed:
 - Lambda schedule rules (disable/enable)
 - CloudWatch alarm actions (disable/enable)
 
-RDS destroy/restore approach:
-  Instead of stop/start (which suffers from AWS's 7-day auto-restart),
-  the scheduler deletes the RDS instance with a final snapshot on stop,
-  and restores from that snapshot on start. This prevents unattended
-  restarts during extended breaks (Golden Week, year-end holidays, etc.).
-  The RDS Proxy target auto-reconnects when the instance is restored
-  with the same identifier.
+RDS shutdown modes (stop_mode):
+  "stop"    - Calls rds stop-db-instance. Fast resume (~2 min).
+              EBS still billed. Subject to AWS 7-day auto-restart.
+              Recommended for regular weeknight shutdowns.
+  "destroy" - Deletes instance with a final snapshot, restores on start.
+              Maximum cost savings, slower resume (~10 min).
+              Immune to 7-day auto-restart. Use for extended breaks
+              (Golden Week, year-end holidays, etc.).
+
+  The mode is set via the event payload (stop_mode field) or the
+  DEFAULT_STOP_MODE environment variable. Defaults to "destroy"
+  for backward compatibility.
 """
 
 import json
@@ -89,7 +94,12 @@ def handler(event, context):
     if action == "start":
         return start_environment()
     elif action == "stop":
-        return stop_environment()
+        stop_mode = event.get("stop_mode") or os.environ.get(
+            "DEFAULT_STOP_MODE", "destroy"
+        )
+        if stop_mode not in ("stop", "destroy"):
+            return {"statusCode": 400, "body": f"Unknown stop_mode: {stop_mode}"}
+        return stop_environment(stop_mode=stop_mode)
     elif action == "override":
         hours = min(event.get("hours", 4), MAX_OVERRIDE_HOURS)
         return set_override(hours)
@@ -159,13 +169,18 @@ def start_environment():
     return {"statusCode": 200, "action": "start", "results": results}
 
 
-def stop_environment():
+def stop_environment(stop_mode="destroy"):
     """Stop all dev environment resources.
+
+    Args:
+        stop_mode: "stop" (fast resume, RDS stopped) or "destroy" (max savings,
+                   RDS deleted with snapshot). See module docstring for details.
 
     Each stage is retried up to MAX_RETRY_ATTEMPTS times on failure.
     A verification EventBridge rule re-invokes this 15 min later to catch
     timeouts or crashes (all operations are idempotent).
     """
+    print(f"Stopping environment with stop_mode={stop_mode}")
     results = {}
 
     # Check manual override
@@ -205,12 +220,18 @@ def stop_environment():
         stop_instance, os.environ["NAT_INSTANCE_ID"], "NAT"
     )
 
-    # 7. Destroy RDS (with final snapshot for later restore)
-    results["rds"] = with_retry(
-        destroy_rds,
-        os.environ["RDS_INSTANCE_ID"],
-        os.environ["RDS_SNAPSHOT_ID"],
-    )
+    # 7. RDS: destroy (delete with snapshot) or stop based on mode
+    if stop_mode == "destroy":
+        results["rds"] = with_retry(
+            destroy_rds,
+            os.environ["RDS_INSTANCE_ID"],
+            os.environ["RDS_SNAPSHOT_ID"],
+        )
+    else:
+        results["rds"] = with_retry(
+            stop_rds,
+            os.environ["RDS_INSTANCE_ID"],
+        )
 
     # 8. Disable CloudWatch alarm actions
     results["alarms"] = with_retry(
@@ -222,7 +243,12 @@ def stop_environment():
     if errors:
         print(f"Stop completed with {len(errors)} error(s): {json.dumps(errors)}")
         raise RuntimeError(f"Stop completed with errors: {json.dumps(errors)}")
-    return {"statusCode": 200, "action": "stop", "results": results}
+    return {
+        "statusCode": 200,
+        "action": "stop",
+        "stop_mode": stop_mode,
+        "results": results,
+    }
 
 
 def destroy_rds(instance_id, snapshot_id):
@@ -263,6 +289,38 @@ def destroy_rds(instance_id, snapshot_id):
         )
         print(f"RDS {instance_id}: deleting (snapshot -> {snapshot_id})")
         return "deleting"
+    except Exception as e:
+        print(f"RDS {instance_id}: error - {e}")
+        return f"error: {e}"
+
+
+def stop_rds(instance_id):
+    """Stop an RDS instance. Fast resume (~2 min) but EBS still billed.
+
+    Idempotent: returns early if already stopped/stopping.
+    Handles cross-mode case: if instance was previously destroyed, returns
+    "not_found" instead of erroring.
+    """
+    try:
+        try:
+            resp = rds.describe_db_instances(DBInstanceIdentifier=instance_id)
+            status = resp["DBInstances"][0]["DBInstanceStatus"]
+            print(f"RDS {instance_id}: current status = {status}")
+        except rds.exceptions.DBInstanceNotFoundFault:
+            print(f"RDS {instance_id}: not found (may have been destroyed)")
+            return "not_found"
+
+        if status in ("stopped", "stopping"):
+            print(f"RDS {instance_id}: already {status}")
+            return f"already_{status}"
+
+        if status != "available":
+            print(f"RDS {instance_id}: cannot stop in status {status}")
+            return f"error: cannot stop in status {status}"
+
+        rds.stop_db_instance(DBInstanceIdentifier=instance_id)
+        print(f"RDS {instance_id}: stopping")
+        return "stopping"
     except Exception as e:
         print(f"RDS {instance_id}: error - {e}")
         return f"error: {e}"

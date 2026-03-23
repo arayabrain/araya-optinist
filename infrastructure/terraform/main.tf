@@ -270,9 +270,20 @@ variable "monthly_budget_usd" {
 }
 
 variable "enable_dev_schedule" {
-  description = "Enable scheduled start/stop for dev environment (09:00-22:00 JST Mon-Fri)"
+  description = "Enable scheduled start/stop for dev environment (08:00-22:00 JST Mon-Fri)"
   type        = bool
   default     = false
+}
+
+variable "dev_schedule_stop_mode" {
+  description = "RDS shutdown mode: 'stop' (fast resume, EBS still billed) or 'destroy' (snapshot + delete, max savings)"
+  type        = string
+  default     = "destroy"
+
+  validation {
+    condition     = contains(["stop", "destroy"], var.dev_schedule_stop_mode)
+    error_message = "dev_schedule_stop_mode must be 'stop' or 'destroy'."
+  }
 }
 
 # Data sources
