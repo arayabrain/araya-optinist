@@ -34,6 +34,10 @@ RUN cd /tmp && \
 RUN apt-get purge wget -y && \
     apt-get autoremove -y && apt-get clean
 
+# install optimization solver (after autoremove to prevent removal)
+RUN apt-get install --no-install-recommends -y coinor-cbc && \
+    apt-get clean
+
 # setup user profile
 RUN echo 'alias ll="ls -la --color=auto"' >> /root/.bashrc && \
     echo 'set nu ic hls nowrap ts=4 sw=4 | syntax on' >> /root/.vimrc
