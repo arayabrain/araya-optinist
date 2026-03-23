@@ -45,6 +45,28 @@ resource "aws_ssm_parameter" "dev_schedule_override" {
 }
 
 # ===========================
+# SSM Parameter for Startup Timestamp
+# ===========================
+# Written by dev_scheduler on start, read by premium_manager to skip
+# monitoring while the environment is still booting up.
+resource "aws_ssm_parameter" "dev_startup_timestamp" {
+  count = var.enable_dev_schedule ? 1 : 0
+
+  name  = "/${var.environment}/optinist/last-environment-start"
+  type  = "String"
+  value = "none"
+
+  tags = {
+    Name    = "Dev Environment Startup Timestamp"
+    Service = "dev-scheduler"
+  }
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+# ===========================
 # Lambda Package
 # ===========================
 data "archive_file" "dev_scheduler_zip" {
@@ -86,7 +108,8 @@ resource "aws_lambda_function" "dev_scheduler" {
       ASG_MAX_SIZE           = tostring(var.asg_max_size)
       ASG_DESIRED_CAPACITY   = tostring(var.asg_desired_capacity)
       CLUSTER_NAME           = aws_ecs_cluster.main.name
-      OVERRIDE_PARAM_NAME    = "/${var.environment}/optinist/schedule-override"
+      OVERRIDE_PARAM_NAME          = "/${var.environment}/optinist/schedule-override"
+      STARTUP_TIMESTAMP_PARAM_NAME = "/${var.environment}/optinist/last-environment-start"
       ALARM_PREFIX                  = "${var.environment}-"
       PREMIUM_MANAGER_FUNCTION_NAME = aws_lambda_function.premium_manager.function_name
       DEFAULT_STOP_MODE             = var.dev_schedule_stop_mode
@@ -262,14 +285,17 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
         ]
         Resource = "*"
       },
-      # SSM parameter for override (scoped to specific parameter)
+      # SSM parameters for override and startup timestamp
       {
         Effect = "Allow"
         Action = [
           "ssm:GetParameter",
           "ssm:PutParameter",
         ]
-        Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/optinist/schedule-override"
+        Resource = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/optinist/schedule-override",
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/optinist/last-environment-start",
+        ]
       },
       # Invoke premium_manager to clean up dynamic instances before stop
       {

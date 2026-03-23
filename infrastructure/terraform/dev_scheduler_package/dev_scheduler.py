@@ -183,7 +183,10 @@ def start_environment():
         toggle_alarm_actions, os.environ.get("ALARM_PREFIX", ""), enable=True
     )
 
-    # 7. Clear override
+    # 7. Write startup timestamp (used by premium_manager for grace period)
+    write_startup_timestamp()
+
+    # 8. Clear override
     clear_override()
 
     print(f"Start results: {json.dumps(results)}")
@@ -613,6 +616,20 @@ def is_override_active():
     except Exception as e:
         print(f"Override check error: {e}")
         return False
+
+
+def write_startup_timestamp():
+    """Write the current UTC timestamp to SSM so premium_manager can skip
+    its first monitoring cycle while the environment is still booting."""
+    try:
+        param_name = os.environ.get("STARTUP_TIMESTAMP_PARAM_NAME", "")
+        if not param_name:
+            return
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        ssm.put_parameter(Name=param_name, Value=now, Type="String", Overwrite=True)
+        print(f"Startup timestamp written: {now}")
+    except Exception as e:
+        print(f"Write startup timestamp error: {e}")
 
 
 def clear_override():

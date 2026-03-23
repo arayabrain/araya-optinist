@@ -41,6 +41,10 @@ resource "aws_lambda_function" "premium_manager" {
       # Environment prefix for dynamic resource naming
       ENV_PREFIX = var.environment
 
+      # Startup grace period - skip monitoring if environment just started
+      STARTUP_TIMESTAMP_PARAM_NAME  = "/${var.environment}/optinist/last-environment-start"
+      STARTUP_GRACE_PERIOD_MINUTES  = "20"
+
       # Internal API configuration for experiment sync after migration
       ALB_DNS_NAME        = aws_lb.autoscaling.dns_name
       INTERNAL_API_SECRET = random_password.internal_api_secret.result
@@ -497,6 +501,12 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
           "ssm:GetCommandInvocation"
         ]
         Resource = "*"
+      },
+      # SSM parameter for startup grace period (read-only)
+      {
+        Effect = "Allow"
+        Action = "ssm:GetParameter"
+        Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/optinist/last-environment-start"
       }
     ]
   })
