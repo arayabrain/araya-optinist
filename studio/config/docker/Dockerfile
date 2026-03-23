@@ -14,8 +14,10 @@ RUN apt-get install --no-install-recommends -y gcc g++ clang clang libgl1 libgl1
 # Specify compiler (use clang)
 ENV CC=clang CXX=clang++
 
+# Pin Miniforge version for reproducible builds
+ENV MINIFORGE_VERSION=26.1.1-2
 RUN mkdir -p /opt/miniforge && \
-    curl -L "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh" -o /opt/miniforge/Miniforge3.sh && \
+    curl -L "https://github.com/conda-forge/miniforge/releases/download/${MINIFORGE_VERSION}/Miniforge3-${MINIFORGE_VERSION}-$(uname)-$(uname -m).sh" -o /opt/miniforge/Miniforge3.sh && \
     bash /opt/miniforge/Miniforge3.sh -b -u -p /opt/miniforge && \
     rm /opt/miniforge/Miniforge3.sh && \
     export PATH="$PATH:/opt/miniforge/bin" && \
