@@ -6,15 +6,42 @@ Starts and stops development environment resources on a schedule to save costs.
 Schedule (JST):
 - Start: Mon-Fri 08:00 (resources ready by ~08:15)
 - Stop:  Mon-Fri 22:00
-- Weekends: Stopped (Fri 22:00 -> Mon 08:45)
+- Weekends: Stopped (Fri 22:00 -> Mon 08:00)
 
-Manual override (skip next stop):
-    aws ssm put-parameter --name /<env>/optinist/schedule-override \
-        --value on --type String --overwrite
+Commands (replace <env> with environment name, e.g. "development"):
 
-Manual start (after-hours):
+  Manual start (after-hours / weekends):
     aws lambda invoke --function-name <env>-dev-scheduler \
+        --cli-binary-format raw-in-base64-out \
         --payload '{"action":"start"}' /dev/stdout
+
+  Manual stop (fast resume):
+    aws lambda invoke --function-name <env>-dev-scheduler \
+        --cli-binary-format raw-in-base64-out \
+        --payload '{"action":"stop","stop_mode":"stop"}' /dev/stdout
+
+  Manual destroy (before long holidays, max savings):
+    aws lambda invoke --function-name <env>-dev-scheduler \
+        --cli-binary-format raw-in-base64-out \
+        --payload '{"action":"stop","stop_mode":"destroy"}' /dev/stdout
+
+  Override (skip next scheduled stop, max 12 hours):
+    aws lambda invoke --function-name <env>-dev-scheduler \
+        --cli-binary-format raw-in-base64-out \
+        --payload '{"action":"override","hours":4}' /dev/stdout
+
+Long holidays / no-development periods:
+  To prevent automatic start during extended breaks:
+    Option 1 - Disable schedule in EventBridge console:
+      Disable rules: <env>-dev-schedule-start, <env>-dev-schedule-verify-start
+      Re-enable when development resumes.
+    Option 2 - Terraform:
+      terraform apply -var="enable_dev_schedule=false"
+      (Set back to true when development resumes.)
+  Before the break, run a manual destroy to avoid idle costs:
+    aws lambda invoke --function-name <env>-dev-scheduler \
+        --cli-binary-format raw-in-base64-out \
+        --payload '{"action":"stop","stop_mode":"destroy"}' /dev/stdout
 
 Resources managed:
 - RDS instance (stop or destroy+snapshot, configurable via stop_mode)
@@ -118,9 +145,7 @@ def start_environment():
     results = {}
 
     # 1. Start NAT instance first (needed for private subnet internet access)
-    results["nat"] = with_retry(
-        start_instance, os.environ["NAT_INSTANCE_ID"], "NAT"
-    )
+    results["nat"] = with_retry(start_instance, os.environ["NAT_INSTANCE_ID"], "NAT")
 
     # 2. Restore RDS from snapshot (takes longest to become available ~5-10 min)
     results["rds"] = with_retry(
@@ -190,9 +215,7 @@ def stop_environment(stop_mode="destroy"):
 
     # 1. Clean up dynamic premium instances (before disabling rules so
     #    premium_manager can still reach the DB through NAT)
-    results["dynamic_premium_cleanup"] = with_retry(
-        cleanup_dynamic_premium_instances
-    )
+    results["dynamic_premium_cleanup"] = with_retry(cleanup_dynamic_premium_instances)
 
     # 2. Disable Lambda schedule rules (prevent re-scaling during shutdown)
     rules = json.loads(os.environ.get("SCHEDULE_RULE_NAMES", "[]"))
@@ -216,9 +239,7 @@ def stop_environment(stop_mode="destroy"):
     )
 
     # 6. Stop NAT instance
-    results["nat"] = with_retry(
-        stop_instance, os.environ["NAT_INSTANCE_ID"], "NAT"
-    )
+    results["nat"] = with_retry(stop_instance, os.environ["NAT_INSTANCE_ID"], "NAT")
 
     # 7. RDS: destroy (delete with snapshot) or stop based on mode
     if stop_mode == "destroy":
@@ -351,9 +372,7 @@ def restore_rds(instance_id, snapshot_id, config):
             snap_resp = rds.describe_db_snapshots(DBSnapshotIdentifier=snapshot_id)
             snap_status = snap_resp["DBSnapshots"][0]["Status"]
             if snap_status != "available":
-                print(
-                    f"RDS snapshot {snapshot_id}: status={snap_status}, waiting..."
-                )
+                print(f"RDS snapshot {snapshot_id}: status={snap_status}, waiting...")
                 waiter = rds.get_waiter("db_snapshot_available")
                 waiter.wait(
                     DBSnapshotIdentifier=snapshot_id,
