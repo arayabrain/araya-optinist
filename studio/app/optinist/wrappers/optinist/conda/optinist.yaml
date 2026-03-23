@@ -5,6 +5,7 @@ dependencies:
   - pip
   - h5py>=3.8.0
   - pip:
+      - setuptools<78
       - scikit-learn==1.1.*
       - statsmodels==0.13.*
       - pynwb==2.2.0

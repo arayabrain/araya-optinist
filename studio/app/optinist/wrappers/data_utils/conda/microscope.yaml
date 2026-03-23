@@ -8,6 +8,7 @@ dependencies:
   # - gcc=12
   - numpy<2
   - pip:
+    - setuptools<78
     - hdmf==3.*
     - isx==1.0.*
     - pynwb==2.6.0

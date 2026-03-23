@@ -4,6 +4,7 @@ dependencies:
   - pip
   - h5py>=3.8.0
   - pip:
+    - setuptools<78
     # - pandas
     # - argparse
     # - joblib
