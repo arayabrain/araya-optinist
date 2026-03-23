@@ -2,7 +2,7 @@
 # Development Environment Scheduled Start/Stop
 # ===============================================
 # Saves ~46% on compute costs by running dev resources
-# only during business hours (09:00-22:00 JST, Mon-Fri).
+# only during business hours (08:00-22:00 JST, Mon-Fri).
 #
 # Resources managed:
 #   - Free tier ASG (scale 0 <-> 1)
@@ -66,7 +66,7 @@ resource "aws_lambda_function" "dev_scheduler" {
   role                           = aws_iam_role.dev_scheduler[0].arn
   handler                        = "dev_scheduler.handler"
   runtime                        = "python3.11"
-  timeout                        = 300
+  timeout                        = 900
   reserved_concurrent_executions = 1
   source_code_hash               = data.archive_file.dev_scheduler_zip[0].output_base64sha256
 
@@ -282,13 +282,13 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
 # ===========================
 # EventBridge: Morning Start
 # ===========================
-# 08:45 JST Mon-Fri = 23:45 UTC Sun-Thu
+# 08:00 JST Mon-Fri = 23:00 UTC Sun-Thu
 resource "aws_cloudwatch_event_rule" "dev_schedule_start" {
   count = var.enable_dev_schedule ? 1 : 0
 
   name                = "${var.environment}-dev-schedule-start"
-  description         = "Start dev environment at 08:45 JST Mon-Fri"
-  schedule_expression = "cron(45 23 ? * SUN-THU *)"
+  description         = "Start dev environment at 08:00 JST Mon-Fri"
+  schedule_expression = "cron(0 23 ? * SUN-THU *)"
   state               = "ENABLED"
 
   tags = {
@@ -360,6 +360,90 @@ resource "aws_lambda_permission" "allow_eventbridge_dev_stop" {
 }
 
 # ===========================
+# EventBridge: Verify Start
+# ===========================
+# 08:15 JST Mon-Fri = 23:15 UTC Sun-Thu
+# Re-invokes start 15 min after the scheduled start to catch timeouts/crashes.
+# All start operations are idempotent, so re-running is safe.
+resource "aws_cloudwatch_event_rule" "dev_schedule_verify_start" {
+  count = var.enable_dev_schedule ? 1 : 0
+
+  name                = "${var.environment}-dev-schedule-verify-start"
+  description         = "Verify dev environment start completed at 08:15 JST Mon-Fri"
+  schedule_expression = "cron(15 23 ? * SUN-THU *)"
+  state               = "ENABLED"
+
+  tags = {
+    Name    = "Dev Schedule Verify Start"
+    Service = "dev-scheduler"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "dev_schedule_verify_start" {
+  count = var.enable_dev_schedule ? 1 : 0
+
+  rule      = aws_cloudwatch_event_rule.dev_schedule_verify_start[0].name
+  target_id = "DevSchedulerVerifyStart"
+  arn       = aws_lambda_function.dev_scheduler[0].arn
+
+  input = jsonencode({
+    action = "start"
+  })
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_dev_verify_start" {
+  count = var.enable_dev_schedule ? 1 : 0
+
+  statement_id  = "AllowExecutionFromEventBridgeVerifyStart"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.dev_scheduler[0].function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.dev_schedule_verify_start[0].arn
+}
+
+# ===========================
+# EventBridge: Verify Stop
+# ===========================
+# 22:15 JST Mon-Fri = 13:15 UTC Mon-Fri
+# Re-invokes stop 15 min after the scheduled stop to catch timeouts/crashes.
+# All stop operations are idempotent, so re-running is safe.
+resource "aws_cloudwatch_event_rule" "dev_schedule_verify_stop" {
+  count = var.enable_dev_schedule ? 1 : 0
+
+  name                = "${var.environment}-dev-schedule-verify-stop"
+  description         = "Verify dev environment stop completed at 22:15 JST Mon-Fri"
+  schedule_expression = "cron(15 13 ? * MON-FRI *)"
+  state               = "ENABLED"
+
+  tags = {
+    Name    = "Dev Schedule Verify Stop"
+    Service = "dev-scheduler"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "dev_schedule_verify_stop" {
+  count = var.enable_dev_schedule ? 1 : 0
+
+  rule      = aws_cloudwatch_event_rule.dev_schedule_verify_stop[0].name
+  target_id = "DevSchedulerVerifyStop"
+  arn       = aws_lambda_function.dev_scheduler[0].arn
+
+  input = jsonencode({
+    action = "stop"
+  })
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_dev_verify_stop" {
+  count = var.enable_dev_schedule ? 1 : 0
+
+  statement_id  = "AllowExecutionFromEventBridgeVerifyStop"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.dev_scheduler[0].function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.dev_schedule_verify_stop[0].arn
+}
+
+# ===========================
 # Outputs
 # ===========================
 output "dev_scheduler_lambda_name" {
@@ -375,9 +459,9 @@ output "dev_schedule_override_param" {
 output "dev_schedule_info" {
   description = "Dev schedule configuration"
   value = var.enable_dev_schedule ? {
-    start_time   = "08:45 JST (23:45 UTC) Mon-Fri"
+    start_time   = "08:00 JST (23:00 UTC) Mon-Fri"
     stop_time    = "22:00 JST (13:00 UTC) Mon-Fri"
-    weekends     = "Stopped (Fri 22:00 -> Mon 08:45 JST)"
+    weekends     = "Stopped (Fri 22:00 -> Mon 08:00 JST)"
     override     = "aws ssm put-parameter --name /${var.environment}/optinist/schedule-override --value on --type String --overwrite"
     manual_start = "aws lambda invoke --function-name ${var.environment}-dev-scheduler --payload '{\"action\":\"start\"}' /dev/stdout"
   } : null

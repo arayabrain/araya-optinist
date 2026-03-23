@@ -4,7 +4,7 @@ Dev Environment Scheduler Lambda
 Starts and stops development environment resources on a schedule to save costs.
 
 Schedule (JST):
-- Start: Mon-Fri 08:45 (resources ready by ~09:00)
+- Start: Mon-Fri 08:00 (resources ready by ~08:15)
 - Stop:  Mon-Fri 22:00
 - Weekends: Stopped (Fri 22:00 -> Mon 08:45)
 
@@ -36,12 +36,17 @@ RDS destroy/restore approach:
 
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 
 import boto3
 
 # Maximum override duration (safety cap even if user requests more)
 MAX_OVERRIDE_HOURS = 12
+
+# Retry configuration for per-stage retries
+MAX_RETRY_ATTEMPTS = 3
+RETRY_BASE_DELAY = 5  # seconds, doubles each attempt
 
 rds = boto3.client("rds")
 ec2 = boto3.client("ec2")
@@ -50,6 +55,29 @@ autoscaling = boto3.client("autoscaling")
 events = boto3.client("events")
 cloudwatch = boto3.client("cloudwatch")
 ssm = boto3.client("ssm")
+
+
+def with_retry(fn, *args, max_attempts=MAX_RETRY_ATTEMPTS, **kwargs):
+    """Execute a function with retry and exponential backoff.
+
+    Retries if the result string starts with "error". Returns the last result
+    if all attempts fail.
+    """
+    last_result = None
+    for attempt in range(1, max_attempts + 1):
+        result = fn(*args, **kwargs)
+        if not str(result).startswith("error"):
+            return result
+        last_result = result
+        if attempt < max_attempts:
+            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            print(
+                f"Retry {attempt}/{max_attempts} for {fn.__name__} "
+                f"after {delay}s (got: {result})"
+            )
+            time.sleep(delay)
+    print(f"All {max_attempts} attempts failed for {fn.__name__}: {last_result}")
+    return last_result
 
 
 def handler(event, context):
@@ -71,14 +99,22 @@ def handler(event, context):
 
 
 def start_environment():
-    """Start all dev environment resources."""
+    """Start all dev environment resources.
+
+    Each stage is retried up to MAX_RETRY_ATTEMPTS times on failure.
+    A verification EventBridge rule re-invokes this 15 min later to catch
+    timeouts or crashes (all operations are idempotent).
+    """
     results = {}
 
     # 1. Start NAT instance first (needed for private subnet internet access)
-    results["nat"] = start_instance(os.environ["NAT_INSTANCE_ID"], "NAT")
+    results["nat"] = with_retry(
+        start_instance, os.environ["NAT_INSTANCE_ID"], "NAT"
+    )
 
     # 2. Restore RDS from snapshot (takes longest to become available ~5-10 min)
-    results["rds"] = restore_rds(
+    results["rds"] = with_retry(
+        restore_rds,
         os.environ["RDS_INSTANCE_ID"],
         os.environ["RDS_SNAPSHOT_ID"],
         {
@@ -90,12 +126,13 @@ def start_environment():
     )
 
     # 3. Start background instance
-    results["background"] = start_instance(
-        os.environ["BACKGROUND_INSTANCE_ID"], "Background"
+    results["background"] = with_retry(
+        start_instance, os.environ["BACKGROUND_INSTANCE_ID"], "Background"
     )
 
     # 4. Scale up ASG (launches free tier instance)
-    results["asg"] = scale_asg(
+    results["asg"] = with_retry(
+        scale_asg,
         os.environ["ASG_NAME"],
         min_size=int(os.environ.get("ASG_MIN_SIZE", "1")),
         desired=int(os.environ.get("ASG_DESIRED_CAPACITY", "1")),
@@ -107,8 +144,8 @@ def start_environment():
     results.update(toggle_event_rules(rules, enable=True))
 
     # 6. Enable CloudWatch alarm actions
-    results["alarms"] = toggle_alarm_actions(
-        os.environ.get("ALARM_PREFIX", ""), enable=True
+    results["alarms"] = with_retry(
+        toggle_alarm_actions, os.environ.get("ALARM_PREFIX", ""), enable=True
     )
 
     # 7. Clear override
@@ -123,7 +160,12 @@ def start_environment():
 
 
 def stop_environment():
-    """Stop all dev environment resources."""
+    """Stop all dev environment resources.
+
+    Each stage is retried up to MAX_RETRY_ATTEMPTS times on failure.
+    A verification EventBridge rule re-invokes this 15 min later to catch
+    timeouts or crashes (all operations are idempotent).
+    """
     results = {}
 
     # Check manual override
@@ -133,39 +175,46 @@ def stop_environment():
 
     # 1. Clean up dynamic premium instances (before disabling rules so
     #    premium_manager can still reach the DB through NAT)
-    results["dynamic_premium_cleanup"] = cleanup_dynamic_premium_instances()
+    results["dynamic_premium_cleanup"] = with_retry(
+        cleanup_dynamic_premium_instances
+    )
 
     # 2. Disable Lambda schedule rules (prevent re-scaling during shutdown)
     rules = json.loads(os.environ.get("SCHEDULE_RULE_NAMES", "[]"))
     results.update(toggle_event_rules(rules, enable=False))
 
     # 3. Scale down ASG (terminates free tier instances)
-    results["asg"] = scale_asg(os.environ["ASG_NAME"], min_size=0, desired=0)
+    results["asg"] = with_retry(
+        scale_asg, os.environ["ASG_NAME"], min_size=0, desired=0
+    )
 
     # 4. Stop base premium instances (Terraform-managed)
     premium_ids = [
         i for i in os.environ.get("PREMIUM_INSTANCE_IDS", "").split(",") if i
     ]
     for pid in premium_ids:
-        results[f"premium_{pid}"] = stop_instance(pid, "Premium")
+        results[f"premium_{pid}"] = with_retry(stop_instance, pid, "Premium")
 
     # 5. Stop background instance
-    results["background"] = stop_instance(
-        os.environ["BACKGROUND_INSTANCE_ID"], "Background"
+    results["background"] = with_retry(
+        stop_instance, os.environ["BACKGROUND_INSTANCE_ID"], "Background"
     )
 
     # 6. Stop NAT instance
-    results["nat"] = stop_instance(os.environ["NAT_INSTANCE_ID"], "NAT")
+    results["nat"] = with_retry(
+        stop_instance, os.environ["NAT_INSTANCE_ID"], "NAT"
+    )
 
     # 7. Destroy RDS (with final snapshot for later restore)
-    results["rds"] = destroy_rds(
+    results["rds"] = with_retry(
+        destroy_rds,
         os.environ["RDS_INSTANCE_ID"],
         os.environ["RDS_SNAPSHOT_ID"],
     )
 
     # 8. Disable CloudWatch alarm actions
-    results["alarms"] = toggle_alarm_actions(
-        os.environ.get("ALARM_PREFIX", ""), enable=False
+    results["alarms"] = with_retry(
+        toggle_alarm_actions, os.environ.get("ALARM_PREFIX", ""), enable=False
     )
 
     print(f"Stop results: {json.dumps(results)}")
