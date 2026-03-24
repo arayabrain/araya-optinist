@@ -22,6 +22,8 @@ import {
   deleteRoi,
   commitRoi,
   getStatus,
+  getDisplayErrorMessage,
+  type RejectPayload,
 } from "store/slice/DisplayData/DisplayDataActions"
 import {
   DATA_TYPE,
@@ -442,13 +444,16 @@ export const displayDataSlice = createSlice({
       })
       .addCase(getImageData.rejected, (state, action) => {
         const { path } = action.meta.arg
+        const payload = action.payload as RejectPayload | undefined
+        const errorMessage = getDisplayErrorMessage(payload, "Image not synced")
 
         state.image[path] = {
           type: "image",
           data: [],
           pending: false,
           fulfilled: false,
-          error: "Image not synced",
+          error: errorMessage,
+          errorStatus: payload?.status,
         }
       })
       .addCase(getCsvData.pending, (state, action) => {
@@ -474,12 +479,16 @@ export const displayDataSlice = createSlice({
       })
       .addCase(getCsvData.rejected, (state, action) => {
         const { path } = action.meta.arg
+        const payload = action.payload as RejectPayload | undefined
+        const errorMessage = getDisplayErrorMessage(payload, "CSV not synced")
+
         state.csv[path] = {
           type: "csv",
           data: [],
           pending: false,
           fulfilled: false,
-          error: action.error.message ?? "rejected",
+          error: errorMessage,
+          errorStatus: payload?.status,
         }
       })
       .addCase(getRoiData.pending, (state, action) => {
@@ -525,6 +534,8 @@ export const displayDataSlice = createSlice({
       })
       .addCase(getRoiData.rejected, (state, action) => {
         const { path } = action.meta.arg
+        const payload = action.payload as RejectPayload | undefined
+        const errorMessage = getDisplayErrorMessage(payload, "Data not synced")
 
         state.loadingStack.pop()
         state.loading = state.loadingStack.length > 0
@@ -534,7 +545,8 @@ export const displayDataSlice = createSlice({
           data: [],
           pending: false,
           fulfilled: false,
-          error: "Data not synced",
+          error: errorMessage,
+          errorStatus: payload?.status,
           roiUniqueList: [],
         }
       })

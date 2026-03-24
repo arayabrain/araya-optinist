@@ -11,6 +11,7 @@ import {
   deleteUser,
   createUser,
   updateUser,
+  updateUserSubscription,
   proxyLogin,
 } from "store/slice/User/UserActions"
 import { USER_SLICE_NAME, User } from "store/slice/User/UserType"
@@ -105,6 +106,8 @@ export const userSlice = createSlice({
           updateMe.rejected,
           updateMe.fulfilled,
           createUser.fulfilled,
+          updateUserSubscription.fulfilled,
+          updateUserSubscription.rejected,
         ),
         (state) => {
           state.loading = false
@@ -118,6 +121,7 @@ export const userSlice = createSlice({
           updateMe.pending,
           deleteMe.pending,
           updateUser.pending,
+          updateUserSubscription.pending,
           getListUserSearch.pending,
           updateMePassword.pending,
         ),

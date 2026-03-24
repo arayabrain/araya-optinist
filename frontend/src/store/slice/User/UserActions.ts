@@ -6,6 +6,7 @@ import {
   createUserApi,
   listUsersApi,
   updateUserApi,
+  updateUserSubscriptionApi,
   getListUserSearchApi,
 } from "api/users/UsersAdmin"
 import {
@@ -13,6 +14,7 @@ import {
   ListUsersQueryDTO,
   UpdateUserDTO,
   UpdateUserPasswordDTO,
+  UpdateUserSubscriptionDTO,
   UserDTO,
 } from "api/users/UsersApiDTO"
 import {
@@ -140,6 +142,20 @@ export const updateUser = createAsyncThunk<
   const { dispatch } = thunkAPI
   try {
     const responseData = await updateUserApi(props.id, props.data)
+    await dispatch(getListUser(props.params))
+    return responseData
+  } catch (e) {
+    return thunkAPI.rejectWithValue(e)
+  }
+})
+
+export const updateUserSubscription = createAsyncThunk<
+  UserDTO,
+  { id: number; data: UpdateUserSubscriptionDTO; params: ListUsersQueryDTO }
+>(`${USER_SLICE_NAME}/updateUserSubscription`, async (props, thunkAPI) => {
+  const { dispatch } = thunkAPI
+  try {
+    const responseData = await updateUserSubscriptionApi(props.id, props.data)
     await dispatch(getListUser(props.params))
     return responseData
   } catch (e) {
