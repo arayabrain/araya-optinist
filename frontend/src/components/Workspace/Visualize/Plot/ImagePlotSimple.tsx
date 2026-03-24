@@ -13,12 +13,16 @@ import {
   Tooltip,
 } from "@mui/material"
 
-import { getImageData } from "store/slice/DisplayData/DisplayDataActions"
+import {
+  getImageData,
+  SYNC_IN_PROGRESS_MESSAGE,
+} from "store/slice/DisplayData/DisplayDataActions"
 import {
   selectImageData,
   selectImageDataIsPending,
   selectImageDataIsInitialized,
   selectImageDataError,
+  selectImageDataErrorStatus,
 } from "store/slice/DisplayData/DisplayDataSelectors"
 import { AppDispatch } from "store/store"
 
@@ -40,6 +44,7 @@ export const ImagePlotSimple = memo(function ImagePlotSimple({
   const isPending = useSelector(selectImageDataIsPending(filePath))
   const isInitialized = useSelector(selectImageDataIsInitialized(filePath))
   const error = useSelector(selectImageDataError(filePath))
+  const errorStatus = useSelector(selectImageDataErrorStatus(filePath))
   const imageData = imageState?.data?.[0]
 
   const dispatch = useDispatch<AppDispatch>()
@@ -91,6 +96,8 @@ export const ImagePlotSimple = memo(function ImagePlotSimple({
   if (isPending) {
     return <LinearProgress />
   } else if (error != null) {
+    const isSyncing = error === SYNC_IN_PROGRESS_MESSAGE
+    const isNotFound = errorStatus === 404
     return (
       <Box
         sx={{
@@ -104,24 +111,26 @@ export const ImagePlotSimple = memo(function ImagePlotSimple({
         }}
       >
         <Typography
-          color="error"
+          color={isSyncing ? "text.secondary" : "error"}
           variant="caption"
           sx={{ fontSize: "0.65rem" }}
         >
           {error}
         </Typography>
-        <Tooltip title="Download">
-          <IconButton
-            size="small"
-            onClick={(e) => {
-              e.stopPropagation()
-              handleRetry()
-            }}
-            sx={{ padding: 0.25 }}
-          >
-            <CloudDownloadIcon sx={{ fontSize: 16 }} color="primary" />
-          </IconButton>
-        </Tooltip>
+        {!isNotFound && (
+          <Tooltip title={isSyncing ? "Retry sync" : "Download"}>
+            <IconButton
+              size="small"
+              onClick={(e) => {
+                e.stopPropagation()
+                handleRetry()
+              }}
+              sx={{ padding: 0.25 }}
+            >
+              <CloudDownloadIcon sx={{ fontSize: 16 }} color="primary" />
+            </IconButton>
+          </Tooltip>
+        )}
       </Box>
     )
   } else if (imageData && Array.isArray(imageData) && imageData.length > 0) {

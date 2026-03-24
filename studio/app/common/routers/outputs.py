@@ -17,9 +17,9 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteExperimentNotFoundError,
     RemoteExperimentSyncMode,
     RemoteStorageController,
+    RemoteStorageDownloadUtils,
     RemoteStorageLockError,
     RemoteStorageReader,
-    RemoteStorageSimpleReader,
     RemoteStorageSimpleWriter,
     RemoteSyncStatusFileUtil,
 )
@@ -759,24 +759,21 @@ async def get_image(
         if is_input_file:
             abs_filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filepath])
 
-            # On-demand sync for input files
-            if (
-                not os.path.exists(abs_filepath)
-                and RemoteStorageController.is_available()
-            ):
-                logger.info(f"On-demand sync for input file: {workspace_id}/{filename}")
-                async with RemoteStorageSimpleReader(
-                    remote_bucket_name
-                ) as remote_storage_controller:
-                    await remote_storage_controller.download_input_data(
-                        workspace_id, filename + ext
-                    )
-
-            # Return 404 if file still doesn't exist after sync attempt
-            if not os.path.exists(abs_filepath):
+            # On-demand sync for input files using shared helper
+            try:
+                synced = await RemoteStorageDownloadUtils.ensure_input_file_synced(
+                    workspace_id, filename + ext, remote_bucket_name
+                )
+            except Exception as e:
+                logger.error(f"Failed to sync input image: {e}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Failed to sync input file from cloud storage",
+                )
+            if not synced:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Input file not found: {filename}{ext}",
+                    detail=f"Input image file not found: {filename}{ext}",
                 )
 
         save_dirpath = join_filepath(
@@ -796,20 +793,14 @@ async def get_image(
         if not os.path.exists(json_filepath):
             if remote_bucket_name:
                 logger.warning(f"File not found after sync attempt: {json_filepath}")
-                # Distinguish between "syncing in progress" vs "file doesn't exist"
-                # If the experiment directory exists but the file doesn't, the file
-                # likely doesn't exist in remote storage either (analysis incomplete)
                 experiment_dir = os.path.dirname(os.path.dirname(json_filepath))
                 if os.path.exists(experiment_dir):
-                    # Experiment dir exists but file missing -
-                    # likely analysis incomplete
                     raise HTTPException(
                         status_code=404,
                         detail="Output file not found. "
                         "Analysis may not have generated this file.",
                     )
                 else:
-                    # Experiment dir doesn't exist - sync may still be in progress
                     raise HTTPException(
                         status_code=503,
                         detail="Data syncing. Please retry.",
@@ -829,24 +820,33 @@ async def get_csv(
     remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
     original_filename = os.path.basename(filepath)
-    filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filepath])
+    abs_filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filepath])
 
-    # On-demand sync for input files
-    if not os.path.exists(filepath) and RemoteStorageController.is_available():
-        logger.info(f"On-demand sync for input: {workspace_id}/{original_filename}")
-        async with RemoteStorageSimpleReader(
-            remote_bucket_name
-        ) as remote_storage_controller:
-            await remote_storage_controller.download_input_data(
-                workspace_id, original_filename
-            )
+    # On-demand sync for input files using shared helper
+    try:
+        synced = await RemoteStorageDownloadUtils.ensure_input_file_synced(
+            workspace_id, original_filename, remote_bucket_name
+        )
+    except Exception as e:
+        logger.error(f"Failed to sync input CSV: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Failed to sync input file from cloud storage",
+        )
 
-    filename, _ = os.path.splitext(os.path.basename(filepath))
-    save_dirpath = join_filepath([os.path.dirname(filepath), filename])
+    # Check file exists before reading (prevents bare 500 from FileNotFoundError)
+    if not synced or not os.path.exists(abs_filepath):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Input CSV file not found: {original_filename}",
+        )
+
+    filename, _ = os.path.splitext(os.path.basename(abs_filepath))
+    save_dirpath = join_filepath([os.path.dirname(abs_filepath), filename])
     create_directory(save_dirpath)
     json_filepath = join_filepath([save_dirpath, f"{filename}.json"])
 
-    JsonWriter.write_as_split(json_filepath, pd.read_csv(filepath, header=None))
+    JsonWriter.write_as_split(json_filepath, pd.read_csv(abs_filepath, header=None))
     return JsonReader.read_as_output(json_filepath)
 
 
