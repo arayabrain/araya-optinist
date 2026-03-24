@@ -478,13 +478,13 @@ output "test_users" {
 
 # Route53 and SSL outputs
 output "domain_name" {
-  description = "Custom domain name for the application"
-  value       = var.frontend_domain
+  description = "Effective domain name for the application (ALB DNS in dev, custom domain in prod)"
+  value       = local.effective_frontend_domain
 }
 
 output "domain_url" {
   description = "Full URL for the application"
-  value       = "${var.frontend_protocol}://${var.frontend_domain}"
+  value       = "${var.frontend_protocol}://${local.effective_frontend_domain}"
 }
 
 output "domain_protocol" {
@@ -493,8 +493,8 @@ output "domain_protocol" {
 }
 
 output "domain_port" {
-  description = "Port for the application"
-  value       = var.frontend_port
+  description = "Effective port for the application (8080 in dev, frontend_port in prod)"
+  value       = local.effective_frontend_port
 }
 
 output "acm_certificate_arn" {

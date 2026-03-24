@@ -121,6 +121,12 @@ resource "aws_lambda_function" "dev_scheduler" {
         aws_cloudwatch_event_rule.premium_cleanup_schedule.name,
         aws_cloudwatch_event_rule.cost_tracker_schedule.name,
       ])
+
+      ECS_SERVICE_NAMES = jsonencode([
+        aws_ecs_service.autoscaling.name,
+        aws_ecs_service.premium.name,
+        aws_ecs_service.background.name,
+      ])
     }
   }
 
@@ -302,6 +308,16 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
         Effect   = "Allow"
         Action   = "lambda:InvokeFunction"
         Resource = aws_lambda_function.premium_manager.arn
+      },
+      # ECS service scaling (set desired_count 0 on stop, 1 on start)
+      {
+        Effect = "Allow"
+        Action = "ecs:UpdateService"
+        Resource = [
+          aws_ecs_service.autoscaling.id,
+          aws_ecs_service.premium.id,
+          aws_ecs_service.background.id,
+        ]
       },
     ]
   })

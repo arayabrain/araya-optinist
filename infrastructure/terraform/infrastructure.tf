@@ -90,12 +90,12 @@ resource "aws_instance" "nat" {
               echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.conf
               sysctl -p
 
-              # Configure NAT with iptables
+              # Configure NAT with iptables (single-ENI setup)
+              # Allow all forwarding so private subnet traffic can route through
+              iptables -P FORWARD ACCEPT
               iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-              iptables -A FORWARD -i eth0 -o eth1 -m state --state RELATED,ESTABLISHED -j ACCEPT
-              iptables -A FORWARD -i eth1 -o eth0 -j ACCEPT
 
-              # Save iptables rules
+              # Save iptables rules (persists across reboot/stop-start)
               service iptables save
 
               # Ensure iptables starts on boot
@@ -131,12 +131,12 @@ resource "aws_instance" "nat2" {
               echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.conf
               sysctl -p
 
-              # Configure NAT with iptables
+              # Configure NAT with iptables (single-ENI setup)
+              # Allow all forwarding so private subnet traffic can route through
+              iptables -P FORWARD ACCEPT
               iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-              iptables -A FORWARD -i eth0 -o eth1 -m state --state RELATED,ESTABLISHED -j ACCEPT
-              iptables -A FORWARD -i eth1 -o eth0 -j ACCEPT
 
-              # Save iptables rules
+              # Save iptables rules (persists across reboot/stop-start)
               service iptables save
 
               # Ensure iptables starts on boot

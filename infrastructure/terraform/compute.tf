@@ -28,7 +28,12 @@ resource "aws_lb" "autoscaling" {
   }
 }
 
-# Load Balancer Listener - HTTP (redirects to main listener)
+# Load Balancer Listener - HTTP port 80 (redirects to main listener)
+# With custom domain: redirect HTTP -> HTTPS (443)
+# Without custom domain (dev): redirect to port 8080
+# Note: Port 8080 must be open in the ALB security group for dev to work.
+# The redirect ensures the browser loads the frontend from the main listener
+# port, so all API calls go through the correct port with premium routing rules.
 resource "aws_lb_listener" "autoscaling" {
   load_balancer_arn = aws_lb.autoscaling.arn
   port              = "80"

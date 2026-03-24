@@ -49,6 +49,7 @@ Resources managed:
 - Background service EC2 instance (stop/start)
 - Premium EC2 instances (stop/start)
 - Free tier ASG (scale 0/1)
+- ECS services (desired_count 0/1 — prevents failed placement noise)
 - Lambda schedule rules (disable/enable)
 - CloudWatch alarm actions (disable/enable)
 
@@ -82,6 +83,7 @@ RETRY_BASE_DELAY = 5  # seconds, doubles each attempt
 
 rds = boto3.client("rds")
 ec2 = boto3.client("ec2")
+ecs = boto3.client("ecs")
 lambda_client = boto3.client("lambda")
 autoscaling = boto3.client("autoscaling")
 events = boto3.client("events")
@@ -174,19 +176,27 @@ def start_environment():
         max_size=int(os.environ.get("ASG_MAX_SIZE", "3")),
     )
 
-    # 5. Enable Lambda schedule rules
+    # 5. Restore ECS service desired counts (so tasks start scheduling
+    #    once container instances register)
+    ecs_services = json.loads(os.environ.get("ECS_SERVICE_NAMES", "[]"))
+    if ecs_services:
+        results.update(update_ecs_services(
+            os.environ["CLUSTER_NAME"], ecs_services, desired_count=1
+        ))
+
+    # 6. Enable Lambda schedule rules
     rules = json.loads(os.environ.get("SCHEDULE_RULE_NAMES", "[]"))
     results.update(toggle_event_rules(rules, enable=True))
 
-    # 6. Enable CloudWatch alarm actions
+    # 7. Enable CloudWatch alarm actions
     results["alarms"] = with_retry(
         toggle_alarm_actions, os.environ.get("ALARM_PREFIX", ""), enable=True
     )
 
-    # 7. Write startup timestamp (used by premium_manager for grace period)
+    # 8. Write startup timestamp (used by premium_manager for grace period)
     write_startup_timestamp()
 
-    # 8. Clear override
+    # 9. Clear override
     clear_override()
 
     print(f"Start results: {json.dumps(results)}")
@@ -224,27 +234,35 @@ def stop_environment(stop_mode="destroy"):
     rules = json.loads(os.environ.get("SCHEDULE_RULE_NAMES", "[]"))
     results.update(toggle_event_rules(rules, enable=False))
 
-    # 3. Scale down ASG (terminates free tier instances)
+    # 3. Scale down ECS services (prevents failed placement noise when
+    #    instances are stopped and no capacity is available)
+    ecs_services = json.loads(os.environ.get("ECS_SERVICE_NAMES", "[]"))
+    if ecs_services:
+        results.update(update_ecs_services(
+            os.environ["CLUSTER_NAME"], ecs_services, desired_count=0
+        ))
+
+    # 4. Scale down ASG (terminates free tier instances)
     results["asg"] = with_retry(
         scale_asg, os.environ["ASG_NAME"], min_size=0, desired=0
     )
 
-    # 4. Stop base premium instances (Terraform-managed)
+    # 5. Stop base premium instances (Terraform-managed)
     premium_ids = [
         i for i in os.environ.get("PREMIUM_INSTANCE_IDS", "").split(",") if i
     ]
     for pid in premium_ids:
         results[f"premium_{pid}"] = with_retry(stop_instance, pid, "Premium")
 
-    # 5. Stop background instance
+    # 6. Stop background instance
     results["background"] = with_retry(
         stop_instance, os.environ["BACKGROUND_INSTANCE_ID"], "Background"
     )
 
-    # 6. Stop NAT instance
+    # 7. Stop NAT instance
     results["nat"] = with_retry(stop_instance, os.environ["NAT_INSTANCE_ID"], "NAT")
 
-    # 7. RDS: destroy (delete with snapshot) or stop based on mode
+    # 8. RDS: destroy (delete with snapshot) or stop based on mode
     if stop_mode == "destroy":
         results["rds"] = with_retry(
             destroy_rds,
@@ -257,7 +275,7 @@ def stop_environment(stop_mode="destroy"):
             os.environ["RDS_INSTANCE_ID"],
         )
 
-    # 8. Disable CloudWatch alarm actions
+    # 9. Disable CloudWatch alarm actions
     results["alarms"] = with_retry(
         toggle_alarm_actions, os.environ.get("ALARM_PREFIX", ""), enable=False
     )
@@ -461,6 +479,29 @@ def scale_asg(asg_name, min_size, desired, max_size=None):
     except Exception as e:
         print(f"ASG {asg_name}: error - {e}")
         return f"error: {e}"
+
+
+def update_ecs_services(cluster_name, service_names, desired_count):
+    """Update desired count for ECS services.
+
+    Setting desired_count=0 on stop prevents failed placement attempts when
+    no container instances are available. Setting desired_count=1 on start
+    resumes task scheduling.
+    """
+    results = {}
+    for service_name in service_names:
+        try:
+            ecs.update_service(
+                cluster=cluster_name,
+                service=service_name,
+                desiredCount=desired_count,
+            )
+            print(f"ECS service {service_name}: set desired_count={desired_count}")
+            results[f"ecs_{service_name}"] = f"desired_count={desired_count}"
+        except Exception as e:
+            print(f"ECS service {service_name}: error - {e}")
+            results[f"ecs_{service_name}"] = f"error: {e}"
+    return results
 
 
 def cleanup_dynamic_premium_instances():
