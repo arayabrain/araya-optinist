@@ -118,6 +118,11 @@ class PremiumAssignment:
     MIGRATING = "migrating"
     # Status: Assignment is being terminated
     TERMINATING = "terminating"
+    # Status: Soft-released via beacon (grace period before full teardown).
+    # Reused TERMINATING enum value to avoid DB migration.
+    PENDING_RELEASE = "terminating"
+    # Grace period (seconds) before a pending_release is finalized.
+    PENDING_RELEASE_GRACE_SECONDS = 120
 
     # Marker: Standby pool entries (no real ALB rule/target group yet)
     STANDBY = "standby"
