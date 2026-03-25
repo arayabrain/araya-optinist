@@ -50,6 +50,9 @@ class TestPremiumManagerEvents:
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     MockRow({"id": 123}),
+                    # restore_pending_release: no pending_release row
+                    None,
+                    # get_existing_user_assignment: no existing assignment
                     None,
                     MockRow({"count": 1}),
                     MockRow({"count": 0}),
