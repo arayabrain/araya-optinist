@@ -167,7 +167,14 @@ def start_environment():
         start_instance, os.environ["BACKGROUND_INSTANCE_ID"], "Background"
     )
 
-    # 4. Scale up ASG (launches free tier instance)
+    # 4. Start premium instances (Terraform-managed base instances)
+    premium_ids = [
+        i for i in os.environ.get("PREMIUM_INSTANCE_IDS", "").split(",") if i
+    ]
+    for pid in premium_ids:
+        results[f"premium_{pid}"] = with_retry(start_instance, pid, "Premium")
+
+    # 5. Scale up ASG (launches free tier instance)
     results["asg"] = with_retry(
         scale_asg,
         os.environ["ASG_NAME"],
@@ -176,7 +183,7 @@ def start_environment():
         max_size=int(os.environ.get("ASG_MAX_SIZE", "3")),
     )
 
-    # 5. Restore ECS service desired counts (so tasks start scheduling
+    # 6. Restore ECS service desired counts (so tasks start scheduling
     #    once container instances register)
     ecs_services = json.loads(os.environ.get("ECS_SERVICE_NAMES", "[]"))
     if ecs_services:
@@ -184,19 +191,19 @@ def start_environment():
             os.environ["CLUSTER_NAME"], ecs_services, desired_count=1
         ))
 
-    # 6. Enable Lambda schedule rules
+    # 7. Enable Lambda schedule rules
     rules = json.loads(os.environ.get("SCHEDULE_RULE_NAMES", "[]"))
     results.update(toggle_event_rules(rules, enable=True))
 
-    # 7. Enable CloudWatch alarm actions
+    # 8. Enable CloudWatch alarm actions
     results["alarms"] = with_retry(
         toggle_alarm_actions, os.environ.get("ALARM_PREFIX", ""), enable=True
     )
 
-    # 8. Write startup timestamp (used by premium_manager for grace period)
+    # 9. Write startup timestamp (used by premium_manager for grace period)
     write_startup_timestamp()
 
-    # 9. Clear override
+    # 10. Clear override
     clear_override()
 
     print(f"Start results: {json.dumps(results)}")
