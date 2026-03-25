@@ -4,7 +4,7 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Environment = var.environment
+      Environment = local.environment_label
       ManagedBy   = "terraform"
       Project     = "optinist-cloud"
     }
@@ -268,7 +268,8 @@ data "aws_caller_identity" "current" {}
 data "aws_elb_service_account" "main" {}
 
 locals {
-  env_prefix = "${var.environment}-optinist"
+  env_prefix        = "${var.environment}-optinist"
+  environment_label = var.environment == "subscr" ? "Production" : "Development"
 
   # Resolve frontend host/port from ALB DNS when no custom domain is configured
   # - Production: uses custom domain on port 443

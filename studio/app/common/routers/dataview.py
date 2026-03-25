@@ -4,6 +4,7 @@ from typing import List, Optional, Sequence, Tuple
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from fastapi_pagination.ext.sqlmodel import paginate
+from sqlalchemy import update
 from sqlalchemy.sql import Select
 from sqlmodel import Session, select
 
@@ -17,6 +18,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteExperimentNotFoundError,
     RemoteStorageController,
+    RemoteStorageDownloadUtils,
     RemoteStorageLockError,
     RemoteStorageReader,
     RemoteStorageType,
@@ -248,6 +250,12 @@ async def public_reproduce_experiment(
         if download_error is not None:
             return download_error
 
+        # Download input files (TIFF/CSV) needed for viewing
+        remote_bucket_name = _resolve_workspace_remote_bucket_name(db, workspace_id)
+        await RemoteStorageDownloadUtils.sync_experiment_input_files(
+            workspace_id, unique_id, remote_bucket_name
+        )
+
     # Validate experiment is displayable (checks if required files exist locally)
     # This should be done BEFORE checking sync status, because on-demand download
     # may have just succeeded
@@ -296,11 +304,40 @@ async def public_reproduce_experiment(
                 f"Experiment {workspace_id}/{unique_id} data is available, "
                 f"updating sync status from '{record.local_sync_status}' to 'synced'"
             )
-            record.local_sync_status = LocalSyncStatus.synced.value
-            db.add(record)
+            stmt = (
+                update(models.ExperimentRecord)
+                .where(models.ExperimentRecord.id == record.id)
+                .where(models.ExperimentRecord.version == record.version)
+                .values(
+                    local_sync_status=LocalSyncStatus.synced.value,
+                    version=models.ExperimentRecord.version + 1,
+                )
+            )
+            result = db.execute(stmt)
             db.commit()
+            if result.rowcount == 0:
+                logger.info(
+                    f"Experiment {workspace_id}/{unique_id} sync status "
+                    f"already updated by another process"
+                )
 
     return await reproduce_experiment(workspace_id, unique_id)
+
+
+# NOTE: This function is not specific to the dataview router module.
+#   It is defined here for now, but should be moved to a shared module
+#   (e.g. storage or workspace utilities) if reuse is needed elsewhere.
+def _resolve_workspace_remote_bucket_name(db: Session, workspace_id: str) -> str:
+    """Resolve the remote storage bucket name for a workspace from its owner."""
+    workspace = (
+        db.query(models.Workspace)
+        .filter(models.Workspace.id == int(workspace_id))
+        .first()
+    )
+    owner_bucket = None
+    if workspace and workspace.user:
+        owner_bucket = getattr(workspace.user, "remote_bucket_name", None)
+    return owner_bucket or os.environ.get("S3_DEFAULT_BUCKET_NAME")
 
 
 async def _ensure_experiment_downloaded(
@@ -317,15 +354,7 @@ async def _ensure_experiment_downloaded(
     Returns JSONResponse(503) via raise-like return if download fails,
     so callers must check the return value.
     """
-    workspace = (
-        db.query(models.Workspace)
-        .filter(models.Workspace.id == int(workspace_id))
-        .first()
-    )
-    owner_bucket = None
-    if workspace and workspace.user:
-        owner_bucket = getattr(workspace.user, "remote_bucket_name", None)
-    remote_bucket_name = owner_bucket or os.environ.get("S3_DEFAULT_BUCKET_NAME")
+    remote_bucket_name = _resolve_workspace_remote_bucket_name(db, workspace_id)
 
     try:
         async with RemoteStorageReader(

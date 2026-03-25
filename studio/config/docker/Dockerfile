@@ -7,8 +7,8 @@ RUN apt-get --allow-releaseinfo-change update && \
     apt-get install --no-install-recommends -y sudo procps iproute2 iputils-ping telnet wget curl unzip less vim git \
         default-mysql-client
 
-# install conda & packages and optimization solvers
-RUN apt-get install --no-install-recommends -y gcc g++ clang clang libgl1 libgl1-mesa-dev libopencv-dev coinor-cbc rsync && \
+# install conda & packages
+RUN apt-get install --no-install-recommends -y gcc g++ clang clang libgl1 libgl1-mesa-dev libopencv-dev rsync && \
     apt-get autoremove -y && apt-get clean
 
 # Specify compiler (use clang)
@@ -33,6 +33,10 @@ RUN cd /tmp && \
 # cleaning apt
 RUN apt-get purge wget -y && \
     apt-get autoremove -y && apt-get clean
+
+# install optimization solver (after autoremove to prevent removal)
+RUN apt-get install --no-install-recommends -y coinor-cbc && \
+    apt-get clean
 
 # setup user profile
 RUN echo 'alias ll="ls -la --color=auto"' >> /root/.bashrc && \

@@ -105,6 +105,12 @@ export const selectImageDataError = (filePath: string) => (state: RootState) =>
     ? selectDisplayData(state).image[filePath].error
     : null
 
+export const selectImageDataErrorStatus =
+  (filePath: string) => (state: RootState) =>
+    selectImageDataIsInitialized(filePath)(state)
+      ? selectDisplayData(state).image[filePath].errorStatus
+      : undefined
+
 export const selectImageDataIsPending =
   (filePath: string) => (state: RootState) =>
     selectImageDataIsInitialized(filePath)(state) &&
@@ -171,6 +177,12 @@ export const selectRoiDataError = (filePath: string) => (state: RootState) =>
   selectRoiDataIsInitialized(filePath)(state)
     ? selectDisplayData(state).roi[filePath].error
     : null
+
+export const selectRoiDataErrorStatus =
+  (filePath: string) => (state: RootState) =>
+    selectRoiDataIsInitialized(filePath)(state)
+      ? selectDisplayData(state).roi[filePath].errorStatus
+      : undefined
 
 export const selectRoiDataIsPending =
   (filePath: string) => (state: RootState) =>

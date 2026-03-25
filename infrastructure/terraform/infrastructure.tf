@@ -365,8 +365,7 @@ resource "aws_s3_bucket" "app_storage" {
   force_destroy = true
 
   tags = {
-    Name            = "${local.env_prefix} Application Storage"
-    EnvironmentType = var.environment == "subscr" ? "Production" : "Development"
+    Name = "${local.env_prefix} Application Storage"
   }
 }
 
