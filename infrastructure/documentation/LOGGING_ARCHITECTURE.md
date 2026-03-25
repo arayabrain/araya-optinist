@@ -525,7 +525,7 @@ Per-workflow error logs written to `{OUTPUT_DIR}/{workspace_id}/{unique_id}/erro
 
 ### Frontend Logging
 
-Frontend uses `console.log` and `console.error` in the browser. There is no server-side collection of frontend logs.
+Frontend `console.error` and `console.warn` calls are intercepted by the error reporter (`initErrorReporter()`) and forwarded to the backend via `POST /users/me/frontend-errors`. See [Section 6: Frontend Error Forwarding](#6-frontend-error-forwarding) for the full pipeline.
 
 ---
 

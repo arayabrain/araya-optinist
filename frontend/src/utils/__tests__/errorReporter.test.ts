@@ -14,7 +14,7 @@ jest.mock("utils/auth/AuthUtils", () => ({
 }))
 
 jest.mock("const/API", () => ({
-  BASE_URL: "http://localhost:8000",
+  BASE_URL: "http://test-host:9999",
 }))
 
 import {
@@ -113,7 +113,7 @@ describe("errorReporter", () => {
     flushErrors()
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "http://localhost:8000/users/me/frontend-errors",
+      "http://test-host:9999/users/me/frontend-errors",
       expect.objectContaining({
         method: "POST",
         keepalive: true,

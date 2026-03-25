@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from studio.app.common.core.utils.log_reader import FRONTEND_LOG_PREFIX
-from studio.app.common.routers.users_me import (
+from studio.app.common.routers.frontend_errors import (
     FrontendErrorBatch,
     FrontendErrorItem,
     _cleanup_stale_rate_limits,
@@ -97,7 +97,7 @@ class TestLogFrontendErrors:
     @pytest.mark.asyncio
     async def test_logs_with_frontend_prefix(self, mock_user):
         batch = _make_batch(1)
-        with patch("studio.app.common.routers.users_me.logger") as mock_logger:
+        with patch("studio.app.common.routers.frontend_errors.logger") as mock_logger:
             await log_frontend_errors(batch=batch, current_user=mock_user)
             call_args = mock_logger.error.call_args
             full_message = call_args[0][0] % call_args[0][1:]
@@ -106,7 +106,7 @@ class TestLogFrontendErrors:
     @pytest.mark.asyncio
     async def test_logs_warn_uses_logger_warning(self, mock_user):
         batch = _make_batch(1, level="warn")
-        with patch("studio.app.common.routers.users_me.logger") as mock_logger:
+        with patch("studio.app.common.routers.frontend_errors.logger") as mock_logger:
             await log_frontend_errors(batch=batch, current_user=mock_user)
             mock_logger.warning.assert_called_once()
             mock_logger.error.assert_not_called()
@@ -114,7 +114,7 @@ class TestLogFrontendErrors:
     @pytest.mark.asyncio
     async def test_logs_error_uses_logger_error(self, mock_user):
         batch = _make_batch(1, level="error")
-        with patch("studio.app.common.routers.users_me.logger") as mock_logger:
+        with patch("studio.app.common.routers.frontend_errors.logger") as mock_logger:
             await log_frontend_errors(batch=batch, current_user=mock_user)
             mock_logger.error.assert_called_once()
             mock_logger.warning.assert_not_called()
@@ -131,7 +131,7 @@ class TestLogFrontendErrors:
                 )
             ]
         )
-        with patch("studio.app.common.routers.users_me.logger") as mock_logger:
+        with patch("studio.app.common.routers.frontend_errors.logger") as mock_logger:
             await log_frontend_errors(batch=batch, current_user=mock_user)
             logged = mock_logger.error.call_args[0]
             # Format string contains url and source placeholders
