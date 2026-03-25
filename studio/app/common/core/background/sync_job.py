@@ -171,6 +171,7 @@ class PublishedExperimentSyncJob:
 
             if not pending:
                 logger.debug("No pending experiments to validate")
+                cls._publish_metrics(0, 0)
                 return
 
             logger.info(f"Found {len(pending)} experiments to validate")
@@ -663,7 +664,8 @@ class PublishedExperimentSyncJob:
             cloudwatch: "CloudWatchClient" = boto3.client("cloudwatch")
 
             total = synced_count + error_count
-            error_rate = (error_count / total * 100) if total > 0 else 0
+            error_rate = float(error_count / total * 100) if total > 0 else 0.0
+            timestamp = get_current_datetime()
 
             cloudwatch.put_metric_data(
                 Namespace="OptiNiSt/BackgroundJobs",
@@ -672,19 +674,25 @@ class PublishedExperimentSyncJob:
                         "MetricName": "ExperimentsSynced",
                         "Value": synced_count,
                         "Unit": "Count",
-                        "Timestamp": get_current_datetime(),
+                        "Timestamp": timestamp,
                     },
                     {
                         "MetricName": "SyncErrors",
                         "Value": error_count,
                         "Unit": "Count",
-                        "Timestamp": get_current_datetime(),
+                        "Timestamp": timestamp,
                     },
+                ],
+            )
+
+            cloudwatch.put_metric_data(
+                Namespace="OptiNiSt/BackgroundJobs",
+                MetricData=[
                     {
                         "MetricName": "SyncErrorRate",
                         "Value": error_rate,
                         "Unit": "Percent",
-                        "Timestamp": get_current_datetime(),
+                        "Timestamp": timestamp,
                     },
                 ],
             )
@@ -703,4 +711,7 @@ class PublishedExperimentSyncJob:
                     " permissions."
                 )
         except Exception as e:
-            logger.warning(f"Failed to publish metrics: {e}")
+            logger.error(
+                f"Failed to publish metrics: {e}",
+                exc_info=True,
+            )
