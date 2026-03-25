@@ -433,13 +433,23 @@ def restore_rds(instance_id, snapshot_id, config):
 
 
 def start_instance(instance_id, label):
-    """Start an EC2 instance. Safe to call if already running."""
+    """Start an EC2 instance. Safe to call if already running.
+
+    Handles terminated instances gracefully — logs a warning instead of
+    retrying a dead instance indefinitely.
+    """
     try:
         response = ec2.describe_instances(InstanceIds=[instance_id])
         state = response["Reservations"][0]["Instances"][0]["State"]["Name"]
         if state == "running":
             print(f"{label} instance {instance_id}: already running")
             return "already_running"
+        if state == "terminated":
+            print(
+                f"{label} instance {instance_id}: TERMINATED — "
+                f"cannot start. Run terraform apply to recreate."
+            )
+            return f"error: instance {instance_id} is terminated"
 
         ec2.start_instances(InstanceIds=[instance_id])
         print(f"{label} instance {instance_id}: starting (was {state})")
@@ -457,6 +467,9 @@ def stop_instance(instance_id, label):
         if state in ("stopped", "stopping"):
             print(f"{label} instance {instance_id}: already {state}")
             return f"already_{state}"
+        if state == "terminated":
+            print(f"{label} instance {instance_id}: already terminated")
+            return "already_terminated"
 
         ec2.stop_instances(InstanceIds=[instance_id])
         print(f"{label} instance {instance_id}: stopping (was {state})")

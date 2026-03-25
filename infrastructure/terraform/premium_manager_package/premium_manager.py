@@ -1602,6 +1602,17 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
         }
 
 
+# SSM client for startup grace period check (module-level for reuse)
+_ssm_client = None
+
+
+def _get_ssm_client():
+    global _ssm_client
+    if _ssm_client is None:
+        _ssm_client = boto3.client("ssm")
+    return _ssm_client
+
+
 def is_within_startup_grace_period() -> bool:
     """
     Check if the dev environment was recently started by the dev_scheduler.
@@ -1615,7 +1626,7 @@ def is_within_startup_grace_period() -> bool:
     grace_minutes = int(os.environ.get("STARTUP_GRACE_PERIOD_MINUTES", "20"))
 
     try:
-        ssm_client = boto3.client("ssm")
+        ssm_client = _get_ssm_client()
         response = ssm_client.get_parameter(Name=param_name)
         value = response["Parameter"]["Value"].strip()
 

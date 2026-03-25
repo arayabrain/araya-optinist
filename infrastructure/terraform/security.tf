@@ -791,13 +791,17 @@ resource "aws_security_group" "alb" {
     ipv6_cidr_blocks = ["::/0"]
   }
 
-  # Port 8080 used as main listener when custom domain is disabled (dev)
-  ingress {
-    from_port        = 8080
-    to_port          = 8080
-    protocol         = "tcp"
-    cidr_blocks      = ["0.0.0.0/0"]
-    ipv6_cidr_blocks = ["::/0"]
+  # Port 8080 used as main listener when custom domain is disabled (dev).
+  # Production uses HTTPS on 443 and does not need 8080 open.
+  dynamic "ingress" {
+    for_each = var.enable_custom_domain ? [] : [1]
+    content {
+      from_port        = 8080
+      to_port          = 8080
+      protocol         = "tcp"
+      cidr_blocks      = ["0.0.0.0/0"]
+      ipv6_cidr_blocks = ["::/0"]
+    }
   }
 
   egress {
