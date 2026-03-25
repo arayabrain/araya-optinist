@@ -187,9 +187,11 @@ def start_environment():
     #    once container instances register)
     ecs_services = json.loads(os.environ.get("ECS_SERVICE_NAMES", "[]"))
     if ecs_services:
-        results.update(update_ecs_services(
-            os.environ["CLUSTER_NAME"], ecs_services, desired_count=1
-        ))
+        results.update(
+            update_ecs_services(
+                os.environ["CLUSTER_NAME"], ecs_services, desired_count=1
+            )
+        )
 
     # 7. Enable Lambda schedule rules (except delayed rules)
     rules = json.loads(os.environ.get("SCHEDULE_RULE_NAMES", "[]"))
@@ -213,7 +215,9 @@ def start_environment():
                 print("Verify invocation detected — enabling delayed rules")
                 results.update(toggle_event_rules(delayed_rules, enable=True))
             else:
-                print("Initial start — delayed rules will be enabled on verify (+15 min)")
+                print(
+                    "Initial start — delayed rules will be enabled on verify (+15 min)"
+                )
         except Exception as e:
             print(f"Delayed rules check error: {e}")
 
@@ -265,9 +269,11 @@ def stop_environment(stop_mode="destroy"):
     #    instances are stopped and no capacity is available)
     ecs_services = json.loads(os.environ.get("ECS_SERVICE_NAMES", "[]"))
     if ecs_services:
-        results.update(update_ecs_services(
-            os.environ["CLUSTER_NAME"], ecs_services, desired_count=0
-        ))
+        results.update(
+            update_ecs_services(
+                os.environ["CLUSTER_NAME"], ecs_services, desired_count=0
+            )
+        )
 
     # 4. Scale down ASG (terminates free tier instances)
     results["asg"] = with_retry(
