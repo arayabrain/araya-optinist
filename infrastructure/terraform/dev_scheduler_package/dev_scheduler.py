@@ -191,17 +191,36 @@ def start_environment():
             os.environ["CLUSTER_NAME"], ecs_services, desired_count=1
         ))
 
-    # 7. Enable Lambda schedule rules
+    # 7. Enable Lambda schedule rules (except delayed rules)
     rules = json.loads(os.environ.get("SCHEDULE_RULE_NAMES", "[]"))
     results.update(toggle_event_rules(rules, enable=True))
 
-    # 8. Enable CloudWatch alarm actions
+    # 8. Enable delayed rules (premium_manager etc.) only on verify-start
+    #    invocation (+15 min after start). This gives instances time to boot
+    #    and register before premium_manager starts monitoring.
+    #    On the initial start, these rules stay disabled to avoid
+    #    premium_manager acting on stale DB state while instances are booting.
+    delayed_rules = json.loads(os.environ.get("DELAYED_RULE_NAMES", "[]"))
+    if delayed_rules:
+        # Check if this is a verify invocation (resources already started)
+        # by seeing if NAT is already running — if so, enable delayed rules
+        try:
+            nat_resp = ec2.describe_instances(
+                InstanceIds=[os.environ["NAT_INSTANCE_ID"]]
+            )
+            nat_state = nat_resp["Reservations"][0]["Instances"][0]["State"]["Name"]
+            if nat_state == "running" and results.get("nat") == "already_running":
+                print("Verify invocation detected — enabling delayed rules")
+                results.update(toggle_event_rules(delayed_rules, enable=True))
+            else:
+                print("Initial start — delayed rules will be enabled on verify (+15 min)")
+        except Exception as e:
+            print(f"Delayed rules check error: {e}")
+
+    # 9. Enable CloudWatch alarm actions
     results["alarms"] = with_retry(
         toggle_alarm_actions, os.environ.get("ALARM_PREFIX", ""), enable=True
     )
-
-    # 9. Write startup timestamp (used by premium_manager for grace period)
-    write_startup_timestamp()
 
     # 10. Clear override
     clear_override()
@@ -239,7 +258,8 @@ def stop_environment(stop_mode="destroy"):
 
     # 2. Disable Lambda schedule rules (prevent re-scaling during shutdown)
     rules = json.loads(os.environ.get("SCHEDULE_RULE_NAMES", "[]"))
-    results.update(toggle_event_rules(rules, enable=False))
+    delayed_rules = json.loads(os.environ.get("DELAYED_RULE_NAMES", "[]"))
+    results.update(toggle_event_rules(rules + delayed_rules, enable=False))
 
     # 3. Scale down ECS services (prevents failed placement noise when
     #    instances are stopped and no capacity is available)
@@ -677,20 +697,6 @@ def is_override_active():
     except Exception as e:
         print(f"Override check error: {e}")
         return False
-
-
-def write_startup_timestamp():
-    """Write the current UTC timestamp to SSM so premium_manager can skip
-    its first monitoring cycle while the environment is still booting."""
-    try:
-        param_name = os.environ.get("STARTUP_TIMESTAMP_PARAM_NAME", "")
-        if not param_name:
-            return
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        ssm.put_parameter(Name=param_name, Value=now, Type="String", Overwrite=True)
-        print(f"Startup timestamp written: {now}")
-    except Exception as e:
-        print(f"Write startup timestamp error: {e}")
 
 
 def clear_override():

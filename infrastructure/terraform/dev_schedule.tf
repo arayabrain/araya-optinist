@@ -45,28 +45,6 @@ resource "aws_ssm_parameter" "dev_schedule_override" {
 }
 
 # ===========================
-# SSM Parameter for Startup Timestamp
-# ===========================
-# Written by dev_scheduler on start, read by premium_manager to skip
-# monitoring while the environment is still booting up.
-resource "aws_ssm_parameter" "dev_startup_timestamp" {
-  count = var.enable_dev_schedule ? 1 : 0
-
-  name  = "/${var.environment}/optinist/last-environment-start"
-  type  = "String"
-  value = "none"
-
-  tags = {
-    Name    = "Dev Environment Startup Timestamp"
-    Service = "dev-scheduler"
-  }
-
-  lifecycle {
-    ignore_changes = [value]
-  }
-}
-
-# ===========================
 # Lambda Package
 # ===========================
 data "archive_file" "dev_scheduler_zip" {
@@ -108,18 +86,23 @@ resource "aws_lambda_function" "dev_scheduler" {
       ASG_MAX_SIZE           = tostring(var.asg_max_size)
       ASG_DESIRED_CAPACITY   = tostring(var.asg_desired_capacity)
       CLUSTER_NAME           = aws_ecs_cluster.main.name
-      OVERRIDE_PARAM_NAME          = "/${var.environment}/optinist/schedule-override"
-      STARTUP_TIMESTAMP_PARAM_NAME = "/${var.environment}/optinist/last-environment-start"
+      OVERRIDE_PARAM_NAME           = "/${var.environment}/optinist/schedule-override"
       ALARM_PREFIX                  = "${var.environment}-"
       PREMIUM_MANAGER_FUNCTION_NAME = aws_lambda_function.premium_manager.function_name
       DEFAULT_STOP_MODE             = var.dev_schedule_stop_mode
 
+      # Rules enabled immediately on start
       SCHEDULE_RULE_NAMES = jsonencode([
         aws_cloudwatch_event_rule.free_manager_schedule.name,
         aws_cloudwatch_event_rule.free_manager_asg_events.name,
+        aws_cloudwatch_event_rule.cost_tracker_schedule.name,
+      ])
+
+      # Rules enabled only on verify-start (+15 min) to let instances boot
+      # before premium_manager starts monitoring
+      DELAYED_RULE_NAMES = jsonencode([
         aws_cloudwatch_event_rule.premium_manager_schedule.name,
         aws_cloudwatch_event_rule.premium_cleanup_schedule.name,
-        aws_cloudwatch_event_rule.cost_tracker_schedule.name,
       ])
 
       ECS_SERVICE_NAMES = jsonencode([
@@ -291,17 +274,14 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
         ]
         Resource = "*"
       },
-      # SSM parameters for override and startup timestamp
+      # SSM parameter for override
       {
         Effect = "Allow"
         Action = [
           "ssm:GetParameter",
           "ssm:PutParameter",
         ]
-        Resource = [
-          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/optinist/schedule-override",
-          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/optinist/last-environment-start",
-        ]
+        Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/optinist/schedule-override"
       },
       # Invoke premium_manager to clean up dynamic instances before stop
       {

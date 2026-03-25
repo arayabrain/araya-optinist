@@ -1602,55 +1602,6 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
         }
 
 
-# SSM client for startup grace period check (module-level for reuse)
-_ssm_client = None
-
-
-def _get_ssm_client():
-    global _ssm_client
-    if _ssm_client is None:
-        _ssm_client = boto3.client("ssm")
-    return _ssm_client
-
-
-def is_within_startup_grace_period() -> bool:
-    """
-    Check if the dev environment was recently started by the dev_scheduler.
-    Returns True if within the grace period, meaning monitoring should be skipped
-    to avoid acting on stale DB state while instances are still booting.
-    """
-    param_name = os.environ.get("STARTUP_TIMESTAMP_PARAM_NAME", "")
-    if not param_name:
-        return False
-
-    grace_minutes = int(os.environ.get("STARTUP_GRACE_PERIOD_MINUTES", "20"))
-
-    try:
-        ssm_client = _get_ssm_client()
-        response = ssm_client.get_parameter(Name=param_name)
-        value = response["Parameter"]["Value"].strip()
-
-        if value in ("none", ""):
-            return False
-
-        started_at = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
-        )
-        elapsed = datetime.now(timezone.utc) - started_at
-        if elapsed < timedelta(minutes=grace_minutes):
-            print(
-                f"Startup grace period active: started {elapsed.total_seconds():.0f}s "
-                f"ago, grace period is {grace_minutes}m"
-            )
-            return True
-        return False
-    except ssm_client.exceptions.ParameterNotFound:
-        return False
-    except Exception as e:
-        print(f"Startup grace period check error: {e}")
-        return False
-
-
 def is_premium_scaling_in_progress() -> bool:
     """
     Check if a premium scaling operation is in progress using CloudWatch metrics.
@@ -1788,21 +1739,6 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
     print(f"Premium monitoring triggered by event: {json.dumps(event)}")
 
     try:
-        # 0. Check startup grace period — skip monitoring if the dev environment
-        #    was recently started, so we don't act on stale DB state while
-        #    instances are still booting.
-        if is_within_startup_grace_period():
-            print("Environment recently started, skipping monitoring (grace period)")
-            return {
-                "statusCode": 200,
-                "body": json.dumps(
-                    {
-                        "status": "skipped",
-                        "message": "Within startup grace period",
-                    }
-                ),
-            }
-
         # 1. Check if scaling is already in progress (prevent concurrent operations)
         if is_premium_scaling_in_progress():
             print("Scaling already in progress, skipping this run")
