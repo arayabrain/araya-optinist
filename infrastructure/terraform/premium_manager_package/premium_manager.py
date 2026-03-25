@@ -674,6 +674,14 @@ def _finalize_expired_pending_releases_transaction(connection):
 
         for assignment in expired:
             uid = assignment["user_id"]
+            # Close usage log defensively before delete (soft_release should
+            # have already closed it, but guard against edge cases)
+            cursor.execute(
+                """UPDATE instance_usage_log SET ended_at = NOW()
+                   WHERE user_id = %s AND tier = 'premium'
+                   AND ended_at IS NULL""",
+                (uid,),
+            )
             cursor.execute(
                 "DELETE FROM premium_user_assignments WHERE user_id = %s",
                 (uid,),
@@ -2526,6 +2534,8 @@ def assign_premium_user(
                     {
                         "message": "Premium assignment restored",
                         "instance_id": restored["instance_id"],
+                        "target_group_arn": restored["target_group_arn"],
+                        "rule_arn": restored["alb_rule_arn"],
                         "assigned": True,
                         "is_shared": bool(restored.get("is_shared", False)),
                         "assignment_source": "restored_from_pending_release",
@@ -2564,12 +2574,12 @@ def assign_premium_user(
                 ]
                 for instance in running_instances:
                     candidate_id = instance["instance_id"]
+                    assigned = get_assigned_users_for_instance(candidate_id)
+                    if len(assigned) > 0:
+                        continue
                     if not check_instance_readiness_with_retry(
                         candidate_id, max_wait_seconds=10, retry_interval=5
                     ):
-                        continue
-                    assigned = get_assigned_users_for_instance(candidate_id)
-                    if len(assigned) > 0:
                         continue
                     # Found a ready, empty dedicated instance — migrate now
                     print(

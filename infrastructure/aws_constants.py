@@ -119,7 +119,10 @@ class PremiumAssignment:
     # Status: Assignment is being terminated
     TERMINATING = "terminating"
     # Status: Soft-released via beacon (grace period before full teardown).
-    # Reused TERMINATING enum value to avoid DB migration.
+    # IMPORTANT: Shares the TERMINATING DB value to avoid a schema migration.
+    # Safe only because all status checks use enum constants, not raw strings.
+    # Adding code that matches TERMINATING will also match PENDING_RELEASE rows.
+    # If a distinct status is ever needed, migrate the column value first.
     PENDING_RELEASE = "terminating"
     # Grace period (seconds) before a pending_release is finalized.
     PENDING_RELEASE_GRACE_SECONDS = 120
