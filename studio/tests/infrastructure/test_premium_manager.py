@@ -709,6 +709,332 @@ class TestEarlyCheckAndCleanup:
                 mock_get_existing.assert_called_once_with(test_user_id)
                 assert not mock_elbv2.create_rule.called
 
+    def test_stopped_instance_restarted_on_assign(self, mock_env_vars_premium):
+        """Assign restarts a stopped dedicated instance
+        and returns it once ECS is ready."""
+        test_user_id = 12345
+
+        existing_assignment = {
+            "user_id": test_user_id,
+            "instance_id": TEST_INSTANCE_ID,
+            "target_group_arn": "arn:aws:tg/existing",
+            "alb_rule_arn": "arn:aws:rule/existing",
+            "status": "active",
+            "instance_state": "stopped",
+            "is_shared": 0,
+        }
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_existing_user_assignment"
+        ) as mock_get_existing, patch(
+            "premium_manager.check_instance_readiness_with_retry"
+        ) as mock_readiness, patch(
+            "premium_manager.clear_ecs_agent_checkpoint"
+        ) as mock_clear_ecs, patch(
+            "premium_manager._update_instance_state_to_running"
+        ) as mock_update_state:
+            mock_get_existing.return_value = existing_assignment
+            mock_readiness.return_value = True
+
+            mock_ec2 = MagicMock()
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": TEST_INSTANCE_ID,
+                                "State": {"Name": "stopped"},
+                            }
+                        ]
+                    }
+                ]
+            }
+            mock_ec2.get_waiter.return_value = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "ec2":
+                    return mock_ec2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(
+                test_user_id, {"tier": "premium"}, "firebase_uid_123"
+            )
+
+            status_code = result["statusCode"]
+            response_body = json.loads(result["body"])
+
+            assert status_code == 200
+            assert response_body["instance_id"] == TEST_INSTANCE_ID
+            assert response_body["assignment_source"] == "restarted_instance"
+            mock_ec2.start_instances.assert_called_once_with(
+                InstanceIds=[TEST_INSTANCE_ID]
+            )
+            mock_clear_ecs.assert_called_once_with(TEST_INSTANCE_ID)
+            mock_update_state.assert_called_once_with(TEST_INSTANCE_ID)
+            mock_readiness.assert_called_once_with(
+                TEST_INSTANCE_ID, max_wait_seconds=120, retry_interval=10
+            )
+
+    def test_stopping_instance_waits_then_restarts(self, mock_env_vars_premium):
+        """Assign waits for a stopping instance to reach stopped
+        state before restarting it."""
+        test_user_id = 12345
+
+        existing_assignment = {
+            "user_id": test_user_id,
+            "instance_id": TEST_INSTANCE_ID,
+            "target_group_arn": "arn:aws:tg/existing",
+            "alb_rule_arn": "arn:aws:rule/existing",
+            "status": "active",
+            "instance_state": "stopping",
+            "is_shared": 0,
+        }
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_existing_user_assignment"
+        ) as mock_get_existing, patch(
+            "premium_manager.check_instance_readiness_with_retry"
+        ) as mock_readiness, patch(
+            "premium_manager.clear_ecs_agent_checkpoint"
+        ) as mock_clear_ecs, patch(
+            "premium_manager._update_instance_state_to_running"
+        ):
+            mock_get_existing.return_value = existing_assignment
+            mock_readiness.return_value = True
+
+            mock_ec2 = MagicMock()
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": TEST_INSTANCE_ID,
+                                "State": {"Name": "stopping"},
+                            }
+                        ]
+                    }
+                ]
+            }
+            mock_stop_waiter = MagicMock()
+            mock_run_waiter = MagicMock()
+
+            def get_waiter_side_effect(waiter_name):
+                if waiter_name == "instance_stopped":
+                    return mock_stop_waiter
+                if waiter_name == "instance_running":
+                    return mock_run_waiter
+                return MagicMock()
+
+            mock_ec2.get_waiter.side_effect = get_waiter_side_effect
+
+            def boto3_client_side_effect(service):
+                if service == "ec2":
+                    return mock_ec2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(
+                test_user_id, {"tier": "premium"}, "firebase_uid_123"
+            )
+
+            status_code = result["statusCode"]
+            response_body = json.loads(result["body"])
+
+            assert status_code == 200
+            assert response_body["assignment_source"] == "restarted_instance"
+            mock_stop_waiter.wait.assert_called_once()
+            mock_ec2.start_instances.assert_called_once_with(
+                InstanceIds=[TEST_INSTANCE_ID]
+            )
+            mock_clear_ecs.assert_called_once_with(TEST_INSTANCE_ID)
+
+    def test_terminated_instance_triggers_fresh_assignment(self, mock_env_vars_premium):
+        """Assign removes stale assignment for a terminated
+        instance and does not return the stale record."""
+        test_user_id = 12345
+
+        existing_assignment = {
+            "user_id": test_user_id,
+            "instance_id": TEST_INSTANCE_ID,
+            "target_group_arn": "arn:aws:tg/existing",
+            "alb_rule_arn": "arn:aws:rule/existing",
+            "status": "active",
+            "instance_state": "running",
+            "is_shared": 0,
+        }
+
+        patches = {
+            "premium_manager.register_orphaned_stopped_instances": None,
+            "premium_manager.get_all_premium_instances_with_states": [],
+            "premium_manager.count_active_premium_users": 0,
+            "premium_manager.get_available_standby_instances": [],
+        }
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            patchers = []
+            for target, rv in patches.items():
+                p = patch(target, return_value=rv)
+                p.start()
+                patchers.append(p)
+
+            try:
+                with patch.object(
+                    premium_manager, "get_existing_user_assignment"
+                ) as mock_get_existing, patch.object(
+                    premium_manager, "remove_user_assignment"
+                ) as mock_remove, patch(
+                    "boto3.client"
+                ) as mock_boto3, patch(
+                    "pymysql.connect"
+                ) as mock_pymysql:
+                    mock_get_existing.return_value = existing_assignment
+                    mock_pymysql.return_value = setup_db_mock(
+                        fetchone_values=[None] * 20,
+                        fetchall_values=[[] for _ in range(10)],
+                    )
+
+                    mock_ec2 = MagicMock()
+                    mock_ec2.describe_instances.return_value = {
+                        "Reservations": [
+                            {
+                                "Instances": [
+                                    {
+                                        "InstanceId": TEST_INSTANCE_ID,
+                                        "State": {"Name": "terminated"},
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+
+                    mock_elbv2 = MagicMock()
+                    mock_elbv2.create_target_group.return_value = {
+                        "TargetGroups": [{"TargetGroupArn": "arn:aws:tg/new"}]
+                    }
+                    mock_elbv2.create_rule.return_value = {
+                        "Rules": [{"RuleArn": "arn:aws:rule/new"}]
+                    }
+
+                    def boto3_client_side_effect(service):
+                        if service == "ec2":
+                            return mock_ec2
+                        if service == "elbv2":
+                            return mock_elbv2
+                        return MagicMock()
+
+                    mock_boto3.side_effect = boto3_client_side_effect
+
+                    result = premium_manager.assign_premium_user(
+                        test_user_id, {"tier": "premium"}, "firebase_uid_123"
+                    )
+
+                    mock_remove.assert_called_once_with(test_user_id)
+                    # Should NOT return the stale assignment
+                    response_body = json.loads(result["body"])
+                    assert response_body.get("assignment_source") != "existing"
+            finally:
+                for p in patchers:
+                    p.stop()
+
+    def test_ec2_not_found_cleans_up_stale_assignment(self, mock_env_vars_premium):
+        """Assign removes stale assignment when EC2 instance
+        no longer exists (InvalidInstanceID.NotFound)."""
+        from botocore.exceptions import ClientError
+
+        test_user_id = 12345
+
+        existing_assignment = {
+            "user_id": test_user_id,
+            "instance_id": "i-deleted999",
+            "target_group_arn": "arn:aws:tg/existing",
+            "alb_rule_arn": "arn:aws:rule/existing",
+            "status": "active",
+            "instance_state": "running",
+            "is_shared": 0,
+        }
+
+        patches = {
+            "premium_manager.register_orphaned_stopped_instances": None,
+            "premium_manager.get_all_premium_instances_with_states": [],
+            "premium_manager.count_active_premium_users": 0,
+            "premium_manager.get_available_standby_instances": [],
+        }
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            patchers = []
+            for target, rv in patches.items():
+                p = patch(target, return_value=rv)
+                p.start()
+                patchers.append(p)
+
+            try:
+                with patch.object(
+                    premium_manager, "get_existing_user_assignment"
+                ) as mock_get_existing, patch.object(
+                    premium_manager, "remove_user_assignment"
+                ) as mock_remove, patch(
+                    "boto3.client"
+                ) as mock_boto3, patch(
+                    "pymysql.connect"
+                ) as mock_pymysql:
+                    mock_get_existing.return_value = existing_assignment
+                    mock_pymysql.return_value = setup_db_mock(
+                        fetchone_values=[None] * 20,
+                        fetchall_values=[[] for _ in range(10)],
+                    )
+
+                    mock_ec2 = MagicMock()
+                    mock_ec2.describe_instances.side_effect = ClientError(
+                        {
+                            "Error": {
+                                "Code": "InvalidInstanceID.NotFound",
+                                "Message": "Instance not found",
+                            }
+                        },
+                        "DescribeInstances",
+                    )
+
+                    mock_elbv2 = MagicMock()
+                    mock_elbv2.create_target_group.return_value = {
+                        "TargetGroups": [{"TargetGroupArn": "arn:aws:tg/new"}]
+                    }
+                    mock_elbv2.create_rule.return_value = {
+                        "Rules": [{"RuleArn": "arn:aws:rule/new"}]
+                    }
+
+                    def boto3_client_side_effect(service):
+                        if service == "ec2":
+                            return mock_ec2
+                        if service == "elbv2":
+                            return mock_elbv2
+                        return MagicMock()
+
+                    mock_boto3.side_effect = boto3_client_side_effect
+
+                    result = premium_manager.assign_premium_user(
+                        test_user_id, {"tier": "premium"}, "firebase_uid_123"
+                    )
+
+                    mock_remove.assert_called_once_with(test_user_id)
+                    response_body = json.loads(result["body"])
+                    assert response_body.get("assignment_source") != "existing"
+            finally:
+                for p in patchers:
+                    p.stop()
+
 
 class TestDictCursorFix:
     """DictCursor fix tests."""
