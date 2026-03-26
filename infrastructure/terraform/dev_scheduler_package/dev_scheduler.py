@@ -116,9 +116,13 @@ def with_retry(fn, *args, max_attempts=MAX_RETRY_ATTEMPTS, **kwargs):
 
 def handler(event, context):
     """Main Lambda handler - dispatches to start or stop based on event action."""
-    action = event.get("action", "")
-    print(f"Dev Scheduler invoked with action: {action}")
+    action = event.get("action", "").strip()
+    print(f"Dev Scheduler invoked with action: {action!r}")
     print(f"Event: {json.dumps(event)}")
+
+    if not action:
+        print("No action provided — ignoring invocation")
+        return {"statusCode": 400, "body": "No action provided"}
 
     if action == "start":
         return start_environment()
@@ -257,8 +261,28 @@ def stop_environment(stop_mode="destroy"):
         return {"statusCode": 200, "action": "stop", "status": "skipped_override"}
 
     # 1. Clean up dynamic premium instances (before disabling rules so
-    #    premium_manager can still reach the DB through NAT)
-    results["dynamic_premium_cleanup"] = with_retry(cleanup_dynamic_premium_instances)
+    #    premium_manager can still reach the DB through NAT).
+    #    Skip if NAT is already stopped (verify-stop after initial stop) —
+    #    premium_manager needs NAT to reach RDS, so cleanup would just
+    #    timeout for 15 min and waste Lambda billing.
+    nat_id = os.environ["NAT_INSTANCE_ID"]
+    try:
+        nat_resp = ec2.describe_instances(InstanceIds=[nat_id])
+        nat_state = nat_resp["Reservations"][0]["Instances"][0]["State"]["Name"]
+    except Exception as e:
+        print(f"Failed to check NAT state: {e}")
+        nat_state = "unknown"
+
+    if nat_state == "running":
+        results["dynamic_premium_cleanup"] = with_retry(
+            cleanup_dynamic_premium_instances
+        )
+    else:
+        print(
+            f"NAT is {nat_state} — skipping dynamic premium cleanup "
+            f"(already completed on initial stop)"
+        )
+        results["dynamic_premium_cleanup"] = "skipped_nat_down"
 
     # 2. Disable Lambda schedule rules (prevent re-scaling during shutdown)
     rules = json.loads(os.environ.get("SCHEDULE_RULE_NAMES", "[]"))
