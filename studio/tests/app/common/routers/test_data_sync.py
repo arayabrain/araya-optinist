@@ -91,7 +91,10 @@ class TestInternalAPISecurity:
         # Clear rate limit cache and patch bucket name
         with patch("studio.app.common.routers.internal._rate_limit_cache", {}), patch(
             "studio.app.common.routers.internal._get_user_remote_bucket_name"
-        ) as mock_bucket:
+        ) as mock_bucket, patch(
+            "studio.app.common.routers.internal._download_experiments_for_user",
+            new_callable=AsyncMock,
+        ):
             mock_bucket.return_value = "test-bucket"
 
             client = TestClient(app)
@@ -195,7 +198,11 @@ class TestRateLimiting:
 
         with patch.object(
             internal_module, "_get_user_remote_bucket_name"
-        ) as mock_bucket:
+        ) as mock_bucket, patch.object(
+            internal_module,
+            "_download_experiments_for_user",
+            new_callable=AsyncMock,
+        ):
             mock_bucket.return_value = "test-bucket"
 
             client = TestClient(app)
@@ -234,31 +241,36 @@ class TestRateLimiting:
 
         app.dependency_overrides[get_db] = lambda: mock_db
 
-        client = TestClient(app)
+        with patch.object(
+            internal_module,
+            "_download_experiments_for_user",
+            new_callable=AsyncMock,
+        ):
+            client = TestClient(app)
 
-        # First request
-        response1 = client.post(
-            "/system-internal/sync-experiments/2",
-            headers={"X-Internal-Secret": "test-secret"},
-        )
-        assert response1.status_code == 200
+            # First request
+            response1 = client.post(
+                "/system-internal/sync-experiments/2",
+                headers={"X-Internal-Secret": "test-secret"},
+            )
+            assert response1.status_code == 200
 
-        # Simulate time passing (manipulate cache directly)
-        internal_module._rate_limit_cache[2] = time.time() - 15  # 15s ago
+            # Simulate time passing (manipulate cache directly)
+            internal_module._rate_limit_cache[2] = time.time() - 15  # 15s ago
 
-        # Second request after cooldown should succeed
-        response2 = client.post(
-            "/system-internal/sync-experiments/2",
-            headers={"X-Internal-Secret": "test-secret"},
-        )
-        assert response2.status_code == 200
+            # Second request after cooldown should succeed
+            response2 = client.post(
+                "/system-internal/sync-experiments/2",
+                headers={"X-Internal-Secret": "test-secret"},
+            )
+            assert response2.status_code == 200
 
         # Clean up
         app.dependency_overrides.clear()
 
     def test_different_users_not_rate_limited(self, setup_internal_router):
         """Concurrent sync requests for different users should both succeed."""
-        app, _ = setup_internal_router
+        app, internal_module = setup_internal_router
 
         # Create mock with side effect to return different users
         call_count = [0]
@@ -280,21 +292,26 @@ class TestRateLimiting:
 
         app.dependency_overrides[get_db] = mock_db_generator
 
-        client = TestClient(app)
+        with patch.object(
+            internal_module,
+            "_download_experiments_for_user",
+            new_callable=AsyncMock,
+        ):
+            client = TestClient(app)
 
-        # Request for user 10
-        response1 = client.post(
-            "/system-internal/sync-experiments/10",
-            headers={"X-Internal-Secret": "test-secret"},
-        )
-        assert response1.status_code == 200
+            # Request for user 10
+            response1 = client.post(
+                "/system-internal/sync-experiments/10",
+                headers={"X-Internal-Secret": "test-secret"},
+            )
+            assert response1.status_code == 200
 
-        # Request for user 11 should also succeed
-        response2 = client.post(
-            "/system-internal/sync-experiments/11",
-            headers={"X-Internal-Secret": "test-secret"},
-        )
-        assert response2.status_code == 200
+            # Request for user 11 should also succeed
+            response2 = client.post(
+                "/system-internal/sync-experiments/11",
+                headers={"X-Internal-Secret": "test-secret"},
+            )
+            assert response2.status_code == 200
 
         # Clean up
         app.dependency_overrides.clear()
@@ -328,7 +345,7 @@ class TestSyncEndpointLogic:
 
     def test_valid_user_syncs(self, setup_app):
         """Existing user should trigger background download."""
-        app, _ = setup_app
+        app, internal_module = setup_app
 
         # Create mock DB session and user
         mock_db = MagicMock()
@@ -341,17 +358,22 @@ class TestSyncEndpointLogic:
 
         app.dependency_overrides[get_db] = lambda: mock_db
 
-        client = TestClient(app)
+        with patch.object(
+            internal_module,
+            "_download_experiments_for_user",
+            new_callable=AsyncMock,
+        ):
+            client = TestClient(app)
 
-        response = client.post(
-            "/system-internal/sync-experiments/100",
-            headers={"X-Internal-Secret": "test-secret"},
-        )
+            response = client.post(
+                "/system-internal/sync-experiments/100",
+                headers={"X-Internal-Secret": "test-secret"},
+            )
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "sync_initiated"
-        assert data["user_id"] == 100
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "sync_initiated"
+            assert data["user_id"] == 100
 
         # Clean up
         app.dependency_overrides.clear()
@@ -564,7 +586,11 @@ class TestMiddlewareBypass:
 
         with patch.object(
             internal_module, "_get_user_remote_bucket_name"
-        ) as mock_bucket:
+        ) as mock_bucket, patch.object(
+            internal_module,
+            "_download_experiments_for_user",
+            new_callable=AsyncMock,
+        ):
             mock_bucket.return_value = "test-bucket"
 
             client = TestClient(app)

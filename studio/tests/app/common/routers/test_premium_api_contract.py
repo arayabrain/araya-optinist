@@ -530,16 +530,20 @@ async def test_contract_premium_heartbeat_no_assignment(mock_premium_user):
     with patch(
         "studio.app.common.routers.users_me.premium_assignment_service"
     ) as mock_service:
-        mock_service.update_user_activity = AsyncMock(
-            return_value={
-                "success": False,
-                "message": "No active assignment",
-            }
-        )
+        with patch(
+            "studio.app.common.routers.users_me.increment_heartbeat_failures",
+            return_value=1,
+        ):
+            mock_service.update_user_activity = AsyncMock(
+                return_value={
+                    "success": False,
+                    "message": "No active assignment",
+                }
+            )
 
-        from studio.app.common.routers.users_me import send_premium_heartbeat
+            from studio.app.common.routers.users_me import send_premium_heartbeat
 
-        result = await send_premium_heartbeat(current_user=mock_premium_user)
+            result = await send_premium_heartbeat(current_user=mock_premium_user)
 
         validate_contract(
             result,
