@@ -312,7 +312,10 @@ class CheckoutService:
         db: Session, user_id: int, plan_id: int, expiration_date: datetime
     ) -> int:
         """
-        Create new subscription or update existing one
+        Create new subscription or update existing one.
+
+        Uses SELECT FOR UPDATE to prevent race conditions from concurrent
+        webhook calls creating duplicate records.
 
         Args:
             db: Database session
@@ -323,12 +326,13 @@ class CheckoutService:
         Returns:
             Subscription user ID
         """
-        # Check for existing subscription
+        # Use with_for_update() to lock the row and prevent race conditions
         existing_subscription = (
             db.query(UserSubscription)
             .filter(
                 UserSubscription.user_id == user_id,
             )
+            .with_for_update()
             .first()
         )
 
