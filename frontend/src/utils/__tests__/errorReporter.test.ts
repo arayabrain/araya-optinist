@@ -114,7 +114,7 @@ describe("errorReporter", () => {
     flushErrors()
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      `${MOCK_BASE_URL}/logs/frontend-errors`,
+      `${MOCK_BASE_URL}/log-report/frontend-errors`,
       expect.objectContaining({
         method: "POST",
         keepalive: true,

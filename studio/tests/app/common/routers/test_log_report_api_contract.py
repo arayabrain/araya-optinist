@@ -1,12 +1,12 @@
 """
 Contract Tests for Frontend Error Reporting API
 
-Verifies that the POST /logs/frontend-errors endpoint response shape
+Verifies that the POST /log-report/frontend-errors endpoint response shape
 matches the frontend ErrorEntry interface in:
   frontend/src/utils/errorReporter.ts
 
 Tested endpoint:
-  - POST /logs/frontend-errors -> { count: number }
+  - POST /log-report/frontend-errors -> { count: number }
 
 Request body contract (FrontendErrorBatch):
   { errors: FrontendErrorItem[] }
@@ -96,7 +96,7 @@ class TestFrontendErrorsContract:
     """Verify response shape matches frontend expectations."""
 
     def test_response_has_count_field(self, client):
-        response = client.post("/logs/frontend-errors", json=VALID_REQUEST_BODY)
+        response = client.post("/log-report/frontend-errors", json=VALID_REQUEST_BODY)
         assert response.status_code == 200
         data = response.json()
         for field, expected_type in RESPONSE_REQUIRED_FIELDS.items():
@@ -107,14 +107,14 @@ class TestFrontendErrorsContract:
             )
 
     def test_count_matches_batch_size(self, client):
-        response = client.post("/logs/frontend-errors", json=VALID_REQUEST_BODY)
+        response = client.post("/log-report/frontend-errors", json=VALID_REQUEST_BODY)
         data = response.json()
         assert data["count"] == len(VALID_REQUEST_BODY["errors"])
 
     def test_accepts_minimal_error_item(self, client):
         """Minimal payload: only required fields."""
         response = client.post(
-            "/logs/frontend-errors",
+            "/log-report/frontend-errors",
             json={"errors": [{"level": "error", "message": "test"}]},
         )
         assert response.status_code == 200
@@ -122,27 +122,27 @@ class TestFrontendErrorsContract:
 
     def test_accepts_warn_level(self, client):
         response = client.post(
-            "/logs/frontend-errors",
+            "/log-report/frontend-errors",
             json={"errors": [{"level": "warn", "message": "warning"}]},
         )
         assert response.status_code == 200
 
     def test_rejects_invalid_level(self, client):
         response = client.post(
-            "/logs/frontend-errors",
+            "/log-report/frontend-errors",
             json={"errors": [{"level": "info", "message": "test"}]},
         )
         assert response.status_code == 422
 
     def test_rejects_empty_errors_list(self, client):
         """Backend should accept empty list (no errors to log)."""
-        response = client.post("/logs/frontend-errors", json={"errors": []})
+        response = client.post("/log-report/frontend-errors", json={"errors": []})
         assert response.status_code == 200
         assert response.json()["count"] == 0
 
     def test_rejects_missing_message(self, client):
         response = client.post(
-            "/logs/frontend-errors",
+            "/log-report/frontend-errors",
             json={"errors": [{"level": "error"}]},
         )
         assert response.status_code == 422
@@ -150,7 +150,7 @@ class TestFrontendErrorsContract:
     def test_rejects_oversized_batch(self, client):
         """Batch exceeding max_items=20 should be rejected."""
         response = client.post(
-            "/logs/frontend-errors",
+            "/log-report/frontend-errors",
             json={
                 "errors": [{"level": "error", "message": f"msg {i}"} for i in range(21)]
             },
@@ -163,7 +163,7 @@ class TestFrontendErrorsContract:
 
         _frontend_error_timestamps[mock_user.id] = [time.time()] * 10
         response = client.post(
-            "/logs/frontend-errors",
+            "/log-report/frontend-errors",
             json={"errors": [{"level": "error", "message": "test"}]},
         )
         assert response.status_code == 429
