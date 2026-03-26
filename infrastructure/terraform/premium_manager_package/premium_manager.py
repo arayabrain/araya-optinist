@@ -574,11 +574,11 @@ def _update_instance_state_to_running(connection, instance_id: str):
     with connection.cursor() as cursor:
         cursor.execute(
             """UPDATE premium_user_assignments
-               SET instance_state = 'running',
+               SET instance_state = %s,
                    last_state_check = NOW()
                WHERE instance_id = %s
                AND is_standby = 0""",
-            (instance_id,),
+            (InstanceState.RUNNING, instance_id),
         )
 
 
@@ -1537,10 +1537,10 @@ def start_standby_instance(instance_id: str):
             with connection.cursor() as cursor:
                 cursor.execute(
                     """UPDATE premium_user_assignments
-                       SET instance_state = 'running',
+                       SET instance_state = %s,
                            last_state_check = NOW()
                        WHERE instance_id = %s AND is_standby = 0""",
-                    (instance_id,),
+                    (InstanceState.RUNNING, instance_id),
                 )
                 connection.commit()  # Commit the state update
 
