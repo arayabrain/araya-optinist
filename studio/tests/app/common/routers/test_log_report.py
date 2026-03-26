@@ -1,5 +1,5 @@
 """
-Unit tests for POST /logs/frontend-errors endpoint.
+Unit tests for POST /log-report/frontend-errors endpoint.
 
 Tests the endpoint handler, rate limiting, and stale entry cleanup.
 """

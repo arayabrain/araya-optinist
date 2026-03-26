@@ -4,7 +4,7 @@ import { getToken } from "utils/auth/AuthUtils"
 export const MAX_QUEUE_SIZE = 20
 export const MAX_MESSAGE_LENGTH = 2000
 const FLUSH_INTERVAL_MS = 5000
-const ENDPOINT = `${BASE_URL}/logs/frontend-errors`
+const ENDPOINT = `${BASE_URL}/log-report/frontend-errors`
 
 const FRONTEND_LOG_LEVELS = ["error", "warn"] as const
 type FrontendLogLevel = (typeof FRONTEND_LOG_LEVELS)[number]
