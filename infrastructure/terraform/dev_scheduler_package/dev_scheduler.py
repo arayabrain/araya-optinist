@@ -73,6 +73,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import boto3
+from botocore.config import Config
 
 # Maximum override duration (safety cap even if user requests more)
 MAX_OVERRIDE_HOURS = 12
@@ -81,10 +82,17 @@ MAX_OVERRIDE_HOURS = 12
 MAX_RETRY_ATTEMPTS = 3
 RETRY_BASE_DELAY = 5  # seconds, doubles each attempt
 
+# Timeout for synchronous Lambda invocations (premium_manager cleanup).
+# premium_manager has a 600s timeout; allow slightly more for overhead.
+LAMBDA_INVOKE_TIMEOUT = 610  # seconds
+
 rds = boto3.client("rds")
 ec2 = boto3.client("ec2")
 ecs = boto3.client("ecs")
-lambda_client = boto3.client("lambda")
+lambda_client = boto3.client(
+    "lambda",
+    config=Config(read_timeout=LAMBDA_INVOKE_TIMEOUT, retries={"max_attempts": 0}),
+)
 autoscaling = boto3.client("autoscaling")
 events = boto3.client("events")
 cloudwatch = boto3.client("cloudwatch")
@@ -275,7 +283,7 @@ def stop_environment(stop_mode="destroy"):
 
     if nat_state == "running":
         results["dynamic_premium_cleanup"] = with_retry(
-            cleanup_dynamic_premium_instances
+            cleanup_dynamic_premium_instances, max_attempts=1
         )
     else:
         print(

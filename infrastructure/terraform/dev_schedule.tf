@@ -185,6 +185,7 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
       {
         Effect = "Allow"
         Action = [
+          "rds:CreateDBSnapshot",
           "rds:DeleteDBInstance",
           "rds:DescribeDBInstances",
           "rds:RestoreDBInstanceFromDBSnapshot",
@@ -198,6 +199,7 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
       {
         Effect = "Allow"
         Action = [
+          "rds:CreateDBSnapshot",
           "rds:DeleteDBSnapshot",
           "rds:DescribeDBSnapshots",
         ]
