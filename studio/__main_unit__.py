@@ -40,6 +40,7 @@ if not MODE.IS_STANDALONE:
         StorageReconciliationJob,
     )
     from studio.app.common.core.background.sync_job import PublishedExperimentSyncJob
+
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
     is_workspace_owner,
@@ -50,8 +51,8 @@ from studio.app.common.routers import (
     dataview,
     experiment,
     files,
-    frontend_errors,
     internal,
+    log_report,
     logs,
     outputs,
     params,
@@ -206,7 +207,7 @@ app.include_router(auth.router)
 app.include_router(internal.router)  # Uses internal secret auth, not JWT
 app.include_router(experiment.router, dependencies=[Depends(get_current_user)])
 app.include_router(files.router, dependencies=[Depends(get_current_user)])
-app.include_router(frontend_errors.router, dependencies=[Depends(get_current_user)])
+app.include_router(log_report.router, dependencies=[Depends(get_current_user)])
 app.include_router(logs.router, dependencies=[Depends(get_current_user)])
 app.include_router(
     outputs.router, dependencies=[Depends(get_current_user_with_dataview_outputs_check)]

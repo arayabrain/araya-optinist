@@ -9,7 +9,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.utils.log_reader import FRONTEND_LOG_PREFIX
 from studio.app.common.schemas.users import User
 
-router = APIRouter(prefix="/users/me", tags=["logs"])
+router = APIRouter(prefix="/logs", tags=["logs"])
 
 logger = AppLogger.get_logger()
 

@@ -8,6 +8,7 @@ import {
 } from "@jest/globals"
 
 let mockTokenValue = "test-token"
+const MOCK_BASE_URL = "http://test-host:9999"
 
 jest.mock("utils/auth/AuthUtils", () => ({
   getToken: () => mockTokenValue,
@@ -113,7 +114,7 @@ describe("errorReporter", () => {
     flushErrors()
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "http://test-host:9999/users/me/frontend-errors",
+      `${MOCK_BASE_URL}/logs/frontend-errors`,
       expect.objectContaining({
         method: "POST",
         keepalive: true,
