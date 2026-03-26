@@ -92,7 +92,8 @@ cp development.tfvars.example development.tfvars
 cd infrastructure/terraform
 
 # 1. Initialize — connects to production state bucket
-terraform init -backend-config=backends/production.hcl
+#    Use -reconfigure if you were previously initialized to a different environment
+terraform init -backend-config=backends/production.hcl -reconfigure
 
 # 2. Preview changes
 terraform plan -var-file=environments/production.tfvars
@@ -112,7 +113,8 @@ terraform output
 cd infrastructure/terraform
 
 # 1. Initialize — connects to development state bucket
-terraform init -backend-config=backends/development.hcl
+#    Use -reconfigure if you were previously initialized to a different environment
+terraform init -backend-config=backends/development.hcl -reconfigure
 
 # 2. Ensure development.tfvars exists (download from Google Drive or copy from example)
 
