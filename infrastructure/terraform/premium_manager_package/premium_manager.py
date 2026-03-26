@@ -569,6 +569,20 @@ def remove_user_assignment(user_id: int):
 
 
 @with_transaction
+def _update_instance_state_to_running(connection, instance_id: str):
+    """Update instance state to running after restart"""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """UPDATE premium_user_assignments
+               SET instance_state = %s,
+                   last_state_check = NOW()
+               WHERE instance_id = %s
+               AND is_standby = 0""",
+            (InstanceState.RUNNING, instance_id),
+        )
+
+
+@with_transaction
 def _soft_release_user_assignment_transaction(connection, user_id: int):
     """Mark assignment as pending_release instead of deleting it.
 
@@ -1663,10 +1677,10 @@ def start_standby_instance(instance_id: str):
             with connection.cursor() as cursor:
                 cursor.execute(
                     """UPDATE premium_user_assignments
-                       SET instance_state = 'running',
+                       SET instance_state = %s,
                            last_state_check = NOW()
                        WHERE instance_id = %s AND is_standby = 0""",
-                    (instance_id,),
+                    (InstanceState.RUNNING, instance_id),
                 )
                 connection.commit()  # Commit the state update
 
@@ -2566,8 +2580,115 @@ def assign_premium_user(
                 f"instance {existing_instance_id}"
             )
 
+            # Check if the assigned instance is stopped and restart it
+            if existing_instance_id != PremiumAssignment.AUTOSCALING_POOL:
+                try:
+                    resp = ec2.describe_instances(InstanceIds=[existing_instance_id])
+                    reservations = resp.get("Reservations", [])
+                    ec2_state = None
+                    if reservations and reservations[0].get("Instances"):
+                        ec2_state = reservations[0]["Instances"][0]["State"]["Name"]
+
+                    if ec2_state == InstanceState.STOPPING:
+                        print(
+                            f"Assigned instance {existing_instance_id} is "
+                            f"stopping — waiting for stopped state"
+                        )
+                        stop_waiter = ec2.get_waiter("instance_stopped")
+                        stop_waiter.wait(
+                            InstanceIds=[existing_instance_id],
+                            WaiterConfig={"Delay": 5, "MaxAttempts": 24},
+                        )
+                        ec2_state = InstanceState.STOPPED
+
+                    if ec2_state == InstanceState.STOPPED:
+                        print(
+                            f"Assigned instance {existing_instance_id} is "
+                            f"stopped — restarting for user {user_id}"
+                        )
+                        ec2.start_instances(InstanceIds=[existing_instance_id])
+                        waiter = ec2.get_waiter("instance_running")
+                        waiter.wait(
+                            InstanceIds=[existing_instance_id],
+                            WaiterConfig={"Delay": 5, "MaxAttempts": 24},
+                        )
+                        clear_ecs_agent_checkpoint(existing_instance_id)
+                        _update_instance_state_to_running(existing_instance_id)
+
+                        # Wait for ECS task readiness before returning
+                        if check_instance_readiness_with_retry(
+                            existing_instance_id,
+                            max_wait_seconds=120,
+                            retry_interval=10,
+                        ):
+                            print(
+                                f"Restarted instance {existing_instance_id} "
+                                f"is ready for user {user_id}"
+                            )
+                            return {
+                                "statusCode": 200,
+                                "body": json.dumps(
+                                    {
+                                        "message": f"User {user_id} assigned "
+                                        f"to restarted instance "
+                                        f"{existing_instance_id}",
+                                        "instance_id": existing_instance_id,
+                                        "target_group_arn": existing_assignment[
+                                            "target_group_arn"
+                                        ],
+                                        "rule_arn": existing_assignment["alb_rule_arn"],
+                                        "is_shared": bool(
+                                            existing_assignment.get("is_shared", False)
+                                        ),
+                                        "assignment_source": "restarted_instance",
+                                    }
+                                ),
+                            }
+                        else:
+                            print(
+                                f"WARNING: Instance {existing_instance_id} "
+                                f"started but ECS not ready after 120s, "
+                                f"cleaning up stale assignment"
+                            )
+                            existing_assignment = None
+                            remove_user_assignment(user_id)
+
+                    elif (
+                        ec2_state
+                        in (
+                            InstanceState.TERMINATED,
+                            InstanceState.SHUTTING_DOWN,
+                        )
+                        or ec2_state is None
+                    ):
+                        print(
+                            f"Assigned instance {existing_instance_id} is "
+                            f"{ec2_state or 'gone'} — removing stale "
+                            f"assignment for user {user_id}"
+                        )
+                        existing_assignment = None
+                        remove_user_assignment(user_id)
+
+                except ClientError as ec2_err:
+                    error_code = ec2_err.response["Error"]["Code"]
+                    if error_code == "InvalidInstanceID.NotFound":
+                        print(
+                            f"Instance {existing_instance_id} no longer "
+                            f"exists — removing stale assignment"
+                        )
+                        existing_assignment = None
+                        remove_user_assignment(user_id)
+                    else:
+                        raise
+                except Exception as state_err:
+                    print(
+                        f"Error checking instance state for "
+                        f"{existing_instance_id}: {state_err}"
+                    )
+                    existing_assignment = None
+
             # Trigger migration for autoscaling-pool or shared
-            if (
+            if existing_assignment and (
                 existing_instance_id == PremiumAssignment.AUTOSCALING_POOL
                 or existing_assignment.get("is_shared")
             ):
@@ -2629,20 +2750,23 @@ def assign_premium_user(
                 )
                 invoke_migration_async()
 
-            return {
-                "statusCode": 200,
-                "body": json.dumps(
-                    {
-                        "message": f"User {user_id} already assigned to "
-                        f"instance {existing_instance_id}",
-                        "instance_id": existing_instance_id,
-                        "target_group_arn": existing_assignment["target_group_arn"],
-                        "rule_arn": existing_assignment["alb_rule_arn"],
-                        "is_shared": bool(existing_assignment.get("is_shared", False)),
-                        "assignment_source": "existing",
-                    }
-                ),
-            }
+            if existing_assignment:
+                return {
+                    "statusCode": 200,
+                    "body": json.dumps(
+                        {
+                            "message": f"User {user_id} already assigned to "
+                            f"instance {existing_instance_id}",
+                            "instance_id": existing_instance_id,
+                            "target_group_arn": existing_assignment["target_group_arn"],
+                            "rule_arn": existing_assignment["alb_rule_arn"],
+                            "is_shared": bool(
+                                existing_assignment.get("is_shared", False)
+                            ),
+                            "assignment_source": "existing",
+                        }
+                    ),
+                }
     except Exception as check_error:
         # Fail fast if we can't verify assignment status
         print(f"Error: Failed to check existing assignment: {check_error}")
