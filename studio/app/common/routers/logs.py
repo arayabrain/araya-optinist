@@ -37,13 +37,13 @@ _UI_MIN_NUMERIC = LOG_LEVEL_NUMERIC.get(_UI_MIN_LEVEL, logging.DEBUG)
 async def get_available_log_levels(
     _current_user: User = Depends(get_current_user),
 ):
-    return {
-        "levels": [
-            name
-            for name, numeric in LOG_LEVEL_NUMERIC.items()
-            if numeric >= _UI_MIN_NUMERIC
-        ]
-    }
+    levels = [
+        name
+        for name, numeric in LOG_LEVEL_NUMERIC.items()
+        if numeric >= _UI_MIN_NUMERIC
+    ]
+    levels.append("FRONTEND")
+    return {"levels": levels}
 
 
 @router.get(

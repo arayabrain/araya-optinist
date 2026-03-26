@@ -221,7 +221,7 @@ const handlePremiumRoutingError = async (
 
   try {
     // eslint-disable-next-line no-console
-    console.log("Using free tier while premium instance provisions")
+    console.warn("Using free tier while premium instance provisions")
     return await axios(retryConfig)
   } catch (retryError) {
     // eslint-disable-next-line no-console

@@ -13,6 +13,7 @@ import AdbIcon from "@mui/icons-material/Adb"
 import ArrowBackIosIcon from "@mui/icons-material/ArrowBackIos"
 import ArrowForwardIosIcon from "@mui/icons-material/ArrowForwardIos"
 import CloseIcon from "@mui/icons-material/Close"
+import ComputerIcon from "@mui/icons-material/Computer"
 import ErrorIcon from "@mui/icons-material/Error"
 import FilterAltOffOutlinedIcon from "@mui/icons-material/FilterAltOffOutlined"
 import GradeIcon from "@mui/icons-material/Grade"
@@ -331,6 +332,15 @@ const ModalLogs = ({ isOpen = false, onClose }: Props) => {
               >
                 <GradeIcon color="secondary" />
                 <span>{TLevelsLog.CRITICAL}</span>
+              </MenuFilter>
+            )}
+            {availableLevels.includes(TLevelsLog.FRONTEND) && (
+              <MenuFilter
+                active={levels?.includes(TLevelsLog.FRONTEND)}
+                onClick={() => onChangeTypeFilter(TLevelsLog.FRONTEND)}
+              >
+                <ComputerIcon color="primary" />
+                <span>{TLevelsLog.FRONTEND}</span>
               </MenuFilter>
             )}
           </BoxFilter>
