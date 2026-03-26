@@ -4,7 +4,15 @@ from typing import Generator
 import pytest
 from fastapi.testclient import TestClient
 
-from studio.__main_unit__ import app, skip_dependencies
+# Set MODE before importing __main_unit__ to prevent scheduler initialization
+# and DB access during tests. MODE is a singleton that reads .env at import time,
+# so it must be overridden before any module-level code in __main_unit__ runs.
+from studio.app.common.core.mode import MODE
+
+MODE.IS_TEST = True
+MODE.IS_STANDALONE = True
+
+from studio.__main_unit__ import app, skip_dependencies  # noqa: E402
 from studio.app.common.core.auth.auth_dependencies import (
     get_admin_user,
     get_current_user,
