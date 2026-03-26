@@ -50,6 +50,9 @@ class TestPremiumManagerEvents:
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     MockRow({"id": 123}),
+                    # restore_pending_release: no pending_release row
+                    None,
+                    # get_existing_user_assignment: no existing assignment
                     None,
                     MockRow({"count": 1}),
                     MockRow({"count": 0}),
@@ -708,6 +711,42 @@ class TestEarlyCheckAndCleanup:
                 assert mock_invoke_migration.called
                 mock_get_existing.assert_called_once_with(test_user_id)
                 assert not mock_elbv2.create_rule.called
+
+    def test_restore_pending_release_returns_alb_fields(self, mock_env_vars_premium):
+        """Restored pending_release response includes
+        target_group_arn and rule_arn."""
+        test_user_id = 12345
+
+        restored_assignment = {
+            "user_id": test_user_id,
+            "instance_id": TEST_INSTANCE_ID,
+            "target_group_arn": "arn:aws:tg/restored",
+            "alb_rule_arn": "arn:aws:rule/restored",
+            "status": "terminating",
+            "instance_state": "running",
+            "is_shared": 0,
+        }
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ), patch("premium_manager.restore_pending_release") as mock_restore:
+            mock_restore.return_value = restored_assignment
+
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(
+                test_user_id, {"tier": "premium"}, "firebase_uid_123"
+            )
+
+            status_code = result["statusCode"]
+            response_body = json.loads(result["body"])
+
+            assert status_code == 200
+            assert response_body["assignment_source"] == "restored_from_pending_release"
+            assert response_body["target_group_arn"] == "arn:aws:tg/restored"
+            assert response_body["rule_arn"] == "arn:aws:rule/restored"
+            assert response_body["instance_id"] == TEST_INSTANCE_ID
+            mock_restore.assert_called_once_with(test_user_id)
 
     def test_stopped_instance_restarted_on_assign(self, mock_env_vars_premium):
         """Assign restarts a stopped dedicated instance

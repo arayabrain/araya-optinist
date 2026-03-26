@@ -583,6 +583,138 @@ def _update_instance_state_to_running(connection, instance_id: str):
 
 
 @with_transaction
+def _soft_release_user_assignment_transaction(connection, user_id: int):
+    """Mark assignment as pending_release instead of deleting it.
+
+    Keeps the ALB rule and target group intact so a page refresh can
+    restore the assignment instantly without recreating AWS resources.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT instance_id, target_group_arn, alb_rule_arn, status
+               FROM premium_user_assignments
+               WHERE user_id = %s AND status = %s AND is_standby = 0
+               FOR UPDATE""",
+            (user_id, PremiumAssignment.ACTIVE),
+        )
+        assignment = cursor.fetchone()
+
+        if not assignment:
+            print(f"No active assignment to soft-release for user {user_id}")
+            return None
+
+        cursor.execute(
+            """UPDATE premium_user_assignments
+               SET status = %s, last_activity = NOW()
+               WHERE user_id = %s AND status = %s""",
+            (PremiumAssignment.PENDING_RELEASE, user_id, PremiumAssignment.ACTIVE),
+        )
+        # Close usage log so idle time is tracked accurately
+        cursor.execute(
+            """UPDATE instance_usage_log SET ended_at = NOW()
+               WHERE user_id = %s AND tier = 'premium'
+               AND ended_at IS NULL""",
+            (user_id,),
+        )
+
+    print(
+        f"Soft-released assignment: user {user_id} -> "
+        f"instance {assignment['instance_id']} (pending_release)"
+    )
+    return assignment
+
+
+def soft_release_user_assignment(user_id: int):
+    """Soft-release: mark as pending_release, keep ALB/TG intact."""
+    return _soft_release_user_assignment_transaction(user_id)
+
+
+@with_transaction
+def _restore_pending_release_transaction(connection, user_id: int):
+    """Restore a pending_release assignment back to active.
+
+    Returns the restored assignment dict, or None if no pending_release exists.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT user_id, instance_id, target_group_arn, alb_rule_arn,
+                      status, instance_state, is_shared
+               FROM premium_user_assignments
+               WHERE user_id = %s AND status = %s AND is_standby = 0
+               FOR UPDATE""",
+            (user_id, PremiumAssignment.PENDING_RELEASE),
+        )
+        assignment = cursor.fetchone()
+
+        if not assignment:
+            return None
+
+        cursor.execute(
+            """UPDATE premium_user_assignments
+               SET status = %s, last_activity = NOW()
+               WHERE user_id = %s AND status = %s""",
+            (PremiumAssignment.ACTIVE, user_id, PremiumAssignment.PENDING_RELEASE),
+        )
+
+    print(
+        f"Restored pending_release -> active: user {user_id} -> "
+        f"instance {assignment['instance_id']}"
+    )
+    return assignment
+
+
+def restore_pending_release(user_id: int):
+    """Restore a pending_release assignment back to active."""
+    return _restore_pending_release_transaction(user_id)
+
+
+@with_transaction
+def _finalize_expired_pending_releases_transaction(connection):
+    """Find and delete pending_release assignments past the grace period.
+
+    Returns list of assignments to finalize (caller handles ALB/TG teardown).
+    """
+    grace_seconds = PremiumAssignment.PENDING_RELEASE_GRACE_SECONDS
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT user_id, instance_id, target_group_arn, alb_rule_arn
+               FROM premium_user_assignments
+               WHERE status = %s
+               AND last_activity < DATE_SUB(NOW(), INTERVAL %s SECOND)
+               FOR UPDATE""",
+            (PremiumAssignment.PENDING_RELEASE, grace_seconds),
+        )
+        expired = cursor.fetchall()
+
+        for assignment in expired:
+            uid = assignment["user_id"]
+            # Close usage log defensively before delete (soft_release should
+            # have already closed it, but guard against edge cases)
+            cursor.execute(
+                """UPDATE instance_usage_log SET ended_at = NOW()
+                   WHERE user_id = %s AND tier = 'premium'
+                   AND ended_at IS NULL""",
+                (uid,),
+            )
+            cursor.execute(
+                "DELETE FROM premium_user_assignments"
+                " WHERE user_id = %s AND status = %s",
+                (uid, PremiumAssignment.PENDING_RELEASE),
+            )
+            print(
+                f"Finalized pending_release: deleted user {uid} -> "
+                f"instance {assignment['instance_id']}"
+            )
+
+    return expired
+
+
+def finalize_expired_pending_releases():
+    """Delete expired pending_release rows and return them for AWS cleanup."""
+    return _finalize_expired_pending_releases_transaction()
+
+
+@with_transaction
 def _get_existing_user_assignment_transaction(
     connection, user_id: int
 ) -> Optional[Dict[str, Any]]:
@@ -631,12 +763,14 @@ def _get_assigned_users_for_instance_transaction(connection, instance_id: str):
             print(f"- User: {user_id}, Standby: {is_standby}, Status: {status}")
 
         # Now get only real user assignments (exclude standby entries) with lock
+        # Include pending_release so instance isn't treated as idle during grace
         cursor.execute(
             """SELECT user_id, is_shared, instance_state
                FROM premium_user_assignments
-               WHERE instance_id = %s AND status = 'active' AND is_standby = 0
+               WHERE instance_id = %s AND status IN ('active', %s)
+               AND is_standby = 0
                FOR UPDATE""",
-            (instance_id,),
+            (instance_id, PremiumAssignment.PENDING_RELEASE),
         )
         real_users = cursor.fetchall()
 
@@ -746,13 +880,18 @@ def get_all_premium_instances_with_states():
 
 @with_transaction
 def _count_active_premium_users_transaction(connection):
-    """Count users with active premium assignments with transaction safety"""
+    """Count users with active premium assignments with transaction safety.
+
+    Includes pending_release users because their instance and resources
+    are still allocated during the grace period.
+    """
     with connection.cursor() as cursor:
         # First count all assignments for debugging
         cursor.execute(
             "SELECT COUNT(*) as total_count, "
             "SUM(CASE WHEN is_standby = 1 THEN 1 ELSE 0 END) as standby_count "
-            "FROM premium_user_assignments WHERE status = 'active'"
+            "FROM premium_user_assignments WHERE status IN ('active', %s)",
+            (PremiumAssignment.PENDING_RELEASE,),
         )
         debug_result = cursor.fetchone()
         total_count = debug_result["total_count"] if debug_result else 0
@@ -761,7 +900,8 @@ def _count_active_premium_users_transaction(connection):
         # Count only real user assignments (exclude standby)
         cursor.execute(
             "SELECT COUNT(*) as count FROM premium_user_assignments "
-            "WHERE status = 'active' AND is_standby = 0"
+            "WHERE status IN ('active', %s) AND is_standby = 0",
+            (PremiumAssignment.PENDING_RELEASE,),
         )
         result = cursor.fetchone()
         real_user_count = result["count"] if result else 0
@@ -1579,6 +1719,22 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
                         ),
                     }
 
+                # Restore pending_release on status check (user refreshed)
+                if assignment["status"] == PremiumAssignment.PENDING_RELEASE:
+                    try:
+                        restored = restore_pending_release(user_id)
+                        if restored:
+                            assignment = restored
+                            assignment["status"] = PremiumAssignment.ACTIVE
+                            print(
+                                f"Restored pending_release on status check "
+                                f"for user {user_id}"
+                            )
+                    except Exception as restore_err:
+                        print(
+                            f"Failed to restore pending_release: " f"{str(restore_err)}"
+                        )
+
                 print(
                     f"Found assignment - "
                     f"instance_id={assignment['instance_id']}, "
@@ -1594,9 +1750,11 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
                             "target_group_arn": assignment["target_group_arn"],
                             "alb_rule_arn": assignment["alb_rule_arn"],
                             "status": assignment["status"],
-                            "assigned_at": assignment["assigned_at"].isoformat()
-                            if assignment["assigned_at"]
-                            else None,
+                            "assigned_at": (
+                                assignment["assigned_at"].isoformat()
+                                if assignment["assigned_at"]
+                                else None
+                            ),
                             "is_shared": bool(assignment["is_shared"]),
                         }
                     ),
@@ -1821,7 +1979,36 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
                 print(f"Standby pool has {excess} excess instances, trimming")
                 cleanup_excess_standby_instances(excess)
 
-            # 10. Cleanup ghost ECS container instance registrations
+            # 10a. Finalize expired pending_release assignments
+            try:
+                expired = finalize_expired_pending_releases()
+                if expired:
+                    print(
+                        f"Finalizing {len(expired)} expired "
+                        f"pending_release assignments"
+                    )
+                    for assignment in expired:
+                        rule_arn = (
+                            assignment.get("alb_rule_arn") or ""
+                        ).strip() or None
+                        tg_arn = (
+                            assignment.get("target_group_arn") or ""
+                        ).strip() or None
+                        teardown_errors = _teardown_alb_resources(
+                            assignment["user_id"], rule_arn, tg_arn
+                        )
+                        if teardown_errors:
+                            print(
+                                f"Teardown warnings for user "
+                                f"{assignment['user_id']}: {teardown_errors}"
+                            )
+            except Exception:
+                print("WARNING: finalize_expired_pending_releases() failed")
+                import traceback
+
+                traceback.print_exc()
+
+            # 10b. Cleanup ghost ECS container instance registrations
             # (deregister container instances where EC2 is stopped/terminated)
             cleanup_ghost_ecs_registrations()
 
@@ -1998,6 +2185,14 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             result = fix_incorrect_is_shared_flags()
             return {"statusCode": 200, "body": json.dumps(result)}
 
+        # Handle cleanup_all_dynamic action (called by dev scheduler before stop)
+        if event.get("action") == "cleanup_all_dynamic":
+            print("Cleaning up all dynamic premium instances...")
+            result = cleanup_all_dynamic_instances(
+                base_instance_ids=event.get("base_instance_ids", [])
+            )
+            return {"statusCode": 200, "body": json.dumps(result)}
+
         # Handle scheduled monitoring events
         if (
             event.get("source") == "aws.events"
@@ -2063,11 +2258,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     "body": json.dumps({"error": str(e)}),
                 }
 
-            if action == "assign":
+            if action == PremiumAssignment.ACTION_ASSIGN:
                 return assign_premium_user(user_id, body_data, user_uid)
-            elif action == "release":
-                return release_premium_user(user_id)
-            elif action == "update_activity":
+            elif action == PremiumAssignment.ACTION_RELEASE:
+                hard = body_data.get("hard", False)
+                return release_premium_user(user_id, hard=hard)
+            elif action == PremiumAssignment.ACTION_UPDATE_ACTIVITY:
                 return handle_activity_update(user_id)
             else:
                 return {
@@ -2349,6 +2545,31 @@ def assign_premium_user(
             ),
         }
 
+    # Restore pending_release if user refreshed (beacon fired but user is back)
+    try:
+        restored = restore_pending_release(user_id)
+        if restored:
+            print(
+                f"Restored pending_release for user {user_id} -> "
+                f"instance {restored['instance_id']} (page refresh detected)"
+            )
+            return {
+                "statusCode": 200,
+                "body": json.dumps(
+                    {
+                        "message": "Premium assignment restored",
+                        "instance_id": restored["instance_id"],
+                        "target_group_arn": restored["target_group_arn"],
+                        "rule_arn": restored["alb_rule_arn"],
+                        "assigned": True,
+                        "is_shared": bool(restored.get("is_shared", False)),
+                        "assignment_source": "restored_from_pending_release",
+                    }
+                ),
+            }
+    except Exception as restore_error:
+        print(f"Pending release restore check failed: {str(restore_error)}")
+
     # Return existing assignment if user is already assigned
     try:
         existing_assignment = get_existing_user_assignment(user_id)
@@ -2475,7 +2696,57 @@ def assign_premium_user(
                     f"User {user_id} needs migration "
                     f"(instance={existing_instance_id}, "
                     f"shared={existing_assignment.get('is_shared')})"
-                    f", triggering migration check..."
+                    f", attempting inline migration..."
+                )
+
+                # Try inline migration: find a ready dedicated instance now
+                all_instances = get_all_premium_instances_with_states()
+                running_instances = [
+                    i for i in all_instances if i["state"] == InstanceState.RUNNING
+                ]
+                for instance in running_instances:
+                    candidate_id = instance["instance_id"]
+                    assigned = get_assigned_users_for_instance(candidate_id)
+                    if len(assigned) > 0:
+                        continue
+                    if not check_instance_readiness_with_retry(
+                        candidate_id, max_wait_seconds=10, retry_interval=5
+                    ):
+                        continue
+                    # Found a ready, empty dedicated instance — migrate now
+                    print(
+                        f"Inline migration: migrating user {user_id} "
+                        f"from {existing_instance_id} to {candidate_id}"
+                    )
+                    if migrate_user_to_dedicated_instance(user_id, candidate_id):
+                        # Re-fetch updated assignment after migration
+                        migrated = get_existing_user_assignment(user_id)
+                        if migrated:
+                            print(
+                                f"Inline migration successful: user {user_id} "
+                                f"now on {migrated['instance_id']}"
+                            )
+                            return {
+                                "statusCode": 200,
+                                "body": json.dumps(
+                                    {
+                                        "message": f"User {user_id} migrated to "
+                                        f"instance {migrated['instance_id']}",
+                                        "instance_id": migrated["instance_id"],
+                                        "target_group_arn": migrated[
+                                            "target_group_arn"
+                                        ],
+                                        "rule_arn": migrated["alb_rule_arn"],
+                                        "is_shared": False,
+                                        "assignment_source": "inline_migration",
+                                    }
+                                ),
+                            }
+
+                # No inline migration possible — fall back to async
+                print(
+                    f"Inline migration not possible for user {user_id}, "
+                    f"falling back to async migration"
                 )
                 invoke_migration_async()
 
@@ -2899,9 +3170,9 @@ def assign_premium_user(
                     ],
                     "failure_reasons": failure_reasons,
                     "has_least_loaded": least_loaded_instance is not None,
-                    "min_users_on_least_loaded": min_users
-                    if least_loaded_instance
-                    else None,
+                    "min_users_on_least_loaded": (
+                        min_users if least_loaded_instance else None
+                    ),
                 },
             }
             print(f" Final assignment failure details: {error_details}")
@@ -3903,92 +4174,120 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
         return False
 
 
-def release_premium_user(user_id: int) -> Dict[str, Any]:
-    """Release premium user from assigned instance
-    (always succeeds to prevent logout blocking)"""
-
-    _: "EC2Client" = boto3.client("ec2")
+def _teardown_alb_resources(user_id, rule_arn, target_group_arn):
+    """Delete ALB rule and target group for a released user."""
     elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+    errors = []
+
+    if rule_arn:
+        try:
+            elbv2.delete_rule(RuleArn=rule_arn)
+            print(f"Deleted ALB rule: {rule_arn}")
+        except Exception as rule_error:
+            error_msg = f"Error deleting ALB rule: {str(rule_error)}"
+            print(error_msg)
+            errors.append(error_msg)
+
+    autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
+    if (
+        target_group_arn
+        and target_group_arn != PremiumAssignment.STANDBY
+        and target_group_arn != autoscaling_tg_arn
+    ):
+        try:
+            elbv2.delete_target_group(TargetGroupArn=target_group_arn)
+            print(f"Deleted target group: {target_group_arn}")
+        except Exception as tg_error:
+            error_msg = f"Error deleting target group: {str(tg_error)}"
+            print(error_msg)
+            errors.append(error_msg)
+    elif target_group_arn == autoscaling_tg_arn:
+        print(
+            f"Skipping deletion of shared autoscaling "
+            f"target group: {target_group_arn}"
+        )
+
+    return errors
+
+
+def release_premium_user(user_id: int, hard: bool = False) -> Dict[str, Any]:
+    """Release premium user from assigned instance.
+
+    By default performs a soft-release (keeps ALB/TG intact for grace period).
+    Set hard=True to immediately delete everything (used by finalization and
+    explicit logout).
+
+    Always succeeds to prevent logout blocking.
+    """
 
     instance_id = None
     success = True
     errors = []
 
     try:
-        # 1. Get assignment from RDS (may fail if already removed)
-        try:
-            assignment = remove_user_assignment(user_id)
-            instance_id = assignment["instance_id"]
-            # Normalize empty/whitespace strings to None
-            target_group_arn = (assignment["target_group_arn"] or "").strip() or None
-            rule_arn = (assignment["alb_rule_arn"] or "").strip() or None
-            print(f"Found assignment for user {user_id} on instance {instance_id}")
-        except Exception as assignment_error:
-            print(f"No assignment found for user {user_id}: {str(assignment_error)}")
-            # User may not have been assigned or already released
-            target_group_arn = None
-            rule_arn = None
-
-        # 2. Delete ALB listener rule (if it exists)
-        if rule_arn:
+        if hard:
+            # Hard release: delete row + ALB resources immediately
             try:
-                elbv2.delete_rule(RuleArn=rule_arn)
-                print(f"Deleted ALB rule: {rule_arn}")
-            except Exception as rule_error:
-                error_msg = f"Error deleting ALB rule: {str(rule_error)}"
-                print(error_msg)
-                errors.append(error_msg)
-
-        # 3. Delete target group (if it exists)
-        # Skip deletion for special target groups
-        # (standby placeholder, autoscaling pool)
-        autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
-        if (
-            target_group_arn
-            and target_group_arn != PremiumAssignment.STANDBY
-            and target_group_arn != autoscaling_tg_arn
-        ):
-            try:
-                elbv2.delete_target_group(TargetGroupArn=target_group_arn)
-                print(f"Deleted target group: {target_group_arn}")
-            except Exception as tg_error:
-                error_msg = f"Error deleting target group: {str(tg_error)}"
-                print(error_msg)
-                errors.append(error_msg)
-        elif target_group_arn == autoscaling_tg_arn:
-            print(
-                f"Skipping deletion of shared autoscaling "
-                f"target group: {target_group_arn}"
-            )
-
-        # Note: Stale assignment cleanup is now handled by premium_cleanup Lambda
-        # running on scheduled basis (hourly)
-
-        # 5. Check if we can scale down premium instances by stopping idle ones
-        try:
-            scale_down_if_possible()
-        except Exception as scale_error:
-            print(f" Scale down failed but continuing: {str(scale_error)}")
-
-        # 6. Immediately convert idle instances to standby if no premium users are left
-        try:
-            active_users = count_active_premium_users()
-            if active_users == 0:
+                assignment = remove_user_assignment(user_id)
+                instance_id = assignment["instance_id"]
+                target_group_arn = (
+                    assignment["target_group_arn"] or ""
+                ).strip() or None
+                rule_arn = (assignment["alb_rule_arn"] or "").strip() or None
+                print(f"Hard-released user {user_id} from instance {instance_id}")
+            except Exception as assignment_error:
                 print(
-                    "No premium users remaining, converting idle "
-                    "instances to standby immediately"
+                    f"No assignment found for user {user_id}: "
+                    f"{str(assignment_error)}"
                 )
-                converted_count = convert_idle_instances_to_standby_immediate()
-                if converted_count > 0:
-                    print(
-                        f"Immediately converted {converted_count} idle instances "
-                        f"to standby after user logout"
-                    )
-        except Exception as standby_error:
-            print(f" Standby conversion failed but continuing: {str(standby_error)}")
+                target_group_arn = None
+                rule_arn = None
 
-        # Always return success - don't block user logout
-        message = f"Premium user {user_id} release completed"
+            errors = _teardown_alb_resources(user_id, rule_arn, target_group_arn)
+        else:
+            # Soft release: mark as pending_release, keep ALB/TG intact
+            assignment = soft_release_user_assignment(user_id)
+            if assignment:
+                instance_id = assignment["instance_id"]
+                print(
+                    f"Soft-released user {user_id} from instance "
+                    f"{instance_id} (grace period "
+                    f"{PremiumAssignment.PENDING_RELEASE_GRACE_SECONDS}s)"
+                )
+            else:
+                print(
+                    f"No active assignment to release for user {user_id} "
+                    f"(may already be pending_release or removed)"
+                )
+
+        # Skip scale-down for soft releases (instance still allocated)
+        if hard:
+            try:
+                scale_down_if_possible()
+            except Exception as scale_error:
+                print(f" Scale down failed but continuing: {str(scale_error)}")
+
+            try:
+                active_users = count_active_premium_users()
+                if active_users == 0:
+                    print(
+                        "No premium users remaining, converting idle "
+                        "instances to standby immediately"
+                    )
+                    converted_count = convert_idle_instances_to_standby_immediate()
+                    if converted_count > 0:
+                        print(
+                            f"Immediately converted {converted_count} idle "
+                            f"instances to standby after user logout"
+                        )
+            except Exception as standby_error:
+                print(
+                    f" Standby conversion failed but continuing: "
+                    f"{str(standby_error)}"
+                )
+
+        release_type = "hard" if hard else "soft"
+        message = f"Premium user {user_id} {release_type} release completed"
         if instance_id:
             message += f" from instance {instance_id}"
         if errors:
@@ -4007,7 +4306,6 @@ def release_premium_user(user_id: int) -> Dict[str, Any]:
         }
 
     except Exception as e:
-        # Even on critical errors, return success to prevent blocking user logout
         error_msg = f"Error releasing premium user {user_id}: {str(e)}"
         print(f" {error_msg}")
         return {
@@ -4368,6 +4666,83 @@ def terminate_standby_instance(instance_id: str):
     except Exception as e:
         print(f"Error terminating standby instance {instance_id}: {str(e)}")
         return False
+
+
+def cleanup_all_dynamic_instances(base_instance_ids: list) -> dict:
+    """
+    Terminate all dynamic premium instances and clean up their DB entries.
+    Called by the dev scheduler before stopping the environment.
+
+    Dynamic instances are those with tag Service: premium-tier that are NOT
+    in the base_instance_ids list (Terraform-managed base instances).
+
+    Args:
+        base_instance_ids: List of Terraform-managed instance IDs to preserve
+        (stop, not terminate)
+    """
+    ec2_client: "EC2Client" = boto3.client("ec2")
+    base_set = set(base_instance_ids)
+    result = {"terminated": [], "errors": [], "db_cleaned": 0}
+
+    try:
+        # Query all premium-tier instances
+        response = ec2_client.describe_instances(
+            Filters=[
+                {"Name": "tag:Service", "Values": ["premium-tier"]},
+                {
+                    "Name": "instance-state-name",
+                    "Values": ["running", "stopped", "pending", "stopping"],
+                },
+            ]
+        )
+
+        dynamic_ids = []
+        for reservation in response.get("Reservations", []):
+            for instance in reservation.get("Instances", []):
+                instance_id = instance["InstanceId"]
+                if instance_id not in base_set:
+                    dynamic_ids.append(instance_id)
+
+        if not dynamic_ids:
+            print("No dynamic premium instances found")
+            return result
+
+        print(
+            f"Found {len(dynamic_ids)} dynamic premium instances to terminate: "
+            f"{dynamic_ids}"
+        )
+
+        # Terminate dynamic instances
+        try:
+            ec2_client.terminate_instances(InstanceIds=dynamic_ids)
+            result["terminated"] = dynamic_ids
+            print(f"Terminated {len(dynamic_ids)} dynamic instances")
+        except Exception as e:
+            print(f"Error terminating dynamic instances: {e}")
+            result["errors"].append(str(e))
+
+        # Clean up DB entries for terminated instances
+        try:
+            with get_db_connection() as connection:
+                with connection.cursor() as cursor:
+                    placeholders = ", ".join(["%s"] * len(dynamic_ids))
+                    cursor.execute(
+                        f"DELETE FROM premium_user_assignments "
+                        f"WHERE instance_id IN ({placeholders})",
+                        tuple(dynamic_ids),
+                    )
+                    result["db_cleaned"] = cursor.rowcount
+                    connection.commit()
+            print(f"Cleaned up {result['db_cleaned']} DB entries")
+        except Exception as e:
+            print(f"Error cleaning up DB entries: {e}")
+            result["errors"].append(f"db_cleanup: {e}")
+
+    except Exception as e:
+        print(f"Error querying dynamic instances: {e}")
+        result["errors"].append(str(e))
+
+    return result
 
 
 def cleanup_failed_standby_instances():

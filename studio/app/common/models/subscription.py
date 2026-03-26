@@ -63,7 +63,10 @@ class SubscriptionPlans(SQLModel, table=True):
 
 class UserSubscription(SQLModel, table=True):
     __tablename__ = "subscription_users"
-    __table_args__ = (UniqueConstraint("id", name="idx_id"),)
+    __table_args__ = (
+        UniqueConstraint("id", name="idx_id"),
+        UniqueConstraint("user_id", name="idx_user_id_unique"),
+    )
 
     id: Optional[int] = Field(
         sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),

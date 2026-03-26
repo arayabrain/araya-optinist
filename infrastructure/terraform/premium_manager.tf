@@ -497,7 +497,7 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
           "ssm:GetCommandInvocation"
         ]
         Resource = "*"
-      }
+      },
     ]
   })
 }

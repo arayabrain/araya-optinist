@@ -1,6 +1,6 @@
 # Infrastructure Deployment Procedure
 
-> See also: [Architecture](TERRAFORM_ARCHITECTURE.md) | [Security](INFRA_SECURITY_MODEL.md)
+> See also: [Architecture](TERRAFORM_ARCHITECTURE.md) | [Security](INFRA_SECURITY_MODEL.md) | [Dev Schedule](../scripts/DEV_SCHEDULE_GUIDE.md)
 
 ---
 
@@ -70,7 +70,7 @@ If creating from scratch:
 Download the tfvars files from Google Drive and place them in the `environments/` directory:
 
 ```bash
-# Download from Google Drive: [https://drive.google.com/drive/folders/1FBIAqBjIdzkXCvNKKGgKu17J4-O3dX-F]
+# Download from Google Drive: [https://drive.google.com/drive/folders/1xUsptIrcWYMAgeqNraRzObG_CUqMXHZh]
 # Place files at:
 #   infrastructure/terraform/environments/production.tfvars
 #   infrastructure/terraform/environments/development.tfvars
@@ -92,7 +92,8 @@ cp development.tfvars.example development.tfvars
 cd infrastructure/terraform
 
 # 1. Initialize — connects to production state bucket
-terraform init -backend-config=backends/production.hcl
+#    Use -reconfigure if you were previously initialized to a different environment
+terraform init -backend-config=backends/production.hcl -reconfigure
 
 # 2. Preview changes
 terraform plan -var-file=environments/production.tfvars
@@ -112,7 +113,8 @@ terraform output
 cd infrastructure/terraform
 
 # 1. Initialize — connects to development state bucket
-terraform init -backend-config=backends/development.hcl
+#    Use -reconfigure if you were previously initialized to a different environment
+terraform init -backend-config=backends/development.hcl -reconfigure
 
 # 2. Ensure development.tfvars exists (download from Google Drive or copy from example)
 
@@ -171,9 +173,9 @@ terraform destroy -var-file=environments/production.tfvars
 
 Production and development use **separate ECR repositories** to ensure complete image isolation:
 
-| Environment | ECR Repository | Managed by |
-|---|---|---|
-| Production | `optinist-for-cloud` | Pre-existing (outside Terraform) |
+| Environment | ECR Repository                   | Managed by                                             |
+| ----------- | -------------------------------- | ------------------------------------------------------ |
+| Production  | `optinist-for-cloud`             | Pre-existing (outside Terraform)                       |
 | Development | `development-optinist-for-cloud` | Terraform (created when `ecr_repository_url` is empty) |
 
 Both environments push to `:latest` within their own repo. A Docker push for dev testing **cannot** affect production.
@@ -196,6 +198,7 @@ cd infrastructure/scripts
 ```
 
 The script will display:
+
 ```
 ============================================
   BUILD AND PUSH CONFIRMATION
@@ -214,6 +217,7 @@ For production, an additional **WARNING** banner is shown.
 - If initialized to **production** → pushes to `optinist-for-cloud:latest`
 
 Every push creates **two tags**:
+
 - `:latest` — used by ECS task definitions (always current)
 - `:YYYYMMDD-HHMMSS-<git-sha>` — immutable version for history and rollback (e.g., `20260317-143022-a1b2c3d`)
 
@@ -265,6 +269,7 @@ aws ecs update-service \
 ### Image Cleanup
 
 The ECR lifecycle policy automatically manages storage:
+
 - **Untagged images**: removed after 7 days
 - **Versioned images**: only the last 10 are kept
 - **`:latest`**: always retained

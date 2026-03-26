@@ -86,20 +86,31 @@ resource "aws_instance" "nat" {
               #!/bin/bash
               yum update -y
 
-              # Enable IP forwarding
-              echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.conf
+              # Enable IP forwarding (idempotent — only appends if not present)
+              grep -q 'net.ipv4.ip_forward' /etc/sysctl.conf || echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.conf
               sysctl -p
 
-              # Configure NAT with iptables
-              iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-              iptables -A FORWARD -i eth0 -o eth1 -m state --state RELATED,ESTABLISHED -j ACCEPT
-              iptables -A FORWARD -i eth1 -o eth0 -j ACCEPT
+              # Create a systemd service to configure NAT iptables on every boot.
+              # User data only runs on first boot, but iptables rules can be lost
+              # after stop/start cycles. This service ensures NAT forwarding works
+              # reliably on every boot.
+              cat > /etc/systemd/system/nat-iptables.service << 'UNIT'
+              [Unit]
+              Description=Configure NAT iptables rules
+              After=network.target
 
-              # Save iptables rules
-              service iptables save
+              [Service]
+              Type=oneshot
+              RemainAfterExit=yes
+              ExecStart=/bin/bash -c 'iptables -P FORWARD ACCEPT && iptables -t nat -C POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE'
 
-              # Ensure iptables starts on boot
-              chkconfig iptables on
+              [Install]
+              WantedBy=multi-user.target
+              UNIT
+
+              systemctl daemon-reload
+              systemctl enable nat-iptables.service
+              systemctl start nat-iptables.service
               EOF
 
   tags = {
@@ -127,20 +138,31 @@ resource "aws_instance" "nat2" {
               #!/bin/bash
               yum update -y
 
-              # Enable IP forwarding
-              echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.conf
+              # Enable IP forwarding (idempotent — only appends if not present)
+              grep -q 'net.ipv4.ip_forward' /etc/sysctl.conf || echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.conf
               sysctl -p
 
-              # Configure NAT with iptables
-              iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-              iptables -A FORWARD -i eth0 -o eth1 -m state --state RELATED,ESTABLISHED -j ACCEPT
-              iptables -A FORWARD -i eth1 -o eth0 -j ACCEPT
+              # Create a systemd service to configure NAT iptables on every boot.
+              # User data only runs on first boot, but iptables rules can be lost
+              # after stop/start cycles. This service ensures NAT forwarding works
+              # reliably on every boot.
+              cat > /etc/systemd/system/nat-iptables.service << 'UNIT'
+              [Unit]
+              Description=Configure NAT iptables rules
+              After=network.target
 
-              # Save iptables rules
-              service iptables save
+              [Service]
+              Type=oneshot
+              RemainAfterExit=yes
+              ExecStart=/bin/bash -c 'iptables -P FORWARD ACCEPT && iptables -t nat -C POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE'
 
-              # Ensure iptables starts on boot
-              chkconfig iptables on
+              [Install]
+              WantedBy=multi-user.target
+              UNIT
+
+              systemctl daemon-reload
+              systemctl enable nat-iptables.service
+              systemctl start nat-iptables.service
               EOF
 
   tags = {
