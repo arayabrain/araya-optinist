@@ -135,6 +135,11 @@ class PremiumAssignment:
     # (awaiting migration to dedicated instance)
     AUTOSCALING_POOL = "autoscaling-pool"
 
+    # Handler action values (API request body "action" field)
+    ACTION_ASSIGN = "assign"
+    ACTION_RELEASE = "release"
+    ACTION_UPDATE_ACTIVITY = "update_activity"
+
 
 class DatabaseConfig:
     """

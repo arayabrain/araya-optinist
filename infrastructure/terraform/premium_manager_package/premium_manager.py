@@ -683,8 +683,9 @@ def _finalize_expired_pending_releases_transaction(connection):
                 (uid,),
             )
             cursor.execute(
-                "DELETE FROM premium_user_assignments WHERE user_id = %s",
-                (uid,),
+                "DELETE FROM premium_user_assignments"
+                " WHERE user_id = %s AND status = %s",
+                (uid, PremiumAssignment.PENDING_RELEASE),
             )
             print(
                 f"Finalized pending_release: deleted user {uid} -> "
@@ -2233,12 +2234,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     "body": json.dumps({"error": str(e)}),
                 }
 
-            if action == "assign":
+            if action == PremiumAssignment.ACTION_ASSIGN:
                 return assign_premium_user(user_id, body_data, user_uid)
-            elif action == "release":
+            elif action == PremiumAssignment.ACTION_RELEASE:
                 hard = body_data.get("hard", False)
                 return release_premium_user(user_id, hard=hard)
-            elif action == "update_activity":
+            elif action == PremiumAssignment.ACTION_UPDATE_ACTIVITY:
                 return handle_activity_update(user_id)
             else:
                 return {
