@@ -281,11 +281,11 @@ async def list_user(
                 func.coalesce(UserStorageUsage.storage_usage_bytes, 0).label(
                     "data_usage"
                 ),
-                SubscriptionPlans.name,
+                func.max(SubscriptionPlans.name).label("subscription_plan_name"),
                 UserStorageUsage.storage_usage_bytes,
                 UserStorageUsage.storage_quota_bytes,
-                UserSubscription.expiration,
-                UserSubscription.plan_id,
+                func.max(UserSubscription.expiration).label("subscription_expiration"),
+                func.max(UserSubscription.plan_id).label("subscription_plan_id"),
             )
             .join(UserRoleModel, UserRoleModel.user_id == UserModel.id, isouter=True)
             .join(RoleModel, RoleModel.id == UserRoleModel.role_id, isouter=True)
@@ -302,14 +302,7 @@ async def list_user(
                 UserModel.name.like("%{0}%".format(options.name)),
                 UserModel.email.like("%{0}%".format(options.email)),
             )
-            .group_by(
-                UserModel.id,
-                SubscriptionPlans.name,
-                UserStorageUsage.storage_usage_bytes,
-                UserStorageUsage.storage_quota_bytes,
-                UserSubscription.expiration,
-                UserSubscription.plan_id,
-            )
+            .group_by(UserModel.id)
             .order_by(*sa_sort_list),
             transformer=_transform_user_rows,  # Use shared transformer
             unique=False,
