@@ -98,7 +98,10 @@ async def fetch_last_experiment(
                 is_remote_synced=is_remote_synced,
             )
         else:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No experiment found in workspace",
+            )
 
     except HTTPException as e:
         logger.error(e, exc_info=True)

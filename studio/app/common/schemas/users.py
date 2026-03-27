@@ -47,6 +47,7 @@ class User(BaseModel):
     storage_usage_bytes: Optional[int] = None
     storage_quota_bytes: Optional[int] = None
     storage_usage_percent: Optional[float] = None
+    subscription_expiration: Optional[datetime] = None
 
     @property
     def is_admin(self) -> bool:
@@ -92,6 +93,21 @@ class UserUpdate(BaseModel):
     email: Optional[EmailStr]
     name: str
     role_id: int
+
+
+class SubscriptionAuditSnapshot(BaseModel):
+    """Typed snapshot of subscription state for audit log old_value/new_value."""
+
+    plan_id: int
+    expiration: Optional[str] = None
+    storage_quota_bytes: int
+
+
+class UserSubscriptionUpdate(BaseModel):
+    plan_id: int
+    expiration: Optional[datetime] = None
+    storage_quota_bytes: int = Field(gt=0, lt=10 * 1024 * 1024 * 1024 * 1024)
+    reason: str = Field(min_length=1)
 
 
 class SelfUserUpdate(BaseModel):

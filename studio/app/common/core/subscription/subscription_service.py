@@ -1,20 +1,23 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 
 import stripe
 from fastapi import HTTPException
-from sqlalchemy import and_
+from sqlalchemy import and_, exists
 from sqlmodel import Session
 
 from studio.app.common import models as common_model
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.constants import (
+    DeletionPriority,
+    SubscriptionPlanType,
     SubscriptionStatusType,
     SubscriptionUserStatus,
     SyncStatus,
 )
 from studio.app.common.core.utils.config_handler import get_env_var
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
+from studio.app.common.models.free_user import FreeUserAssignment
 from studio.app.common.models.subscription import (
     SubscriptionCancellation,
     SubscriptionPlans,
@@ -22,6 +25,7 @@ from studio.app.common.models.subscription import (
     UserSubscription,
 )
 from studio.app.common.models.user import User
+from studio.app.common.models.user_preferences import UserPreferences
 
 logger = AppLogger.get_logger()
 
@@ -459,85 +463,179 @@ class SubscriptionService:
         return (None, user)
 
     @staticmethod
-    def get_users_with_upcoming_quota_drop(db: Session) -> List[dict]:
+    def get_current_excess_bytes(db: Session, user_id: int) -> Optional[int]:
+        """Return bytes over free-tier quota, or None if no storage record."""
+        from studio.app.common.core.subscription.constants import ExpirationDeletion
+        from studio.app.common.models.subscription import UserStorageUsage
+
+        storage = (
+            db.query(UserStorageUsage)
+            .filter(UserStorageUsage.user_id == user_id)
+            .first()
+        )
+        if not storage:
+            return None
+        return max(0, storage.storage_usage_bytes - ExpirationDeletion.FREE_QUOTA_BYTES)
+
+    @staticmethod
+    def has_active_workflows(db: Session, user_id: int) -> bool:
+        """Check if user has active workflows via FreeUserAssignment."""
+        assignment = (
+            db.query(FreeUserAssignment)
+            .filter(FreeUserAssignment.user_id == user_id)
+            .first()
+        )
+        return assignment is not None and assignment.active_workflow_count > 0
+
+    @staticmethod
+    def get_deletion_priority(db: Session, user_id: int) -> DeletionPriority:
+        """Get user's deletion priority preference, defaulting to preserve_outputs."""
+        prefs = (
+            db.query(UserPreferences).filter(UserPreferences.user_id == user_id).first()
+        )
+        if prefs and prefs.deletion_priority:
+            return DeletionPriority(prefs.deletion_priority)
+        return DeletionPriority.PRESERVE_OUTPUTS
+
+    @staticmethod
+    def update_deletion_priority(
+        db: Session, user_id: int, priority: DeletionPriority
+    ) -> None:
+        """Upsert user's deletion priority preference into UserPreferences."""
+        prefs = (
+            db.query(UserPreferences).filter(UserPreferences.user_id == user_id).first()
+        )
+        if prefs:
+            prefs.deletion_priority = priority
+        else:
+            prefs = UserPreferences(user_id=user_id, deletion_priority=priority)
+            db.add(prefs)
+        db.commit()
+
+    @staticmethod
+    def mark_deletion_processed(db: Session, user_id: int) -> None:
+        """Set deletion_processed_at on expired subscription records for the user.
+
+        Only stamps records whose expiration is past the grace cutoff (the same
+        records the eligibility query selected). New subscription records created
+        after re-subscribing start with deletion_processed_at = NULL.
         """
-        Get users whose quota will drop soon due to grace period ending.
+        from studio.app.common.core.subscription.constants import SubscriptionPeriods
 
-        This identifies users in grace period whose current storage usage exceeds
-        the FREE tier quota. These users should be warned about impending quota drop.
+        now = get_current_datetime()
+        grace_cutoff = now - timedelta(days=SubscriptionPeriods.GRACE_PERIOD_DAYS)
+        subscriptions = (
+            db.query(UserSubscription)
+            .filter(
+                UserSubscription.user_id == user_id,
+                UserSubscription.deletion_processed_at.is_(None),
+                UserSubscription.expiration <= grace_cutoff,
+            )
+            .all()
+        )
+        for subscription in subscriptions:
+            subscription.deletion_processed_at = now
+        if subscriptions:
+            db.commit()
 
-        Args:
-            db: Database session
-
-        Returns:
-            List of dicts with user info and excess storage data
+    @staticmethod
+    def get_users_for_expiration_deletion(db: Session) -> List[dict]:
         """
-        from datetime import timedelta
+        Get users past grace period who need expiration deletion.
 
+        Finds users where:
+        - Premium subscription expired > GRACE_PERIOD_DAYS ago
+        - deletion_processed_at is NULL on those records (not yet processed)
+        - Storage usage exceeds free tier quota
+
+        Also re-processes users whose storage has grown back above quota
+        after a cooldown period (self-healing).
+        """
         from studio.app.common.core.subscription.constants import (
-            StorageQuota,
-            StorageSize,
+            ExpirationDeletion,
             SubscriptionPeriods,
             SubscriptionPlanIds,
         )
         from studio.app.common.models.subscription import UserStorageUsage
 
-        warning_days = SubscriptionPeriods.QUOTA_DROP_WARNING_DAYS
-        free_quota_bytes = StorageQuota.FREE * StorageSize.GB
-        current_time = SubscriptionService.get_current_datetime()
+        current_time = get_current_datetime()
+        grace_cutoff = current_time - timedelta(
+            days=SubscriptionPeriods.GRACE_PERIOD_DAYS
+        )
+        reprocess_cutoff = current_time - timedelta(
+            days=ExpirationDeletion.REPROCESS_COOLDOWN_DAYS
+        )
 
-        users_to_warn = []
+        # Subquery: exclude users who have a current active subscription
+        from sqlalchemy.orm import aliased
 
-        try:
-            # Find expired premium subscriptions (in grace period)
-            grace_period_end = current_time - timedelta(
-                days=SubscriptionPeriods.GRACE_PERIOD_DAYS
+        ActiveSub = aliased(UserSubscription)
+        has_active_sub = exists().where(
+            and_(
+                ActiveSub.user_id == UserSubscription.user_id,
+                ActiveSub.expiration > current_time,
             )
+        )
 
-            # Get users with expired premium subscriptions within grace period
-            expired_subs = (
-                db.query(UserSubscription, User, UserStorageUsage)
-                .join(User, UserSubscription.user_id == User.id)
-                .join(UserStorageUsage, UserStorageUsage.user_id == User.id)
-                .filter(
-                    UserSubscription.plan_id == SubscriptionPlanIds.PREMIUM,
-                    UserSubscription.expiration < current_time,
-                    UserSubscription.expiration > grace_period_end,
-                    # Storage exceeds free tier
-                    UserStorageUsage.storage_usage_bytes > free_quota_bytes,
-                )
-                .all()
+        # Query 1: Users with unprocessed expired subscriptions
+        unprocessed = (
+            db.query(UserSubscription, User, UserStorageUsage)
+            .join(User, UserSubscription.user_id == User.id)
+            .join(UserStorageUsage, UserStorageUsage.user_id == User.id)
+            .filter(
+                UserSubscription.plan_id == SubscriptionPlanIds.PREMIUM,
+                UserSubscription.expiration <= grace_cutoff,
+                UserSubscription.deletion_processed_at.is_(None),
+                UserStorageUsage.storage_usage_bytes
+                > ExpirationDeletion.FREE_QUOTA_BYTES,
+                ~has_active_sub,
             )
+            .order_by(UserSubscription.expiration.desc())
+            .all()
+        )
 
-            for sub, user, storage in expired_subs:
-                # Calculate days until grace period ends
-                grace_end = sub.expiration + timedelta(
-                    days=SubscriptionPeriods.GRACE_PERIOD_DAYS
-                )
-                days_until_drop = (grace_end - current_time).days
+        # Query 2: Self-healing — users already processed but storage
+        # grew back above quota, after cooldown period
+        reprocess = (
+            db.query(UserSubscription, User, UserStorageUsage)
+            .join(User, UserSubscription.user_id == User.id)
+            .join(UserStorageUsage, UserStorageUsage.user_id == User.id)
+            .filter(
+                UserSubscription.plan_id == SubscriptionPlanIds.PREMIUM,
+                UserSubscription.expiration <= grace_cutoff,
+                UserSubscription.deletion_processed_at.isnot(None),
+                UserSubscription.deletion_processed_at <= reprocess_cutoff,
+                UserStorageUsage.storage_usage_bytes
+                > ExpirationDeletion.FREE_QUOTA_BYTES,
+                ~has_active_sub,
+            )
+            .order_by(UserSubscription.expiration.desc())
+            .all()
+        )
 
-                # Only warn if within warning window
-                if days_until_drop <= warning_days:
-                    excess_bytes = storage.storage_usage_bytes - free_quota_bytes
-                    users_to_warn.append(
-                        {
-                            "user_id": user.id,
-                            "user_uid": user.uid,
-                            "email": user.email,
-                            "current_storage_bytes": storage.storage_usage_bytes,
-                            "future_quota_bytes": free_quota_bytes,
-                            "excess_bytes": excess_bytes,
-                            "days_until_quota_drop": days_until_drop,
-                            "grace_period_end": grace_end,
-                        }
-                    )
+        # Deduplicate by user_id, then limit to BATCH_SIZE
+        seen_user_ids = set()
+        users = []
+        for sub, user, storage in list(unprocessed) + list(reprocess):
+            if user.id in seen_user_ids:
+                continue
+            seen_user_ids.add(user.id)
+            users.append(
+                {
+                    "user_id": user.id,
+                    "user_uid": user.uid,
+                    "storage_usage_bytes": storage.storage_usage_bytes,
+                    "excess_bytes": (
+                        storage.storage_usage_bytes
+                        - ExpirationDeletion.FREE_QUOTA_BYTES
+                    ),
+                }
+            )
+            if len(users) >= ExpirationDeletion.BATCH_SIZE:
+                break
 
-            logger.info(f"Found {len(users_to_warn)} users with upcoming quota drops")
-            return users_to_warn
-
-        except Exception as e:
-            logger.error(f"Error getting users with upcoming quota drop: {e}")
-            return []
+        logger.info(f"Found {len(users)} users for expiration deletion processing")
+        return users
 
 
 class SyncService:

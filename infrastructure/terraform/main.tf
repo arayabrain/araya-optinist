@@ -4,7 +4,7 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Environment = var.environment
+      Environment = local.environment_label
       ManagedBy   = "terraform"
       Project     = "optinist-cloud"
     }
@@ -185,8 +185,15 @@ variable "git_branch" {
 }
 
 variable "ecr_repository_url" {
-  description = "ECR repository URL for OptiNiSt Docker image"
+  description = "ECR repository URL for a pre-existing repo (production). If empty, Terraform creates a new repo named <environment>-optinist-for-cloud."
   type        = string
+  default     = ""
+}
+
+variable "docker_image_tag" {
+  description = "Docker image tag to deploy (use env-specific tags to isolate dev from prod)"
+  type        = string
+  default     = "latest"
 }
 
 variable "asg_min_size" {
@@ -205,6 +212,25 @@ variable "asg_desired_capacity" {
   description = "Desired number of instances in ASG"
   type        = number
   default     = 1
+}
+
+# Instance type configuration
+variable "free_instance_type" {
+  description = "Instance type for free tier instances"
+  type        = string
+  default     = "t3.large"
+}
+
+variable "premium_instance_type" {
+  description = "Instance type for premium tier instances"
+  type        = string
+  default     = "t3.large"
+}
+
+variable "background_instance_type" {
+  description = "Instance type for background service instance"
+  type        = string
+  default     = "t3.micro"
 }
 
 # Frontend domain configuration
@@ -243,12 +269,36 @@ variable "monthly_budget_usd" {
   type        = number
 }
 
+variable "enable_dev_schedule" {
+  description = "Enable scheduled start/stop for dev environment (08:00-22:00 JST Mon-Fri)"
+  type        = bool
+  default     = false
+}
+
+variable "dev_schedule_stop_mode" {
+  description = "RDS shutdown mode: 'stop' (fast resume, EBS still billed) or 'destroy' (snapshot + delete, max savings)"
+  type        = string
+  default     = "destroy"
+
+  validation {
+    condition     = contains(["stop", "destroy"], var.dev_schedule_stop_mode)
+    error_message = "dev_schedule_stop_mode must be 'stop' or 'destroy'."
+  }
+}
+
 # Data sources
 data "aws_caller_identity" "current" {}
 data "aws_elb_service_account" "main" {}
 
 locals {
-  env_prefix = "${var.environment}-optinist"
+  env_prefix        = "${var.environment}-optinist"
+  environment_label = var.environment == "subscr" ? "Production" : "Development"
+
+  # Resolve frontend host/port from ALB DNS when no custom domain is configured
+  # - Production: uses custom domain on port 443
+  # - Development: uses ALB DNS name on port 8080
+  effective_frontend_domain = var.enable_custom_domain ? var.frontend_domain : aws_lb.autoscaling.dns_name
+  effective_frontend_port   = var.enable_custom_domain ? var.frontend_port : "8080"
 }
 
 # =======
@@ -317,6 +367,11 @@ output "ecs_security_group_id" {
 output "alb_dns_name" {
   description = "ALB DNS name"
   value       = aws_lb.autoscaling.dns_name
+}
+
+output "docker_image_tag" {
+  description = "Docker image tag used by this environment"
+  value       = var.docker_image_tag
 }
 
 output "ecs_cluster_name" {
@@ -424,13 +479,13 @@ output "test_users" {
 
 # Route53 and SSL outputs
 output "domain_name" {
-  description = "Custom domain name for the application"
-  value       = var.frontend_domain
+  description = "Effective domain name for the application (ALB DNS in dev, custom domain in prod)"
+  value       = local.effective_frontend_domain
 }
 
 output "domain_url" {
   description = "Full URL for the application"
-  value       = "${var.frontend_protocol}://${var.frontend_domain}"
+  value       = "${var.frontend_protocol}://${local.effective_frontend_domain}"
 }
 
 output "domain_protocol" {
@@ -439,8 +494,8 @@ output "domain_protocol" {
 }
 
 output "domain_port" {
-  description = "Port for the application"
-  value       = var.frontend_port
+  description = "Effective port for the application (8080 in dev, frontend_port in prod)"
+  value       = local.effective_frontend_port
 }
 
 output "acm_certificate_arn" {

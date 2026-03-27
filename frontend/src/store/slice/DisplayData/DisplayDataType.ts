@@ -12,6 +12,7 @@ import {
   PieData,
   PolarData,
   MatlabData,
+  StructuredData,
 } from "api/outputs/Outputs"
 import { StatusROI } from "components/Workspace/Visualize/Plot/ImagePlot"
 
@@ -57,6 +58,9 @@ export type DisplayData = {
   polar: {
     [filePath: string]: PolarDisplayData
   }
+  structured: {
+    [itemId: string]: StructuredDisplayData
+  }
   loading: boolean
   loadingStack: boolean[]
   statusRoi: StatusROI
@@ -97,6 +101,7 @@ interface BaseDisplay<T extends DATA_TYPE, Data> {
   meta?: PlotMetaData
   pending: boolean
   error: string | null
+  errorStatus?: number
   fulfilled: boolean
 }
 
@@ -151,4 +156,11 @@ export interface PieDisplayData extends BaseDisplay<"pie", PieData> {
 export interface PolarDisplayData extends BaseDisplay<"polar", PolarData> {
   columns: number[]
   index: number[]
+}
+
+export interface StructuredDisplayData {
+  data: StructuredData | null
+  pending: boolean
+  fulfilled: boolean
+  error: string | null
 }

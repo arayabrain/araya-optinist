@@ -221,7 +221,7 @@ const handlePremiumRoutingError = async (
 
   try {
     // eslint-disable-next-line no-console
-    console.log("Using free tier while premium instance provisions")
+    console.warn("Using free tier while premium instance provisions")
     return await axios(retryConfig)
   } catch (retryError) {
     // eslint-disable-next-line no-console
@@ -246,11 +246,16 @@ axios.interceptors.response.use(
       return handleUnauthorizedError(error)
     }
 
-    // ALB 503 when premium instance is unavailable.
+    // ALB 502/503 when premium instance is unavailable (target group empty
+    // or unhealthy after environment restart).
     // Also handle network errors (ERR_FAILED / no response)
-    const is503 = error?.response?.status === 503
+    const is502or503 =
+      error?.response?.status === 502 || error?.response?.status === 503
     const isNetworkError = !error?.response && !!error?.config
-    if ((is503 || isNetworkError) && routingService.requiresPremiumRouting()) {
+    if (
+      (is502or503 || isNetworkError) &&
+      routingService.requiresPremiumRouting()
+    ) {
       return handlePremiumRoutingError(error)
     }
 

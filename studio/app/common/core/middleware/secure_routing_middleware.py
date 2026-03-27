@@ -30,6 +30,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jwt
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.middleware.constants import SKIP_AUTH_PATHS
 from studio.app.common.core.mode import MODE
 
 logger = AppLogger.get_logger()
@@ -160,8 +161,6 @@ class SecureRoutingMiddleware:
     - Immediate cache invalidation on subscription changes
     """
 
-    SKIP_AUTH_PATHS = ["/health", "/api/auth/login", "/api/auth/refresh"]
-
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
@@ -180,7 +179,7 @@ class SecureRoutingMiddleware:
 
         # Skip health check, auth endpoints, and system-internal API endpoints
         # System-internal endpoints use their own auth (shared secret, not JWT)
-        if path in self.SKIP_AUTH_PATHS or path.startswith("/system-internal/"):
+        if path in SKIP_AUTH_PATHS or path.startswith("/system-internal/"):
             await self.app(scope, receive, send)
             return
 

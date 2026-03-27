@@ -10,6 +10,7 @@ export enum TLevelsLog {
   DEBUG = "DEBUG",
   WARNING = "WARNING",
   CRITICAL = "CRITICAL",
+  FRONTEND = "FRONTEND",
 }
 
 export type TParams<T = unknown> = {

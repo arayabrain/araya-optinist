@@ -118,6 +118,14 @@ class PremiumAssignment:
     MIGRATING = "migrating"
     # Status: Assignment is being terminated
     TERMINATING = "terminating"
+    # Status: Soft-released via beacon (grace period before full teardown).
+    # IMPORTANT: Shares the TERMINATING DB value to avoid a schema migration.
+    # Safe only because all status checks use enum constants, not raw strings.
+    # Adding code that matches TERMINATING will also match PENDING_RELEASE rows.
+    # If a distinct status is ever needed, migrate the column value first.
+    PENDING_RELEASE = "terminating"
+    # Grace period (seconds) before a pending_release is finalized.
+    PENDING_RELEASE_GRACE_SECONDS = 120
 
     # Marker: Standby pool entries (no real ALB rule/target group yet)
     STANDBY = "standby"
@@ -126,6 +134,11 @@ class PremiumAssignment:
     # Marker: User temporarily assigned to shared autoscaling pool
     # (awaiting migration to dedicated instance)
     AUTOSCALING_POOL = "autoscaling-pool"
+
+    # Handler action values (API request body "action" field)
+    ACTION_ASSIGN = "assign"
+    ACTION_RELEASE = "release"
+    ACTION_UPDATE_ACTIVITY = "update_activity"
 
 
 class DatabaseConfig:

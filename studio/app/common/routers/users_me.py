@@ -142,14 +142,15 @@ async def release_premium_instance(current_user: User = Depends(get_current_user
     """
     Release current user from their assigned premium instance.
     This endpoint should be called on logout for premium users.
+    Hard-release: immediately deletes assignment + ALB resources.
     """
     try:
         invalidate_activity_cache(current_user.id)
         mark_user_logged_out(current_user.id)
 
-        # Call the premium assignment service
+        # Hard release on explicit logout (no grace period)
         result = await premium_assignment_service.release_premium_user(
-            current_user.id, current_user.uid
+            current_user.id, current_user.uid, hard=True
         )
 
         if result["success"]:

@@ -1,4 +1,4 @@
-from datetime import timezone
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
@@ -36,15 +36,18 @@ from studio.app.common.models import UserRole as UserRoleModel
 from studio.app.common.models.subscription import (
     DeletionStatus,
     DeletionStep,
+    SubscriptionAuditLog,
     SubscriptionPlans,
     UserDeletionRecord,
     UserStorageUsage,
     UserSubscription,
 )
+from studio.app.common.models.user_preferences import UserPreferences
 from studio.app.common.models.workspace import Workspace
 from studio.app.common.schemas.auth import UserAuth
 from studio.app.common.schemas.base import SortOptions
 from studio.app.common.schemas.users import (
+    SubscriptionAuditSnapshot,
     User,
     UserCreate,
     UserPasswordUpdate,
@@ -107,6 +110,8 @@ def _transform_user_row(item) -> UserModel:
     user.__dict__["storage_usage_percent"] = round(
         (storage_usage_bytes or 0) / (storage_quota_bytes or 1) * 100, 2
     )
+
+    user.__dict__["subscription_expiration"] = subscription_expiration
 
     # Calculate subscription status and days remaining
     now = get_current_datetime()
@@ -275,11 +280,11 @@ async def list_user(
                 func.coalesce(UserStorageUsage.storage_usage_bytes, 0).label(
                     "data_usage"
                 ),
-                SubscriptionPlans.name,
+                func.max(SubscriptionPlans.name).label("subscription_plan_name"),
                 UserStorageUsage.storage_usage_bytes,
                 UserStorageUsage.storage_quota_bytes,
-                UserSubscription.expiration,
-                UserSubscription.plan_id,
+                func.max(UserSubscription.expiration).label("subscription_expiration"),
+                func.max(UserSubscription.plan_id).label("subscription_plan_id"),
             )
             .join(UserRoleModel, UserRoleModel.user_id == UserModel.id, isouter=True)
             .join(RoleModel, RoleModel.id == UserRoleModel.role_id, isouter=True)
@@ -296,14 +301,7 @@ async def list_user(
                 UserModel.name.like("%{0}%".format(options.name)),
                 UserModel.email.like("%{0}%".format(options.email)),
             )
-            .group_by(
-                UserModel.id,
-                SubscriptionPlans.name,
-                UserStorageUsage.storage_usage_bytes,
-                UserStorageUsage.storage_quota_bytes,
-                UserSubscription.expiration,
-                UserSubscription.plan_id,
-            )
+            .group_by(UserModel.id)
             .order_by(*sa_sort_list),
             transformer=_transform_user_rows,  # Use shared transformer
             unique=False,
@@ -527,18 +525,19 @@ async def update_user_subscription_admin(
     db: Session,
     user_id: int,
     data: UserSubscriptionUpdate,
-    organization_id: int,
+    admin_user: User,
 ) -> User:
     """Admin-only: directly update a user's subscription plan,
     expiration, and storage quota.
-    This bypasses Stripe and modifies the database directly."""
+    This bypasses Stripe and modifies the database directly.
+    All changes are recorded in the subscription_audit_log."""
     try:
         user_db = (
             db.query(UserModel)
             .filter(
                 UserModel.active.is_(True),
                 UserModel.id == user_id,
-                UserModel.organization_id == organization_id,
+                UserModel.organization_id == admin_user.organization.id,
             )
             .first()
         )
@@ -559,8 +558,6 @@ async def update_user_subscription_admin(
             raise HTTPException(
                 status_code=400, detail="User has no subscription record"
             )
-        subscription.plan_id = data.plan_id
-        subscription.expiration = data.expiration
 
         storage = (
             db.query(UserStorageUsage)
@@ -569,16 +566,66 @@ async def update_user_subscription_admin(
         )
         if storage is None:
             raise HTTPException(status_code=400, detail="User has no storage record")
+
+        # Capture old values before applying changes
+        # Normalize expiration to UTC ISO string for consistent audit format
+        old_expiration_str = None
+        if subscription.expiration:
+            old_exp = subscription.expiration
+            if old_exp.tzinfo is None:
+                old_exp = old_exp.replace(tzinfo=timezone.utc)
+            old_expiration_str = old_exp.isoformat()
+
+        old_value = SubscriptionAuditSnapshot(
+            plan_id=subscription.plan_id,
+            expiration=old_expiration_str,
+            storage_quota_bytes=storage.storage_quota_bytes,
+        )
+
+        # Apply changes
+        # For Free plan, expiration is not meaningful — default to now
+        expiration = data.expiration or datetime.now(timezone.utc)
+        subscription.plan_id = data.plan_id
+        subscription.expiration = expiration
+        subscription.scheduled_downgrade = False
         storage.storage_quota_bytes = data.storage_quota_bytes
+
+        # Write audit log
+        new_value = SubscriptionAuditSnapshot(
+            plan_id=data.plan_id,
+            expiration=expiration.isoformat(),
+            storage_quota_bytes=data.storage_quota_bytes,
+        )
+        audit_log = SubscriptionAuditLog(
+            user_id=user_id,
+            changed_by=admin_user.id,
+            old_value=old_value.dict(),
+            new_value=new_value.dict(),
+            reason=data.reason,
+        )
+        db.add(audit_log)
 
         db.commit()
         return await get_user_with_context(db, user_id)
 
-    except HTTPException:
+    except HTTPException as e:
+        db.rollback()
+        logger.warning(
+            "Subscription update rejected for user %s: [%s] %s",
+            user_id,
+            e.status_code,
+            e.detail,
+        )
         raise
     except Exception as e:
-        logger.error(e, exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        db.rollback()
+        logger.error(
+            "Unexpected error updating subscription for user %s: %s",
+            user_id,
+            e,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 async def update_password(
@@ -726,6 +773,11 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
 
         deletion_record.step = DeletionStep.WORKSPACES_DELETED.value
         db.commit()
+
+        # Clean up user preferences
+        db.query(UserPreferences).filter(UserPreferences.user_id == user_id).delete(
+            synchronize_session=False
+        )
 
         # ----------------------------------------
         # Step 5: Mark user inactive
@@ -882,6 +934,11 @@ async def resume_deletion_from_step(record: UserDeletionRecord, db: Session) -> 
                 logger.warning(f"Workspace deletion in recovery failed: {e}")
         record.step = DeletionStep.WORKSPACES_DELETED.value
         db.commit()
+
+    # Clean up user preferences
+    db.query(UserPreferences).filter(UserPreferences.user_id == record.user_id).delete(
+        synchronize_session=False
+    )
 
     # Final step: mark user inactive
     user_db.active = False

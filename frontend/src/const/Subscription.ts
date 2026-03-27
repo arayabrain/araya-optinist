@@ -98,6 +98,32 @@ export const PremiumTiming = {
   WARNING_UPDATE_INTERVAL_MS: 60 * 1000, // 1 minute
 } as const
 
+// Deletion priority options (matches backend DeletionPriority enum)
+export enum DeletionPriority {
+  PRESERVE_OUTPUTS = "preserve_outputs",
+  PRESERVE_INPUTS = "preserve_inputs",
+}
+
+// User-facing messages for data deleted by expiration lifecycle
+export const ExpirationMessages = {
+  ALL_DATA_DELETED:
+    "Data deleted due to subscription expiration. Config files preserved.",
+  INTERMEDIATES_AND_OUTPUTS:
+    "Visualization and output data deleted. Reproduce still available.",
+  INTERMEDIATES_AND_INPUTS:
+    "Visualization and input data deleted due to subscription expiration. NWB download still available. Reproduce available after re-uploading inputs.",
+  INTERMEDIATES_ONLY:
+    "Visualization data deleted due to subscription expiration. NWB download and reproduce still available.",
+  INPUTS_ONLY:
+    "Input data deleted due to subscription expiration. Reproduce available after re-uploading inputs.",
+  GENERIC: "Some data deleted due to subscription expiration.",
+  NWB_DELETED: "NWB data deleted due to subscription expiration",
+  OUTPUTS_DELETED: "Output data deleted due to subscription expiration",
+  VISUALIZATION_DELETED:
+    "Visualization data deleted due to subscription expiration.",
+  DATA_UNSYNCHRONIZED: "Data is unsynchronized",
+} as const
+
 // HTTP header names for ALB routing
 // These headers are used to route premium users to their dedicated instances
 export const RoutingHeaders = {

@@ -43,6 +43,8 @@ export interface SubscriptionState {
   plansLoading: boolean
   userSubscriptionLoading: boolean
   serverTime: string | null
+  deletionPriority: string | null
+  deletionPriorityLoading: boolean
 }
 
 // API Error types

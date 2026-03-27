@@ -60,6 +60,8 @@ const DisplayEditor: FC<{
     case DATA_TYPE_SET.LINE:
     case DATA_TYPE_SET.PIE:
     case DATA_TYPE_SET.POLAR:
+    case DATA_TYPE_SET.HDF5:
+    case DATA_TYPE_SET.MATLAB:
       return <SaveFig />
     case DATA_TYPE_SET.HTML:
       return <div>html editor</div>

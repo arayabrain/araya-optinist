@@ -4,8 +4,10 @@ import { SubscriptionUserStatus } from "const/Subscription"
 import {
   cancelSubscription,
   createCheckoutSession,
+  getDeletionPriority,
   getSubscriptionPlan,
   getUserSubscription,
+  updateDeletionPriority,
   validateCheckoutSession,
   reactivateSubscription,
   getUTCServerTime,
@@ -29,6 +31,8 @@ const initialState: SubscriptionState = {
   plansLoading: false,
   userSubscriptionLoading: false,
   serverTime: null,
+  deletionPriority: null,
+  deletionPriorityLoading: false,
 }
 
 const subscriptionSlice = createSlice({
@@ -211,6 +215,34 @@ const subscriptionSlice = createSlice({
           "Failed to fetch server time",
         )
         state.serverTime = null
+      })
+      .addCase(getDeletionPriority.pending, (state) => {
+        state.deletionPriorityLoading = true
+      })
+      .addCase(getDeletionPriority.fulfilled, (state, action) => {
+        state.deletionPriorityLoading = false
+        state.deletionPriority = action.payload
+      })
+      .addCase(getDeletionPriority.rejected, (state, action) => {
+        state.deletionPriorityLoading = false
+        state.error = extractRejectedErrorMessage(
+          action,
+          "Failed to load deletion priority",
+        )
+      })
+      .addCase(updateDeletionPriority.pending, (state) => {
+        state.deletionPriorityLoading = true
+      })
+      .addCase(updateDeletionPriority.fulfilled, (state, action) => {
+        state.deletionPriorityLoading = false
+        state.deletionPriority = action.payload
+      })
+      .addCase(updateDeletionPriority.rejected, (state, action) => {
+        state.deletionPriorityLoading = false
+        state.error = extractRejectedErrorMessage(
+          action,
+          "Failed to update deletion priority",
+        )
       })
   },
 })

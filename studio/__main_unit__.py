@@ -24,6 +24,7 @@ from studio.app.common.core.middleware import (
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
 from studio.app.common.core.subscription.constants import (
+    ExpirationDeletion,
     StorageReconciliation,
     SyncStatusConstants,
 )
@@ -31,11 +32,15 @@ from studio.app.common.core.subscription.constants import (
 # Background job imports (only used in non-standalone mode)
 if not MODE.IS_STANDALONE:
     from studio.app.common.core.background.cleanup_job import DataCleanupJob
+    from studio.app.common.core.background.expiration_lifecycle_job import (
+        ExpirationLifecycleJob,
+    )
     from studio.app.common.core.background.scheduler import BackgroundScheduler
     from studio.app.common.core.background.storage_reconciliation_job import (
         StorageReconciliationJob,
     )
     from studio.app.common.core.background.sync_job import PublishedExperimentSyncJob
+
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
     is_workspace_owner,
@@ -47,6 +52,7 @@ from studio.app.common.routers import (
     experiment,
     files,
     internal,
+    log_report,
     logs,
     outputs,
     params,
@@ -154,6 +160,12 @@ async def lifespan(app: FastAPI):
             job_id="storage_reconciliation",
         )
 
+        BackgroundScheduler.add_job(
+            func=ExpirationLifecycleJob.run,
+            interval_minutes=ExpirationDeletion.JOB_INTERVAL_MINUTES,
+            job_id=ExpirationDeletion.JOB_ID,
+        )
+
         # Start scheduler
         BackgroundScheduler.start()
         logger.info("Background job scheduler started")
@@ -195,6 +207,7 @@ app.include_router(auth.router)
 app.include_router(internal.router)  # Uses internal secret auth, not JWT
 app.include_router(experiment.router, dependencies=[Depends(get_current_user)])
 app.include_router(files.router, dependencies=[Depends(get_current_user)])
+app.include_router(log_report.router, dependencies=[Depends(get_current_user)])
 app.include_router(logs.router, dependencies=[Depends(get_current_user)])
 app.include_router(
     outputs.router, dependencies=[Depends(get_current_user_with_dataview_outputs_check)]

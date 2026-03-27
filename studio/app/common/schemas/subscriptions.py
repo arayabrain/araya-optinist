@@ -4,6 +4,10 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, validator
 
+from studio.app.common.core.subscription.constants import (
+    DeletionPriority as DeletionPriorityEnum,
+)
+
 
 class SubscriptionPlanResponse(BaseModel):
     id: int
@@ -250,3 +254,14 @@ class CancelSubscriptionResponse(BaseModel):
     message: str
     cancellation_date: str
     access_until: str
+
+
+class DeletionPriorityRequest(BaseModel):
+    priority: DeletionPriorityEnum = Field(
+        ...,
+        description="Deletion priority: 'preserve_outputs' or 'preserve_inputs'",
+    )
+
+
+class DeletionPriorityResponse(BaseModel):
+    priority: DeletionPriorityEnum

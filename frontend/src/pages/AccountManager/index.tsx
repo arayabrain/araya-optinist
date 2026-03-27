@@ -12,11 +12,13 @@ import { useNavigate, useSearchParams } from "react-router-dom"
 
 import { useSnackbar, VariantType } from "notistack"
 
+import CreditCardIcon from "@mui/icons-material/CreditCard"
 import DeleteIcon from "@mui/icons-material/Delete"
 import EditIcon from "@mui/icons-material/Edit"
 import LoginIcon from "@mui/icons-material/Login"
 import ReplayIcon from "@mui/icons-material/Replay"
 import {
+  Alert,
   Box,
   Button,
   CircularProgress,
@@ -24,8 +26,13 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControl,
   Input,
+  InputLabel,
+  MenuItem,
+  Select as MuiSelect,
   styled,
+  TextField,
   Tooltip,
   Typography,
 } from "@mui/material"
@@ -45,7 +52,11 @@ import {
 import { isRejectedWithValue } from "@reduxjs/toolkit"
 
 import { ROLE } from "@types"
-import { AddUserDTO, UserDTO } from "api/users/UsersApiDTO"
+import {
+  AddUserDTO,
+  UpdateUserSubscriptionDTO,
+  UserDTO,
+} from "api/users/UsersApiDTO"
 import { ConfirmDialog } from "components/common/ConfirmDialog"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import InputError from "components/common/InputError"
@@ -62,6 +73,7 @@ import {
   createUser,
   getListUser,
   updateUser,
+  updateUserSubscription,
   proxyLogin,
 } from "store/slice/User/UserActions"
 import {
@@ -284,6 +296,156 @@ const ModalComponent = ({
   )
 }
 
+const PLAN_FREE = 1
+const PLAN_PREMIUM = 2
+const GB = 1024 * 1024 * 1024
+
+type SubscriptionEditModalProps = {
+  open: boolean
+  user: UserDTO
+  onClose: () => void
+  onSubmit: (data: UpdateUserSubscriptionDTO) => Promise<boolean>
+}
+
+const SubscriptionEditModal = ({
+  open,
+  user,
+  onClose,
+  onSubmit,
+}: SubscriptionEditModalProps) => {
+  const currentPlanId =
+    user.subscription_plan_name === "Premium" ? PLAN_PREMIUM : PLAN_FREE
+
+  const [planId, setPlanId] = useState(currentPlanId)
+  const [expiration, setExpiration] = useState(() => {
+    if (user.subscription_expiration) {
+      return user.subscription_expiration.slice(0, 10)
+    }
+    return ""
+  })
+  const [storageQuotaGb, setStorageQuotaGb] = useState(() => {
+    return user.storage_quota_bytes
+      ? Math.round(user.storage_quota_bytes / GB)
+      : 5
+  })
+  const [reason, setReason] = useState("")
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const isFree = planId === PLAN_FREE
+
+  const handleSubmit = async () => {
+    setIsSubmitting(true)
+    try {
+      const success = await onSubmit({
+        plan_id: planId,
+        expiration: isFree
+          ? undefined
+          : new Date(expiration + "T23:59:59Z").toISOString(),
+        storage_quota_bytes: storageQuotaGb * GB,
+        reason: reason.trim(),
+      })
+      if (success) {
+        onClose()
+      }
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={onClose}>
+      <ModalBox>
+        <TitleModal>Edit Subscription - {user.name}</TitleModal>
+        <DialogContent
+          sx={{ display: "flex", flexDirection: "column", gap: 3, pt: 2 }}
+        >
+          <Alert severity="warning">
+            This will directly modify the database and bypass Stripe. The
+            user&apos;s Stripe subscription will not be affected by these
+            changes.
+          </Alert>
+
+          <FormControl fullWidth>
+            <InputLabel>Plan</InputLabel>
+            <MuiSelect
+              value={planId}
+              label="Plan"
+              onChange={(e) => setPlanId(Number(e.target.value))}
+            >
+              <MenuItem value={PLAN_FREE}>Free</MenuItem>
+              <MenuItem value={PLAN_PREMIUM}>Premium</MenuItem>
+            </MuiSelect>
+          </FormControl>
+
+          <TextField
+            label={
+              isFree
+                ? "Expiration Date (not required for Free)"
+                : "Expiration Date"
+            }
+            type="date"
+            value={isFree ? "" : expiration}
+            onChange={(e) => setExpiration(e.target.value)}
+            InputLabelProps={{ shrink: true }}
+            fullWidth
+            disabled={isFree}
+          />
+
+          <TextField
+            label="Storage Quota (GB)"
+            type="number"
+            value={storageQuotaGb}
+            onChange={(e) => {
+              const val = Math.max(
+                1,
+                Math.min(9999, Math.floor(Number(e.target.value) || 1)),
+              )
+              setStorageQuotaGb(val)
+            }}
+            inputProps={{ min: 1, max: 9999 }}
+            helperText="1 - 9999 GB (max ~10 TB)"
+            fullWidth
+          />
+
+          <TextField
+            label="Reason for manual edit"
+            multiline
+            minRows={2}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="e.g. User requested plan change via support ticket #123"
+            fullWidth
+            required
+          />
+
+          <Box sx={{ color: "text.secondary", fontSize: "0.875rem" }}>
+            Current usage:{" "}
+            {user.storage_usage_bytes
+              ? Math.round((user.storage_usage_bytes / GB) * 100) / 100
+              : 0}{" "}
+            GB
+          </Box>
+        </DialogContent>
+        <ButtonModal>
+          <Button variant="outlined" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            disabled={
+              isSubmitting || (!isFree && !expiration) || !reason.trim()
+            }
+            onClick={handleSubmit}
+          >
+            Save
+          </Button>
+        </ButtonModal>
+      </ModalBox>
+      <Loading loading={isSubmitting} />
+    </Modal>
+  )
+}
+
 const AccountManager = () => {
   const dispatch = useDispatch<AppDispatch>()
   const navigate = useNavigate()
@@ -297,6 +459,9 @@ const AccountManager = () => {
 
   const [openModal, setOpenModal] = useState(false)
   const [dataEdit, setDataEdit] = useState({})
+  const [subscriptionEditOpen, setSubscriptionEditOpen] = useState(false)
+  const [subscriptionEditUser, setSubscriptionEditUser] =
+    useState<UserDTO | null>(null)
   const [userWaitingProxy, setUserWatingProxy] = useState<UserDTO>()
   const [newParams, setNewParams] = useState(
     window.location.search.replace("?", ""),
@@ -628,6 +793,26 @@ const AccountManager = () => {
     }
   }, [dispatch, filterParams, sortParams, params, handleClickVariant])
 
+  const handleSubscriptionEdit = async (
+    data: UpdateUserSubscriptionDTO,
+  ): Promise<boolean> => {
+    if (!subscriptionEditUser?.id) return false
+    const result = await dispatch(
+      updateUserSubscription({
+        id: subscriptionEditUser.id,
+        data,
+        params: { ...filterParams, ...sortParams, ...params },
+      }),
+    )
+    if (isRejectedWithValue(result)) {
+      handleClickVariant("error", "Subscription update failed!")
+      return false
+    } else {
+      handleClickVariant("success", "Subscription updated successfully!")
+      return true
+    }
+  }
+
   const columns: GridColDef[] = [
     {
       headerName: "ID",
@@ -799,7 +984,7 @@ const AccountManager = () => {
       field: "action",
       sortable: false,
       filterable: false,
-      minWidth: 100,
+      minWidth: 180,
       flex: 1,
       renderCell: (params: { row: UserDTO }) => {
         const { id, role_id, name, email } = params.row
@@ -823,6 +1008,18 @@ const AccountManager = () => {
                 }
               >
                 <EditIcon />
+              </IconButton>
+            </Tooltip>
+
+            <Tooltip title="Edit Subscription">
+              <IconButton
+                color="primary"
+                onClick={() => {
+                  setSubscriptionEditUser(params.row)
+                  setSubscriptionEditOpen(true)
+                }}
+              >
+                <CreditCardIcon />
               </IconButton>
             </Tooltip>
 
@@ -950,6 +1147,17 @@ const AccountManager = () => {
           dataEdit={dataEdit}
         />
       ) : null}
+      {subscriptionEditOpen && subscriptionEditUser && (
+        <SubscriptionEditModal
+          open={subscriptionEditOpen}
+          user={subscriptionEditUser}
+          onClose={() => {
+            setSubscriptionEditOpen(false)
+            setSubscriptionEditUser(null)
+          }}
+          onSubmit={handleSubscriptionEdit}
+        />
+      )}
       <Loading loading={loading || loadingProxyLogin || loadingRefresh} />
     </AccountManagerWrapper>
   )
