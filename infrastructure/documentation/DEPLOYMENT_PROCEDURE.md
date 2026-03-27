@@ -55,55 +55,40 @@ aws configure
 
 Use this method if you have access to `infrastructure/terraform/terraform.tfvars`.
 
+> For environment setup, switching between dev/production, and ECR management, see [INFRA_DEPLOYMENT_PROCEDURE.md](INFRA_DEPLOYMENT_PROCEDURE.md).
+
 ### Prerequisites for Method 1
 
 - Access to `infrastructure/terraform/terraform.tfvars`
 - Terraform installed (v1.0+)
 - Firebase credentials (already configured in terraform.tfvars)
 
-### 1.1 Standard Deployment (Image Update Only)
+### 1.1 Deployment Steps
 
-Use this when you only need to update the application code without infrastructure changes.
-
-```bash
-cd infrastructure/scripts
-./ecr_build_push.sh
-```
-
-This script will:
-
-1. Read configuration from Terraform outputs (domain, port, protocol)
-2. Build the frontend with the correct environment variables
-3. Build and tag the Docker image
-4. Push the image to ECR
-
-**Note:** Pushing to ECR alone does NOT trigger ECS redeployment. To deploy the new image, run `terraform apply` (which calls `aws ecs update-service --force-new-deployment`) or manually force a new deployment via the AWS console/CLI.
-
-### 1.2 Deployment with Infrastructure Changes
-
-Use this when you need to update AWS infrastructure (VPC, ALB, RDS, etc.) in addition to the application.
+After merging, run the deployment:
 
 ```bash
-# From the repository root:
+# Step 1: Apply infrastructure and Lambda changes
 cd infrastructure/terraform
-
-# Review planned changes
-terraform plan
-
-# Apply infrastructure changes (automatically builds and pushes image)
+terraform plan     # Review changes before applying
 terraform apply
+
+# Step 2: Build and push the Docker image (if studio/ or frontend/ code changed)
+cd ../scripts
+./ecr_build_push.sh
+
+# Step 3: Force ECS to pull the new image
+#   AWS Console → ECS → Cluster → Service → Update → check "Force new deployment"
 ```
 
-**Note:** `terraform apply` automatically runs `ecr_build_push.sh` via the `null_resource.build_and_deploy` provisioner. There is no need to run it manually first.
+**What each step does:**
 
-**What gets updated:**
-
-- VPC, subnets, security groups (if modified)
-- Load balancers and target groups
-- ECS services and task definitions
-- RDS database configuration
-- Auto Scaling Groups
-- Route53 and ACM certificates
+- **`terraform apply`** updates infrastructure and Lambdas:
+  - Infrastructure (VPC, ALB, RDS, ECS, Auto Scaling, Route53, ACM)
+  - Lambda function code and layers
+  - Copies `infrastructure/aws_constants.py` to all Lambda packages via provisioners
+- **`ecr_build_push.sh`** builds the frontend and studio app into a Docker image and pushes it to ECR. It reads terraform outputs (domain, port, protocol) to configure the frontend build, so terraform must run first. Skip this step if only Lambda/infrastructure code changed.
+- **Force new deployment** tells ECS to pull the latest image from ECR. Required after pushing a new image; skip if only Lambda/infrastructure changed.
 
 ---
 
