@@ -2086,3 +2086,177 @@ class TestGetUserUidFromId:
 
             with pytest.raises(ValueError, match="not found"):
                 get_user_uid_from_id(mock_connection, 9999)
+
+
+class TestGetPremiumUserStatus:
+    """Tests for get_premium_user_status Lambda function."""
+
+    def test_returns_status_for_active_user(self, mock_env_vars_premium):
+        """Returns 200 with assignment details for an active user."""
+        test_user_id = 12345
+        assigned_at = datetime(2026, 3, 27, 2, 3, 26)
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql:
+            mock_connection = setup_db_mock(
+                fetchone_values=[
+                    MockRow(
+                        {
+                            "instance_id": TEST_INSTANCE_ID,
+                            "target_group_arn": "arn:aws:tg/test",
+                            "alb_rule_arn": "arn:aws:rule/test",
+                            "status": "active",
+                            "assigned_at": assigned_at,
+                            "is_shared": 0,
+                        }
+                    ),
+                ],
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_manager import get_premium_user_status
+
+            result = get_premium_user_status(test_user_id)
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            assert body["user_id"] == test_user_id
+            assert body["instance_id"] == TEST_INSTANCE_ID
+            assert body["status"] == "active"
+            assert body["assigned_at"] == assigned_at.isoformat()
+            assert body["is_shared"] is False
+
+    def test_returns_404_for_unassigned_user(self, mock_env_vars_premium):
+        """Returns 404 when user has no premium assignment."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql:
+            mock_connection = setup_db_mock(
+                fetchone_values=[None],
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_manager import get_premium_user_status
+
+            result = get_premium_user_status(99999)
+
+            assert result["statusCode"] == 404
+
+    def test_returns_null_assigned_at_when_missing(self, mock_env_vars_premium):
+        """Returns assigned_at as null when the column value is None."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql:
+            mock_connection = setup_db_mock(
+                fetchone_values=[
+                    MockRow(
+                        {
+                            "instance_id": TEST_INSTANCE_ID,
+                            "target_group_arn": "arn:aws:tg/test",
+                            "alb_rule_arn": "arn:aws:rule/test",
+                            "status": "active",
+                            "assigned_at": None,
+                            "is_shared": 1,
+                        }
+                    ),
+                ],
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_manager import get_premium_user_status
+
+            result = get_premium_user_status(12345)
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            assert body["assigned_at"] is None
+            assert body["is_shared"] is True
+
+    def test_pending_release_restored_includes_assigned_at(self, mock_env_vars_premium):
+        """When status is pending_release, restore_pending_release is called
+        and the response still includes assigned_at without KeyError."""
+        test_user_id = 12345
+        assigned_at = datetime(2026, 3, 27, 2, 0, 0)
+
+        restored_assignment = {
+            "user_id": test_user_id,
+            "instance_id": TEST_INSTANCE_ID,
+            "target_group_arn": "arn:aws:tg/restored",
+            "alb_rule_arn": "arn:aws:rule/restored",
+            "status": "terminating",
+            "instance_state": "running",
+            "is_shared": 0,
+            "assigned_at": assigned_at,
+        }
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch(
+            "premium_manager.restore_pending_release"
+        ) as mock_restore:
+            mock_connection = setup_db_mock(
+                fetchone_values=[
+                    # Initial query returns pending_release status
+                    MockRow(
+                        {
+                            "instance_id": TEST_INSTANCE_ID,
+                            "target_group_arn": "arn:aws:tg/test",
+                            "alb_rule_arn": "arn:aws:rule/test",
+                            "status": "terminating",
+                            "assigned_at": assigned_at,
+                            "is_shared": 0,
+                        }
+                    ),
+                ],
+            )
+            mock_pymysql.return_value = mock_connection
+            mock_restore.return_value = restored_assignment
+
+            from premium_manager import get_premium_user_status
+
+            result = get_premium_user_status(test_user_id)
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            assert body["assigned_at"] == assigned_at.isoformat()
+            assert body["status"] == "active"
+            mock_restore.assert_called_once_with(test_user_id)
+
+    def test_pending_release_restore_fails_gracefully(self, mock_env_vars_premium):
+        """When restore_pending_release raises, the original assignment
+        is still returned."""
+        test_user_id = 12345
+        assigned_at = datetime(2026, 3, 27, 2, 0, 0)
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch(
+            "premium_manager.restore_pending_release"
+        ) as mock_restore:
+            mock_connection = setup_db_mock(
+                fetchone_values=[
+                    MockRow(
+                        {
+                            "instance_id": TEST_INSTANCE_ID,
+                            "target_group_arn": "arn:aws:tg/test",
+                            "alb_rule_arn": "arn:aws:rule/test",
+                            "status": "terminating",
+                            "assigned_at": assigned_at,
+                            "is_shared": 0,
+                        }
+                    ),
+                ],
+            )
+            mock_pymysql.return_value = mock_connection
+            mock_restore.side_effect = Exception("restore failed")
+
+            from premium_manager import get_premium_user_status
+
+            result = get_premium_user_status(test_user_id)
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            # Original assignment returned with terminating status
+            assert body["status"] == "terminating"
+            assert body["assigned_at"] == assigned_at.isoformat()
