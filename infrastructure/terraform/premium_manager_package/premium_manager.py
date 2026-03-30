@@ -489,7 +489,7 @@ def _store_user_assignment_transaction(
             ),
         )
 
-        # Log premium usage session (skip standby — no real user)
+        # Log premium usage session (skip standby  - no real user)
         if user_id is not None and not is_standby:
             cursor.execute(
                 """INSERT INTO instance_usage_log
@@ -670,11 +670,15 @@ def _restore_pending_release_transaction(connection, user_id: int):
                 # Instance ID not recognised by AWS (already terminated/gone)
                 ec2_state = None
 
-            if ec2_state in (InstanceState.TERMINATED, InstanceState.SHUTTING_DOWN, None):
-                # Instance is gone — delete the stale DB record
+            if ec2_state in (
+                InstanceState.TERMINATED,
+                InstanceState.SHUTTING_DOWN,
+                None,
+            ):
+                # Instance is gone  - delete the stale DB record
                 print(
                     f"Instance {instance_id} is {ec2_state or 'not found'} "
-                    f"— removing stale assignment for user {user_id}"
+                    f" - removing stale assignment for user {user_id}"
                 )
                 cursor.execute(
                     "DELETE FROM premium_user_assignments "
@@ -694,9 +698,7 @@ def _restore_pending_release_transaction(connection, user_id: int):
                 target_group_arn = (
                     assignment.get("target_group_arn") or ""
                 ).strip() or None
-                rule_arn = (
-                    assignment.get("alb_rule_arn") or ""
-                ).strip() or None
+                rule_arn = (assignment.get("alb_rule_arn") or "").strip() or None
                 if target_group_arn or rule_arn:
                     try:
                         _teardown_alb_resources(user_id, rule_arn, target_group_arn)
@@ -1078,7 +1080,7 @@ def get_dynamic_max_capacity():
         # Production scenario - scale based on subscriber count
         max_capacity = min(total_premium_subscribers + EXTRA_CAPACITY, ABSOLUTE_MAX)
 
-    print("🏗️ Dynamic capacity calculation:")
+    print("Dynamic capacity calculation:")
     print(f"- Premium subscribers: {total_premium_subscribers}")
     print(f"- Extra capacity (buffer + standby): {EXTRA_CAPACITY}")
     print(f"- Current standby count: {standby_count}")
@@ -1778,6 +1780,52 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
                         ),
                     }
 
+                # Verify instance liveness for active assignments
+                instance_id = assignment["instance_id"]
+                if (
+                    assignment["status"] == PremiumAssignment.ACTIVE
+                    and instance_id != PremiumAssignment.AUTOSCALING_POOL
+                ):
+                    try:
+                        ec2: "EC2Client" = boto3.client("ec2")
+                        resp = ec2.describe_instances(InstanceIds=[instance_id])
+                        reservations = resp.get("Reservations", [])
+                        if reservations and reservations[0].get("Instances"):
+                            ec2_state = reservations[0]["Instances"][0]["State"]["Name"]
+                        else:
+                            ec2_state = None
+                    except ClientError:
+                        ec2_state = None
+
+                    if ec2_state in (
+                        InstanceState.TERMINATED,
+                        InstanceState.SHUTTING_DOWN,
+                        None,
+                    ):
+                        print(
+                            f"Instance {instance_id} is "
+                            f"{ec2_state or 'not found'}  - removing "
+                            f"stale active assignment for user {user_id}"
+                        )
+                        try:
+                            remove_user_assignment(user_id)
+                        except Exception as cleanup_err:
+                            print(
+                                f"Warning: cleanup failed for user "
+                                f"{user_id}: {cleanup_err}"
+                            )
+                        return {
+                            "statusCode": 404,
+                            "body": json.dumps(
+                                {
+                                    "error": (
+                                        f"No premium assignment found "
+                                        f"for user {user_id}"
+                                    )
+                                }
+                            ),
+                        }
+
                 # Restore pending_release on status check (user refreshed)
                 if assignment["status"] == PremiumAssignment.PENDING_RELEASE:
                     try:
@@ -1794,7 +1842,7 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
                             # Return 404 so frontend triggers a fresh assign
                             print(
                                 f"Stale assignment removed for user {user_id} "
-                                f"— returning 404 for fresh assignment"
+                                f" - returning 404 for fresh assignment"
                             )
                             return {
                                 "statusCode": 404,
@@ -2669,7 +2717,7 @@ def assign_premium_user(
                     if ec2_state == InstanceState.STOPPING:
                         print(
                             f"Assigned instance {existing_instance_id} is "
-                            f"stopping — waiting for stopped state"
+                            f"stopping  - waiting for stopped state"
                         )
                         stop_waiter = ec2.get_waiter("instance_stopped")
                         stop_waiter.wait(
@@ -2681,7 +2729,7 @@ def assign_premium_user(
                     if ec2_state == InstanceState.STOPPED:
                         print(
                             f"Assigned instance {existing_instance_id} is "
-                            f"stopped — restarting for user {user_id}"
+                            f"stopped  - restarting for user {user_id}"
                         )
                         ec2.start_instances(InstanceIds=[existing_instance_id])
                         waiter = ec2.get_waiter("instance_running")
@@ -2740,7 +2788,7 @@ def assign_premium_user(
                     ):
                         print(
                             f"Assigned instance {existing_instance_id} is "
-                            f"{ec2_state or 'gone'} — removing stale "
+                            f"{ec2_state or 'gone'}  - removing stale "
                             f"assignment for user {user_id}"
                         )
                         existing_assignment = None
@@ -2751,7 +2799,7 @@ def assign_premium_user(
                     if error_code == "InvalidInstanceID.NotFound":
                         print(
                             f"Instance {existing_instance_id} no longer "
-                            f"exists — removing stale assignment"
+                            f"exists  - removing stale assignment"
                         )
                         existing_assignment = None
                         remove_user_assignment(user_id)
@@ -2763,6 +2811,7 @@ def assign_premium_user(
                         f"{existing_instance_id}: {state_err}"
                     )
                     existing_assignment = None
+                    remove_user_assignment(user_id)
 
             # Trigger migration for autoscaling-pool or shared
             if existing_assignment and (
@@ -2790,7 +2839,7 @@ def assign_premium_user(
                         candidate_id, max_wait_seconds=10, retry_interval=5
                     ):
                         continue
-                    # Found a ready, empty dedicated instance — migrate now
+                    # Found a ready, empty dedicated instance - migrate now
                     print(
                         f"Inline migration: migrating user {user_id} "
                         f"from {existing_instance_id} to {candidate_id}"
@@ -2820,7 +2869,7 @@ def assign_premium_user(
                                 ),
                             }
 
-                # No inline migration possible — fall back to async
+                # No inline migration possible - fall back to async
                 print(
                     f"Inline migration not possible for user {user_id}, "
                     f"falling back to async migration"
@@ -2922,7 +2971,7 @@ def assign_premium_user(
         min_users = float("inf")
 
         print(
-            f"PRIORITY 1: Evaluating {len(running_instances)} running "
+            f"Evaluating {len(running_instances)} running "
             f"instances for immediate assignment"
         )
 
@@ -2971,7 +3020,7 @@ def assign_premium_user(
             else:
                 print(f"Instance {instance_id} has {user_count} users (not optimal)")
 
-        print(" PRIORITY 1 Results:")
+        print("Dedicated instance search results:")
         print(
             f"- Available dedicated: "
             f"{available_dedicated['instance_id'] if available_dedicated else 'None'}"  # noqa: E501
@@ -2989,11 +3038,11 @@ def assign_premium_user(
             instance_state = InstanceState.RUNNING
             assignment_source = "dedicated"
             print(
-                f"PRIORITY 1 SUCCESS: Using dedicated running instance "
+                f"Using dedicated running instance "
                 f"{instance_to_use['instance_id']} for user {user_id}"
             )
         else:
-            print(" PRIORITY 1 FAILED: No dedicated instances available")
+            print("No dedicated instances available")
 
         # PRIORITY 2: Share with least loaded instance
         if not instance_to_use and least_loaded_instance:
@@ -3002,7 +3051,7 @@ def assign_premium_user(
             instance_state = InstanceState.RUNNING
             assignment_source = "shared"
             print(
-                f"PRIORITY 2: Sharing instance {instance_to_use['instance_id']} "
+                f"Sharing instance {instance_to_use['instance_id']} "
                 f"for user {user_id} (least loaded with {min_users} users)"
             )
 
@@ -3012,7 +3061,7 @@ def assign_premium_user(
                 and len(running_instances) < active_users + 1
             ):
                 needs_scaling = True
-                print("→ Flagged for background scaling after assignment")
+                print("-> Flagged for background scaling after assignment")
 
         # 3. PRIORITY 3: Start standby instance (5-15 second assignment)
         # NOTE: Must run BEFORE autoscaling pool fallback, so that stopped
@@ -3020,7 +3069,7 @@ def assign_premium_user(
         # shared pool where migration may never complete.
         if not instance_to_use and standby_instances:
             print(
-                f"PRIORITY 3: No running instances available, "
+                f"No running instances available, "
                 f"starting standby instance ({standby_count} available)"
             )
 
@@ -3053,10 +3102,12 @@ def assign_premium_user(
         # PRIORITY 3.5: Temporary assignment to autoscaling pool for immediate login
         # Only used when no standby instances are available either
         if not instance_to_use:
-            no_premium_available = len(running_instances) == 0 or not available_dedicated
+            no_premium_available = (
+                len(running_instances) == 0 or not available_dedicated
+            )
             if no_premium_available:
                 print(
-                    "PRIORITY 3.5: No premium or standby instances ready "
+                    "No premium or standby instances ready "
                     "- using autoscaling pool for immediate login"
                 )
 
@@ -3067,9 +3118,9 @@ def assign_premium_user(
                 assignment_source = "autoscaling_temp"
                 needs_scaling = True  # Always trigger scaling for premium instance
 
-                print(f"→ User {user_id} will login via autoscaling pool")
-                print("→ Scaling premium instances in background")
-                print("→ User will be migrated to dedicated instance once ready")
+                print(f"-> User {user_id} will login via autoscaling pool")
+                print("-> Scaling premium instances in background")
+                print("-> User will be migrated to dedicated instance once ready")
 
         # 4. PRIORITY 4: Fallback to AWS stopped instances not in database
         if not instance_to_use:
@@ -3311,7 +3362,7 @@ def assign_premium_user(
             except ClientError as desc_err:
                 if "TargetGroupNotFound" not in str(desc_err):
                     raise
-                # No existing TG with this name — proceed normally
+                # No existing TG with this name - proceed normally
 
             # Normal path: create a dedicated target group for the premium instance
             target_group_response = elbv2.create_target_group(
@@ -3981,7 +4032,7 @@ def update_premium_service_desired_count():
         if running_premium_count != current_desired_count:
             print(
                 f"Updating ECS service desired count: {current_desired_count} "
-                f"→ {running_premium_count}"
+                f"-> {running_premium_count}"
             )
             ecs.update_service(
                 cluster=cluster_name,
