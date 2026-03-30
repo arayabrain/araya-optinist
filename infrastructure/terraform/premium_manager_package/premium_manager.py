@@ -1784,11 +1784,31 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
                         ),
                     }
 
-                # Verify instance liveness for active assignments
+                # Autoscaling pool is a temporary fallback — return 404
+                # so the frontend calls /premium/assign which runs the
+                # full assignment logic and can find a dedicated instance.
                 instance_id = assignment["instance_id"]
+                if instance_id == PremiumAssignment.AUTOSCALING_POOL:
+                    print(
+                        f"User {user_id} is on autoscaling-pool "
+                        f"(temporary) — returning 404 to trigger "
+                        f"fresh assignment"
+                    )
+                    return {
+                        "statusCode": 404,
+                        "body": json.dumps(
+                            {
+                                "error": (
+                                    f"No premium assignment found "
+                                    f"for user {user_id}"
+                                )
+                            }
+                        ),
+                    }
+
+                # Verify instance liveness for active assignments
                 if (
                     assignment["status"] == PremiumAssignment.ACTIVE
-                    and instance_id != PremiumAssignment.AUTOSCALING_POOL
                 ):
                     try:
                         ec2: "EC2Client" = boto3.client("ec2")
