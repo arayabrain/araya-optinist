@@ -1,6 +1,6 @@
 # Infrastructure Deployment Procedure
 
-> See also: [Architecture](TERRAFORM_ARCHITECTURE.md) | [Security](INFRA_SECURITY_MODEL.md) | [Dev Schedule](../scripts/DEV_SCHEDULE_GUIDE.md)
+> See also: [Deployment Procedure](DEPLOYMENT_PROCEDURE.md) | [Architecture](TERRAFORM_ARCHITECTURE.md) | [Security](INFRA_SECURITY_MODEL.md) | [Dev Schedule](../scripts/DEV_SCHEDULE_GUIDE.md)
 
 ---
 

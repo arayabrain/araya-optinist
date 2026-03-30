@@ -296,9 +296,7 @@ const LegendSelect: FC = () => {
         itemId,
         clickedDataId: event.target.checked ? index : null,
       }),
-    ),
-      // eslint-disable-next-line no-console
-      console.log("#############\n In TimeSeriesItemEditor.tsx, clickedDataId")
+    )
 
     if (filePath !== null) {
       dispatch(getTimeSeriesDataById({ path: filePath, index: index }))
