@@ -633,7 +633,12 @@ def soft_release_user_assignment(user_id: int):
 def _restore_pending_release_transaction(connection, user_id: int):
     """Restore a pending_release assignment back to active.
 
-    Returns the restored assignment dict, or None if no pending_release exists.
+    Before restoring, verifies the assigned EC2 instance still exists and is
+    not terminated. If the instance is gone, deletes the stale assignment and
+    cleans up ALB resources so the caller can trigger a fresh assignment.
+
+    Returns the restored assignment dict, or None if no pending_release exists
+    (or if the assignment was stale and removed).
     """
     with connection.cursor() as cursor:
         cursor.execute(
@@ -648,6 +653,60 @@ def _restore_pending_release_transaction(connection, user_id: int):
 
         if not assignment:
             return None
+
+        instance_id = assignment["instance_id"]
+
+        # Autoscaling pool is a virtual marker, not a real EC2 instance
+        if instance_id != PremiumAssignment.AUTOSCALING_POOL:
+            try:
+                ec2: "EC2Client" = boto3.client("ec2")
+                resp = ec2.describe_instances(InstanceIds=[instance_id])
+                reservations = resp.get("Reservations", [])
+                if reservations and reservations[0].get("Instances"):
+                    ec2_state = reservations[0]["Instances"][0]["State"]["Name"]
+                else:
+                    ec2_state = None
+            except ClientError:
+                # Instance ID not recognised by AWS (already terminated/gone)
+                ec2_state = None
+
+            if ec2_state in (InstanceState.TERMINATED, InstanceState.SHUTTING_DOWN, None):
+                # Instance is gone — delete the stale DB record
+                print(
+                    f"Instance {instance_id} is {ec2_state or 'not found'} "
+                    f"— removing stale assignment for user {user_id}"
+                )
+                cursor.execute(
+                    "DELETE FROM premium_user_assignments "
+                    "WHERE user_id = %s AND status = %s",
+                    (user_id, PremiumAssignment.PENDING_RELEASE),
+                )
+                # Close usage log if open
+                cursor.execute(
+                    """UPDATE instance_usage_log SET ended_at = NOW()
+                       WHERE user_id = %s AND tier = 'premium'
+                       AND ended_at IS NULL""",
+                    (user_id,),
+                )
+                connection.commit()
+
+                # Best-effort ALB resource cleanup
+                target_group_arn = (
+                    assignment.get("target_group_arn") or ""
+                ).strip() or None
+                rule_arn = (
+                    assignment.get("alb_rule_arn") or ""
+                ).strip() or None
+                if target_group_arn or rule_arn:
+                    try:
+                        _teardown_alb_resources(user_id, rule_arn, target_group_arn)
+                    except Exception as alb_err:
+                        print(
+                            f"ALB cleanup warning for stale user {user_id}: "
+                            f"{alb_err}"
+                        )
+
+                return None
 
         cursor.execute(
             """UPDATE premium_user_assignments
@@ -1730,6 +1789,24 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
                                 f"Restored pending_release on status check "
                                 f"for user {user_id}"
                             )
+                        else:
+                            # Stale assignment was removed (instance terminated)
+                            # Return 404 so frontend triggers a fresh assign
+                            print(
+                                f"Stale assignment removed for user {user_id} "
+                                f"— returning 404 for fresh assignment"
+                            )
+                            return {
+                                "statusCode": 404,
+                                "body": json.dumps(
+                                    {
+                                        "error": (
+                                            f"No premium assignment found "
+                                            f"for user {user_id}"
+                                        )
+                                    }
+                                ),
+                            }
                     except Exception as restore_err:
                         print(
                             f"Failed to restore pending_release: " f"{str(restore_err)}"
@@ -2937,28 +3014,15 @@ def assign_premium_user(
                 needs_scaling = True
                 print("→ Flagged for background scaling after assignment")
 
-        # PRIORITY 2.5: Temporary assignment to autoscaling pool for immediate login
-        no_premium_available = len(running_instances) == 0 or not available_dedicated
-        if not instance_to_use and no_premium_available:
-            print(
-                "PRIORITY 2.5: No premium instances ready "
-                "- using autoscaling pool for immediate login"
-            )
-
-            # Use special marker for autoscaling pool assignment
-            instance_to_use = {"instance_id": PremiumAssignment.AUTOSCALING_POOL}
-            is_shared = True  # This is a temporary shared assignment
-            instance_state = InstanceState.RUNNING
-            assignment_source = "autoscaling_temp"
-            needs_scaling = True  # Always trigger scaling for premium instance
-
-            print(f"→ User {user_id} will login via autoscaling pool")
-            print("→ Scaling premium instances in background")
-            print("→ User will be migrated to dedicated instance once ready")
-
         # 3. PRIORITY 3: Start standby instance (5-15 second assignment)
+        # NOTE: Must run BEFORE autoscaling pool fallback, so that stopped
+        # standby instances are started instead of sending users to the
+        # shared pool where migration may never complete.
         if not instance_to_use and standby_instances:
-            print("No dedicated instances available, starting standby instance")
+            print(
+                f"PRIORITY 3: No running instances available, "
+                f"starting standby instance ({standby_count} available)"
+            )
 
             # Use oldest standby instance
             standby_to_start = standby_instances[0]
@@ -2985,6 +3049,27 @@ def assign_premium_user(
                     f"Failed to start standby instance {standby_instance_id}, "
                     f"falling back to other options"
                 )
+
+        # PRIORITY 3.5: Temporary assignment to autoscaling pool for immediate login
+        # Only used when no standby instances are available either
+        if not instance_to_use:
+            no_premium_available = len(running_instances) == 0 or not available_dedicated
+            if no_premium_available:
+                print(
+                    "PRIORITY 3.5: No premium or standby instances ready "
+                    "- using autoscaling pool for immediate login"
+                )
+
+                # Use special marker for autoscaling pool assignment
+                instance_to_use = {"instance_id": PremiumAssignment.AUTOSCALING_POOL}
+                is_shared = True  # This is a temporary shared assignment
+                instance_state = InstanceState.RUNNING
+                assignment_source = "autoscaling_temp"
+                needs_scaling = True  # Always trigger scaling for premium instance
+
+                print(f"→ User {user_id} will login via autoscaling pool")
+                print("→ Scaling premium instances in background")
+                print("→ User will be migrated to dedicated instance once ready")
 
         # 4. PRIORITY 4: Fallback to AWS stopped instances not in database
         if not instance_to_use:
@@ -3207,9 +3292,30 @@ def assign_premium_user(
                 )
             print(f"Autoscaling target group: {target_group_arn}")
         else:
+            # Clean up any orphaned target group with the same name before
+            # creating a new one, to avoid reusing a stale ARN that a
+            # concurrent cleanup may be deleting.
+            tg_name = f"premium-{user_id}-tg"
+            try:
+                old_tgs = elbv2.describe_target_groups(Names=[tg_name])
+                for old_tg in old_tgs.get("TargetGroups", []):
+                    old_arn = old_tg["TargetGroupArn"]
+                    print(
+                        f"Cleaning up orphaned target group {tg_name} "
+                        f"({old_arn}) before creating new one"
+                    )
+                    try:
+                        elbv2.delete_target_group(TargetGroupArn=old_arn)
+                    except Exception as del_err:
+                        print(f"Warning: could not delete orphaned TG: {del_err}")
+            except ClientError as desc_err:
+                if "TargetGroupNotFound" not in str(desc_err):
+                    raise
+                # No existing TG with this name — proceed normally
+
             # Normal path: create a dedicated target group for the premium instance
             target_group_response = elbv2.create_target_group(
-                Name=f"premium-{user_id}-tg",
+                Name=tg_name,
                 Protocol="HTTP",
                 Port=8000,
                 VpcId=vpc_id,
