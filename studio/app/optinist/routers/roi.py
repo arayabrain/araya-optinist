@@ -11,24 +11,14 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageReader,
     RemoteSyncStatusFileUtil,
 )
-from studio.app.common.core.utils.filepath_creater import (
-    join_filepath,
-    normalize_output_path,
-)
+from studio.app.common.core.utils.filepath_creater import resolve_absolute_output_path
 from studio.app.common.core.workspace.workspace_dependencies import is_workspace_owner
-from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.edit_ROI import EditROI, EditRoiUtils
 from studio.app.optinist.schemas.roi import RoiList, RoiPos, RoiStatus
 
 router = APIRouter(prefix="/outputs", tags=["outputs"])
 
 logger = AppLogger.get_logger()
-
-
-def to_absolute_output_path(filepath: str) -> str:
-    """Normalize and convert to absolute path for filesystem operations."""
-    filepath = normalize_output_path(filepath)
-    return join_filepath([DIRPATH.OUTPUT_DIR, filepath])
 
 
 async def ensure_experiment_synced_for_edit(
@@ -83,7 +73,7 @@ async def status_roi(
     filepath: str,
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
-    filepath = to_absolute_output_path(filepath)
+    filepath = resolve_absolute_output_path(filepath)
     # Ensure experiment is synced before Edit ROI operations
     await ensure_experiment_synced_for_edit(filepath, remote_bucket_name)
     return EditROI(file_path=filepath).get_status()
@@ -95,7 +85,7 @@ async def status_roi(
     dependencies=[Depends(is_workspace_owner)],
 )
 async def add_roi(filepath: str, pos: RoiPos):
-    filepath = to_absolute_output_path(filepath)
+    filepath = resolve_absolute_output_path(filepath)
     EditROI(file_path=filepath).add(pos)
     return True
 
@@ -106,7 +96,7 @@ async def add_roi(filepath: str, pos: RoiPos):
     dependencies=[Depends(is_workspace_owner)],
 )
 async def merge_roi(filepath: str, roi_list: RoiList):
-    filepath = to_absolute_output_path(filepath)
+    filepath = resolve_absolute_output_path(filepath)
     EditROI(file_path=filepath).merge(roi_list.ids)
     return True
 
@@ -117,7 +107,7 @@ async def merge_roi(filepath: str, roi_list: RoiList):
     dependencies=[Depends(is_workspace_owner)],
 )
 async def delete_roi(filepath: str, roi_list: RoiList):
-    filepath = to_absolute_output_path(filepath)
+    filepath = resolve_absolute_output_path(filepath)
     EditROI(file_path=filepath).delete(roi_list.ids)
     return True
 
@@ -131,7 +121,7 @@ async def commit_edit(
     filepath: str,
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
-    filepath = to_absolute_output_path(filepath)
+    filepath = resolve_absolute_output_path(filepath)
     try:
         EditRoiUtils.execute(filepath, remote_bucket_name)
 
@@ -154,6 +144,6 @@ async def commit_edit(
     dependencies=[Depends(is_workspace_owner)],
 )
 async def cancel_edit(filepath: str):
-    filepath = to_absolute_output_path(filepath)
+    filepath = resolve_absolute_output_path(filepath)
     EditROI(file_path=filepath).cancel()
     return True
