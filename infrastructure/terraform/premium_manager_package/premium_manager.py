@@ -638,7 +638,7 @@ def _restore_pending_release_transaction(connection, user_id: int):
     with connection.cursor() as cursor:
         cursor.execute(
             """SELECT user_id, instance_id, target_group_arn, alb_rule_arn,
-                      status, instance_state, is_shared
+                      status, instance_state, is_shared, assigned_at
                FROM premium_user_assignments
                WHERE user_id = %s AND status = %s AND is_standby = 0
                FOR UPDATE""",
