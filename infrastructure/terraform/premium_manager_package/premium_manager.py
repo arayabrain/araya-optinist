@@ -673,12 +673,16 @@ def _restore_pending_release_transaction(connection, user_id: int):
             if ec2_state in (
                 InstanceState.TERMINATED,
                 InstanceState.SHUTTING_DOWN,
+                InstanceState.STOPPED,
+                InstanceState.STOPPING,
                 None,
             ):
-                # Instance is gone  - delete the stale DB record
+                # Instance is gone or not running — delete the stale DB
+                # record so the frontend triggers a fresh assignment which
+                # can restart the instance or pick a different one.
                 print(
                     f"Instance {instance_id} is {ec2_state or 'not found'} "
-                    f" - removing stale assignment for user {user_id}"
+                    f"— removing stale assignment for user {user_id}"
                 )
                 cursor.execute(
                     "DELETE FROM premium_user_assignments "
@@ -1800,11 +1804,13 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
                     if ec2_state in (
                         InstanceState.TERMINATED,
                         InstanceState.SHUTTING_DOWN,
+                        InstanceState.STOPPED,
+                        InstanceState.STOPPING,
                         None,
                     ):
                         print(
                             f"Instance {instance_id} is "
-                            f"{ec2_state or 'not found'}  - removing "
+                            f"{ec2_state or 'not found'} — removing "
                             f"stale active assignment for user {user_id}"
                         )
                         try:
