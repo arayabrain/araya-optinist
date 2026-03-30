@@ -1019,7 +1019,7 @@ def get_dynamic_max_capacity():
         # Production scenario - scale based on subscriber count
         max_capacity = min(total_premium_subscribers + EXTRA_CAPACITY, ABSOLUTE_MAX)
 
-    print("🏗️ Dynamic capacity calculation:")
+    print("Dynamic capacity calculation:")
     print(f"- Premium subscribers: {total_premium_subscribers}")
     print(f"- Extra capacity (buffer + standby): {EXTRA_CAPACITY}")
     print(f"- Current standby count: {standby_count}")
@@ -2935,7 +2935,7 @@ def assign_premium_user(
                 and len(running_instances) < active_users + 1
             ):
                 needs_scaling = True
-                print("→ Flagged for background scaling after assignment")
+                print("Flagged for background scaling after assignment")
 
         # PRIORITY 2.5: Temporary assignment to autoscaling pool for immediate login
         no_premium_available = len(running_instances) == 0 or not available_dedicated
@@ -2952,9 +2952,9 @@ def assign_premium_user(
             assignment_source = "autoscaling_temp"
             needs_scaling = True  # Always trigger scaling for premium instance
 
-            print(f"→ User {user_id} will login via autoscaling pool")
-            print("→ Scaling premium instances in background")
-            print("→ User will be migrated to dedicated instance once ready")
+            print(f"User {user_id} will login via autoscaling pool")
+            print("Scaling premium instances in background")
+            print("User will be migrated to dedicated instance once ready")
 
         # 3. PRIORITY 3: Start standby instance (5-15 second assignment)
         if not instance_to_use and standby_instances:
@@ -3875,7 +3875,7 @@ def update_premium_service_desired_count():
         if running_premium_count != current_desired_count:
             print(
                 f"Updating ECS service desired count: {current_desired_count} "
-                f"→ {running_premium_count}"
+                f"-> {running_premium_count}"
             )
             ecs.update_service(
                 cluster=cluster_name,
