@@ -213,11 +213,6 @@ const handlePremiumRoutingError = async (
     return Promise.reject(error)
   }
 
-  // Premium instance not ready, falling back to free tier.
-  // Clear premiumAssigned so subsequent requests don't keep sending
-  // stale routing headers that cause repeated 503s.
-  routingService.setPremiumAssigned(false)
-
   const retryConfig = { ...originalRequest }
   delete retryConfig.headers[RoutingHeaders.USER_TIER]
   delete retryConfig.headers[RoutingHeaders.ROUTING_ID]
