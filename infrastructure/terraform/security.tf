@@ -504,7 +504,9 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
         ]
         NotResource = [
           "arn:aws:s3:::${local.env_prefix}-*",
-          "arn:aws:s3:::${local.env_prefix}-*/*"
+          "arn:aws:s3:::${local.env_prefix}-*/*",
+          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*",
+          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*/*"
         ]
       },
       {
