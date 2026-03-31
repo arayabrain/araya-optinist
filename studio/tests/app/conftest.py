@@ -13,17 +13,17 @@ MODE.IS_TEST = True
 MODE.IS_STANDALONE = True
 
 from studio.__main_unit__ import app, skip_dependencies  # noqa: E402
-from studio.app.common.core.auth.auth_dependencies import (
+from studio.app.common.core.auth.auth_dependencies import (  # noqa: E402
     get_admin_user,
     get_current_user,
     get_current_user_with_dataview_outputs_check,
     get_outputs_remote_bucket_name,
 )
-from studio.app.common.core.workspace.workspace_dependencies import (
+from studio.app.common.core.workspace.workspace_dependencies import (  # noqa: E402
     is_workspace_available,
     is_workspace_owner,
 )
-from studio.app.dir_path import DIRPATH
+from studio.app.dir_path import DIRPATH  # noqa: E402
 
 
 def skip_outputs_remote_bucket_name():
