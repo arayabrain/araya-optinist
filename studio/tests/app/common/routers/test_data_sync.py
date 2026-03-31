@@ -512,7 +512,9 @@ class TestLazySync:
             "RemoteStorageController"
         ) as mock_controller_class, patch(
             "studio.app.common.core.experiment.experiment_reader." "RemoteStorageReader"
-        ) as mock_reader_class:
+        ) as mock_reader_class, patch(
+            "studio.app.common.core.experiment.experiment_reader.logger.warning"
+        ):
             mock_controller_class.is_available.return_value = True
 
             # Mock reader to raise an exception
@@ -1238,6 +1240,8 @@ class TestDownloadSingleExperiment:
             return_value=mock_reader,
         ), patch(
             "os.path.exists", return_value=False
+        ), patch(
+            "studio.app.common.routers.internal.logger.error"
         ):
             mock_ctrl.is_available.return_value = True
 

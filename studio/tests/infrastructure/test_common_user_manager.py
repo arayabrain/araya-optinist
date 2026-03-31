@@ -142,7 +142,9 @@ class TestCheckFreeUserInactivity:
 
         with patch.dict("os.environ", mock_env_vars_common), patch(
             "common_user_manager.get_db_connection"
-        ) as mock_db:
+        ) as mock_db, patch(
+            "common_user_manager.traceback.print_exc"
+        ):
             mock_db.return_value = mock_conn
 
             from common_user_manager import check_free_user_inactivity
@@ -333,7 +335,9 @@ class TestHandler:
         """Unhandled exception returns 500."""
         with patch.dict("os.environ", mock_env_vars_common), patch(
             "common_user_manager.recover_stale_workflow_counts"
-        ) as mock_recover:
+        ) as mock_recover, patch(
+            "common_user_manager.traceback.print_exc"
+        ):
             mock_recover.side_effect = RuntimeError("Unexpected crash")
 
             from common_user_manager import handler
