@@ -494,7 +494,8 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
         Effect = "Allow"
         Action = [
           "ssm:SendCommand",
-          "ssm:GetCommandInvocation"
+          "ssm:GetCommandInvocation",
+          "ssm:DescribeInstanceInformation"
         ]
         Resource = "*"
       },

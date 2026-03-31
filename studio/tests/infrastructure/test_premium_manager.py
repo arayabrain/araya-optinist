@@ -1509,6 +1509,9 @@ class TestClearEcsAgentCheckpoint:
         ) as mock_boto3, patch("premium_manager.time.sleep"):
             mock_ssm = MagicMock()
             mock_boto3.return_value = mock_ssm
+            mock_ssm.describe_instance_information.return_value = {
+                "InstanceInformationList": [{"PingStatus": "Online"}]
+            }
             mock_ssm.send_command.return_value = {"Command": {"CommandId": "cmd-123"}}
             mock_ssm.get_command_invocation.return_value = {
                 "Status": "Success",
@@ -1531,6 +1534,9 @@ class TestClearEcsAgentCheckpoint:
         ) as mock_boto3, patch("premium_manager.time.sleep"):
             mock_ssm = MagicMock()
             mock_boto3.return_value = mock_ssm
+            mock_ssm.describe_instance_information.return_value = {
+                "InstanceInformationList": [{"PingStatus": "Online"}]
+            }
             mock_ssm.send_command.return_value = {"Command": {"CommandId": "cmd-456"}}
             mock_ssm.get_command_invocation.return_value = {
                 "Status": "Failed",
@@ -1549,9 +1555,12 @@ class TestClearEcsAgentCheckpoint:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3:
+        ) as mock_boto3, patch("premium_manager.time.sleep"):
             mock_ssm = MagicMock()
             mock_boto3.return_value = mock_ssm
+            mock_ssm.describe_instance_information.return_value = {
+                "InstanceInformationList": [{"PingStatus": "Online"}]
+            }
             mock_ssm.send_command.side_effect = ClientError(
                 {"Error": {"Code": "InvalidInstanceId"}},
                 "SendCommand",
@@ -1570,6 +1579,9 @@ class TestClearEcsAgentCheckpoint:
         ) as mock_boto3, patch("premium_manager.time.sleep"):
             mock_ssm = MagicMock()
             mock_boto3.return_value = mock_ssm
+            mock_ssm.describe_instance_information.return_value = {
+                "InstanceInformationList": [{"PingStatus": "Online"}]
+            }
             mock_ssm.send_command.return_value = {"Command": {"CommandId": "cmd-789"}}
             mock_ssm.get_command_invocation.return_value = {
                 "Status": "InProgress",
