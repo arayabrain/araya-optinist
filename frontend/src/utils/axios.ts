@@ -250,14 +250,13 @@ axios.interceptors.response.use(
       return handleUnauthorizedError(error)
     }
 
-    // ALB 502/503 when premium instance is unavailable (target group empty
-    // or unhealthy after environment restart).
-    // Also handle network errors (ERR_FAILED / no response)
-    const is502or503 =
-      error?.response?.status === 502 || error?.response?.status === 503
+    // ALB returns 503 when the premium target group is empty or unhealthy.
+    // 502 is excluded — it signals a backend/Lambda failure, not stale routing.
+    // Network errors (ERR_FAILED / no response) are also treated as routing failures.
+    const isAlb503 = error?.response?.status === 503
     const isNetworkError = !error?.response && !!error?.config
     if (
-      (is502or503 || isNetworkError) &&
+      (isAlb503 || isNetworkError) &&
       routingService.requiresPremiumRouting()
     ) {
       return handlePremiumRoutingError(error)
