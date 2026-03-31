@@ -2098,7 +2098,7 @@ class TestGetPremiumUserStatus:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "pymysql.connect"
-        ) as mock_pymysql:
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     MockRow(
@@ -2114,6 +2114,12 @@ class TestGetPremiumUserStatus:
                 ],
             )
             mock_pymysql.return_value = mock_connection
+            # Mock EC2 describe_instances to return running instance
+            mock_ec2 = MagicMock()
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [{"Instances": [{"State": {"Name": "running"}}]}]
+            }
+            mock_boto3.return_value = mock_ec2
 
             from premium_manager import get_premium_user_status
 
@@ -2147,7 +2153,7 @@ class TestGetPremiumUserStatus:
         """Returns assigned_at as null when the column value is None."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "pymysql.connect"
-        ) as mock_pymysql:
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     MockRow(
@@ -2163,6 +2169,12 @@ class TestGetPremiumUserStatus:
                 ],
             )
             mock_pymysql.return_value = mock_connection
+            # Mock EC2 describe_instances to return running instance
+            mock_ec2 = MagicMock()
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [{"Instances": [{"State": {"Name": "running"}}]}]
+            }
+            mock_boto3.return_value = mock_ec2
 
             from premium_manager import get_premium_user_status
 
