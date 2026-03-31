@@ -121,7 +121,7 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
             }
         else:
             raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=result["message"],
             )
 
