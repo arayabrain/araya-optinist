@@ -2897,10 +2897,10 @@ def assign_premium_user(
         # Fail fast if we can't verify assignment status
         print(f"Error: Failed to check existing assignment: {check_error}")
         return {
-            "statusCode": 503,
+            "statusCode": 500,
             "body": json.dumps(
                 {
-                    "error": "Service temporarily unavailable",
+                    "error": "Internal error",
                     "message": "Unable to verify assignment status. Please retry.",
                     "assigned": False,
                 }
