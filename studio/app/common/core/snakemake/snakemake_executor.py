@@ -192,24 +192,35 @@ def _snakemake_execute_process(
 
     try:
         # Update workflow processing results
+        observe_success = False
         try:
             asyncio.run(WorkflowResult(workspace_id, unique_id).observe_overall())
+            observe_success = True
         except Exception as e:
             logger.error(
                 f"snakemake_execute post process (WorkflowResult) failed: {e}",
                 exc_info=True,
             )
 
-        # Update experiment database record
-        if ExperimentRecordService.is_available():
+        # Update experiment database record if observe_overall() succeeded
+        if observe_success and ExperimentRecordService.is_available():
             ExperimentRecordService.regist_record_on_workflow_completed(
                 workspace_id, unique_id
             )
 
         # Data usage calculation
-        WorkspaceDataCapacityService.update_experiment_data_usage(
-            workspace_id, unique_id
-        )
+        if observe_success:
+            WorkspaceDataCapacityService.update_experiment_data_usage(
+                workspace_id, unique_id
+            )
+
+        if not observe_success:
+            logger.warning(
+                "Skipped experiment record registration and data usage update "
+                "due to observe_overall() failure. [workspace: %s] [unique_id: %s]",
+                workspace_id,
+                unique_id,
+            )
     except Exception as e:
         logger.error(f"snakemake_execute post process failed: {e}", exc_info=True)
 
