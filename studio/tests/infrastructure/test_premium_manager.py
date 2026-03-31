@@ -2116,9 +2116,7 @@ class TestGetPremiumUserStatus:
             mock_pymysql.return_value = mock_connection
             mock_ec2 = MagicMock()
             mock_ec2.describe_instances.return_value = {
-                "Reservations": [
-                    {"Instances": [{"State": {"Name": "running"}}]}
-                ]
+                "Reservations": [{"Instances": [{"State": {"Name": "running"}}]}]
             }
             mock_boto3.return_value = mock_ec2
 
@@ -2172,9 +2170,7 @@ class TestGetPremiumUserStatus:
             mock_pymysql.return_value = mock_connection
             mock_ec2 = MagicMock()
             mock_ec2.describe_instances.return_value = {
-                "Reservations": [
-                    {"Instances": [{"State": {"Name": "running"}}]}
-                ]
+                "Reservations": [{"Instances": [{"State": {"Name": "running"}}]}]
             }
             mock_boto3.return_value = mock_ec2
 
