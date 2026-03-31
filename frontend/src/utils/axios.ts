@@ -213,7 +213,6 @@ const handlePremiumRoutingError = async (
     return Promise.reject(error)
   }
 
-  // Premium instance not ready, falling back to free tier.
   const retryConfig = { ...originalRequest }
   delete retryConfig.headers[RoutingHeaders.USER_TIER]
   delete retryConfig.headers[RoutingHeaders.ROUTING_ID]
