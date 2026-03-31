@@ -1664,6 +1664,36 @@ def create_and_stop_standby_instance():
 ECS_CHECKPOINT_PATH = "/var/lib/ecs/data/agent.db"
 SSM_POLL_INTERVAL_SECONDS = 5
 SSM_POLL_MAX_WAIT_SECONDS = 30
+SSM_AGENT_WAIT_MAX_SECONDS = 120
+SSM_AGENT_WAIT_INTERVAL_SECONDS = 5
+
+
+def wait_for_ssm_agent(instance_id: str) -> bool:
+    """Wait until SSM agent is online for the given instance.
+
+    After an EC2 instance reaches 'running' state, the SSM agent may still
+    need additional time to boot and register with Systems Manager.
+    """
+    ssm = boto3.client("ssm")
+    elapsed = 0
+    while elapsed < SSM_AGENT_WAIT_MAX_SECONDS:
+        try:
+            resp = ssm.describe_instance_information(
+                Filters=[{"Key": "InstanceIds", "Values": [instance_id]}]
+            )
+            info_list = resp.get("InstanceInformationList", [])
+            if info_list and info_list[0].get("PingStatus") == "Online":
+                print(f"SSM agent online for {instance_id}")
+                return True
+        except ClientError as e:
+            print(f"Error checking SSM agent status for {instance_id}: {e}")
+        time.sleep(SSM_AGENT_WAIT_INTERVAL_SECONDS)
+        elapsed += SSM_AGENT_WAIT_INTERVAL_SECONDS
+    print(
+        f"SSM agent not online for {instance_id}"
+        f" after {SSM_AGENT_WAIT_MAX_SECONDS}s"
+    )
+    return False
 
 
 def clear_ecs_agent_checkpoint(instance_id: str) -> bool:
@@ -1672,6 +1702,9 @@ def clear_ecs_agent_checkpoint(instance_id: str) -> bool:
     Non-fatal: returns False on failure so the caller can proceed
     (the readiness check will catch unregistered instances).
     """
+    if not wait_for_ssm_agent(instance_id):
+        return False
+
     ssm = boto3.client("ssm")
     command = f"rm -f {ECS_CHECKPOINT_PATH} && systemctl restart ecs"
     try:
