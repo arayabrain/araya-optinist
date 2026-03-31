@@ -263,6 +263,8 @@ async def refresh_storage_usage(
             "database_updated": success,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to refresh storage usage for user {current_user.id}: {e}")
         raise HTTPException(
