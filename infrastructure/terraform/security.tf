@@ -486,7 +486,9 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
         ]
         Resource = [
           "arn:aws:s3:::${local.env_prefix}-*",
-          "arn:aws:s3:::${local.env_prefix}-*/*"
+          "arn:aws:s3:::${local.env_prefix}-*/*",
+          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*",
+          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*/*"
         ]
       },
       # S3: Explicitly deny CRUD on other environments' buckets
