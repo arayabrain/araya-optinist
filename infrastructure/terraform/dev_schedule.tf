@@ -193,7 +193,15 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
           "rds:StartDBInstance",
           "rds:StopDBInstance",
         ]
-        Resource = aws_db_instance.main.arn
+        Resource = [
+          aws_db_instance.main.arn,
+          # RestoreDBInstanceFromDBSnapshot requires access to the
+          # parameter group, subnet group, security group, and snapshot
+          "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:pg:${aws_db_parameter_group.main.name}",
+          "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:subgrp:${aws_db_subnet_group.main.name}",
+          "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secgrp:${aws_security_group.rds.id}",
+          "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:snapshot:${aws_db_instance.main.identifier}-dev-scheduler",
+        ]
       },
       # RDS snapshot management (scoped to environment snapshots)
       {
