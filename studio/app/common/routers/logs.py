@@ -6,12 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing_extensions import Optional
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
-from studio.app.common.core.logger import (
-    ECS_SERVICE_NAME,
-    ECS_TASK_ID,
-    VALID_LOG_LEVELS,
-    AppLogger,
-)
+from studio.app.common.core.platform_metadata import ECS_SERVICE_NAME, ECS_TASK_ID
+from studio.app.common.core.logger import VALID_LOG_LEVELS, AppLogger
 from studio.app.common.core.utils.log_reader import LogLevel, LogReader
 from studio.app.common.schemas.outputs import PaginatedLineResult, PlatformInfo
 from studio.app.common.schemas.users import User
@@ -76,9 +72,7 @@ async def get_log_data(
     levels: List[LogLevel] = Query(default=[LogLevel.ALL]),
 ):
     try:
-        platform = PlatformInfo(
-            service_name=ECS_SERVICE_NAME, task_id=ECS_TASK_ID
-        )
+        platform = PlatformInfo(service_name=ECS_SERVICE_NAME, task_id=ECS_TASK_ID)
         stop_offset = None
         log_reader = LogReader(
             levels=levels, filter_user_id=current_user.uid if current_user else None
