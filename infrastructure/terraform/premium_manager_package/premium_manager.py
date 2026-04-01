@@ -856,8 +856,13 @@ def get_assigned_users_for_instance(instance_id: str):
 
 
 def get_all_premium_instances_with_states():
-    """Get all premium instances with their AWS states"""
+    """Get all premium instances with their AWS states.
+
+    Filters by environment prefix (ENV_PREFIX) to prevent cross-environment
+    contamination (e.g., development Lambda discovering production instances).
+    """
     ec2: "EC2Client" = boto3.client("ec2")
+    env_prefix = os.environ.get("ENV_PREFIX", "subscr")
     try:
         # Get instances with premium tags (use multiple filters for robust discovery)
         response = ec2.describe_instances(
@@ -883,9 +888,10 @@ def get_all_premium_instances_with_states():
             instance_id = instance["InstanceId"]
 
             # Check multiple criteria for premium instances
+            name_tag = tags.get("Name", "")
             name_match = (
                 PremiumInstanceConfig.INSTANCE_IDENTIFIER
-                in tags.get("Name", "").lower()
+                in name_tag.lower()
             )
             tier_match = (
                 tags.get("Tier", "").lower()
@@ -896,16 +902,32 @@ def get_all_premium_instances_with_states():
                 in tags.get("Type", "").lower()
             )
 
+            is_premium = name_match or tier_match or type_match
+
+            # Filter by environment prefix to prevent cross-environment
+            # contamination. Instance Name tags follow the pattern:
+            # "{env_prefix}-premium-running" (e.g., "development-premium-running"
+            # vs "subscr-premium-running"). Reject instances whose Name tag
+            # doesn't start with this Lambda's ENV_PREFIX.
+            if is_premium and name_tag:
+                env_match = name_tag.lower().startswith(env_prefix.lower())
+                if not env_match:
+                    print(
+                        f"Skipping instance {instance_id}: "
+                        f"Name '{name_tag}' does not match "
+                        f"environment prefix '{env_prefix}'"
+                    )
+                    return False
+
             # Debug logging for tag matching
             print(f"Instance {instance_id} tag analysis:")
-            print(f"- Name: '{tags.get('Name', '')}' -> name_match: {name_match}")
+            print(f"- Name: '{name_tag}' -> name_match: {name_match}")
             print(f"- Tier: '{tags.get('Tier', '')}' -> tier_match: {tier_match}")
             print(f"- Type: '{tags.get('Type', '')}' -> type_match: {type_match}")
             print(f"- All tags: {tags}")
 
-            result = name_match or tier_match or type_match
-            print(f"- Final match result: {result}")
-            return result
+            print(f"- Final match result: {is_premium}")
+            return is_premium
 
         instances = []
         all_instances_found = 0
@@ -4901,10 +4923,12 @@ def cleanup_all_dynamic_instances(base_instance_ids: list) -> dict:
     result = {"terminated": [], "errors": [], "db_cleaned": 0}
 
     try:
-        # Query all premium-tier instances
+        # Query premium-tier instances filtered by environment prefix
+        env_prefix = os.environ.get("ENV_PREFIX", "subscr")
         response = ec2_client.describe_instances(
             Filters=[
                 {"Name": "tag:Service", "Values": ["premium-tier"]},
+                {"Name": "tag:Name", "Values": [f"{env_prefix}-premium-*"]},
                 {
                     "Name": "instance-state-name",
                     "Values": ["running", "stopped", "pending", "stopping"],
@@ -5151,7 +5175,8 @@ def cleanup_orphaned_ec2_instances():
             for ci in desc.get("containerInstances", []):
                 ecs_ec2_ids.add(ci["ec2InstanceId"])
 
-        # List all running premium-tagged EC2 instances
+        # List all running premium-tagged EC2 instances for this environment
+        env_prefix = os.environ.get("ENV_PREFIX", "subscr")
         ec2_response = ec2.describe_instances(
             Filters=[
                 {
@@ -5161,6 +5186,10 @@ def cleanup_orphaned_ec2_instances():
                 {
                     "Name": "tag:Tier",
                     "Values": ["premium", "Premium"],
+                },
+                {
+                    "Name": "tag:Name",
+                    "Values": [f"{env_prefix}-premium-*"],
                 },
             ]
         )
