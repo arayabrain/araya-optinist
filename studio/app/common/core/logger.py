@@ -9,8 +9,8 @@ from typing import Optional
 
 import yaml
 
-from studio.app.common.core.platform_metadata import ECS_TASK_ID
 from studio.app.common.core.mode import MODE
+from studio.app.common.core.platform_metadata import ECS_TASK_ID
 from studio.app.common.core.utils.datetime_utils import get_current_datetime_formatted
 from studio.app.dir_path import DIRPATH
 
