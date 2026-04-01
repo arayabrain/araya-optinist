@@ -889,10 +889,7 @@ def get_all_premium_instances_with_states():
 
             # Check multiple criteria for premium instances
             name_tag = tags.get("Name", "")
-            name_match = (
-                PremiumInstanceConfig.INSTANCE_IDENTIFIER
-                in name_tag.lower()
-            )
+            name_match = PremiumInstanceConfig.INSTANCE_IDENTIFIER in name_tag.lower()
             tier_match = (
                 tags.get("Tier", "").lower()
                 == PremiumInstanceConfig.INSTANCE_IDENTIFIER
@@ -1341,7 +1338,10 @@ def create_running_instance():
                                     "Value": PremiumInstanceConfig.get_instance_name(),
                                 },
                                 {"Key": "Type", "Value": "Premium-Instance"},
-                                {"Key": "Tier", "Value": PremiumInstanceConfig.INSTANCE_IDENTIFIER},
+                                {
+                                    "Key": "Tier",
+                                    "Value": PremiumInstanceConfig.INSTANCE_IDENTIFIER,
+                                },
                                 {"Key": "Service", "Value": "premium-tier"},
                             ],
                         }
@@ -1585,7 +1585,10 @@ def create_and_stop_standby_instance():
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": f"{PremiumInstanceConfig.get_env_prefix()}-{PremiumInstanceConfig.INSTANCE_IDENTIFIER}-standby",
+                                        "Value": "{}-{}-standby".format(
+                                            PremiumInstanceConfig.get_env_prefix(),
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER,
+                                        ),
                                     },
                                     {
                                         "Key": "Type",
@@ -1593,7 +1596,9 @@ def create_and_stop_standby_instance():
                                     },
                                     {
                                         "Key": "Tier",
-                                        "Value": PremiumInstanceConfig.INSTANCE_IDENTIFIER,
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     },
                                     {
                                         "Key": "Service",
@@ -1856,9 +1861,7 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
                     }
 
                 # Verify instance liveness for active assignments
-                if (
-                    assignment["status"] == PremiumAssignment.ACTIVE
-                ):
+                if assignment["status"] == PremiumAssignment.ACTIVE:
                     try:
                         ec2: "EC2Client" = boto3.client("ec2")
                         resp = ec2.describe_instances(InstanceIds=[instance_id])
@@ -4921,7 +4924,10 @@ def cleanup_all_dynamic_instances(base_instance_ids: list) -> dict:
         response = ec2_client.describe_instances(
             Filters=[
                 {"Name": "tag:Service", "Values": ["premium-tier"]},
-                {"Name": "tag:Name", "Values": [PremiumInstanceConfig.get_instance_name_pattern()]},
+                {
+                    "Name": "tag:Name",
+                    "Values": [PremiumInstanceConfig.get_instance_name_pattern()],
+                },
                 {
                     "Name": "instance-state-name",
                     "Values": ["running", "stopped", "pending", "stopping"],
