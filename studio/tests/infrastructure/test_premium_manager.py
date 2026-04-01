@@ -1402,7 +1402,7 @@ class TestGetAllPremiumInstances:
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": "premium-inst-1",
+                                        "Value": "subscr-premium-running",
                                     },
                                     {
                                         "Key": "Tier",
