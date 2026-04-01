@@ -26,14 +26,17 @@ test_run_all:
 	# cleanup
 	@$(call cleanup_test_env, test_studio_backend)
 	@$(call cleanup_test_env, test_studio_frontend)
+	# build containers once (performance optimization)
+	docker compose -f docker-compose.test.yml build test_studio_backend
+	docker compose -f docker-compose.test.yml build test_studio_frontend
 	# backend tests
-	@$(call run_test_service, test_studio_backend, $(PYTEST) -m "not heavier_processing")
+	docker compose -f docker-compose.test.yml run test_studio_backend $(PYTEST) -m "not heavier_processing"
 	# frontend tests
-	@$(call run_test_service, test_studio_frontend)
-	# lambda tests
-	@$(call run_test_service, test_studio_backend, $(PYTEST) studio/tests/infrastructure/ -v)
-	# contract tests
-	@$(call run_test_service, test_studio_backend, $(PYTEST) studio/tests/app/common/routers/test_*_contract.py -v)
+	docker compose -f docker-compose.test.yml run test_studio_frontend
+	# lambda tests (reuse backend container)
+	docker compose -f docker-compose.test.yml run test_studio_backend $(PYTEST) studio/tests/infrastructure/ -v
+	# contract tests (reuse backend container)
+	docker compose -f docker-compose.test.yml run test_studio_backend $(PYTEST) studio/tests/app/common/routers/test_*_contract.py -v
 
 .PHONY: test_backend
 test_backend:
