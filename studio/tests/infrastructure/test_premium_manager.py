@@ -1402,7 +1402,9 @@ class TestGetAllPremiumInstances:
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": PremiumInstanceConfig.get_instance_name(),
+                                        "Value": (
+                                            PremiumInstanceConfig.get_instance_name()
+                                        ),
                                     },
                                     {
                                         "Key": "Tier",
