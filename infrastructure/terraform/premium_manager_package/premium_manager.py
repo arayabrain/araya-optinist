@@ -862,7 +862,7 @@ def get_all_premium_instances_with_states():
     contamination (e.g., development Lambda discovering production instances).
     """
     ec2: "EC2Client" = boto3.client("ec2")
-    env_prefix = os.environ.get("ENV_PREFIX", "subscr")
+    env_prefix = PremiumInstanceConfig.get_env_prefix()
     try:
         # Get instances with premium tags (use multiple filters for robust discovery)
         response = ec2.describe_instances(
@@ -1338,13 +1338,10 @@ def create_running_instance():
                             "Tags": [
                                 {
                                     "Key": "Name",
-                                    "Value": (
-                                        f"{os.environ.get('ENV_PREFIX', 'subscr')}"
-                                        "-premium-running"
-                                    ),
+                                    "Value": PremiumInstanceConfig.get_instance_name(),
                                 },
                                 {"Key": "Type", "Value": "Premium-Instance"},
-                                {"Key": "Tier", "Value": "premium"},
+                                {"Key": "Tier", "Value": PremiumInstanceConfig.INSTANCE_IDENTIFIER},
                                 {"Key": "Service", "Value": "premium-tier"},
                             ],
                         }
@@ -1588,18 +1585,15 @@ def create_and_stop_standby_instance():
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": (
-                                            f"{os.environ.get('ENV_PREFIX', 'subscr')}"
-                                            "-premium-standby"
-                                        ),
+                                        "Value": f"{PremiumInstanceConfig.get_env_prefix()}-{PremiumInstanceConfig.INSTANCE_IDENTIFIER}-standby",
                                     },
                                     {
                                         "Key": "Type",
-                                        "Value": ("Premium-Instance"),
+                                        "Value": "Premium-Instance",
                                     },
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": PremiumInstanceConfig.INSTANCE_IDENTIFIER,
                                     },
                                     {
                                         "Key": "Service",
@@ -4924,11 +4918,10 @@ def cleanup_all_dynamic_instances(base_instance_ids: list) -> dict:
 
     try:
         # Query premium-tier instances filtered by environment prefix
-        env_prefix = os.environ.get("ENV_PREFIX", "subscr")
         response = ec2_client.describe_instances(
             Filters=[
                 {"Name": "tag:Service", "Values": ["premium-tier"]},
-                {"Name": "tag:Name", "Values": [f"{env_prefix}-premium-*"]},
+                {"Name": "tag:Name", "Values": [PremiumInstanceConfig.get_instance_name_pattern()]},
                 {
                     "Name": "instance-state-name",
                     "Values": ["running", "stopped", "pending", "stopping"],
@@ -5176,7 +5169,6 @@ def cleanup_orphaned_ec2_instances():
                 ecs_ec2_ids.add(ci["ec2InstanceId"])
 
         # List all running premium-tagged EC2 instances for this environment
-        env_prefix = os.environ.get("ENV_PREFIX", "subscr")
         ec2_response = ec2.describe_instances(
             Filters=[
                 {
@@ -5189,7 +5181,7 @@ def cleanup_orphaned_ec2_instances():
                 },
                 {
                     "Name": "tag:Name",
-                    "Values": [f"{env_prefix}-premium-*"],
+                    "Values": [PremiumInstanceConfig.get_instance_name_pattern()],
                 },
             ]
         )

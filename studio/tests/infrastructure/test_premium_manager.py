@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
-from aws_constants import ECSTaskStatus
+from aws_constants import ECSTaskStatus, PremiumInstanceConfig
 from conftest import MockRow, setup_db_mock
 
 TEST_USER_ID = "test_user_12345"
@@ -1402,7 +1402,7 @@ class TestGetAllPremiumInstances:
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": "subscr-premium-running",
+                                        "Value": PremiumInstanceConfig.get_instance_name(),
                                     },
                                     {
                                         "Key": "Tier",
