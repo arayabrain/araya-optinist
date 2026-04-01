@@ -110,15 +110,21 @@ class TestPremiumManagerEvents:
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": "premium-instance-1",
+                                        "Value": (
+                                            PremiumInstanceConfig.get_instance_name()
+                                        ),
                                     },
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     },
                                     {
                                         "Key": "Type",
-                                        "Value": "Premium-Instance",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_TYPE_TAG
+                                        ),
                                     },
                                 ],
                             }
@@ -540,11 +546,15 @@ class TestEarlyCheckAndCleanup:
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": "premium-instance",
+                                        "Value": (
+                                            PremiumInstanceConfig.get_instance_name()
+                                        ),
                                     },
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     },
                                 ],
                             }
@@ -1408,7 +1418,9 @@ class TestGetAllPremiumInstances:
                                     },
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     },
                                 ],
                             },
@@ -1944,7 +1956,9 @@ class TestCleanupOrphanedEC2Instances:
                                 "Tags": [
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     }
                                 ],
                             }
@@ -1994,7 +2008,9 @@ class TestCleanupOrphanedEC2Instances:
                                 "Tags": [
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     }
                                 ],
                             }
@@ -2052,7 +2068,9 @@ class TestCleanupOrphanedEC2Instances:
                                 "Tags": [
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     }
                                 ],
                             }

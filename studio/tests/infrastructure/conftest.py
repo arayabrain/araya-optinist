@@ -74,6 +74,7 @@ MOCK_ENV_VARS_BASE = {
 
 MOCK_ENV_VARS_PREMIUM = {
     **MOCK_ENV_VARS_BASE,
+    "ENV_PREFIX": "test",
     "AUTOSCALING_TARGET_GROUP_ARN": (
         "arn:aws:elasticloadbalancing:region:account:" "targetgroup/asg"
     ),

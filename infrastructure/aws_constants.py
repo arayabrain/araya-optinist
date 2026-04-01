@@ -81,20 +81,32 @@ class PremiumInstanceConfig:
 
     # Identifier used in EC2 instance Name/Tier/Type tags
     INSTANCE_IDENTIFIER = "premium"
-
+    # EC2 Type tag value for premium instances
+    INSTANCE_TYPE_TAG = "Premium-Instance"
+    # EC2 Service tag value for premium instances
+    SERVICE_TAG = "premium-tier"
     # Environment variable name for the deployment prefix
     ENV_PREFIX_VAR = "ENV_PREFIX"
-    # Default prefix when ENV_PREFIX is not set (production)
-    DEFAULT_ENV_PREFIX = "subscr"
     # Instance Name tag suffix (combined with env prefix: "{prefix}-premium-running")
     INSTANCE_NAME_SUFFIX = "premium-running"
 
     @classmethod
     def get_env_prefix(cls) -> str:
-        """Get the environment prefix from ENV_PREFIX env var."""
+        """Get the environment prefix from ENV_PREFIX env var.
+
+        Raises ValueError if ENV_PREFIX is not set, to prevent a misconfigured
+        Lambda from silently operating on the wrong environment's instances.
+        """
         import os
 
-        return os.environ.get(cls.ENV_PREFIX_VAR, cls.DEFAULT_ENV_PREFIX)
+        prefix = os.environ.get(cls.ENV_PREFIX_VAR)
+        if not prefix:
+            raise ValueError(
+                f"{cls.ENV_PREFIX_VAR} environment variable is not set. "
+                "Refusing to proceed without an explicit environment prefix "
+                "to prevent cross-environment contamination."
+            )
+        return prefix
 
     @classmethod
     def get_instance_name_pattern(cls) -> str:
