@@ -82,6 +82,37 @@ class PremiumInstanceConfig:
     # Identifier used in EC2 instance Name/Tier/Type tags
     INSTANCE_IDENTIFIER = "premium"
 
+    # Environment variable name for the deployment prefix
+    ENV_PREFIX_VAR = "ENV_PREFIX"
+    # Default prefix when ENV_PREFIX is not set (production)
+    DEFAULT_ENV_PREFIX = "subscr"
+    # Instance Name tag suffix (combined with env prefix: "{prefix}-premium-running")
+    INSTANCE_NAME_SUFFIX = "premium-running"
+
+    @classmethod
+    def get_env_prefix(cls) -> str:
+        """Get the environment prefix from ENV_PREFIX env var."""
+        import os
+
+        return os.environ.get(cls.ENV_PREFIX_VAR, cls.DEFAULT_ENV_PREFIX)
+
+    @classmethod
+    def get_instance_name_pattern(cls) -> str:
+        """Get the EC2 Name tag wildcard pattern for this environment.
+
+        Returns e.g. 'development-premium-*' or 'subscr-premium-*'.
+        Used in AWS API tag:Name filters.
+        """
+        return f"{cls.get_env_prefix()}-{cls.INSTANCE_IDENTIFIER}-*"
+
+    @classmethod
+    def get_instance_name(cls) -> str:
+        """Get the EC2 Name tag value for new instances.
+
+        Returns e.g. 'development-premium-running' or 'subscr-premium-running'.
+        """
+        return f"{cls.get_env_prefix()}-{cls.INSTANCE_NAME_SUFFIX}"
+
 
 class RoutingHeaders:
     """
