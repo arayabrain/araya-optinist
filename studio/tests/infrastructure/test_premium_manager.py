@@ -46,7 +46,7 @@ class TestPremiumManagerEvents:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("premium_manager.pymysql.connect") as mock_pymysql:
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     MockRow({"id": 123}),
@@ -272,7 +272,7 @@ class TestPremiumManagerEvents:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("premium_manager.pymysql.connect") as mock_pymysql:
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     MockRow(
@@ -413,8 +413,12 @@ class TestEarlyCheckAndCleanup:
             "boto3.client"
         ) as mock_boto3, patch(
             "premium_manager.get_existing_user_assignment"
-        ) as mock_get_existing:
+        ) as mock_get_existing, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql:
             mock_get_existing.return_value = existing_assignment
+            mock_connection = setup_db_mock(fetchone_values=[None])
+            mock_pymysql.return_value = mock_connection
 
             mock_elbv2 = MagicMock()
 
@@ -450,7 +454,7 @@ class TestEarlyCheckAndCleanup:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("premium_manager.pymysql.connect") as mock_pymysql:
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     None,
@@ -684,8 +688,12 @@ class TestEarlyCheckAndCleanup:
                 premium_manager, "invoke_migration_async"
             ) as mock_invoke_migration, patch(
                 "boto3.client"
-            ) as mock_boto3:
+            ) as mock_boto3, patch(
+                "premium_manager.pymysql.connect"
+            ) as mock_pymysql:
                 mock_get_existing.return_value = existing_autoscaling_assignment
+                mock_connection = setup_db_mock(fetchone_values=[None])
+                mock_pymysql.return_value = mock_connection
 
                 mock_elbv2 = MagicMock()
 
@@ -773,9 +781,13 @@ class TestEarlyCheckAndCleanup:
             "premium_manager.clear_ecs_agent_checkpoint"
         ) as mock_clear_ecs, patch(
             "premium_manager._update_instance_state_to_running"
-        ) as mock_update_state:
+        ) as mock_update_state, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql:
             mock_get_existing.return_value = existing_assignment
             mock_readiness.return_value = True
+            mock_connection = setup_db_mock(fetchone_values=[None])
+            mock_pymysql.return_value = mock_connection
 
             mock_ec2 = MagicMock()
             mock_ec2.describe_instances.return_value = {
@@ -845,9 +857,13 @@ class TestEarlyCheckAndCleanup:
             "premium_manager.clear_ecs_agent_checkpoint"
         ) as mock_clear_ecs, patch(
             "premium_manager._update_instance_state_to_running"
-        ):
+        ), patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql:
             mock_get_existing.return_value = existing_assignment
             mock_readiness.return_value = True
+            mock_connection = setup_db_mock(fetchone_values=[None])
+            mock_pymysql.return_value = mock_connection
 
             mock_ec2 = MagicMock()
             mock_ec2.describe_instances.return_value = {
@@ -1328,7 +1344,7 @@ class TestDatabaseCommits:
         """Verify commit is called after DELETE."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("premium_manager.pymysql.connect") as mock_pymysql:
             mock_connection = setup_db_mock()
             mock_pymysql.return_value = mock_connection
 
@@ -1346,7 +1362,7 @@ class TestDatabaseCommits:
         """Verify commit is called after cleanup."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "premium_manager" ".get_all_premium_instances_with_states"
-        ) as mock_aws, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_aws, patch("premium_manager.pymysql.connect") as mock_pymysql:
             mock_aws.return_value = []
 
             mock_connection = setup_db_mock(
@@ -1455,7 +1471,9 @@ class TestStartStandbyInstance:
         """EC2 start + waiter + checkpoint clear + DB update."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql, patch(
+        ) as mock_boto3, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql, patch(
             "premium_manager.clear_ecs_agent_checkpoint"
         ) as mock_clear:
             mock_ec2 = MagicMock()
@@ -1481,7 +1499,7 @@ class TestStartStandbyInstance:
         """EC2 waiter timeout returns False."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("premium_manager.pymysql.connect") as mock_pymysql:
             mock_ec2 = MagicMock()
             mock_boto3.return_value = mock_ec2
             mock_waiter = MagicMock()
@@ -1750,7 +1768,9 @@ class TestRoutingIdContract:
         try:
             with patch.dict("os.environ", mock_env_vars_premium), patch(
                 "boto3.client"
-            ) as mock_boto3, patch("pymysql.connect") as mock_pymysql, patch(
+            ) as mock_boto3, patch(
+                "premium_manager.pymysql.connect"
+            ) as mock_pymysql, patch(
                 "premium_manager." "try_reserve_instance_for_migration",
                 return_value=True,
             ), patch(
@@ -1851,7 +1871,9 @@ class TestRoutingIdContract:
         }
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql, patch(
+        ) as mock_boto3, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql, patch(
             "premium_manager.generate_routing_id",
             return_value="abcd1234abcd1234",
         ) as mock_gen:
