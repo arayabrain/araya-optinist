@@ -6,9 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing_extensions import Optional
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
-from studio.app.common.core.logger import VALID_LOG_LEVELS, AppLogger
+from studio.app.common.core.logger import (
+    ECS_SERVICE_NAME,
+    ECS_TASK_ID,
+    VALID_LOG_LEVELS,
+    AppLogger,
+)
 from studio.app.common.core.utils.log_reader import LogLevel, LogReader
-from studio.app.common.schemas.outputs import PaginatedLineResult
+from studio.app.common.schemas.outputs import PaginatedLineResult, PlatformInfo
 from studio.app.common.schemas.users import User
 
 router = APIRouter(prefix="/logs", tags=["logs"])
@@ -71,6 +76,9 @@ async def get_log_data(
     levels: List[LogLevel] = Query(default=[LogLevel.ALL]),
 ):
     try:
+        platform = PlatformInfo(
+            service_name=ECS_SERVICE_NAME, task_id=ECS_TASK_ID
+        )
         stop_offset = None
         log_reader = LogReader(
             levels=levels, filter_user_id=current_user.uid if current_user else None
@@ -85,6 +93,7 @@ async def get_log_data(
                     next_offset=offset,
                     prev_offset=offset,
                     data=[],
+                    platform=platform,
                 )
 
             logs = log_reader.read_from_offset(
@@ -106,14 +115,17 @@ async def get_log_data(
                     if reverse
                     else logs.data + extra_logs.data
                 ),
+                platform=platform,
             )
 
-        return log_reader.read_from_offset(
+        result = log_reader.read_from_offset(
             offset=offset,
             stop_offset=stop_offset,
             limit=limit,
             reverse=reverse,
         )
+        result.platform = platform
+        return result
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
