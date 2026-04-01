@@ -12,7 +12,9 @@ Does NOT:
 - Stop or start instances (premium_manager handles that)
 - Update ECS service count (premium_manager handles that)
 
-Triggered by CloudWatch Events hourly.
+Triggered by:
+- CloudWatch Events hourly (full 5-step cleanup)
+- EventBridge EC2 state-change events (single-instance reconcile on termination)
 Coordinates with premium_manager which handles all compute/capacity decisions.
 """
 
@@ -43,6 +45,44 @@ if TYPE_CHECKING:
     from mypy_boto3_ec2 import EC2Client
     from mypy_boto3_ecs import ECSClient
     from mypy_boto3_elbv2 import ElasticLoadBalancingv2Client
+
+
+def _cleanup_assignment_alb_resources(
+    elbv2: "ElasticLoadBalancingv2Client",
+    user_id: Any,
+    alb_rule_arn: str | None,
+    target_group_arn: str | None,
+) -> None:
+    """Delete ALB rule and target group for an assignment.
+
+    Skips standby markers and the shared autoscaling target group.
+    Errors are logged but not raised — callers proceed with DB cleanup.
+    """
+    # Delete ALB rule (skip standby markers)
+    if alb_rule_arn and alb_rule_arn.lower() != PremiumAssignment.STANDBY:
+        try:
+            elbv2.delete_rule(RuleArn=alb_rule_arn)
+            print(f"Deleted ALB rule for user {user_id}: {alb_rule_arn}")
+        except Exception as e:
+            print(f"Warning: Failed to delete ALB rule {alb_rule_arn}: {e}")
+
+    # Delete target group (skip standby markers and shared autoscaling TG)
+    autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
+    if (
+        target_group_arn
+        and target_group_arn.lower() != PremiumAssignment.STANDBY
+        and target_group_arn != autoscaling_tg_arn
+    ):
+        try:
+            elbv2.delete_target_group(TargetGroupArn=target_group_arn)
+            print(f"Deleted target group for user {user_id}: {target_group_arn}")
+        except Exception as e:
+            print(f"Warning: Failed to delete target group {target_group_arn}: {e}")
+    elif target_group_arn == autoscaling_tg_arn:
+        print(
+            f"Skipping deletion of shared autoscaling "
+            f"target group: {target_group_arn}"
+        )
 
 
 def get_required_env_var(var_name: str, default_value: str | None = None) -> str:
@@ -256,35 +296,9 @@ def cleanup_stale_assignments(connection) -> Dict[str, Any]:
 
                 try:
                     print(f"Cleaning stale assignment for user {user_id}")
-
-                    # Delete ALB rule and target group (skip marker values)
-                    if (
-                        alb_rule_arn
-                        and alb_rule_arn.lower() != PremiumAssignment.STANDBY
-                    ):
-                        try:
-                            elbv2.delete_rule(RuleArn=alb_rule_arn)
-                            print(f"Deleted ALB rule: {alb_rule_arn}")
-                        except Exception as e:
-                            print(f"Warning: Failed to delete ALB rule: {e}")
-
-                    # Skip deletion of shared autoscaling target group
-                    autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
-                    if (
-                        target_group_arn
-                        and target_group_arn.lower() != PremiumAssignment.STANDBY
-                        and target_group_arn != autoscaling_tg_arn
-                    ):
-                        try:
-                            elbv2.delete_target_group(TargetGroupArn=target_group_arn)
-                            print(f"Deleted target group: {target_group_arn}")
-                        except Exception as e:
-                            print(f"Warning: Failed to delete target group: {e}")
-                    elif target_group_arn == autoscaling_tg_arn:
-                        print(
-                            f"Skipping deletion of shared autoscaling "
-                            f"target group: {target_group_arn}"
-                        )
+                    _cleanup_assignment_alb_resources(
+                        elbv2, user_id, alb_rule_arn, target_group_arn
+                    )
 
                     # Close usage log before deleting assignment
                     cursor.execute(
@@ -891,38 +905,9 @@ def _reconcile_instance_states_transaction(
                 # Clean up ALB resources before DB deletion
                 target_group_arn = assignment.get("target_group_arn")
                 alb_rule_arn = assignment.get("alb_rule_arn")
-
-                # Delete ALB rule (skip standby markers)
-                if alb_rule_arn and alb_rule_arn.lower() != PremiumAssignment.STANDBY:
-                    try:
-                        elbv2.delete_rule(RuleArn=alb_rule_arn)
-                        print(f"Deleted ALB rule for user {user_id}: {alb_rule_arn}")
-                    except Exception as e:
-                        print(f"Warning: Failed to delete ALB rule {alb_rule_arn}: {e}")
-
-                # Delete target group (skip standby markers and shared autoscaling TG)
-                autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
-                if (
-                    target_group_arn
-                    and target_group_arn.lower() != PremiumAssignment.STANDBY
-                    and target_group_arn != autoscaling_tg_arn
-                ):
-                    try:
-                        elbv2.delete_target_group(TargetGroupArn=target_group_arn)
-                        print(
-                            f"Deleted target group for user "
-                            f"{user_id}: {target_group_arn}"
-                        )
-                    except Exception as e:
-                        print(
-                            f"Warning: Failed to delete target group "
-                            f"{target_group_arn}: {e}"
-                        )
-                elif target_group_arn == autoscaling_tg_arn:
-                    print(
-                        f"Skipping deletion of shared autoscaling "
-                        f"target group: {target_group_arn}"
-                    )
+                _cleanup_assignment_alb_resources(
+                    elbv2, user_id, alb_rule_arn, target_group_arn
+                )
 
                 cursor.execute(
                     "DELETE FROM premium_user_assignments WHERE id = %s",
@@ -951,6 +936,124 @@ def _reconcile_instance_states_transaction(
         "update_count": update_count,
         "total_aws_instances": len(aws_instance_map),
         "total_db_assignments": len(db_assignments),
+    }
+
+
+def reconcile_single_instance(instance_id: str) -> Dict[str, Any]:
+    """
+    Reconcile a single instance — triggered by EventBridge when an EC2
+    instance enters shutting-down or terminated state.
+
+    Fast-path complement to the full reconcile_instance_states() which
+    runs hourly. Only checks the specified instance.
+    """
+    try:
+        ec2: "EC2Client" = boto3.client("ec2")
+        try:
+            response = ec2.describe_instances(InstanceIds=[instance_id])
+            reservations = response.get("Reservations", [])
+            if reservations:
+                instance = reservations[0]["Instances"][0]
+                tags = {
+                    tag.get("Key"): tag.get("Value") for tag in instance.get("Tags", [])
+                }
+                name_match = (
+                    PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                    in tags.get("Name", "").lower()
+                )
+                tier_match = (
+                    tags.get("Tier", "").lower()
+                    == PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                )
+                type_match = (
+                    PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                    in tags.get("Type", "").lower()
+                )
+                if not (name_match or tier_match or type_match):
+                    print(
+                        f"Instance {instance_id} is not a "
+                        f"premium instance, skipping"
+                    )
+                    return {
+                        "skipped": True,
+                        "reason": "not_premium_instance",
+                    }
+        except Exception as e:
+            # Instance may be fully terminated and gone from API.
+            # Fall through to DB check — if it's in our DB, clean it.
+            print(
+                f"Could not describe instance {instance_id} "
+                f"(may be fully terminated, checking DB): {e}"
+            )
+
+        # Skip autoscaling-pool — it's a virtual marker, not a real instance
+        if instance_id == PremiumAssignment.AUTOSCALING_POOL:
+            print("Skipping autoscaling-pool marker (not a real instance)")
+            return {
+                "skipped": True,
+                "reason": "autoscaling_pool_marker",
+            }
+
+        return _reconcile_single_instance_transaction(instance_id)
+
+    except Exception as e:
+        print(f"Error in reconcile_single_instance " f"for {instance_id}: {e}")
+        return {"error": str(e), "instance_id": instance_id}
+
+
+@with_transaction
+def _reconcile_single_instance_transaction(
+    connection, instance_id: str
+) -> Dict[str, Any]:
+    """
+    Clean up DB records and ALB resources for a single
+    terminated instance. Transaction-safe via decorator.
+    """
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+    cleanup_count = 0
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT id, user_id, instance_id,
+                      target_group_arn, alb_rule_arn
+               FROM premium_user_assignments
+               WHERE instance_id = %s AND status = %s
+               FOR UPDATE""",
+            (instance_id, PremiumAssignment.ACTIVE),
+        )
+        assignments = cursor.fetchall()
+
+        if not assignments:
+            print(f"No active assignments for instance " f"{instance_id}")
+            return {
+                "cleanup_count": 0,
+                "instance_id": instance_id,
+            }
+
+        print(
+            f"Found {len(assignments)} assignments to clean "
+            f"up for terminated instance {instance_id}"
+        )
+
+        for assignment in assignments:
+            assignment_id = assignment["id"]
+            user_id = assignment["user_id"]
+            target_group_arn = assignment.get("target_group_arn")
+            alb_rule_arn = assignment.get("alb_rule_arn")
+
+            _cleanup_assignment_alb_resources(
+                elbv2, user_id, alb_rule_arn, target_group_arn
+            )
+
+            cursor.execute(
+                "DELETE FROM premium_user_assignments " "WHERE id = %s",
+                (assignment_id,),
+            )
+            cleanup_count += 1
+
+    return {
+        "cleanup_count": cleanup_count,
+        "instance_id": instance_id,
     }
 
 
@@ -1055,26 +1158,9 @@ def cleanup_test_user_assignments(connection, user_emails: List[str]) -> Dict[st
                 alb_rule_arn = assignment["alb_rule_arn"]
 
                 try:
-                    # Delete ALB rule and target group (skip standby markers)
-                    if (
-                        alb_rule_arn
-                        and alb_rule_arn.lower() != PremiumAssignment.STANDBY
-                    ):
-                        try:
-                            elbv2.delete_rule(RuleArn=alb_rule_arn)
-                            print(f"Deleted ALB rule for user {user_id}")
-                        except Exception as e:
-                            print(f"Warning: Failed to delete ALB rule: {e}")
-
-                    if (
-                        target_group_arn
-                        and target_group_arn.lower() != PremiumAssignment.STANDBY
-                    ):
-                        try:
-                            elbv2.delete_target_group(TargetGroupArn=target_group_arn)
-                            print(f"Deleted target group for user {user_id}")
-                        except Exception as e:
-                            print(f"Warning: Failed to delete target group: {e}")
+                    _cleanup_assignment_alb_resources(
+                        elbv2, user_id, alb_rule_arn, target_group_arn
+                    )
 
                     # Close usage log before deleting assignment
                     cursor.execute(
@@ -1325,6 +1411,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     - reconcile: Reconcile DB instance states with AWS reality
       Event: {"action": "reconcile"}
+
+    - reconcile_instance: Reconcile a single instance (EventBridge)
+      Event: {"action": "reconcile_instance",
+              "instance_id": "i-abc123",
+              "instance_state": "terminated",
+              "source": "ec2_state_change"}
     """
 
     print(f"Premium cleanup triggered by event: {json.dumps(event)}")
@@ -1401,6 +1493,26 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                         }
                     }
                 ),
+            }
+
+        elif action == "reconcile_instance":
+            instance_id = event.get("instance_id")
+            if not instance_id:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps(
+                        {"error": ("Missing required parameter:" " instance_id")}
+                    ),
+                }
+            source = event.get("source", "manual")
+            print(
+                f"Targeted instance reconciliation for "
+                f"{instance_id} (source: {source})"
+            )
+            result = reconcile_single_instance(instance_id)
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"result": result}),
             }
 
         elif action == "reconcile":
