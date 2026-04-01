@@ -19,17 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run test_run command
+      - name: Run all tests
         shell: bash
         run: |
-          make test_run
-
-      - name: Run Lambda unit tests
-        shell: bash
-        run: |
-          make test_lambda
-
-      - name: Run API contract tests
-        shell: bash
-        run: |
-          make contract-test
+          make test_run_all
