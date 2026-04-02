@@ -1840,9 +1840,7 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
                     }
 
                 # Verify instance liveness for active assignments
-                if (
-                    assignment["status"] == PremiumAssignment.ACTIVE
-                ):
+                if assignment["status"] == PremiumAssignment.ACTIVE:
                     try:
                         ec2: "EC2Client" = boto3.client("ec2")
                         resp = ec2.describe_instances(InstanceIds=[instance_id])
@@ -2649,6 +2647,43 @@ def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
                 print(f"Failed to retrieve existing target group: {describe_error}")
                 raise
         raise
+
+
+def create_alb_rule(
+    listener_arn: str,
+    conditions: list,
+    actions: list,
+    start_priority: int = 100,
+    max_retries: int = 3,
+) -> dict:
+    """Create an ALB rule, retrying with a fresh priority on PriorityInUse.
+
+    Concurrent Lambda invocations can race between get_next_available_priority()
+    and create_rule(). This wrapper catches PriorityInUse and re-queries for the
+    next free priority, up to max_retries times.
+    """
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+
+    for attempt in range(1, max_retries + 1):
+        priority = get_next_available_priority(listener_arn, start_priority)
+        try:
+            response = elbv2.create_rule(
+                ListenerArn=listener_arn,
+                Priority=priority,
+                Conditions=conditions,
+                Actions=actions,
+            )
+            return response
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "PriorityInUse":
+                print(
+                    f"Priority {priority} taken (attempt {attempt}/{max_retries}), "
+                    f"retrying with next available priority"
+                )
+                if attempt == max_retries:
+                    raise
+            else:
+                raise
 
 
 def get_next_available_priority(listener_arn: str, start_priority: int = 100) -> int:
@@ -3465,12 +3500,10 @@ def assign_premium_user(
         )
 
         cleanup_duplicate_rules_for_routing_id(alb_listener_arn, routing_id)
-        priority = get_next_available_priority(alb_listener_arn, start_priority=100)
 
-        rule_response = elbv2.create_rule(
-            ListenerArn=alb_listener_arn,
-            Priority=priority,
-            Conditions=[
+        rule_response = create_alb_rule(
+            listener_arn=alb_listener_arn,
+            conditions=[
                 {
                     "Field": "http-header",
                     "HttpHeaderConfig": {
@@ -3486,7 +3519,7 @@ def assign_premium_user(
                     },
                 },
             ],
-            Actions=[{"Type": "forward", "TargetGroupArn": target_group_arn}],
+            actions=[{"Type": "forward", "TargetGroupArn": target_group_arn}],
         )
 
         rule_arn = rule_response["Rules"][0]["RuleArn"]
@@ -4284,15 +4317,9 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                         user_uid = get_user_uid_from_id(connection, user_id)
                         routing_id = generate_routing_id(user_uid, routing_secret_key)
 
-                        # Get next available priority
-                        priority = get_next_available_priority(
-                            alb_listener_arn, start_priority=100
-                        )
-
-                        rule_response = elbv2.create_rule(
-                            ListenerArn=alb_listener_arn,
-                            Priority=priority,
-                            Conditions=[
+                        rule_response = create_alb_rule(
+                            listener_arn=alb_listener_arn,
+                            conditions=[
                                 {
                                     "Field": "http-header",
                                     "HttpHeaderConfig": {
@@ -4310,7 +4337,7 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                                     },
                                 },
                             ],
-                            Actions=[
+                            actions=[
                                 {
                                     "Type": "forward",
                                     "TargetGroupArn": new_target_group_arn,
