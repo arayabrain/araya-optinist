@@ -29,28 +29,26 @@ test_run_all:
 	# build containers once (performance optimization)
 	docker compose -f docker-compose.test.yml build test_studio_backend
 	docker compose -f docker-compose.test.yml build test_studio_frontend
-	# backend tests
-	docker compose -f docker-compose.test.yml run test_studio_backend $(PYTEST) -m "not heavier_processing"
+	# backend tests (studio/tests/app/ only)
+	docker compose -f docker-compose.test.yml run test_studio_backend $(PYTEST) studio/tests/app/ -m "not heavier_processing"
 	# frontend tests
 	docker compose -f docker-compose.test.yml run test_studio_frontend
 	# lambda tests (reuse backend container)
 	docker compose -f docker-compose.test.yml run test_studio_backend $(PYTEST) studio/tests/infrastructure/ -v
-	# contract tests (reuse backend container)
-	docker compose -f docker-compose.test.yml run test_studio_backend $(PYTEST) studio/tests/app/common/routers/test_*_contract.py -v
 
 .PHONY: test_backend
 test_backend:
 	# cleanup
 	@$(call cleanup_test_env, test_studio_backend)
 	# build/run
-	@$(call run_test_service, test_studio_backend, $(PYTEST) -m "not heavier_processing")
+	@$(call run_test_service, test_studio_backend, $(PYTEST) studio/tests/app/ -m "not heavier_processing")
 
 .PHONY: test_backend_full
 test_backend_full:
 	# cleanup
 	@$(call cleanup_test_env, test_studio_backend)
 	# build/run
-	@$(call run_test_service, test_studio_backend, $(PYTEST))
+	@$(call run_test_service, test_studio_backend, $(PYTEST) studio/tests/app/)
 
 .PHONY: test_frontend
 test_frontend:
@@ -69,6 +67,7 @@ test_lambda:
 .PHONY: test_contract
 test_contract:
 	# API contract tests - validates backend responses match frontend TypeScript interfaces
+	# NOTE: These tests are a subset of test_backend. Use this target for running contract tests only.
 	# cleanup
 	@$(call cleanup_test_env, test_studio_backend)
 	# build/run
