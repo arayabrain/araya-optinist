@@ -2,7 +2,8 @@
  * Tests for Sleep Detection Hook (Cases 50-51)
  *
  * Tests verify that the hook correctly detects when a device wakes from sleep
- * by monitoring interval timing gaps.
+ * by monitoring interval timing gaps, while ignoring false positives from
+ * browser background-tab timer throttling.
  */
 
 import {
@@ -24,6 +25,11 @@ describe("useSleepDetection (Cases 50-51)", () => {
     currentTime = 1000000
     jest.useFakeTimers()
     jest.spyOn(Date, "now").mockImplementation(() => currentTime)
+    // Default: tab is visible
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    })
   })
 
   afterEach(() => {
@@ -36,12 +42,19 @@ describe("useSleepDetection (Cases 50-51)", () => {
     jest.advanceTimersByTime(ms)
   }
 
+  const setVisibility = (state: "visible" | "hidden") => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => state,
+    })
+  }
+
   it("should not call onWake during normal interval ticks", () => {
     const onWake = jest.fn()
     renderHook(() => useSleepDetection(onWake))
 
     act(() => {
-      advanceTime(10000)
+      advanceTime(30000)
     })
 
     expect(onWake).not.toHaveBeenCalled()
@@ -52,12 +65,40 @@ describe("useSleepDetection (Cases 50-51)", () => {
     renderHook(() => useSleepDetection(onWake))
 
     act(() => {
-      // Simulate sleep: advance Date.now() by more than the interval fires
-      currentTime += 25000
-      jest.advanceTimersByTime(10000)
+      // Simulate sleep: advance Date.now() by more than the threshold (150s)
+      currentTime += 200000
+      jest.advanceTimersByTime(30000)
     })
 
     expect(onWake).toHaveBeenCalledTimes(1)
+  })
+
+  it("should not call onWake when tab is hidden (background throttling)", () => {
+    const onWake = jest.fn()
+    renderHook(() => useSleepDetection(onWake))
+
+    setVisibility("hidden")
+
+    act(() => {
+      // Large gap but tab is hidden — this is browser throttling, not sleep
+      currentTime += 200000
+      jest.advanceTimersByTime(30000)
+    })
+
+    expect(onWake).not.toHaveBeenCalled()
+  })
+
+  it("should not trigger on 60s gap (browser background throttle)", () => {
+    const onWake = jest.fn()
+    renderHook(() => useSleepDetection(onWake))
+
+    act(() => {
+      // 60s gap is typical of Chromium background tab throttling
+      currentTime += 60000
+      jest.advanceTimersByTime(30000)
+    })
+
+    expect(onWake).not.toHaveBeenCalled()
   })
 
   it("should call onWake multiple times for multiple sleep events", () => {
@@ -66,21 +107,21 @@ describe("useSleepDetection (Cases 50-51)", () => {
 
     // First sleep event
     act(() => {
-      currentTime += 25000
-      jest.advanceTimersByTime(10000)
+      currentTime += 200000
+      jest.advanceTimersByTime(30000)
     })
     expect(onWake).toHaveBeenCalledTimes(1)
 
     // Normal tick - no wake
     act(() => {
-      advanceTime(10000)
+      advanceTime(30000)
     })
     expect(onWake).toHaveBeenCalledTimes(1)
 
     // Second sleep event
     act(() => {
-      currentTime += 25000
-      jest.advanceTimersByTime(10000)
+      currentTime += 200000
+      jest.advanceTimersByTime(30000)
     })
     expect(onWake).toHaveBeenCalledTimes(2)
   })
@@ -95,9 +136,9 @@ describe("useSleepDetection (Cases 50-51)", () => {
     })
     expect(onWake).not.toHaveBeenCalled()
 
-    // Sleep event - time jumped more than 2x the 5s interval (>10s)
+    // Sleep event - time jumped more than 5x the 5s interval (>25s)
     act(() => {
-      currentTime += 15000
+      currentTime += 30000
       jest.advanceTimersByTime(5000)
     })
     expect(onWake).toHaveBeenCalled()
@@ -132,7 +173,7 @@ describe("useSleepDetection (Cases 50-51)", () => {
     renderHook(() => useSleepDetection(onWake, { enabled: false }))
 
     act(() => {
-      currentTime += 60000
+      currentTime += 300000
       jest.advanceTimersByTime(60000)
     })
 
@@ -163,11 +204,98 @@ describe("useSleepDetection (Cases 50-51)", () => {
 
     // Simulate sleep event
     act(() => {
-      currentTime += 25000
-      jest.advanceTimersByTime(10000)
+      currentTime += 200000
+      jest.advanceTimersByTime(30000)
     })
 
     expect(onWake1).not.toHaveBeenCalled()
     expect(onWake2).toHaveBeenCalled()
+  })
+
+  it("should not fire onWake when tab is hidden despite large gap", () => {
+    const onWake = jest.fn()
+    renderHook(() => useSleepDetection(onWake))
+
+    // Device sleeps — tab goes hidden, large gap detected but suppressed
+    setVisibility("hidden")
+    act(() => {
+      currentTime += 600000 // 10 min sleep
+      jest.advanceTimersByTime(30000)
+    })
+    expect(onWake).not.toHaveBeenCalled()
+
+    // Tab becomes visible — but lastTick was already updated while hidden,
+    // so the next normal tick has no gap. This is correct: the inactivity
+    // check (not sleep detection) handles the idle-user-returns case.
+    setVisibility("visible")
+    act(() => {
+      advanceTime(30000)
+    })
+    expect(onWake).not.toHaveBeenCalled()
+  })
+
+  it("should fire onWake when real sleep happens with tab visible", () => {
+    const onWake = jest.fn()
+    renderHook(() => useSleepDetection(onWake))
+
+    // Laptop lid closes and reopens — tab stays visible the whole time
+    // (common when external monitor keeps session alive)
+    act(() => {
+      currentTime += 600000 // 10 min gap
+      jest.advanceTimersByTime(30000)
+    })
+    expect(onWake).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * Simulates the exact production scenario that caused premium EC2 instances
+   * to run overnight (2026-04-01).
+   *
+   * Chromium throttles setInterval in background tabs to fire at most once per
+   * ~60 seconds. With the old threshold (10s interval × 2 = 20s), every
+   * throttled tick appeared as a "sleep wake" and fired recordActivity() →
+   * sendPremiumHeartbeat() → Lambda update_activity, keeping last_activity
+   * perpetually fresh and preventing the cleanup Lambda from ever marking
+   * assignments as stale.
+   *
+   * This test runs 8 hours of simulated Chromium background-tab throttling
+   * and verifies that zero false wake events are produced.
+   */
+  it("should produce zero false wakes during 8h of Chromium background throttling", () => {
+    const onWake = jest.fn()
+    renderHook(() => useSleepDetection(onWake))
+
+    // User switches to another tab — Chromium throttles timers to ~60s
+    setVisibility("hidden")
+
+    // Simulate 8 hours of background throttling:
+    // The real setInterval(30000) fires every ~60s in a background tab.
+    // Each tick sees a ~60s gap (> 30s interval but < 150s threshold).
+    const EIGHT_HOURS_MS = 8 * 60 * 60 * 1000
+    const CHROMIUM_THROTTLED_TICK_MS = 60000
+
+    for (
+      let elapsed = 0;
+      elapsed < EIGHT_HOURS_MS;
+      elapsed += CHROMIUM_THROTTLED_TICK_MS
+    ) {
+      act(() => {
+        currentTime += CHROMIUM_THROTTLED_TICK_MS
+        jest.advanceTimersByTime(CHROMIUM_THROTTLED_TICK_MS)
+      })
+    }
+
+    // After 8 hours of background throttling: zero false wakes
+    expect(onWake).not.toHaveBeenCalled()
+
+    // User returns — tab becomes visible, normal ticks resume
+    setVisibility("visible")
+    act(() => {
+      advanceTime(30000)
+    })
+
+    // Still no wake — the gap is only 30s (normal tick after lastTick update)
+    // The 2-hour inactivity check handles this case, not sleep detection
+    expect(onWake).not.toHaveBeenCalled()
   })
 })

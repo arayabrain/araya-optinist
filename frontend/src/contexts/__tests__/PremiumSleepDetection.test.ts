@@ -15,8 +15,8 @@ import {
 } from "@jest/globals"
 
 // Configuration from useSleepDetection
-const DEFAULT_CHECK_INTERVAL_MS = 10000
-const SLEEP_DETECTION_MULTIPLIER = 2
+const DEFAULT_CHECK_INTERVAL_MS = 30000
+const SLEEP_DETECTION_MULTIPLIER = 5
 
 /**
  * Simulates the sleep detection logic from useSleepDetection
@@ -62,7 +62,7 @@ class SleepDetectionSimulator {
     const elapsed = now - this.lastTick
     const threshold = this.checkIntervalMs * this.sleepThresholdMultiplier
 
-    if (elapsed > threshold) {
+    if (elapsed > threshold && document.visibilityState === "visible") {
       this.onWake()
     }
 
@@ -77,24 +77,30 @@ class SleepDetectionSimulator {
 describe("Sleep Detection Integration (Cases 50-51)", () => {
   beforeEach(() => {
     jest.useFakeTimers()
+    // Default: tab is visible
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    })
   })
 
   afterEach(() => {
     jest.useRealTimers()
+    jest.restoreAllMocks()
   })
 
   describe("Sleep Detection Configuration", () => {
-    it("should check for sleep every 10 seconds", () => {
-      expect(DEFAULT_CHECK_INTERVAL_MS).toBe(10000)
+    it("should check for sleep every 30 seconds", () => {
+      expect(DEFAULT_CHECK_INTERVAL_MS).toBe(30000)
     })
 
-    it("should detect sleep when interval fires 2x late", () => {
-      expect(SLEEP_DETECTION_MULTIPLIER).toBe(2)
+    it("should detect sleep when interval fires 5x late", () => {
+      expect(SLEEP_DETECTION_MULTIPLIER).toBe(5)
     })
 
-    it("should detect sleep after 20+ second gap", () => {
+    it("should detect sleep after 150+ second gap", () => {
       const threshold = DEFAULT_CHECK_INTERVAL_MS * SLEEP_DETECTION_MULTIPLIER
-      expect(threshold).toBe(20000)
+      expect(threshold).toBe(150000)
     })
   })
 
@@ -104,7 +110,7 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
       const simulator = new SleepDetectionSimulator(onWake)
       simulator.start()
 
-      jest.advanceTimersByTime(10000)
+      jest.advanceTimersByTime(30000)
 
       expect(onWake).not.toHaveBeenCalled()
       simulator.stop()
@@ -115,8 +121,8 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
       const simulator = new SleepDetectionSimulator(onWake)
       simulator.start()
 
-      simulator.simulateSleep(25000)
-      jest.advanceTimersByTime(10000)
+      simulator.simulateSleep(200000)
+      jest.advanceTimersByTime(30000)
 
       expect(onWake).toHaveBeenCalledTimes(1)
       simulator.stop()
@@ -127,15 +133,15 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
       const simulator = new SleepDetectionSimulator(onWake)
       simulator.start()
 
-      simulator.simulateSleep(25000)
-      jest.advanceTimersByTime(10000)
+      simulator.simulateSleep(200000)
+      jest.advanceTimersByTime(30000)
       expect(onWake).toHaveBeenCalledTimes(1)
 
-      jest.advanceTimersByTime(10000)
+      jest.advanceTimersByTime(30000)
       expect(onWake).toHaveBeenCalledTimes(1)
 
-      simulator.simulateSleep(30000)
-      jest.advanceTimersByTime(10000)
+      simulator.simulateSleep(200000)
+      jest.advanceTimersByTime(30000)
       expect(onWake).toHaveBeenCalledTimes(2)
 
       simulator.stop()
@@ -150,7 +156,7 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
         simulator.start()
 
         simulator.simulateSleep(30 * 60 * 1000)
-        jest.advanceTimersByTime(10000)
+        jest.advanceTimersByTime(30000)
 
         expect(activityRecorded).toHaveBeenCalledTimes(1)
         simulator.stop()
@@ -166,8 +172,8 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
         const simulator = new SleepDetectionSimulator(recordActivity)
         simulator.start()
 
-        simulator.simulateSleep(25000)
-        jest.advanceTimersByTime(10000)
+        simulator.simulateSleep(200000)
+        jest.advanceTimersByTime(30000)
 
         expect(recordActivity).toHaveBeenCalled()
         expect(showInactivityWarning).toBe(false)
@@ -182,7 +188,7 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
         simulator.start()
 
         simulator.simulateSleep(30 * 60 * 1000)
-        jest.advanceTimersByTime(10000)
+        jest.advanceTimersByTime(30000)
 
         expect(onWake).toHaveBeenCalled()
         simulator.stop()
@@ -194,20 +200,21 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
         simulator.start()
 
         for (let i = 0; i < 10; i++) {
-          jest.advanceTimersByTime(10000)
+          jest.advanceTimersByTime(30000)
         }
 
         expect(onWake).not.toHaveBeenCalled()
         simulator.stop()
       })
 
-      it("should handle short sleep periods correctly", () => {
+      it("should not trigger for browser background throttle gaps", () => {
         const onWake = jest.fn()
         const simulator = new SleepDetectionSimulator(onWake)
         simulator.start()
 
-        // Advance time normally - elapsed will be ~10000ms which is below 20000 threshold
-        jest.advanceTimersByTime(10000)
+        // 60s gap is typical of Chromium background tab throttling
+        simulator.simulateSleep(60000)
+        jest.advanceTimersByTime(30000)
 
         expect(onWake).not.toHaveBeenCalled()
         simulator.stop()
@@ -218,8 +225,8 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
         const simulator = new SleepDetectionSimulator(onWake)
         simulator.start()
 
-        simulator.simulateSleep(21000)
-        jest.advanceTimersByTime(10000)
+        simulator.simulateSleep(151000)
+        jest.advanceTimersByTime(30000)
 
         expect(onWake).toHaveBeenCalled()
         simulator.stop()
@@ -233,8 +240,8 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
       const simulator = new SleepDetectionSimulator(onWake)
       simulator.start()
 
-      simulator.simulateSleep(25000)
-      jest.advanceTimersByTime(10000)
+      simulator.simulateSleep(200000)
+      jest.advanceTimersByTime(30000)
       expect(onWake).toHaveBeenCalledTimes(1)
 
       jest.advanceTimersByTime(1000)
@@ -274,10 +281,10 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
       const simulator = new SleepDetectionSimulator(errorOnWake)
       simulator.start()
 
-      simulator.simulateSleep(25000)
+      simulator.simulateSleep(200000)
 
       expect(() => {
-        jest.advanceTimersByTime(10000)
+        jest.advanceTimersByTime(30000)
       }).toThrow("Callback error")
 
       simulator.stop()
@@ -303,8 +310,8 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
 
       const initialTime = lastActivityTime
 
-      simulator.simulateSleep(25000)
-      jest.advanceTimersByTime(10000)
+      simulator.simulateSleep(200000)
+      jest.advanceTimersByTime(30000)
 
       await Promise.resolve()
 
@@ -324,10 +331,10 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
       const simulator = new SleepDetectionSimulator(handleDeviceWake)
       simulator.start()
 
-      simulator.simulateSleep(25000)
+      simulator.simulateSleep(200000)
 
       expect(() => {
-        jest.advanceTimersByTime(10000)
+        jest.advanceTimersByTime(30000)
       }).not.toThrow()
 
       await Promise.resolve()

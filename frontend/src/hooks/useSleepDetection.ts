@@ -3,12 +3,16 @@
  *
  * Detects when a device wakes from sleep by monitoring interval timing gaps.
  * When the interval fires much later than expected, we assume the device slept.
+ *
+ * The 150s threshold avoids false positives from Chromium's background-tab
+ * timer throttling (~60s). We also require tab visibility so throttled
+ * background tabs don't trigger a wake event.
  */
 
 import { useEffect, useRef, useCallback } from "react"
 
-const DEFAULT_CHECK_INTERVAL_MS = 10000
-const SLEEP_DETECTION_MULTIPLIER = 2
+const DEFAULT_CHECK_INTERVAL_MS = 30000
+const SLEEP_DETECTION_MULTIPLIER = 5
 
 interface UseSleepDetectionOptions {
   checkIntervalMs?: number
@@ -44,7 +48,7 @@ export const useSleepDetection = (
     const elapsed = now - lastTickRef.current
     const expectedInterval = checkIntervalMs * sleepThresholdMultiplier
 
-    if (elapsed > expectedInterval) {
+    if (elapsed > expectedInterval && document.visibilityState === "visible") {
       onWakeRef.current()
     }
 
