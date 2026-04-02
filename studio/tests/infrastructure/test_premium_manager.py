@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
-from aws_constants import ECSTaskStatus
+from aws_constants import ECSTaskStatus, PremiumInstanceConfig
 from conftest import MockRow, setup_db_mock
 
 TEST_USER_ID = "test_user_12345"
@@ -54,19 +54,21 @@ class TestPremiumManagerEvents:
                     None,
                     # get_existing_user_assignment: no existing assignment
                     None,
+                    # _count_active_premium_users_transaction: debug count
                     MockRow({"count": 1}),
+                    # _count_active_premium_users_transaction: real count
                     MockRow({"count": 0}),
-                    MockRow({"count": 1}),
+                    # try_reserve_instance: no existing reservation
                     None,
-                    MockRow({"count": 1}),
-                    MockRow({"count": 0}),
-                    MockRow({"count": 1}),
+                    # store_user_assignment: no existing user assignment
                     None,
+                    # store_user_assignment: free_user_assignments check
                     None,
-                    MockRow({"priority": 100}),
                 ],
                 fetchall_values=[
+                    # register_orphaned: get_available_standby (1st call)
                     [],
+                    # get_available_standby (2nd call in assign flow)
                     [
                         MockRow(
                             {
@@ -75,9 +77,9 @@ class TestPremiumManagerEvents:
                             }
                         )
                     ],
+                    # get_assigned_users_for_instance: debug query
                     [],
-                    [],
-                    [],
+                    # get_assigned_users_for_instance: real users
                     [],
                 ],
             )
@@ -110,15 +112,21 @@ class TestPremiumManagerEvents:
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": "premium-instance-1",
+                                        "Value": (
+                                            PremiumInstanceConfig.get_instance_name()
+                                        ),
                                     },
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     },
                                     {
                                         "Key": "Type",
-                                        "Value": "Premium-Instance",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_TYPE_TAG
+                                        ),
                                     },
                                 ],
                             }
@@ -544,11 +552,15 @@ class TestEarlyCheckAndCleanup:
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": "premium-instance",
+                                        "Value": (
+                                            PremiumInstanceConfig.get_instance_name()
+                                        ),
                                     },
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     },
                                 ],
                             }
@@ -1418,11 +1430,15 @@ class TestGetAllPremiumInstances:
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": "premium-inst-1",
+                                        "Value": (
+                                            PremiumInstanceConfig.get_instance_name()
+                                        ),
                                     },
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     },
                                 ],
                             },
@@ -1964,7 +1980,9 @@ class TestCleanupOrphanedEC2Instances:
                                 "Tags": [
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     }
                                 ],
                             }
@@ -2014,7 +2032,9 @@ class TestCleanupOrphanedEC2Instances:
                                 "Tags": [
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     }
                                 ],
                             }
@@ -2072,7 +2092,9 @@ class TestCleanupOrphanedEC2Instances:
                                 "Tags": [
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     }
                                 ],
                             }

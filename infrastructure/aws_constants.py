@@ -81,6 +81,49 @@ class PremiumInstanceConfig:
 
     # Identifier used in EC2 instance Name/Tier/Type tags
     INSTANCE_IDENTIFIER = "premium"
+    # EC2 Type tag value for premium instances
+    INSTANCE_TYPE_TAG = "Premium-Instance"
+    # EC2 Service tag value for premium instances
+    SERVICE_TAG = "premium-tier"
+    # Environment variable name for the deployment prefix
+    ENV_PREFIX_VAR = "ENV_PREFIX"
+    # Instance Name tag suffix (combined with env prefix: "{prefix}-premium-running")
+    INSTANCE_NAME_SUFFIX = "premium-running"
+
+    @classmethod
+    def get_env_prefix(cls) -> str:
+        """Get the environment prefix from ENV_PREFIX env var.
+
+        Raises ValueError if ENV_PREFIX is not set, to prevent a misconfigured
+        Lambda from silently operating on the wrong environment's instances.
+        """
+        import os
+
+        prefix = os.environ.get(cls.ENV_PREFIX_VAR)
+        if not prefix:
+            raise ValueError(
+                f"{cls.ENV_PREFIX_VAR} environment variable is not set. "
+                "Refusing to proceed without an explicit environment prefix "
+                "to prevent cross-environment contamination."
+            )
+        return prefix
+
+    @classmethod
+    def get_instance_name_pattern(cls) -> str:
+        """Get the EC2 Name tag wildcard pattern for this environment.
+
+        Returns e.g. 'development-premium-*' or 'subscr-premium-*'.
+        Used in AWS API tag:Name filters.
+        """
+        return f"{cls.get_env_prefix()}-{cls.INSTANCE_IDENTIFIER}-*"
+
+    @classmethod
+    def get_instance_name(cls) -> str:
+        """Get the EC2 Name tag value for new instances.
+
+        Returns e.g. 'development-premium-running' or 'subscr-premium-running'.
+        """
+        return f"{cls.get_env_prefix()}-{cls.INSTANCE_NAME_SUFFIX}"
 
 
 class RoutingHeaders:
