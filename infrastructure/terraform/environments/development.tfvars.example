@@ -29,6 +29,7 @@ git_branch = "test-environment"
 # Database configuration (use new credentials for dev)
 mysql_root_password = "<PLACEHOLDER-generate-new>"
 mysql_database      = "studio"
+# Note: Changing username will require destroying and recreating the database
 mysql_user          = "test_db_admin"
 mysql_password      = "<PLACEHOLDER-generate-new>"
 
