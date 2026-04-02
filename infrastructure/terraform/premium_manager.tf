@@ -151,6 +151,57 @@ resource "aws_lambda_permission" "allow_cloudwatch_cleanup" {
   source_arn    = aws_cloudwatch_event_rule.premium_cleanup_schedule.arn
 }
 
+# ==========================================
+# EventBridge: EC2 State Change → Cleanup
+# ==========================================
+
+# Trigger cleanup Lambda when any EC2 instance enters shutting-down or
+# terminated state. EventBridge EC2 state-change events do not include
+# tags, so the Lambda checks premium tags and exits early for non-premium
+# instances. Manager-initiated terminations already clean up inline, so
+# those invocations are no-ops.
+
+resource "aws_cloudwatch_event_rule" "premium_ec2_state_change" {
+  name        = "${var.environment}-premium-ec2-state-change"
+  description = "Trigger cleanup on EC2 instance termination"
+
+  event_pattern = jsonencode({
+    source      = ["aws.ec2"]
+    detail-type = ["EC2 Instance State-change Notification"]
+    detail = {
+      state = ["shutting-down", "terminated"]
+    }
+  })
+
+  tags = {
+    Name    = "Premium EC2 State Change"
+    Type    = "Premium-CloudWatch"
+    Service = "premium-tier"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "premium_ec2_state_change_target" {
+  rule      = aws_cloudwatch_event_rule.premium_ec2_state_change.name
+  target_id = "PremiumEC2StateChangeCleanup"
+  arn       = aws_lambda_function.premium_cleanup.arn
+
+  input_transformer {
+    input_paths = {
+      instance_id = "$.detail.instance-id"
+      state       = "$.detail.state"
+    }
+    input_template = "{\"action\":\"reconcile_instance\",\"instance_id\":<instance_id>,\"instance_state\":<state>,\"source\":\"ec2_state_change\"}"
+  }
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_ec2_state_change" {
+  statement_id  = "AllowExecutionFromEC2StateChange"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.premium_cleanup.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.premium_ec2_state_change.arn
+}
+
 # Create ZIP file for premium manager Lambda with dependencies
 # Install dependencies first
 resource "null_resource" "install_dependencies" {

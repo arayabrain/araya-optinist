@@ -609,3 +609,383 @@ class TestReconcileInstanceStates:
             result = reconcile_instance_states()
             assert result["cleanup_count"] == 0
             assert result["update_count"] == 0
+
+
+class TestReconcileSingleInstance:
+    """Tests for EventBridge-triggered single-instance reconcile."""
+
+    def test_cleans_up_premium_instance(self, mock_env_vars_premium):
+        """Terminated premium instance with active assignments
+        gets ALB and DB cleaned up."""
+        instance_id = "i-terminated123"
+        tg_arn = "arn:aws:elasticloadbalancing:tg/premium-user"
+        rule_arn = "arn:aws:elasticloadbalancing:rule/premium-user"
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+            mock_ec2 = MagicMock()
+            mock_elbv2 = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "ec2":
+                    return mock_ec2
+                if service == "elbv2":
+                    return mock_elbv2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": instance_id,
+                                "State": {"Name": "terminated"},
+                                "Tags": [
+                                    {
+                                        "Key": "Tier",
+                                        "Value": "premium",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            mock_connection = setup_db_mock(
+                fetchall_values=[
+                    [
+                        MockRow(
+                            {
+                                "id": 1,
+                                "user_id": 100,
+                                "instance_id": instance_id,
+                                "target_group_arn": tg_arn,
+                                "alb_rule_arn": rule_arn,
+                            }
+                        )
+                    ],
+                ],
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_cleanup import reconcile_single_instance
+
+            result = reconcile_single_instance(instance_id)
+            assert result["cleanup_count"] == 1
+            assert result["instance_id"] == instance_id
+            mock_elbv2.delete_rule.assert_called_once_with(RuleArn=rule_arn)
+            mock_elbv2.delete_target_group.assert_called_once_with(
+                TargetGroupArn=tg_arn
+            )
+
+    def test_skips_non_premium_instance(self, mock_env_vars_premium):
+        """Non-premium instance returns skipped."""
+        instance_id = "i-notpremium456"
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ec2 = MagicMock()
+            mock_boto3.side_effect = (
+                lambda service: mock_ec2 if service == "ec2" else MagicMock()
+            )
+
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": instance_id,
+                                "State": {"Name": "terminated"},
+                                "Tags": [
+                                    {
+                                        "Key": "Name",
+                                        "Value": "web-server-1",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            from premium_cleanup import reconcile_single_instance
+
+            result = reconcile_single_instance(instance_id)
+            assert result["skipped"] is True
+            assert result["reason"] == "not_premium_instance"
+
+    def test_idempotent_no_assignments(self, mock_env_vars_premium):
+        """Instance with no DB assignments returns cleanup_count 0."""
+        instance_id = "i-alreadyclean789"
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+            mock_ec2 = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "ec2":
+                    return mock_ec2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": instance_id,
+                                "State": {"Name": "terminated"},
+                                "Tags": [
+                                    {
+                                        "Key": "Tier",
+                                        "Value": "premium",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            mock_connection = setup_db_mock(
+                fetchall_values=[[]],
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_cleanup import reconcile_single_instance
+
+            result = reconcile_single_instance(instance_id)
+            assert result["cleanup_count"] == 0
+            assert result["instance_id"] == instance_id
+
+    def test_handler_missing_instance_id(self, mock_env_vars_premium):
+        """Handler returns 400 when instance_id is missing."""
+        event = {
+            "action": "reconcile_instance",
+            "source": "ec2_state_change",
+        }
+        mock_context = MagicMock()
+        mock_context.function_name = "test-premium-cleanup"
+
+        with patch.dict("os.environ", mock_env_vars_premium):
+            from premium_cleanup import handler
+
+            result = handler(event, mock_context)
+            assert result["statusCode"] == 400
+
+    def test_describe_instances_failure_falls_through_to_db(
+        self, mock_env_vars_premium
+    ):
+        """When describe_instances fails (instance gone), still checks
+        DB and cleans up if assignment exists."""
+        instance_id = "i-fullygone999"
+        tg_arn = "arn:aws:elasticloadbalancing:tg/premium-gone"
+        rule_arn = "arn:aws:elasticloadbalancing:rule/premium-gone"
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+            mock_ec2 = MagicMock()
+            mock_elbv2 = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "ec2":
+                    return mock_ec2
+                if service == "elbv2":
+                    return mock_elbv2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            # Simulate instance fully gone from AWS API
+            mock_ec2.describe_instances.side_effect = Exception(
+                "InvalidInstanceID.NotFound"
+            )
+
+            mock_connection = setup_db_mock(
+                fetchall_values=[
+                    [
+                        MockRow(
+                            {
+                                "id": 5,
+                                "user_id": 200,
+                                "instance_id": instance_id,
+                                "target_group_arn": tg_arn,
+                                "alb_rule_arn": rule_arn,
+                            }
+                        )
+                    ],
+                ],
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_cleanup import reconcile_single_instance
+
+            result = reconcile_single_instance(instance_id)
+            assert result["cleanup_count"] == 1
+            assert result["instance_id"] == instance_id
+            mock_elbv2.delete_rule.assert_called_once_with(RuleArn=rule_arn)
+            mock_elbv2.delete_target_group.assert_called_once_with(
+                TargetGroupArn=tg_arn
+            )
+
+    def test_skips_autoscaling_pool_marker(self, mock_env_vars_premium):
+        """Autoscaling-pool virtual marker is skipped."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ec2 = MagicMock()
+            mock_boto3.side_effect = (
+                lambda service: mock_ec2 if service == "ec2" else MagicMock()
+            )
+
+            # describe_instances will fail for non-real instance ID
+            mock_ec2.describe_instances.side_effect = Exception(
+                "InvalidInstanceID.Malformed"
+            )
+
+            from premium_cleanup import reconcile_single_instance
+
+            result = reconcile_single_instance(PremiumAssignment.AUTOSCALING_POOL)
+            assert result["skipped"] is True
+            assert result["reason"] == "autoscaling_pool_marker"
+
+    def test_skips_standby_alb_resources(self, mock_env_vars_premium):
+        """Standby ALB markers are not deleted."""
+        instance_id = "i-standbytest123"
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+            mock_ec2 = MagicMock()
+            mock_elbv2 = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "ec2":
+                    return mock_ec2
+                if service == "elbv2":
+                    return mock_elbv2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": instance_id,
+                                "State": {"Name": "terminated"},
+                                "Tags": [
+                                    {
+                                        "Key": "Tier",
+                                        "Value": "premium",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            mock_connection = setup_db_mock(
+                fetchall_values=[
+                    [
+                        MockRow(
+                            {
+                                "id": 10,
+                                "user_id": 300,
+                                "instance_id": instance_id,
+                                "target_group_arn": "standby",
+                                "alb_rule_arn": "standby",
+                            }
+                        )
+                    ],
+                ],
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_cleanup import reconcile_single_instance
+
+            result = reconcile_single_instance(instance_id)
+            assert result["cleanup_count"] == 1
+            # Standby markers should NOT trigger ALB API calls
+            mock_elbv2.delete_rule.assert_not_called()
+            mock_elbv2.delete_target_group.assert_not_called()
+
+    def test_skips_shared_autoscaling_target_group(self, mock_env_vars_premium):
+        """Shared autoscaling target group is not deleted."""
+        instance_id = "i-sharedtg123"
+        shared_tg_arn = "arn:aws:elasticloadbalancing:tg/autoscaling-shared"
+        rule_arn = "arn:aws:elasticloadbalancing:rule/user-rule"
+
+        env_with_tg = {
+            **mock_env_vars_premium,
+            "AUTOSCALING_TARGET_GROUP_ARN": shared_tg_arn,
+        }
+
+        with patch.dict("os.environ", env_with_tg), patch(
+            "boto3.client"
+        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+            mock_ec2 = MagicMock()
+            mock_elbv2 = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "ec2":
+                    return mock_ec2
+                if service == "elbv2":
+                    return mock_elbv2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": instance_id,
+                                "State": {"Name": "terminated"},
+                                "Tags": [
+                                    {
+                                        "Key": "Tier",
+                                        "Value": "premium",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            mock_connection = setup_db_mock(
+                fetchall_values=[
+                    [
+                        MockRow(
+                            {
+                                "id": 11,
+                                "user_id": 400,
+                                "instance_id": instance_id,
+                                "target_group_arn": shared_tg_arn,
+                                "alb_rule_arn": rule_arn,
+                            }
+                        )
+                    ],
+                ],
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_cleanup import reconcile_single_instance
+
+            result = reconcile_single_instance(instance_id)
+            assert result["cleanup_count"] == 1
+            # ALB rule should be deleted, but shared TG should NOT
+            mock_elbv2.delete_rule.assert_called_once_with(RuleArn=rule_arn)
+            mock_elbv2.delete_target_group.assert_not_called()
