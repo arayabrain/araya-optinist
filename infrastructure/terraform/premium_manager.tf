@@ -218,6 +218,7 @@ resource "aws_lambda_function" "premium_cleanup" {
       RDS_USER                   = var.mysql_user
       RDS_PASSWORD               = var.mysql_password
       RDS_DATABASE               = var.mysql_database
+      ENV_PREFIX                 = var.environment
       # Cleanup-specific settings
       PREMIUM_IDLE_TIMEOUT_HOURS = "3"
     }
