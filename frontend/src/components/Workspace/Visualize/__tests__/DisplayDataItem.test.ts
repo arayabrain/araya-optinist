@@ -1,4 +1,4 @@
-import { getExperimentUidFromFilePath } from "components/Workspace/Visualize/DisplayDataItem"
+import { getExperimentUidFromFilePath } from "components/Workspace/Visualize/experimentPathUtils"
 
 describe("getExperimentUidFromFilePath", () => {
   it("extracts experiment UID from standard output path", () => {
