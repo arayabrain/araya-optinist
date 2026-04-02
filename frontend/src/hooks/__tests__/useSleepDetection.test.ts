@@ -49,6 +49,12 @@ describe("useSleepDetection (Cases 50-51)", () => {
     })
   }
 
+  /** Change visibility and fire the corresponding event (like a real browser). */
+  const changeVisibility = (state: "visible" | "hidden") => {
+    setVisibility(state)
+    document.dispatchEvent(new Event("visibilitychange"))
+  }
+
   it("should not call onWake during normal interval ticks", () => {
     const onWake = jest.fn()
     renderHook(() => useSleepDetection(onWake))
@@ -212,26 +218,24 @@ describe("useSleepDetection (Cases 50-51)", () => {
     expect(onWake2).toHaveBeenCalled()
   })
 
-  it("should not fire onWake when tab is hidden despite large gap", () => {
+  it("should detect sleep-while-hidden via visibilitychange", () => {
     const onWake = jest.fn()
     renderHook(() => useSleepDetection(onWake))
 
-    // Device sleeps — tab goes hidden, large gap detected but suppressed
-    setVisibility("hidden")
+    // Tab goes hidden — hook records hiddenAt timestamp
     act(() => {
-      currentTime += 600000 // 10 min sleep
-      jest.advanceTimersByTime(30000)
+      changeVisibility("hidden")
     })
-    expect(onWake).not.toHaveBeenCalled()
 
-    // Tab becomes visible — but lastTick was already updated while hidden,
-    // so the next normal tick has no gap. This is correct: the inactivity
-    // check (not sleep detection) handles the idle-user-returns case.
-    setVisibility("visible")
+    // Device sleeps — CPU suspended, no interval ticks fire, time passes
+    currentTime += 600000 // 10 min
+
+    // User opens laptop, tab becomes visible — no ticks fired while hidden
+    // so visibilitychange detects the gap as real sleep
     act(() => {
-      advanceTime(30000)
+      changeVisibility("visible")
     })
-    expect(onWake).not.toHaveBeenCalled()
+    expect(onWake).toHaveBeenCalledTimes(1)
   })
 
   it("should fire onWake when real sleep happens with tab visible", () => {
@@ -288,14 +292,11 @@ describe("useSleepDetection (Cases 50-51)", () => {
     // After 8 hours of background throttling: zero false wakes
     expect(onWake).not.toHaveBeenCalled()
 
-    // User returns — tab becomes visible, normal ticks resume
-    setVisibility("visible")
+    // User returns — visibilitychange fires. lastTick was kept fresh by
+    // throttled ticks (~60s apart), so gap is only ~60s — below threshold.
     act(() => {
-      advanceTime(30000)
+      changeVisibility("visible")
     })
-
-    // Still no wake — the gap is only 30s (normal tick after lastTick update)
-    // The 2-hour inactivity check handles this case, not sleep detection
     expect(onWake).not.toHaveBeenCalled()
   })
 })

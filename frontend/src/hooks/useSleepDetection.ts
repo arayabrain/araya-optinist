@@ -4,9 +4,9 @@
  * Detects when a device wakes from sleep by monitoring interval timing gaps.
  * When the interval fires much later than expected, we assume the device slept.
  *
- * The 150s threshold avoids false positives from Chromium's background-tab
- * timer throttling (~60s). We also require tab visibility so throttled
- * background tabs don't trigger a wake event.
+ * Two detection paths: (1) interval fires late while tab is visible,
+ * (2) on hidden→visible, no ticks fired while hidden (real sleep suspends
+ * the CPU; background throttling still fires ticks at ~60s).
  */
 
 import { useEffect, useRef, useCallback } from "react"
@@ -38,6 +38,11 @@ export const useSleepDetection = (
 
   const lastTickRef = useRef(Date.now())
   const onWakeRef = useRef(onWake)
+  // Tracks whether any interval ticks fired while tab was hidden.
+  // If none fired, the CPU was suspended (real sleep, not throttling).
+  const hiddenTickRef = useRef(false)
+  // Timestamp when the tab went hidden, for gap measurement.
+  const hiddenAtRef = useRef<number | null>(null)
 
   useEffect(() => {
     onWakeRef.current = onWake
@@ -48,8 +53,13 @@ export const useSleepDetection = (
     const elapsed = now - lastTickRef.current
     const expectedInterval = checkIntervalMs * sleepThresholdMultiplier
 
-    if (elapsed > expectedInterval && document.visibilityState === "visible") {
-      onWakeRef.current()
+    if (document.visibilityState === "visible") {
+      if (elapsed > expectedInterval) {
+        onWakeRef.current()
+      }
+    } else {
+      // Tab is hidden — record that a tick fired (CPU is running, not sleep)
+      hiddenTickRef.current = true
     }
 
     lastTickRef.current = now
@@ -61,6 +71,33 @@ export const useSleepDetection = (
     lastTickRef.current = Date.now()
     const interval = setInterval(checkForSleep, checkIntervalMs)
 
-    return () => clearInterval(interval)
-  }, [enabled, checkIntervalMs, checkForSleep])
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        hiddenAtRef.current = Date.now()
+        hiddenTickRef.current = false
+      } else if (document.visibilityState === "visible") {
+        // If no interval ticks fired while hidden, the CPU was suspended
+        // (real sleep). Check whether the gap exceeds the threshold.
+        if (!hiddenTickRef.current && hiddenAtRef.current !== null) {
+          const now = Date.now()
+          const elapsed = now - hiddenAtRef.current
+          const threshold = checkIntervalMs * sleepThresholdMultiplier
+
+          if (elapsed > threshold) {
+            onWakeRef.current()
+          }
+        }
+        lastTickRef.current = Date.now()
+        hiddenAtRef.current = null
+        hiddenTickRef.current = false
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+    }
+  }, [enabled, checkIntervalMs, checkForSleep, sleepThresholdMultiplier])
 }

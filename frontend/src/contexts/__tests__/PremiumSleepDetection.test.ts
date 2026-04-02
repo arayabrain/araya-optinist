@@ -27,6 +27,8 @@ class SleepDetectionSimulator {
   private sleepThresholdMultiplier: number
   private onWake: () => void
   private interval: ReturnType<typeof setInterval> | null = null
+  private hiddenTick = false
+  private hiddenAt: number | null = null
 
   constructor(
     onWake: () => void,
@@ -42,12 +44,33 @@ class SleepDetectionSimulator {
     this.lastTick = Date.now()
   }
 
+  private handleVisibilityChange = (): void => {
+    if (document.visibilityState === "hidden") {
+      this.hiddenAt = Date.now()
+      this.hiddenTick = false
+    } else if (document.visibilityState === "visible") {
+      if (!this.hiddenTick && this.hiddenAt !== null) {
+        const now = Date.now()
+        const elapsed = now - this.hiddenAt
+        const threshold = this.checkIntervalMs * this.sleepThresholdMultiplier
+
+        if (elapsed > threshold) {
+          this.onWake()
+        }
+      }
+      this.lastTick = Date.now()
+      this.hiddenAt = null
+      this.hiddenTick = false
+    }
+  }
+
   start(): void {
     this.lastTick = Date.now()
     this.interval = setInterval(
       () => this.checkForSleep(),
       this.checkIntervalMs,
     )
+    document.addEventListener("visibilitychange", this.handleVisibilityChange)
   }
 
   stop(): void {
@@ -55,6 +78,10 @@ class SleepDetectionSimulator {
       clearInterval(this.interval)
       this.interval = null
     }
+    document.removeEventListener(
+      "visibilitychange",
+      this.handleVisibilityChange,
+    )
   }
 
   private checkForSleep(): void {
@@ -62,8 +89,12 @@ class SleepDetectionSimulator {
     const elapsed = now - this.lastTick
     const threshold = this.checkIntervalMs * this.sleepThresholdMultiplier
 
-    if (elapsed > threshold && document.visibilityState === "visible") {
-      this.onWake()
+    if (document.visibilityState === "visible") {
+      if (elapsed > threshold) {
+        this.onWake()
+      }
+    } else {
+      this.hiddenTick = true
     }
 
     this.lastTick = now
@@ -88,6 +119,18 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
     jest.useRealTimers()
     jest.restoreAllMocks()
   })
+
+  const setVisibility = (state: "visible" | "hidden") => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => state,
+    })
+  }
+
+  const changeVisibility = (state: "visible" | "hidden") => {
+    setVisibility(state)
+    document.dispatchEvent(new Event("visibilitychange"))
+  }
 
   describe("Sleep Detection Configuration", () => {
     it("should check for sleep every 30 seconds", () => {
@@ -217,6 +260,29 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
         jest.advanceTimersByTime(30000)
 
         expect(onWake).not.toHaveBeenCalled()
+        simulator.stop()
+      })
+
+      it("should detect sleep-while-hidden via visibilitychange", () => {
+        // We need a mutable currentTime to simulate sleep without firing ticks
+        let now = Date.now()
+        jest.spyOn(Date, "now").mockImplementation(() => now)
+
+        const onWake = jest.fn()
+        const simulator = new SleepDetectionSimulator(onWake)
+        simulator.start()
+
+        // Tab goes hidden (records hiddenAt, resets hiddenTick)
+        changeVisibility("hidden")
+
+        // Device sleeps — CPU suspended, no ticks fire, just time passes
+        now += 600000 // 10 min
+
+        // User opens laptop, tab becomes visible — no ticks fired so
+        // visibilitychange detects the gap as real sleep
+        changeVisibility("visible")
+        expect(onWake).toHaveBeenCalledTimes(1)
+
         simulator.stop()
       })
 
