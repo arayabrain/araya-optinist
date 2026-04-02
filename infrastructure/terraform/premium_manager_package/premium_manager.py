@@ -1337,12 +1337,18 @@ def create_running_instance():
                                     "Key": "Name",
                                     "Value": PremiumInstanceConfig.get_instance_name(),
                                 },
-                                {"Key": "Type", "Value": "Premium-Instance"},
+                                {
+                                    "Key": "Type",
+                                    "Value": PremiumInstanceConfig.INSTANCE_TYPE_TAG,
+                                },
                                 {
                                     "Key": "Tier",
                                     "Value": PremiumInstanceConfig.INSTANCE_IDENTIFIER,
                                 },
-                                {"Key": "Service", "Value": "premium-tier"},
+                                {
+                                    "Key": "Service",
+                                    "Value": PremiumInstanceConfig.SERVICE_TAG,
+                                },
                             ],
                         }
                     ],
@@ -1592,7 +1598,9 @@ def create_and_stop_standby_instance():
                                     },
                                     {
                                         "Key": "Type",
-                                        "Value": "Premium-Instance",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_TYPE_TAG
+                                        ),
                                     },
                                     {
                                         "Key": "Tier",
@@ -1602,7 +1610,7 @@ def create_and_stop_standby_instance():
                                     },
                                     {
                                         "Key": "Service",
-                                        "Value": ("premium-tier"),
+                                        "Value": PremiumInstanceConfig.SERVICE_TAG,
                                     },
                                 ],
                             }
@@ -3538,14 +3546,8 @@ def assign_premium_user(
                 )
                 connection.commit()
 
-        # Trigger scaling before DB write so failures don't block retries
-        if needs_scaling:
-            print("Triggering scaling for shared assignment...")
-            scale_premium_instances_if_needed()
-            print("Triggering async migration for autoscaling-pool user...")
-            invoke_migration_async()
-
-        # Store assignment last - orphaned AWS resources cleaned up hourly
+        # Store assignment before scaling so that active_users count
+        # then scale_premium_instances_if_needed
         store_user_assignment(
             user_id,
             instance_id,
@@ -3555,6 +3557,12 @@ def assign_premium_user(
             is_shared,
         )
         assignment_stored = True
+
+        if needs_scaling:
+            print("Triggering scaling for shared assignment...")
+            scale_premium_instances_if_needed()
+            print("Triggering async migration for autoscaling-pool user...")
+            invoke_migration_async()
 
         # Initialize activity tracking for the new assignment
         try:
@@ -4829,11 +4837,24 @@ def terminate_aged_stopped_instances():
         response = ec2.describe_instances(InstanceIds=instance_ids)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         cutoff = timedelta(hours=max_age_hours)
+        env_prefix = PremiumInstanceConfig.get_env_prefix()
         aged_instances = []
 
         for reservation in response["Reservations"]:
             for instance in reservation["Instances"]:
                 instance_id = instance["InstanceId"]
+
+                # Defense-in-depth: verify instance belongs to this environment
+                tags = {t.get("Key"): t.get("Value") for t in instance.get("Tags", [])}
+                name_tag = tags.get("Name", "")
+                if not name_tag.lower().startswith(env_prefix.lower()):
+                    print(
+                        f"Skipping instance {instance_id}: "
+                        f"Name '{name_tag}' does not match "
+                        f"environment prefix '{env_prefix}'"
+                    )
+                    continue
+
                 reason = instance.get("StateTransitionReason", "")
                 stop_time = _parse_stop_time(reason)
                 if stop_time is None:
@@ -4923,7 +4944,7 @@ def cleanup_all_dynamic_instances(base_instance_ids: list) -> dict:
         # Query premium-tier instances filtered by environment prefix
         response = ec2_client.describe_instances(
             Filters=[
-                {"Name": "tag:Service", "Values": ["premium-tier"]},
+                {"Name": "tag:Service", "Values": [PremiumInstanceConfig.SERVICE_TAG]},
                 {
                     "Name": "tag:Name",
                     "Values": [PremiumInstanceConfig.get_instance_name_pattern()],
@@ -5183,7 +5204,10 @@ def cleanup_orphaned_ec2_instances():
                 },
                 {
                     "Name": "tag:Tier",
-                    "Values": ["premium", "Premium"],
+                    "Values": [
+                        PremiumInstanceConfig.INSTANCE_IDENTIFIER,
+                        PremiumInstanceConfig.INSTANCE_IDENTIFIER.capitalize(),
+                    ],
                 },
                 {
                     "Name": "tag:Name",
