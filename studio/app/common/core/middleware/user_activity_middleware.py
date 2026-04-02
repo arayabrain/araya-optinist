@@ -34,7 +34,10 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jwt
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.middleware.constants import SKIP_AUTH_PATHS
+from studio.app.common.core.middleware.constants import (
+    SKIP_ACTIVITY_PATHS,
+    SKIP_AUTH_PATHS,
+)
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.subscription.constants import SubscriptionPlanIds
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
@@ -104,6 +107,11 @@ class UserActivityMiddleware:
 
         # Skip health check, auth endpoints, and system-internal API endpoints
         if path in SKIP_AUTH_PATHS or path.startswith("/system-internal/"):
+            await self.app(scope, receive, send)
+            return
+
+        # Skip activity tracking for automated endpoints (auth still applies)
+        if path in SKIP_ACTIVITY_PATHS:
             await self.app(scope, receive, send)
             return
 
