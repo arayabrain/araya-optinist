@@ -129,6 +129,8 @@ class TestGetExperimentsMetadataSync:
             "studio.app.common.routers.experiment.ExptConfigReader."
             "validate_experiment_config",
             return_value=True,
+        ), patch(
+            "studio.app.common.routers.experiment.logger.warning",
         ):
             # Should not raise despite sync failure
             result = await get_experiments(

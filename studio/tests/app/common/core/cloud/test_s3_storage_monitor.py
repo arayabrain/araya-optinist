@@ -687,21 +687,17 @@ def test_ensure_user_storage_record_creates_new_free():
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
 
-            # Mock exec to return an object with first() method
+            # Mock execute to return an object with first() method
             mock_exec_result = Mock()
             mock_exec_result.first.return_value = None
-            mock_db.exec.return_value = mock_exec_result
+            mock_db.execute.return_value = mock_exec_result
 
             monitor = S3StorageMonitor("test-bucket")
             result = monitor.ensure_user_storage_record(
                 user_id, SubscriptionType.FREE.value
             )
 
-            # Verify method completes (may create or update record)
-            assert result in [
-                True,
-                False,
-            ]  # Accept both outcomes due to mocking complexity
+            assert result is True
 
 
 def test_ensure_user_storage_record_creates_new_premium():
@@ -716,21 +712,17 @@ def test_ensure_user_storage_record_creates_new_premium():
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
 
-            # Mock exec to return an object with first() method
+            # Mock execute to return an object with first() method
             mock_exec_result = Mock()
             mock_exec_result.first.return_value = None
-            mock_db.exec.return_value = mock_exec_result
+            mock_db.execute.return_value = mock_exec_result
 
             monitor = S3StorageMonitor("test-bucket")
             result = monitor.ensure_user_storage_record(
                 user_id, SubscriptionType.PREMIUM.value
             )
 
-            # Verify method completes (may create or update record)
-            assert result in [
-                True,
-                False,
-            ]  # Accept both outcomes due to mocking complexity
+            assert result is True
 
 
 def test_ensure_user_storage_record_exception_handling():

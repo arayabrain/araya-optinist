@@ -28,7 +28,7 @@ class TestPremiumCleanupHandler:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("premium_cleanup.pymysql.connect") as mock_pymysql:
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     MockRow({"count": 0}),
@@ -219,7 +219,7 @@ class TestCleanupStaleAssignments:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("premium_cleanup.pymysql.connect") as mock_pymysql:
             mock_connection = setup_db_mock(
                 fetchall_values=[
                     [
@@ -263,7 +263,7 @@ class TestCleanupStaleAssignments:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("premium_cleanup.pymysql.connect") as mock_pymysql:
             mock_connection = setup_db_mock(
                 fetchall_values=[
                     [
@@ -308,7 +308,7 @@ class TestCleanupOrphanedAlbResources:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("premium_cleanup.pymysql.connect") as mock_pymysql:
             mock_elbv2 = MagicMock()
 
             def boto3_client_side_effect(service):
@@ -377,7 +377,7 @@ class TestCleanupOrphanedAlbResources:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("premium_cleanup.pymysql.connect") as mock_pymysql:
             mock_elbv2 = MagicMock()
 
             def boto3_client_side_effect(service):
@@ -434,7 +434,7 @@ class TestCleanupOrphanedAlbResources:
         """Default ALB rule is never deleted."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("premium_cleanup.pymysql.connect") as mock_pymysql:
             mock_elbv2 = MagicMock()
 
             def boto3_client_side_effect(service):

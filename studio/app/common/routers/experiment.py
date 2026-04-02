@@ -41,10 +41,14 @@ logger = AppLogger.get_logger()
 
 def _get_published_uids(db: Session, workspace_id: str) -> Set[str]:
     """Query DB for UIDs of published experiments in the given workspace."""
+    try:
+        ws_id = int(workspace_id)
+    except (ValueError, TypeError):
+        return set()
     statement = (
         select(ExperimentRecord.uid)
         .join(Workspace, Workspace.id == ExperimentRecord.workspace_id)
-        .where(ExperimentRecord.workspace_id == int(workspace_id))
+        .where(ExperimentRecord.workspace_id == ws_id)
         .where(ExperimentRecord.publish_status == PublishStatus.on.value)
         .where(ExperimentRecord.success == 1)
         .where(Workspace.deleted == 0)

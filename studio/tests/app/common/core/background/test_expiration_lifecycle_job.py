@@ -357,6 +357,7 @@ class TestExecuteDeletion:
                 new_callable=AsyncMock,
                 return_value=5000,
             ) as mock_delete,
+            patch.object(ExpirationLifecycleJob, "_update_data_flags"),
             patch(f"{MODULE}.aioboto3.Session", return_value=mock_session),
         ):
             result = await ExpirationLifecycleJob._execute_deletion(
@@ -399,6 +400,7 @@ class TestExecuteDeletion:
                 "_has_active_subscription",
                 return_value=True,
             ),
+            patch.object(ExpirationLifecycleJob, "_update_data_flags"),
             patch(f"{MODULE}.aioboto3.Session", return_value=mock_session),
         ):
             result = await ExpirationLifecycleJob._execute_deletion(
@@ -444,6 +446,7 @@ class TestExecuteDeletion:
             patch.object(
                 ExpirationLifecycleJob, "_delete_unit", side_effect=track_delete
             ),
+            patch.object(ExpirationLifecycleJob, "_update_data_flags"),
             patch(f"{MODULE}.aioboto3.Session", return_value=mock_session),
         ):
             await ExpirationLifecycleJob._execute_deletion(
@@ -494,6 +497,7 @@ class TestExecuteDeletion:
             patch.object(
                 ExpirationLifecycleJob, "_delete_unit", side_effect=track_delete
             ),
+            patch.object(ExpirationLifecycleJob, "_update_data_flags"),
             patch(f"{MODULE}.aioboto3.Session", return_value=mock_session),
         ):
             await ExpirationLifecycleJob._execute_deletion(
@@ -544,6 +548,7 @@ class TestExecuteDeletion:
             patch.object(
                 ExpirationLifecycleJob, "_delete_unit", side_effect=track_delete
             ),
+            patch.object(ExpirationLifecycleJob, "_update_data_flags"),
             patch(f"{MODULE}.aioboto3.Session", return_value=mock_session),
         ):
             await ExpirationLifecycleJob._execute_deletion(
