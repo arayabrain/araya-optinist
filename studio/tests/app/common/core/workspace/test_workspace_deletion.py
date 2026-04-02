@@ -264,7 +264,9 @@ async def test_initiate_marks_task_failed_on_exception(mock_db, mock_workspace):
     ), patch(
         "studio.app.common.core.workspace.workspace_services"
         ".BackgroundTaskService.mark_failed",
-    ) as mock_failed:
+    ) as mock_failed, patch(
+        "studio.app.common.core.workspace.workspace_services.logger",
+    ):
         with pytest.raises(HTTPException) as exc_info:
             await WorkspaceService.initiate_workspace_deletion(
                 mock_db, "test-bucket", "1", "1"
@@ -399,6 +401,8 @@ async def test_initiate_rollback_on_general_exception(mock_db, mock_workspace):
     ), patch(
         "studio.app.common.core.workspace.workspace_services"
         ".BackgroundTaskService.mark_failed",
+    ), patch(
+        "studio.app.common.core.workspace.workspace_services.logger",
     ):
         with pytest.raises(HTTPException):
             await WorkspaceService.initiate_workspace_deletion(

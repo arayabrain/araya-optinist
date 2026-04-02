@@ -94,6 +94,12 @@ class TestPostProcessObserveFailure:
             side_effect=RuntimeError("observe failed")
         )
 
+    @pytest.fixture(autouse=True)
+    def _suppress_error_traceback(self):
+        """Suppress ERROR+Traceback output from intentional observe failure."""
+        with patch(f"{MODULE}.logger.error"):
+            yield
+
     @pytest.mark.usefixtures("_patch_snakemake_execution")
     def test_skips_record_and_data_usage(
         self, mock_observe, mock_experiment_record, mock_data_capacity

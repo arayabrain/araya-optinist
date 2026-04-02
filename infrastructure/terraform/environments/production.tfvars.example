@@ -29,6 +29,7 @@ ecr_repository_url = "<AWS_ACCOUNT_ID>.dkr.ecr.ap-northeast-1.amazonaws.com/opti
 # Database configuration
 mysql_root_password = "<PLACEHOLDER-generate-with-openssl-rand-base64-24>"
 mysql_database      = "studio"
+# Note: Changing username will require destroying and recreating the database
 mysql_user          = "<PLACEHOLDER-db-admin-username>"
 mysql_password      = "<PLACEHOLDER-generate-with-openssl-rand-base64-24>"
 

@@ -20,6 +20,11 @@ export type TParams<T = unknown> = {
 
 export type TParamQueryLogs = TParams & { reverse?: boolean; offset: number }
 
+export type TPlatformInfo = {
+  service_name: string
+  task_id: string
+}
+
 export const fetchAvailableLogLevels = async (): Promise<TLevelsLog[]> => {
   const { data } = await axios.get("/logs/level")
   return (data.levels as string[]).map(
@@ -36,5 +41,6 @@ export const serviceLogs = async (params: TParamQueryLogs) => {
     data: data.data.map((e: string) => ({ text: e, id: uuidv4() })),
     params: config.params,
     offset: { next: data.next_offset, pre: data.prev_offset },
+    platform: data.platform as TPlatformInfo | undefined,
   }
 }

@@ -57,11 +57,8 @@ const ModalLogs = ({ isOpen = false, onClose }: Props) => {
       .catch(() => setAvailableLevels(Object.values(TLevelsLog)))
   }, [isOpen])
 
-  const { logs, onPrevSearchApi, onNextSearchApi, isError, reset } = useLogs(
-    levels,
-    keyword,
-    !visibleScrollEnd,
-  )
+  const { logs, onPrevSearchApi, onNextSearchApi, isError, reset, platform } =
+    useLogs(levels, keyword, !visibleScrollEnd)
   const logsRef = useRef(logs)
   const scrollLogs = useRef<HTMLDivElement>(null)
   const modalContent = useRef<HTMLDivElement>(null)
@@ -358,6 +355,12 @@ const ModalLogs = ({ isOpen = false, onClose }: Props) => {
             <KeyboardDoubleArrowDownIcon />
           </BoxScrollDown>
         ) : null}
+        {platform ? (
+          <PlatformInfoBox>
+            <span>Platform service name: {platform.service_name}</span>
+            <span>task id: {platform.task_id}</span>
+          </PlatformInfoBox>
+        ) : null}
       </Content>
     </Modal>
   )
@@ -512,6 +515,24 @@ const BoxScrollDown = styled(Box)`
   height: 30px;
   animation: ${rotate} 2s linear infinite;
   cursor: pointer;
+`
+
+const PlatformInfoBox = styled(Box)`
+  position: absolute;
+  bottom: 12px;
+  right: 36px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  background-color: rgba(92, 92, 92, 0.8);
+  border-radius: 4px;
+  padding: 4px 10px;
+  color: rgba(255, 255, 255);
+  font-size: 12px;
+  line-height: 1;
+  user-select: text;
+  cursor: text;
 `
 
 export default ModalLogs

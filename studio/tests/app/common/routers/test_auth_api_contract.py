@@ -217,39 +217,49 @@ async def test_contract_login_response_format():
         with patch(
             "studio.app.common.routers.auth.calculate_limit_warning"
         ) as mock_warning:
-            # Mock successful authentication
-            mock_token = Token(
-                access_token="jwt_token_here",
-                token_type="bearer",
-                refresh_token="refresh_token_here",
-                ex_token="ex_token_here",
-            )
-            mock_user = Mock()
-            mock_user.id = 1
-            mock_user.email = "test@example.com"
+            with patch("studio.app.common.routers.auth.clear_logged_out_status"):
+                with patch(
+                    "studio.app.common.routers.auth.clear_free_user_logged_out_at"
+                ):
+                    with patch(
+                        "studio.app.common.routers.auth.ensure_user_bucket_exists",
+                        new_callable=AsyncMock,
+                    ):
+                        # Mock successful authentication
+                        mock_token = Token(
+                            access_token="jwt_token_here",
+                            token_type="bearer",
+                            refresh_token="refresh_token_here",
+                            ex_token="ex_token_here",
+                        )
+                        mock_user = Mock()
+                        mock_user.id = 1
+                        mock_user.email = "test@example.com"
 
-            mock_auth.authenticate_user = AsyncMock(
-                return_value=(mock_token, mock_user)
-            )
-            mock_warning.return_value = None
+                        mock_auth.authenticate_user = AsyncMock(
+                            return_value=(mock_token, mock_user)
+                        )
+                        mock_warning.return_value = None
 
-            from studio.app.common.routers.auth import login
-            from studio.app.common.schemas.auth import UserAuth
+                        from studio.app.common.routers.auth import login
+                        from studio.app.common.schemas.auth import UserAuth
 
-            user_data = UserAuth(email="test@example.com", password="Password123!")
-            mock_db = Mock()
+                        user_data = UserAuth(
+                            email="test@example.com", password="Password123!"
+                        )
+                        mock_db = Mock()
 
-            result = await login(user_data=user_data, db=mock_db)
+                        result = await login(user_data=user_data, db=mock_db)
 
-            # Result should be Token model, convert to dict for validation
-            result_dict = result.dict()
+                        # Result should be Token model, convert to dict for validation
+                        result_dict = result.dict()
 
-            validate_contract(
-                result_dict,
-                TOKEN_DTO_REQUIRED_FIELDS,
-                TOKEN_DTO_OPTIONAL_FIELDS,
-                context="Login response",
-            )
+                        validate_contract(
+                            result_dict,
+                            TOKEN_DTO_REQUIRED_FIELDS,
+                            TOKEN_DTO_OPTIONAL_FIELDS,
+                            context="Login response",
+                        )
 
 
 @pytest.mark.asyncio
@@ -352,34 +362,38 @@ async def test_contract_login_clears_logged_out_status():
                 with patch(
                     "studio.app.common.routers.auth.clear_free_user_logged_out_at"
                 ) as mock_clear_logged_out_at:
-                    mock_token = Token(
-                        access_token="jwt_token_here",
-                        token_type="bearer",
-                        refresh_token="refresh_token_here",
-                        ex_token="ex_token_here",
-                    )
-                    mock_user = Mock()
-                    mock_user.id = 42
-                    mock_user.email = "test@example.com"
+                    with patch(
+                        "studio.app.common.routers.auth.ensure_user_bucket_exists",
+                        new_callable=AsyncMock,
+                    ):
+                        mock_token = Token(
+                            access_token="jwt_token_here",
+                            token_type="bearer",
+                            refresh_token="refresh_token_here",
+                            ex_token="ex_token_here",
+                        )
+                        mock_user = Mock()
+                        mock_user.id = 42
+                        mock_user.email = "test@example.com"
 
-                    mock_auth.authenticate_user = AsyncMock(
-                        return_value=(mock_token, mock_user)
-                    )
-                    mock_warning.return_value = None
+                        mock_auth.authenticate_user = AsyncMock(
+                            return_value=(mock_token, mock_user)
+                        )
+                        mock_warning.return_value = None
 
-                    from studio.app.common.routers.auth import login
-                    from studio.app.common.schemas.auth import UserAuth
+                        from studio.app.common.routers.auth import login
+                        from studio.app.common.schemas.auth import UserAuth
 
-                    user_data = UserAuth(
-                        email="test@example.com", password="Password123!"
-                    )
-                    mock_db = Mock()
+                        user_data = UserAuth(
+                            email="test@example.com", password="Password123!"
+                        )
+                        mock_db = Mock()
 
-                    await login(user_data=user_data, db=mock_db)
+                        await login(user_data=user_data, db=mock_db)
 
-                    # Verify both clear functions were called with user.id
-                    mock_clear_status.assert_called_once_with(42)
-                    mock_clear_logged_out_at.assert_called_once_with(42)
+                        # Verify both clear functions were called with user.id
+                        mock_clear_status.assert_called_once_with(42)
+                        mock_clear_logged_out_at.assert_called_once_with(42)
 
 
 @pytest.mark.asyncio
@@ -399,37 +413,43 @@ async def test_contract_login_continues_on_clear_failure():
                 with patch(
                     "studio.app.common.routers.auth.clear_free_user_logged_out_at"
                 ) as mock_clear_logged_out_at:
-                    mock_token = Token(
-                        access_token="jwt_token_here",
-                        token_type="bearer",
-                        refresh_token="refresh_token_here",
-                        ex_token="ex_token_here",
-                    )
-                    mock_user = Mock()
-                    mock_user.id = 42
-                    mock_user.email = "test@example.com"
+                    with patch(
+                        "studio.app.common.routers.auth.ensure_user_bucket_exists",
+                        new_callable=AsyncMock,
+                    ):
+                        mock_token = Token(
+                            access_token="jwt_token_here",
+                            token_type="bearer",
+                            refresh_token="refresh_token_here",
+                            ex_token="ex_token_here",
+                        )
+                        mock_user = Mock()
+                        mock_user.id = 42
+                        mock_user.email = "test@example.com"
 
-                    mock_auth.authenticate_user = AsyncMock(
-                        return_value=(mock_token, mock_user)
-                    )
-                    mock_warning.return_value = None
+                        mock_auth.authenticate_user = AsyncMock(
+                            return_value=(mock_token, mock_user)
+                        )
+                        mock_warning.return_value = None
 
-                    # Make clear function raise exception
-                    mock_clear_status.side_effect = Exception("DB connection failed")
-                    mock_clear_logged_out_at.side_effect = Exception(
-                        "DB connection failed"
-                    )
+                        # Make clear function raise exception
+                        mock_clear_status.side_effect = Exception(
+                            "DB connection failed"
+                        )
+                        mock_clear_logged_out_at.side_effect = Exception(
+                            "DB connection failed"
+                        )
 
-                    from studio.app.common.routers.auth import login
-                    from studio.app.common.schemas.auth import UserAuth
+                        from studio.app.common.routers.auth import login
+                        from studio.app.common.schemas.auth import UserAuth
 
-                    user_data = UserAuth(
-                        email="test@example.com", password="Password123!"
-                    )
-                    mock_db = Mock()
+                        user_data = UserAuth(
+                            email="test@example.com", password="Password123!"
+                        )
+                        mock_db = Mock()
 
-                    # Should not raise - login should continue
-                    result = await login(user_data=user_data, db=mock_db)
+                        # Should not raise - login should continue
+                        result = await login(user_data=user_data, db=mock_db)
 
-                    # Login should still succeed
-                    assert result.access_token == "jwt_token_here"
+                        # Login should still succeed
+                        assert result.access_token == "jwt_token_here"

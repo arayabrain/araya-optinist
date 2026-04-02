@@ -449,6 +449,13 @@ class TestValidateExperiment:
     @pytest.mark.asyncio
     async def test_validate_outer_exception(self):
         """Exception outside retry loop -> marks error"""
+        original_range = range
+
+        def selective_range(*args, **kwargs):
+            if args == (3,):
+                raise RuntimeError("outer")
+            return original_range(*args, **kwargs)
+
         with (
             patch.object(
                 PublishedExperimentSyncJob,
@@ -458,18 +465,21 @@ class TestValidateExperiment:
                 PublishedExperimentSyncJob,
                 "_increment_retry_count",
             ) as mock_inc,
+            patch(
+                "studio.app.common.core.background.sync_job.logger",
+            ),
+            patch(
+                "builtins.range",
+                side_effect=selective_range,
+            ),
         ):
             bad_s3 = MagicMock()
             bad_s3.validate_experiment_in_s3 = AsyncMock(
                 side_effect=RuntimeError("broken")
             )
-            with patch(
-                "builtins.range",
-                side_effect=RuntimeError("outer"),
-            ):
-                result = await PublishedExperimentSyncJob._validate_experiment(
-                    bad_s3, "ws1", "uid1", 1, "bucket1"
-                )
+            result = await PublishedExperimentSyncJob._validate_experiment(
+                bad_s3, "ws1", "uid1", 1, "bucket1"
+            )
 
             assert result is False
             mock_error.assert_called_once_with(1)
@@ -651,7 +661,9 @@ class TestValidationLogicMetrics:
         ), patch.object(
             PublishedExperimentSyncJob,
             "_publish_metrics",
-        ) as mock_publish:
+        ) as mock_publish, patch(
+            "studio.app.common.core.background.sync_job.logger",
+        ):
             await PublishedExperimentSyncJob._run_validation_logic()
 
             mock_publish.assert_called_once_with(1, 1)
@@ -776,7 +788,9 @@ class TestPublishMetrics:
 
     def test_does_not_raise_on_cloudwatch_error(self):
         """_publish_metrics swallows exceptions, never propagates"""
-        with patch("boto3.client") as mock_boto:
+        with patch("boto3.client") as mock_boto, patch(
+            "studio.app.common.core.background.sync_job.logger",
+        ):
             mock_cw = MagicMock()
             mock_cw.put_metric_data.side_effect = Exception("CloudWatch down")
             mock_boto.return_value = mock_cw
