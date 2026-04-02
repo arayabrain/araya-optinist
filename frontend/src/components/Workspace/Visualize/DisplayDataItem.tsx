@@ -66,15 +66,15 @@ export const DisplayDataItem = memo(function DisplayDataItem({
 
 /**
  * Extract experiment UID from a visualize data file path.
- * Path format: "{nodeId}/{workspaceId}/{uniqueId}/{nodeId}/filename"
- * (set in FilePathSelect, which prepends nodeId to the normalized output path).
+ * Path format: "{workspaceId}/{uniqueId}/{functionNodeId}/filename"
+ * (from experiment config outputPaths).
  */
-function getExperimentUidFromFilePath(
+export function getExperimentUidFromFilePath(
   filePath: string | null | undefined,
 ): string {
   if (!filePath) return ""
   const segments = filePath.split("/")
-  return segments.length >= 3 ? segments[2] : ""
+  return segments.length >= 2 ? segments[1] : ""
 }
 
 interface DataTypeProps {
