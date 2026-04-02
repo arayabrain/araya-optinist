@@ -4,6 +4,7 @@ import {
   serviceLogs,
   TLevelsLog,
   TParams,
+  TPlatformInfo,
 } from "components/Workspace/FlowChart/ModalLogs/helpers/service"
 
 export type TLogs = { text: string; id: string }
@@ -16,6 +17,7 @@ export const useLogs = (
   isRealtime: boolean,
 ) => {
   const [logs, setLogs] = useState<TLogs[]>([])
+  const [platform, setPlatform] = useState<TPlatformInfo | undefined>()
   const [isError, setIsError] = useState(false)
   const timeout = useRef<NodeJS.Timeout>()
   const paginate = useRef({ next: -1, pre: -1 })
@@ -43,8 +45,12 @@ export const useLogs = (
   const getPrevLogsApi = useCallback(
     async (_params: TParams<{ offset: number }>) => {
       _params.levels = levelsRef.current
-      const { data, offset } = await serviceLogs({ ..._params, reverse: true })
+      const { data, offset, platform } = await serviceLogs({
+        ..._params,
+        reverse: true,
+      })
       paginate.current.pre = offset.pre
+      if (platform) setPlatform(platform)
       return data
     },
     [],
@@ -54,8 +60,12 @@ export const useLogs = (
     async (_params: TParams<{ offset: number }>) => {
       _params.levels = levelsRef.current
       const { pre } = paginate.current
-      const { data, offset } = await serviceLogs({ ..._params, reverse: false })
+      const { data, offset, platform } = await serviceLogs({
+        ..._params,
+        reverse: false,
+      })
       paginate.current.next = offset.next
+      if (platform) setPlatform(platform)
       if (!data.length && pre === -1) {
         const dataPre = await getPrevLogsApi({ ..._params, offset: offset.pre })
         return dataPre
@@ -118,5 +128,5 @@ export const useLogs = (
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onNextSearchApi])
 
-  return { onPrevSearchApi, onNextSearchApi, logs, isError, reset }
+  return { onPrevSearchApi, onNextSearchApi, logs, isError, reset, platform }
 }
