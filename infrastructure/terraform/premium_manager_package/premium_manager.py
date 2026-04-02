@@ -3546,14 +3546,8 @@ def assign_premium_user(
                 )
                 connection.commit()
 
-        # Trigger scaling before DB write so failures don't block retries
-        if needs_scaling:
-            print("Triggering scaling for shared assignment...")
-            scale_premium_instances_if_needed()
-            print("Triggering async migration for autoscaling-pool user...")
-            invoke_migration_async()
-
-        # Store assignment last - orphaned AWS resources cleaned up hourly
+        # Store assignment before scaling so that active_users count
+        # then scale_premium_instances_if_needed
         store_user_assignment(
             user_id,
             instance_id,
@@ -3563,6 +3557,12 @@ def assign_premium_user(
             is_shared,
         )
         assignment_stored = True
+
+        if needs_scaling:
+            print("Triggering scaling for shared assignment...")
+            scale_premium_instances_if_needed()
+            print("Triggering async migration for autoscaling-pool user...")
+            invoke_migration_async()
 
         # Initialize activity tracking for the new assignment
         try:
