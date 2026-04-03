@@ -35,7 +35,7 @@ resource "aws_sns_topic_subscription" "critical_alerts_email" {
   count     = var.environment == "subscr" ? 1 : 0
   topic_arn = aws_sns_topic.critical_alerts[0].arn
   protocol  = "email"
-  endpoint  = "support@araya-optinist.com"
+  endpoint  = "optinist-support@araya.org"
 }
 
 locals {
