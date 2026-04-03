@@ -212,7 +212,7 @@ class TestPublishActiveUserMetric:
 
             mock_cw.put_metric_data.assert_called_once()
             call_kwargs = mock_cw.put_metric_data.call_args[1]
-            assert call_kwargs["Namespace"] == "OptiNiSt/FreeUsers"
+            assert call_kwargs["Namespace"] == "OptiNiSt/FreeUsers/test"
             metric = call_kwargs["MetricData"][0]
             assert metric["MetricName"] == "ActiveLogins"
             assert metric["Value"] == 42

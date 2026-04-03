@@ -586,7 +586,7 @@ resource "aws_cloudwatch_log_metric_filter" "premium_assignments" {
 
   metric_transformation {
     name      = "ActiveAssignments"
-    namespace = "OptiNiSt/Premium"
+    namespace = "OptiNiSt/Premium/${var.environment}"
     value     = "1"
   }
 }
@@ -644,6 +644,7 @@ resource "aws_lambda_function" "cost_tracker" {
       RDS_DATABASE        = var.mysql_database
       PREMIUM_HOURLY_RATE = "0.1088"
       FREE_HOURLY_RATE    = "0.1088"
+      ENV_PREFIX          = var.environment
     }
   }
 
@@ -768,7 +769,7 @@ resource "aws_cloudwatch_metric_alarm" "monthly_cost_high" {
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "1"
   metric_name         = "ExpectedMonthlyBudget"
-  namespace           = "Optinist/CostTracking"
+  namespace           = "Optinist/CostTracking/${var.environment}"
   period              = "86400"
   statistic           = "Maximum"
   threshold           = var.monthly_budget_usd

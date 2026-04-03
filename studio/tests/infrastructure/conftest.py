@@ -89,6 +89,7 @@ MOCK_ENV_VARS_PREMIUM = {
 
 MOCK_ENV_VARS_FREE = {
     **MOCK_ENV_VARS_BASE,
+    "ENV_PREFIX": "test",
     "CLUSTER_NAME": "test-cluster",
     "FREE_SERVICE_NAME": "subscr-optinist-cloud-service",
     "ASG_NAME": "test-free-asg",

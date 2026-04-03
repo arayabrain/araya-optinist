@@ -1997,7 +1997,7 @@ def is_premium_scaling_in_progress() -> bool:
                     "Id": "scaling_lock",
                     "MetricStat": {
                         "Metric": {
-                            "Namespace": "OptiNiSt/PremiumManager",
+                            "Namespace": f"OptiNiSt/PremiumManager/{PremiumInstanceConfig.get_env_prefix()}",
                             "MetricName": "ScalingInProgress",
                         },
                         "Period": 900,  # 15 minutes
@@ -2032,7 +2032,7 @@ def set_premium_scaling_lock(in_progress: bool) -> None:
 
     try:
         cloudwatch.put_metric_data(
-            Namespace="OptiNiSt/PremiumManager",
+            Namespace=f"OptiNiSt/PremiumManager/{PremiumInstanceConfig.get_env_prefix()}",
             MetricData=[
                 {
                     "MetricName": "ScalingInProgress",
@@ -2054,7 +2054,7 @@ def publish_premium_metrics(
     """
     Publish premium tier monitoring metrics to CloudWatch.
 
-    Metrics published to namespace OptiNiSt/PremiumManager:
+    Metrics published to namespace OptiNiSt/PremiumManager/{env_prefix}:
     - ActivePremiumUsers: Count of users with active assignments
     - IdlePremiumUsers: Count of users with inactive/no assignments
     - RunningInstances: Count of running EC2 instances
@@ -2064,7 +2064,7 @@ def publish_premium_metrics(
 
     try:
         cloudwatch.put_metric_data(
-            Namespace="OptiNiSt/PremiumManager",
+            Namespace=f"OptiNiSt/PremiumManager/{PremiumInstanceConfig.get_env_prefix()}",
             MetricData=[
                 {
                     "MetricName": "ActivePremiumUsers",
