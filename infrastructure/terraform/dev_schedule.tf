@@ -78,6 +78,7 @@ resource "aws_lambda_function" "dev_scheduler" {
       RDS_SUBNET_GROUP_NAME         = aws_db_subnet_group.main.name
       RDS_SECURITY_GROUP_IDS        = aws_security_group.rds.id
       RDS_PARAMETER_GROUP_NAME      = aws_db_parameter_group.main.name
+      RDS_PROXY_NAME                = aws_db_proxy.main.name
       NAT_INSTANCE_ID               = aws_instance.nat.id
       BACKGROUND_INSTANCE_ID        = aws_instance.background.id
       PREMIUM_INSTANCE_IDS          = join(",", aws_instance.premium[*].id)
@@ -192,9 +193,12 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
           "rds:AddTagsToResource",
           "rds:StartDBInstance",
           "rds:StopDBInstance",
+          "rds:RegisterDBProxyTargets",
+          "rds:DescribeDBProxyTargets",
         ]
         Resource = [
           aws_db_instance.main.arn,
+          aws_db_proxy.main.arn,
           # RestoreDBInstanceFromDBSnapshot requires access to the
           # parameter group, subnet group, security group, and snapshot
           "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:pg:${aws_db_parameter_group.main.name}",
