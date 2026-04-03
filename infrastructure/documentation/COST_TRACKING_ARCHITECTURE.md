@@ -314,7 +314,7 @@ free_utilization    = (active_free_users / (running_free_instances * 5)) * 100
 | **Threshold** | `var.monthly_budget_usd` (set in `terraform.tfvars`, not in repo) |
 | **Condition** | Projected monthly spend > budget |
 | **Evaluation** | 1 × 24h period |
-| **Action (ALARM)** | SNS `subscr-optinist-critical-alerts` → email `support@araya-optinist.com` |
+| **Action (ALARM)** | SNS `subscr-optinist-critical-alerts` → email `optinist-support@araya.org` |
 | **Action (OK)** | Same SNS topic (sends recovery notification) |
 | **Defined in** | `premium_manager.tf` → `aws_cloudwatch_metric_alarm.monthly_cost_high` |
 
