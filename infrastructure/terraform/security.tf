@@ -467,6 +467,7 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
           "cloudwatch:ListMetrics",
           "cloudwatch:GetMetricStatistics",
           "cloudwatch:DescribeAlarms",
+          "cloudwatch:PutMetricData",
           "autoscaling:DescribeAutoScalingGroups",
           "ecs:ListClusters",
           "ecs:ListContainerInstances"
