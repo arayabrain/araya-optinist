@@ -484,6 +484,22 @@ def restore_rds(instance_id, snapshot_id, config):
             PubliclyAccessible=False,
         )
         print(f"RDS {instance_id}: restoring from snapshot {snapshot_id}")
+
+        # Re-register with RDS Proxy. The proxy deregisters its target when the
+        # instance is deleted, and does NOT auto-register when a new instance is
+        # restored with the same identifier.
+        proxy_name = os.environ.get("RDS_PROXY_NAME")
+        if proxy_name:
+            try:
+                rds.register_db_proxy_targets(
+                    DBProxyName=proxy_name,
+                    DBInstanceIdentifiers=[instance_id],
+                )
+                print(f"RDS Proxy {proxy_name}: registered target {instance_id}")
+            except Exception as proxy_err:
+                # Log but don't fail — verify-start (+15 min) will retry
+                print(f"RDS Proxy {proxy_name}: registration warning - {proxy_err}")
+
         return "restoring"
     except Exception as e:
         print(f"RDS {instance_id}: error - {e}")
