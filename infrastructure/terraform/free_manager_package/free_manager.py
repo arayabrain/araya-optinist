@@ -927,7 +927,9 @@ def get_available_instance_ids(cluster_name: str, service_name: str) -> List[str
         ]
         for container_status in container_statuses:
             response = ecs_client.list_container_instances(
-                cluster=cluster_name, status=container_status
+                cluster=cluster_name,
+                status=container_status,
+                filter="attribute:tier == free",
             )
             arns = response.get("containerInstanceArns", [])
             if arns:
