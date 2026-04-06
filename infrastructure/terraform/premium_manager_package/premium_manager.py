@@ -1277,7 +1277,7 @@ def register_orphaned_stopped_instances():
                     instance_id=instance_id,
                     target_group_arn=PremiumAssignment.STANDBY,
                     rule_arn=PremiumAssignment.STANDBY,
-                    instance_state=InstanceState.LAUNCHING,
+                    instance_state=InstanceState.STOPPED,
                     is_shared=False,
                     is_standby=True,
                 )
@@ -2178,7 +2178,13 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
             # (remove DB entries for terminated instances)
             cleanup_failed_standby_instances()
 
-            # 8. Terminate stopped standby instances older than
+            # 8a. Register any stopped instances that are missing
+            # from the database (e.g. store_user_assignment failed
+            # after ec2.stop_instances, or a waiter timed out in
+            # convert_running_instance_to_standby).
+            register_orphaned_stopped_instances()
+
+            # 8b. Terminate stopped standby instances older than
             # PREMIUM_STOPPED_MAX_AGE_HOURS
             terminate_aged_stopped_instances()
 
@@ -4666,6 +4672,30 @@ def scale_down_if_possible():
 
                 ec2.stop_instances(InstanceIds=idle_instance_ids)
 
+                # Register stopped instances as standby in DB so
+                # terminate_aged_stopped_instances() can find and
+                # terminate them after PREMIUM_STOPPED_MAX_AGE_HOURS.
+                for instance_id in idle_instance_ids:
+                    try:
+                        store_user_assignment(
+                            user_id=None,
+                            instance_id=instance_id,
+                            target_group_arn=PremiumAssignment.STANDBY,
+                            rule_arn=PremiumAssignment.STANDBY,
+                            instance_state=InstanceState.STOPPED,
+                            is_shared=False,
+                            is_standby=True,
+                        )
+                        print(
+                            f"Registered stopped instance {instance_id} "
+                            f"as standby in database"
+                        )
+                    except Exception as e:
+                        print(
+                            f"Failed to register standby for "
+                            f"{instance_id}: {str(e)}"
+                        )
+
                 # Update ECS service desired count to match remaining running instances
                 update_premium_service_desired_count()
             else:
@@ -5270,6 +5300,24 @@ def cleanup_orphaned_ec2_instances():
                 print(f"Stopping orphaned EC2 instance {iid}")
                 ec2.stop_instances(InstanceIds=[iid])
                 stopped_count += 1
+
+                # Register as standby so terminate_aged_stopped_instances()
+                # can find and terminate after PREMIUM_STOPPED_MAX_AGE_HOURS.
+                try:
+                    store_user_assignment(
+                        user_id=None,
+                        instance_id=iid,
+                        target_group_arn=PremiumAssignment.STANDBY,
+                        rule_arn=PremiumAssignment.STANDBY,
+                        instance_state=InstanceState.STOPPED,
+                        is_shared=False,
+                        is_standby=True,
+                    )
+                    print(
+                        f"Registered orphaned instance {iid} " f"as standby in database"
+                    )
+                except Exception as e:
+                    print(f"Failed to register standby for " f"{iid}: {str(e)}")
 
         print(f"Orphan cleanup: stopped {stopped_count} " f"instance(s)")
 
