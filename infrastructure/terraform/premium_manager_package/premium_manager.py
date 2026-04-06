@@ -1320,6 +1320,8 @@ def create_running_instance():
                 )
 
                 # Launch instance using the premium launch template
+                env_label = PremiumInstanceConfig.get_environment_label()
+                inst_name = PremiumInstanceConfig.get_instance_name()
                 response = ec2.run_instances(
                     LaunchTemplate={
                         "LaunchTemplateId": launch_template_id,
@@ -1351,7 +1353,7 @@ def create_running_instance():
                                 },
                                 {
                                     "Key": "Environment",
-                                    "Value": PremiumInstanceConfig.get_environment_label(),
+                                    "Value": env_label,
                                 },
                             ],
                         },
@@ -1360,11 +1362,11 @@ def create_running_instance():
                             "Tags": [
                                 {
                                     "Key": "Name",
-                                    "Value": f"{PremiumInstanceConfig.get_instance_name()}-vol",
+                                    "Value": f"{inst_name}-vol",
                                 },
                                 {
                                     "Key": "Environment",
-                                    "Value": PremiumInstanceConfig.get_environment_label(),
+                                    "Value": env_label,
                                 },
                             ],
                         },
@@ -1593,9 +1595,18 @@ def create_and_stop_standby_instance():
                         f"/{len(subnet_ids)})"
                     )
 
+                    env_label = (
+                        PremiumInstanceConfig.get_environment_label()
+                    )
+                    env_prefix = (
+                        PremiumInstanceConfig.get_env_prefix()
+                    )
+                    inst_id = (
+                        PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                    )
                     response = ec2.run_instances(
                         LaunchTemplate={
-                            "LaunchTemplateId": (launch_template_id),
+                            "LaunchTemplateId": launch_template_id,
                             "Version": "$Latest",
                         },
                         InstanceType=instance_type,
@@ -1608,30 +1619,32 @@ def create_and_stop_standby_instance():
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": "{}-{}-standby".format(
-                                            PremiumInstanceConfig.get_env_prefix(),
-                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER,
+                                        "Value": (
+                                            f"{env_prefix}-"
+                                            f"{inst_id}-standby"
                                         ),
                                     },
                                     {
                                         "Key": "Type",
                                         "Value": (
-                                            PremiumInstanceConfig.INSTANCE_TYPE_TAG
+                                            PremiumInstanceConfig
+                                            .INSTANCE_TYPE_TAG
                                         ),
                                     },
                                     {
                                         "Key": "Tier",
-                                        "Value": (
-                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
-                                        ),
+                                        "Value": inst_id,
                                     },
                                     {
                                         "Key": "Service",
-                                        "Value": PremiumInstanceConfig.SERVICE_TAG,
+                                        "Value": (
+                                            PremiumInstanceConfig
+                                            .SERVICE_TAG
+                                        ),
                                     },
                                     {
                                         "Key": "Environment",
-                                        "Value": PremiumInstanceConfig.get_environment_label(),
+                                        "Value": env_label,
                                     },
                                 ],
                             },
@@ -1640,14 +1653,14 @@ def create_and_stop_standby_instance():
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": "{}-{}-standby-vol".format(
-                                            PremiumInstanceConfig.get_env_prefix(),
-                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER,
+                                        "Value": (
+                                            f"{env_prefix}-"
+                                            f"{inst_id}-standby-vol"
                                         ),
                                     },
                                     {
                                         "Key": "Environment",
-                                        "Value": PremiumInstanceConfig.get_environment_label(),
+                                        "Value": env_label,
                                     },
                                 ],
                             },
