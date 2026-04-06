@@ -295,7 +295,10 @@ def is_scaling_in_progress() -> bool:
                     "Id": "scaling_lock",
                     "MetricStat": {
                         "Metric": {
-                            "Namespace": f"OptiNiSt/FreeManager/{PremiumInstanceConfig.get_env_prefix()}",
+                            "Namespace": (
+                                "OptiNiSt/FreeManager/"
+                                f"{PremiumInstanceConfig.get_env_prefix()}"
+                            ),
                             "MetricName": "ScalingInProgress",
                         },
                         "Period": 900,  # 15 minutes
