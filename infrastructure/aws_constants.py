@@ -109,6 +109,16 @@ class PremiumInstanceConfig:
         return prefix
 
     @classmethod
+    def get_environment_label(cls) -> str:
+        """Get the human-readable environment label for AWS tags.
+
+        Returns 'Production' for subscr, 'Development' for everything else.
+        Matches the Terraform local.environment_label convention.
+        """
+        prefix = cls.get_env_prefix()
+        return "Production" if prefix == "subscr" else "Development"
+
+    @classmethod
     def get_instance_name_pattern(cls) -> str:
         """Get the EC2 Name tag wildcard pattern for this environment.
 

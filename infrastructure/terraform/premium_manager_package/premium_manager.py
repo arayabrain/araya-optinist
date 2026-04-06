@@ -1349,8 +1349,25 @@ def create_running_instance():
                                     "Key": "Service",
                                     "Value": PremiumInstanceConfig.SERVICE_TAG,
                                 },
+                                {
+                                    "Key": "Environment",
+                                    "Value": PremiumInstanceConfig.get_environment_label(),
+                                },
                             ],
-                        }
+                        },
+                        {
+                            "ResourceType": "volume",
+                            "Tags": [
+                                {
+                                    "Key": "Name",
+                                    "Value": f"{PremiumInstanceConfig.get_instance_name()}-vol",
+                                },
+                                {
+                                    "Key": "Environment",
+                                    "Value": PremiumInstanceConfig.get_environment_label(),
+                                },
+                            ],
+                        },
                     ],
                 )
 
@@ -1612,8 +1629,28 @@ def create_and_stop_standby_instance():
                                         "Key": "Service",
                                         "Value": PremiumInstanceConfig.SERVICE_TAG,
                                     },
+                                    {
+                                        "Key": "Environment",
+                                        "Value": PremiumInstanceConfig.get_environment_label(),
+                                    },
                                 ],
-                            }
+                            },
+                            {
+                                "ResourceType": "volume",
+                                "Tags": [
+                                    {
+                                        "Key": "Name",
+                                        "Value": "{}-{}-standby-vol".format(
+                                            PremiumInstanceConfig.get_env_prefix(),
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER,
+                                        ),
+                                    },
+                                    {
+                                        "Key": "Environment",
+                                        "Value": PremiumInstanceConfig.get_environment_label(),
+                                    },
+                                ],
+                            },
                         ],
                     )
 

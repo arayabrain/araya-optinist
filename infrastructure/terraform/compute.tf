@@ -161,9 +161,18 @@ resource "aws_launch_template" "ecs" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Name    = "${local.env_prefix}-asg-instance"
-      Type    = "ECS-ASG"
-      Service = "autoscaling"
+      Name        = "${local.env_prefix}-asg-instance"
+      Type        = "ECS-ASG"
+      Service     = "autoscaling"
+      Environment = local.environment_label
+    }
+  }
+
+  tag_specifications {
+    resource_type = "volume"
+    tags = {
+      Name        = "${local.env_prefix}-asg-vol"
+      Environment = local.environment_label
     }
   }
 
@@ -373,10 +382,19 @@ resource "aws_launch_template" "premium" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Name    = "${local.env_prefix}-premium-instance"
-      Type    = "ECS-Premium"
-      Tier    = "premium"
-      Service = "premium-spot-fleet"
+      Name        = "${local.env_prefix}-premium-instance"
+      Type        = "ECS-Premium"
+      Tier        = "premium"
+      Service     = "premium-spot-fleet"
+      Environment = local.environment_label
+    }
+  }
+
+  tag_specifications {
+    resource_type = "volume"
+    tags = {
+      Name        = "${local.env_prefix}-premium-vol"
+      Environment = local.environment_label
     }
   }
 
