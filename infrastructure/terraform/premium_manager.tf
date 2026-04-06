@@ -397,11 +397,16 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
           }
         }
       },
-      # EC2 CreateTags (unrestricted to allow tagging new instances)
+      # EC2 CreateTags/DeleteTags (tagging new instances + ghost cleanup grace period)
       {
         Effect   = "Allow"
-        Action   = "ec2:CreateTags"
+        Action   = ["ec2:CreateTags", "ec2:DeleteTags"]
         Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
+        Condition = {
+          "ForAllValues:StringEquals" = {
+            "aws:TagKeys" = ["optinist:agent-disconnected-at"]
+          }
+        }
       },
       # EC2 RunInstances (requires multiple resource types)
       {

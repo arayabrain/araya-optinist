@@ -184,7 +184,10 @@ def _get_ecs_container_instance_arn(
     """Map EC2 instance ID to ECS container instance ARN."""
     ecs: "ECSClient" = boto3.client("ecs")
     try:
-        response = ecs.list_container_instances(cluster=cluster_name)
+        response = ecs.list_container_instances(
+            cluster=cluster_name,
+            filter="attribute:tier == premium",
+        )
         arns = response.get("containerInstanceArns", [])
         if not arns:
             return None
