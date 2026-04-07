@@ -641,16 +641,17 @@ class RemoteStorageController(BaseRemoteStorageController):
 
     @staticmethod
     def create_user_bucket_name(id: int, prefix: str = "optinist-user") -> str:
+        # Deterministic per (secret, id): repeated calls for the same user
+        # produce the same bucket name, so retries are idempotent and
+        # BucketAlreadyOwnedByYou is a real safety net rather than masking
+        # drift.
         import hashlib
-        import time
+        import os
 
-        current_time = time.time()
-        hash_src = f"{id}-{current_time}"
-        hash_value = hashlib.md5(hash_src.encode()).hexdigest()
-        hash_value = hash_value[0:10]
-        new_name = f"{prefix}-{id}-{hash_value}"
-
-        return new_name
+        secret = os.environ.get("S3_USER_BUCKET_SECRET", "")
+        hash_src = f"{secret}-{id}"
+        hash_value = hashlib.md5(hash_src.encode()).hexdigest()[0:10]
+        return f"{prefix}-{id}-{hash_value}"
 
     @property
     def bucket_name(self) -> str:

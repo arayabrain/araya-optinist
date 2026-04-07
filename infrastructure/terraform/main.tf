@@ -58,6 +58,12 @@ variable "s3_user_bucket_prefix" {
   default     = "optinist-user"
 }
 
+variable "s3_user_bucket_secret" {
+  description = "Secret seed for deterministic per-user S3 bucket name hashing"
+  type        = string
+  sensitive   = true
+}
+
 # Database configuration
 variable "mysql_root_password" {
   description = "MySQL/MariaDB root password"

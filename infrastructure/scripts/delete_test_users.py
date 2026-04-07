@@ -39,6 +39,12 @@ except ImportError as e:
     sys.exit(1)
 
 
+# Track S3 cleanup outcomes across the whole script run so we can report a
+# loud summary and exit non-zero if any user's bucket was skipped or failed.
+S3_DELETE_SKIPPED: list = []
+S3_DELETE_FAILED: list = []
+
+
 def get_database_url():
     """Get database URL from environment variables."""
     from studio.app.common.db.config import build_mysql_url
@@ -225,7 +231,21 @@ async def delete_test_user_from_db(db, user_email):
         # Do this after database commit so bucket deletion
         # failure doesn't rollback DB changes
 
-        if remote_bucket_name and RemoteStorageController.is_available():
+        if not RemoteStorageController.is_available():
+            print(
+                "WARNING: RemoteStorageController not available — "
+                "skipping S3 bucket deletion. Any bucket associated with "
+                f"{user_name} will be left orphaned in S3."
+            )
+            S3_DELETE_SKIPPED.append(user_name)
+        elif not remote_bucket_name:
+            print(
+                f"WARNING: No remote_bucket_name on user {user_name} — "
+                "DB row had no bucket pointer to delete. If a bucket exists "
+                "for this user in S3, it must be cleaned up manually."
+            )
+            S3_DELETE_SKIPPED.append(user_name)
+        else:
             try:
                 print(f"Deleting S3 bucket: {remote_bucket_name}")
                 async with RemoteStorageSimpleWriter(
@@ -235,10 +255,11 @@ async def delete_test_user_from_db(db, user_email):
                 print("S3 bucket deleted successfully")
             except Exception as s3_error:
                 print(
-                    f"Warning: Error deleting S3 bucket "
+                    f"ERROR: Failed to delete S3 bucket "
                     f"{remote_bucket_name}: {s3_error}"
                 )
                 print("(Continuing with user deletion)")
+                S3_DELETE_FAILED.append((user_name, remote_bucket_name, str(s3_error)))
 
         print(f"Deleted {experiment_count} experiments")
         print(f"Deleted {workspace_share_count} workspace shares")
@@ -327,6 +348,22 @@ async def main():
 
     except Exception as e:
         print(f"Database connection error: {str(e)}")
+
+    # Loud summary of S3 cleanup outcomes so silent no-ops are visible.
+    if S3_DELETE_SKIPPED or S3_DELETE_FAILED:
+        print("\n" + "=" * 60)
+        print("S3 CLEANUP ISSUES")
+        print("=" * 60)
+        if S3_DELETE_SKIPPED:
+            print(f"Skipped S3 deletion for {len(S3_DELETE_SKIPPED)} user(s):")
+            for name in S3_DELETE_SKIPPED:
+                print(f"  - {name}")
+        if S3_DELETE_FAILED:
+            print(f"Failed S3 deletion for {len(S3_DELETE_FAILED)} user(s):")
+            for name, bucket, err in S3_DELETE_FAILED:
+                print(f"  - {name} ({bucket}): {err}")
+        print("Exiting with non-zero status so this is visible in CI/logs.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

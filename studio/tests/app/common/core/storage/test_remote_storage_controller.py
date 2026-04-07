@@ -413,3 +413,58 @@ class TestSyncStatusOnPartialFailure:
             mock_processing.assert_called_once()
             mock_success.assert_called_once()
             mock_error.assert_not_called()
+
+
+# ============================================================================
+# create_user_bucket_name — deterministic generation
+# ============================================================================
+
+
+def test_create_user_bucket_name_is_deterministic(monkeypatch):
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "test-secret")
+    a = RemoteStorageController.create_user_bucket_name(id=42)
+    b = RemoteStorageController.create_user_bucket_name(id=42)
+    assert a == b
+
+
+def test_create_user_bucket_name_differs_per_id(monkeypatch):
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "test-secret")
+    a = RemoteStorageController.create_user_bucket_name(id=1)
+    b = RemoteStorageController.create_user_bucket_name(id=2)
+    assert a != b
+
+
+def test_create_user_bucket_name_respects_secret(monkeypatch):
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "secret-one")
+    a = RemoteStorageController.create_user_bucket_name(id=42)
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "secret-two")
+    b = RemoteStorageController.create_user_bucket_name(id=42)
+    assert a != b
+
+
+def test_create_user_bucket_name_uses_prefix_and_id(monkeypatch):
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "test-secret")
+    name = RemoteStorageController.create_user_bucket_name(
+        id=99, prefix="custom-prefix"
+    )
+    assert name.startswith("custom-prefix-99-")
+    # 10-char hex hash suffix
+    assert len(name.split("-")[-1]) == 10
+
+
+def test_create_user_bucket_name_within_s3_length_limit(monkeypatch):
+    """S3 bucket names must be <= 63 chars; check a large id."""
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "test-secret")
+    name = RemoteStorageController.create_user_bucket_name(
+        id=99999999, prefix="development-optinist-user"
+    )
+    assert len(name) <= 63
+
+
+def test_create_user_bucket_name_matches_s3_naming_rules(monkeypatch):
+    """S3 bucket names must be lowercase, alphanumeric, dots/hyphens only."""
+    import re
+
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "test-secret")
+    name = RemoteStorageController.create_user_bucket_name(id=42)
+    assert re.fullmatch(r"[a-z0-9.\-]+", name)

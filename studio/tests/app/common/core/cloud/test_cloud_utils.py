@@ -8,12 +8,16 @@ Tests cover:
 - _get_fallback_storage_quota() - Subscription plan determination
 """
 
+import asyncio
 from datetime import timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
-from studio.app.common.core.cloud.cloud_utils import calculate_limit_warning
+from studio.app.common.core.cloud.cloud_utils import (
+    _ensure_user_bucket_exists_impl,
+    calculate_limit_warning,
+)
 from studio.app.common.core.cloud.storage_tracking import (
     _get_fallback_storage_quota,
     _is_storage_data_fresh,
@@ -1225,3 +1229,151 @@ class TestProcessFailedStorageOperations:
             result = process_failed_storage_operations(max_retries=5)
 
             assert result == 0
+
+
+# ============================================================================
+# _ensure_user_bucket_exists_impl — short-circuit & merge behaviour
+# ============================================================================
+
+
+def _make_db_with_user(attributes):
+    user = MagicMock()
+    user.id = 42
+    user.attributes = attributes
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = user
+    return db, user
+
+
+def test_ensure_bucket_short_circuits_when_attribute_set(monkeypatch):
+    """When the DB already holds a bucket name, no S3 CreateBucket call."""
+    db, user = _make_db_with_user({"remote_bucket_name": "optinist-user-42-existing00"})
+
+    create_bucket_mock = AsyncMock()
+
+    class FakeWriter:
+        def __init__(self, name):
+            self.name = name
+
+        async def __aenter__(self):
+            inner = MagicMock()
+            inner.create_bucket = create_bucket_mock
+            return inner
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        "studio.app.common.core.storage."
+        "remote_storage_controller.RemoteStorageSimpleWriter",
+        FakeWriter,
+    )
+
+    result = asyncio.run(_ensure_user_bucket_exists_impl(42, db, auto_commit=False))
+
+    assert result == "optinist-user-42-existing00"
+    create_bucket_mock.assert_not_called()
+    db.commit.assert_not_called()
+
+
+def test_ensure_bucket_creates_and_merges_when_missing(monkeypatch):
+    """When attributes lacks the key, create bucket and merge (preserve others)."""
+    db, user = _make_db_with_user({"some_other_key": "preserved"})
+
+    create_bucket_mock = AsyncMock()
+
+    class FakeWriter:
+        def __init__(self, name):
+            self.name = name
+
+        async def __aenter__(self):
+            inner = MagicMock()
+            inner.create_bucket = create_bucket_mock
+            return inner
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        "studio.app.common.core.storage."
+        "remote_storage_controller.RemoteStorageSimpleWriter",
+        FakeWriter,
+    )
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "test-secret")
+
+    result = asyncio.run(_ensure_user_bucket_exists_impl(42, db, auto_commit=True))
+
+    assert result.startswith("optinist-user-42-")
+    create_bucket_mock.assert_awaited_once()
+    # Merge preserved the other key
+    assert user.attributes["some_other_key"] == "preserved"
+    assert user.attributes["remote_bucket_name"] == result
+    db.commit.assert_called_once()
+
+
+def test_ensure_bucket_swallows_already_owned_error(monkeypatch):
+    """BucketAlreadyOwnedByYou should not propagate; function still returns name."""
+    db, user = _make_db_with_user({})
+
+    class FakeWriter:
+        def __init__(self, name):
+            self.name = name
+
+        async def __aenter__(self):
+            inner = MagicMock()
+            inner.create_bucket = AsyncMock(
+                side_effect=Exception("BucketAlreadyOwnedByYou")
+            )
+            return inner
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        "studio.app.common.core.storage."
+        "remote_storage_controller.RemoteStorageSimpleWriter",
+        FakeWriter,
+    )
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "test-secret")
+
+    result = asyncio.run(_ensure_user_bucket_exists_impl(42, db, auto_commit=False))
+
+    assert result.startswith("optinist-user-42-")
+
+
+def test_ensure_bucket_propagates_unexpected_errors(monkeypatch):
+    """Errors that are not BucketAlreadyOwnedByYou must propagate."""
+    db, user = _make_db_with_user({})
+
+    class FakeWriter:
+        def __init__(self, name):
+            self.name = name
+
+        async def __aenter__(self):
+            inner = MagicMock()
+            inner.create_bucket = AsyncMock(side_effect=Exception("AccessDenied"))
+            return inner
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        "studio.app.common.core.storage."
+        "remote_storage_controller.RemoteStorageSimpleWriter",
+        FakeWriter,
+    )
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "test-secret")
+
+    with pytest.raises(Exception, match="AccessDenied"):
+        asyncio.run(_ensure_user_bucket_exists_impl(42, db, auto_commit=False))
+
+
+def test_ensure_bucket_returns_none_when_user_not_found():
+    """If the user row doesn't exist, return None and don't touch S3."""
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = None
+
+    result = asyncio.run(_ensure_user_bucket_exists_impl(999, db, auto_commit=False))
+
+    assert result is None
+    db.commit.assert_not_called()
