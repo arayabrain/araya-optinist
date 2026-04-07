@@ -2,7 +2,12 @@
 
 from unittest.mock import MagicMock, patch
 
-from aws_constants import ECSTaskStatus, PremiumAssignment, PremiumInstanceConfig, RoutingHeaders
+from aws_constants import (
+    ECSTaskStatus,
+    PremiumAssignment,
+    PremiumInstanceConfig,
+    RoutingHeaders,
+)
 from conftest import MockRow, setup_db_mock
 
 TEST_INSTANCE_ID = "i-testlambda123"
@@ -690,8 +695,8 @@ class TestReconcileSingleInstance:
             "boto3.client"
         ) as mock_boto3:
             mock_ec2 = MagicMock()
-            mock_boto3.side_effect = (
-                lambda service: mock_ec2 if service == "ec2" else MagicMock()
+            mock_boto3.side_effect = lambda service: (
+                mock_ec2 if service == "ec2" else MagicMock()
             )
 
             mock_ec2.describe_instances.return_value = {
@@ -842,8 +847,8 @@ class TestReconcileSingleInstance:
             "boto3.client"
         ) as mock_boto3:
             mock_ec2 = MagicMock()
-            mock_boto3.side_effect = (
-                lambda service: mock_ec2 if service == "ec2" else MagicMock()
+            mock_boto3.side_effect = lambda service: (
+                mock_ec2 if service == "ec2" else MagicMock()
             )
 
             # describe_instances will fail for non-real instance ID
