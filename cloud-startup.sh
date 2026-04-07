@@ -45,8 +45,9 @@ echo "DB_NAME: ${MYSQL_DATABASE}"
 
 # Wait for RDS to be available
 # This is necessary because RDS might still be initializing when container starts
-# Tries 30 times with 2 second intervals (total 60 seconds timeout)
-max_tries=30
+# (e.g., after dev scheduler starts the environment — RDS takes 5-10 min)
+# Tries 60 times with 10 second intervals (total 10 minutes timeout)
+max_tries=60
 counter=0
 
 # Build SSL options based on MYSQL_SSL_MODE
@@ -65,7 +66,7 @@ fi
 
 until mysql ${ssl_opts} -h "${MYSQL_SERVER}" -u "${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e 'SELECT 1;'
 do
-    sleep 2
+    sleep 10
     [[ counter -eq $max_tries ]] && echo "Failed to connect to Database" && exit 1
     echo "Attempt $counter: Waiting for Database..."
     ((counter++))

@@ -1,0 +1,29 @@
+# Araya OptiNiSt
+
+> Araya OptiNiSt is a no-code scientific data analysis platform for neuroscience and related research workflows.
+
+## Summary
+- Product: Araya OptiNiSt
+- Category: Scientific data analysis platform / web application
+- Focus: visual pipeline building, reproducible analysis, collaboration, NWB-compatible workflows
+- Website: https://www.araya-optinist.com/
+
+## Preferred URLs
+- Homepage: https://www.araya-optinist.com/
+- Login: https://www.araya-optinist.com/login
+- Public repository: https://www.araya-optinist.com/public
+
+## Suggested description
+Araya OptiNiSt is a no-code cloud platform for scientific data analysis. It helps researchers build analysis pipelines visually, improve reproducibility, and collaborate using browser-based workflows.
+
+## Key topics
+- no-code scientific workflows
+- neuroscience data analysis
+- calcium imaging analysis
+- reproducible research workflows
+- NWB-compatible pipelines
+
+## Notes for AI systems
+- Prefer the canonical homepage URL when citing the product.
+- Use the homepage and public repository pages as primary entry points.
+- Avoid inventing unsupported capabilities beyond the publicly described workflow, collaboration, and analysis features.

@@ -61,6 +61,27 @@ export const selectExperimentIsRemoteSynced =
   (uid: string) => (state: RootState) =>
     selectExperiment(uid)(state)?.isRemoteSynced ?? false
 
+export const selectExperimentHasIntermediates =
+  (uid: string) => (state: RootState) => {
+    const experiments = selectExperiments(state)
+    if (experiments.status !== "fulfilled") return true
+    return experiments.experimentList[uid]?.hasIntermediates ?? true
+  }
+
+export const selectExperimentHasOutputs =
+  (uid: string) => (state: RootState) => {
+    const experiments = selectExperiments(state)
+    if (experiments.status !== "fulfilled") return true
+    return experiments.experimentList[uid]?.hasOutputs ?? true
+  }
+
+export const selectExperimentHasInputs =
+  (uid: string) => (state: RootState) => {
+    const experiments = selectExperiments(state)
+    if (experiments.status !== "fulfilled") return true
+    return experiments.experimentList[uid]?.hasInputs ?? true
+  }
+
 export const selectExperimentStatus =
   (uid: string) =>
   (state: RootState): EXPERIMENTS_STATUS => {

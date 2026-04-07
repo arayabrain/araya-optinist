@@ -41,16 +41,47 @@ logger = AppLogger.get_logger()
 
 def _get_published_uids(db: Session, workspace_id: str) -> Set[str]:
     """Query DB for UIDs of published experiments in the given workspace."""
+    try:
+        ws_id = int(workspace_id)
+    except (ValueError, TypeError):
+        return set()
     statement = (
         select(ExperimentRecord.uid)
         .join(Workspace, Workspace.id == ExperimentRecord.workspace_id)
-        .where(ExperimentRecord.workspace_id == int(workspace_id))
+        .where(ExperimentRecord.workspace_id == ws_id)
         .where(ExperimentRecord.publish_status == PublishStatus.on.value)
         .where(ExperimentRecord.success == 1)
         .where(Workspace.deleted == 0)
     )
     result = db.execute(statement)
     return {row[0] for row in result}
+
+
+def _get_experiment_data_flags(
+    db: Session, workspace_id: str
+) -> Dict[str, Dict[str, bool]]:
+    """Query DB for data-existence flags for all experiments in the workspace."""
+    try:
+        ws_id = int(workspace_id)
+    except (ValueError, TypeError):
+        return {}
+    statement = select(
+        ExperimentRecord.uid,
+        ExperimentRecord.has_intermediates,
+        ExperimentRecord.has_outputs,
+        ExperimentRecord.has_inputs,
+        ExperimentRecord.has_nwb,
+    ).where(ExperimentRecord.workspace_id == ws_id)
+    result = db.execute(statement)
+    return {
+        row[0]: {
+            "has_intermediates": row[1],
+            "has_outputs": row[2],
+            "has_inputs": row[3],
+            "has_nwb": row[4],
+        }
+        for row in result
+    }
 
 
 @router.get(
@@ -140,6 +171,17 @@ async def get_experiments(
         except Exception as e:
             logger.error(e, exc_info=True)
             pass
+
+    if exp_config:
+        data_flags = _get_experiment_data_flags(db, workspace_id)
+        for uid, config in exp_config.items():
+            flags = data_flags.get(uid)
+            if flags:
+                config.has_intermediates = flags["has_intermediates"]
+                config.has_outputs = flags["has_outputs"]
+                config.has_inputs = flags["has_inputs"]
+                # DB has_nwb is authoritative, overrides YAML hasNWB
+                config.hasNWB = flags["has_nwb"]
 
     return exp_config
 

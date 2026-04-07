@@ -13,6 +13,7 @@ import AdbIcon from "@mui/icons-material/Adb"
 import ArrowBackIosIcon from "@mui/icons-material/ArrowBackIos"
 import ArrowForwardIosIcon from "@mui/icons-material/ArrowForwardIos"
 import CloseIcon from "@mui/icons-material/Close"
+import ComputerIcon from "@mui/icons-material/Computer"
 import ErrorIcon from "@mui/icons-material/Error"
 import FilterAltOffOutlinedIcon from "@mui/icons-material/FilterAltOffOutlined"
 import GradeIcon from "@mui/icons-material/Grade"
@@ -56,11 +57,8 @@ const ModalLogs = ({ isOpen = false, onClose }: Props) => {
       .catch(() => setAvailableLevels(Object.values(TLevelsLog)))
   }, [isOpen])
 
-  const { logs, onPrevSearchApi, onNextSearchApi, isError, reset } = useLogs(
-    levels,
-    keyword,
-    !visibleScrollEnd,
-  )
+  const { logs, onPrevSearchApi, onNextSearchApi, isError, reset, platform } =
+    useLogs(levels, keyword, !visibleScrollEnd)
   const logsRef = useRef(logs)
   const scrollLogs = useRef<HTMLDivElement>(null)
   const modalContent = useRef<HTMLDivElement>(null)
@@ -333,6 +331,15 @@ const ModalLogs = ({ isOpen = false, onClose }: Props) => {
                 <span>{TLevelsLog.CRITICAL}</span>
               </MenuFilter>
             )}
+            {availableLevels.includes(TLevelsLog.FRONTEND) && (
+              <MenuFilter
+                active={levels?.includes(TLevelsLog.FRONTEND)}
+                onClick={() => onChangeTypeFilter(TLevelsLog.FRONTEND)}
+              >
+                <ComputerIcon color="primary" />
+                <span>{TLevelsLog.FRONTEND}</span>
+              </MenuFilter>
+            )}
           </BoxFilter>
         ) : (
           <BoxMenu onClick={() => setOpenSearchLevels(true)}>
@@ -347,6 +354,12 @@ const ModalLogs = ({ isOpen = false, onClose }: Props) => {
           <BoxScrollDown onClick={onScrollEnd}>
             <KeyboardDoubleArrowDownIcon />
           </BoxScrollDown>
+        ) : null}
+        {platform ? (
+          <PlatformInfoBox>
+            <span>Platform service name: {platform.service_name}</span>
+            <span>task id: {platform.task_id}</span>
+          </PlatformInfoBox>
         ) : null}
       </Content>
     </Modal>
@@ -502,6 +515,24 @@ const BoxScrollDown = styled(Box)`
   height: 30px;
   animation: ${rotate} 2s linear infinite;
   cursor: pointer;
+`
+
+const PlatformInfoBox = styled(Box)`
+  position: absolute;
+  bottom: 12px;
+  right: 36px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  background-color: rgba(92, 92, 92, 0.8);
+  border-radius: 4px;
+  padding: 4px 10px;
+  color: rgba(255, 255, 255);
+  font-size: 12px;
+  line-height: 1;
+  user-select: text;
+  cursor: text;
 `
 
 export default ModalLogs

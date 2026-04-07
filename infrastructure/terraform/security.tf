@@ -467,6 +467,7 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
           "cloudwatch:ListMetrics",
           "cloudwatch:GetMetricStatistics",
           "cloudwatch:DescribeAlarms",
+          "cloudwatch:PutMetricData",
           "autoscaling:DescribeAutoScalingGroups",
           "ecs:ListClusters",
           "ecs:ListContainerInstances"
@@ -486,7 +487,9 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
         ]
         Resource = [
           "arn:aws:s3:::${local.env_prefix}-*",
-          "arn:aws:s3:::${local.env_prefix}-*/*"
+          "arn:aws:s3:::${local.env_prefix}-*/*",
+          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*",
+          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*/*"
         ]
       },
       # S3: Explicitly deny CRUD on other environments' buckets
@@ -504,7 +507,9 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
         ]
         NotResource = [
           "arn:aws:s3:::${local.env_prefix}-*",
-          "arn:aws:s3:::${local.env_prefix}-*/*"
+          "arn:aws:s3:::${local.env_prefix}-*/*",
+          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*",
+          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*/*"
         ]
       },
       {
@@ -789,6 +794,19 @@ resource "aws_security_group" "alb" {
     protocol         = "tcp"
     cidr_blocks      = ["0.0.0.0/0"]
     ipv6_cidr_blocks = ["::/0"]
+  }
+
+  # Port 8080 used as main listener when custom domain is disabled (dev).
+  # Production uses HTTPS on 443 and does not need 8080 open.
+  dynamic "ingress" {
+    for_each = var.enable_custom_domain ? [] : [1]
+    content {
+      from_port        = 8080
+      to_port          = 8080
+      protocol         = "tcp"
+      cidr_blocks      = ["0.0.0.0/0"]
+      ipv6_cidr_blocks = ["::/0"]
+    }
   }
 
   egress {

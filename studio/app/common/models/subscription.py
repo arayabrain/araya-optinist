@@ -63,7 +63,10 @@ class SubscriptionPlans(SQLModel, table=True):
 
 class UserSubscription(SQLModel, table=True):
     __tablename__ = "subscription_users"
-    __table_args__ = (UniqueConstraint("id", name="idx_id"),)
+    __table_args__ = (
+        UniqueConstraint("id", name="idx_id"),
+        UniqueConstraint("user_id", name="idx_user_id_unique"),
+    )
 
     id: Optional[int] = Field(
         sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
@@ -98,6 +101,10 @@ class UserSubscription(SQLModel, table=True):
             server_default=func.current_timestamp(),
             onupdate=func.current_timestamp(),
         ),
+    )
+    deletion_processed_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime, nullable=True),
+        default=None,
     )
 
 
@@ -442,4 +449,44 @@ class UserDeletionRecord(SQLModel, table=True):
             server_default=func.current_timestamp(),
             onupdate=func.current_timestamp(),
         ),
+    )
+
+
+class SubscriptionAuditLog(SQLModel, table=True):
+    """
+    Audit log for admin-initiated subscription changes.
+    Records old/new values and the reason for each manual edit.
+    """
+
+    __tablename__ = "subscription_audit_log"
+
+    id: Optional[int] = Field(
+        sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
+        default=None,
+    )
+    user_id: int = Field(
+        sa_column=Column(BIGINT, nullable=False, index=True),
+        description="The user whose subscription was changed. "
+        "No FK constraint — audit records must survive user deletion.",
+    )
+    changed_by: int = Field(
+        sa_column=Column(BIGINT, nullable=False),
+        description="Admin user ID who made the change. "
+        "No FK constraint — audit records must survive user deletion.",
+    )
+    old_value: Dict[str, Any] = Field(
+        sa_column=Column(JSON, nullable=False),
+        description="Subscription state before the change",
+    )
+    new_value: Dict[str, Any] = Field(
+        sa_column=Column(JSON, nullable=False),
+        description="Subscription state after the change",
+    )
+    reason: str = Field(
+        sa_column=Column(Text, nullable=False),
+        description="Admin-provided reason for the manual edit",
+    )
+    created_at: Optional[datetime] = Field(
+        default_factory=get_current_datetime,
+        sa_column=Column(TIMESTAMP, server_default=func.current_timestamp()),
     )

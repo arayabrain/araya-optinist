@@ -40,7 +40,7 @@ from studio.app.dir_path import DIRPATH
 logger = AppLogger.get_logger()
 
 
-def _is_no_such_bucket_error(e: Exception) -> bool:
+def is_no_such_bucket_error(e: Exception) -> bool:
     """Check if exception is a NoSuchBucket error from S3."""
     if isinstance(e, ClientError):
         return e.response.get("Error", {}).get("Code") == "NoSuchBucket"
@@ -319,7 +319,7 @@ class S3StorageController(BaseRemoteStorageController):
 
             if not all_s3_objects:
                 logger.warning(
-                    "remote data is not exists. [%s] [%s]",
+                    "Remote data does not exist. [%s] [%s]",
                     self.bucket_name,
                     input_data_remote_path,
                 )
@@ -424,7 +424,7 @@ class S3StorageController(BaseRemoteStorageController):
                             }
                         )
         except Exception as e:
-            if _is_no_such_bucket_error(e):
+            if is_no_such_bucket_error(e):
                 logger.warning(f"Bucket does not exist: {self.bucket_name}")
                 return []
             raise
@@ -494,7 +494,7 @@ class S3StorageController(BaseRemoteStorageController):
                     Delimiter="/",
                 )
         except Exception as e:
-            if _is_no_such_bucket_error(e):
+            if is_no_such_bucket_error(e):
                 logger.warning(f"Bucket does not exist: {self.bucket_name}")
                 raise RemoteStorageBucketNotFoundError(self.bucket_name) from e
             raise
@@ -927,7 +927,7 @@ class S3StorageController(BaseRemoteStorageController):
 
             if not all_s3_objects:
                 logger.warning(
-                    "Remote data is not exists. [%s] [%s]",
+                    "Remote data does not exist. [%s] [%s]",
                     self.bucket_name,
                     experiment_remote_path,
                 )

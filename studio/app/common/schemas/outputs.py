@@ -34,7 +34,14 @@ class TextPosition:
 
 
 @dataclass
+class PlatformInfo:
+    service_name: str
+    task_id: str
+
+
+@dataclass
 class PaginatedLineResult:
     next_offset: int
     prev_offset: int
     data: "list[str]"
+    platform: Optional[PlatformInfo] = None

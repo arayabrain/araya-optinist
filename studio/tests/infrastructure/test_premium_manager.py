@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
-from aws_constants import ECSTaskStatus
+from aws_constants import ECSTaskStatus, PremiumInstanceConfig
 from conftest import MockRow, setup_db_mock
 
 TEST_USER_ID = "test_user_12345"
@@ -46,24 +46,29 @@ class TestPremiumManagerEvents:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("premium_manager.pymysql.connect") as mock_pymysql:
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     MockRow({"id": 123}),
+                    # restore_pending_release: no pending_release row
                     None,
+                    # get_existing_user_assignment: no existing assignment
+                    None,
+                    # _count_active_premium_users_transaction: debug count
                     MockRow({"count": 1}),
+                    # _count_active_premium_users_transaction: real count
                     MockRow({"count": 0}),
-                    MockRow({"count": 1}),
+                    # try_reserve_instance: no existing reservation
                     None,
-                    MockRow({"count": 1}),
-                    MockRow({"count": 0}),
-                    MockRow({"count": 1}),
+                    # store_user_assignment: no existing user assignment
                     None,
+                    # store_user_assignment: free_user_assignments check
                     None,
-                    MockRow({"priority": 100}),
                 ],
                 fetchall_values=[
+                    # register_orphaned: get_available_standby (1st call)
                     [],
+                    # get_available_standby (2nd call in assign flow)
                     [
                         MockRow(
                             {
@@ -72,9 +77,9 @@ class TestPremiumManagerEvents:
                             }
                         )
                     ],
+                    # get_assigned_users_for_instance: debug query
                     [],
-                    [],
-                    [],
+                    # get_assigned_users_for_instance: real users
                     [],
                 ],
             )
@@ -107,15 +112,21 @@ class TestPremiumManagerEvents:
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": "premium-instance-1",
+                                        "Value": (
+                                            PremiumInstanceConfig.get_instance_name()
+                                        ),
                                     },
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     },
                                     {
                                         "Key": "Type",
-                                        "Value": "Premium-Instance",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_TYPE_TAG
+                                        ),
                                     },
                                 ],
                             }
@@ -269,7 +280,7 @@ class TestPremiumManagerEvents:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("premium_manager.pymysql.connect") as mock_pymysql:
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     MockRow(
@@ -410,8 +421,12 @@ class TestEarlyCheckAndCleanup:
             "boto3.client"
         ) as mock_boto3, patch(
             "premium_manager.get_existing_user_assignment"
-        ) as mock_get_existing:
+        ) as mock_get_existing, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql:
             mock_get_existing.return_value = existing_assignment
+            mock_connection = setup_db_mock(fetchone_values=[None])
+            mock_pymysql.return_value = mock_connection
 
             mock_elbv2 = MagicMock()
 
@@ -447,7 +462,7 @@ class TestEarlyCheckAndCleanup:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("premium_manager.pymysql.connect") as mock_pymysql:
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     None,
@@ -537,11 +552,15 @@ class TestEarlyCheckAndCleanup:
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": "premium-instance",
+                                        "Value": (
+                                            PremiumInstanceConfig.get_instance_name()
+                                        ),
                                     },
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     },
                                 ],
                             }
@@ -681,8 +700,12 @@ class TestEarlyCheckAndCleanup:
                 premium_manager, "invoke_migration_async"
             ) as mock_invoke_migration, patch(
                 "boto3.client"
-            ) as mock_boto3:
+            ) as mock_boto3, patch(
+                "premium_manager.pymysql.connect"
+            ) as mock_pymysql:
                 mock_get_existing.return_value = existing_autoscaling_assignment
+                mock_connection = setup_db_mock(fetchone_values=[None])
+                mock_pymysql.return_value = mock_connection
 
                 mock_elbv2 = MagicMock()
 
@@ -708,6 +731,376 @@ class TestEarlyCheckAndCleanup:
                 assert mock_invoke_migration.called
                 mock_get_existing.assert_called_once_with(test_user_id)
                 assert not mock_elbv2.create_rule.called
+
+    def test_restore_pending_release_returns_alb_fields(self, mock_env_vars_premium):
+        """Restored pending_release response includes
+        target_group_arn and rule_arn."""
+        test_user_id = 12345
+
+        restored_assignment = {
+            "user_id": test_user_id,
+            "instance_id": TEST_INSTANCE_ID,
+            "target_group_arn": "arn:aws:tg/restored",
+            "alb_rule_arn": "arn:aws:rule/restored",
+            "status": "terminating",
+            "instance_state": "running",
+            "is_shared": 0,
+        }
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ), patch("premium_manager.restore_pending_release") as mock_restore:
+            mock_restore.return_value = restored_assignment
+
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(
+                test_user_id, {"tier": "premium"}, "firebase_uid_123"
+            )
+
+            status_code = result["statusCode"]
+            response_body = json.loads(result["body"])
+
+            assert status_code == 200
+            assert response_body["assignment_source"] == "restored_from_pending_release"
+            assert response_body["target_group_arn"] == "arn:aws:tg/restored"
+            assert response_body["rule_arn"] == "arn:aws:rule/restored"
+            assert response_body["instance_id"] == TEST_INSTANCE_ID
+            mock_restore.assert_called_once_with(test_user_id)
+
+    def test_stopped_instance_restarted_on_assign(self, mock_env_vars_premium):
+        """Assign restarts a stopped dedicated instance
+        and returns it once ECS is ready."""
+        test_user_id = 12345
+
+        existing_assignment = {
+            "user_id": test_user_id,
+            "instance_id": TEST_INSTANCE_ID,
+            "target_group_arn": "arn:aws:tg/existing",
+            "alb_rule_arn": "arn:aws:rule/existing",
+            "status": "active",
+            "instance_state": "stopped",
+            "is_shared": 0,
+        }
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_existing_user_assignment"
+        ) as mock_get_existing, patch(
+            "premium_manager.check_instance_readiness_with_retry"
+        ) as mock_readiness, patch(
+            "premium_manager.clear_ecs_agent_checkpoint"
+        ) as mock_clear_ecs, patch(
+            "premium_manager._update_instance_state_to_running"
+        ) as mock_update_state, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql:
+            mock_get_existing.return_value = existing_assignment
+            mock_readiness.return_value = True
+            mock_connection = setup_db_mock(fetchone_values=[None])
+            mock_pymysql.return_value = mock_connection
+
+            mock_ec2 = MagicMock()
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": TEST_INSTANCE_ID,
+                                "State": {"Name": "stopped"},
+                            }
+                        ]
+                    }
+                ]
+            }
+            mock_ec2.get_waiter.return_value = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "ec2":
+                    return mock_ec2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(
+                test_user_id, {"tier": "premium"}, "firebase_uid_123"
+            )
+
+            status_code = result["statusCode"]
+            response_body = json.loads(result["body"])
+
+            assert status_code == 200
+            assert response_body["instance_id"] == TEST_INSTANCE_ID
+            assert response_body["assignment_source"] == "restarted_instance"
+            mock_ec2.start_instances.assert_called_once_with(
+                InstanceIds=[TEST_INSTANCE_ID]
+            )
+            mock_clear_ecs.assert_called_once_with(TEST_INSTANCE_ID)
+            mock_update_state.assert_called_once_with(TEST_INSTANCE_ID)
+            mock_readiness.assert_called_once_with(
+                TEST_INSTANCE_ID, max_wait_seconds=120, retry_interval=10
+            )
+
+    def test_stopping_instance_waits_then_restarts(self, mock_env_vars_premium):
+        """Assign waits for a stopping instance to reach stopped
+        state before restarting it."""
+        test_user_id = 12345
+
+        existing_assignment = {
+            "user_id": test_user_id,
+            "instance_id": TEST_INSTANCE_ID,
+            "target_group_arn": "arn:aws:tg/existing",
+            "alb_rule_arn": "arn:aws:rule/existing",
+            "status": "active",
+            "instance_state": "stopping",
+            "is_shared": 0,
+        }
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_existing_user_assignment"
+        ) as mock_get_existing, patch(
+            "premium_manager.check_instance_readiness_with_retry"
+        ) as mock_readiness, patch(
+            "premium_manager.clear_ecs_agent_checkpoint"
+        ) as mock_clear_ecs, patch(
+            "premium_manager._update_instance_state_to_running"
+        ), patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql:
+            mock_get_existing.return_value = existing_assignment
+            mock_readiness.return_value = True
+            mock_connection = setup_db_mock(fetchone_values=[None])
+            mock_pymysql.return_value = mock_connection
+
+            mock_ec2 = MagicMock()
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": TEST_INSTANCE_ID,
+                                "State": {"Name": "stopping"},
+                            }
+                        ]
+                    }
+                ]
+            }
+            mock_stop_waiter = MagicMock()
+            mock_run_waiter = MagicMock()
+
+            def get_waiter_side_effect(waiter_name):
+                if waiter_name == "instance_stopped":
+                    return mock_stop_waiter
+                if waiter_name == "instance_running":
+                    return mock_run_waiter
+                return MagicMock()
+
+            mock_ec2.get_waiter.side_effect = get_waiter_side_effect
+
+            def boto3_client_side_effect(service):
+                if service == "ec2":
+                    return mock_ec2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(
+                test_user_id, {"tier": "premium"}, "firebase_uid_123"
+            )
+
+            status_code = result["statusCode"]
+            response_body = json.loads(result["body"])
+
+            assert status_code == 200
+            assert response_body["assignment_source"] == "restarted_instance"
+            mock_stop_waiter.wait.assert_called_once()
+            mock_ec2.start_instances.assert_called_once_with(
+                InstanceIds=[TEST_INSTANCE_ID]
+            )
+            mock_clear_ecs.assert_called_once_with(TEST_INSTANCE_ID)
+
+    def test_terminated_instance_triggers_fresh_assignment(self, mock_env_vars_premium):
+        """Assign removes stale assignment for a terminated
+        instance and does not return the stale record."""
+        test_user_id = 12345
+
+        existing_assignment = {
+            "user_id": test_user_id,
+            "instance_id": TEST_INSTANCE_ID,
+            "target_group_arn": "arn:aws:tg/existing",
+            "alb_rule_arn": "arn:aws:rule/existing",
+            "status": "active",
+            "instance_state": "running",
+            "is_shared": 0,
+        }
+
+        patches = {
+            "premium_manager.register_orphaned_stopped_instances": None,
+            "premium_manager.get_all_premium_instances_with_states": [],
+            "premium_manager.count_active_premium_users": 0,
+            "premium_manager.get_available_standby_instances": [],
+        }
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            patchers = []
+            for target, rv in patches.items():
+                p = patch(target, return_value=rv)
+                p.start()
+                patchers.append(p)
+
+            try:
+                with patch.object(
+                    premium_manager, "get_existing_user_assignment"
+                ) as mock_get_existing, patch.object(
+                    premium_manager, "remove_user_assignment"
+                ) as mock_remove, patch(
+                    "boto3.client"
+                ) as mock_boto3, patch(
+                    "pymysql.connect"
+                ) as mock_pymysql:
+                    mock_get_existing.return_value = existing_assignment
+                    mock_pymysql.return_value = setup_db_mock(
+                        fetchone_values=[None] * 20,
+                        fetchall_values=[[] for _ in range(10)],
+                    )
+
+                    mock_ec2 = MagicMock()
+                    mock_ec2.describe_instances.return_value = {
+                        "Reservations": [
+                            {
+                                "Instances": [
+                                    {
+                                        "InstanceId": TEST_INSTANCE_ID,
+                                        "State": {"Name": "terminated"},
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+
+                    mock_elbv2 = MagicMock()
+                    mock_elbv2.create_target_group.return_value = {
+                        "TargetGroups": [{"TargetGroupArn": "arn:aws:tg/new"}]
+                    }
+                    mock_elbv2.create_rule.return_value = {
+                        "Rules": [{"RuleArn": "arn:aws:rule/new"}]
+                    }
+
+                    def boto3_client_side_effect(service):
+                        if service == "ec2":
+                            return mock_ec2
+                        if service == "elbv2":
+                            return mock_elbv2
+                        return MagicMock()
+
+                    mock_boto3.side_effect = boto3_client_side_effect
+
+                    result = premium_manager.assign_premium_user(
+                        test_user_id, {"tier": "premium"}, "firebase_uid_123"
+                    )
+
+                    mock_remove.assert_called_once_with(test_user_id)
+                    # Should NOT return the stale assignment
+                    response_body = json.loads(result["body"])
+                    assert response_body.get("assignment_source") != "existing"
+            finally:
+                for p in patchers:
+                    p.stop()
+
+    def test_ec2_not_found_cleans_up_stale_assignment(self, mock_env_vars_premium):
+        """Assign removes stale assignment when EC2 instance
+        no longer exists (InvalidInstanceID.NotFound)."""
+        from botocore.exceptions import ClientError
+
+        test_user_id = 12345
+
+        existing_assignment = {
+            "user_id": test_user_id,
+            "instance_id": "i-deleted999",
+            "target_group_arn": "arn:aws:tg/existing",
+            "alb_rule_arn": "arn:aws:rule/existing",
+            "status": "active",
+            "instance_state": "running",
+            "is_shared": 0,
+        }
+
+        patches = {
+            "premium_manager.register_orphaned_stopped_instances": None,
+            "premium_manager.get_all_premium_instances_with_states": [],
+            "premium_manager.count_active_premium_users": 0,
+            "premium_manager.get_available_standby_instances": [],
+        }
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            patchers = []
+            for target, rv in patches.items():
+                p = patch(target, return_value=rv)
+                p.start()
+                patchers.append(p)
+
+            try:
+                with patch.object(
+                    premium_manager, "get_existing_user_assignment"
+                ) as mock_get_existing, patch.object(
+                    premium_manager, "remove_user_assignment"
+                ) as mock_remove, patch(
+                    "boto3.client"
+                ) as mock_boto3, patch(
+                    "pymysql.connect"
+                ) as mock_pymysql:
+                    mock_get_existing.return_value = existing_assignment
+                    mock_pymysql.return_value = setup_db_mock(
+                        fetchone_values=[None] * 20,
+                        fetchall_values=[[] for _ in range(10)],
+                    )
+
+                    mock_ec2 = MagicMock()
+                    mock_ec2.describe_instances.side_effect = ClientError(
+                        {
+                            "Error": {
+                                "Code": "InvalidInstanceID.NotFound",
+                                "Message": "Instance not found",
+                            }
+                        },
+                        "DescribeInstances",
+                    )
+
+                    mock_elbv2 = MagicMock()
+                    mock_elbv2.create_target_group.return_value = {
+                        "TargetGroups": [{"TargetGroupArn": "arn:aws:tg/new"}]
+                    }
+                    mock_elbv2.create_rule.return_value = {
+                        "Rules": [{"RuleArn": "arn:aws:rule/new"}]
+                    }
+
+                    def boto3_client_side_effect(service):
+                        if service == "ec2":
+                            return mock_ec2
+                        if service == "elbv2":
+                            return mock_elbv2
+                        return MagicMock()
+
+                    mock_boto3.side_effect = boto3_client_side_effect
+
+                    result = premium_manager.assign_premium_user(
+                        test_user_id, {"tier": "premium"}, "firebase_uid_123"
+                    )
+
+                    mock_remove.assert_called_once_with(test_user_id)
+                    response_body = json.loads(result["body"])
+                    assert response_body.get("assignment_source") != "existing"
+            finally:
+                for p in patchers:
+                    p.stop()
 
 
 class TestDictCursorFix:
@@ -963,7 +1356,7 @@ class TestDatabaseCommits:
         """Verify commit is called after DELETE."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("premium_manager.pymysql.connect") as mock_pymysql:
             mock_connection = setup_db_mock()
             mock_pymysql.return_value = mock_connection
 
@@ -981,7 +1374,7 @@ class TestDatabaseCommits:
         """Verify commit is called after cleanup."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "premium_manager" ".get_all_premium_instances_with_states"
-        ) as mock_aws, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_aws, patch("premium_manager.pymysql.connect") as mock_pymysql:
             mock_aws.return_value = []
 
             mock_connection = setup_db_mock(
@@ -1037,11 +1430,15 @@ class TestGetAllPremiumInstances:
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": "premium-inst-1",
+                                        "Value": (
+                                            PremiumInstanceConfig.get_instance_name()
+                                        ),
                                     },
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     },
                                 ],
                             },
@@ -1090,7 +1487,9 @@ class TestStartStandbyInstance:
         """EC2 start + waiter + checkpoint clear + DB update."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql, patch(
+        ) as mock_boto3, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql, patch(
             "premium_manager.clear_ecs_agent_checkpoint"
         ) as mock_clear:
             mock_ec2 = MagicMock()
@@ -1116,7 +1515,7 @@ class TestStartStandbyInstance:
         """EC2 waiter timeout returns False."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch("premium_manager.pymysql.connect") as mock_pymysql:
             mock_ec2 = MagicMock()
             mock_boto3.return_value = mock_ec2
             mock_waiter = MagicMock()
@@ -1144,6 +1543,9 @@ class TestClearEcsAgentCheckpoint:
         ) as mock_boto3, patch("premium_manager.time.sleep"):
             mock_ssm = MagicMock()
             mock_boto3.return_value = mock_ssm
+            mock_ssm.describe_instance_information.return_value = {
+                "InstanceInformationList": [{"PingStatus": "Online"}]
+            }
             mock_ssm.send_command.return_value = {"Command": {"CommandId": "cmd-123"}}
             mock_ssm.get_command_invocation.return_value = {
                 "Status": "Success",
@@ -1166,6 +1568,9 @@ class TestClearEcsAgentCheckpoint:
         ) as mock_boto3, patch("premium_manager.time.sleep"):
             mock_ssm = MagicMock()
             mock_boto3.return_value = mock_ssm
+            mock_ssm.describe_instance_information.return_value = {
+                "InstanceInformationList": [{"PingStatus": "Online"}]
+            }
             mock_ssm.send_command.return_value = {"Command": {"CommandId": "cmd-456"}}
             mock_ssm.get_command_invocation.return_value = {
                 "Status": "Failed",
@@ -1184,9 +1589,12 @@ class TestClearEcsAgentCheckpoint:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3:
+        ) as mock_boto3, patch("premium_manager.time.sleep"):
             mock_ssm = MagicMock()
             mock_boto3.return_value = mock_ssm
+            mock_ssm.describe_instance_information.return_value = {
+                "InstanceInformationList": [{"PingStatus": "Online"}]
+            }
             mock_ssm.send_command.side_effect = ClientError(
                 {"Error": {"Code": "InvalidInstanceId"}},
                 "SendCommand",
@@ -1205,6 +1613,9 @@ class TestClearEcsAgentCheckpoint:
         ) as mock_boto3, patch("premium_manager.time.sleep"):
             mock_ssm = MagicMock()
             mock_boto3.return_value = mock_ssm
+            mock_ssm.describe_instance_information.return_value = {
+                "InstanceInformationList": [{"PingStatus": "Online"}]
+            }
             mock_ssm.send_command.return_value = {"Command": {"CommandId": "cmd-789"}}
             mock_ssm.get_command_invocation.return_value = {
                 "Status": "InProgress",
@@ -1373,7 +1784,9 @@ class TestRoutingIdContract:
         try:
             with patch.dict("os.environ", mock_env_vars_premium), patch(
                 "boto3.client"
-            ) as mock_boto3, patch("pymysql.connect") as mock_pymysql, patch(
+            ) as mock_boto3, patch(
+                "premium_manager.pymysql.connect"
+            ) as mock_pymysql, patch(
                 "premium_manager." "try_reserve_instance_for_migration",
                 return_value=True,
             ), patch(
@@ -1474,7 +1887,9 @@ class TestRoutingIdContract:
         }
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql, patch(
+        ) as mock_boto3, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql, patch(
             "premium_manager.generate_routing_id",
             return_value="abcd1234abcd1234",
         ) as mock_gen:
@@ -1526,16 +1941,207 @@ class TestRoutingIdContract:
                 self._patchers = []
 
 
+class TestScaleDownIfPossible:
+    """scale_down_if_possible stops idle instances and registers
+    them as standby in the database for later termination."""
+
+    def _make_instance(self, instance_id, state="running"):
+        return {"instance_id": instance_id, "state": state}
+
+    def test_stops_idle_and_registers_standby(self, mock_env_vars_premium):
+        """Idle instances are stopped, deregistered from ECS,
+        and registered as standby in the DB."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_dynamic_max_capacity", return_value=10
+        ), patch(
+            "premium_manager.count_active_premium_users", return_value=0
+        ), patch(
+            "premium_manager.count_total_premium_users", return_value=5
+        ), patch(
+            "premium_manager.get_all_premium_instances_with_states"
+        ) as mock_get_instances, patch(
+            "premium_manager.get_assigned_users_for_instance"
+        ) as mock_get_users, patch(
+            "premium_manager.deregister_container_instance_from_ecs"
+        ) as mock_deregister, patch(
+            "premium_manager.store_user_assignment"
+        ) as mock_store, patch(
+            "premium_manager.update_premium_service_desired_count"
+        ):
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+
+            # 3 running, 0 users -> 3 idle (>= 2), min_needed = 1
+            mock_get_instances.return_value = [
+                self._make_instance("i-idle1"),
+                self._make_instance("i-idle2"),
+                self._make_instance("i-idle3"),
+            ]
+            mock_get_users.return_value = []
+
+            from premium_manager import scale_down_if_possible
+
+            scale_down_if_possible()
+
+            # Should stop idle instances
+            mock_ec2.stop_instances.assert_called_once()
+            stopped_ids = mock_ec2.stop_instances.call_args[1]["InstanceIds"]
+            assert len(stopped_ids) >= 1
+
+            # Each stopped instance should be deregistered from ECS
+            for iid in stopped_ids:
+                mock_deregister.assert_any_call(iid)
+
+            # Each stopped instance should be registered as standby
+            assert mock_store.call_count == len(stopped_ids)
+            for call in mock_store.call_args_list:
+                assert call[1]["user_id"] is None
+                assert call[1]["instance_state"] == "stopped"
+                assert call[1]["is_standby"] is True
+
+    def test_no_scale_down_when_idle_below_threshold(self, mock_env_vars_premium):
+        """No scale-down when fewer than 2 idle instances."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_dynamic_max_capacity", return_value=10
+        ), patch(
+            "premium_manager.count_active_premium_users", return_value=0
+        ), patch(
+            "premium_manager.count_total_premium_users", return_value=5
+        ), patch(
+            "premium_manager.get_all_premium_instances_with_states"
+        ) as mock_get_instances, patch(
+            "premium_manager.get_assigned_users_for_instance"
+        ) as mock_get_users, patch(
+            "premium_manager.store_user_assignment"
+        ) as mock_store:
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+
+            # 1 running, 0 users -> 1 idle (< 2 threshold)
+            mock_get_instances.return_value = [
+                self._make_instance("i-only1"),
+            ]
+            mock_get_users.return_value = []
+
+            from premium_manager import scale_down_if_possible
+
+            scale_down_if_possible()
+
+            mock_ec2.stop_instances.assert_not_called()
+            mock_store.assert_not_called()
+
+    def test_standby_registration_failure_does_not_block(self, mock_env_vars_premium):
+        """If store_user_assignment fails for one instance, the
+        remaining instances are still registered."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_dynamic_max_capacity", return_value=10
+        ), patch(
+            "premium_manager.count_active_premium_users", return_value=0
+        ), patch(
+            "premium_manager.count_total_premium_users", return_value=5
+        ), patch(
+            "premium_manager.get_all_premium_instances_with_states"
+        ) as mock_get_instances, patch(
+            "premium_manager.get_assigned_users_for_instance"
+        ) as mock_get_users, patch(
+            "premium_manager.deregister_container_instance_from_ecs"
+        ), patch(
+            "premium_manager.store_user_assignment"
+        ) as mock_store, patch(
+            "premium_manager.update_premium_service_desired_count"
+        ):
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+
+            # 4 running, 0 users -> 4 idle
+            mock_get_instances.return_value = [
+                self._make_instance(f"i-idle{i}") for i in range(4)
+            ]
+            mock_get_users.return_value = []
+
+            # First call fails, rest succeed
+            mock_store.side_effect = [
+                Exception("DB error"),
+                None,
+                None,
+            ]
+
+            from premium_manager import scale_down_if_possible
+
+            # Should not raise despite the DB error
+            scale_down_if_possible()
+
+            mock_ec2.stop_instances.assert_called_once()
+            # All stopped instances attempted registration
+            assert mock_store.call_count == len(
+                mock_ec2.stop_instances.call_args[1]["InstanceIds"]
+            )
+
+    def test_occupied_instances_not_stopped(self, mock_env_vars_premium):
+        """Instances with assigned users are never stopped."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_dynamic_max_capacity", return_value=10
+        ), patch(
+            "premium_manager.count_active_premium_users", return_value=1
+        ), patch(
+            "premium_manager.count_total_premium_users", return_value=5
+        ), patch(
+            "premium_manager.get_all_premium_instances_with_states"
+        ) as mock_get_instances, patch(
+            "premium_manager.get_assigned_users_for_instance"
+        ) as mock_get_users, patch(
+            "premium_manager.deregister_container_instance_from_ecs"
+        ), patch(
+            "premium_manager.store_user_assignment"
+        ) as mock_store, patch(
+            "premium_manager.update_premium_service_desired_count"
+        ):
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+
+            # 4 running: 1 occupied + 3 idle
+            mock_get_instances.return_value = [
+                self._make_instance("i-occupied"),
+                self._make_instance("i-idle1"),
+                self._make_instance("i-idle2"),
+                self._make_instance("i-idle3"),
+            ]
+
+            def users_side_effect(iid):
+                if iid == "i-occupied":
+                    return [{"user_id": 42}]
+                return []
+
+            mock_get_users.side_effect = users_side_effect
+
+            from premium_manager import scale_down_if_possible
+
+            scale_down_if_possible()
+
+            stopped_ids = mock_ec2.stop_instances.call_args[1]["InstanceIds"]
+            assert "i-occupied" not in stopped_ids
+            # All stopped instances registered as standby
+            assert mock_store.call_count == len(stopped_ids)
+
+
 class TestCleanupOrphanedEC2Instances:
     """cleanup_orphaned_ec2_instances stops unregistered
     instances past the grace period and skips the rest."""
 
     def test_stops_orphaned_past_grace_period(self, mock_env_vars_premium):
         """EC2 instance running 20 min and NOT in ECS
-        container instances gets stopped."""
+        container instances gets stopped and registered as standby."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3:
+        ) as mock_boto3, patch("premium_manager.store_user_assignment") as mock_store:
             mock_ecs = MagicMock()
             mock_ec2 = MagicMock()
 
@@ -1565,7 +2171,9 @@ class TestCleanupOrphanedEC2Instances:
                                 "Tags": [
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     }
                                 ],
                             }
@@ -1579,6 +2187,64 @@ class TestCleanupOrphanedEC2Instances:
             cleanup_orphaned_ec2_instances()
 
             mock_ec2.stop_instances.assert_called_once_with(InstanceIds=["i-orphan1"])
+            mock_store.assert_called_once()
+            call_kwargs = mock_store.call_args[1]
+            assert call_kwargs["user_id"] is None
+            assert call_kwargs["instance_id"] == "i-orphan1"
+            assert call_kwargs["instance_state"] == "stopped"
+            assert call_kwargs["is_standby"] is True
+
+    def test_orphan_standby_registration_failure_does_not_block(
+        self, mock_env_vars_premium
+    ):
+        """If store_user_assignment fails for one orphan, remaining
+        orphans are still stopped and registered."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch("premium_manager.store_user_assignment") as mock_store:
+            mock_ecs = MagicMock()
+            mock_ec2 = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "ecs":
+                    return mock_ecs
+                if service == "ec2":
+                    return mock_ec2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": []
+            }
+
+            launch_time = datetime.now(timezone.utc) - timedelta(minutes=20)
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": f"i-orphan{i}",
+                                "State": {"Name": "running"},
+                                "LaunchTime": launch_time,
+                            }
+                            for i in range(2)
+                        ]
+                    }
+                ]
+            }
+
+            # First registration fails, second succeeds
+            mock_store.side_effect = [Exception("DB error"), None]
+
+            from premium_manager import cleanup_orphaned_ec2_instances
+
+            cleanup_orphaned_ec2_instances()
+
+            # Both instances should be stopped
+            assert mock_ec2.stop_instances.call_count == 2
+            # Both registrations attempted
+            assert mock_store.call_count == 2
 
     def test_skips_instance_within_grace_period(self, mock_env_vars_premium):
         """EC2 instance running 5 min is within grace period
@@ -1615,7 +2281,9 @@ class TestCleanupOrphanedEC2Instances:
                                 "Tags": [
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     }
                                 ],
                             }
@@ -1673,7 +2341,9 @@ class TestCleanupOrphanedEC2Instances:
                                 "Tags": [
                                     {
                                         "Key": "Tier",
-                                        "Value": "premium",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
                                     }
                                 ],
                             }
@@ -1687,6 +2357,66 @@ class TestCleanupOrphanedEC2Instances:
             cleanup_orphaned_ec2_instances()
 
             mock_ec2.stop_instances.assert_not_called()
+
+
+class TestHandleScheduledMonitoring:
+    """handle_scheduled_monitoring registers orphaned stopped
+    instances before attempting to terminate aged ones."""
+
+    def test_registers_orphans_before_terminating_aged(self, mock_env_vars_premium):
+        """register_orphaned_stopped_instances runs before
+        terminate_aged_stopped_instances so ghost instances
+        become visible to the terminator."""
+        call_order = []
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.is_premium_scaling_in_progress", return_value=False
+        ), patch("premium_manager.set_premium_scaling_lock"), patch(
+            "premium_manager.count_active_premium_users", return_value=0
+        ), patch(
+            "premium_manager.count_total_premium_users", return_value=0
+        ), patch(
+            "premium_manager.get_all_premium_instances_with_states",
+            return_value=[],
+        ), patch(
+            "premium_manager.get_assigned_users_for_instance",
+            return_value=[],
+        ), patch(
+            "premium_manager.publish_premium_metrics"
+        ), patch(
+            "premium_manager.scale_down_if_possible"
+        ), patch(
+            "premium_manager.update_premium_service_desired_count"
+        ), patch(
+            "premium_manager.cleanup_failed_standby_instances"
+        ), patch(
+            "premium_manager.register_orphaned_stopped_instances",
+            side_effect=lambda: call_order.append("register_orphans"),
+        ), patch(
+            "premium_manager.terminate_aged_stopped_instances",
+            side_effect=lambda: call_order.append("terminate_aged"),
+        ), patch(
+            "premium_manager.get_standby_count", return_value=0
+        ), patch(
+            "premium_manager.finalize_expired_pending_releases",
+            return_value=[],
+        ), patch(
+            "premium_manager.cleanup_ghost_ecs_registrations"
+        ), patch(
+            "premium_manager.cleanup_orphaned_ec2_instances"
+        ), patch(
+            "premium_manager.fix_incorrect_is_shared_flags",
+            return_value={"fixed_count": 0},
+        ), patch(
+            "premium_manager.process_shared_instance_optimization",
+            return_value={"migrations_performed": 0, "shared_instances_found": 0},
+        ):
+            from premium_manager import handle_scheduled_monitoring
+
+            result = handle_scheduled_monitoring({"source": "test"}, None)
+            assert result["statusCode"] == 200
+
+            assert call_order == ["register_orphans", "terminate_aged"]
 
 
 class TestGetUserUidFromId:
@@ -1721,3 +2451,513 @@ class TestGetUserUidFromId:
 
             with pytest.raises(ValueError, match="not found"):
                 get_user_uid_from_id(mock_connection, 9999)
+
+
+class TestGetPremiumUserStatus:
+    """Tests for get_premium_user_status Lambda function."""
+
+    def test_returns_status_for_active_user(self, mock_env_vars_premium):
+        """Returns 200 with assignment details for an active user."""
+        test_user_id = 12345
+        assigned_at = datetime(2026, 3, 27, 2, 3, 26)
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_connection = setup_db_mock(
+                fetchone_values=[
+                    MockRow(
+                        {
+                            "instance_id": TEST_INSTANCE_ID,
+                            "target_group_arn": "arn:aws:tg/test",
+                            "alb_rule_arn": "arn:aws:rule/test",
+                            "status": "active",
+                            "assigned_at": assigned_at,
+                            "is_shared": 0,
+                        }
+                    ),
+                ],
+            )
+            mock_pymysql.return_value = mock_connection
+            # Mock EC2 describe_instances to return running instance
+            mock_ec2 = MagicMock()
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [{"Instances": [{"State": {"Name": "running"}}]}]
+            }
+            mock_boto3.return_value = mock_ec2
+
+            from premium_manager import get_premium_user_status
+
+            result = get_premium_user_status(test_user_id)
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            assert body["user_id"] == test_user_id
+            assert body["instance_id"] == TEST_INSTANCE_ID
+            assert body["status"] == "active"
+            assert body["assigned_at"] == assigned_at.isoformat()
+            assert body["is_shared"] is False
+
+    def test_returns_404_for_unassigned_user(self, mock_env_vars_premium):
+        """Returns 404 when user has no premium assignment."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql:
+            mock_connection = setup_db_mock(
+                fetchone_values=[None],
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_manager import get_premium_user_status
+
+            result = get_premium_user_status(99999)
+
+            assert result["statusCode"] == 404
+
+    def test_returns_null_assigned_at_when_missing(self, mock_env_vars_premium):
+        """Returns assigned_at as null when the column value is None."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_connection = setup_db_mock(
+                fetchone_values=[
+                    MockRow(
+                        {
+                            "instance_id": TEST_INSTANCE_ID,
+                            "target_group_arn": "arn:aws:tg/test",
+                            "alb_rule_arn": "arn:aws:rule/test",
+                            "status": "active",
+                            "assigned_at": None,
+                            "is_shared": 1,
+                        }
+                    ),
+                ],
+            )
+            mock_pymysql.return_value = mock_connection
+            # Mock EC2 describe_instances to return running instance
+            mock_ec2 = MagicMock()
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [{"Instances": [{"State": {"Name": "running"}}]}]
+            }
+            mock_boto3.return_value = mock_ec2
+
+            from premium_manager import get_premium_user_status
+
+            result = get_premium_user_status(12345)
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            assert body["assigned_at"] is None
+            assert body["is_shared"] is True
+
+    def test_pending_release_restored_includes_assigned_at(self, mock_env_vars_premium):
+        """When status is pending_release, restore_pending_release is called
+        and the response still includes assigned_at without KeyError."""
+        test_user_id = 12345
+        assigned_at = datetime(2026, 3, 27, 2, 0, 0)
+
+        restored_assignment = {
+            "user_id": test_user_id,
+            "instance_id": TEST_INSTANCE_ID,
+            "target_group_arn": "arn:aws:tg/restored",
+            "alb_rule_arn": "arn:aws:rule/restored",
+            "status": "terminating",
+            "instance_state": "running",
+            "is_shared": 0,
+            "assigned_at": assigned_at,
+        }
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch(
+            "premium_manager.restore_pending_release"
+        ) as mock_restore:
+            mock_connection = setup_db_mock(
+                fetchone_values=[
+                    # Initial query returns pending_release status
+                    MockRow(
+                        {
+                            "instance_id": TEST_INSTANCE_ID,
+                            "target_group_arn": "arn:aws:tg/test",
+                            "alb_rule_arn": "arn:aws:rule/test",
+                            "status": "terminating",
+                            "assigned_at": assigned_at,
+                            "is_shared": 0,
+                        }
+                    ),
+                ],
+            )
+            mock_pymysql.return_value = mock_connection
+            mock_restore.return_value = restored_assignment
+
+            from premium_manager import get_premium_user_status
+
+            result = get_premium_user_status(test_user_id)
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            assert body["assigned_at"] == assigned_at.isoformat()
+            assert body["status"] == "active"
+            mock_restore.assert_called_once_with(test_user_id)
+
+    def test_pending_release_restore_fails_gracefully(self, mock_env_vars_premium):
+        """When restore_pending_release raises, the original assignment
+        is still returned."""
+        test_user_id = 12345
+        assigned_at = datetime(2026, 3, 27, 2, 0, 0)
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch(
+            "premium_manager.restore_pending_release"
+        ) as mock_restore:
+            mock_connection = setup_db_mock(
+                fetchone_values=[
+                    MockRow(
+                        {
+                            "instance_id": TEST_INSTANCE_ID,
+                            "target_group_arn": "arn:aws:tg/test",
+                            "alb_rule_arn": "arn:aws:rule/test",
+                            "status": "terminating",
+                            "assigned_at": assigned_at,
+                            "is_shared": 0,
+                        }
+                    ),
+                ],
+            )
+            mock_pymysql.return_value = mock_connection
+            mock_restore.side_effect = Exception("restore failed")
+
+            from premium_manager import get_premium_user_status
+
+            result = get_premium_user_status(test_user_id)
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            # Original assignment returned with terminating status
+            assert body["status"] == "terminating"
+            assert body["assigned_at"] == assigned_at.isoformat()
+
+
+class TestCleanupGhostECSRegistrations:
+    """cleanup_ghost_ecs_registrations must only deregister premium
+    instances, and must apply a grace period for agent disconnects
+    on running EC2 instances."""
+
+    def _make_clients(self, mock_boto3):
+        mock_ecs = MagicMock()
+        mock_ec2 = MagicMock()
+
+        def client_factory(service):
+            if service == "ecs":
+                return mock_ecs
+            if service == "ec2":
+                return mock_ec2
+            return MagicMock()
+
+        mock_boto3.side_effect = client_factory
+        return mock_ecs, mock_ec2
+
+    def test_uses_premium_tier_filter(self, mock_env_vars_premium):
+        """list_container_instances must include the premium tier filter."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, _ = self._make_clients(mock_boto3)
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": []
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.list_container_instances.assert_called_once_with(
+                cluster="test-cluster",
+                filter="attribute:tier == premium",
+            )
+
+    def test_deregisters_stopped_ec2_immediately(self, mock_env_vars_premium):
+        """Instance whose EC2 is stopped gets deregistered with no grace."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/ghost1"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "i-stopped1",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {"Instances": [{"State": {"Name": "stopped"}, "Tags": []}]}
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_called_once_with(
+                cluster="test-cluster",
+                containerInstance=ci_arn,
+                force=True,
+            )
+
+    def test_tags_running_instance_on_first_disconnect(self, mock_env_vars_premium):
+        """Running EC2 with disconnected agent gets tagged but not deregistered."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/disc1"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "i-running1",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {"Instances": [{"State": {"Name": "running"}, "Tags": []}]}
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_not_called()
+            mock_ec2.create_tags.assert_called_once()
+            tag_call = mock_ec2.create_tags.call_args
+            assert tag_call.kwargs["Resources"] == ["i-running1"]
+            assert tag_call.kwargs["Tags"][0]["Key"] == "optinist:agent-disconnected-at"
+
+    def test_skips_within_grace_period(self, mock_env_vars_premium):
+        """Running EC2 tagged recently is within grace period — skip."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/grace1"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "i-grace1",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+            # Tagged 2 minutes ago — within the 5-minute grace
+            recent = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "State": {"Name": "running"},
+                                "Tags": [
+                                    {
+                                        "Key": "optinist:agent-disconnected-at",
+                                        "Value": recent,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_not_called()
+
+    def test_deregisters_after_grace_period(self, mock_env_vars_premium):
+        """Running EC2 tagged over 5 minutes ago gets deregistered."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/expired1"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "i-expired1",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+            # Tagged 10 minutes ago — past the 5-minute grace
+            old = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "State": {"Name": "running"},
+                                "Tags": [
+                                    {
+                                        "Key": "optinist:agent-disconnected-at",
+                                        "Value": old,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_called_once_with(
+                cluster="test-cluster",
+                containerInstance=ci_arn,
+                force=True,
+            )
+
+    def test_clears_tag_on_reconnect(self, mock_env_vars_premium):
+        """Connected agent triggers delete_tags to clear disconnect tag."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/healthy1"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "i-healthy1",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_not_called()
+            mock_ec2.delete_tags.assert_called_once_with(
+                Resources=["i-healthy1"],
+                Tags=[{"Key": "optinist:agent-disconnected-at"}],
+            )
+
+    def test_mixed_cluster_only_deregisters_ghost(self, mock_env_vars_premium):
+        """With a healthy and a stopped instance in the filtered results,
+        only the stopped one is deregistered."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            healthy_arn = "arn:aws:ecs:r:a:ci/healthy"
+            ghost_arn = "arn:aws:ecs:r:a:ci/ghost"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [healthy_arn, ghost_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": healthy_arn,
+                        "ec2InstanceId": "i-healthy",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    },
+                    {
+                        "containerInstanceArn": ghost_arn,
+                        "ec2InstanceId": "i-ghost",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    },
+                ]
+            }
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {"Instances": [{"State": {"Name": "terminated"}, "Tags": []}]}
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            # Only the ghost gets deregistered
+            mock_ecs.deregister_container_instance.assert_called_once_with(
+                cluster="test-cluster",
+                containerInstance=ghost_arn,
+                force=True,
+            )
+            # EC2 describe only called for the disconnected instance
+            mock_ec2.describe_instances.assert_called_once_with(InstanceIds=["i-ghost"])
+            # Healthy instance's tag is cleared
+            mock_ec2.delete_tags.assert_any_call(
+                Resources=["i-healthy"],
+                Tags=[{"Key": "optinist:agent-disconnected-at"}],
+            )
+
+    def test_deregisters_disconnected_without_ec2_id(self, mock_env_vars_premium):
+        """Container instance with disconnected agent and no ec2InstanceId
+        is deregistered immediately."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/no-ec2"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_called_once_with(
+                cluster="test-cluster",
+                containerInstance=ci_arn,
+                force=True,
+            )
+            # No EC2 calls should be made
+            mock_ec2.describe_instances.assert_not_called()

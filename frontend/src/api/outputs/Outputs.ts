@@ -260,6 +260,34 @@ export async function getHistogramDataApi(
   return response.data
 }
 
+export type StructuredData = {
+  data: number[] | number[][] | number[][][]
+  data_type: "timeseries" | "images" | "bar"
+  columns?: string[]
+  index?: (string | number)[]
+  total_frames?: number
+  dataset_path?: string
+}
+
+export async function getStructuredDataApi(
+  workspaceId: string,
+  uniqueId: string,
+  nodeId: string,
+  startIndex?: number,
+  endIndex?: number,
+): Promise<StructuredData> {
+  const response = await axios.get(
+    `${BASE_URL}/outputs/structured/${workspaceId}/${uniqueId}/${nodeId}`,
+    {
+      params: {
+        start_index: startIndex,
+        end_index: endIndex,
+      },
+    },
+  )
+  return response.data
+}
+
 export type PieData = number[][]
 
 export async function getPieDataApi(

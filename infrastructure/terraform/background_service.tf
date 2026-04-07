@@ -45,8 +45,8 @@ resource "aws_launch_template" "background" {
     git_repo              = var.git_repo
     firebase_config_json  = var.firebase_config_json
     firebase_private_json = var.firebase_private_json
-    ecr_registry          = split("/", var.ecr_repository_url)[0]
-    ecr_repository_url    = var.ecr_repository_url
+    ecr_registry          = split("/", local.ecr_repository_url)[0]
+    ecr_repository_url    = local.ecr_repository_url
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
     swap_size_mb          = 1536 # 2x task memory (768MB) for stable background job operation
@@ -106,7 +106,7 @@ resource "aws_ecs_task_definition" "background" {
   container_definitions = jsonencode([
     {
       name              = "${var.environment}-background-optinist-cloud-container"
-      image             = "${var.ecr_repository_url}:latest"
+      image             = "${local.ecr_repository_url}:latest"
       cpu               = 512
       memory            = 768
       memoryReservation = 512
@@ -168,11 +168,11 @@ resource "aws_ecs_task_definition" "background" {
         },
         {
           name  = "FRONTEND_SERVER_HOST"
-          value = var.frontend_domain
+          value = local.effective_frontend_domain
         },
         {
           name  = "FRONTEND_SERVER_PORT"
-          value = var.frontend_port
+          value = local.effective_frontend_port
         },
         {
           name  = "FRONTEND_SERVER_PROTO"
@@ -236,7 +236,7 @@ resource "aws_ecs_task_definition" "background" {
         },
         {
           name  = "STRIPE_CALLBACK_URL"
-          value = "${var.frontend_protocol}://${var.frontend_domain}"
+          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
         },
         {
           name  = "STRIPE_SECRET_KEY"
@@ -271,6 +271,10 @@ resource "aws_ecs_task_definition" "background" {
         {
           name  = "UVICORN_WORKERS"
           value = "1"
+        },
+        {
+          name  = "PREMIUM_MANAGER_FUNCTION_NAME"
+          value = "${var.environment}-premium-manager"
         },
       ]
       secrets = [

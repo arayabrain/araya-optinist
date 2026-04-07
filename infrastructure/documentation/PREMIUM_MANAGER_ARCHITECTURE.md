@@ -568,7 +568,7 @@ PREMIUM_IDLE_TIMEOUT_HOURS   # Hours before stale assignment cleanup (code defau
 | `handle_scheduled_monitoring()` | 15-min monitoring cycle (10 operations) |
 | `scale_down_if_possible()` | Conservative scaling algorithm |
 | `update_premium_service_desired_count()` | Sync ECS desired count |
-| `assign_premium_user()` | Real-time user assignment (API) |
+| `assign_premium_user()` | Real-time user assignment (API) - 5-tier priority: dedicated > shared > standby > autoscaling pool > stopped > new |
 | `release_premium_user()` | Real-time user release (API) |
 | `handle_activity_update()` | Heartbeat/activity timestamp update (API) |
 | `get_premium_user_status()` | Get user assignment status (API) |

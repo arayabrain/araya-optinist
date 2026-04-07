@@ -42,8 +42,9 @@ class PremiumAssignmentService:
 
     def __init__(self):
         self.lambda_client: "LambdaClient | None" = None
+        env_prefix = os.environ.get("ENV_PREFIX", "subscr")
         self.premium_manager_function_name = os.environ.get(
-            "PREMIUM_MANAGER_FUNCTION_NAME", "subscr-premium-manager"
+            "PREMIUM_MANAGER_FUNCTION_NAME", f"{env_prefix}-premium-manager"
         )
 
     def _get_lambda_client(self):
@@ -295,13 +296,18 @@ class PremiumAssignmentService:
                 "requires_retry": False,
             }
 
-    async def release_premium_user(self, user_id: int, user_uid: str) -> Dict[str, any]:
+    async def release_premium_user(
+        self, user_id: int, user_uid: str, *, hard: bool = False
+    ) -> Dict[str, any]:
         """
         Release a premium user from their assigned instance and clear rate limiting.
 
         Args:
             user_id: The database ID of the premium user (for internal tracking)
             user_uid: The Firebase UID of the premium user (sent to Lambda)
+            hard: If True, immediately delete assignment + ALB resources.
+                  If False (default), soft-release with grace period so a
+                  page refresh can restore the assignment instantly.
 
         Returns:
             Dict containing release result:
@@ -310,8 +316,9 @@ class PremiumAssignmentService:
             - released_instance: str (if successful)
         """
         try:
+            release_type = "hard" if hard else "soft"
             logger.info(
-                f"Releasing premium user "
+                f"Releasing ({release_type}) premium user "
                 f"{user_id} (uid: {user_uid}) from assigned instance"
             )
 
@@ -328,6 +335,7 @@ class PremiumAssignmentService:
                         "action": "release",
                         "user_id": user_uid,
                         "tier": SubscriptionType.PREMIUM.value,
+                        "hard": hard,
                     }
                 ),
             }

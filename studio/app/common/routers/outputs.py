@@ -1,11 +1,14 @@
 import os
 from typing import Optional
 
+import h5py
+import numpy as np
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 
 from studio.app.common.core.auth.auth_dependencies import get_outputs_remote_bucket_name
+from studio.app.common.core.dataview.dataview import DatasetPaths
 from studio.app.common.core.dataview.thumbnail_generator import ThumbnailGenerator
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
@@ -14,9 +17,9 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteExperimentNotFoundError,
     RemoteExperimentSyncMode,
     RemoteStorageController,
+    RemoteStorageDownloadUtils,
     RemoteStorageLockError,
     RemoteStorageReader,
-    RemoteStorageSimpleReader,
     RemoteStorageSimpleWriter,
     RemoteSyncStatusFileUtil,
 )
@@ -27,6 +30,7 @@ from studio.app.common.core.utils.filepath_creater import (
     normalize_output_path,
 )
 from studio.app.common.core.utils.json_writer import JsonWriter, save_tiff2json
+from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
 )
@@ -34,6 +38,7 @@ from studio.app.common.dataclass.timeseries_chunk_handler import TimeSeriesChunk
 from studio.app.common.schemas.outputs import JsonTimeSeriesData, OutputData
 from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT, ThumbnailType
 from studio.app.dir_path import DIRPATH
+from studio.app.optinist.routers.mat import MatGetter
 
 router = APIRouter(prefix="/outputs", tags=["outputs"])
 
@@ -46,6 +51,7 @@ async def get_or_generate_thumbnail(
     original_path: str,
     remote_bucket_name: str,
     thumb_type: ThumbnailType,
+    dataset_paths: DatasetPaths = None,
 ) -> str:
     """
     Get thumbnail path, generating if needed (lazy migration).
@@ -65,6 +71,8 @@ async def get_or_generate_thumbnail(
         remote_bucket_name: remote storage bucket name for remote storage
         thumb_type: ThumbnailType.INPUT (for TIFF) or ThumbnailType.ROI
             (for cell_roi.json)
+        dataset_paths: Internal dataset paths for structured data
+            (optional)
 
     Returns:
         Path to the thumbnail PNG file (may be newly generated)
@@ -116,6 +124,7 @@ async def get_or_generate_thumbnail(
                     source_path=original_path,
                     output_path=thumb_path,
                     abs_source_path=abs_original_path,
+                    dataset_paths=dataset_paths,
                 )
             else:
                 ThumbnailGenerator.generate_roi_thumbnail(abs_original_path, thumb_path)
@@ -349,8 +358,9 @@ async def get_thumbnail(
                 pass  # Continue processing
 
         # Get the original file path for generation
+        dataset_paths = None
         if thumb_type == ThumbnailType.INPUT:
-            # Need to find the input TIFF file
+            # Need to find the input file and dataset paths
             try:
                 input_filenames = SmkUtils.get_datatypes_inputs(
                     workspace_id, unique_id, apply_basename=True
@@ -359,38 +369,61 @@ async def get_thumbnail(
                     original_path = input_filenames[0]
                 else:
                     raise HTTPException(
-                        status_code=404, detail="No input files found for thumbnail"
+                        status_code=404,
+                        detail="No input files found for thumbnail",
                     )
             except (AssertionError, KeyError):
                 raise HTTPException(
-                    status_code=404, detail="Could not determine input file"
+                    status_code=404,
+                    detail="Could not determine input file",
                 )
+
+            # Extract dataset paths from workflow config
+            try:
+                from studio.app.common.core.dataview.dataview_services import (
+                    DataviewService,
+                )
+
+                wf_config = WorkflowConfigReader.read(workspace_id, unique_id)
+                _, dataset_paths = DataviewService.select_best_thumbnail_input(
+                    wf_config
+                )
+            except Exception:
+                pass  # Dataset paths are optional enhancement
         else:
-            # ROI thumbnail uses cell_roi.json - need to find actual path from config
+            # ROI thumbnail uses cell_roi.json
             from studio.app.common.core.dataview.dataview_services import (
                 DataviewService,
             )
 
             try:
-                thumbnails = DataviewService.make_dataview_thumnail_paths(
+                thumbnails, _ = DataviewService.make_dataview_thumnail_paths(
                     workspace_id, unique_id
                 )
                 if thumbnails.roi_url:
                     original_path = thumbnails.roi_url
                 else:
                     raise HTTPException(
-                        status_code=404, detail="No ROI data found for thumbnail"
+                        status_code=404,
+                        detail="No ROI data found for thumbnail",
                     )
             except Exception as e:
                 logger.warning(f"Could not determine ROI path: {e}")
                 raise HTTPException(
-                    status_code=404, detail="Could not determine ROI file path"
+                    status_code=404,
+                    detail="Could not determine ROI file path",
                 )
 
-        # Generate thumbnail (may download source from remote storage if needed)
-        # Note: get_or_generate_thumbnail returns a normalized (relative) path
+        # Generate thumbnail (may download source from remote
+        # storage if needed). get_or_generate_thumbnail returns
+        # a normalized (relative) path.
         await get_or_generate_thumbnail(
-            workspace_id, unique_id, original_path, remote_bucket_name, thumb_type
+            workspace_id,
+            unique_id,
+            original_path,
+            remote_bucket_name,
+            thumb_type,
+            dataset_paths=dataset_paths,
         )
         # Re-get the absolute path since generation should have created the file
         thumb_path = ThumbnailGenerator.get_thumbnail_path(
@@ -726,24 +759,21 @@ async def get_image(
         if is_input_file:
             abs_filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filepath])
 
-            # On-demand sync for input files
-            if (
-                not os.path.exists(abs_filepath)
-                and RemoteStorageController.is_available()
-            ):
-                logger.info(f"On-demand sync for input file: {workspace_id}/{filename}")
-                async with RemoteStorageSimpleReader(
-                    remote_bucket_name
-                ) as remote_storage_controller:
-                    await remote_storage_controller.download_input_data(
-                        workspace_id, filename + ext
-                    )
-
-            # Return 404 if file still doesn't exist after sync attempt
-            if not os.path.exists(abs_filepath):
+            # On-demand sync for input files using shared helper
+            try:
+                synced = await RemoteStorageDownloadUtils.ensure_input_file_synced(
+                    workspace_id, filename + ext, remote_bucket_name
+                )
+            except Exception as e:
+                logger.error(f"Failed to sync input image: {e}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Failed to sync input file from cloud storage",
+                )
+            if not synced:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Input file not found: {filename}{ext}",
+                    detail=f"Input image file not found: {filename}{ext}",
                 )
 
         save_dirpath = join_filepath(
@@ -763,20 +793,14 @@ async def get_image(
         if not os.path.exists(json_filepath):
             if remote_bucket_name:
                 logger.warning(f"File not found after sync attempt: {json_filepath}")
-                # Distinguish between "syncing in progress" vs "file doesn't exist"
-                # If the experiment directory exists but the file doesn't, the file
-                # likely doesn't exist in remote storage either (analysis incomplete)
                 experiment_dir = os.path.dirname(os.path.dirname(json_filepath))
                 if os.path.exists(experiment_dir):
-                    # Experiment dir exists but file missing -
-                    # likely analysis incomplete
                     raise HTTPException(
                         status_code=404,
                         detail="Output file not found. "
                         "Analysis may not have generated this file.",
                     )
                 else:
-                    # Experiment dir doesn't exist - sync may still be in progress
                     raise HTTPException(
                         status_code=503,
                         detail="Data syncing. Please retry.",
@@ -796,22 +820,124 @@ async def get_csv(
     remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
     original_filename = os.path.basename(filepath)
-    filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filepath])
+    abs_filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filepath])
 
-    # On-demand sync for input files
-    if not os.path.exists(filepath) and RemoteStorageController.is_available():
-        logger.info(f"On-demand sync for input: {workspace_id}/{original_filename}")
-        async with RemoteStorageSimpleReader(
-            remote_bucket_name
-        ) as remote_storage_controller:
-            await remote_storage_controller.download_input_data(
-                workspace_id, original_filename
-            )
+    # On-demand sync for input files using shared helper
+    try:
+        synced = await RemoteStorageDownloadUtils.ensure_input_file_synced(
+            workspace_id, original_filename, remote_bucket_name
+        )
+    except Exception as e:
+        logger.error(f"Failed to sync input CSV: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Failed to sync input file from cloud storage",
+        )
 
-    filename, _ = os.path.splitext(os.path.basename(filepath))
-    save_dirpath = join_filepath([os.path.dirname(filepath), filename])
+    # Check file exists before reading (prevents bare 500 from FileNotFoundError)
+    if not synced or not os.path.exists(abs_filepath):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Input CSV file not found: {original_filename}",
+        )
+
+    filename, _ = os.path.splitext(os.path.basename(abs_filepath))
+    save_dirpath = join_filepath([os.path.dirname(abs_filepath), filename])
     create_directory(save_dirpath)
     json_filepath = join_filepath([save_dirpath, f"{filename}.json"])
 
-    JsonWriter.write_as_split(json_filepath, pd.read_csv(filepath, header=None))
+    JsonWriter.write_as_split(json_filepath, pd.read_csv(abs_filepath, header=None))
     return JsonReader.read_as_output(json_filepath)
+
+
+@router.get("/structured/{workspace_id}/{unique_id}/{node_id}")
+async def get_structured_data(
+    workspace_id: str,
+    unique_id: str,
+    node_id: str,
+    start_index: Optional[int] = 0,
+    end_index: Optional[int] = 10,
+):
+    try:
+        config = WorkflowConfigReader.read(workspace_id, unique_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Workflow config not found")
+
+    node = config.nodeDict.get(node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+
+    file_path = node.data.path
+    if isinstance(file_path, list):
+        file_path = file_path[0] if file_path else None
+    if not file_path:
+        raise HTTPException(status_code=400, detail="Node has no file path")
+
+    full_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_path])
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+    hdf5_path = node.data.hdf5Path
+    mat_path = node.data.matPath
+
+    try:
+        if hdf5_path is not None:
+            with h5py.File(full_path, "r") as f:
+                dataset = f[hdf5_path]
+                shape = dataset.shape
+                ndim = dataset.ndim
+                if ndim == 3:
+                    si = max(0, start_index)
+                    ei = min(shape[0], end_index)
+                    data = dataset[si:ei]
+                else:
+                    data = dataset[:]
+        elif mat_path is not None:
+            raw = MatGetter.data(full_path, mat_path)
+            data = np.asarray(raw)
+            shape = data.shape
+            ndim = data.ndim
+            if ndim == 3:
+                si = max(0, start_index)
+                ei = min(shape[0], end_index)
+                data = data[si:ei]
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Node has no hdf5Path or matPath",
+            )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=f"Dataset not found: {e}")
+
+    data = np.asarray(data)
+    dataset_path = hdf5_path or mat_path
+
+    match ndim:
+        case 3:
+            return {
+                "data": data.tolist(),
+                "data_type": "images",
+                "total_frames": int(shape[0]),
+                "dataset_path": dataset_path,
+            }
+        case 2:
+            df = pd.DataFrame(data)
+            return {
+                "data": df.to_dict(orient="split")["data"],
+                "columns": [str(c) for c in df.columns.tolist()],
+                "index": [str(i) for i in df.index.tolist()],
+                "data_type": "timeseries",
+                "dataset_path": dataset_path,
+            }
+        case 1:
+            return {
+                "data": data.tolist(),
+                "index": list(range(len(data))),
+                "data_type": "bar",
+                "dataset_path": dataset_path,
+            }
+        case _:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported data dimensionality: {ndim}",
+            )

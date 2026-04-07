@@ -38,6 +38,9 @@ resource "aws_lambda_function" "premium_manager" {
       PREMIUM_IDLE_TIMEOUT_HOURS    = "3" # Hours before idle instances are converted to standby
       PREMIUM_STOPPED_MAX_AGE_HOURS = "4" # Terminate stopped standby instances older than this
 
+      # Environment prefix for dynamic resource naming
+      ENV_PREFIX = var.environment
+
       # Internal API configuration for experiment sync after migration
       ALB_DNS_NAME        = aws_lb.autoscaling.dns_name
       INTERNAL_API_SECRET = random_password.internal_api_secret.result
@@ -148,6 +151,57 @@ resource "aws_lambda_permission" "allow_cloudwatch_cleanup" {
   source_arn    = aws_cloudwatch_event_rule.premium_cleanup_schedule.arn
 }
 
+# ==========================================
+# EventBridge: EC2 State Change → Cleanup
+# ==========================================
+
+# Trigger cleanup Lambda when any EC2 instance enters shutting-down or
+# terminated state. EventBridge EC2 state-change events do not include
+# tags, so the Lambda checks premium tags and exits early for non-premium
+# instances. Manager-initiated terminations already clean up inline, so
+# those invocations are no-ops.
+
+resource "aws_cloudwatch_event_rule" "premium_ec2_state_change" {
+  name        = "${var.environment}-premium-ec2-state-change"
+  description = "Trigger cleanup on EC2 instance termination"
+
+  event_pattern = jsonencode({
+    source      = ["aws.ec2"]
+    detail-type = ["EC2 Instance State-change Notification"]
+    detail = {
+      state = ["shutting-down", "terminated"]
+    }
+  })
+
+  tags = {
+    Name    = "Premium EC2 State Change"
+    Type    = "Premium-CloudWatch"
+    Service = "premium-tier"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "premium_ec2_state_change_target" {
+  rule      = aws_cloudwatch_event_rule.premium_ec2_state_change.name
+  target_id = "PremiumEC2StateChangeCleanup"
+  arn       = aws_lambda_function.premium_cleanup.arn
+
+  input_transformer {
+    input_paths = {
+      instance_id = "$.detail.instance-id"
+      state       = "$.detail.state"
+    }
+    input_template = "{\"action\":\"reconcile_instance\",\"instance_id\":<instance_id>,\"instance_state\":<state>,\"source\":\"ec2_state_change\"}"
+  }
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_ec2_state_change" {
+  statement_id  = "AllowExecutionFromEC2StateChange"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.premium_cleanup.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.premium_ec2_state_change.arn
+}
+
 # Create ZIP file for premium manager Lambda with dependencies
 # Install dependencies first
 resource "null_resource" "install_dependencies" {
@@ -215,6 +269,7 @@ resource "aws_lambda_function" "premium_cleanup" {
       RDS_USER                   = var.mysql_user
       RDS_PASSWORD               = var.mysql_password
       RDS_DATABASE               = var.mysql_database
+      ENV_PREFIX                 = var.environment
       # Cleanup-specific settings
       PREMIUM_IDLE_TIMEOUT_HOURS = "3"
     }
@@ -342,11 +397,22 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
           }
         }
       },
-      # EC2 CreateTags (unrestricted to allow tagging new instances)
+      # EC2 CreateTags (unrestricted — needed by RunInstances TagSpecifications)
       {
         Effect   = "Allow"
         Action   = "ec2:CreateTags"
         Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
+      },
+      # EC2 DeleteTags (scoped to ghost cleanup grace period tag only)
+      {
+        Effect   = "Allow"
+        Action   = "ec2:DeleteTags"
+        Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
+        Condition = {
+          "ForAllValues:StringEquals" = {
+            "aws:TagKeys" = ["optinist:agent-disconnected-at"]
+          }
+        }
       },
       # EC2 RunInstances (requires multiple resource types)
       {
@@ -491,10 +557,11 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
         Effect = "Allow"
         Action = [
           "ssm:SendCommand",
-          "ssm:GetCommandInvocation"
+          "ssm:GetCommandInvocation",
+          "ssm:DescribeInstanceInformation"
         ]
         Resource = "*"
-      }
+      },
     ]
   })
 }

@@ -465,13 +465,8 @@ async def test_refresh_storage_no_bucket(mock_current_user):
             remote_bucket_name=None,
         )
 
-    # The function catches all exceptions and returns 500, even for None bucket
-    assert exc_info.value.status_code in [400, 500]
-    # Either "No S3 bucket" or "Failed to refresh" message
-    assert (
-        "bucket" in str(exc_info.value.detail).lower()
-        or "failed" in str(exc_info.value.detail).lower()
-    )
+    assert exc_info.value.status_code == 400
+    assert "No S3 bucket configured" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio

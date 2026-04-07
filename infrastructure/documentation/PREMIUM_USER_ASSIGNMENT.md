@@ -12,14 +12,15 @@
 1. **Priority-Based Assignment**
    - Tier 1: Dedicated running instances (0s wait)
    - Tier 2: Shared instances for immediate login (0s wait)
-   - Tier 2.5: Autoscaling pool as temporary fallback (0s wait)
    - Tier 3: Standby instances (5-15s startup)
+   - Tier 3.5: Autoscaling pool as temporary fallback (0s wait, only if no standby)
    - Tier 4: AWS stopped instances fallback (60-90s startup)
    - Tier 5: Scale new instances (4-8 minutes)
 
 2. **User Experience First**
-   - Users get immediate login via autoscaling pool if no premium ready
-   - Background migration to dedicated premium instance
+   - Users get dedicated instance from standby pool when available (5-15s)
+   - Falls back to autoscaling pool only when no standby instances exist
+   - Background migration to dedicated premium instance from shared/pool
    - No user-visible delays or retry loops
 
 3. **Standby Pool Management**
@@ -45,9 +46,9 @@ graph TB
 
         B -->|Dedicated Available| C1[Tier 1: Assign to Dedicated]
         B -->|No Dedicated, Has Shared| C2[Tier 2: Share Instance]
-        B -->|No Premium Ready| C3[Tier 2.5: Assign to Autoscaling Pool]
         B -->|Has Standby| C4[Tier 3: Start Standby Instance]
-        B -->|Has Stopped| C5[Tier 4: Start AWS Instance]
+        B -->|No Standby Either| C3[Tier 3.5: Assign to Autoscaling Pool]
+        B -->|Has Stopped, Not Standby| C5[Tier 4: Start AWS Instance]
         B -->|None Available| C6[Tier 5: Create New Instance]
 
         C1 --> D[Create Target Group + ALB Rule]
@@ -82,8 +83,8 @@ graph TB
 |------|--------|-----------|-----------------|------|----------|
 | 1 | Dedicated Running | 0s | Best (exclusive) | Highest | Active user pool |
 | 2 | Shared Instance | 0s | Good (shared) | Medium | Burst capacity |
-| 2.5 | Autoscaling Pool | 0s | Temporary (migrates) | Low | Cold start fallback |
-| 3 | Standby (Stopped) | 5-15s | Good (warming) | Low | Premium provisioning |
+| 3 | Standby (Stopped) | 5-15s | Good (warming) | Low | Premium provisioning / re-login |
+| 3.5 | Autoscaling Pool | 0s | Temporary (migrates) | Low | Last-resort fallback (no standby) |
 | 4 | AWS Stopped | 60-90s | Acceptable | Low | Fallback recovery |
 | 5 | New Instance | 4-8 min | Poor (scaling) | Highest | Last resort |
 
@@ -116,13 +117,6 @@ sequenceDiagram
         PM->>PM: invoke_migration_async()
         PM-->>User: Assigned to shared (0s wait)
         Note over PM: Will migrate when new instance ready
-    else Tier 2.5: Autoscaling Pool Fallback
-        DB-->>PM: No premium instances ready
-        PM->>DB: Assign to "autoscaling-pool"
-        PM->>PM: scale_premium_instances_if_needed()
-        PM->>PM: invoke_migration_async()
-        PM-->>User: Assigned to temp pool (0s wait)
-        Note over PM: User logs in immediately, migrates later
     else Tier 3: Start Standby
         DB-->>PM: Found standby instance (is_standby=1)
         PM->>EC2: Start Instance
@@ -131,6 +125,13 @@ sequenceDiagram
         PM->>ALB: Create Target Group + Rule
         PM->>PM: create_and_stop_standby_instance() (replenish)
         PM-->>User: Assigned (5-15s wait)
+    else Tier 3.5: Autoscaling Pool Fallback
+        DB-->>PM: No premium or standby instances ready
+        PM->>DB: Assign to "autoscaling-pool"
+        PM->>PM: scale_premium_instances_if_needed()
+        PM->>PM: invoke_migration_async()
+        PM-->>User: Assigned to temp pool (0s wait)
+        Note over PM: User logs in immediately, migrates later
     end
 ```
 
@@ -229,10 +230,13 @@ graph TB
   reserve first instance with 0 users via `SELECT FOR UPDATE`
 - **Tier 2 (Shared):** Use least-loaded running instance, trigger
   scaling if `launching == 0 and running < active_users + 1`
-- **Tier 2.5 (Autoscaling Pool):** Assign to `"autoscaling-pool"` as
-  temporary fallback, always trigger scaling
 - **Tier 3 (Standby):** Start a stopped standby instance
-  (`is_standby=1`), replenish pool immediately
+  (`is_standby=1`), replenish pool immediately. This runs BEFORE
+  autoscaling pool to ensure returning users get a dedicated instance
+  instead of being stuck in the shared pool.
+- **Tier 3.5 (Autoscaling Pool):** Assign to `"autoscaling-pool"` as
+  temporary fallback only when no standby instances exist, always
+  trigger scaling
 - **Tier 4 (AWS Stopped):** Start non-standby stopped instance,
   wait up to 6 minutes for running state
 - **Tier 5 (Scale New):** If launching instances exist, return 202;
@@ -412,8 +416,9 @@ existing assignment, and inserts a reservation with marker values
 **Solution:** Automatic replenishment + fallback chain:
 - On standby consumption: immediately call
   `create_and_stop_standby_instance()` to replenish
-- If standby pool empty: fall back to Tier 4
-  (start non-standby stopped instances)
+- If standby pool empty: fall back to Tier 3.5
+  (autoscaling pool for immediate login)
+- Then Tier 4 (start non-standby stopped instances)
 - If nothing stopped: fall back to Tier 5
   (`scale_premium_instances_if_needed()`, return 202)
 
