@@ -53,7 +53,7 @@ if TYPE_CHECKING:
 # Add parent directory to path for shared imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
-from aws_constants import ECSTaskStatus, PremiumInstanceConfig  # noqa: E402
+from aws_constants import ECSTaskStatus  # noqa: E402
 
 # Import utility functions
 from free_user_utils import (  # noqa: E402
@@ -297,7 +297,7 @@ def is_scaling_in_progress() -> bool:
                         "Metric": {
                             "Namespace": (
                                 "OptiNiSt/FreeManager/"
-                                f"{PremiumInstanceConfig.get_env_prefix()}"
+                                f"{os.environ['ENV_PREFIX']}"
                             ),
                             "MetricName": "ScalingInProgress",
                         },
@@ -330,7 +330,7 @@ def set_scaling_lock(in_progress: bool) -> None:
     """
     try:
         cloudwatch_client.put_metric_data(
-            Namespace=f"OptiNiSt/FreeManager/{PremiumInstanceConfig.get_env_prefix()}",
+            Namespace=f"OptiNiSt/FreeManager/{os.environ['ENV_PREFIX']}",
             MetricData=[
                 {
                     "MetricName": "ScalingInProgress",
@@ -1039,7 +1039,7 @@ def publish_active_user_metric(active_user_count: int) -> None:
     """
     try:
         cloudwatch_client.put_metric_data(
-            Namespace=f"OptiNiSt/FreeUsers/{PremiumInstanceConfig.get_env_prefix()}",
+            Namespace=f"OptiNiSt/FreeUsers/{os.environ['ENV_PREFIX']}",
             MetricData=[
                 {
                     "MetricName": "ActiveLogins",

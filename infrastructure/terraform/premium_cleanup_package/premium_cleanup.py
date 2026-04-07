@@ -660,6 +660,11 @@ def get_all_premium_instances_with_states():
             # "{env_prefix}-premium-running" (e.g., "development-premium-running"
             # vs "subscr-premium-running"). Reject instances whose Name tag
             # doesn't start with this Lambda's ENV_PREFIX.
+            #
+            # Note: instances without a Name tag are intentionally allowed
+            # through. All Terraform-managed and dynamically-created instances
+            # have Name tags, but we don't block tagless instances to avoid
+            # rejecting legitimate instances in transient states.
             if is_premium and name_tag:
                 env_match = name_tag.lower().startswith(env_prefix.lower())
                 if not env_match:

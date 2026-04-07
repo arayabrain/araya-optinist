@@ -358,6 +358,9 @@ resource "aws_lambda_function" "free_cleanup" {
       RDS_USER     = var.mysql_user
       RDS_PASSWORD = var.mysql_password
       RDS_DATABASE = var.mysql_database
+
+      # Environment prefix for consistency with other Lambdas
+      ENV_PREFIX = var.environment
     }
   }
 
