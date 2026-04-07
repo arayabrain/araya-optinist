@@ -396,12 +396,12 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["Optinist/CostTracking/${var.environment}", "ActualMonthToDateSpend", { "label" : "Actual MTD Spend ($)", "yAxis" : "left" }],
-            ["Optinist/CostTracking/${var.environment}", "ExpectedMonthlyBudget", { "label" : "Expected Budget ($)", "yAxis" : "left" }],
-            ["Optinist/CostTracking/${var.environment}", "PremiumInstanceCount", { "label" : "Premium Instances", "yAxis" : "right" }],
-            ["Optinist/CostTracking/${var.environment}", "FreeInstanceCount", { "label" : "Free Tier Instances", "yAxis" : "right" }],
-            ["Optinist/CostTracking/${var.environment}", "ActivePremiumUsers", { "label" : "Active Premium Users", "yAxis" : "right" }],
-            ["Optinist/CostTracking/${var.environment}", "ActiveFreeUsers", { "label" : "Active Free Users", "yAxis" : "right" }]
+            ["OptiNiSt/CostTracking/${var.environment}", "ActualMonthToDateSpend", { "label" : "Actual MTD Spend ($)", "yAxis" : "left" }],
+            ["OptiNiSt/CostTracking/${var.environment}", "ExpectedMonthlyBudget", { "label" : "Expected Budget ($)", "yAxis" : "left" }],
+            ["OptiNiSt/CostTracking/${var.environment}", "PremiumInstanceCount", { "label" : "Premium Instances", "yAxis" : "right" }],
+            ["OptiNiSt/CostTracking/${var.environment}", "FreeInstanceCount", { "label" : "Free Tier Instances", "yAxis" : "right" }],
+            ["OptiNiSt/CostTracking/${var.environment}", "ActivePremiumUsers", { "label" : "Active Premium Users", "yAxis" : "right" }],
+            ["OptiNiSt/CostTracking/${var.environment}", "ActiveFreeUsers", { "label" : "Active Free Users", "yAxis" : "right" }]
           ]
           view    = "timeSeries"
           stacked = false

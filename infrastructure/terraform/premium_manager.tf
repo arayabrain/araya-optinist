@@ -769,7 +769,7 @@ resource "aws_cloudwatch_metric_alarm" "monthly_cost_high" {
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "1"
   metric_name         = "ExpectedMonthlyBudget"
-  namespace           = "Optinist/CostTracking/${var.environment}"
+  namespace           = "OptiNiSt/CostTracking/${var.environment}"
   period              = "86400"
   statistic           = "Maximum"
   threshold           = var.monthly_budget_usd

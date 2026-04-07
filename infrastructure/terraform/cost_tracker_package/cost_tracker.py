@@ -27,7 +27,7 @@ logger.setLevel(logging.INFO)
 PREMIUM_HOURLY_RATE = float(os.environ.get("PREMIUM_HOURLY_RATE", "0.1088"))
 FREE_HOURLY_RATE = float(os.environ.get("FREE_HOURLY_RATE", "0.1088"))
 
-NAMESPACE = f"Optinist/CostTracking/{PremiumInstanceConfig.get_env_prefix()}"
+NAMESPACE = f"OptiNiSt/CostTracking/{PremiumInstanceConfig.get_env_prefix()}"
 
 SSL_ARGS = {"check_hostname": False}
 

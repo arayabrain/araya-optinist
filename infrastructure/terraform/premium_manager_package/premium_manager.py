@@ -905,10 +905,13 @@ def get_all_premium_instances_with_states():
             # contamination. Instance Name tags follow the pattern:
             # "{env_prefix}-premium-running" (e.g., "development-premium-running"
             # vs "subscr-premium-running"). Reject instances whose Name tag
-            # doesn't start with this Lambda's ENV_PREFIX.
-            if is_premium and name_tag:
-                env_match = name_tag.lower().startswith(env_prefix.lower())
-                if not env_match:
+            # doesn't start with this Lambda's ENV_PREFIX, or that have no
+            # Name tag at all (tagless instances cannot be verified as belonging
+            # to this environment).
+            if is_premium:
+                if not name_tag or not name_tag.lower().startswith(
+                    env_prefix.lower()
+                ):
                     print(
                         f"Skipping instance {instance_id}: "
                         f"Name '{name_tag}' does not match "
