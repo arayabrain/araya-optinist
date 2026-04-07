@@ -1941,16 +1941,207 @@ class TestRoutingIdContract:
                 self._patchers = []
 
 
+class TestScaleDownIfPossible:
+    """scale_down_if_possible stops idle instances and registers
+    them as standby in the database for later termination."""
+
+    def _make_instance(self, instance_id, state="running"):
+        return {"instance_id": instance_id, "state": state}
+
+    def test_stops_idle_and_registers_standby(self, mock_env_vars_premium):
+        """Idle instances are stopped, deregistered from ECS,
+        and registered as standby in the DB."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_dynamic_max_capacity", return_value=10
+        ), patch(
+            "premium_manager.count_active_premium_users", return_value=0
+        ), patch(
+            "premium_manager.count_total_premium_users", return_value=5
+        ), patch(
+            "premium_manager.get_all_premium_instances_with_states"
+        ) as mock_get_instances, patch(
+            "premium_manager.get_assigned_users_for_instance"
+        ) as mock_get_users, patch(
+            "premium_manager.deregister_container_instance_from_ecs"
+        ) as mock_deregister, patch(
+            "premium_manager.store_user_assignment"
+        ) as mock_store, patch(
+            "premium_manager.update_premium_service_desired_count"
+        ):
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+
+            # 3 running, 0 users -> 3 idle (>= 2), min_needed = 1
+            mock_get_instances.return_value = [
+                self._make_instance("i-idle1"),
+                self._make_instance("i-idle2"),
+                self._make_instance("i-idle3"),
+            ]
+            mock_get_users.return_value = []
+
+            from premium_manager import scale_down_if_possible
+
+            scale_down_if_possible()
+
+            # Should stop idle instances
+            mock_ec2.stop_instances.assert_called_once()
+            stopped_ids = mock_ec2.stop_instances.call_args[1]["InstanceIds"]
+            assert len(stopped_ids) >= 1
+
+            # Each stopped instance should be deregistered from ECS
+            for iid in stopped_ids:
+                mock_deregister.assert_any_call(iid)
+
+            # Each stopped instance should be registered as standby
+            assert mock_store.call_count == len(stopped_ids)
+            for call in mock_store.call_args_list:
+                assert call[1]["user_id"] is None
+                assert call[1]["instance_state"] == "stopped"
+                assert call[1]["is_standby"] is True
+
+    def test_no_scale_down_when_idle_below_threshold(self, mock_env_vars_premium):
+        """No scale-down when fewer than 2 idle instances."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_dynamic_max_capacity", return_value=10
+        ), patch(
+            "premium_manager.count_active_premium_users", return_value=0
+        ), patch(
+            "premium_manager.count_total_premium_users", return_value=5
+        ), patch(
+            "premium_manager.get_all_premium_instances_with_states"
+        ) as mock_get_instances, patch(
+            "premium_manager.get_assigned_users_for_instance"
+        ) as mock_get_users, patch(
+            "premium_manager.store_user_assignment"
+        ) as mock_store:
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+
+            # 1 running, 0 users -> 1 idle (< 2 threshold)
+            mock_get_instances.return_value = [
+                self._make_instance("i-only1"),
+            ]
+            mock_get_users.return_value = []
+
+            from premium_manager import scale_down_if_possible
+
+            scale_down_if_possible()
+
+            mock_ec2.stop_instances.assert_not_called()
+            mock_store.assert_not_called()
+
+    def test_standby_registration_failure_does_not_block(self, mock_env_vars_premium):
+        """If store_user_assignment fails for one instance, the
+        remaining instances are still registered."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_dynamic_max_capacity", return_value=10
+        ), patch(
+            "premium_manager.count_active_premium_users", return_value=0
+        ), patch(
+            "premium_manager.count_total_premium_users", return_value=5
+        ), patch(
+            "premium_manager.get_all_premium_instances_with_states"
+        ) as mock_get_instances, patch(
+            "premium_manager.get_assigned_users_for_instance"
+        ) as mock_get_users, patch(
+            "premium_manager.deregister_container_instance_from_ecs"
+        ), patch(
+            "premium_manager.store_user_assignment"
+        ) as mock_store, patch(
+            "premium_manager.update_premium_service_desired_count"
+        ):
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+
+            # 4 running, 0 users -> 4 idle
+            mock_get_instances.return_value = [
+                self._make_instance(f"i-idle{i}") for i in range(4)
+            ]
+            mock_get_users.return_value = []
+
+            # First call fails, rest succeed
+            mock_store.side_effect = [
+                Exception("DB error"),
+                None,
+                None,
+            ]
+
+            from premium_manager import scale_down_if_possible
+
+            # Should not raise despite the DB error
+            scale_down_if_possible()
+
+            mock_ec2.stop_instances.assert_called_once()
+            # All stopped instances attempted registration
+            assert mock_store.call_count == len(
+                mock_ec2.stop_instances.call_args[1]["InstanceIds"]
+            )
+
+    def test_occupied_instances_not_stopped(self, mock_env_vars_premium):
+        """Instances with assigned users are never stopped."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_dynamic_max_capacity", return_value=10
+        ), patch(
+            "premium_manager.count_active_premium_users", return_value=1
+        ), patch(
+            "premium_manager.count_total_premium_users", return_value=5
+        ), patch(
+            "premium_manager.get_all_premium_instances_with_states"
+        ) as mock_get_instances, patch(
+            "premium_manager.get_assigned_users_for_instance"
+        ) as mock_get_users, patch(
+            "premium_manager.deregister_container_instance_from_ecs"
+        ), patch(
+            "premium_manager.store_user_assignment"
+        ) as mock_store, patch(
+            "premium_manager.update_premium_service_desired_count"
+        ):
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+
+            # 4 running: 1 occupied + 3 idle
+            mock_get_instances.return_value = [
+                self._make_instance("i-occupied"),
+                self._make_instance("i-idle1"),
+                self._make_instance("i-idle2"),
+                self._make_instance("i-idle3"),
+            ]
+
+            def users_side_effect(iid):
+                if iid == "i-occupied":
+                    return [{"user_id": 42}]
+                return []
+
+            mock_get_users.side_effect = users_side_effect
+
+            from premium_manager import scale_down_if_possible
+
+            scale_down_if_possible()
+
+            stopped_ids = mock_ec2.stop_instances.call_args[1]["InstanceIds"]
+            assert "i-occupied" not in stopped_ids
+            # All stopped instances registered as standby
+            assert mock_store.call_count == len(stopped_ids)
+
+
 class TestCleanupOrphanedEC2Instances:
     """cleanup_orphaned_ec2_instances stops unregistered
     instances past the grace period and skips the rest."""
 
     def test_stops_orphaned_past_grace_period(self, mock_env_vars_premium):
         """EC2 instance running 20 min and NOT in ECS
-        container instances gets stopped."""
+        container instances gets stopped and registered as standby."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3:
+        ) as mock_boto3, patch("premium_manager.store_user_assignment") as mock_store:
             mock_ecs = MagicMock()
             mock_ec2 = MagicMock()
 
@@ -1996,6 +2187,64 @@ class TestCleanupOrphanedEC2Instances:
             cleanup_orphaned_ec2_instances()
 
             mock_ec2.stop_instances.assert_called_once_with(InstanceIds=["i-orphan1"])
+            mock_store.assert_called_once()
+            call_kwargs = mock_store.call_args[1]
+            assert call_kwargs["user_id"] is None
+            assert call_kwargs["instance_id"] == "i-orphan1"
+            assert call_kwargs["instance_state"] == "stopped"
+            assert call_kwargs["is_standby"] is True
+
+    def test_orphan_standby_registration_failure_does_not_block(
+        self, mock_env_vars_premium
+    ):
+        """If store_user_assignment fails for one orphan, remaining
+        orphans are still stopped and registered."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch("premium_manager.store_user_assignment") as mock_store:
+            mock_ecs = MagicMock()
+            mock_ec2 = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "ecs":
+                    return mock_ecs
+                if service == "ec2":
+                    return mock_ec2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": []
+            }
+
+            launch_time = datetime.now(timezone.utc) - timedelta(minutes=20)
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": f"i-orphan{i}",
+                                "State": {"Name": "running"},
+                                "LaunchTime": launch_time,
+                            }
+                            for i in range(2)
+                        ]
+                    }
+                ]
+            }
+
+            # First registration fails, second succeeds
+            mock_store.side_effect = [Exception("DB error"), None]
+
+            from premium_manager import cleanup_orphaned_ec2_instances
+
+            cleanup_orphaned_ec2_instances()
+
+            # Both instances should be stopped
+            assert mock_ec2.stop_instances.call_count == 2
+            # Both registrations attempted
+            assert mock_store.call_count == 2
 
     def test_skips_instance_within_grace_period(self, mock_env_vars_premium):
         """EC2 instance running 5 min is within grace period
@@ -2108,6 +2357,66 @@ class TestCleanupOrphanedEC2Instances:
             cleanup_orphaned_ec2_instances()
 
             mock_ec2.stop_instances.assert_not_called()
+
+
+class TestHandleScheduledMonitoring:
+    """handle_scheduled_monitoring registers orphaned stopped
+    instances before attempting to terminate aged ones."""
+
+    def test_registers_orphans_before_terminating_aged(self, mock_env_vars_premium):
+        """register_orphaned_stopped_instances runs before
+        terminate_aged_stopped_instances so ghost instances
+        become visible to the terminator."""
+        call_order = []
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.is_premium_scaling_in_progress", return_value=False
+        ), patch("premium_manager.set_premium_scaling_lock"), patch(
+            "premium_manager.count_active_premium_users", return_value=0
+        ), patch(
+            "premium_manager.count_total_premium_users", return_value=0
+        ), patch(
+            "premium_manager.get_all_premium_instances_with_states",
+            return_value=[],
+        ), patch(
+            "premium_manager.get_assigned_users_for_instance",
+            return_value=[],
+        ), patch(
+            "premium_manager.publish_premium_metrics"
+        ), patch(
+            "premium_manager.scale_down_if_possible"
+        ), patch(
+            "premium_manager.update_premium_service_desired_count"
+        ), patch(
+            "premium_manager.cleanup_failed_standby_instances"
+        ), patch(
+            "premium_manager.register_orphaned_stopped_instances",
+            side_effect=lambda: call_order.append("register_orphans"),
+        ), patch(
+            "premium_manager.terminate_aged_stopped_instances",
+            side_effect=lambda: call_order.append("terminate_aged"),
+        ), patch(
+            "premium_manager.get_standby_count", return_value=0
+        ), patch(
+            "premium_manager.finalize_expired_pending_releases",
+            return_value=[],
+        ), patch(
+            "premium_manager.cleanup_ghost_ecs_registrations"
+        ), patch(
+            "premium_manager.cleanup_orphaned_ec2_instances"
+        ), patch(
+            "premium_manager.fix_incorrect_is_shared_flags",
+            return_value={"fixed_count": 0},
+        ), patch(
+            "premium_manager.process_shared_instance_optimization",
+            return_value={"migrations_performed": 0, "shared_instances_found": 0},
+        ):
+            from premium_manager import handle_scheduled_monitoring
+
+            result = handle_scheduled_monitoring({"source": "test"}, None)
+            assert result["statusCode"] == 200
+
+            assert call_order == ["register_orphans", "terminate_aged"]
 
 
 class TestGetUserUidFromId:
