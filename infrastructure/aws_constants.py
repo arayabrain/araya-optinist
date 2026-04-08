@@ -71,27 +71,27 @@ class SubscriptionType:
     PREMIUM = "premium"
 
 
-class PremiumInstanceConfig:
+class EnvironmentConfig:
     """
-    Configuration constants for premium EC2 instances.
+    Deployment environment constants.
 
-    These values are used for identifying and filtering premium instances
-    in EC2, ECS, and ALB operations.
+    Provides the environment prefix (read from the ENV_PREFIX env var)
+    and a validated human-readable label for AWS resource tagging.
+    Must match Terraform var.environment / local.environment_label.
     """
 
-    # Identifier used in EC2 instance Name/Tier/Type tags
-    INSTANCE_IDENTIFIER = "premium"
-    # EC2 Type tag value for premium instances
-    INSTANCE_TYPE_TAG = "Premium-Instance"
-    # EC2 Service tag value for premium instances
-    SERVICE_TAG = "premium-tier"
     # Environment variable name for the deployment prefix
     ENV_PREFIX_VAR = "ENV_PREFIX"
     # Known environment prefix values (must match Terraform var.environment)
-    PRODUCTION_ENV_PREFIX = "subscr"
-    DEVELOPMENT_ENV_PREFIX = "development"
-    # Instance Name tag suffix (combined with env prefix: "{prefix}-premium-running")
-    INSTANCE_NAME_SUFFIX = "premium-running"
+    PRODUCTION = "subscr"
+    DEVELOPMENT = "development"
+
+    # Map of known prefixes to human-readable labels.
+    # Matches the Terraform local.environment_label convention.
+    _LABELS = {
+        PRODUCTION: "Production",
+        DEVELOPMENT: "Development",
+    }
 
     @classmethod
     def get_env_prefix(cls) -> str:
@@ -111,13 +111,6 @@ class PremiumInstanceConfig:
             )
         return prefix
 
-    # Map of known environment prefixes to their human-readable labels.
-    # Matches the Terraform local.environment_label convention.
-    ENV_PREFIX_LABELS = {
-        "subscr": "Production",
-        "development": "Development",
-    }
-
     @classmethod
     def get_environment_label(cls) -> str:
         """Get the human-readable environment label for AWS tags.
@@ -126,13 +119,31 @@ class PremiumInstanceConfig:
         to prevent silent mis-tagging of resources.
         """
         prefix = cls.get_env_prefix()
-        label = cls.ENV_PREFIX_LABELS.get(prefix)
+        label = cls._LABELS.get(prefix)
         if label is None:
             raise ValueError(
                 f"Unknown environment prefix '{prefix}'. "
-                f"Expected one of: {sorted(cls.ENV_PREFIX_LABELS)}"
+                f"Expected one of: {sorted(cls._LABELS)}"
             )
         return label
+
+
+class PremiumInstanceConfig:
+    """
+    Configuration constants for premium EC2 instances.
+
+    These values are used for identifying and filtering premium instances
+    in EC2, ECS, and ALB operations.
+    """
+
+    # Identifier used in EC2 instance Name/Tier/Type tags
+    INSTANCE_IDENTIFIER = "premium"
+    # EC2 Type tag value for premium instances
+    INSTANCE_TYPE_TAG = "Premium-Instance"
+    # EC2 Service tag value for premium instances
+    SERVICE_TAG = "premium-tier"
+    # Instance Name tag suffix (combined with env prefix: "{prefix}-premium-running")
+    INSTANCE_NAME_SUFFIX = "premium-running"
 
     @classmethod
     def get_instance_name_pattern(cls) -> str:
@@ -141,7 +152,7 @@ class PremiumInstanceConfig:
         Returns e.g. 'development-premium-*' or 'subscr-premium-*'.
         Used in AWS API tag:Name filters.
         """
-        return f"{cls.get_env_prefix()}-{cls.INSTANCE_IDENTIFIER}-*"
+        return f"{EnvironmentConfig.get_env_prefix()}-{cls.INSTANCE_IDENTIFIER}-*"
 
     @classmethod
     def get_instance_name(cls) -> str:
@@ -149,7 +160,7 @@ class PremiumInstanceConfig:
 
         Returns e.g. 'development-premium-running' or 'subscr-premium-running'.
         """
-        return f"{cls.get_env_prefix()}-{cls.INSTANCE_NAME_SUFFIX}"
+        return f"{EnvironmentConfig.get_env_prefix()}-{cls.INSTANCE_NAME_SUFFIX}"
 
 
 class RoutingHeaders:

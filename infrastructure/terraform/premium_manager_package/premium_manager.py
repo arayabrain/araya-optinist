@@ -50,6 +50,7 @@ import pymysql
 from aws_constants import (
     DatabaseConfig,
     ECSTaskStatus,
+    EnvironmentConfig,
     InstanceState,
     PremiumAssignment,
     PremiumInstanceConfig,
@@ -862,7 +863,7 @@ def get_all_premium_instances_with_states():
     contamination (e.g., development Lambda discovering production instances).
     """
     ec2: "EC2Client" = boto3.client("ec2")
-    env_prefix = PremiumInstanceConfig.get_env_prefix()
+    env_prefix = EnvironmentConfig.get_env_prefix()
     try:
         # Get instances with premium tags (use multiple filters for robust discovery)
         response = ec2.describe_instances(
@@ -1320,7 +1321,7 @@ def create_running_instance():
                 )
 
                 # Launch instance using the premium launch template
-                env_label = PremiumInstanceConfig.get_environment_label()
+                env_label = EnvironmentConfig.get_environment_label()
                 inst_name = PremiumInstanceConfig.get_instance_name()
                 response = ec2.run_instances(
                     LaunchTemplate={
@@ -1596,10 +1597,10 @@ def create_and_stop_standby_instance():
                     )
 
                     env_label = (
-                        PremiumInstanceConfig.get_environment_label()
+                        EnvironmentConfig.get_environment_label()
                     )
                     env_prefix = (
-                        PremiumInstanceConfig.get_env_prefix()
+                        EnvironmentConfig.get_env_prefix()
                     )
                     inst_id = (
                         PremiumInstanceConfig.INSTANCE_IDENTIFIER
@@ -4916,7 +4917,7 @@ def terminate_aged_stopped_instances():
         response = ec2.describe_instances(InstanceIds=instance_ids)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         cutoff = timedelta(hours=max_age_hours)
-        env_prefix = PremiumInstanceConfig.get_env_prefix()
+        env_prefix = EnvironmentConfig.get_env_prefix()
         aged_instances = []
 
         for reservation in response["Reservations"]:
