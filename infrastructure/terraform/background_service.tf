@@ -38,7 +38,9 @@ resource "aws_launch_template" "background" {
     enabled = true
   }
 
-  user_data = base64encode(templatefile("${path.module}/../scripts/ecs-user-data.sh", {
+  # base64gzip (not base64encode): inlined agent-recovery scripts push raw
+  # user-data past EC2's 16 KB limit. cloud-init transparently decompresses.
+  user_data = base64gzip(templatefile("${path.module}/../scripts/ecs-user-data.sh", {
     tier                           = "background"
     cluster_name                   = aws_ecs_cluster.main.name
     git_branch                     = var.git_branch
