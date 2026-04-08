@@ -24,6 +24,7 @@ _PACKAGE_NAMES = [
     "free_manager_package",
     "free_cleanup_package",
     "common_user_manager_package",
+    "dev_scheduler_package",
 ]
 
 # Add Lambda package directories to sys.path so imports work
