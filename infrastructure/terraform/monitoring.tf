@@ -118,7 +118,7 @@ resource "aws_cloudwatch_log_metric_filter" "user_cpu_usage" {
 
   metric_transformation {
     name      = "UserCPUUsage"
-    namespace = "OptiNiSt/Application"
+    namespace = "OptiNiSt/Application/${var.environment}"
     value     = "$cpu_usage"
   }
 }
@@ -396,12 +396,12 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["Optinist/CostTracking", "ActualMonthToDateSpend", { "label" : "Actual MTD Spend ($)", "yAxis" : "left" }],
-            ["Optinist/CostTracking", "ExpectedMonthlyBudget", { "label" : "Expected Budget ($)", "yAxis" : "left" }],
-            ["Optinist/CostTracking", "PremiumInstanceCount", { "label" : "Premium Instances", "yAxis" : "right" }],
-            ["Optinist/CostTracking", "FreeInstanceCount", { "label" : "Free Tier Instances", "yAxis" : "right" }],
-            ["Optinist/CostTracking", "ActivePremiumUsers", { "label" : "Active Premium Users", "yAxis" : "right" }],
-            ["Optinist/CostTracking", "ActiveFreeUsers", { "label" : "Active Free Users", "yAxis" : "right" }]
+            ["OptiNiSt/CostTracking/${var.environment}", "ActualMonthToDateSpend", { "label" : "Actual MTD Spend ($)", "yAxis" : "left" }],
+            ["OptiNiSt/CostTracking/${var.environment}", "ExpectedMonthlyBudget", { "label" : "Expected Budget ($)", "yAxis" : "left" }],
+            ["OptiNiSt/CostTracking/${var.environment}", "PremiumInstanceCount", { "label" : "Premium Instances", "yAxis" : "right" }],
+            ["OptiNiSt/CostTracking/${var.environment}", "FreeInstanceCount", { "label" : "Free Tier Instances", "yAxis" : "right" }],
+            ["OptiNiSt/CostTracking/${var.environment}", "ActivePremiumUsers", { "label" : "Active Premium Users", "yAxis" : "right" }],
+            ["OptiNiSt/CostTracking/${var.environment}", "ActiveFreeUsers", { "label" : "Active Free Users", "yAxis" : "right" }]
           ]
           view    = "timeSeries"
           stacked = false
@@ -451,10 +451,10 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["OptiNiSt/FreeUsers", "ActiveLogins", { "label" : "Active Free Tier Users", "yAxis" : "left" }],
-            ["OptiNiSt/Premium", "ActiveAssignments", { "label" : "Active Premium Users", "yAxis" : "left" }],
-            ["OptiNiSt/Premium", "InstanceUtilization", { "label" : "Premium Instance Utilization %", "yAxis" : "right" }],
-            ["OptiNiSt/Application", "UserCPUUsage", { "label" : "User CPU Usage", "stat" : "Average", "yAxis" : "right" }],
+            ["OptiNiSt/FreeUsers/${var.environment}", "ActiveLogins", { "label" : "Active Free Tier Users", "yAxis" : "left" }],
+            ["OptiNiSt/Premium/${var.environment}", "ActiveAssignments", { "label" : "Active Premium Users", "yAxis" : "left" }],
+            ["OptiNiSt/Premium/${var.environment}", "InstanceUtilization", { "label" : "Premium Instance Utilization %", "yAxis" : "right" }],
+            ["OptiNiSt/Application/${var.environment}", "UserCPUUsage", { "label" : "User CPU Usage", "stat" : "Average", "yAxis" : "right" }],
             ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Duration (ms)", "yAxis" : "right" }],
             ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Errors", "yAxis" : "left" }]
           ]

@@ -575,8 +575,9 @@ class DataCleanupJob:
 
             cloudwatch = boto3.client("cloudwatch")
 
+            env_prefix = os.environ.get("ENV_PREFIX", "default")
             cloudwatch.put_metric_data(
-                Namespace="OptiNiSt/BackgroundJobs",
+                Namespace=f"OptiNiSt/BackgroundJobs/{env_prefix}",
                 MetricData=[
                     {
                         "MetricName": "DataCleanupCount",

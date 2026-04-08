@@ -123,7 +123,7 @@ def cleanup_test_user_sessions(connection, user_emails: List[str]) -> Dict[str, 
     Usage (from test scripts):
         lambda_client = boto3.client('lambda')
         response = lambda_client.invoke(
-            FunctionName='subscr-free-cleanup',
+            FunctionName='{env}-free-cleanup',
             InvocationType='RequestResponse',
             Payload=json.dumps({
                 "action": "cleanup_test_users",

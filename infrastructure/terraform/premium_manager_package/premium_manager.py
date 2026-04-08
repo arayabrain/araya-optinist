@@ -906,10 +906,13 @@ def get_all_premium_instances_with_states():
             # contamination. Instance Name tags follow the pattern:
             # "{env_prefix}-premium-running" (e.g., "development-premium-running"
             # vs "subscr-premium-running"). Reject instances whose Name tag
-            # doesn't start with this Lambda's ENV_PREFIX.
-            if is_premium and name_tag:
-                env_match = name_tag.lower().startswith(env_prefix.lower())
-                if not env_match:
+            # doesn't start with this Lambda's ENV_PREFIX, or that have no
+            # Name tag at all (tagless instances cannot be verified as belonging
+            # to this environment).
+            if is_premium:
+                if not name_tag or not name_tag.lower().startswith(
+                    env_prefix.lower()
+                ):
                     print(
                         f"Skipping instance {instance_id}: "
                         f"Name '{name_tag}' does not match "
@@ -2048,7 +2051,10 @@ def is_premium_scaling_in_progress() -> bool:
                     "Id": "scaling_lock",
                     "MetricStat": {
                         "Metric": {
-                            "Namespace": "OptiNiSt/PremiumManager",
+                            "Namespace": (
+                                "OptiNiSt/PremiumManager/"
+                                f"{PremiumInstanceConfig.get_env_prefix()}"
+                            ),
                             "MetricName": "ScalingInProgress",
                         },
                         "Period": 900,  # 15 minutes
@@ -2083,7 +2089,9 @@ def set_premium_scaling_lock(in_progress: bool) -> None:
 
     try:
         cloudwatch.put_metric_data(
-            Namespace="OptiNiSt/PremiumManager",
+            Namespace=(
+                "OptiNiSt/PremiumManager/" f"{PremiumInstanceConfig.get_env_prefix()}"
+            ),
             MetricData=[
                 {
                     "MetricName": "ScalingInProgress",
@@ -2105,7 +2113,7 @@ def publish_premium_metrics(
     """
     Publish premium tier monitoring metrics to CloudWatch.
 
-    Metrics published to namespace OptiNiSt/PremiumManager:
+    Metrics published to namespace OptiNiSt/PremiumManager/{env_prefix}:
     - ActivePremiumUsers: Count of users with active assignments
     - IdlePremiumUsers: Count of users with inactive/no assignments
     - RunningInstances: Count of running EC2 instances
@@ -2115,7 +2123,9 @@ def publish_premium_metrics(
 
     try:
         cloudwatch.put_metric_data(
-            Namespace="OptiNiSt/PremiumManager",
+            Namespace=(
+                "OptiNiSt/PremiumManager/" f"{PremiumInstanceConfig.get_env_prefix()}"
+            ),
             MetricData=[
                 {
                     "MetricName": "ActivePremiumUsers",
