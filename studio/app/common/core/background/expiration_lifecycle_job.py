@@ -577,7 +577,10 @@ class ExpirationLifecycleJob:
             now = get_current_datetime()
             cloudwatch = boto3.client("cloudwatch")
             cloudwatch.put_metric_data(
-                Namespace=ExpirationDeletion.METRIC_NAMESPACE,
+                Namespace=(
+                    f"{ExpirationDeletion.METRIC_NAMESPACE_BASE}"
+                    f"/{os.environ.get('ENV_PREFIX', 'default')}"
+                ),
                 MetricData=[
                     {
                         "MetricName": ExpirationDeletion.METRIC_PROCESSED,

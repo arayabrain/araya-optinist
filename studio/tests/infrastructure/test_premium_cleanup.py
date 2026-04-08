@@ -2,7 +2,12 @@
 
 from unittest.mock import MagicMock, patch
 
-from aws_constants import ECSTaskStatus, PremiumAssignment, RoutingHeaders
+from aws_constants import (
+    ECSTaskStatus,
+    PremiumAssignment,
+    PremiumInstanceConfig,
+    RoutingHeaders,
+)
 from conftest import MockRow, setup_db_mock
 
 TEST_INSTANCE_ID = "i-testlambda123"
@@ -690,8 +695,8 @@ class TestReconcileSingleInstance:
             "boto3.client"
         ) as mock_boto3:
             mock_ec2 = MagicMock()
-            mock_boto3.side_effect = (
-                lambda service: mock_ec2 if service == "ec2" else MagicMock()
+            mock_boto3.side_effect = lambda service: (
+                mock_ec2 if service == "ec2" else MagicMock()
             )
 
             mock_ec2.describe_instances.return_value = {
@@ -842,8 +847,8 @@ class TestReconcileSingleInstance:
             "boto3.client"
         ) as mock_boto3:
             mock_ec2 = MagicMock()
-            mock_boto3.side_effect = (
-                lambda service: mock_ec2 if service == "ec2" else MagicMock()
+            mock_boto3.side_effect = lambda service: (
+                mock_ec2 if service == "ec2" else MagicMock()
             )
 
             # describe_instances will fail for non-real instance ID
@@ -989,3 +994,123 @@ class TestReconcileSingleInstance:
             # ALB rule should be deleted, but shared TG should NOT
             mock_elbv2.delete_rule.assert_called_once_with(RuleArn=rule_arn)
             mock_elbv2.delete_target_group.assert_not_called()
+
+
+class TestGetAllPremiumInstancesEnvFilter:
+    """Environment prefix filter tests for get_all_premium_instances_with_states."""
+
+    def test_same_env_instance_passes(self, mock_env_vars_premium):
+        """Instance with matching env prefix is included."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-same-env",
+                                "InstanceType": "t3.large",
+                                "State": {"Name": "running"},
+                                "Tags": [
+                                    {
+                                        "Key": "Name",
+                                        "Value": (
+                                            PremiumInstanceConfig.get_instance_name()
+                                        ),
+                                    },
+                                    {
+                                        "Key": "Tier",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
+                                    },
+                                ],
+                            },
+                        ]
+                    }
+                ]
+            }
+
+            from premium_cleanup import get_all_premium_instances_with_states
+
+            result = get_all_premium_instances_with_states()
+            assert len(result) == 1
+            assert result[0]["instance_id"] == "i-same-env"
+
+    def test_cross_env_instance_skipped(self, mock_env_vars_premium):
+        """Instance with different env prefix is excluded."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-cross-env",
+                                "InstanceType": "t3.large",
+                                "State": {"Name": "running"},
+                                "Tags": [
+                                    {
+                                        "Key": "Name",
+                                        "Value": "production-premium-running",
+                                    },
+                                    {
+                                        "Key": "Tier",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
+                                    },
+                                ],
+                            },
+                        ]
+                    }
+                ]
+            }
+
+            from premium_cleanup import get_all_premium_instances_with_states
+
+            result = get_all_premium_instances_with_states()
+            assert len(result) == 0
+
+    def test_tagless_instance_skipped(self, mock_env_vars_premium):
+        """Premium instance without Name tag is excluded."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-no-name",
+                                "InstanceType": "t3.large",
+                                "State": {"Name": "running"},
+                                "Tags": [
+                                    {
+                                        "Key": "Tier",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
+                                    },
+                                ],
+                            },
+                        ]
+                    }
+                ]
+            }
+
+            from premium_cleanup import get_all_premium_instances_with_states
+
+            result = get_all_premium_instances_with_states()
+            assert len(result) == 0

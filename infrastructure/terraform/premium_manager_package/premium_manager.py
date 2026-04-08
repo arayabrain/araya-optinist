@@ -50,6 +50,7 @@ import pymysql
 from aws_constants import (
     DatabaseConfig,
     ECSTaskStatus,
+    EnvironmentConfig,
     InstanceState,
     PremiumAssignment,
     PremiumInstanceConfig,
@@ -862,7 +863,7 @@ def get_all_premium_instances_with_states():
     contamination (e.g., development Lambda discovering production instances).
     """
     ec2: "EC2Client" = boto3.client("ec2")
-    env_prefix = PremiumInstanceConfig.get_env_prefix()
+    env_prefix = EnvironmentConfig.get_env_prefix()
     try:
         # Get instances with premium tags (use multiple filters for robust discovery)
         response = ec2.describe_instances(
@@ -905,10 +906,13 @@ def get_all_premium_instances_with_states():
             # contamination. Instance Name tags follow the pattern:
             # "{env_prefix}-premium-running" (e.g., "development-premium-running"
             # vs "subscr-premium-running"). Reject instances whose Name tag
-            # doesn't start with this Lambda's ENV_PREFIX.
-            if is_premium and name_tag:
-                env_match = name_tag.lower().startswith(env_prefix.lower())
-                if not env_match:
+            # doesn't start with this Lambda's ENV_PREFIX, or that have no
+            # Name tag at all (tagless instances cannot be verified as belonging
+            # to this environment).
+            if is_premium:
+                if not name_tag or not name_tag.lower().startswith(
+                    env_prefix.lower()
+                ):
                     print(
                         f"Skipping instance {instance_id}: "
                         f"Name '{name_tag}' does not match "
@@ -1320,6 +1324,8 @@ def create_running_instance():
                 )
 
                 # Launch instance using the premium launch template
+                env_label = EnvironmentConfig.get_environment_label()
+                inst_name = PremiumInstanceConfig.get_instance_name()
                 response = ec2.run_instances(
                     LaunchTemplate={
                         "LaunchTemplateId": launch_template_id,
@@ -1349,8 +1355,25 @@ def create_running_instance():
                                     "Key": "Service",
                                     "Value": PremiumInstanceConfig.SERVICE_TAG,
                                 },
+                                {
+                                    "Key": "Environment",
+                                    "Value": env_label,
+                                },
                             ],
-                        }
+                        },
+                        {
+                            "ResourceType": "volume",
+                            "Tags": [
+                                {
+                                    "Key": "Name",
+                                    "Value": f"{inst_name}-vol",
+                                },
+                                {
+                                    "Key": "Environment",
+                                    "Value": env_label,
+                                },
+                            ],
+                        },
                     ],
                 )
 
@@ -1576,9 +1599,18 @@ def create_and_stop_standby_instance():
                         f"/{len(subnet_ids)})"
                     )
 
+                    env_label = (
+                        EnvironmentConfig.get_environment_label()
+                    )
+                    env_prefix = (
+                        EnvironmentConfig.get_env_prefix()
+                    )
+                    inst_id = (
+                        PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                    )
                     response = ec2.run_instances(
                         LaunchTemplate={
-                            "LaunchTemplateId": (launch_template_id),
+                            "LaunchTemplateId": launch_template_id,
                             "Version": "$Latest",
                         },
                         InstanceType=instance_type,
@@ -1591,29 +1623,51 @@ def create_and_stop_standby_instance():
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": "{}-{}-standby".format(
-                                            PremiumInstanceConfig.get_env_prefix(),
-                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER,
+                                        "Value": (
+                                            f"{env_prefix}-"
+                                            f"{inst_id}-standby"
                                         ),
                                     },
                                     {
                                         "Key": "Type",
                                         "Value": (
-                                            PremiumInstanceConfig.INSTANCE_TYPE_TAG
+                                            PremiumInstanceConfig
+                                            .INSTANCE_TYPE_TAG
                                         ),
                                     },
                                     {
                                         "Key": "Tier",
-                                        "Value": (
-                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
-                                        ),
+                                        "Value": inst_id,
                                     },
                                     {
                                         "Key": "Service",
-                                        "Value": PremiumInstanceConfig.SERVICE_TAG,
+                                        "Value": (
+                                            PremiumInstanceConfig
+                                            .SERVICE_TAG
+                                        ),
+                                    },
+                                    {
+                                        "Key": "Environment",
+                                        "Value": env_label,
                                     },
                                 ],
-                            }
+                            },
+                            {
+                                "ResourceType": "volume",
+                                "Tags": [
+                                    {
+                                        "Key": "Name",
+                                        "Value": (
+                                            f"{env_prefix}-"
+                                            f"{inst_id}-standby-vol"
+                                        ),
+                                    },
+                                    {
+                                        "Key": "Environment",
+                                        "Value": env_label,
+                                    },
+                                ],
+                            },
                         ],
                     )
 
@@ -1997,7 +2051,10 @@ def is_premium_scaling_in_progress() -> bool:
                     "Id": "scaling_lock",
                     "MetricStat": {
                         "Metric": {
-                            "Namespace": "OptiNiSt/PremiumManager",
+                            "Namespace": (
+                                "OptiNiSt/PremiumManager/"
+                                f"{PremiumInstanceConfig.get_env_prefix()}"
+                            ),
                             "MetricName": "ScalingInProgress",
                         },
                         "Period": 900,  # 15 minutes
@@ -2032,7 +2089,9 @@ def set_premium_scaling_lock(in_progress: bool) -> None:
 
     try:
         cloudwatch.put_metric_data(
-            Namespace="OptiNiSt/PremiumManager",
+            Namespace=(
+                "OptiNiSt/PremiumManager/" f"{PremiumInstanceConfig.get_env_prefix()}"
+            ),
             MetricData=[
                 {
                     "MetricName": "ScalingInProgress",
@@ -2054,7 +2113,7 @@ def publish_premium_metrics(
     """
     Publish premium tier monitoring metrics to CloudWatch.
 
-    Metrics published to namespace OptiNiSt/PremiumManager:
+    Metrics published to namespace OptiNiSt/PremiumManager/{env_prefix}:
     - ActivePremiumUsers: Count of users with active assignments
     - IdlePremiumUsers: Count of users with inactive/no assignments
     - RunningInstances: Count of running EC2 instances
@@ -2064,7 +2123,9 @@ def publish_premium_metrics(
 
     try:
         cloudwatch.put_metric_data(
-            Namespace="OptiNiSt/PremiumManager",
+            Namespace=(
+                "OptiNiSt/PremiumManager/" f"{PremiumInstanceConfig.get_env_prefix()}"
+            ),
             MetricData=[
                 {
                     "MetricName": "ActivePremiumUsers",
@@ -4902,7 +4963,7 @@ def terminate_aged_stopped_instances():
         response = ec2.describe_instances(InstanceIds=instance_ids)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         cutoff = timedelta(hours=max_age_hours)
-        env_prefix = PremiumInstanceConfig.get_env_prefix()
+        env_prefix = EnvironmentConfig.get_env_prefix()
         aged_instances = []
 
         for reservation in response["Reservations"]:

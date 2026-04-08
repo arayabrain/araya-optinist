@@ -9,6 +9,7 @@ environment           = "subscr"
 enable_custom_domain  = true
 vpc_cidr              = "10.1.0.0/16"
 s3_user_bucket_prefix = "optinist-user"
+s3_user_bucket_secret = "<PLACEHOLDER-generate-with-openssl-rand-hex-32>"
 
 # AWS configuration
 aws_region        = "ap-northeast-1"

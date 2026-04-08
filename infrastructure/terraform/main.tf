@@ -58,6 +58,12 @@ variable "s3_user_bucket_prefix" {
   default     = "optinist-user"
 }
 
+variable "s3_user_bucket_secret" {
+  description = "Secret seed for deterministic per-user S3 bucket name hashing"
+  type        = string
+  sensitive   = true
+}
+
 # Database configuration
 variable "mysql_root_password" {
   description = "MySQL/MariaDB root password"
@@ -291,8 +297,12 @@ data "aws_caller_identity" "current" {}
 data "aws_elb_service_account" "main" {}
 
 locals {
+  # Known environment prefix values — single source of truth for Terraform.
+  # Python equivalent: PremiumInstanceConfig.PRODUCTION_ENV_PREFIX in aws_constants.py
+  production_env_prefix = "subscr"
+
   env_prefix        = "${var.environment}-optinist"
-  environment_label = var.environment == "subscr" ? "Production" : "Development"
+  environment_label = var.environment == local.production_env_prefix ? "Production" : "Development"
 
   # Resolve frontend host/port from ALB DNS when no custom domain is configured
   # - Production: uses custom domain on port 443

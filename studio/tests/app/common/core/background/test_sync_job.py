@@ -838,12 +838,14 @@ class TestPublishMetrics:
             assert pct_data[0]["Timestamp"] == ts
 
     def test_uses_correct_namespace(self):
-        """All calls use the OptiNiSt/BackgroundJobs namespace"""
-        with patch("boto3.client") as mock_boto:
+        """All calls use the env-scoped OptiNiSt/BackgroundJobs namespace"""
+        with patch.dict("os.environ", {"ENV_PREFIX": "test"}), patch(
+            "boto3.client"
+        ) as mock_boto:
             mock_cw = MagicMock()
             mock_boto.return_value = mock_cw
 
             PublishedExperimentSyncJob._publish_metrics(1, 0)
 
             for call in mock_cw.put_metric_data.call_args_list:
-                assert call[1]["Namespace"] == "OptiNiSt/BackgroundJobs"
+                assert call[1]["Namespace"] == "OptiNiSt/BackgroundJobs/test"

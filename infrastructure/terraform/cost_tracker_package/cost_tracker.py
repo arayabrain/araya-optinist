@@ -18,7 +18,7 @@ from typing import Any, Dict
 
 import boto3
 import pymysql
-from aws_constants import DatabaseConfig
+from aws_constants import DatabaseConfig, PremiumInstanceConfig
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -27,7 +27,7 @@ logger.setLevel(logging.INFO)
 PREMIUM_HOURLY_RATE = float(os.environ.get("PREMIUM_HOURLY_RATE", "0.1088"))
 FREE_HOURLY_RATE = float(os.environ.get("FREE_HOURLY_RATE", "0.1088"))
 
-NAMESPACE = "Optinist/CostTracking"
+NAMESPACE = f"OptiNiSt/CostTracking/{PremiumInstanceConfig.get_env_prefix()}"
 
 SSL_ARGS = {"check_hostname": False}
 
@@ -98,11 +98,19 @@ def get_db_connection():
 
 
 def track_premium_instances(ec2_client) -> Dict[str, Any]:
-    """Track premium instance counts using EC2 DescribeInstances with tag filter."""
+    """Track premium instance counts using EC2 DescribeInstances with tag filter.
+
+    Filters by environment Name tag pattern to prevent counting instances
+    from another environment (e.g., dev counting prod instances).
+    """
     try:
         response = ec2_client.describe_instances(
             Filters=[
-                {"Name": "tag:Service", "Values": ["premium-tier"]},
+                {"Name": "tag:Service", "Values": [PremiumInstanceConfig.SERVICE_TAG]},
+                {
+                    "Name": "tag:Name",
+                    "Values": [PremiumInstanceConfig.get_instance_name_pattern()],
+                },
                 {
                     "Name": "instance-state-name",
                     "Values": ["running", "stopped", "pending"],

@@ -199,6 +199,7 @@ class TestPublishActiveUserMetric:
 
     def test_publishes_metric(self, mock_env_vars_free):
         """Calls cloudwatch_client.put_metric_data."""
+        env_prefix = mock_env_vars_free["ENV_PREFIX"]
         with patch.dict("os.environ", mock_env_vars_free), patch(
             "free_manager.ecs_client"
         ), patch("free_manager.autoscaling_client"), patch(
@@ -212,7 +213,7 @@ class TestPublishActiveUserMetric:
 
             mock_cw.put_metric_data.assert_called_once()
             call_kwargs = mock_cw.put_metric_data.call_args[1]
-            assert call_kwargs["Namespace"] == "OptiNiSt/FreeUsers"
+            assert call_kwargs["Namespace"] == f"OptiNiSt/FreeUsers/{env_prefix}"
             metric = call_kwargs["MetricData"][0]
             assert metric["MetricName"] == "ActiveLogins"
             assert metric["Value"] == 42

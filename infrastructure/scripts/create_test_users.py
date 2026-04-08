@@ -144,7 +144,10 @@ async def create_test_user_in_db(db, user_data, organization_id):
     # Create remote storage bucket (S3 folder) - same as in create_user
     if RemoteStorageController.is_available():
         prefix = os.environ.get("S3_USER_BUCKET_PREFIX", "optinist-user")
-        new_bucket_name = RemoteStorageController.create_user_bucket_name(
+        # Reuse an existing bucket name if the user row already has one,
+        # so partial-reset states don't generate orphan buckets.
+        existing = (user_db.attributes or {}).get("remote_bucket_name")
+        new_bucket_name = existing or RemoteStorageController.create_user_bucket_name(
             id=user_db.id, prefix=prefix
         )
 
@@ -153,8 +156,11 @@ async def create_test_user_in_db(db, user_data, organization_id):
         ) as remote_storage_controller:
             await remote_storage_controller.create_bucket()
 
-        # Store bucket info in user record
-        user_db.attributes = {"remote_bucket_name": new_bucket_name}
+        # Merge into attributes (do not overwrite other keys).
+        user_db.attributes = {
+            **(user_db.attributes or {}),
+            "remote_bucket_name": new_bucket_name,
+        }
         db.flush()
         db.commit()
 
