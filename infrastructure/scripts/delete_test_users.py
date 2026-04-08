@@ -220,6 +220,14 @@ async def delete_test_user_from_db(db, user_email):
         )
         assignment_count = assignment_result.rowcount
 
+        # 10b. Delete free user assignments (stored in separate table, not ORM).
+        # Required to avoid fk_free_user FK violation when deleting the user row.
+        free_assignment_result = db.execute(
+            text("DELETE FROM free_user_assignments WHERE user_id = :user_id"),
+            {"user_id": user_id},
+        )
+        free_assignment_count = free_assignment_result.rowcount
+
         # 11. Finally delete the user
         db.delete(user_db)
 
@@ -271,6 +279,7 @@ async def delete_test_user_from_db(db, user_email):
         print(f"Deleted {subscription_count} subscriptions")
         print(f"Deleted {user_role_count} user roles")
         print(f"Deleted {assignment_count} premium assignments")
+        print(f"Deleted {free_assignment_count} free assignments")
         print(f"Successfully deleted user: {user_name}")
 
         return True
@@ -342,6 +351,27 @@ async def main():
                 print("No orphaned premium assignments found")
         except Exception as orphan_error:
             print(f"Warning: Could not clean up orphaned assignments: {orphan_error}")
+            db.rollback()
+
+        # Clean up any orphaned free assignments (for users that no longer exist)
+        print("\nCleaning up orphaned free assignments...")
+        try:
+            orphan_free_result = db.execute(
+                text(
+                    """DELETE FROM free_user_assignments
+                        WHERE user_id NOT IN (SELECT id FROM users)"""
+                )
+            )
+            orphan_free_count = orphan_free_result.rowcount
+            db.commit()
+            if orphan_free_count > 0:
+                print(f"Cleaned up {orphan_free_count} orphaned free assignment(s)")
+            else:
+                print("No orphaned free assignments found")
+        except Exception as orphan_error:
+            print(
+                f"Warning: Could not clean up orphaned free assignments: {orphan_error}"
+            )
             db.rollback()
 
         db.close()
