@@ -633,6 +633,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
           value = var.s3_user_bucket_prefix
         },
         {
+          name  = "S3_USER_BUCKET_SECRET"
+          value = var.s3_user_bucket_secret
+        },
+        {
           name  = "REMOTE_STORAGE_TYPE"
           value = "2"
         },
@@ -893,6 +897,10 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "S3_USER_BUCKET_PREFIX"
           value = var.s3_user_bucket_prefix
+        },
+        {
+          name  = "S3_USER_BUCKET_SECRET"
+          value = var.s3_user_bucket_secret
         },
         {
           name  = "REMOTE_STORAGE_TYPE"
