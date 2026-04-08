@@ -1803,6 +1803,9 @@ class TestRoutingIdContract:
                 return_value=200,
             ), patch(
                 "premium_manager." "trigger_experiment_sync"
+            ), patch(
+                "premium_manager.get_host_port_for_instance",
+                return_value=49153,
             ):
                 mock_connection = setup_db_mock(
                     fetchone_values=[
@@ -1884,6 +1887,7 @@ class TestRoutingIdContract:
             "premium_manager.try_reserve_instance": True,
             "premium_manager." "cleanup_duplicate_rules_for_routing_id": 0,
             "premium_manager." "get_next_available_priority": 100,
+            "premium_manager.get_host_port_for_instance": 49153,
         }
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
@@ -2961,3 +2965,298 @@ class TestCleanupGhostECSRegistrations:
             )
             # No EC2 calls should be made
             mock_ec2.describe_instances.assert_not_called()
+
+
+class TestGetHostPortForInstance:
+    """Tests for ephemeral host port resolution.
+
+    Premium task def now uses hostPort=0, so the Lambda must look up the
+    actual host port via networkBindings instead of assuming 8000.
+    """
+
+    def _make_task(self, status, bindings):
+        return {
+            "lastStatus": status,
+            "containers": [{"networkBindings": bindings}],
+        }
+
+    def test_happy_path_returns_host_port(self, mock_env_vars_premium):
+        """Walks EC2 -> ECS container instance -> task -> networkBindings."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id"
+        ) as mock_get_ci:
+            mock_get_ci.return_value = "ci-arn-123"
+            mock_ecs = MagicMock()
+            mock_ecs.list_tasks.return_value = {"taskArns": ["task-arn-1"]}
+            mock_ecs.describe_tasks.return_value = {
+                "tasks": [
+                    self._make_task(
+                        "RUNNING",
+                        [{"containerPort": 8000, "hostPort": 49153}],
+                    )
+                ]
+            }
+            mock_boto3.return_value = mock_ecs
+
+            from premium_manager import get_host_port_for_instance
+
+            assert get_host_port_for_instance("i-abc") == 49153
+            mock_get_ci.assert_called_with("i-abc", "test-cluster")
+
+    def test_polls_when_bindings_initially_empty(self, mock_env_vars_premium):
+        """networkBindings is empty for a window after lastStatus=RUNNING.
+
+        The plan explicitly warns against one-shot lookups here — there's a
+        race where the task is RUNNING but the container has not yet bound
+        its port.
+        """
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id"
+        ) as mock_get_ci, patch(
+            "premium_manager.time.sleep"
+        ) as mock_sleep:
+            mock_get_ci.return_value = "ci-arn-123"
+            mock_ecs = MagicMock()
+            mock_ecs.list_tasks.return_value = {"taskArns": ["task-arn-1"]}
+            mock_ecs.describe_tasks.side_effect = [
+                {"tasks": [self._make_task("RUNNING", [])]},
+                {
+                    "tasks": [
+                        self._make_task(
+                            "RUNNING",
+                            [{"containerPort": 8000, "hostPort": 49200}],
+                        )
+                    ]
+                },
+            ]
+            mock_boto3.return_value = mock_ecs
+
+            from premium_manager import get_host_port_for_instance
+
+            assert get_host_port_for_instance("i-abc") == 49200
+            assert mock_ecs.describe_tasks.call_count == 2
+            assert mock_sleep.called
+
+    def test_filters_by_container_port_not_index(self, mock_env_vars_premium):
+        """Multiple bindings must be filtered by containerPort==8000.
+
+        Plan warning: do NOT use bindings[0] — a future second port
+        mapping (metrics/debug) would silently return the wrong entry.
+        """
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id"
+        ) as mock_get_ci:
+            mock_get_ci.return_value = "ci-arn-123"
+            mock_ecs = MagicMock()
+            mock_ecs.list_tasks.return_value = {"taskArns": ["task-arn-1"]}
+            mock_ecs.describe_tasks.return_value = {
+                "tasks": [
+                    self._make_task(
+                        "RUNNING",
+                        [
+                            {"containerPort": 9000, "hostPort": 49100},
+                            {"containerPort": 8000, "hostPort": 49153},
+                        ],
+                    )
+                ]
+            }
+            mock_boto3.return_value = mock_ecs
+
+            from premium_manager import get_host_port_for_instance
+
+            assert get_host_port_for_instance("i-abc") == 49153
+
+    def test_raises_after_max_attempts(self, mock_env_vars_premium):
+        """Give up loudly rather than silently fall back to a wrong port."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id"
+        ) as mock_get_ci, patch(
+            "premium_manager.time.sleep"
+        ):
+            mock_get_ci.return_value = "ci-arn-123"
+            mock_ecs = MagicMock()
+            mock_ecs.list_tasks.return_value = {"taskArns": ["task-arn-1"]}
+            mock_ecs.describe_tasks.return_value = {
+                "tasks": [self._make_task("RUNNING", [])]
+            }
+            mock_boto3.return_value = mock_ecs
+
+            from premium_manager import get_host_port_for_instance
+
+            with pytest.raises(RuntimeError, match="Could not resolve host port"):
+                get_host_port_for_instance("i-abc", max_attempts=3, delay=0)
+
+
+class TestGetRegisteredPortForInstance:
+    """Tests for the deregister-path lookup.
+
+    Used in teardown paths where the task is already gone, so we can't
+    rely on describe_tasks to recover the host port.
+    """
+
+    def test_finds_registered_port(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_elbv2 = MagicMock()
+            mock_elbv2.describe_target_health.return_value = {
+                "TargetHealthDescriptions": [
+                    {"Target": {"Id": "i-abc", "Port": 49153}},
+                    {"Target": {"Id": "i-xyz", "Port": 49200}},
+                ]
+            }
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import get_registered_port_for_instance
+
+            assert get_registered_port_for_instance("tg-arn", "i-abc") == 49153
+            assert get_registered_port_for_instance("tg-arn", "i-xyz") == 49200
+
+    def test_raises_when_not_registered(self, mock_env_vars_premium):
+        """Required so _teardown_alb_resources can gracefully skip deregister
+        when the entry is already gone (e.g. cleaned up by an EC2 state
+        change event)."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_elbv2 = MagicMock()
+            mock_elbv2.describe_target_health.return_value = {
+                "TargetHealthDescriptions": []
+            }
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import get_registered_port_for_instance
+
+            with pytest.raises(RuntimeError, match="not found in target group"):
+                get_registered_port_for_instance("tg-arn", "i-abc")
+
+
+class TestTeardownAlbResources:
+    """Tests for _teardown_alb_resources, especially the leak fix.
+
+    The shared autoscaling target group is never deleted (other users
+    depend on it) but this user's instance:port entry MUST be deregistered
+    — with ephemeral ports a leak is untraceable after the next task
+    replacement.
+    """
+
+    def test_per_user_tg_deletes_and_does_not_deregister(self, mock_env_vars_premium):
+        """Pinning test: per-user TG path is unchanged."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import _teardown_alb_resources
+
+            errors = _teardown_alb_resources(
+                user_id=42,
+                rule_arn="arn:aws:rule/r-1",
+                target_group_arn="arn:aws:tg/premium-42-tg",
+                instance_id="i-abc",
+            )
+
+            assert errors == []
+            mock_elbv2.delete_rule.assert_called_once_with(RuleArn="arn:aws:rule/r-1")
+            mock_elbv2.delete_target_group.assert_called_once_with(
+                TargetGroupArn="arn:aws:tg/premium-42-tg"
+            )
+            mock_elbv2.deregister_targets.assert_not_called()
+
+    def test_shared_tg_deregisters_with_looked_up_port(self, mock_env_vars_premium):
+        """Load-bearing leak fix: shared TG must deregister this instance."""
+        asg_tg_arn = mock_env_vars_premium["AUTOSCALING_TARGET_GROUP_ARN"]
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_elbv2 = MagicMock()
+            mock_elbv2.describe_target_health.return_value = {
+                "TargetHealthDescriptions": [
+                    {"Target": {"Id": "i-abc", "Port": 49153}},
+                ]
+            }
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import _teardown_alb_resources
+
+            errors = _teardown_alb_resources(
+                user_id=42,
+                rule_arn=None,
+                target_group_arn=asg_tg_arn,
+                instance_id="i-abc",
+            )
+
+            assert errors == []
+            mock_elbv2.delete_target_group.assert_not_called()
+            mock_elbv2.deregister_targets.assert_called_once_with(
+                TargetGroupArn=asg_tg_arn,
+                Targets=[{"Id": "i-abc", "Port": 49153}],
+            )
+
+    def test_shared_tg_skips_gracefully_when_not_registered(
+        self, mock_env_vars_premium
+    ):
+        """Already-gone case must not raise — release/finalize paths must
+        not break when an EC2 state-change event has already cleaned up."""
+        asg_tg_arn = mock_env_vars_premium["AUTOSCALING_TARGET_GROUP_ARN"]
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_elbv2 = MagicMock()
+            mock_elbv2.describe_target_health.return_value = {
+                "TargetHealthDescriptions": []
+            }
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import _teardown_alb_resources
+
+            errors = _teardown_alb_resources(
+                user_id=42,
+                rule_arn=None,
+                target_group_arn=asg_tg_arn,
+                instance_id="i-abc",
+            )
+
+            assert errors == []
+            mock_elbv2.delete_target_group.assert_not_called()
+            mock_elbv2.deregister_targets.assert_not_called()
+
+    def test_shared_tg_skips_when_instance_id_is_pool_marker(
+        self, mock_env_vars_premium
+    ):
+        """AUTOSCALING_POOL marker is not a real instance id — don't try
+        to deregister it."""
+        from aws_constants import PremiumAssignment
+
+        asg_tg_arn = mock_env_vars_premium["AUTOSCALING_TARGET_GROUP_ARN"]
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import _teardown_alb_resources
+
+            errors = _teardown_alb_resources(
+                user_id=42,
+                rule_arn=None,
+                target_group_arn=asg_tg_arn,
+                instance_id=PremiumAssignment.AUTOSCALING_POOL,
+            )
+
+            assert errors == []
+            mock_elbv2.describe_target_health.assert_not_called()
+            mock_elbv2.deregister_targets.assert_not_called()
+            mock_elbv2.delete_target_group.assert_not_called()

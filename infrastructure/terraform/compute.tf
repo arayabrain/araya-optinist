@@ -529,6 +529,8 @@ resource "aws_ecs_task_definition" "autoscaling" {
       entryPoint        = ["/bin/sh", "-c"]
       command           = ["./cloud-startup.sh"]
 
+      stopTimeout = 120 # see ECS_CONTAINER_STOP_TIMEOUT in ecs-user-data.sh
+
       linuxParameters = {
         maxSwap    = 32768 # Max swap in MiB (matches 32GB host swap on EBS)
         swappiness = 20    # Only swap under memory pressure (host also set to 20)
@@ -538,7 +540,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
         {
           name          = "${local.env_prefix}-cloud-container-port-8000"
           containerPort = 8000
-          hostPort      = 8000
+          hostPort      = 0 # ephemeral
           protocol      = "tcp"
         }
       ]
@@ -790,6 +792,8 @@ resource "aws_ecs_task_definition" "premium" {
       entryPoint        = ["/bin/sh", "-c"]
       command           = ["./cloud-startup.sh"]
 
+      stopTimeout = 120 # see ECS_CONTAINER_STOP_TIMEOUT in ecs-user-data.sh
+
       # linuxParameters = {
       #   maxSwap    = 32768  # Max swap in MiB (matches 32GB host swap on EBS)
       #   swappiness = 20     # Only swap under memory pressure (host also set to 20)
@@ -800,7 +804,7 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name          = "${var.environment}-premium-optinist-cloud-container-port-8000"
           containerPort = 8000
-          hostPort      = 8000
+          hostPort      = 0 # ephemeral; resolved by premium_manager Lambda
           protocol      = "tcp"
         }
       ]
@@ -1021,6 +1025,11 @@ resource "aws_ecs_service" "autoscaling" {
   desired_count                      = 1
   deployment_maximum_percent         = 200
   deployment_minimum_healthy_percent = 0
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
 
   capacity_provider_strategy {
     capacity_provider = aws_ecs_capacity_provider.main.name
