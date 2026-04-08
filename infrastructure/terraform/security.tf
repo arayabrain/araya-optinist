@@ -225,6 +225,9 @@ resource "aws_iam_role_policy" "ecs_instance_enhanced_monitoring" {
           "autoscaling:Describe*",
           "autoscaling:CompleteLifecycleAction",
           "autoscaling:RecordLifecycleActionHeartbeat",
+          # Lets the on-instance probe in ecs-user-data.sh mark itself
+          # Unhealthy when the ECS agent is bricked.
+          "autoscaling:SetInstanceHealth",
           "ec2:DescribeVolumes",
           "ec2:DescribeNetworkInterfaces",
           "ecs:ListTasks",

@@ -39,17 +39,20 @@ resource "aws_launch_template" "background" {
   }
 
   user_data = base64encode(templatefile("${path.module}/../scripts/ecs-user-data.sh", {
-    tier                  = "background"
-    cluster_name          = aws_ecs_cluster.main.name
-    git_branch            = var.git_branch
-    git_repo              = var.git_repo
-    firebase_config_json  = var.firebase_config_json
-    firebase_private_json = var.firebase_private_json
-    ecr_registry          = split("/", local.ecr_repository_url)[0]
-    ecr_repository_url    = local.ecr_repository_url
-    efs_id                = aws_efs_file_system.snmk.id
-    db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
-    swap_size_mb          = 1536 # 2x task memory (768MB) for stable background job operation
+    tier                           = "background"
+    cluster_name                   = aws_ecs_cluster.main.name
+    git_branch                     = var.git_branch
+    git_repo                       = var.git_repo
+    firebase_config_json           = var.firebase_config_json
+    firebase_private_json          = var.firebase_private_json
+    ecr_registry                   = split("/", local.ecr_repository_url)[0]
+    ecr_repository_url             = local.ecr_repository_url
+    efs_id                         = aws_efs_file_system.snmk.id
+    db_host                        = replace(aws_db_instance.main.endpoint, ":3306", "")
+    swap_size_mb                   = 1536 # 2x task memory (768MB) for stable background job operation
+    agent_recovery_lifecycle_sh    = local.agent_recovery_lifecycle_sh
+    agent_recovery_watchdog_sh     = local.agent_recovery_watchdog_sh
+    agent_recovery_health_probe_sh = local.agent_recovery_health_probe_sh
   }))
 
   tag_specifications {
