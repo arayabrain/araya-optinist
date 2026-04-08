@@ -23,7 +23,7 @@ resource "aws_cloudwatch_log_group" "premium_ecs" {
 # SNS Topic for Critical Alert Notifications
 # ==================================================
 resource "aws_sns_topic" "critical_alerts" {
-  count = var.environment == "subscr" ? 1 : 0
+  count = var.environment == local.production_env_prefix ? 1 : 0
   name  = "${var.environment}-optinist-critical-alerts"
 
   tags = {
@@ -32,14 +32,14 @@ resource "aws_sns_topic" "critical_alerts" {
 }
 
 resource "aws_sns_topic_subscription" "critical_alerts_email" {
-  count     = var.environment == "subscr" ? 1 : 0
+  count     = var.environment == local.production_env_prefix ? 1 : 0
   topic_arn = aws_sns_topic.critical_alerts[0].arn
   protocol  = "email"
   endpoint  = "optinist-support@araya.org"
 }
 
 locals {
-  critical_alerts_actions = var.environment == "subscr" ? [aws_sns_topic.critical_alerts[0].arn] : []
+  critical_alerts_actions = var.environment == local.production_env_prefix ? [aws_sns_topic.critical_alerts[0].arn] : []
 }
 
 resource "aws_cloudwatch_metric_alarm" "cpu_high" {

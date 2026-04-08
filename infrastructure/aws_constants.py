@@ -87,6 +87,9 @@ class PremiumInstanceConfig:
     SERVICE_TAG = "premium-tier"
     # Environment variable name for the deployment prefix
     ENV_PREFIX_VAR = "ENV_PREFIX"
+    # Known environment prefix values (must match Terraform var.environment)
+    PRODUCTION_ENV_PREFIX = "subscr"
+    DEVELOPMENT_ENV_PREFIX = "development"
     # Instance Name tag suffix (combined with env prefix: "{prefix}-premium-running")
     INSTANCE_NAME_SUFFIX = "premium-running"
 
@@ -108,15 +111,28 @@ class PremiumInstanceConfig:
             )
         return prefix
 
+    # Map of known environment prefixes to their human-readable labels.
+    # Matches the Terraform local.environment_label convention.
+    ENV_PREFIX_LABELS = {
+        "subscr": "Production",
+        "development": "Development",
+    }
+
     @classmethod
     def get_environment_label(cls) -> str:
         """Get the human-readable environment label for AWS tags.
 
-        Returns 'Production' for subscr, 'Development' for everything else.
-        Matches the Terraform local.environment_label convention.
+        Raises ValueError if the prefix is not a recognised environment name,
+        to prevent silent mis-tagging of resources.
         """
         prefix = cls.get_env_prefix()
-        return "Production" if prefix == "subscr" else "Development"
+        label = cls.ENV_PREFIX_LABELS.get(prefix)
+        if label is None:
+            raise ValueError(
+                f"Unknown environment prefix '{prefix}'. "
+                f"Expected one of: {sorted(cls.ENV_PREFIX_LABELS)}"
+            )
+        return label
 
     @classmethod
     def get_instance_name_pattern(cls) -> str:
