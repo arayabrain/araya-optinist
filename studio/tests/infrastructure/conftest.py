@@ -30,6 +30,9 @@ _PACKAGE_NAMES = [
 # Add Lambda package directories to sys.path so imports work
 _LAMBDA_PATHS = [TERRAFORM_DIR / name for name in _PACKAGE_NAMES]
 
+# Single-file Lambdas live directly in terraform/ rather than in a package dir.
+_LAMBDA_PATHS.append(TERRAFORM_DIR)
+
 # aws_constants lives at infrastructure/aws_constants.py
 _LAMBDA_PATHS.append(PROJECT_ROOT / "infrastructure")
 

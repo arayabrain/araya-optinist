@@ -178,6 +178,7 @@ resource "aws_launch_template" "ecs" {
     efs_id                         = aws_efs_file_system.snmk.id
     db_host                        = replace(aws_db_instance.main.endpoint, ":3306", "")
     swap_size_mb                   = 32768 # 32GB swap for workflow memory spikes
+    aws_region                     = var.aws_region
     agent_recovery_lifecycle_sh    = local.agent_recovery_lifecycle_sh
     agent_recovery_watchdog_sh     = local.agent_recovery_watchdog_sh
     agent_recovery_health_probe_sh = local.agent_recovery_health_probe_sh
@@ -293,11 +294,13 @@ resource "aws_autoscaling_group" "main" {
     propagate_at_launch = true
   }
 
+  # Warmup matches health_check_grace_period to clear the agent-recovery
+  # boot window before a refreshed host is considered healthy.
   instance_refresh {
     strategy = "Rolling"
     preferences {
-      instance_warmup        = 300
-      min_healthy_percentage = 0
+      instance_warmup        = 900
+      min_healthy_percentage = 50
     }
   }
 
@@ -410,6 +413,7 @@ resource "aws_launch_template" "premium" {
     efs_id                         = aws_efs_file_system.snmk.id
     db_host                        = replace(aws_db_instance.main.endpoint, ":3306", "")
     swap_size_mb                   = 32768 # 32GB swap for workflow memory spikes
+    aws_region                     = var.aws_region
     agent_recovery_lifecycle_sh    = local.agent_recovery_lifecycle_sh
     agent_recovery_watchdog_sh     = local.agent_recovery_watchdog_sh
     agent_recovery_health_probe_sh = local.agent_recovery_health_probe_sh

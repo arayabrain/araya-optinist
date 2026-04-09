@@ -62,7 +62,13 @@ systemctl enable ecs-clear-checkpoint.service
 # to fetch a token first.
 # =====================================================================
 
-mkdir -p /opt/agent-recovery /var/run/agent-recovery
+mkdir -p /opt/agent-recovery /var/run/agent-recovery /etc/agent-recovery
+
+# Region pinned from Terraform; sourced by the agent-recovery scripts.
+cat > /etc/agent-recovery/env << ENV_EOF
+AWS_REGION=${aws_region}
+ENV_EOF
+chmod 0644 /etc/agent-recovery/env
 
 # Recovery scripts are sourced from infrastructure/scripts/agent-recovery/
 # and inlined at terraform plan time via templatefile(). Edit them there,

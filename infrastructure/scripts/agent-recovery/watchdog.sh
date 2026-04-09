@@ -11,9 +11,28 @@
 # $${...} would need escaping if ever introduced.
 set -u
 set -o pipefail
+# Provides AWS_REGION; written by ecs-user-data.sh from a Terraform variable.
+# shellcheck disable=SC1091
+[ -r /etc/agent-recovery/env ] && . /etc/agent-recovery/env
+
 LOG_GROUP="/ecs/agent-recovery"
-INSTANCE_ID=$(curl -s -m 2 http://169.254.169.254/latest/meta-data/instance-id || echo unknown)
-REGION=$(curl -s -m 2 http://169.254.169.254/latest/meta-data/placement/region || echo ap-northeast-1)
+
+# IMDSv2 helper. Returns metadata value on stdout, empty string on failure.
+imds_get() {
+  local path="$1"
+  local token
+  token=$(curl -s -m 2 -X PUT \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 60" \
+    http://169.254.169.254/latest/api/token 2>/dev/null || true)
+  if [ -z "$token" ]; then
+    return 0
+  fi
+  curl -s -m 2 -H "X-aws-ec2-metadata-token: $token" \
+    "http://169.254.169.254/latest/meta-data/$path" 2>/dev/null || true
+}
+
+INSTANCE_ID=$(imds_get instance-id); INSTANCE_ID="${INSTANCE_ID:-unknown}"
+REGION="${AWS_REGION:-$(imds_get placement/region)}"
 SENTINEL=/var/run/agent-recovery/last-recovery
 # Probe-armed sentinel: written by health-probe.sh once it's seen
 # AgentConnected=true at least once on this boot. Used here to debounce the
@@ -21,16 +40,26 @@ SENTINEL=/var/run/agent-recovery/last-recovery
 ARMED_FILE=/var/run/agent-recovery/probe-armed
 RATE_LIMIT_SECONDS=3600
 
+# Log group is created by Terraform; the stream is created once per boot,
+# gated on a tmpfs marker so we don't hit the control plane on every tick.
+ensure_log_stream() {
+  local marker=/var/run/agent-recovery/log-stream-created
+  [ -f "$marker" ] && return 0
+  aws logs create-log-stream \
+    --log-group-name "$LOG_GROUP" \
+    --log-stream-name "$INSTANCE_ID" \
+    --region "$REGION" 2>/dev/null || true
+  : > "$marker"
+}
+
 emit_log() {
   local msg="$1"
-  local stream="$INSTANCE_ID"
   local ts=$(date -u +%s%3N)
+  ensure_log_stream
   # Best-effort log emission; never block recovery on logging failure.
-  aws logs create-log-group --log-group-name "$LOG_GROUP" --region "$REGION" 2>/dev/null || true
-  aws logs create-log-stream --log-group-name "$LOG_GROUP" --log-stream-name "$stream" --region "$REGION" 2>/dev/null || true
   aws logs put-log-events \
     --log-group-name "$LOG_GROUP" \
-    --log-stream-name "$stream" \
+    --log-stream-name "$INSTANCE_ID" \
     --log-events "timestamp=$ts,message=$(printf '%s' "$msg" | tr '\n' ' ')" \
     --region "$REGION" >/dev/null 2>&1 || true
   logger -t agent-recovery "$msg"
@@ -137,7 +166,13 @@ rm -f /var/lib/ecs/data/agent.db
 # Clear the probe-armed sentinel: the restarted agent will go through its
 # own warmup, and the probe should re-arm only after observing it healthy.
 rm -f "$ARMED_FILE"
-systemctl start ecs
 
-touch "$SENTINEL"
-emit_log "recovery complete instance=$INSTANCE_ID"
+# Only mark recovery successful if `systemctl start ecs` actually succeeded;
+# otherwise the rate-limit sentinel would block retries for an hour.
+if systemctl start ecs; then
+  touch "$SENTINEL"
+  emit_log "recovery complete instance=$INSTANCE_ID"
+else
+  emit_log "recovery failed: systemctl start ecs returned $? — instance left without agent"
+  exit 1
+fi

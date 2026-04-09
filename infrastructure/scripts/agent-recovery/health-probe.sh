@@ -10,8 +10,26 @@
 # Loaded into ecs-user-data.sh via Terraform templatefile().
 set -u
 set -o pipefail
-INSTANCE_ID=$(curl -s -m 2 http://169.254.169.254/latest/meta-data/instance-id || echo unknown)
-REGION=$(curl -s -m 2 http://169.254.169.254/latest/meta-data/placement/region || echo ap-northeast-1)
+# Provides AWS_REGION; written by ecs-user-data.sh from a Terraform variable.
+# shellcheck disable=SC1091
+[ -r /etc/agent-recovery/env ] && . /etc/agent-recovery/env
+
+# IMDSv2 helper. Returns metadata value on stdout, empty string on failure.
+imds_get() {
+  local path="$1"
+  local token
+  token=$(curl -s -m 2 -X PUT \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 60" \
+    http://169.254.169.254/latest/api/token 2>/dev/null || true)
+  if [ -z "$token" ]; then
+    return 0
+  fi
+  curl -s -m 2 -H "X-aws-ec2-metadata-token: $token" \
+    "http://169.254.169.254/latest/meta-data/$path" 2>/dev/null || true
+}
+
+INSTANCE_ID=$(imds_get instance-id); INSTANCE_ID="${INSTANCE_ID:-unknown}"
+REGION="${AWS_REGION:-$(imds_get placement/region)}"
 STATE_FILE=/var/run/agent-recovery/agent-disconnect-since
 ARMED_FILE=/var/run/agent-recovery/probe-armed
 DISCONNECT_THRESHOLD_SECONDS=300

@@ -12,6 +12,7 @@ exists to page humans when the on-host watchdog is silent.
 import os
 
 import boto3
+from botocore.exceptions import ClientError
 
 ecs = boto3.client("ecs")
 asg = boto3.client("autoscaling")
@@ -65,7 +66,7 @@ def handler(event, context):
         for asg_name in ASG_NAMES:
             try:
                 asg_ids = _asg_instance_ids(asg_name)
-            except asg.exceptions.ClientError as exc:
+            except ClientError as exc:
                 print(f"asg {asg_name} describe failed: {exc}")
                 continue
             missing = asg_ids - registered

@@ -52,6 +52,7 @@ resource "aws_launch_template" "background" {
     efs_id                         = aws_efs_file_system.snmk.id
     db_host                        = replace(aws_db_instance.main.endpoint, ":3306", "")
     swap_size_mb                   = 1536 # 2x task memory (768MB) for stable background job operation
+    aws_region                     = var.aws_region
     agent_recovery_lifecycle_sh    = local.agent_recovery_lifecycle_sh
     agent_recovery_watchdog_sh     = local.agent_recovery_watchdog_sh
     agent_recovery_health_probe_sh = local.agent_recovery_health_probe_sh
