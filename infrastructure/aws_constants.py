@@ -146,6 +146,11 @@ class PremiumInstanceConfig:
     INSTANCE_NAME_SUFFIX = "premium-running"
 
     @classmethod
+    def get_env_prefix(cls) -> str:
+        """Delegate to EnvironmentConfig.get_env_prefix for convenience."""
+        return EnvironmentConfig.get_env_prefix()
+
+    @classmethod
     def get_instance_name_pattern(cls) -> str:
         """Get the EC2 Name tag wildcard pattern for this environment.
 
