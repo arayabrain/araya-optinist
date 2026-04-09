@@ -1479,6 +1479,80 @@ class TestGetAllPremiumInstances:
             result = get_all_premium_instances_with_states()
             assert result == []
 
+    def test_cross_env_instance_skipped(self, mock_env_vars_premium):
+        """Instance with different env prefix is excluded."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-cross-env",
+                                "InstanceType": "t3.large",
+                                "State": {"Name": "running"},
+                                "Tags": [
+                                    {
+                                        "Key": "Name",
+                                        "Value": "production-premium-running",
+                                    },
+                                    {
+                                        "Key": "Tier",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
+                                    },
+                                ],
+                            },
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import get_all_premium_instances_with_states
+
+            result = get_all_premium_instances_with_states()
+            assert len(result) == 0
+
+    def test_tagless_instance_skipped(self, mock_env_vars_premium):
+        """Premium instance without Name tag is excluded."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-no-name",
+                                "InstanceType": "t3.large",
+                                "State": {"Name": "running"},
+                                "Tags": [
+                                    {
+                                        "Key": "Tier",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
+                                    },
+                                ],
+                            },
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import get_all_premium_instances_with_states
+
+            result = get_all_premium_instances_with_states()
+            assert len(result) == 0
+
 
 class TestStartStandbyInstance:
     """start_standby_instance tests."""

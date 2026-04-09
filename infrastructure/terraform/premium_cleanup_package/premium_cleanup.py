@@ -613,8 +613,13 @@ def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
 
 
 def get_all_premium_instances_with_states():
-    """Get all premium instances with their AWS states (copied from premium_manager)"""
+    """Get all premium instances with their AWS states.
+
+    Filters by environment prefix (ENV_PREFIX) to prevent cross-environment
+    contamination (e.g., development Lambda discovering production instances).
+    """
     ec2: "EC2Client" = boto3.client("ec2")
+    env_prefix = PremiumInstanceConfig.get_env_prefix()
     try:
         # Get instances with premium tags (use multiple filters for robust discovery)
         response = ec2.describe_instances(
@@ -640,10 +645,8 @@ def get_all_premium_instances_with_states():
             instance_id = instance["InstanceId"]
 
             # Check multiple criteria for premium instances
-            name_match = (
-                PremiumInstanceConfig.INSTANCE_IDENTIFIER
-                in tags.get("Name", "").lower()
-            )
+            name_tag = tags.get("Name", "")
+            name_match = PremiumInstanceConfig.INSTANCE_IDENTIFIER in name_tag.lower()
             tier_match = (
                 tags.get("Tier", "").lower()
                 == PremiumInstanceConfig.INSTANCE_IDENTIFIER
@@ -653,16 +656,35 @@ def get_all_premium_instances_with_states():
                 in tags.get("Type", "").lower()
             )
 
+            is_premium = name_match or tier_match or type_match
+
+            # Filter by environment prefix to prevent cross-environment
+            # contamination. Instance Name tags follow the pattern:
+            # "{env_prefix}-premium-running" (e.g., "development-premium-running"
+            # vs "subscr-premium-running"). Reject instances whose Name tag
+            # doesn't start with this Lambda's ENV_PREFIX, or that have no
+            # Name tag at all (tagless instances cannot be verified as belonging
+            # to this environment).
+            if is_premium:
+                if not name_tag or not name_tag.lower().startswith(
+                    env_prefix.lower()
+                ):
+                    print(
+                        f"Skipping instance {instance_id}: "
+                        f"Name '{name_tag}' does not match "
+                        f"environment prefix '{env_prefix}'"
+                    )
+                    return False
+
             # Debug logging for tag matching
             print(f"Instance {instance_id} tag analysis:")
-            print(f"- Name: '{tags.get('Name', '')}' -> name_match: {name_match}")
+            print(f"- Name: '{name_tag}' -> name_match: {name_match}")
             print(f"- Tier: '{tags.get('Tier', '')}' -> tier_match: {tier_match}")
             print(f"- Type: '{tags.get('Type', '')}' -> type_match: {type_match}")
             print(f"- All tags: {tags}")
 
-            result = name_match or tier_match or type_match
-            print(f"- Final match result: {result}")
-            return result
+            print(f"- Final match result: {is_premium}")
+            return is_premium
 
         instances = []
         all_instances_found = 0
@@ -1076,7 +1098,7 @@ def cleanup_test_user_assignments(connection, user_emails: List[str]) -> Dict[st
         # Invoke this Lambda with:
         lambda_client = boto3.client('lambda')
         response = lambda_client.invoke(
-            FunctionName='subscr-premium-cleanup',
+            FunctionName='{env}-premium-cleanup',
             InvocationType='RequestResponse',
             Payload=json.dumps({
                 "action": "cleanup_test_users",

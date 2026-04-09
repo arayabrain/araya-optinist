@@ -455,7 +455,7 @@ class ExpirationDeletion:
     FREE_QUOTA_BYTES = StorageQuota.FREE * StorageSize.GB  # 5 GB
     REPROCESS_COOLDOWN_DAYS = 7  # Days before re-processing a user
     # CloudWatch metrics
-    METRIC_NAMESPACE = "OptiNiSt/BackgroundJobs"
+    METRIC_NAMESPACE_BASE = "OptiNiSt/BackgroundJobs"
     METRIC_PROCESSED = "ExpirationDeletionProcessed"
     METRIC_ERRORS = "ExpirationDeletionErrors"
 

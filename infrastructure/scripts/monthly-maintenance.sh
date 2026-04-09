@@ -293,7 +293,7 @@ cat >> "$REPORT" <<'EOF'
 
 EOF
 
-# 1b. Cost Tracker Custom Metrics (from Optinist/CostTracking namespace)
+# 1b. Cost Tracker Custom Metrics (from OptiNiSt/CostTracking namespace)
 echo "  Querying cost tracker metrics..."
 COST_METRICS=(
   "ActualMonthToDateSpend"
@@ -314,7 +314,7 @@ cost_tracker_table="| Metric | Latest Value |
 
 for metric in "${COST_METRICS[@]}"; do
   val=$(aws cloudwatch get-metric-statistics \
-    --namespace "Optinist/CostTracking" \
+    --namespace "OptiNiSt/CostTracking/${ENV_PREFIX:-subscr}" \
     --metric-name "$metric" \
     --start-time "$(iso_days_ago 2)" \
     --end-time "$NOW_ISO" \
@@ -343,7 +343,7 @@ cat >> "$REPORT" <<EOF
 
 $cost_tracker_table
 
-> Source: \`Optinist/CostTracking\` CloudWatch namespace (published hourly by \`subscr-cost-tracker\` Lambda).
+> Source: \`OptiNiSt/CostTracking\` CloudWatch namespace (published hourly by \`subscr-cost-tracker\` Lambda).
 
 EOF
 
