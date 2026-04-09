@@ -3,13 +3,12 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python=3.9
-  - setuptools<67.5
+  - python=3.11
   - cython
   - conda-build
   - numpy=1.26.*
   - pandas>=1.5.0
   - scikit-image>=0.19.0
   - pynwb<3
-  - tensorflow>=2.10
+  - tensorflow>=2.12
   - caiman>=1.11.1,<=1.11.4

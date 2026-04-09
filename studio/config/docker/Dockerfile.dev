@@ -49,13 +49,6 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
     poetry config virtualenvs.create false
 RUN poetry install --no-root --with dev
 
-# Remove standalone jaraco/more-itertools packages that may have been installed
-# as transient dependencies of setuptools>=70 during pip/poetry installation.
-# setuptools 69.5.1 (pinned in poetry.lock) vendors these internally.
-# Leaving them causes namespace package leaks into conda envs (Python 3.9)
-# where more-itertools' match/case syntax triggers SyntaxError.
-RUN pip3 uninstall -y jaraco.functools jaraco.text jaraco.context more-itertools 2>/dev/null || true
-
 # setup optinist: download caiman model files
 COPY studio/app/optinist/wrappers/caiman/run_download_model_files.sh ./
 RUN bash run_download_model_files.sh && rm run_download_model_files.sh
