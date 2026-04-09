@@ -4,6 +4,7 @@ channels:
   - defaults
 dependencies:
   - python=3.9
+  - setuptools<67.5
   - cython
   - conda-build
   - numpy=1.26.*
