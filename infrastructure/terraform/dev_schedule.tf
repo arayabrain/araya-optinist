@@ -199,8 +199,7 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
         Resource = [
           aws_db_instance.main.arn,
           aws_db_proxy.main.arn,
-          # RestoreDBInstanceFromDBSnapshot requires access to the
-          # parameter group, subnet group, security group, and snapshot
+          aws_db_proxy_default_target_group.main.arn,
           "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:pg:${aws_db_parameter_group.main.name}",
           "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:subgrp:${aws_db_subnet_group.main.name}",
           "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secgrp:${aws_security_group.rds.id}",
