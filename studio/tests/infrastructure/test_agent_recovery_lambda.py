@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError
 # import is safe in any environment.
 os.environ.setdefault("CLUSTERS", "test-cluster")
 os.environ.setdefault("ASG_NAMES", "test-asg")
+os.environ.setdefault("AWS_DEFAULT_REGION", "ap-northeast-1")
 
 import agent_recovery_lambda  # noqa: E402
 
