@@ -100,16 +100,18 @@ resource "aws_cloudwatch_log_metric_filter" "agent_disconnected" {
 resource "aws_cloudwatch_metric_alarm" "agent_disconnected" {
   alarm_name          = "${var.environment}-ecs-agent-disconnected"
   comparison_operator = "GreaterThanOrEqualToThreshold"
-  evaluation_periods  = "1"
-  metric_name         = "AgentDisconnectedCount"
-  namespace           = "OptiNiSt/AgentRecovery"
-  period              = "300"
-  statistic           = "Sum"
-  threshold           = "1"
-  alarm_description   = "ECS container instance reported agentConnected=false."
-  alarm_actions       = local.critical_alerts_actions
-  ok_actions          = local.critical_alerts_actions
-  treat_missing_data  = "notBreaching"
+  # Debounced: ECS emits a one-off agentConnected=false on routine scale-in.
+  # A real stuck host keeps re-emitting, so requiring 2 windows filters noise.
+  evaluation_periods = "2"
+  metric_name        = "AgentDisconnectedCount"
+  namespace          = "OptiNiSt/AgentRecovery"
+  period             = "300"
+  statistic          = "Sum"
+  threshold          = "2"
+  alarm_description  = "ECS container instance reported agentConnected=false in 2 consecutive windows."
+  alarm_actions      = local.critical_alerts_actions
+  ok_actions         = local.critical_alerts_actions
+  treat_missing_data = "notBreaching"
 
   tags = {
     Name = "ECS Agent Disconnected Alarm"

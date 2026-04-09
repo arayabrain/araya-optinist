@@ -15,6 +15,10 @@ LOG_GROUP="/ecs/agent-recovery"
 INSTANCE_ID=$(curl -s -m 2 http://169.254.169.254/latest/meta-data/instance-id || echo unknown)
 REGION=$(curl -s -m 2 http://169.254.169.254/latest/meta-data/placement/region || echo ap-northeast-1)
 SENTINEL=/var/run/agent-recovery/last-recovery
+# Probe-armed sentinel: written by health-probe.sh once it's seen
+# AgentConnected=true at least once on this boot. Used here to debounce the
+# "no log files" warning during agent warmup.
+ARMED_FILE=/var/run/agent-recovery/probe-armed
 RATE_LIMIT_SECONDS=3600
 
 emit_log() {
@@ -44,25 +48,66 @@ case "$LIFECYCLE_STATE" in
     ;;
 esac
 
-# Glob across rotated logs and filter to lines from the last 5 minutes.
-# Rotation breaks any "tail -n 1000" approach, so we always glob.
+# Skip until ecs.service is up — avoids racing the host's own boot.
+if ! systemctl is-active --quiet ecs.service; then
+  emit_log "skip ecs.service=$(systemctl is-active ecs.service 2>/dev/null || echo unknown)"
+  exit 0
+fi
+
+# Extract epoch seconds from an ECS agent log line. Handles both the legacy
+# leading-ISO-8601 form and the `level=... time=... msg=...` form. Returns 0
+# on parse failure.
+parse_log_timestamp() {
+  local line="$1"
+  local ts=""
+  if [ -z "$line" ]; then
+    echo 0
+    return
+  fi
+  ts=$(printf '%s' "$line" | grep -oE 'time=("?)[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z\1' \
+       | head -n1 | sed -E 's/^time=//; s/^"//; s/"$//')
+  if [ -z "$ts" ]; then
+    ts=$(printf '%s' "$line" | awk '{print $1}' | tr -d '"')
+  fi
+  if [ -z "$ts" ]; then
+    echo 0
+    return
+  fi
+  date -d "$ts" -u +%s 2>/dev/null || echo 0
+}
+
+# Format-drift self-test: if the first log line no longer parses, the AMI's
+# log format has shifted and every subsequent match would be silently
+# rejected. Exit non-zero so the heartbeat-missing alarm catches it.
+SAMPLE_LINE=""
+if [ -r /var/log/ecs/ecs-agent.log ]; then
+  SAMPLE_LINE=$(head -n1 /var/log/ecs/ecs-agent.log 2>/dev/null || true)
+fi
+if [ -n "$SAMPLE_LINE" ]; then
+  if [ "$(parse_log_timestamp "$SAMPLE_LINE")" -eq 0 ]; then
+    emit_log "format drift detected — first line did not yield a timestamp: $SAMPLE_LINE"
+    exit 2
+  fi
+fi
+
+# Glob across rotated logs; rotation breaks any "tail -n N" approach.
 shopt -s nullglob
 LOG_FILES=(/var/log/ecs/ecs-agent.log*)
 if [ ${#LOG_FILES[@]} -eq 0 ]; then
-  exit 0
+  # Tolerate the warmup window before the agent has written its first log line.
+  if [ ! -f "$ARMED_FILE" ]; then
+    exit 0
+  fi
+  emit_log "ecs.service active but /var/log/ecs/ecs-agent.log* missing — agent not logging"
+  exit 2
 fi
 
 CUTOFF_EPOCH=$(date -d '5 minutes ago' -u +%s 2>/dev/null || { emit_log "date parse failed — exiting to fail safe"; exit 0; })
 MATCH=""
-# Use grep -h for combined output; the agent log lines start with an ISO-8601
-# timestamp. We post-filter by parsing the leading timestamp ourselves so a
-# stale rotated file doesn't trigger a false positive.
+# Post-filter each grep hit by its own timestamp so stale rotated lines
+# don't trigger false positives.
 while IFS= read -r line; do
-  # NOTE: assumes the leading whitespace-separated token is an ISO-8601
-  # timestamp. This format is AMI-version-specific (see ecs_optimized_ami_name
-  # in compute.tf) — re-run the watchdog smoke test on every AMI bump.
-  ts_field=$(printf '%s' "$line" | awk '{print $1}' | tr -d '"')
-  ts_epoch=$(date -d "$ts_field" -u +%s 2>/dev/null || echo 0)
+  ts_epoch=$(parse_log_timestamp "$line")
   if [ "$ts_epoch" -ge "$CUTOFF_EPOCH" ]; then
     MATCH="$line"
     break
@@ -89,6 +134,9 @@ emit_log "match=\"$MATCH\" — running recovery sequence"
 systemctl stop ecs || true
 docker rm -f ecs-agent 2>/dev/null || true
 rm -f /var/lib/ecs/data/agent.db
+# Clear the probe-armed sentinel: the restarted agent will go through its
+# own warmup, and the probe should re-arm only after observing it healthy.
+rm -f "$ARMED_FILE"
 systemctl start ecs
 
 touch "$SENTINEL"

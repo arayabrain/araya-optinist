@@ -7,16 +7,16 @@
 # This is what makes plain EC2 health checks meaningful — without it,
 # they would only catch hardware/OS failure.
 #
-# Loaded into ecs-user-data.sh via Terraform templatefile(); literal
-# $${...} would need escaping if ever introduced.
+# Loaded into ecs-user-data.sh via Terraform templatefile().
 set -u
 set -o pipefail
 INSTANCE_ID=$(curl -s -m 2 http://169.254.169.254/latest/meta-data/instance-id || echo unknown)
 REGION=$(curl -s -m 2 http://169.254.169.254/latest/meta-data/placement/region || echo ap-northeast-1)
 STATE_FILE=/var/run/agent-recovery/agent-disconnect-since
+ARMED_FILE=/var/run/agent-recovery/probe-armed
 DISCONNECT_THRESHOLD_SECONDS=300
 
-# Lifecycle guard — same as watchdog.
+# Lifecycle guard: never act during ASG-driven transitions.
 LIFECYCLE_STATE=$(/opt/agent-recovery/lifecycle-state.sh)
 case "$LIFECYCLE_STATE" in
   Terminating*|Pending*)
@@ -25,9 +25,14 @@ case "$LIFECYCLE_STATE" in
     ;;
 esac
 
-# Read the ECS agent introspection endpoint (default port 51678, bound to
-# loopback only — see AWS ECS agent introspection docs). If the agent is
-# not even answering on the local socket, treat that as a disconnect too.
+# Skip until ecs.service is up
+if ! systemctl is-active --quiet ecs.service; then
+  rm -f "$STATE_FILE"
+  exit 0
+fi
+
+# Read the ECS agent introspection endpoint (loopback-only, port 51678).
+# An unreachable socket counts as a disconnect.
 META=$(curl -s -m 2 http://localhost:51678/v1/metadata 2>/dev/null || echo "")
 CONNECTED=""
 if [ -n "$META" ]; then
@@ -38,6 +43,14 @@ if [ -n "$META" ]; then
 fi
 
 if [ -n "$CONNECTED" ]; then
+  rm -f "$STATE_FILE"
+  touch "$ARMED_FILE"
+  exit 0
+fi
+
+# Disconnected — but if we've never observed a successful connect on this
+# boot, we're still in agent warmup, not stranded.
+if [ ! -f "$ARMED_FILE" ]; then
   rm -f "$STATE_FILE"
   exit 0
 fi
