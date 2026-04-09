@@ -36,8 +36,9 @@ fi
 META=$(curl -s -m 2 http://localhost:51678/v1/metadata 2>/dev/null || echo "")
 CONNECTED=""
 if [ -n "$META" ]; then
-  # Naive but dependency-free JSON parse: AgentConnected is a bool literal.
-  if echo "$META" | grep -q '"AgentConnected"[[:space:]]*:[[:space:]]*true'; then
+  # /v1/metadata has no AgentConnected field; a non-empty ContainerInstanceArn
+  # is the local proxy — only set after successful control-plane registration.
+  if echo "$META" | grep -qE '"ContainerInstanceArn"[[:space:]]*:[[:space:]]*"[^"]+"'; then
     CONNECTED=1
   fi
 fi
