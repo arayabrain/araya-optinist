@@ -4,11 +4,11 @@ channels:
   - defaults
 dependencies:
   - python=3.11
+  - setuptools<81
   - cython
-  - conda-build
-  - numpy=1.26.*
+  - numpy<2
   - pandas>=1.5.0
   - scikit-image>=0.19.0
   - pynwb<3
-  - tensorflow>=2.12
-  - caiman>=1.11.1,<=1.11.4
+  - tensorflow>=2.12,<2.16
+  - caiman>=1.11.3,<=1.11.4
