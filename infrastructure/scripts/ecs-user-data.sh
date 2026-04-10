@@ -9,6 +9,8 @@ echo ECS_CLUSTER=${cluster_name} >> /etc/ecs/ecs.config
 echo ECS_ENABLE_CONTAINER_METADATA=true >> /etc/ecs/ecs.config
 echo ECS_ENABLE_TASK_IAM_ROLE=true >> /etc/ecs/ecs.config
 echo ECS_INSTANCE_ATTRIBUTES='{"tier":"${tier}"}' >> /etc/ecs/ecs.config
+# Must be >= task-level stopTimeout (see compute.tf).
+echo ECS_CONTAINER_STOP_TIMEOUT=120s >> /etc/ecs/ecs.config
 
 # Systemd service to clear stale ECS agent checkpoint on every boot.
 cat > /etc/systemd/system/ecs-clear-checkpoint.service << 'UNIT_EOF'
