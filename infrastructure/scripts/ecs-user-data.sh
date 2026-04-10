@@ -31,6 +31,118 @@ UNIT_EOF
 systemctl daemon-reload
 systemctl enable ecs-clear-checkpoint.service
 
+# =====================================================================
+# Stale ECS agent watchdog + on-instance health probe
+# ---------------------------------------------------------------------
+# Two systemd timers run every 5 minutes on the ECS host:
+#
+#   agent-recovery.timer:
+#     Greps /var/log/ecs/ecs-agent.log* for InvalidInstanceException /
+#     "Missing container instance arn" within the last 5 minutes. If
+#     matched, performs the recovery sequence:
+#     `systemctl stop ecs` -> `docker rm -f ecs-agent` -> rm agent.db
+#     -> `systemctl start ecs`. Rate-limited to 1 recovery / hour /
+#     instance via a sentinel in /var/run (tmpfs — auto-clears on boot).
+#     Logs every action to CloudWatch Logs `/ecs/agent-recovery`, which
+#     also serves as the source for the watchdog heartbeat alarm.
+#
+#   agent-health-probe.timer:
+#     Calls the agent introspection endpoint at
+#     http://localhost:51678/v1/metadata. If AgentConnected has been
+#     `false` for more than 5 minutes, calls
+#     `aws autoscaling set-instance-health --health-status Unhealthy`
+#     so the ASG (now using EC2 health-checks) terminates and replaces
+#     the host. This is what makes plain EC2 health-checks meaningful:
+#     they would otherwise only catch hardware/OS failure.
+#
+# Both timers honour the ASG lifecycle state via IMDS
+# (`autoscaling/target-lifecycle-state`) and skip when the instance is
+# in `Terminating:*` or `Pending:*` so they cannot race the capacity
+# provider's managed drain or first-boot ECS registration.
+# IMDSv1 is currently allowed (no metadata_options on the launch
+# template). If IMDSv2 is ever enforced, switch the IMDS calls below
+# to fetch a token first.
+# =====================================================================
+
+mkdir -p /opt/agent-recovery /var/run/agent-recovery /etc/agent-recovery
+
+# Region pinned from Terraform; sourced by the agent-recovery scripts.
+cat > /etc/agent-recovery/env << ENV_EOF
+AWS_REGION=${aws_region}
+ENV_EOF
+chmod 0644 /etc/agent-recovery/env
+
+# Recovery scripts are sourced from infrastructure/scripts/agent-recovery/
+# and inlined at terraform plan time via templatefile(). Edit them there,
+# not here. The 'EOF' quoting on each heredoc prevents bash from
+# interpreting any $-references in the inlined content at instance-run
+# time (the substitution itself happens earlier, in Terraform).
+cat > /opt/agent-recovery/lifecycle-state.sh << 'LIFECYCLE_EOF'
+${agent_recovery_lifecycle_sh}
+LIFECYCLE_EOF
+chmod +x /opt/agent-recovery/lifecycle-state.sh
+
+cat > /opt/agent-recovery/watchdog.sh << 'WATCHDOG_EOF'
+${agent_recovery_watchdog_sh}
+WATCHDOG_EOF
+chmod +x /opt/agent-recovery/watchdog.sh
+
+cat > /opt/agent-recovery/health-probe.sh << 'PROBE_EOF'
+${agent_recovery_health_probe_sh}
+PROBE_EOF
+chmod +x /opt/agent-recovery/health-probe.sh
+
+# systemd units
+cat > /etc/systemd/system/agent-recovery.service << 'UNIT_EOF'
+[Unit]
+Description=Stale ECS agent checkpoint watchdog
+After=ecs.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/agent-recovery/watchdog.sh
+UNIT_EOF
+
+cat > /etc/systemd/system/agent-recovery.timer << 'UNIT_EOF'
+[Unit]
+Description=Run agent-recovery watchdog every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=agent-recovery.service
+
+[Install]
+WantedBy=timers.target
+UNIT_EOF
+
+cat > /etc/systemd/system/agent-health-probe.service << 'UNIT_EOF'
+[Unit]
+Description=ECS agent health probe (marks instance Unhealthy on disconnect)
+After=ecs.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/agent-recovery/health-probe.sh
+UNIT_EOF
+
+cat > /etc/systemd/system/agent-health-probe.timer << 'UNIT_EOF'
+[Unit]
+Description=Run agent-health-probe every 5 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=5min
+Unit=agent-health-probe.service
+
+[Install]
+WantedBy=timers.target
+UNIT_EOF
+
+systemctl daemon-reload
+systemctl enable --now agent-recovery.timer
+systemctl enable --now agent-health-probe.timer
+
 # Install packages
 yum update -y
 yum install -y amazon-ssm-agent mysql amazon-efs-utils nc mysql-client git docker amazon-cloudwatch-agent awscli

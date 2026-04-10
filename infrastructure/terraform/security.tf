@@ -231,6 +231,14 @@ resource "aws_iam_role_policy" "ecs_instance_enhanced_monitoring" {
           "ecs:DescribeTasks"
         ]
         Resource = "*"
+      },
+      {
+        # Lets the on-instance probe mark its host Unhealthy when the ECS
+        # agent is bricked. Scoped to the ASG so a compromised host cannot
+        # tag arbitrary instances elsewhere.
+        Effect   = "Allow"
+        Action   = "autoscaling:SetInstanceHealth"
+        Resource = aws_autoscaling_group.main.arn
       }
     ]
   })
