@@ -1,5 +1,7 @@
 #!/bin/bash
 # Stale ECS agent watchdog — see AGENT_RECOVERY_ARCHITECTURE.md.
+# Premium: detects stale agent and runs in-place recovery (agent.db wipe).
+# Free/background: detection + heartbeat only; health probe triggers ASG replacement.
 #
 # Greps /var/log/ecs/ecs-agent.log* for known stale-agent error strings
 # within the last 5 minutes. On match, runs the documented manual
@@ -33,6 +35,7 @@ imds_get() {
 
 INSTANCE_ID=$(imds_get instance-id); INSTANCE_ID="${INSTANCE_ID:-unknown}"
 REGION="${AWS_REGION:-$(imds_get placement/region)}"
+TIER="${INSTANCE_TIER:-free}"
 SENTINEL=/var/run/agent-recovery/last-recovery
 # Probe-armed sentinel: written by health-probe.sh once it's seen
 # AgentConnected=true at least once on this boot. Used here to debounce the
@@ -147,32 +150,38 @@ if [ -z "$MATCH" ]; then
   exit 0
 fi
 
-# Rate-limit: max 1 recovery per hour per instance.
-if [ -f "$SENTINEL" ]; then
-  LAST=$(stat -c %Y "$SENTINEL" 2>/dev/null || echo 0)
-  NOW=$(date -u +%s)
-  if [ $((NOW - LAST)) -lt $RATE_LIMIT_SECONDS ]; then
-    emit_log "rate-limited match=\"$MATCH\""
-    exit 0
+# Premium: in-place recovery (agent.db wipe + restart). premium_manager
+# deregisters the old container instance, so no orphan is created.
+# Free/background: log only; health probe will mark Unhealthy for ASG replacement.
+if [ "$TIER" = "premium" ]; then
+  # Rate-limit: max 1 recovery per hour per instance.
+  if [ -f "$SENTINEL" ]; then
+    LAST=$(stat -c %Y "$SENTINEL" 2>/dev/null || echo 0)
+    NOW=$(date -u +%s)
+    if [ $((NOW - LAST)) -lt $RATE_LIMIT_SECONDS ]; then
+      emit_log "rate-limited match=\"$MATCH\""
+      exit 0
+    fi
   fi
-fi
 
-emit_log "match=\"$MATCH\" — running recovery sequence"
-
-# Documented manual recovery sequence — order matters.
-systemctl stop ecs || true
-docker rm -f ecs-agent 2>/dev/null || true
-rm -f /var/lib/ecs/data/agent.db
-# Clear the probe-armed sentinel: the restarted agent will go through its
+  emit_log "match=\"$MATCH\" — running recovery sequence"
+  # Documented manual recovery sequence — order matters.
+  systemctl stop ecs || true
+  docker rm -f ecs-agent 2>/dev/null || true
+  rm -f /var/lib/ecs/data/agent.db
+  # Clear the probe-armed sentinel: the restarted agent will go through its
 # own warmup, and the probe should re-arm only after observing it healthy.
-rm -f "$ARMED_FILE"
+  rm -f "$ARMED_FILE"
 
-# Only mark recovery successful if `systemctl start ecs` actually succeeded;
+  # Only mark recovery successful if `systemctl start ecs` actually succeeded;
 # otherwise the rate-limit sentinel would block retries for an hour.
-if systemctl start ecs; then
-  touch "$SENTINEL"
-  emit_log "recovery complete instance=$INSTANCE_ID"
+  if systemctl start ecs; then
+    touch "$SENTINEL"
+    emit_log "recovery complete instance=$INSTANCE_ID"
+  else
+    emit_log "recovery failed: systemctl start ecs returned $? — instance left without agent"
+    exit 1
+  fi
 else
-  emit_log "recovery failed: systemctl start ecs returned $? — instance left without agent"
-  exit 1
+  emit_log "stale-agent detected match=\"$MATCH\" — health probe will trigger ASG replacement"
 fi
