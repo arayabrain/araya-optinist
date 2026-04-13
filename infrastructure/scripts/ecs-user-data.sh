@@ -12,7 +12,10 @@ echo ECS_INSTANCE_ATTRIBUTES='{"tier":"${tier}"}' >> /etc/ecs/ecs.config
 # Must be >= task-level stopTimeout (see compute.tf).
 echo ECS_CONTAINER_STOP_TIMEOUT=120s >> /etc/ecs/ecs.config
 
-# Systemd service to clear stale ECS agent checkpoint on every boot.
+# Premium: clear agent.db on boot so restarted instances re-register cleanly.
+# premium_manager handles deregistering the old container instance before stop.
+# Free/background: skip — ASG replacement is the recovery path.
+if [ "${tier}" = "premium" ]; then
 cat > /etc/systemd/system/ecs-clear-checkpoint.service << 'UNIT_EOF'
 [Unit]
 Description=Clear stale ECS agent checkpoint before startup
@@ -30,6 +33,7 @@ UNIT_EOF
 
 systemctl daemon-reload
 systemctl enable ecs-clear-checkpoint.service
+fi
 
 # =====================================================================
 # Stale ECS agent watchdog + on-instance health probe
@@ -69,6 +73,7 @@ mkdir -p /opt/agent-recovery /var/run/agent-recovery /etc/agent-recovery
 # Region pinned from Terraform; sourced by the agent-recovery scripts.
 cat > /etc/agent-recovery/env << ENV_EOF
 AWS_REGION=${aws_region}
+INSTANCE_TIER=${tier}
 ENV_EOF
 chmod 0644 /etc/agent-recovery/env
 
