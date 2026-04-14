@@ -7,7 +7,7 @@
 #      → CloudWatch Logs → metric filter on `agentConnected=false`
 #      → alarm. Catches every disconnect the control plane sees.
 #
-#   2. Heartbeat alarm on `/ecs/agent-recovery` log group. The
+#   2. Heartbeat alarm on `/ecs/<env>-agent-recovery` log group. The
 #      on-host watchdog (ecs-user-data.sh) writes a "tick" line
 #      every run, so a 30-min silence means the watchdog itself
 #      is broken.
@@ -25,7 +25,11 @@
 #   * the EventBridge → CW Logs target below
 # -------------------------------------------------------------
 resource "aws_cloudwatch_log_group" "agent_recovery" {
-  name              = "/ecs/agent-recovery"
+  # Env-prefixed so subscr and development watchdogs + EventBridge rules
+  # don't commingle in one log group. The metric filter below counts every
+  # `agentConnected=false` line, so a shared log group would make each env's
+  # alarm see the other env's churn.
+  name              = "/ecs/${var.environment}-agent-recovery"
   retention_in_days = 30
 
   tags = {
@@ -91,7 +95,7 @@ resource "aws_cloudwatch_log_metric_filter" "agent_disconnected" {
 
   metric_transformation {
     name      = "AgentDisconnectedCount"
-    namespace = "OptiNiSt/AgentRecovery"
+    namespace = "OptiNiSt/${var.environment}/AgentRecovery"
     value     = "1"
     unit      = "Count"
   }
@@ -100,18 +104,21 @@ resource "aws_cloudwatch_log_metric_filter" "agent_disconnected" {
 resource "aws_cloudwatch_metric_alarm" "agent_disconnected" {
   alarm_name          = "${var.environment}-ecs-agent-disconnected"
   comparison_operator = "GreaterThanOrEqualToThreshold"
-  # Debounced: ECS emits a one-off agentConnected=false on routine scale-in.
-  # A real stuck host keeps re-emitting, so requiring 2 windows filters noise.
-  evaluation_periods = "2"
-  metric_name        = "AgentDisconnectedCount"
-  namespace          = "OptiNiSt/AgentRecovery"
-  period             = "300"
-  statistic          = "Sum"
-  threshold          = "2"
-  alarm_description  = "ECS container instance reported agentConnected=false in 2 consecutive windows."
-  alarm_actions      = local.critical_alerts_actions
-  ok_actions         = local.critical_alerts_actions
-  treat_missing_data = "notBreaching"
+  # A stuck host re-emits agentConnected=false every few minutes. Healthy
+  # hosts produce brief 1–2 false events during routine agent restarts, so
+  # require a higher sustained rate: ≥4 false events per 5-min window,
+  # held across 3 consecutive windows (~15 min).
+  evaluation_periods  = "3"
+  datapoints_to_alarm = "3"
+  metric_name         = "AgentDisconnectedCount"
+  namespace           = "OptiNiSt/${var.environment}/AgentRecovery"
+  period              = "300"
+  statistic           = "Sum"
+  threshold           = "4"
+  alarm_description   = "ECS container instance reported agentConnected=false sustained across 3×5-min windows."
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
+  treat_missing_data  = "notBreaching"
 
   tags = {
     Name = "ECS Agent Disconnected Alarm"
@@ -122,7 +129,7 @@ resource "aws_cloudwatch_metric_alarm" "agent_disconnected" {
 # Watchdog heartbeat alarm
 # =============================================================
 # The on-host watchdog (ecs-user-data.sh) emits "watchdog tick" to
-# /ecs/agent-recovery every 5 min on every host. If the entire
+# /ecs/<env>-agent-recovery every 5 min on every host. If the entire
 # fleet goes silent for 30 min, the watchdog itself is broken
 # (e.g. never installed on a new AMI) and we need to know.
 resource "aws_cloudwatch_log_metric_filter" "agent_recovery_heartbeat" {
@@ -132,7 +139,7 @@ resource "aws_cloudwatch_log_metric_filter" "agent_recovery_heartbeat" {
 
   metric_transformation {
     name      = "AgentRecoveryHeartbeatCount"
-    namespace = "OptiNiSt/AgentRecovery"
+    namespace = "OptiNiSt/${var.environment}/AgentRecovery"
     value     = "1"
     unit      = "Count"
   }
@@ -143,7 +150,7 @@ resource "aws_cloudwatch_metric_alarm" "agent_recovery_heartbeat_missing" {
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = "1"
   metric_name         = "AgentRecoveryHeartbeatCount"
-  namespace           = "OptiNiSt/AgentRecovery"
+  namespace           = "OptiNiSt/${var.environment}/AgentRecovery"
   period              = "1800" # 30 min
   statistic           = "Sum"
   threshold           = "1"
@@ -225,8 +232,9 @@ resource "aws_lambda_function" "agent_recovery_reconciliation" {
 
   environment {
     variables = {
-      CLUSTERS  = aws_ecs_cluster.main.name
-      ASG_NAMES = aws_autoscaling_group.main.name
+      CLUSTERS         = aws_ecs_cluster.main.name
+      ASG_NAMES        = aws_autoscaling_group.main.name
+      METRIC_NAMESPACE = "OptiNiSt/${var.environment}/AgentRecovery"
     }
   }
 
@@ -266,7 +274,7 @@ resource "aws_cloudwatch_metric_alarm" "ecs_asg_instance_unregistered" {
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "2"
   metric_name         = "EcsAsgInstanceUnregisteredCount"
-  namespace           = "OptiNiSt/AgentRecovery"
+  namespace           = "OptiNiSt/${var.environment}/AgentRecovery"
   period              = "300"
   statistic           = "Maximum"
   threshold           = "0"

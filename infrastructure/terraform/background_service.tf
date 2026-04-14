@@ -56,6 +56,7 @@ resource "aws_launch_template" "background" {
     agent_recovery_lifecycle_sh    = local.agent_recovery_lifecycle_sh
     agent_recovery_watchdog_sh     = local.agent_recovery_watchdog_sh
     agent_recovery_health_probe_sh = local.agent_recovery_health_probe_sh
+    agent_recovery_log_group       = aws_cloudwatch_log_group.agent_recovery.name
   }))
 
   tag_specifications {

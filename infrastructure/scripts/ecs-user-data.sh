@@ -47,7 +47,7 @@ fi
 #     `systemctl stop ecs` -> `docker rm -f ecs-agent` -> rm agent.db
 #     -> `systemctl start ecs`. Rate-limited to 1 recovery / hour /
 #     instance via a sentinel in /var/run (tmpfs — auto-clears on boot).
-#     Logs every action to CloudWatch Logs `/ecs/agent-recovery`, which
+#     Logs every action to CloudWatch Logs `/ecs/<env>-agent-recovery`, which
 #     also serves as the source for the watchdog heartbeat alarm.
 #
 #   agent-health-probe.timer:
@@ -74,6 +74,7 @@ mkdir -p /opt/agent-recovery /var/run/agent-recovery /etc/agent-recovery
 cat > /etc/agent-recovery/env << ENV_EOF
 AWS_REGION=${aws_region}
 INSTANCE_TIER=${tier}
+AGENT_RECOVERY_LOG_GROUP=${agent_recovery_log_group}
 ENV_EOF
 chmod 0644 /etc/agent-recovery/env
 

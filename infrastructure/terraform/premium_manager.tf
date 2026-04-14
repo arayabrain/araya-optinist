@@ -845,6 +845,8 @@ resource "aws_cloudwatch_metric_alarm" "premium_cpu_high" {
   alarm_description   = "Premium ECS service CPU utilization is high"
   alarm_actions       = local.critical_alerts_actions
   ok_actions          = local.critical_alerts_actions
+  # Scale-to-zero leaves no datapoints; avoid OK emails on every warm-up.
+  treat_missing_data = "notBreaching"
 
   dimensions = {
     ServiceName = aws_ecs_service.premium.name
@@ -869,6 +871,8 @@ resource "aws_cloudwatch_metric_alarm" "premium_memory_high" {
   alarm_description   = "Premium ECS service memory utilization is high"
   alarm_actions       = local.critical_alerts_actions
   ok_actions          = local.critical_alerts_actions
+  # Scale-to-zero leaves no datapoints; avoid OK emails on every warm-up.
+  treat_missing_data = "notBreaching"
 
   dimensions = {
     ServiceName = aws_ecs_service.premium.name

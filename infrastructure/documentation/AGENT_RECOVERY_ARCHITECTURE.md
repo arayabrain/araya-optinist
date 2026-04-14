@@ -58,10 +58,10 @@
 └────────────┼────────────────────────────────┼──────────────────┘
              │                                │
              ↓                                ↓
-   ┌─────────────────────┐          ┌────────────────────────┐
-   │ CloudWatch Logs     │          │ Auto Scaling Group     │
-   │ /ecs/agent-recovery │          │ health_check_type=EC2  │
-   └─────────┬───────────┘          │ (replaces unhealthy)   │
+   ┌───────────────────────────┐    ┌────────────────────────┐
+   │ CloudWatch Logs           │    │ Auto Scaling Group     │
+   │ /ecs/<env>-agent-recovery │    │ health_check_type=EC2  │
+   └─────────┬─────────────────┘    │ (replaces unhealthy)   │
              │                      └────────────────────────┘
              ↓
    ┌────────────────────────────────────────────────────┐
@@ -88,7 +88,7 @@
 
 The watchdog (`infrastructure/scripts/ecs-user-data.sh`, embedded as a heredoc that writes `/opt/agent-recovery/watchdog.sh`) runs every 5 minutes via `agent-recovery.timer`:
 
-1. Emit a `watchdog tick` heartbeat to `/ecs/agent-recovery` so the heartbeat-missing alarm stays quiet
+1. Emit a `watchdog tick` heartbeat to `/ecs/<env>-agent-recovery` so the heartbeat-missing alarm stays quiet
 2. Check ASG target lifecycle state via IMDS — exit if `Pending:*` or `Terminating:*` to avoid racing the capacity provider
 3. Glob `/var/log/ecs/ecs-agent.log*` (rotation-safe) and grep for `InvalidInstanceException` or `Missing container instance arn`
 4. Parse the leading whitespace-separated token of each match as an ISO-8601 timestamp; ignore matches older than 5 minutes
@@ -164,7 +164,7 @@ The Lambda is alarm-only — it never calls `set-instance-health` or `terminate`
 | Metric Name                          | Description                                                              | Unit  | Trigger                                       |
 |--------------------------------------|--------------------------------------------------------------------------|-------|-----------------------------------------------|
 | `AgentDisconnectedCount`             | Count of `agentConnected=false` events from EventBridge                  | Count | ECS control plane state change                |
-| `AgentRecoveryHeartbeatCount`        | Count of `watchdog tick` lines in `/ecs/agent-recovery`                  | Count | Every watchdog run on every host              |
+| `AgentRecoveryHeartbeatCount`        | Count of `watchdog tick` lines in `/ecs/<env>-agent-recovery`                  | Count | Every watchdog run on every host              |
 | `EcsAsgInstanceUnregisteredCount`    | ASG `InService` instances missing from ECS or with `agentConnected=false`| Count | Reconciliation Lambda (every 5 min)           |
 
 | Alarm Name                                       | Trigger condition                                              | Treat missing |
@@ -228,7 +228,7 @@ Deploy the new AMI to a non-production ASG, then on one fresh host:
 4. **Confirm heartbeats reach CloudWatch.**
    ```bash
    INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-   aws logs tail /ecs/agent-recovery --since 10m --log-stream-names "$INSTANCE_ID"
+   aws logs tail /ecs/<env>-agent-recovery --since 10m --log-stream-names "$INSTANCE_ID"
    # Expected: at least one "watchdog tick" line in the last 10 min.
    ```
 
@@ -259,7 +259,7 @@ If any step fails, do **not** promote the AMI to production. Revert the pin and 
 
 | Resource type                       | Name                                                  | Purpose                                              |
 |-------------------------------------|-------------------------------------------------------|------------------------------------------------------|
-| `aws_cloudwatch_log_group`          | `/ecs/agent-recovery`                                 | Heartbeats, recovery actions, EventBridge events     |
+| `aws_cloudwatch_log_group`          | `/ecs/<env>-agent-recovery`                                 | Heartbeats, recovery actions, EventBridge events     |
 | `aws_cloudwatch_event_rule`         | `${env}-ecs-container-instance-state-change`          | Captures ECS container instance state-change events  |
 | `aws_cloudwatch_log_metric_filter`  | `${env}-agent-disconnected`                           | `agentConnected=false` → metric                      |
 | `aws_cloudwatch_log_metric_filter`  | `${env}-agent-recovery-heartbeat`                     | `watchdog tick` → metric                             |

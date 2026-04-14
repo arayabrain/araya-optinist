@@ -17,7 +17,8 @@ set -o pipefail
 # shellcheck disable=SC1091
 [ -r /etc/agent-recovery/env ] && . /etc/agent-recovery/env
 
-LOG_GROUP="/ecs/agent-recovery"
+# Injected by ecs-user-data.sh from the env-prefixed Terraform log group.
+LOG_GROUP="${AGENT_RECOVERY_LOG_GROUP:-/ecs/default-agent-recovery}"
 
 # IMDSv2 helper. Returns metadata value on stdout, empty string on failure.
 imds_get() {
