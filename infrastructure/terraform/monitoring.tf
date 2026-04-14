@@ -285,13 +285,15 @@ resource "aws_cloudwatch_metric_alarm" "alb_5xx_errors" {
 resource "aws_cloudwatch_metric_alarm" "alb_response_time_high" {
   alarm_name          = "${local.env_prefix}-alb-response-time-high"
   comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = "2"
+  # p95 over 3×5-min: Average is tripped by one slow request on sparse traffic.
+  evaluation_periods  = "3"
+  datapoints_to_alarm = "3"
   metric_name         = "TargetResponseTime"
   namespace           = "AWS/ApplicationELB"
   period              = "300"
-  statistic           = "Average"
+  extended_statistic  = "p95"
   threshold           = "5"
-  alarm_description   = "ALB response time is too high"
+  alarm_description   = "ALB p95 response time exceeded 5s across 3×5-min windows."
   alarm_actions       = local.critical_alerts_actions
   ok_actions          = local.critical_alerts_actions
 
