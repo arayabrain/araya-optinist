@@ -2,9 +2,9 @@
 
 ## Executive Summary
 - **Premium Manager** handles all instance provisioning and user assignment
-- **5-tier prioritization** system optimizes user experience and cost
+- **5-tier prioritization** (with a 3.5 sub-tier fallback) optimizes user experience and cost
 - **Standby pool** ensures fast cold starts via stopped instances
-- **Automatic migration** moves users from shared to dedicated instances
+- **Automatic migration** moves users from shared to dedicated instances, inline when possible and async otherwise
 - **Workflow safety** prevents migration of users with active workflows
 
 ## Key Architectural Principles
@@ -85,8 +85,22 @@ graph TB
 | 2 | Shared Instance | 0s | Good (shared) | Medium | Burst capacity |
 | 3 | Standby (Stopped) | 5-15s | Good (warming) | Low | Premium provisioning / re-login |
 | 3.5 | Autoscaling Pool | 0s | Temporary (migrates) | Low | Last-resort fallback (no standby) |
-| 4 | AWS Stopped | 60-90s | Acceptable | Low | Fallback recovery |
+| 4 | AWS Stopped | 60s-6min | Acceptable | Low | Fallback recovery |
 | 5 | New Instance | 4-8 min | Poor (scaling) | Highest | Last resort |
+
+### Responsibility Matrix
+
+This document covers one Lambda -- the Premium Manager -- acting across several subsystems. The table below maps each concern to the function family that owns it, to make it clear where to look for a given behavior.
+
+| Concern                              | Owning subsystem                              | Key functions                                                                           |
+|--------------------------------------|-----------------------------------------------|-----------------------------------------------------------------------------------------|
+| Real-time user assignment            | Assignment handler                            | `assign_premium_user()`, `try_reserve_instance()`, `store_user_assignment()`            |
+| Standby pool lifecycle               | Standby pool management                       | `create_and_stop_standby_instance()`, `start_standby_instance()`, `register_orphaned_stopped_instances()` |
+| Capacity scaling (up)                | Scaling system                                | `scale_premium_instances_if_needed()`, `_create_running_instances_locked()`             |
+| Shared-to-dedicated migration        | Background migration                          | `process_shared_instance_optimization()`, `migrate_user_to_dedicated_instance()`, `invoke_migration_async()` |
+| Concurrency / race prevention        | Locking                                       | `distributed_lock()` (MySQL `GET_LOCK`), `try_reserve_instance_transaction()` (`SELECT FOR UPDATE`), `is_creation_lock_held()` |
+| Scale-down + ghost / orphan cleanup  | Scheduled monitoring (see `PREMIUM_MANAGER_ARCHITECTURE.md`) | `handle_scheduled_monitoring()`, `scale_down_if_possible()`                             |
+| Stale assignment + ALB rule hygiene  | Premium Cleanup Lambda (separate)             | See `PREMIUM_MANAGER_ARCHITECTURE.md`                                                   |
 
 ## Provisioning Flow Diagrams
 
@@ -150,9 +164,9 @@ sequenceDiagram
     alt Tier 4: AWS Stopped Instance
         DB-->>PM: Found stopped instance (not standby)
         PM->>EC2: Start Instance
-        EC2-->>PM: Instance running (60-90s)
+        EC2-->>PM: Instance running (typically 60-90s; waiter caps at 6 min)
         PM->>PM: Create Target Group + Rule
-        PM-->>User: Assigned (60-90s wait)
+        PM-->>User: Assigned (60s-6min wait)
     else Tier 5: Scale New Instance
         DB-->>PM: No instances available
         PM->>PM: Check launching instances + creation locks
@@ -216,13 +230,18 @@ graph TB
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Assign a premium instance using 5-tier priority fallback
 **Input:** user_id (int), event (API Gateway dict), optional user_uid (str)
-**Output:** Dict with statusCode, instance_id, routing headers; or 202 retry
-**Calls:** register_orphaned_stopped_instances() -> check_instance_readiness_with_retry() -> try_reserve_instance() -> create_or_get_target_group() -> store_user_assignment()
+**Output:** Dict with `statusCode` and a body containing `instance_id`, `target_group_arn`, `rule_arn`, `is_shared`, `assignment_source`; or `statusCode: 202` when scaling is in progress
+**Calls:** restore_pending_release() -> get_existing_user_assignment() -> register_orphaned_stopped_instances() -> check_instance_readiness_with_retry() -> try_reserve_instance() -> create_or_get_target_group() -> store_user_assignment()
 
 **Pre-assignment Steps:**
-1. Check for existing assignment (return it if found; trigger migration if shared/autoscaling)
-2. Register orphaned stopped instances as standby
-3. Get comprehensive instance state (running, launching, stopped, standby)
+1. Restore any `pending_release` assignment (beacon fired but the user is back) -- returns with `assignment_source: "restored_from_pending_release"`
+2. Check for existing assignment:
+   - If the EC2 is `stopped`/`stopping`, restart it, clear the ECS checkpoint, wait up to 120s for ECS readiness, and return `assignment_source: "restarted_instance"`
+   - If the EC2 is `terminated`/`shutting-down`/gone, remove the stale DB entry and fall through to fresh assignment
+   - If the assignment is on `autoscaling-pool` or a shared instance, attempt an **inline migration** to a ready dedicated instance first (`assignment_source: "inline_migration"`); fall back to `invoke_migration_async()` if no instance is ready
+   - Otherwise return the existing assignment (`assignment_source: "existing"`)
+3. Register orphaned stopped instances as standby
+4. Get comprehensive instance state (running, launching, stopped, standby)
 
 **Priority Evaluation:**
 
@@ -238,7 +257,7 @@ graph TB
   temporary fallback only when no standby instances exist, always
   trigger scaling
 - **Tier 4 (AWS Stopped):** Start non-standby stopped instance,
-  wait up to 6 minutes for running state
+  wait up to 6 minutes for running state (typical cold start is 60-90s)
 - **Tier 5 (Scale New):** If launching instances exist, return 202;
   otherwise call `scale_premium_instances_if_needed()` and return 202
 
@@ -378,7 +397,7 @@ subscribers.
 
 **Key behaviors:**
 - Blocked if launching instances exist or `CREATE_RUNNING_LOCK` held
-- No-op if `running_count >= active_users` (sufficient capacity)
+- No-op if `running_count >= active_users` (sufficient capacity). Note this is distinct from `scale_down_if_possible()`, which keeps `max(1, active_users + 1)` -- scale-up has no `+ 1` safety margin, so the scale-down headroom only exists after a full monitor cycle runs
 - Prefers starting stopped instances (fastest) over creating new
 - Clears ECS agent checkpoints after starting stopped instances
 - Falls back to `_create_running_instances_locked()` under
@@ -480,7 +499,7 @@ retried on the next attempt.
 The single table that tracks all premium instance assignments,
 including standby pool entries.
 
-**Source:** `studio/alembic/versions/e701e7250019_create_premium_management_system.py`
+**Sources:** Created in `studio/alembic/versions/e701e7250019_create_premium_management_system.py`; the conditional `idx_unique_user_assignment` index and nullable `user_id` were added by `h901h9270022_add_standby_sentinel_user.py`; `heartbeat_failures` was added by `j901j9290024_add_alert_fix_tables_and_columns.py`.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -490,7 +509,7 @@ including standby pool entries.
 | `target_group_arn` | VARCHAR(512) | ALB target group ARN or "standby"/"reserving" |
 | `alb_rule_arn` | VARCHAR(512) | ALB rule ARN or "standby"/"reserving" |
 | `assigned_at` | TIMESTAMP | Assignment creation time |
-| `status` | ENUM | 'active', 'migrating', 'terminating' |
+| `status` | ENUM | `'active'`, `'migrating'`, `'terminating'`. The soft-release "pending_release" state reuses `'terminating'` rather than being a distinct ENUM value -- the code-level `PremiumAssignment.PENDING_RELEASE` constant resolves to the string `"terminating"` (see `infrastructure/aws_constants.py`) |
 | `last_activity` | TIMESTAMP | Last user activity (auto-updates) |
 | `instance_state` | ENUM | 'launching', 'running', 'stopping', 'stopped', 'terminating' |
 | `is_shared` | BOOLEAN | Whether instance is shared with other users |
@@ -520,7 +539,7 @@ including standby pool entries.
 
 ### CloudWatch Metrics Published
 
-**By Premium Manager** (every 15 minutes via `publish_premium_metrics()`):
+**By Premium Manager** (published every 15 minutes by `publish_premium_metrics()`, invoked inside `handle_scheduled_monitoring()`):
 
 | Metric Name | Description | Unit |
 |-------------|-------------|------|
@@ -530,11 +549,11 @@ including standby pool entries.
 | `IdleInstances` | Running instances with 0 users | Count |
 | `ScalingInProgress` | Lock to prevent concurrent operations | None (0 or 1) |
 
-**Namespace:** `OptiNiSt/PremiumManager`
+**Namespace:** `OptiNiSt/PremiumManager/{env_prefix}` where `env_prefix` is the Terraform `environment` variable (e.g. `staging`, `prod`).
 
 ### Key Log Events
 
-**Premium Manager Logs** (`/aws/lambda/subscr-premium-manager`):
+**Premium Manager Logs** (`/aws/lambda/{env_prefix}-premium-manager`):
 
 ```
 === PREMIUM USER ASSIGNMENT START ===
@@ -563,14 +582,14 @@ PRIORITY 1 SUCCESS: Using dedicated running instance i-abc123
 **Standby Creation Logs:**
 
 ```
-Acquired distributed lock for standby creation
+Acquired distributed lock '${lock_name}'
 Standby pool has capacity (0/1), proceeding with creation
-Attempting to launch standby instance in subnet-abc (attempt 1/2)
-Successfully created standby instance i-def456
+Attempting to launch standby instance in subnet ${subnet_id} (attempt 1/2)
+Successfully created standby instance ${instance_id}...
 Waiting for instance to start...
 Instance running, stopping for standby...
 Instance stopped successfully
-Registered instance i-def456 as standby
+Registered instance ${instance_id} as standby
 ```
 
 **Migration Logs:**
@@ -595,6 +614,7 @@ Shared instance optimization complete: 1 users migrated
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
+| `ENV_PREFIX` | Terraform `environment` value; used for resource naming and the CloudWatch metric namespace | Required |
 | `RDS_HOST` | Database endpoint (via RDS Proxy, format: host:port) | Required |
 | `RDS_USER` | Database username | Required |
 | `RDS_PASSWORD` | Database password | Required |
@@ -603,23 +623,29 @@ Shared instance optimization complete: 1 users migrated
 | `PREMIUM_SERVICE_NAME` | ECS service name for premium tier | Required |
 | `VPC_ID` | VPC ID for target groups | Required |
 | `SUBNET_IDS` | Comma-separated subnet IDs (for multi-AZ) | Required |
+| `SECURITY_GROUP_ID` | ECS security group | Required |
+| `ALB_ARN` | Application Load Balancer ARN | Required |
 | `ALB_LISTENER_ARN` | ALB HTTPS listener for routing rules | Required |
 | `ALB_DNS_NAME` | ALB DNS name (for experiment sync) | Required |
 | `AUTOSCALING_TARGET_GROUP_ARN` | Shared pool target group | Required |
-| `PREMIUM_LAUNCH_TEMPLATE_ID` | EC2 launch template for premium instances | Required |
+| `PREMIUM_INSTANCE_IDS` | Comma-separated base EC2 instance IDs | Required |
+| `PREMIUM_LAUNCH_TEMPLATE_ID` | EC2 launch template for dynamic premium instances | Required |
+| `PREMIUM_INSTANCE_TYPE` | EC2 instance type for dynamically-created premium instances | Required |
 | `PREMIUM_STANDBY_POOL_SIZE` | Desired standby pool size | `1` |
 | `PREMIUM_EXTRA_CAPACITY` | Extra capacity buffer for scaling decisions | `1` |
-| `PREMIUM_IDLE_TIMEOUT_HOURS` | Hours before idle timeout | `3` |
+| `PREMIUM_STOPPED_MAX_AGE_HOURS` | Terminate stopped standby instances older than this | `4` |
 | `ROUTING_SECRET_KEY` | HMAC secret for generating routing IDs | Required |
 | `INTERNAL_API_SECRET` | Secret for internal API authentication | Required |
 
+`PREMIUM_IDLE_TIMEOUT_HOURS` is set in the Manager's Terraform block but is only read by the Cleanup Lambda; it does not influence Manager behavior.
+
 ### Triggers
 
-| Lambda          | Trigger              | Frequency        | EventBridge Rule                  |
-|-----------------|----------------------|------------------|-----------------------------------|
-| Premium Manager | User assign/release  | On-demand (API)  | N/A                               |
-| Premium Manager | Scheduled monitoring | Every 15 minutes | `subscr-premium-manager-schedule` |
-| Premium Manager | Migration check      | After assignment | N/A (async self-invocation)       |
+| Lambda          | Trigger              | Frequency        | EventBridge Rule                       |
+|-----------------|----------------------|------------------|----------------------------------------|
+| Premium Manager | User assign/release  | On-demand (API)  | N/A                                    |
+| Premium Manager | Scheduled monitoring | Every 15 minutes | `{env_prefix}-premium-manager-schedule` |
+| Premium Manager | Migration check      | After assignment | N/A (async self-invocation)            |
 
 ---
 
@@ -682,15 +708,17 @@ Shared instance optimization complete: 1 users migrated
 | `cleanup_failed_standby_instances()` | Remove DB entries for terminated instances |
 | `cleanup_ghost_ecs_registrations()` | Deregister orphaned ECS container instances |
 | `cleanup_orphaned_ec2_instances()` | Stop premium EC2 not in ECS cluster |
-| `handle_scheduled_monitoring()` | 15-minute monitoring loop (10 operations) |
+| `handle_scheduled_monitoring()` | 15-minute monitoring loop (12 steps: scale-down, ECS sync, standby-pool hygiene, pending-release finalization, ghost/orphan cleanup, shared-instance optimization -- see `PREMIUM_MANAGER_ARCHITECTURE.md`) |
 
 ---
 
 ## AWS Resources
 
-- **Premium Manager Lambda:** `subscr-premium-manager` (timeout: 600s)
+All resource names are prefixed with the Terraform `environment` variable (shown here as `{env_prefix}`, e.g. `staging-premium-manager`).
+
+- **Premium Manager Lambda:** `{env_prefix}-premium-manager` (timeout: 600s)
 - **EventBridge Rules:**
-  - `subscr-premium-manager-schedule` (15 min monitoring)
-- **CloudWatch Log Group:** `/aws/lambda/subscr-premium-manager` (14 day retention)
+  - `{env_prefix}-premium-manager-schedule` (rate(15 minutes) monitoring)
+- **CloudWatch Log Group:** `/aws/lambda/{env_prefix}-premium-manager` (30 day retention)
 - **Launch Template:** Defined by `PREMIUM_LAUNCH_TEMPLATE_ID`
 - **RDS Table:** `premium_user_assignments` (assignments + standby pool)
