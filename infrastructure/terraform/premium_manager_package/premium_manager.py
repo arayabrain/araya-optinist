@@ -5503,6 +5503,9 @@ def cleanup_ghost_ecs_registrations():
                                     f"{_AGENT_DISCONNECT_GRACE_SECONDS}s)"
                                 ),
                                 "status": status,
+                                # Terminate — stop would re-enter standby and
+                                # ghost again on next start.
+                                "terminate_ec2": True,
                             }
                         )
                         continue
@@ -5559,6 +5562,21 @@ def cleanup_ghost_ecs_registrations():
                         )
                     except Exception:
                         pass
+                if ghost.get("terminate_ec2") and ghost["ec2_instance_id"]:
+                    try:
+                        print(
+                            f"Terminating ghost EC2 "
+                            f"{ghost['ec2_instance_id']} "
+                            f"after ECS deregistration"
+                        )
+                        ec2.terminate_instances(
+                            InstanceIds=[ghost["ec2_instance_id"]],
+                        )
+                    except Exception as term_err:
+                        print(
+                            f"Failed to terminate ghost EC2 "
+                            f"{ghost['ec2_instance_id']}: {str(term_err)}"
+                        )
                 cleanup_count += 1
             except Exception as e:
                 print(

@@ -376,9 +376,7 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
         Effect = "Allow"
         Action = [
           "ec2:DescribeInstances",
-          "ec2:DescribeInstanceStatus",
-          "ec2:DescribeSpotFleetInstances",
-          "ec2:DescribeSpotFleetRequests"
+          "ec2:DescribeInstanceStatus"
         ]
         Resource = "*"
       },

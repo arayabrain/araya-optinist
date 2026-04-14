@@ -425,7 +425,7 @@ resource "aws_launch_template" "premium" {
       Name        = "${local.env_prefix}-premium-instance"
       Type        = "ECS-Premium"
       Tier        = "premium"
-      Service     = "premium-spot-fleet"
+      Service     = "premium-tier"
       Environment = local.environment_label
     }
   }
