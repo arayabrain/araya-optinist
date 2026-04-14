@@ -729,7 +729,8 @@ class TestEarlyCheckAndCleanup:
                 assert response_body.get("instance_id") == "autoscaling-pool"
                 assert response_body.get("assignment_source") == "existing"
                 assert mock_invoke_migration.called
-                mock_get_existing.assert_called_once_with(test_user_id)
+                mock_get_existing.assert_called_with(test_user_id)
+                assert mock_get_existing.call_count == 2
                 assert not mock_elbv2.create_rule.called
 
     def test_restore_pending_release_returns_alb_fields(self, mock_env_vars_premium):
