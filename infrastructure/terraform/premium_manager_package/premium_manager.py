@@ -2353,8 +2353,17 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
         }
 
 
-def _handle_migrate_shared_users(event):
-    """Run migration loop under a distributed lock."""
+def _handle_migrate_shared_users(event, context=None):
+    """Run migration loop under a distributed lock.
+
+    Exits the loop with a 60 s safety margin before the Lambda
+    timeout so the ``finally`` in ``distributed_lock`` can run
+    ``RELEASE_LOCK``. Without this the Lambda is SIGKILLed
+    mid-loop and the lock releases only after RDS Proxy tears
+    down the pinned backend connection (~30-60 s).
+    """
+    SAFETY_MARGIN_MS = 60_000
+
     with distributed_lock(MIGRATE_USERS_LOCK) as acquired:
         if not acquired:
             print("Another Lambda is already running " "migrations, skipping")
@@ -2383,7 +2392,21 @@ def _handle_migrate_shared_users(event):
         time.sleep(MIGRATION_INITIAL_DELAY_SECONDS)
         elapsed += MIGRATION_INITIAL_DELAY_SECONDS
 
-        while elapsed < max_wait_seconds:
+        def _should_continue():
+            if elapsed >= max_wait_seconds:
+                return False
+            if context and hasattr(context, "get_remaining_time_in_millis"):
+                remaining = context.get_remaining_time_in_millis()
+                if remaining < SAFETY_MARGIN_MS:
+                    print(
+                        f"Approaching Lambda timeout ({remaining}ms "
+                        f"remaining < {SAFETY_MARGIN_MS}ms margin), "
+                        f"exiting migration loop gracefully"
+                    )
+                    return False
+            return True
+
+        while _should_continue():
             update_premium_service_desired_count()
 
             migration_result = process_shared_instance_optimization()
@@ -2446,7 +2469,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     try:
         # Handle async migration invocation
         if event.get("action") == "migrate_shared_users":
-            return _handle_migrate_shared_users(event)
+            return _handle_migrate_shared_users(event, context)
 
         # Handle fix_shared_flags action (one-time data cleanup)
         if event.get("action") == "fix_shared_flags":
