@@ -37,6 +37,7 @@ class TextPosition:
 class PlatformInfo:
     service_name: str
     task_id: str
+    instance_id: str
 
 
 @dataclass

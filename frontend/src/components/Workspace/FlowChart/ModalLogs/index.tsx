@@ -12,7 +12,7 @@ import styled from "@emotion/styled"
 import AdbIcon from "@mui/icons-material/Adb"
 import ArrowBackIosIcon from "@mui/icons-material/ArrowBackIos"
 import ArrowForwardIosIcon from "@mui/icons-material/ArrowForwardIos"
-import CheckCircleIcon from "@mui/icons-material/CheckCircle"
+import CheckCircleOutline from "@mui/icons-material/CheckCircleOutline"
 import CloseIcon from "@mui/icons-material/Close"
 import ComputerIcon from "@mui/icons-material/Computer"
 import ErrorIcon from "@mui/icons-material/Error"
@@ -369,15 +369,17 @@ const ModalLogs = ({ isOpen = false, onClose }: Props) => {
               Platform service name: {platform.service_name}
               {platform.service_name.includes("-premium-") ? (
                 <WorkspacePremiumIcon
-                  sx={{ ...serviceNameIconSx, color: "#FFD700" }}
+                  sx={{ ...serviceNameIconSx, color: "#fffb00" }}
                 />
               ) : (
-                <CheckCircleIcon
+                <CheckCircleOutline
                   sx={{ ...serviceNameIconSx, color: "#ffffff" }}
                 />
               )}
             </span>
-            <span>task id: {platform.task_id}</span>
+            <span>
+              task id: {platform.task_id} ({platform.instance_id})
+            </span>
           </PlatformInfoBox>
         ) : null}
       </Content>
