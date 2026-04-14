@@ -12,6 +12,7 @@ import styled from "@emotion/styled"
 import AdbIcon from "@mui/icons-material/Adb"
 import ArrowBackIosIcon from "@mui/icons-material/ArrowBackIos"
 import ArrowForwardIosIcon from "@mui/icons-material/ArrowForwardIos"
+import CheckCircleIcon from "@mui/icons-material/CheckCircle"
 import CloseIcon from "@mui/icons-material/Close"
 import ComputerIcon from "@mui/icons-material/Computer"
 import ErrorIcon from "@mui/icons-material/Error"
@@ -22,6 +23,7 @@ import KeyboardDoubleArrowDownIcon from "@mui/icons-material/KeyboardDoubleArrow
 import MenuIcon from "@mui/icons-material/Menu"
 import SearchIcon from "@mui/icons-material/Search"
 import WarningIcon from "@mui/icons-material/Warning"
+import WorkspacePremiumIcon from "@mui/icons-material/WorkspacePremium"
 import { Badge, Box, Modal, Tooltip } from "@mui/material"
 
 import {
@@ -40,6 +42,12 @@ type Props = {
 }
 
 const SPACE_CHECK_SCROLL = 50
+
+const serviceNameIconSx = {
+  fontSize: 18,
+  verticalAlign: "-4px",
+  ml: 0.5,
+} as const
 
 const ModalLogs = ({ isOpen = false, onClose }: Props) => {
   const [levels, setLevels] = useState<TLevelsLog[]>([])
@@ -357,7 +365,18 @@ const ModalLogs = ({ isOpen = false, onClose }: Props) => {
         ) : null}
         {platform ? (
           <PlatformInfoBox>
-            <span>Platform service name: {platform.service_name}</span>
+            <span>
+              Platform service name: {platform.service_name}
+              {platform.service_name.includes("-premium-") ? (
+                <WorkspacePremiumIcon
+                  sx={{ ...serviceNameIconSx, color: "#FFD700" }}
+                />
+              ) : (
+                <CheckCircleIcon
+                  sx={{ ...serviceNameIconSx, color: "#ffffff" }}
+                />
+              )}
+            </span>
             <span>task id: {platform.task_id}</span>
           </PlatformInfoBox>
         ) : null}
