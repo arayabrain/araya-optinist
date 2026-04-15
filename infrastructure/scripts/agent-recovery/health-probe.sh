@@ -30,6 +30,8 @@ imds_get() {
 
 INSTANCE_ID=$(imds_get instance-id); INSTANCE_ID="${INSTANCE_ID:-unknown}"
 REGION="${AWS_REGION:-$(imds_get placement/region)}"
+# Safe default: unknown tier falls through to the non-destructive ASG path.
+TIER="${INSTANCE_TIER:-free}"
 STATE_FILE=/var/run/agent-recovery/agent-disconnect-since
 ARMED_FILE=/var/run/agent-recovery/probe-armed
 DISCONNECT_THRESHOLD_SECONDS=300
@@ -82,10 +84,19 @@ fi
 
 SINCE=$(cat "$STATE_FILE" 2>/dev/null || echo "$NOW")
 if [ $((NOW - SINCE)) -ge $DISCONNECT_THRESHOLD_SECONDS ]; then
-  logger -t agent-recovery "agent disconnected for >=${DISCONNECT_THRESHOLD_SECONDS}s — marking instance Unhealthy"
-  aws autoscaling set-instance-health \
-    --instance-id "$INSTANCE_ID" \
-    --health-status Unhealthy \
-    --region "$REGION" || true
+  # Premium has no ASG, so set-instance-health is a no-op; self-terminate
+  # instead. cleanup_ghost_ecs_registrations is the Lambda-side backstop.
+  if [ "$TIER" = "premium" ]; then
+    logger -t agent-recovery "agent disconnected for >=${DISCONNECT_THRESHOLD_SECONDS}s — terminating instance"
+    aws ec2 terminate-instances \
+      --instance-ids "$INSTANCE_ID" \
+      --region "$REGION" || true
+  else
+    logger -t agent-recovery "agent disconnected for >=${DISCONNECT_THRESHOLD_SECONDS}s — marking instance Unhealthy"
+    aws autoscaling set-instance-health \
+      --instance-id "$INSTANCE_ID" \
+      --health-status Unhealthy \
+      --region "$REGION" || true
+  fi
   rm -f "$STATE_FILE"
 fi

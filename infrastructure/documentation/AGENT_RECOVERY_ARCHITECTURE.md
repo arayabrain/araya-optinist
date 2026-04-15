@@ -3,7 +3,7 @@
 ## Executive Summary
 
 - **On-host watchdog** detects the stale-ECS-agent failure mode by grepping the ECS agent log for `InvalidInstanceException` / `Missing container instance arn` and re-running the documented manual recovery sequence
-- **On-host health probe** flips the instance to `Unhealthy` in the ASG when the ECS agent introspection endpoint reports `AgentConnected=false` for >5 minutes, so the ASG terminates and replaces it
+- **On-host health probe** reacts to prolonged (`>5 min`) ECS agent disconnect by tier: ASG-managed free-tier hosts are flipped to `Unhealthy` so the ASG replaces them; premium hosts (no ASG) self-terminate via `ec2:TerminateInstances`, and `cleanup_ghost_ecs_registrations()` in the premium Lambda is the backstop
 - **Out-of-band alarms** (EventBridge `agentConnected=false`, watchdog heartbeat silence, ASG↔ECS reconciliation Lambda) page humans when the on-host watchdog itself is broken
 - **ASG health-check type is `EC2`** because dynamic-port ECS targets never register with the ALB target group, so ELB health checks would silently treat stranded hosts as healthy
 - **AMI is pinned** because the watchdog parses the ECS agent log line format, which is AMI-version-specific — bumping the AMI requires the smoke test in this document
@@ -22,10 +22,10 @@
    - Plus a reconciliation Lambda that compares ASG `InService` instances against `ListContainerInstances` every 5 min
    - Any single path can fail without the system going blind
 
-3. **Alarm-only Lambda, never destructive**
+3. **Alarm-only reconciliation Lambda, never destructive**
    - The reconciliation Lambda emits a count metric and that's it
-   - The only resource that *terminates* an instance is the ASG itself, in response to the on-host probe flipping health to `Unhealthy`
-   - Centralises destructive authority on the host, where the lifecycle guard via IMDS prevents racing the capacity provider
+   - Destructive actions are tier-specific and live on the host: free-tier uses `autoscaling:SetInstanceHealth` so the ASG replaces the instance; premium (no ASG) calls `ec2:TerminateInstances` on itself, with `cleanup_ghost_ecs_registrations()` in `premium_manager.py` as the Lambda-side backstop
+   - Centralises destructive authority on the host, where the lifecycle guard via IMDS prevents racing the capacity provider; premium terminate is IAM-scoped to `Service=premium-tier`-tagged instances to contain blast radius
 
 4. **AMI pinning over `most_recent = true`**
    - Watchdog log parsing depends on the agent log format, which has shifted between AMI releases
@@ -47,11 +47,13 @@
 │  │ greps ecs-agent.log*   │   │ curls localhost:51678      │   │
 │  │ for known stale-agent  │   │ /v1/metadata; if           │   │
 │  │ error strings within   │   │ AgentConnected=false       │   │
-│  │ last 5 min; if found:  │   │ for >5 min:                │   │
-│  │   stop ecs             │   │   set-instance-health      │   │
-│  │   docker rm ecs-agent  │   │   --status Unhealthy       │   │
-│  │   rm agent.db          │   │   (ASG terminates host)    │   │
-│  │   start ecs            │   │                            │   │
+│  │ last 5 min; if found:  │   │ for >5 min, branch by      │   │
+│  │   stop ecs             │   │ INSTANCE_TIER:             │   │
+│  │   docker rm ecs-agent  │   │   free → set-instance-     │   │
+│  │   rm agent.db          │   │     health Unhealthy       │   │
+│  │   start ecs            │   │     (ASG replaces host)    │   │
+│  │                        │   │   premium → ec2:Terminate  │   │
+│  │                        │   │     Instances (no ASG)     │   │
 │  └─────────┬──────────────┘   └─────────────┬──────────────┘   │
 │            │                                │                  │
 │            ↓ PutLogEvents (heartbeat + actions)                 │
@@ -77,7 +79,8 @@
 | Detect stale-agent error in agent log   | Yes — exclusive  | No            | No                    | No               |
 | Detect prolonged AgentConnected=false   | No               | Yes — primary | Yes — secondary       | Yes — primary    |
 | Run recovery sequence (stop/rm/start)   | Yes — exclusive  | No            | No                    | No               |
-| Mark instance Unhealthy in ASG          | No               | Yes — exclusive | No                  | No               |
+| Mark instance Unhealthy in ASG (free)   | No               | Yes — exclusive | No                  | No               |
+| Self-terminate EC2 (premium, no ASG)    | No               | Yes — primary; `cleanup_ghost_ecs_registrations()` in premium Lambda is the backstop | No | No |
 | Page humans                             | No               | No            | Yes (via alarm)       | Yes (via alarm)  |
 
 ---
@@ -101,10 +104,14 @@ The watchdog (`infrastructure/scripts/ecs-user-data.sh`, embedded as a heredoc t
 The probe (`/opt/agent-recovery/health-probe.sh`, also written by user-data) runs every 5 minutes via `agent-health-probe.timer`:
 
 1. Honour the same lifecycle guard as the watchdog
-2. `curl http://localhost:51678/v1/metadata` and look for `"AgentConnected": true`
-3. If connected, clear the disconnect-since state file and exit
-4. If disconnected, write the current epoch to the state file (or read the existing one)
-5. If `now - since >= 300` seconds, call `aws autoscaling set-instance-health --health-status Unhealthy` so the ASG replaces the host
+2. Read `INSTANCE_TIER` from `/etc/agent-recovery/env` (fail-closed default `free` — a missing or unreadable env file takes the non-destructive ASG path)
+3. `curl http://localhost:51678/v1/metadata`; a non-empty `ContainerInstanceArn` counts as connected
+4. If connected, clear the disconnect-since state file, touch `$ARMED_FILE` (the "agent was connected at least once this boot" flag), and exit
+5. If disconnected and `$ARMED_FILE` does not exist, exit — we are still in first-boot agent warmup, not stranded
+6. Otherwise, write the current epoch to the state file (or read the existing one)
+7. If `now - since >= 300` seconds, branch on `INSTANCE_TIER`:
+   - `free` → `aws autoscaling set-instance-health --health-status Unhealthy` so the ASG replaces the host
+   - `premium` → `aws ec2 terminate-instances --instance-ids $INSTANCE_ID` (premium has no ASG, so `set-instance-health` is a no-op; termination is IAM-scoped to `Service=premium-tier` so the host cannot terminate a free-tier peer). The Lambda-side `cleanup_ghost_ecs_registrations()` is the backstop if this call is rate-limited or IAM-denied
 
 ### Reconciliation Lambda
 
@@ -187,7 +194,8 @@ The heartbeat-missing alarm aggregates across the whole fleet (no instance dimen
 | `CLUSTERS`                     | Comma-separated ECS cluster names for the reconciliation Lambda | `aws_ecs_cluster.main.name`                   |
 | `ASG_NAMES`                    | Comma-separated ASG names for the reconciliation Lambda         | `aws_autoscaling_group.main.name`             |
 | `RATE_LIMIT_SECONDS`           | Min seconds between watchdog recoveries per instance            | `3600` (in `watchdog.sh`)                     |
-| `DISCONNECT_THRESHOLD_SECONDS` | Seconds of `AgentConnected=false` before probe marks Unhealthy  | `300` (in `health-probe.sh`)                  |
+| `DISCONNECT_THRESHOLD_SECONDS` | Seconds of `AgentConnected=false` before probe acts             | `300` (in `health-probe.sh`)                  |
+| `INSTANCE_TIER`                | `free` or `premium`; selects the probe's disconnect action      | `free` fail-closed default (set via `/etc/agent-recovery/env` from ecs-user-data) |
 
 ---
 
@@ -247,7 +255,7 @@ If any step fails, do **not** promote the AMI to production. Revert the pin and 
 | Function / script                          | Purpose                                                                                    |
 |--------------------------------------------|--------------------------------------------------------------------------------------------|
 | `/opt/agent-recovery/watchdog.sh`          | Detects stale-agent log entries and runs the documented manual recovery sequence           |
-| `/opt/agent-recovery/health-probe.sh`      | Marks the instance Unhealthy in the ASG when the agent is disconnected for 5+ minutes      |
+| `/opt/agent-recovery/health-probe.sh`      | Acts on 5+ min agent disconnect: free-tier → mark Unhealthy in ASG; premium → self-terminate |
 | `/opt/agent-recovery/lifecycle-state.sh`   | Reads ASG target lifecycle state via IMDS; shared by watchdog and probe                    |
 | `handler()` (Lambda)                       | Counts ASG-vs-ECS reconciliation gaps and emits a CloudWatch metric                        |
 | `_registered_ec2_ids()`                    | Returns the set of EC2 IDs registered as container instances with `agentConnected=true`    |
@@ -267,4 +275,5 @@ If any step fails, do **not** promote the AMI to production. Revert the pin and 
 | `aws_cloudwatch_metric_alarm`       | `${env}-agent-recovery-heartbeat-missing`             | Pages when on-host watchdog has gone silent          |
 | `aws_cloudwatch_metric_alarm`       | `${env}-ecs-asg-instance-unregistered`                | Pages when reconciliation finds gaps                 |
 | `aws_lambda_function`               | `${env}-agent-recovery-reconciliation`                | ASG vs ECS reconciliation, alarm-only                |
-| `aws_iam_role_policy` addition      | `autoscaling:SetInstanceHealth` on ECS instance role  | Lets the on-host probe mark itself Unhealthy         |
+| `aws_iam_role_policy` addition      | `autoscaling:SetInstanceHealth` on ECS instance role  | Lets free-tier on-host probe mark itself Unhealthy   |
+| `aws_iam_role_policy` addition      | `ec2:TerminateInstances` on ECS instance role, scoped by tag `Service=premium-tier` | Lets premium on-host probe self-terminate (no ASG path available) |

@@ -912,9 +912,7 @@ def get_all_premium_instances_with_states():
             # Name tag at all (tagless instances cannot be verified as belonging
             # to this environment).
             if is_premium:
-                if not name_tag or not name_tag.lower().startswith(
-                    env_prefix.lower()
-                ):
+                if not name_tag or not name_tag.lower().startswith(env_prefix.lower()):
                     print(
                         f"Skipping instance {instance_id}: "
                         f"Name '{name_tag}' does not match "
@@ -1601,15 +1599,9 @@ def create_and_stop_standby_instance():
                         f"/{len(subnet_ids)})"
                     )
 
-                    env_label = (
-                        EnvironmentConfig.get_environment_label()
-                    )
-                    env_prefix = (
-                        EnvironmentConfig.get_env_prefix()
-                    )
-                    inst_id = (
-                        PremiumInstanceConfig.INSTANCE_IDENTIFIER
-                    )
+                    env_label = EnvironmentConfig.get_environment_label()
+                    env_prefix = EnvironmentConfig.get_env_prefix()
+                    inst_id = PremiumInstanceConfig.INSTANCE_IDENTIFIER
                     response = ec2.run_instances(
                         LaunchTemplate={
                             "LaunchTemplateId": launch_template_id,
@@ -1626,15 +1618,13 @@ def create_and_stop_standby_instance():
                                     {
                                         "Key": "Name",
                                         "Value": (
-                                            f"{env_prefix}-"
-                                            f"{inst_id}-standby"
+                                            f"{env_prefix}-" f"{inst_id}-standby"
                                         ),
                                     },
                                     {
                                         "Key": "Type",
                                         "Value": (
-                                            PremiumInstanceConfig
-                                            .INSTANCE_TYPE_TAG
+                                            PremiumInstanceConfig.INSTANCE_TYPE_TAG
                                         ),
                                     },
                                     {
@@ -1643,10 +1633,7 @@ def create_and_stop_standby_instance():
                                     },
                                     {
                                         "Key": "Service",
-                                        "Value": (
-                                            PremiumInstanceConfig
-                                            .SERVICE_TAG
-                                        ),
+                                        "Value": (PremiumInstanceConfig.SERVICE_TAG),
                                     },
                                     {
                                         "Key": "Environment",
@@ -1660,8 +1647,7 @@ def create_and_stop_standby_instance():
                                     {
                                         "Key": "Name",
                                         "Value": (
-                                            f"{env_prefix}-"
-                                            f"{inst_id}-standby-vol"
+                                            f"{env_prefix}-" f"{inst_id}-standby-vol"
                                         ),
                                     },
                                     {
@@ -2370,14 +2356,12 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
 def _handle_migrate_shared_users(event, context=None):
     """Run migration loop under a distributed lock.
 
-    Uses ``context.get_remaining_time_in_millis()`` (when available)
-    to guarantee the loop exits with enough time for RELEASE_LOCK to
-    run, preventing a permanently stuck advisory lock on Lambda
-    timeout.
+    Exits the loop with a 60 s safety margin before the Lambda
+    timeout so the ``finally`` in ``distributed_lock`` can run
+    ``RELEASE_LOCK``. Without this the Lambda is SIGKILLed
+    mid-loop and the lock releases only after RDS Proxy tears
+    down the pinned backend connection (~30-60 s).
     """
-    # Safety margin: exit the loop this many ms before Lambda
-    # timeout so the finally block in distributed_lock() can run
-    # RELEASE_LOCK and close the connection.
     SAFETY_MARGIN_MS = 60_000
 
     with distributed_lock(MIGRATE_USERS_LOCK) as acquired:
@@ -2388,7 +2372,7 @@ def _handle_migrate_shared_users(event, context=None):
                 "body": json.dumps({"message": "Migration skipped - lock held"}),
             }
 
-        max_wait_seconds = event.get("max_wait_seconds", 480)
+        max_wait_seconds = event.get("max_wait_seconds", 600)
         retry_interval = event.get("retry_interval", 10)
 
         print(
@@ -2409,16 +2393,14 @@ def _handle_migrate_shared_users(event, context=None):
         elapsed += MIGRATION_INITIAL_DELAY_SECONDS
 
         def _should_continue():
-            """Check both elapsed-time budget and Lambda remaining time."""
             if elapsed >= max_wait_seconds:
                 return False
             if context and hasattr(context, "get_remaining_time_in_millis"):
                 remaining = context.get_remaining_time_in_millis()
                 if remaining < SAFETY_MARGIN_MS:
                     print(
-                        f"Approaching Lambda timeout "
-                        f"({remaining}ms remaining < "
-                        f"{SAFETY_MARGIN_MS}ms margin), "
+                        f"Approaching Lambda timeout ({remaining}ms "
+                        f"remaining < {SAFETY_MARGIN_MS}ms margin), "
                         f"exiting migration loop gracefully"
                     )
                     return False
@@ -3214,9 +3196,7 @@ def assign_premium_user(
                                 "instance_id": refreshed["instance_id"],
                                 "target_group_arn": refreshed["target_group_arn"],
                                 "rule_arn": refreshed["alb_rule_arn"],
-                                "is_shared": bool(
-                                    refreshed.get("is_shared", False)
-                                ),
+                                "is_shared": bool(refreshed.get("is_shared", False)),
                                 "assignment_source": "concurrent_migration",
                             }
                         ),
@@ -3927,14 +3907,12 @@ def invoke_migration_async():
             )
             return
 
-        # Invoke this function with a special event to trigger migration.
-        # max_wait_seconds + MIGRATION_INITIAL_DELAY_SECONDS (60) must
-        # stay well within the Lambda timeout (600s) to ensure
-        # RELEASE_LOCK runs before the process is killed.
+        # Invoke this function with a special event to trigger migration
+        # Retry every 10s for up to 180s waiting for instances to be ready
         payload = json.dumps(
             {
                 "action": "migrate_shared_users",
-                "max_wait_seconds": 480,
+                "max_wait_seconds": 600,
                 "retry_interval": 10,
             }
         )
@@ -3976,24 +3954,7 @@ def scale_premium_instances_if_needed():
             if i["state"] in [InstanceState.PENDING, InstanceState.LAUNCHING]
         ]
 
-        # Filter out ghost instances: EC2 running but no ECS tasks.
-        # These inflate the "running" count and suppress scale-up.
-        ready_running_instances = []
-        ghost_instances = []
-        for inst in running_instances:
-            if check_instance_readiness(inst["instance_id"]):
-                ready_running_instances.append(inst)
-            else:
-                ghost_instances.append(inst)
-        if ghost_instances:
-            ghost_ids = [g["instance_id"] for g in ghost_instances]
-            print(
-                f"WARNING: {len(ghost_instances)} ghost instance(s) detected "
-                f"(EC2 running, 0 ECS tasks): {ghost_ids}. "
-                f"Excluded from capacity calculation."
-            )
-
-        running_count = len(ready_running_instances)
+        running_count = len(running_instances)
         launching_count = len(launching_instances)
         total_instances = len(all_instances)
 
@@ -4007,8 +3968,7 @@ def scale_premium_instances_if_needed():
         effective_capacity = running_count + launching_count
 
         print("Enhanced premium instance analysis:")
-        print(f"- Running instances (ready): {running_count}")
-        print(f"- Ghost instances (running, no ECS tasks): {len(ghost_instances)}")
+        print(f"- Running instances: {running_count}")
         print(f"- Launching instances: {launching_count}")
         print(f"- Standby creation in progress: {standby_creating}")
         print(f"- Running creation in progress: {running_creating}")
@@ -5566,6 +5526,9 @@ def cleanup_ghost_ecs_registrations():
                                     f"{_AGENT_DISCONNECT_GRACE_SECONDS}s)"
                                 ),
                                 "status": status,
+                                # Terminate — stop would re-enter standby and
+                                # ghost again on next start.
+                                "terminate_ec2": True,
                             }
                         )
                         continue
@@ -5622,6 +5585,21 @@ def cleanup_ghost_ecs_registrations():
                         )
                     except Exception:
                         pass
+                if ghost.get("terminate_ec2") and ghost["ec2_instance_id"]:
+                    try:
+                        print(
+                            f"Terminating ghost EC2 "
+                            f"{ghost['ec2_instance_id']} "
+                            f"after ECS deregistration"
+                        )
+                        ec2.terminate_instances(
+                            InstanceIds=[ghost["ec2_instance_id"]],
+                        )
+                    except Exception as term_err:
+                        print(
+                            f"Failed to terminate ghost EC2 "
+                            f"{ghost['ec2_instance_id']}: {str(term_err)}"
+                        )
                 cleanup_count += 1
             except Exception as e:
                 print(

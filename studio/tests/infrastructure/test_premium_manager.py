@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
-from aws_constants import ECSTaskStatus, PremiumInstanceConfig
+from aws_constants import ECSTaskStatus, PremiumAssignment, PremiumInstanceConfig
 from conftest import MockRow, setup_db_mock
 
 TEST_USER_ID = "test_user_12345"
@@ -729,7 +729,8 @@ class TestEarlyCheckAndCleanup:
                 assert response_body.get("instance_id") == "autoscaling-pool"
                 assert response_body.get("assignment_source") == "existing"
                 assert mock_invoke_migration.called
-                mock_get_existing.assert_called_once_with(test_user_id)
+                mock_get_existing.assert_called_with(test_user_id)
+                assert mock_get_existing.call_count == 2
                 assert not mock_elbv2.create_rule.called
 
     def test_restore_pending_release_returns_alb_fields(self, mock_env_vars_premium):
@@ -2922,6 +2923,42 @@ class TestCleanupGhostECSRegistrations:
                 containerInstance=ci_arn,
                 force=True,
             )
+            mock_ec2.terminate_instances.assert_called_once_with(
+                InstanceIds=["i-expired1"],
+            )
+
+    def test_does_not_terminate_already_stopped_ec2(self, mock_env_vars_premium):
+        """Stopped EC2 is deregistered but not re-terminated."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/stopped1"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "i-stopped1",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {"Instances": [{"State": {"Name": "stopped"}, "Tags": []}]}
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_called_once()
+            mock_ec2.terminate_instances.assert_not_called()
 
     def test_clears_tag_on_reconnect(self, mock_env_vars_premium):
         """Connected agent triggers delete_tags to clear disconnect tag."""
@@ -3039,6 +3076,193 @@ class TestCleanupGhostECSRegistrations:
             )
             # No EC2 calls should be made
             mock_ec2.describe_instances.assert_not_called()
+
+
+class TestAssignPremiumUserConcurrentMigration:
+    """When inline migration has no candidate but a concurrent Lambda has
+    already migrated the user, assign_premium_user must re-check and return
+    the updated dedicated assignment instead of falling back to async."""
+
+    def _pool_assignment(self):
+        return {
+            "instance_id": PremiumAssignment.AUTOSCALING_POOL,
+            "target_group_arn": "tg-pool",
+            "alb_rule_arn": "rule-pool",
+            "is_shared": False,
+        }
+
+    def _dedicated_assignment(self, instance_id):
+        return {
+            "instance_id": instance_id,
+            "target_group_arn": f"tg-{instance_id}",
+            "alb_rule_arn": f"rule-{instance_id}",
+            "is_shared": False,
+        }
+
+    def test_concurrent_migration_returns_refreshed_assignment(
+        self, mock_env_vars_premium
+    ):
+        """Second get_existing_user_assignment sees a new dedicated
+        instance → response reflects it, async migration is not invoked."""
+        new_id = "i-dedicated-new"
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.restore_pending_release", return_value=None
+        ), patch(
+            "premium_manager.get_existing_user_assignment"
+        ) as mock_get_assignment, patch(
+            "premium_manager.get_all_premium_instances_with_states",
+            return_value=[],
+        ), patch(
+            "premium_manager.invoke_migration_async"
+        ) as mock_invoke_async, patch(
+            "boto3.client"
+        ):
+            mock_get_assignment.side_effect = [
+                self._pool_assignment(),
+                self._dedicated_assignment(new_id),
+            ]
+
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(user_id=42, event={}, user_uid="uid-42")
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            assert body["assignment_source"] == "concurrent_migration"
+            assert body["instance_id"] == new_id
+            assert body["is_shared"] is False
+            mock_invoke_async.assert_not_called()
+            assert mock_get_assignment.call_count == 2
+
+    def test_no_concurrent_migration_falls_back_to_async(self, mock_env_vars_premium):
+        """If the re-check still returns the pool assignment,
+        invoke_migration_async must run."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.restore_pending_release", return_value=None
+        ), patch(
+            "premium_manager.get_existing_user_assignment"
+        ) as mock_get_assignment, patch(
+            "premium_manager.get_all_premium_instances_with_states",
+            return_value=[],
+        ), patch(
+            "premium_manager.invoke_migration_async"
+        ) as mock_invoke_async, patch(
+            "boto3.client"
+        ):
+            mock_get_assignment.side_effect = [
+                self._pool_assignment(),
+                self._pool_assignment(),
+            ]
+
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(user_id=42, event={}, user_uid="uid-42")
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            assert body.get("assignment_source") != "concurrent_migration"
+            mock_invoke_async.assert_called_once()
+
+
+class TestHandleMigrateSharedUsersTimeout:
+    """Migration loop must exit before the Lambda is SIGKILLed, so the
+    ``finally`` in ``distributed_lock`` can release the MySQL advisory
+    lock synchronously (as opposed to relying on RDS Proxy to tear down
+    the pinned backend connection ~30-60 s later)."""
+
+    def _common_patches(self, mock_env_vars_premium):
+        """Patch out everything the migration loop touches except the
+        pieces under test (loop condition + ``context`` handling)."""
+        lock_cm = MagicMock()
+        lock_cm.__enter__.return_value = True
+        lock_cm.__exit__.return_value = None
+
+        return [
+            patch.dict("os.environ", mock_env_vars_premium),
+            patch("premium_manager.distributed_lock", return_value=lock_cm),
+            patch("premium_manager.time.sleep"),
+            patch("premium_manager.update_premium_service_desired_count"),
+            patch("premium_manager.get_assigned_users_for_instance", return_value=[]),
+        ]
+
+    def test_exits_early_when_lambda_time_low(self, mock_env_vars_premium):
+        """When ``context.get_remaining_time_in_millis()`` drops below the
+        60 s safety margin, the loop must exit *without* starting another
+        iteration, even if ``elapsed < max_wait_seconds`` is still true."""
+        mock_process = MagicMock(
+            return_value={"migrations_performed": 0, "shared_instances_found": 1}
+        )
+        mock_context = MagicMock()
+        # 30 s remaining — below the 60 s safety margin on the very first
+        # check, so the loop should never enter an iteration.
+        mock_context.get_remaining_time_in_millis.return_value = 30_000
+
+        patches = self._common_patches(mock_env_vars_premium) + [
+            patch("premium_manager.process_shared_instance_optimization", mock_process),
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            from premium_manager import _handle_migrate_shared_users
+
+            result = _handle_migrate_shared_users(
+                {"max_wait_seconds": 600, "retry_interval": 10},
+                context=mock_context,
+            )
+
+        assert result["statusCode"] == 200
+        # Zero iterations: the loop short-circuits on the context check
+        # before the first call to process_shared_instance_optimization.
+        mock_process.assert_not_called()
+
+    def test_runs_at_least_one_iteration_when_time_plentiful(
+        self, mock_env_vars_premium
+    ):
+        """With plenty of remaining time and a completed migration, the
+        loop runs a normal iteration and exits via the success path."""
+        # First call: migrates a user. Second call (if it happens): none.
+        # The happy-path branch in _handle_migrate_shared_users exits the
+        # loop once migrations_performed>0 and no shared instances remain.
+        mock_process = MagicMock(
+            side_effect=[
+                {"migrations_performed": 1, "shared_instances_found": 0},
+            ]
+        )
+        mock_context = MagicMock()
+        mock_context.get_remaining_time_in_millis.return_value = 500_000  # 500 s
+
+        patches = self._common_patches(mock_env_vars_premium) + [
+            patch("premium_manager.process_shared_instance_optimization", mock_process),
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            from premium_manager import _handle_migrate_shared_users
+
+            _handle_migrate_shared_users(
+                {"max_wait_seconds": 600, "retry_interval": 10},
+                context=mock_context,
+            )
+
+        assert mock_process.call_count >= 1
+
+    def test_works_without_context(self, mock_env_vars_premium):
+        """``context=None`` (local invocation / older callers) must still
+        be accepted; the loop falls back to the elapsed-time budget."""
+        mock_process = MagicMock(
+            return_value={"migrations_performed": 1, "shared_instances_found": 0}
+        )
+
+        patches = self._common_patches(mock_env_vars_premium) + [
+            patch("premium_manager.process_shared_instance_optimization", mock_process),
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            from premium_manager import _handle_migrate_shared_users
+
+            result = _handle_migrate_shared_users(
+                {"max_wait_seconds": 600, "retry_interval": 10},
+                # No context kwarg — use the default.
+            )
+
+        assert result["statusCode"] == 200
+        mock_process.assert_called()
 
 
 class TestGetHostPortForInstance:
