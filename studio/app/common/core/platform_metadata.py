@@ -98,21 +98,19 @@ def _get_ecs_instance_id() -> str:
         return NO_ECS_INSTANCE_DEFAULT
 
 
-def _mask_instance_id(instance_id: str) -> str:
-    """Truncate an EC2 instance ID to a short prefix for safe exposure.
+def _truncate_id(value: str, max_length: int) -> str:
+    """Truncate an ID string to *max_length* characters for safe exposure.
 
-    Example: ``i-0a1b2c3d4e5f67890`` → ``i-0a1b2c``
-
-    The ``i-`` prefix and the first 6 hex characters are preserved so
-    the value remains useful for prefix-searching in AWS Console or log files.
+    Returns the original value unchanged when it is already short enough.
     """
-    _VISIBLE_CHARS = 6
-    prefix, _, hex_part = instance_id.partition("-")
-    if not hex_part or len(hex_part) <= _VISIBLE_CHARS:
-        return instance_id
-    return f"{prefix}-{hex_part[:_VISIBLE_CHARS]}"
+    if len(value) <= max_length:
+        return value
+    return value[:max_length]
 
 
-ECS_TASK_ID: str = _get_ecs_task_id()
+_ECS_TASK_ID_LENGTH = 10
+_ECS_INSTANCE_ID_LENGTH = 8  # "i-" prefix (2) + 6 hex chars
+
+ECS_TASK_ID: str = _truncate_id(_get_ecs_task_id(), _ECS_TASK_ID_LENGTH)
 ECS_SERVICE_NAME: str = _get_ecs_service_name()
-ECS_INSTANCE_ID: str = _mask_instance_id(_get_ecs_instance_id())
+ECS_INSTANCE_ID: str = _truncate_id(_get_ecs_instance_id(), _ECS_INSTANCE_ID_LENGTH)

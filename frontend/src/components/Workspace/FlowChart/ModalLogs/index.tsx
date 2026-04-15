@@ -366,7 +366,8 @@ const ModalLogs = ({ isOpen = false, onClose }: Props) => {
         {platform ? (
           <PlatformInfoBox>
             <span>
-              Platform service name: {platform.service_name}
+              Service: {platform.service_name}, Task: {platform.task_id} (
+              {platform.instance_id})
               {platform.service_name.includes("-premium-") ? (
                 <WorkspacePremiumIcon
                   sx={{ ...serviceNameIconSx, color: "#fffb00" }}
@@ -376,9 +377,6 @@ const ModalLogs = ({ isOpen = false, onClose }: Props) => {
                   sx={{ ...serviceNameIconSx, color: "#ffffff" }}
                 />
               )}
-            </span>
-            <span>
-              task id: {platform.task_id} ({platform.instance_id})
             </span>
           </PlatformInfoBox>
         ) : null}
