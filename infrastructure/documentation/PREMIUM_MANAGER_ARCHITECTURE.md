@@ -407,12 +407,11 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 
 ### 4. Ghost ECS Container Instances
 
-**Problem:** EC2 instances stopped/terminated outside normal flow leave orphaned ECS registrations that confuse the ECS scheduler.
+**Problem:** Premium EC2s can land `running` with the ECS agent never (re-)registering — e.g. a `start_instances()` + `clear_ecs_agent_checkpoint()` cycle that fails to reconnect. With no ASG, nothing replaces the host, and the stale tag-match inflates `running_count` in `scale_premium_instances_if_needed()`, suppressing legitimate scale-up.
 
-**Solution:** Premium Manager's `cleanup_ghost_ecs_registrations()`:
-- Finds container instances with disconnected agents or stopped/terminated EC2
-- Force-deregisters them from the ECS cluster
-- Runs every 15 minutes as part of scheduled monitoring
+**Solution:** `cleanup_ghost_ecs_registrations()`, on the 15-min monitoring cycle, force-deregisters ghosts from ECS and — on the "EC2 `running` + agent disconnected past `_AGENT_DISCONNECT_GRACE_SECONDS` (300s)" branch — also calls `ec2.terminate_instances()`. **Terminate, not stop:** a stopped ghost is picked up by `register_orphaned_stopped_instances()` and the next `start_premium_instance()` re-runs `clear_ecs_agent_checkpoint()` on the same bad host, reproducing the failure. The on-host probe (`health-probe.sh`, premium branch — see `AGENT_RECOVERY_ARCHITECTURE.md`) is the faster independent path.
+
+**IAM:** `ec2:TerminateInstances` on the Lambda role is tag-scoped to `Service=premium-tier` (premium_manager.tf); the launch template's `Service` tag is aligned to match so direct `RunInstances` without the usual override doesn't silently hit `AccessDenied`.
 
 
 ### 5. Orphaned EC2 Instances
