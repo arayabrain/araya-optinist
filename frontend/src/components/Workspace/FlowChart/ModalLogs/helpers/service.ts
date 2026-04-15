@@ -23,6 +23,7 @@ export type TParamQueryLogs = TParams & { reverse?: boolean; offset: number }
 export type TPlatformInfo = {
   service_name: string
   task_id: string
+  instance_id: string
 }
 
 export const fetchAvailableLogLevels = async (): Promise<TLevelsLog[]> => {
