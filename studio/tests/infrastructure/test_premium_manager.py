@@ -2497,6 +2497,85 @@ class TestHandleScheduledMonitoring:
 
             assert call_order == ["register_orphans", "terminate_aged"]
 
+    def test_resyncs_desired_count_after_ghost_cleanup(self, mock_env_vars_premium):
+        """update_premium_service_desired_count must run AFTER
+        cleanup_ghost_ecs_registrations and cleanup_orphaned_ec2_instances
+        so deregistered ghost CIs and stopped orphans propagate to the
+        ECS service desiredCount in the same Lambda run — otherwise the
+        service keeps trying to place a task on nothing until the next
+        15-min cycle."""
+        call_order = []
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.is_premium_scaling_in_progress", return_value=False
+        ), patch("premium_manager.set_premium_scaling_lock"), patch(
+            "premium_manager.count_active_premium_users", return_value=0
+        ), patch(
+            "premium_manager.count_total_premium_users", return_value=0
+        ), patch(
+            "premium_manager.get_all_premium_instances_with_states",
+            return_value=[],
+        ), patch(
+            "premium_manager.get_assigned_users_for_instance",
+            return_value=[],
+        ), patch(
+            "premium_manager.publish_premium_metrics"
+        ), patch(
+            "premium_manager.scale_down_if_possible"
+        ), patch(
+            "premium_manager.update_premium_service_desired_count",
+            side_effect=lambda: call_order.append("update_desired"),
+        ), patch(
+            "premium_manager.cleanup_failed_standby_instances"
+        ), patch(
+            "premium_manager.register_orphaned_stopped_instances"
+        ), patch(
+            "premium_manager.terminate_aged_stopped_instances"
+        ), patch(
+            "premium_manager.get_standby_count", return_value=0
+        ), patch(
+            "premium_manager.finalize_expired_pending_releases",
+            return_value=[],
+        ), patch(
+            "premium_manager.cleanup_ghost_ecs_registrations",
+            side_effect=lambda: call_order.append("cleanup_ghost"),
+        ), patch(
+            "premium_manager.cleanup_orphaned_ec2_instances",
+            side_effect=lambda: call_order.append("cleanup_orphaned"),
+        ), patch(
+            "premium_manager.fix_incorrect_is_shared_flags",
+            return_value={"fixed_count": 0},
+        ), patch(
+            "premium_manager.process_shared_instance_optimization",
+            return_value={"migrations_performed": 0, "shared_instances_found": 0},
+        ):
+            from premium_manager import handle_scheduled_monitoring
+
+            result = handle_scheduled_monitoring({"source": "test"}, None)
+            assert result["statusCode"] == 200
+
+            assert "cleanup_ghost" in call_order
+            assert "cleanup_orphaned" in call_order
+            assert call_order.count("update_desired") >= 2, (
+                "expected update_premium_service_desired_count to fire at "
+                "step 6 AND step 11b"
+            )
+
+            last_update_idx = (
+                len(call_order) - 1 - call_order[::-1].index("update_desired")
+            )
+            cleanup_ghost_idx = call_order.index("cleanup_ghost")
+            cleanup_orphaned_idx = call_order.index("cleanup_orphaned")
+
+            assert last_update_idx > cleanup_ghost_idx, (
+                "update_premium_service_desired_count must run after "
+                "cleanup_ghost_ecs_registrations"
+            )
+            assert last_update_idx > cleanup_orphaned_idx, (
+                "update_premium_service_desired_count must run after "
+                "cleanup_orphaned_ec2_instances"
+            )
+
 
 class TestGetUserUidFromId:
     """Reverse UID lookup from numeric DB ID."""

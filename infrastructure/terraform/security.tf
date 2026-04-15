@@ -241,14 +241,13 @@ resource "aws_iam_role_policy" "ecs_instance_enhanced_monitoring" {
         Resource = aws_autoscaling_group.main.arn
       },
       {
-        # Premium has no ASG: the probe self-terminates instead. Tag-scoped
-        # so only premium instances can be targets.
         Effect   = "Allow"
         Action   = "ec2:TerminateInstances"
         Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
         Condition = {
           StringEquals = {
-            "ec2:ResourceTag/Service" = "premium-tier"
+            "ec2:ResourceTag/Service"     = "premium-tier"
+            "ec2:ResourceTag/Environment" = local.environment_label
           }
         }
       }

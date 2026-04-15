@@ -2284,6 +2284,9 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
             # 11. Stop orphaned EC2 instances not in ECS cluster
             cleanup_orphaned_ec2_instances()
 
+            # 11b. Re-sync desiredCount — 10b/11 may have removed ACTIVE CIs.
+            update_premium_service_desired_count()
+
             # 12. Optimize shared instances (safety net)
             try:
                 try:

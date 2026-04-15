@@ -189,6 +189,66 @@ describe("UserSlice", () => {
     })
   })
 
+  describe("login.fulfilled", () => {
+    it("should clear stale routing info before saving new tokens", () => {
+      const state = userSlice.reducer(undefined, { type: "@@INIT" })
+
+      const loginFulfilledAction = {
+        type: "user/login/fulfilled",
+        payload: {
+          access_token: "new-access",
+          refresh_token: "new-refresh",
+          ex_token: "new-ex",
+        },
+      }
+
+      userSlice.reducer(state, loginFulfilledAction)
+
+      expect(mockClearRoutingInfo).toHaveBeenCalledTimes(1)
+      expect(mockSaveToken).toHaveBeenCalledWith("new-access")
+      expect(mockSaveRefreshToken).toHaveBeenCalledWith("new-refresh")
+      expect(mockSaveExToken).toHaveBeenCalledWith("new-ex")
+
+      const clearOrder = mockClearRoutingInfo.mock.invocationCallOrder[0]
+      const saveOrder = mockSaveToken.mock.invocationCallOrder[0]
+      expect(clearOrder).toBeLessThan(saveOrder)
+    })
+  })
+
+  describe("login.rejected", () => {
+    it("should fully reset auth state on login failure", () => {
+      const stateWithUser: User = {
+        currentUser: {
+          id: 1,
+          uid: "test",
+          email: "test@example.com",
+        } as User["currentUser"],
+        listUserSearch: undefined,
+        listUser: undefined,
+        loading: true,
+        logoutGeneration: 3,
+      }
+
+      const nextState = userSlice.reducer(stateWithUser, {
+        type: "user/login/rejected",
+        error: { message: "bad credentials" },
+      })
+
+      expect(mockRemoveToken).toHaveBeenCalledTimes(1)
+      expect(mockRemoveRefreshToken).toHaveBeenCalledTimes(1)
+      expect(mockRemoveExToken).toHaveBeenCalledTimes(1)
+      expect(mockClearRoutingInfo).toHaveBeenCalledTimes(1)
+      expect(mockSaveToken).not.toHaveBeenCalled()
+      expect(mockSaveRefreshToken).not.toHaveBeenCalled()
+      expect(mockSaveExToken).not.toHaveBeenCalled()
+
+      expect(nextState.currentUser).toBeUndefined()
+      expect(nextState.listUser).toBeUndefined()
+      expect(nextState.listUserSearch).toBeUndefined()
+      expect(nextState.loading).toBe(false)
+    })
+  })
+
   describe("getMe.rejected", () => {
     it("should clear currentUser but not clear tokens", () => {
       const stateWithUser: User = {

@@ -32,7 +32,7 @@ WantedBy=multi-user.target
 UNIT_EOF
 
 systemctl daemon-reload
-systemctl enable ecs-clear-checkpoint.service
+systemctl enable --now ecs-clear-checkpoint.service
 fi
 
 # =====================================================================

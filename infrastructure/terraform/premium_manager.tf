@@ -380,7 +380,6 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
         ]
         Resource = "*"
       },
-      # EC2 Management actions (scoped to premium instances by tag)
       {
         Effect = "Allow"
         Action = [
@@ -391,7 +390,8 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
         Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
         Condition = {
           StringEquals = {
-            "ec2:ResourceTag/Service" = "premium-tier"
+            "ec2:ResourceTag/Service"     = "premium-tier"
+            "ec2:ResourceTag/Environment" = local.environment_label
           }
         }
       },

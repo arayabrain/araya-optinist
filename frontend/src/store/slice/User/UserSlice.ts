@@ -86,6 +86,8 @@ export const userSlice = createSlice({
       .addMatcher(
         isAnyOf(login.fulfilled, proxyLogin.fulfilled),
         (_, action) => {
+          // Prior user's routing_id would replay with the new JWT → 403.
+          routingService.clearRoutingInfo()
           saveToken(action.payload.access_token)
           saveRefreshToken(action.payload.refresh_token)
           saveExToken(action.payload.ex_token)
