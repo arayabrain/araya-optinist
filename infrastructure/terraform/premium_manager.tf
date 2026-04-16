@@ -397,14 +397,11 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
           }
         }
       },
-      # EC2 CreateTags (needed by RunInstances TagSpecifications on instances and volumes)
+      # EC2 CreateTags (unrestricted — needed by RunInstances TagSpecifications)
       {
-        Effect = "Allow"
-        Action = "ec2:CreateTags"
-        Resource = [
-          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*",
-          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:volume/*"
-        ]
+        Effect   = "Allow"
+        Action   = "ec2:CreateTags"
+        Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
       },
       # EC2 DeleteTags (scoped to ghost cleanup grace period tag only)
       {
@@ -475,7 +472,6 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
         Effect = "Allow"
         Action = [
           "elasticloadbalancing:DescribeTargetGroups",
-          "elasticloadbalancing:DescribeTargetHealth",
           "elasticloadbalancing:DescribeRules"
         ]
         Resource = "*"
@@ -603,41 +599,6 @@ resource "aws_cloudwatch_log_metric_filter" "premium_assignments" {
     name      = "ActiveAssignments"
     namespace = "OptiNiSt/Premium/${var.environment}"
     value     = "1"
-  }
-}
-
-# Sustained "Error migrating user" bursts indicate the migration path is broken;
-# single occurrences are benign (reservation contention, lock loss).
-resource "aws_cloudwatch_log_metric_filter" "premium_migration_errors" {
-  name           = "premium-migration-errors"
-  log_group_name = aws_cloudwatch_log_group.premium_manager_logs.name
-  pattern        = "\"Error migrating user\""
-
-  metric_transformation {
-    name          = "MigrationErrors"
-    namespace     = "OptiNiSt/Premium/${var.environment}"
-    value         = "1"
-    default_value = "0"
-  }
-}
-
-resource "aws_cloudwatch_metric_alarm" "premium_migration_errors_high" {
-  alarm_name          = "${var.environment}-premium-migration-errors-high"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = "1"
-  metric_name         = "MigrationErrors"
-  namespace           = "OptiNiSt/Premium/${var.environment}"
-  period              = "900"
-  statistic           = "Sum"
-  threshold           = "50"
-  treat_missing_data  = "notBreaching"
-  alarm_description   = "Premium manager migration is failing repeatedly (>50 errors / 15 min). Users on is_shared=true assignments will not be promoted until resolved."
-  alarm_actions       = local.critical_alerts_actions
-  ok_actions          = local.critical_alerts_actions
-
-  tags = {
-    Name    = "Premium Migration Errors Alarm"
-    Service = "premium-monitoring"
   }
 }
 
@@ -845,8 +806,6 @@ resource "aws_cloudwatch_metric_alarm" "premium_cpu_high" {
   alarm_description   = "Premium ECS service CPU utilization is high"
   alarm_actions       = local.critical_alerts_actions
   ok_actions          = local.critical_alerts_actions
-  # Scale-to-zero leaves no datapoints; avoid OK emails on every warm-up.
-  treat_missing_data = "notBreaching"
 
   dimensions = {
     ServiceName = aws_ecs_service.premium.name
@@ -871,8 +830,6 @@ resource "aws_cloudwatch_metric_alarm" "premium_memory_high" {
   alarm_description   = "Premium ECS service memory utilization is high"
   alarm_actions       = local.critical_alerts_actions
   ok_actions          = local.critical_alerts_actions
-  # Scale-to-zero leaves no datapoints; avoid OK emails on every warm-up.
-  treat_missing_data = "notBreaching"
 
   dimensions = {
     ServiceName = aws_ecs_service.premium.name

@@ -706,9 +706,7 @@ def _restore_pending_release_transaction(connection, user_id: int):
                 rule_arn = (assignment.get("alb_rule_arn") or "").strip() or None
                 if target_group_arn or rule_arn:
                     try:
-                        _teardown_alb_resources(
-                            user_id, rule_arn, target_group_arn, instance_id
-                        )
+                        _teardown_alb_resources(user_id, rule_arn, target_group_arn)
                     except Exception as alb_err:
                         print(
                             f"ALB cleanup warning for stale user {user_id}: "
@@ -912,9 +910,7 @@ def get_all_premium_instances_with_states():
             # Name tag at all (tagless instances cannot be verified as belonging
             # to this environment).
             if is_premium:
-                if not name_tag or not name_tag.lower().startswith(
-                    env_prefix.lower()
-                ):
+                if not name_tag or not name_tag.lower().startswith(env_prefix.lower()):
                     print(
                         f"Skipping instance {instance_id}: "
                         f"Name '{name_tag}' does not match "
@@ -1601,15 +1597,9 @@ def create_and_stop_standby_instance():
                         f"/{len(subnet_ids)})"
                     )
 
-                    env_label = (
-                        EnvironmentConfig.get_environment_label()
-                    )
-                    env_prefix = (
-                        EnvironmentConfig.get_env_prefix()
-                    )
-                    inst_id = (
-                        PremiumInstanceConfig.INSTANCE_IDENTIFIER
-                    )
+                    env_label = EnvironmentConfig.get_environment_label()
+                    env_prefix = EnvironmentConfig.get_env_prefix()
+                    inst_id = PremiumInstanceConfig.INSTANCE_IDENTIFIER
                     response = ec2.run_instances(
                         LaunchTemplate={
                             "LaunchTemplateId": launch_template_id,
@@ -1626,15 +1616,13 @@ def create_and_stop_standby_instance():
                                     {
                                         "Key": "Name",
                                         "Value": (
-                                            f"{env_prefix}-"
-                                            f"{inst_id}-standby"
+                                            f"{env_prefix}-" f"{inst_id}-standby"
                                         ),
                                     },
                                     {
                                         "Key": "Type",
                                         "Value": (
-                                            PremiumInstanceConfig
-                                            .INSTANCE_TYPE_TAG
+                                            PremiumInstanceConfig.INSTANCE_TYPE_TAG
                                         ),
                                     },
                                     {
@@ -1643,10 +1631,7 @@ def create_and_stop_standby_instance():
                                     },
                                     {
                                         "Key": "Service",
-                                        "Value": (
-                                            PremiumInstanceConfig
-                                            .SERVICE_TAG
-                                        ),
+                                        "Value": (PremiumInstanceConfig.SERVICE_TAG),
                                     },
                                     {
                                         "Key": "Environment",
@@ -1660,8 +1645,7 @@ def create_and_stop_standby_instance():
                                     {
                                         "Key": "Name",
                                         "Value": (
-                                            f"{env_prefix}-"
-                                            f"{inst_id}-standby-vol"
+                                            f"{env_prefix}-" f"{inst_id}-standby-vol"
                                         ),
                                     },
                                     {
@@ -2275,10 +2259,7 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
                             assignment.get("target_group_arn") or ""
                         ).strip() or None
                         teardown_errors = _teardown_alb_resources(
-                            assignment["user_id"],
-                            rule_arn,
-                            tg_arn,
-                            assignment.get("instance_id"),
+                            assignment["user_id"], rule_arn, tg_arn
                         )
                         if teardown_errors:
                             print(
@@ -2693,103 +2674,6 @@ def _enable_sticky_sessions(
         print(f"WARNING: Failed to enable sticky sessions on {target_group_arn}: {e}")
 
 
-# Container port the studio backend always binds inside the task. The host port
-# is now ephemeral (hostPort=0 in the task definition), so all register /
-# deregister calls must look up the actual mapped host port instead of assuming
-# the container port equals the host port.
-CONTAINER_PORT = 8000
-
-
-def get_host_port_for_instance(
-    instance_id: str, max_attempts: int = 10, delay: float = 3.0
-) -> int:
-    """Look up the ephemeral host port that the studio container is bound to
-    on the given EC2 instance.
-
-    The premium task def uses ``hostPort = 0``, so ECS picks a port from the
-    OS ephemeral range at task start. We resolve it via:
-        EC2 instance -> ECS container instance -> running task -> networkBindings
-
-    ``networkBindings`` is empty during a window where ``lastStatus == RUNNING``
-    but the container has not yet bound its port — poll instead of one-shot.
-    Filter explicitly by ``containerPort`` so a future second port mapping
-    (metrics/debug) cannot silently return the wrong entry.
-    """
-    cluster_name = get_required_env_var("CLUSTER_NAME")
-    ecs_client: "ECSClient" = boto3.client("ecs")
-
-    last_err: Optional[str] = None
-    for _ in range(max_attempts):
-        try:
-            ecs_container_instance_id = get_ecs_container_instance_id(
-                instance_id, cluster_name
-            )
-            if not ecs_container_instance_id:
-                last_err = "no ECS container instance mapping yet"
-                time.sleep(delay)
-                continue
-
-            tasks_response = ecs_client.list_tasks(
-                cluster=cluster_name, containerInstance=ecs_container_instance_id
-            )
-            task_arns = tasks_response.get("taskArns", [])
-            if not task_arns:
-                last_err = "no tasks on container instance yet"
-                time.sleep(delay)
-                continue
-
-            task_details = ecs_client.describe_tasks(
-                cluster=cluster_name, tasks=task_arns
-            )
-            for task in task_details.get("tasks", []):
-                if task.get("lastStatus") != ECSTaskStatus.RUNNING:
-                    continue
-                for container in task.get("containers", []):
-                    bindings = container.get("networkBindings") or []
-                    match = next(
-                        (
-                            b
-                            for b in bindings
-                            if b.get("containerPort") == CONTAINER_PORT
-                        ),
-                        None,
-                    )
-                    if match and match.get("hostPort"):
-                        host_port = int(match["hostPort"])
-                        print(
-                            f"Resolved host port {host_port} for instance "
-                            f"{instance_id} (container port {CONTAINER_PORT})"
-                        )
-                        return host_port
-            last_err = "task running but networkBindings still empty"
-        except Exception as e:
-            last_err = str(e)
-        time.sleep(delay)
-
-    raise RuntimeError(
-        f"Could not resolve host port for instance {instance_id} after "
-        f"{max_attempts} attempts: {last_err}"
-    )
-
-
-def get_registered_port_for_instance(target_group_arn: str, instance_id: str) -> int:
-    """Look up the port currently registered in a target group for an instance.
-
-    Used in deregister paths because the task may already be stopped — we
-    cannot rely on ``describe_tasks`` to recover the host port. Reads the
-    target group's live registrations via ``describe_target_health`` instead.
-    """
-    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
-    response = elbv2.describe_target_health(TargetGroupArn=target_group_arn)
-    for desc in response.get("TargetHealthDescriptions", []):
-        target = desc.get("Target", {}) or {}
-        if target.get("Id") == instance_id and target.get("Port"):
-            return int(target["Port"])
-    raise RuntimeError(
-        f"Instance {instance_id} not found in target group {target_group_arn}"
-    )
-
-
 def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
     """
     Create a new target group for a premium user, or return existing one if
@@ -2812,11 +2696,7 @@ def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
         response = elbv2.create_target_group(
             Name=target_group_name,
             Protocol="HTTP",
-            # TG-level Port is only a default for unported registrations; we
-            # always register with the actual ephemeral host port via
-            # get_host_port_for_instance(). Kept aligned with CONTAINER_PORT
-            # for clarity rather than functional reasons.
-            Port=CONTAINER_PORT,
+            Port=8000,
             VpcId=vpc_id,
             HealthCheckPath="/health",
             HealthCheckProtocol="HTTP",
@@ -3664,9 +3544,7 @@ def assign_premium_user(
             target_group_response = elbv2.create_target_group(
                 Name=tg_name,
                 Protocol="HTTP",
-                # TG-level Port is only a default; we always register with the
-                # actual ephemeral host port via get_host_port_for_instance().
-                Port=CONTAINER_PORT,
+                Port=8000,
                 VpcId=vpc_id,
                 HealthCheckPath="/health",
                 HealthCheckProtocol="HTTP",
@@ -3687,11 +3565,10 @@ def assign_premium_user(
             ]
             _enable_sticky_sessions(elbv2, target_group_arn)
 
-            # 8. Register instance to target group on its ephemeral host port
-            host_port = get_host_port_for_instance(instance_id)
+            # 8. Register instance to target group
             elbv2.register_targets(
                 TargetGroupArn=target_group_arn,
-                Targets=[{"Id": instance_id, "Port": host_port}],
+                Targets=[{"Id": instance_id, "Port": 8000}],
             )
 
         # Create ALB listener rule for user routing
@@ -4483,11 +4360,10 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                     vpc_id = get_required_env_var("VPC_ID")
                     new_target_group_arn = create_or_get_target_group(user_id, vpc_id)
 
-                    # Register new instance to new target group on its ephemeral port
-                    new_host_port = get_host_port_for_instance(new_instance_id)
+                    # Register new instance to new target group
                     elbv2.register_targets(
                         TargetGroupArn=new_target_group_arn,
-                        Targets=[{"Id": new_instance_id, "Port": new_host_port}],
+                        Targets=[{"Id": new_instance_id, "Port": 8000}],
                     )
 
                     # Check if old ALB rule exists, create new one if not
@@ -4588,29 +4464,15 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                             user_id, vpc_id
                         )
 
-                    # Look up the actual registered port for the old instance
-                    # — the task may already be stopping so we cannot rely on
-                    # describe_tasks. Fall back to skipping deregister if the
-                    # entry is already gone (e.g. cleaned up by EC2 state event).
-                    try:
-                        old_host_port = get_registered_port_for_instance(
-                            old_target_group_arn, old_instance_id
-                        )
-                        elbv2.deregister_targets(
-                            TargetGroupArn=old_target_group_arn,
-                            Targets=[{"Id": old_instance_id, "Port": old_host_port}],
-                        )
-                    except RuntimeError as lookup_err:
-                        print(
-                            f"Skipping deregister for {old_instance_id} from "
-                            f"{old_target_group_arn}: {lookup_err}"
-                        )
+                    elbv2.deregister_targets(
+                        TargetGroupArn=old_target_group_arn,
+                        Targets=[{"Id": old_instance_id, "Port": 8000}],
+                    )
 
-                    # Register new instance on its ephemeral host port
-                    new_host_port = get_host_port_for_instance(new_instance_id)
+                    # Register to new instance (same target group)
                     elbv2.register_targets(
                         TargetGroupArn=old_target_group_arn,
-                        Targets=[{"Id": new_instance_id, "Port": new_host_port}],
+                        Targets=[{"Id": new_instance_id, "Port": 8000}],
                     )
 
                     # Update RDS assignment
@@ -4643,16 +4505,8 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
         return False
 
 
-def _teardown_alb_resources(user_id, rule_arn, target_group_arn, instance_id=None):
-    """Delete ALB rule and target group for a released user.
-
-    For per-user target groups the TG is deleted outright. For the shared
-    autoscaling target group we cannot delete it (other users still depend on
-    it), but we *must* deregister this user's instance from it — otherwise the
-    instance:port entry leaks. With ephemeral host ports a leak is untraceable
-    (no stable port to match on after the next task replacement), so the
-    deregister is now load-bearing rather than just hygiene.
-    """
+def _teardown_alb_resources(user_id, rule_arn, target_group_arn):
+    """Delete ALB rule and target group for a released user."""
     elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
     errors = []
 
@@ -4679,39 +4533,6 @@ def _teardown_alb_resources(user_id, rule_arn, target_group_arn, instance_id=Non
             print(error_msg)
             errors.append(error_msg)
     elif target_group_arn == autoscaling_tg_arn:
-        # Shared TG: do not delete, but deregister this user's instance so the
-        # ephemeral instance:port entry does not leak.
-        if instance_id and instance_id != PremiumAssignment.AUTOSCALING_POOL:
-            try:
-                old_host_port = get_registered_port_for_instance(
-                    autoscaling_tg_arn, instance_id
-                )
-                elbv2.deregister_targets(
-                    TargetGroupArn=autoscaling_tg_arn,
-                    Targets=[{"Id": instance_id, "Port": old_host_port}],
-                )
-                print(
-                    f"Deregistered {instance_id}:{old_host_port} from shared "
-                    f"autoscaling target group"
-                )
-            except RuntimeError as lookup_err:
-                # Already gone — fine, nothing to leak
-                print(
-                    f"No registration to deregister for {instance_id} in "
-                    f"shared autoscaling TG: {lookup_err}"
-                )
-            except Exception as dereg_err:
-                error_msg = (
-                    f"Error deregistering {instance_id} from shared "
-                    f"autoscaling TG: {str(dereg_err)}"
-                )
-                print(error_msg)
-                errors.append(error_msg)
-        else:
-            print(
-                f"Skipping deregister from shared autoscaling TG "
-                f"(instance_id={instance_id})"
-            )
         print(
             f"Skipping deletion of shared autoscaling "
             f"target group: {target_group_arn}"
@@ -4745,7 +4566,6 @@ def release_premium_user(user_id: int, hard: bool = False) -> Dict[str, Any]:
                 ).strip() or None
                 rule_arn = (assignment["alb_rule_arn"] or "").strip() or None
                 print(f"Hard-released user {user_id} from instance {instance_id}")
-                instance_id_for_teardown = instance_id
             except Exception as assignment_error:
                 print(
                     f"No assignment found for user {user_id}: "
@@ -4753,11 +4573,8 @@ def release_premium_user(user_id: int, hard: bool = False) -> Dict[str, Any]:
                 )
                 target_group_arn = None
                 rule_arn = None
-                instance_id_for_teardown = None
 
-            errors = _teardown_alb_resources(
-                user_id, rule_arn, target_group_arn, instance_id_for_teardown
-            )
+            errors = _teardown_alb_resources(user_id, rule_arn, target_group_arn)
         else:
             # Soft release: mark as pending_release, keep ALB/TG intact
             assignment = soft_release_user_assignment(user_id)
