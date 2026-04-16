@@ -104,33 +104,14 @@ resource "aws_lb_target_group" "autoscaling" {
 # Launch Template for Auto Scaling Group
 # ======================================
 
-# Agent-recovery scripts inlined into the launch template user-data via
-# templatefile(). Kept as standalone files (not heredocs) so they can be
-# shellcheck'd, edited, and smoke-tested as real files. See
-# AGENT_RECOVERY_ARCHITECTURE.md for the smoke test procedure.
-locals {
-  agent_recovery_lifecycle_sh    = file("${path.module}/../scripts/agent-recovery/lifecycle-state.sh")
-  agent_recovery_watchdog_sh     = file("${path.module}/../scripts/agent-recovery/watchdog.sh")
-  agent_recovery_health_probe_sh = file("${path.module}/../scripts/agent-recovery/health-probe.sh")
-}
-
-# ECS-optimized AMI — pinned. The stale-agent watchdog in
-# scripts/agent-recovery/watchdog.sh greps the ECS agent logs for specific
-# error strings whose format can shift between AMI releases, so we pin
-# rather than track `recommended`. Re-run the watchdog smoke test
-# (AGENT_RECOVERY_ARCHITECTURE.md) whenever this is bumped.
-variable "ecs_optimized_ami_name" {
-  description = "Pinned ECS-optimized AMI name. Bumping requires re-running the agent-recovery watchdog smoke test."
-  type        = string
-  default     = "amzn2-ami-ecs-hvm-2.0.20251015-x86_64-ebs"
-}
-
+# Get the latest ECS-optimized AMI
 data "aws_ami" "ecs_optimized" {
-  owners = ["amazon"]
+  most_recent = true
+  owners      = ["amazon"]
 
   filter {
     name   = "name"
-    values = [var.ecs_optimized_ami_name]
+    values = ["amzn2-ami-ecs-hvm-*-x86_64-ebs"]
   }
 
   filter {
@@ -164,25 +145,18 @@ resource "aws_launch_template" "ecs" {
     enabled = true
   }
 
-  # base64gzip (not base64encode): inlined agent-recovery scripts push raw
-  # user-data past EC2's 16 KB limit. cloud-init transparently decompresses.
-  user_data = base64gzip(templatefile("${path.module}/../scripts/ecs-user-data.sh", {
-    tier                           = "free"
-    cluster_name                   = aws_ecs_cluster.main.name
-    git_branch                     = var.git_branch
-    git_repo                       = var.git_repo
-    firebase_config_json           = var.firebase_config_json
-    firebase_private_json          = var.firebase_private_json
-    ecr_registry                   = split("/", local.ecr_repository_url)[0]
-    ecr_repository_url             = local.ecr_repository_url
-    efs_id                         = aws_efs_file_system.snmk.id
-    db_host                        = replace(aws_db_instance.main.endpoint, ":3306", "")
-    swap_size_mb                   = 32768 # 32GB swap for workflow memory spikes
-    aws_region                     = var.aws_region
-    agent_recovery_lifecycle_sh    = local.agent_recovery_lifecycle_sh
-    agent_recovery_watchdog_sh     = local.agent_recovery_watchdog_sh
-    agent_recovery_health_probe_sh = local.agent_recovery_health_probe_sh
-    agent_recovery_log_group       = aws_cloudwatch_log_group.agent_recovery.name
+  user_data = base64encode(templatefile("${path.module}/../scripts/ecs-user-data.sh", {
+    tier                  = "free"
+    cluster_name          = aws_ecs_cluster.main.name
+    git_branch            = var.git_branch
+    git_repo              = var.git_repo
+    firebase_config_json  = var.firebase_config_json
+    firebase_private_json = var.firebase_private_json
+    ecr_registry          = split("/", local.ecr_repository_url)[0]
+    ecr_repository_url    = local.ecr_repository_url
+    efs_id                = aws_efs_file_system.snmk.id
+    db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
+    swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
   }))
   tag_specifications {
     resource_type = "instance"
@@ -211,17 +185,10 @@ resource "aws_launch_template" "ecs" {
 # Auto Scaling Group
 # ==================
 resource "aws_autoscaling_group" "main" {
-  name                = "${local.env_prefix}-asg"
-  vpc_zone_identifier = [aws_subnet.private1.id, aws_subnet.private2.id]
-  target_group_arns   = [aws_lb_target_group.autoscaling.arn]
-  # Use EC2 health checks rather than ELB. With dynamic-port ECS registration,
-  # an instance with no running task is never registered in the target group,
-  # so the ELB reports it as `unused` and an "ELB" health check treats that as
-  # healthy — letting a stranded host live forever. The on-instance probe in
-  # ecs-user-data.sh marks the instance Unhealthy when the ECS agent has been
-  # disconnected for >5 min, which is what makes plain EC2 health checks
-  # meaningful here.
-  health_check_type         = "EC2"
+  name                      = "${local.env_prefix}-asg"
+  vpc_zone_identifier       = [aws_subnet.private1.id, aws_subnet.private2.id]
+  target_group_arns         = [aws_lb_target_group.autoscaling.arn]
+  health_check_type         = "ELB"
   health_check_grace_period = 900
   default_cooldown          = 300
 
@@ -295,13 +262,11 @@ resource "aws_autoscaling_group" "main" {
     propagate_at_launch = true
   }
 
-  # Warmup matches health_check_grace_period to clear the agent-recovery
-  # boot window before a refreshed host is considered healthy.
   instance_refresh {
     strategy = "Rolling"
     preferences {
-      instance_warmup        = 900
-      min_healthy_percentage = 50
+      instance_warmup        = 300
+      min_healthy_percentage = 0
     }
   }
 
@@ -400,25 +365,18 @@ resource "aws_launch_template" "premium" {
     enabled = true
   }
 
-  # base64gzip (not base64encode): inlined agent-recovery scripts push raw
-  # user-data past EC2's 16 KB limit. cloud-init transparently decompresses.
-  user_data = base64gzip(templatefile("${path.module}/../scripts/ecs-user-data.sh", {
-    tier                           = "premium"
-    cluster_name                   = aws_ecs_cluster.main.name
-    git_branch                     = var.git_branch
-    git_repo                       = var.git_repo
-    firebase_config_json           = var.firebase_config_json
-    firebase_private_json          = var.firebase_private_json
-    ecr_registry                   = split("/", local.ecr_repository_url)[0]
-    ecr_repository_url             = local.ecr_repository_url
-    efs_id                         = aws_efs_file_system.snmk.id
-    db_host                        = replace(aws_db_instance.main.endpoint, ":3306", "")
-    swap_size_mb                   = 32768 # 32GB swap for workflow memory spikes
-    aws_region                     = var.aws_region
-    agent_recovery_lifecycle_sh    = local.agent_recovery_lifecycle_sh
-    agent_recovery_watchdog_sh     = local.agent_recovery_watchdog_sh
-    agent_recovery_health_probe_sh = local.agent_recovery_health_probe_sh
-    agent_recovery_log_group       = aws_cloudwatch_log_group.agent_recovery.name
+  user_data = base64encode(templatefile("${path.module}/../scripts/ecs-user-data.sh", {
+    tier                  = "premium"
+    cluster_name          = aws_ecs_cluster.main.name
+    git_branch            = var.git_branch
+    git_repo              = var.git_repo
+    firebase_config_json  = var.firebase_config_json
+    firebase_private_json = var.firebase_private_json
+    ecr_registry          = split("/", local.ecr_repository_url)[0]
+    ecr_repository_url    = local.ecr_repository_url
+    efs_id                = aws_efs_file_system.snmk.id
+    db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
+    swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
   }))
 
   tag_specifications {
@@ -589,8 +547,6 @@ resource "aws_ecs_task_definition" "autoscaling" {
       entryPoint        = ["/bin/sh", "-c"]
       command           = ["./cloud-startup.sh"]
 
-      stopTimeout = 120 # see ECS_CONTAINER_STOP_TIMEOUT in ecs-user-data.sh
-
       linuxParameters = {
         maxSwap    = 32768 # Max swap in MiB (matches 32GB host swap on EBS)
         swappiness = 20    # Only swap under memory pressure (host also set to 20)
@@ -600,7 +556,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
         {
           name          = "${local.env_prefix}-cloud-container-port-8000"
           containerPort = 8000
-          hostPort      = 0 # ephemeral
+          hostPort      = 8000
           protocol      = "tcp"
         }
       ]
@@ -852,8 +808,6 @@ resource "aws_ecs_task_definition" "premium" {
       entryPoint        = ["/bin/sh", "-c"]
       command           = ["./cloud-startup.sh"]
 
-      stopTimeout = 120 # see ECS_CONTAINER_STOP_TIMEOUT in ecs-user-data.sh
-
       # linuxParameters = {
       #   maxSwap    = 32768  # Max swap in MiB (matches 32GB host swap on EBS)
       #   swappiness = 20     # Only swap under memory pressure (host also set to 20)
@@ -864,7 +818,7 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name          = "${var.environment}-premium-optinist-cloud-container-port-8000"
           containerPort = 8000
-          hostPort      = 0 # ephemeral; resolved by premium_manager Lambda
+          hostPort      = 8000
           protocol      = "tcp"
         }
       ]
@@ -1086,11 +1040,6 @@ resource "aws_ecs_service" "autoscaling" {
   deployment_maximum_percent         = 200
   deployment_minimum_healthy_percent = 0
 
-  deployment_circuit_breaker {
-    enable   = true
-    rollback = true
-  }
-
   capacity_provider_strategy {
     capacity_provider = aws_ecs_capacity_provider.main.name
     weight            = 1
@@ -1158,61 +1107,6 @@ resource "aws_ecs_service" "autoscaling" {
 #   }
 # }
 #
-# ===========================================================
-# Free-tier outage detection alarms
-# ===========================================================
-# Mirrors the background_service.tf pattern. Pages when the free-tier
-# ECS service has no running task, or when the ALB target group has no
-# healthy targets (defence-in-depth against ContainerInsights pipeline lag).
-
-resource "aws_cloudwatch_metric_alarm" "free_tier_running_task_count_zero" {
-  alarm_name          = "${local.env_prefix}-free-tier-running-task-count-zero"
-  comparison_operator = "LessThanThreshold"
-  evaluation_periods  = "1"
-  metric_name         = "RunningTaskCount"
-  namespace           = "ECS/ContainerInsights"
-  period              = "300"
-  statistic           = "Average"
-  threshold           = "1"
-  alarm_description   = "Free-tier service has no running task — covers stale ECS agent and ASG replacement gaps."
-  alarm_actions       = local.critical_alerts_actions
-  ok_actions          = local.critical_alerts_actions
-  treat_missing_data  = "breaching"
-
-  dimensions = {
-    ClusterName = aws_ecs_cluster.main.name
-    ServiceName = aws_ecs_service.autoscaling.name
-  }
-
-  tags = {
-    Name = "Free Tier RunningTaskCount Zero Alarm"
-  }
-}
-
-resource "aws_cloudwatch_metric_alarm" "free_tier_alb_no_healthy_targets" {
-  alarm_name          = "${local.env_prefix}-free-tier-alb-no-healthy-targets"
-  comparison_operator = "LessThanThreshold"
-  evaluation_periods  = "2"
-  metric_name         = "HealthyHostCount"
-  namespace           = "AWS/ApplicationELB"
-  period              = "60"
-  statistic           = "Average"
-  threshold           = "1"
-  alarm_description   = "Free-tier ALB target group has no healthy targets — defence-in-depth against Container Insights pipeline lag."
-  alarm_actions       = local.critical_alerts_actions
-  ok_actions          = local.critical_alerts_actions
-  treat_missing_data  = "breaching"
-
-  dimensions = {
-    LoadBalancer = aws_lb.autoscaling.arn_suffix
-    TargetGroup  = aws_lb_target_group.autoscaling.arn_suffix
-  }
-
-  tags = {
-    Name = "Free Tier ALB No Healthy Targets Alarm"
-  }
-}
-
 # # Memory-based scaling policy
 # resource "aws_appautoscaling_policy" "autoscaling_ecs_memory" {
 #   name               = "subscr-optinist-ecs-memory-scaling"

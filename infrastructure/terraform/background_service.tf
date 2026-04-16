@@ -38,25 +38,18 @@ resource "aws_launch_template" "background" {
     enabled = true
   }
 
-  # base64gzip (not base64encode): inlined agent-recovery scripts push raw
-  # user-data past EC2's 16 KB limit. cloud-init transparently decompresses.
-  user_data = base64gzip(templatefile("${path.module}/../scripts/ecs-user-data.sh", {
-    tier                           = "background"
-    cluster_name                   = aws_ecs_cluster.main.name
-    git_branch                     = var.git_branch
-    git_repo                       = var.git_repo
-    firebase_config_json           = var.firebase_config_json
-    firebase_private_json          = var.firebase_private_json
-    ecr_registry                   = split("/", local.ecr_repository_url)[0]
-    ecr_repository_url             = local.ecr_repository_url
-    efs_id                         = aws_efs_file_system.snmk.id
-    db_host                        = replace(aws_db_instance.main.endpoint, ":3306", "")
-    swap_size_mb                   = 1536 # 2x task memory (768MB) for stable background job operation
-    aws_region                     = var.aws_region
-    agent_recovery_lifecycle_sh    = local.agent_recovery_lifecycle_sh
-    agent_recovery_watchdog_sh     = local.agent_recovery_watchdog_sh
-    agent_recovery_health_probe_sh = local.agent_recovery_health_probe_sh
-    agent_recovery_log_group       = aws_cloudwatch_log_group.agent_recovery.name
+  user_data = base64encode(templatefile("${path.module}/../scripts/ecs-user-data.sh", {
+    tier                  = "background"
+    cluster_name          = aws_ecs_cluster.main.name
+    git_branch            = var.git_branch
+    git_repo              = var.git_repo
+    firebase_config_json  = var.firebase_config_json
+    firebase_private_json = var.firebase_private_json
+    ecr_registry          = split("/", local.ecr_repository_url)[0]
+    ecr_repository_url    = local.ecr_repository_url
+    efs_id                = aws_efs_file_system.snmk.id
+    db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
+    swap_size_mb          = 1536 # 2x task memory (768MB) for stable background job operation
   }))
 
   tag_specifications {
