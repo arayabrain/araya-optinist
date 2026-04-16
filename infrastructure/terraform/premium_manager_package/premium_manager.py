@@ -4157,26 +4157,27 @@ def check_instance_readiness_with_retry(
 
 
 def update_premium_service_desired_count():
-    """
-    Update the ECS premium service desired count to match the number of
-    running premium instances.
+    """Update the ECS premium service desired count to match the number
+    of premium instances that are either ECS-registered or still inside
+    the boot grace period.
 
-    This ensures that each premium instance has an ECS task running on it,
-    which is required for the instance to be considered "ready" for user assignments.
+    Booting standbys must keep a service slot reserved. If desiredCount
+    is dropped during the gap between EC2 `running` and ECS agent
+    registration, ECS cancels the pending task placement and never
+    re-fires it once the agent finally registers, leaving the instance
+    with no premium task and the user stuck on the waiting popup.
 
-    The function:
-    1. Counts running premium EC2 instances (by Tier=premium tag)
-    2. Updates the ECS service desired count to match
-    3. ECS will then place one task per instance (with tier=premium
-        placement constraint)
+    The grace period mirrors cleanup_orphaned_ec2_instances() so the two
+    are symmetric: instances we don't yet treat as orphans must keep
+    their service slot.
     """
     try:
         cluster_name = get_required_env_var("CLUSTER_NAME")
         service_name = get_required_env_var("PREMIUM_SERVICE_NAME")
 
         ecs: "ECSClient" = boto3.client("ecs")
+        ec2: "EC2Client" = boto3.client("ec2")
 
-        # Get current service status
         service_response = ecs.describe_services(
             cluster=cluster_name, services=[service_name]
         )
@@ -4191,24 +4192,71 @@ def update_premium_service_desired_count():
         current_desired_count = service_response["services"][0]["desiredCount"]
         current_running_count = service_response["services"][0]["runningCount"]
 
-        # Count ACTIVE ECS container instances (not EC2 instances,
-        # which may include orphans that never joined the cluster)
+        # ACTIVE premium ECS container instances (post-registration).
         ci_response = ecs.list_container_instances(
             cluster=cluster_name,
             filter="attribute:tier == premium",
             status="ACTIVE",
         )
         ci_arns = ci_response.get("containerInstanceArns", [])
-        running_premium_count = len(ci_arns)
+        registered_ec2_ids: set = set()
+        if ci_arns:
+            desc = ecs.describe_container_instances(
+                cluster=cluster_name,
+                containerInstances=ci_arns,
+            )
+            for ci in desc.get("containerInstances", []):
+                registered_ec2_ids.add(ci["ec2InstanceId"])
+        registered_count = len(registered_ec2_ids)
+
+        # Booting standbys: premium-tagged EC2s running but not yet
+        # ECS-registered, still inside the orphan grace period. Same
+        # filters as cleanup_orphaned_ec2_instances() so the two stay
+        # symmetric.
+        ec2_response = ec2.describe_instances(
+            Filters=[
+                {
+                    "Name": "instance-state-name",
+                    "Values": [InstanceState.RUNNING],
+                },
+                {
+                    "Name": "tag:Tier",
+                    "Values": [
+                        PremiumInstanceConfig.INSTANCE_IDENTIFIER,
+                        PremiumInstanceConfig.INSTANCE_IDENTIFIER.capitalize(),
+                    ],
+                },
+                {
+                    "Name": "tag:Name",
+                    "Values": [PremiumInstanceConfig.get_instance_name_pattern()],
+                },
+            ]
+        )
+        now = datetime.now(timezone.utc)
+        booting_count = 0
+        for reservation in ec2_response["Reservations"]:
+            for instance in reservation["Instances"]:
+                if instance["InstanceId"] in registered_ec2_ids:
+                    continue
+                launch_time = instance.get("LaunchTime")
+                if not launch_time:
+                    continue
+                age_minutes = (now - launch_time).total_seconds() / 60
+                if age_minutes < ORPHAN_GRACE_PERIOD_MINUTES:
+                    booting_count += 1
+
+        running_premium_count = registered_count + booting_count
 
         print(
             f"ECS Service Status: "
             f"desired={current_desired_count}, "
             f"running={current_running_count}"
         )
-        print(f"Premium ECS container instances: " f"{running_premium_count} active")
+        print(
+            f"Premium instances: {registered_count} registered + "
+            f"{booting_count} booting"
+        )
 
-        # Update service desired count if different from instance count
         if running_premium_count != current_desired_count:
             print(
                 f"Updating ECS service desired count: {current_desired_count} "
