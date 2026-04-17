@@ -84,9 +84,14 @@ by `PREMIUM_STOPPED_MAX_AGE_HOURS`. The full lifecycle (creation,
 replenishment, aging, excess trim, failure cleanup) is documented under
 [Standby Pool Management](#2-standby-pool-management).
 
-The standby pool is owned by Premium Manager (start / stop / terminate);
-Premium Cleanup only performs read-only health checks
-(`ensure_standby_pool_capacity()`).
+The standby pool is primarily owned by Premium Manager (create / start /
+stop / terminate). Premium Cleanup does not create, start, or stop
+instances, but its `ensure_standby_pool_capacity()` will **demote** excess
+standby rows by setting `is_standby = 0` so that Manager's normal
+scale-down / idle cleanup path can reclaim the instance on the next cycle.
+The full responsibility split is in the
+[Manager vs Cleanup responsibility split](#manager-vs-cleanup-responsibility-split-standby)
+subsection under Standby Pool Management.
 
 ### `is_standby` column semantics
 
@@ -111,10 +116,10 @@ real user.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> StandbyRow: create_and_stop_standby_instance()<br/>INSERT is_standby=1, user_id=NULL
-    StandbyRow --> Deleted: assign_premium_user() Tier 3<br/>DELETE standby placeholder<br/>(premium_manager.py:3735)
-    Deleted --> UserRow: store_user_assignment()<br/>INSERT is_standby=0, user_id=&lt;uid&gt;
-    UserRow --> [*]: release / cleanup<br/>DELETE row
+    [*] --> StandbyRow: create_and_stop_standby_instance()<br/>INSERT is_standby=1 user_id=NULL
+    StandbyRow --> Deleted: assign_premium_user Tier 3<br/>DELETE standby placeholder<br/>(premium_manager.py line 3735)
+    Deleted --> UserRow: store_user_assignment()<br/>INSERT is_standby=0 with real user_id
+    UserRow --> [*]: release or cleanup<br/>DELETE row
     StandbyRow --> [*]: terminate_aged_stopped_instances()<br/>or cleanup_excess_standby_instances()<br/>DELETE row
 ```
 
@@ -355,7 +360,7 @@ sequenceDiagram
     alt Tier 4: AWS Stopped Instance
         DB-->>PM: Found stopped instance (not standby)
         PM->>EC2: Start Instance
-        EC2-->>PM: Instance running (typically 60-90s; waiter caps at 6 min)
+        EC2-->>PM: Instance running (typically 60-90s, waiter caps at 6 min)
         PM->>PM: Create Target Group + Rule
         PM-->>User: Assigned (60s-6min wait)
     else Tier 5: Scale New Instance
@@ -471,11 +476,170 @@ On any failure after partial resource creation, the handler cleans up:
 
 ### 2. Standby Pool Management
 
-**Storage:** Standby instances are tracked in the `premium_user_assignments` table with:
+#### Conceptual overview
+
+The standby pool is a small set of **stopped** premium EC2 instances kept
+pre-provisioned so that incoming premium `/assign` calls can skip the
+4-8 minute "create from launch template" path and instead use the
+5-15 second "start a stopped instance" path. See the
+[Standby pool](#standby-pool) entry in the Glossary for the conceptual
+definition, DB representation, and cross-document disambiguation. This
+section is the **operational** reference: lifecycle, entry/exit paths,
+responsibility split, and configuration.
+
+#### Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Stopped: create_and_stop_standby_instance()
+    [*] --> Stopped: register_orphaned_stopped_instances()
+    Running --> Stopped: convert_idle_instances_to_standby_immediate()
+    Stopped --> Consumed: assign_premium_user() Tier 3
+    Stopped --> Terminated: terminate_aged_stopped_instances()
+    Stopped --> Terminated: cleanup_excess_standby_instances()
+    Stopped --> DbOnly: cleanup_failed_standby_instances()
+    Stopped --> Demoted: ensure_standby_pool_capacity() (Cleanup)
+    Consumed --> [*]
+    Terminated --> [*]
+    DbOnly --> [*]
+    Demoted --> [*]
+```
+
+States:
+- **Stopped** -- standby placeholder row exists with `is_standby = 1, user_id = NULL`, EC2 is stopped.
+- **Running** -- real premium EC2 with assigned users (not a standby).
+  Shown only as the source of the `convert_idle_instances_to_standby_immediate()` arrow.
+- **Consumed** -- standby was picked by Tier 3; placeholder row is DELETEd and a user row is INSERTed.
+- **Terminated** -- standby row DELETEd and EC2 terminated (aging / excess trim).
+- **DbOnly** -- DB row DELETEd only; EC2 was already gone.
+- **Demoted** -- row remains but `is_standby` set to `0`; reclaimed on a later scale-down.
+
+Each arrow is labelled with the function that drives the transition; the
+corresponding DB and EC2 effects are tabulated in the Entry / Exit tables
+below.
+
+#### Entry paths: how an `is_standby = 1` row is created
+
+There are **three** ways a standby placeholder row ever gets into
+`premium_user_assignments`. All three funnel through `store_user_assignment()`
+with `is_standby=True, user_id=NULL`.
+
+| # | Function | Caller / trigger | EC2 action | DB action |
+|---|---|---|---|---|
+| 1 | `create_and_stop_standby_instance()` | `handle_scheduled_monitoring()` replenish, and Tier 3 backfill immediately after a standby is consumed | `run_instances` → `stop_instances` (waits for stopped) | INSERT `is_standby=1, user_id=NULL, instance_state='stopped', target_group_arn='standby', alb_rule_arn='standby', standby_created_at=NOW()` |
+| 2 | `register_orphaned_stopped_instances()` | `handle_scheduled_monitoring()` step that runs after `scale_down_if_possible()` | None (only adopts an existing stopped EC2) | INSERT `is_standby=1, user_id=NULL, instance_state='stopped'` for every AWS-stopped premium instance with zero rows in `premium_user_assignments` |
+| 3 | `convert_idle_instances_to_standby_immediate()` | Called from inside `scale_down_if_possible()` -- the scheduled monitor path, and also runs when the last user releases on an instance | `deregister_from_ecs` → `stop_instances` (waits for stopped) | INSERT `is_standby=1, user_id=NULL, instance_state='stopped'` on the just-idled instance |
+
+The invariant is that the table never holds more than one `is_standby=1`
+row per `instance_id`: (1) and (3) create fresh rows, while (2) only
+adopts instances that have no existing row at all.
+
+#### Exit paths: how an `is_standby = 1` row is consumed or removed
+
+| Path | Function | Caller / trigger | DB action | EC2 action |
+|---|---|---|---|---|
+| **Assigned** (Tier 3 happy path) | inline SQL inside `assign_premium_user()` Tier 3 | User `/assign` picks this standby | DELETE the `is_standby=1` row, then INSERT a new `is_standby=0` user row (see [premium_manager.py:3735](../terraform/premium_manager_package/premium_manager.py#L3735)) | `start_instances` (via `start_standby_instance()`) |
+| **Migrated** (displaces a standby for migration) | DELETE inside `try_reserve_instance_for_migration()` | `process_shared_instance_optimization()` picks this instance to relocate a shared / autoscaling-pool user | DELETE the `is_standby=1` row at [premium_manager.py:1540-1544](../terraform/premium_manager_package/premium_manager.py#L1540-L1544), reservation row is inserted separately | `start_instances` (via `start_standby_instance()` from the migration path) |
+| **Aged-out** | `terminate_aged_stopped_instances()` → `terminate_standby_instance()` | Scheduled monitor, hourly-style check | DELETE the row | `terminate_instances` |
+| **Excess trim** | `cleanup_excess_standby_instances()` → `terminate_standby_instance()` | Scheduled monitor when `get_standby_count() > PREMIUM_STANDBY_POOL_SIZE`; selects **oldest `standby_created_at` first** | DELETE the row | `terminate_instances` |
+| **Failed cleanup** | `cleanup_failed_standby_instances()` | Scheduled monitor, first standby step | DELETE the row | None (EC2 already gone from AWS; this is pure DB orphan cleanup) |
+| **Demoted** | `ensure_standby_pool_capacity()` [**Cleanup Lambda**] | Hourly cleanup schedule, when `standby_stopped > target_stopped` | UPDATE `is_standby = 0` on the oldest excess rows (ordered by `last_activity DESC` keep-the-newest) | None (row becomes a normal stopped-instance row; Manager will reclaim via scale-down) |
+
+#### `convert_idle_instances_to_standby_immediate()`
+
+**File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
+**Purpose:** When scale-down detects idle running instances, stop them and
+convert each to a standby placeholder **within the same invocation** --
+instead of waiting for the next 15-minute monitor cycle. This shortens the
+"last user released → instance stopped" latency to ~30-60 s for the common
+case where the idle detection and the user release happen on the same
+Lambda run.
+**Input:** None (enumerates idle running instances itself)
+**Output:** None (logs per-instance outcome)
+**Calls:** `get_assigned_users_for_instance()` → `convert_running_instance_to_standby()` → `ecs.deregister_container_instance()` → `ec2.stop_instances()` → `store_user_assignment(is_standby=True)`
+
+**Key behaviors:**
+- Enumerates **all** idle running instances (no per-call cap; bounded
+  implicitly by Lambda timeout and ECS waiter delays)
+- Only runs from inside `scale_down_if_possible()`, so it inherits the
+  scale-down guard (`running_count > max(1, active_users + 1)` AND
+  `idle_instances >= 2`)
+- Mutation is INSERT a **new** `is_standby=1` row -- the previous user's
+  assignment row must already be gone (DELETE by release / cleanup before
+  this point)
+
+This is the third entry path in the lifecycle diagram. The function name
+first appeared only in the Key Functions Reference; this subsection is the
+specification called out by Finding 4.
+
+#### Manager vs Cleanup responsibility split (standby)
+
+| Capability | Premium Manager | Premium Cleanup |
+|---|---|---|
+| CREATE standby (new EC2, stop it) | Yes (`create_and_stop_standby_instance()`) | No |
+| START a standby (consume) | Yes (`start_standby_instance()`) | No |
+| STOP a running instance into the pool | Yes (`convert_idle_instances_to_standby_immediate()`) | No |
+| ADOPT an unknown stopped EC2 as standby | Yes (`register_orphaned_stopped_instances()`) | No |
+| TERMINATE an aged / excess standby | Yes (`terminate_aged_stopped_instances()`, `cleanup_excess_standby_instances()`) | No |
+| DELETE orphan DB rows for vanished EC2s | Yes (`cleanup_failed_standby_instances()`) | No |
+| UPDATE `is_standby=0` on excess rows (demote) | No | Yes (`ensure_standby_pool_capacity()`) |
+| READ / report pool status | Yes (metrics, status JSON) | Yes (monitoring, alarms) |
+
+The only Cleanup-side mutation on the standby pool is the demotion UPDATE
+above; all start/stop/terminate calls live in Manager. The demotion is
+deliberate: it turns a misclassified "standby" row back into a normal
+stopped-instance row so Manager's existing idle-cleanup machinery (which
+only looks at `is_standby=0`) can recycle it without needing a
+standby-specific code path.
+
+#### Scheduled-monitor step order (standby-relevant steps)
+
+Within `handle_scheduled_monitoring()` (the 15-minute loop), the standby
+touchpoints run in this order:
+
+1. `cleanup_failed_standby_instances()` -- prunes orphan DB rows first so
+   later steps see an accurate picture.
+2. `scale_down_if_possible()` -- may call
+   `convert_idle_instances_to_standby_immediate()` on currently-idle
+   running instances.
+3. `register_orphaned_stopped_instances()` -- adopts any AWS-stopped
+   premium instance that has no row at all.
+4. `terminate_aged_stopped_instances()` -- enforces
+   `PREMIUM_STOPPED_MAX_AGE_HOURS`.
+5. If `get_standby_count() > PREMIUM_STANDBY_POOL_SIZE`, call
+   `cleanup_excess_standby_instances(excess)` -- oldest-first trim.
+
+The full 12-step sequence of `handle_scheduled_monitoring()` (including
+the non-standby steps) is enumerated in
+[PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md).
+
+#### Configuration values
+
+| Env var | Code default | Terraform default | Effect |
+|---|---|---|---|
+| `PREMIUM_STANDBY_POOL_SIZE` | `1` | `1` | Target count of stopped standby EC2s. `create_and_stop_standby_instance()` refuses to add more once this is hit; `cleanup_excess_standby_instances()` trims the oldest above it. Increasing this improves assignment latency for bursts at the cost of steady-state EBS storage. |
+| `PREMIUM_STOPPED_MAX_AGE_HOURS` | `4` | `4` | How long an individual stopped standby EC2 may live before `terminate_aged_stopped_instances()` terminates it. Bounds EBS accumulation and forces periodic launch-template refresh. The age source is the EC2 `StateTransitionReason` timestamp, falling back to `standby_created_at` if not parseable. |
+| `PREMIUM_EXTRA_CAPACITY` | `2` | `1` | Used by `calculate_max_capacity()` for scale-up ceiling; **not** a standby-pool knob despite the adjacent name. Included here only to disambiguate against `PREMIUM_STANDBY_POOL_SIZE`. |
+
+Terraform overrides take precedence over the code defaults at deploy time;
+the code defaults are only used if the env var is missing entirely. The
+`PREMIUM_EXTRA_CAPACITY` value actually used in production is therefore
+`1`, not the `2` written in the Python fallback.
+
+#### Storage (DB representation)
+
+Standby instances are tracked in the `premium_user_assignments` table with:
 - `is_standby = 1`
 - `user_id = NULL` (no real user)
+- `status = 'active'` (same `status` column used for real assignments; uniqueness is enforced by `idx_unique_user_assignment` being conditional on `user_id IS NOT NULL`, so multiple standby rows can coexist)
 - `target_group_arn = 'standby'`
 - `alb_rule_arn = 'standby'`
+- `instance_state = 'stopped'` (queried by `get_available_standby_instances()`)
+- `standby_created_at` = `NOW()` at insert time, used as an age fallback and for oldest-first excess trim
+
+See the [`is_standby` column semantics](#is_standby-column-semantics)
+subsection in the Glossary for the full column-value table and the
+non-UPDATE lifecycle.
 
 ### create_and_stop_standby_instance()
 
@@ -496,20 +660,39 @@ On any failure after partial resource creation, the handler cleans up:
 ### start_standby_instance()
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
-**Purpose:** Start a stopped standby instance and prepare for user assignment
+**Purpose:** Start a stopped standby instance and prepare for user
+assignment. This function only handles the **start** transition; it does
+**not** touch the standby placeholder row itself.
 **Input:** instance_id (str)
 **Output:** True on success, False on failure
-**Calls:** ec2.start_instances() -> clear_ecs_agent_checkpoint()
+**Calls:** `ec2.start_instances()` -> `ec2.get_waiter('instance_running')` -> `clear_ecs_agent_checkpoint()`
 
 **Key behaviors:**
 - Waits for running state (delay=5s, max 24 attempts)
 - Clears stale ECS agent checkpoint so it re-registers
-- Updates `instance_state` to `'running'` for non-standby assignments
+- Updates `instance_state` to `'running'` for any pre-existing **non-standby**
+  assignment rows on this instance (there should be none on a true Tier 3
+  path; the clause is defensive)
 
 ```sql
--- Key constraint: only update non-standby assignments
+-- Defensive: only update non-standby rows on this instance
 WHERE instance_id = %s AND is_standby = 0
 ```
+
+**Important:** The `is_standby = 1` placeholder row is **not** deleted
+here. Row deletion happens in the caller:
+- On a Tier 3 user assignment, the inline DELETE at
+  [premium_manager.py:3735](../terraform/premium_manager_package/premium_manager.py#L3735)
+  removes the placeholder just before the new user row is inserted.
+- On a migration-driven start, the DELETE inside
+  `try_reserve_instance_for_migration()` at
+  [premium_manager.py:1540-1544](../terraform/premium_manager_package/premium_manager.py#L1540-L1544)
+  removes it before the reservation is written.
+
+In other words, `start_standby_instance()` is shared between both exit
+paths ("Assigned" and "Migrated" in the
+[Exit paths table](#exit-paths-how-an-is_standby--1-row-is-consumed-or-removed));
+only the DB mutation differs between the two callers.
 
 ### 3. Orphaned Instance Registration
 
@@ -861,11 +1044,15 @@ Shared instance optimization complete: 1 users migrated
 | Function | Purpose |
 |----------|---------|
 | `create_and_stop_standby_instance()` | Create instance, stop for pool (distributed lock) |
-| `start_standby_instance()` | Start standby + clear ECS checkpoint |
+| `start_standby_instance()` | Start standby + clear ECS checkpoint (does NOT delete placeholder row) |
+| `convert_idle_instances_to_standby_immediate()` | Stop idle running instances and convert to standby in-line during scale-down (see [spec](#convert_idle_instances_to_standby_immediate)) |
 | `get_available_standby_instances()` | Query standby pool (is_standby=1) |
-| `register_orphaned_stopped_instances()` | Auto-register stopped instances as standby |
-| `get_standby_count()` | Count current standby pool size |
-| `get_standby_pool_count()` | Count standby instances by state |
+| `register_orphaned_stopped_instances()` | Adopt AWS-stopped / DB-less instances into the standby pool |
+| `terminate_aged_stopped_instances()` | Terminate standby EC2 beyond `PREMIUM_STOPPED_MAX_AGE_HOURS` |
+| `cleanup_excess_standby_instances()` | Trim oldest standbys when `count > PREMIUM_STANDBY_POOL_SIZE` |
+| `cleanup_failed_standby_instances()` | DELETE orphan DB rows for EC2s that no longer exist in AWS |
+| `get_standby_count()` | Scalar `COUNT(*)` of `is_standby=1, status='active'` rows |
+| `get_standby_pool_count()` | Dict keyed by `instance_state` (e.g. `{stopped: N, running: N}`) |
 
 ### Migration & Scaling
 
