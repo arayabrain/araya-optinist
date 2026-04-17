@@ -433,6 +433,14 @@ migrated regardless of last activity time.
 **Input:** `instance_id`
 **Output:** List of user IDs safe to migrate
 
+> **Terminology note.** "Idle" on the free tier means `active_workflow_count = 0`
+> -- a migration-safety check, not an activity cutoff. The premium tier uses
+> "idle" in four distinct senses (idle instance, idle premium user, idle /
+> stale assignment, idle browser tab), none of which match this definition.
+> See the "Disambiguation" section in
+> [PREMIUM_USER_ASSIGNMENT.md](./PREMIUM_USER_ASSIGNMENT.md) when reading
+> across both documents.
+
 #### get_users_per_instance()
 
 **File:** `infrastructure/terraform/free_manager_package/free_user_utils.py`
