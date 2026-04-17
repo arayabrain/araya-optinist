@@ -146,25 +146,24 @@ real users.
 > `premium_user_assignments` satisfying
 > `instance_id = i AND is_standby = 0 AND status IN ('active', 'terminating')`.
 
-This matches the query in
-[get_assigned_users_for_instance() at premium_manager.py:835-841](../terraform/premium_manager_package/premium_manager.py#L835-L841)
-that backs `scale_down_if_possible()` and the `IdleInstances` CloudWatch
-metric. Note that `'terminating'` is the DB encoding of the
-`pending_release` state (see "Soft release" below).
+This matches the query used by `get_assigned_users_for_instance()`
+(in `premium_manager.py`), which backs `scale_down_if_possible()` and
+the `IdleInstances` CloudWatch metric. Note that `'terminating'` is
+the DB encoding of the `pending_release` state (see "Soft release"
+below).
 
 **What counts / does not count as occupation:**
 
 | Row shape | Counts as occupation? | Notes |
 |---|---|---|
 | `is_standby = 0`, `status = 'active'`, real `user_id` | **Yes** | Normal active user |
-| `is_standby = 0`, `status = 'terminating'` (pending_release), real `user_id` | **Yes** | Pending_release rows DO keep the instance non-idle during the 120s grace window. Comment at [premium_manager.py:834](../terraform/premium_manager_package/premium_manager.py#L834): *"Include pending_release so instance isn't treated as idle during grace"* |
+| `is_standby = 0`, `status = 'terminating'` (pending_release), real `user_id` | **Yes** | Pending_release rows DO keep the instance non-idle during the 120s grace window. A comment in `get_assigned_users_for_instance()` spells this out: *"Include pending_release so instance isn't treated as idle during grace"* |
 | `is_standby = 1`, `user_id = NULL` (standby placeholder) | **No** | Standby rows never count as occupation; the instance is stopped, not running |
 | `is_standby = 0`, `user_id = <uid>`, `target_group_arn = 'reserving'` | **Yes** | The row has a real `user_id` and `status = 'active'`, so the occupation query matches. The reservation is either promoted to a full assignment within the same Lambda invocation or cleaned up by `release_instance_reservation()` on failure |
 
 **Scale-down threshold.** `scale_down_if_possible()` only stops an idle
 instance when
-`running_count > max(1, active_users + 1)` **AND** `idle_instances >= 2`
-(see [premium_manager.py:4878-4880](../terraform/premium_manager_package/premium_manager.py#L4878-L4880)).
+`running_count > max(1, active_users + 1)` **AND** `idle_instances >= 2`.
 The `+ 1` safety margin is kept by scale-down; scale-up has no such margin.
 
 ### Disambiguation: the four meanings of "idle"
@@ -216,13 +215,13 @@ delete the row immediately. It transitions the row to the `pending_release`
 state for a grace period, so that a user who re-opens the tab within the
 window can resume on the same instance without a cold reassignment.
 
-| Property | Value | Source |
-|---|---|---|
-| DB representation | `status = 'terminating'` (the `pending_release` sentinel reuses the `TERMINATING` enum value -- safe because all status checks go through the `PremiumAssignment` enum constants, not raw strings) | [aws_constants.py:207-211](../aws_constants.py#L207-L211) |
-| Grace period duration | `PENDING_RELEASE_GRACE_SECONDS = 120` (2 minutes) | [aws_constants.py:213](../aws_constants.py#L213) |
-| Effect on idle counting during grace | Instance is **not** idle; the pending_release row counts as occupation | [premium_manager.py:835-841](../terraform/premium_manager_package/premium_manager.py#L835-L841) |
-| Grace expiration handler | `finalize_expired_pending_releases()` (step 10a of the 15-min monitor) -- DELETEs the row and tears down ALB resources | [premium_manager.py:768-771](../terraform/premium_manager_package/premium_manager.py#L768-L771) |
-| Resume path | `restore_pending_release()` at the start of `assign_premium_user()` -- UPDATEs `status` back to `'active'` on the same row if the EC2 instance still exists; returns with `assignment_source: "restored_from_pending_release"`. `is_shared` is **not** touched | [premium_manager.py:720-725](../terraform/premium_manager_package/premium_manager.py#L720-L725) |
+| Property | Value |
+|---|---|
+| DB representation | `status = 'terminating'` (the `pending_release` sentinel reuses the `TERMINATING` enum value -- safe because all status checks go through the `PremiumAssignment` enum constants in `aws_constants.py`, not raw strings) |
+| Grace period duration | `PENDING_RELEASE_GRACE_SECONDS = 120` (2 minutes), defined in `aws_constants.py` |
+| Effect on idle counting during grace | Instance is **not** idle; the pending_release row counts as occupation (see the `get_assigned_users_for_instance()` query) |
+| Grace expiration handler | `finalize_expired_pending_releases()` (step 10a of the 15-min monitor) -- DELETEs the row and tears down ALB resources |
+| Resume path | `restore_pending_release()` at the start of `assign_premium_user()` -- UPDATEs `status` back to `'active'` on the same row if the EC2 instance still exists; returns with `assignment_source: "restored_from_pending_release"`. `is_shared` is **not** touched |
 
 Other release paths (hard `DELETE /assign` without beacon token, backend
 `release_premium_user()` on logout, `cleanup_stale_assignments()` at 3h)
@@ -489,57 +488,47 @@ graph TB
   retry re-enters `assign_premium_user()` from the top and re-evaluates
   the cascade starting at Tier 1 -- there is no server-side wait-queue
   or reserved slot for the retrying user. See **Tier Cascade: Precedence
-  & Reachability** below for the line-level references.
+  & Reachability** below for details.
 
 **Tier Cascade: Precedence & Reachability**
 
-The bullets above describe each tier's happy path. The cascade as
-implemented at
-[premium_manager.py:3210-3413](../terraform/premium_manager_package/premium_manager.py#L3210-L3413)
-has three non-obvious properties worth calling out:
+The bullets above describe each tier's happy path. The cascade in
+`assign_premium_user()` (in `premium_manager.py`) has three non-obvious
+properties worth calling out. Function and variable names are used
+throughout rather than line numbers, so that this section stays
+accurate as the code moves; grep or jump-to-definition on the
+identifier when investigating.
 
 - **Tier 2 vs Tier 3 (unconditional precedence).** If
   `least_loaded_instance` is non-null after the Tier 1 scan, Tier 2
-  captures the user at
-  [premium_manager.py:3224-3232](../terraform/premium_manager_package/premium_manager.py#L3224-L3232),
-  and the Tier 3 block at
-  [premium_manager.py:3246](../terraform/premium_manager_package/premium_manager.py#L3246)
-  is skipped by its `if not instance_to_use` guard -- no gate allows
-  the cascade to prefer a 5-15s standby start over a 0s shared
-  assignment even when both are viable. The rationale is *immediacy
-  over exclusivity*; `invoke_migration_async()` will move the user to a
-  dedicated instance once capacity arrives.
+  captures the user immediately; the Tier 3 block is skipped by its
+  `if not instance_to_use` guard. No gate allows the cascade to prefer
+  a 5-15 s standby start over a 0 s shared assignment even when both
+  are viable. The rationale is *immediacy over exclusivity*;
+  `invoke_migration_async()` will move the user to a dedicated
+  instance once capacity arrives.
 
 - **Tier 3.5 vs Tier 4 (Tier 4 is unreachable on the happy path).**
   Tier 3.5's gate is
-  `no_premium_available = (len(running_instances) == 0 or not available_dedicated)`
-  ([premium_manager.py:3281-3283](../terraform/premium_manager_package/premium_manager.py#L3281-L3283)).
+  `no_premium_available = (len(running_instances) == 0 or not available_dedicated)`.
   By the time the cascade reaches Tier 3.5, `available_dedicated` is
   guaranteed to be `None` (otherwise Tier 1 would have captured the
   user), so `not available_dedicated` is always true and Tier 3.5
   always succeeds when reached. The pre-cascade call to
-  `register_orphaned_stopped_instances()` at
-  [premium_manager.py:3094](../terraform/premium_manager_package/premium_manager.py#L3094)
-  adopts any AWS-only stopped instance into the standby pool before the
-  cascade runs, so by the time the Tier 4 block filters for
-  `aws_only_stopped` at
-  [premium_manager.py:3305-3315](../terraform/premium_manager_package/premium_manager.py#L3305-L3315)
-  the filter is empty. Tier 4 only fires if adoption itself failed
+  `register_orphaned_stopped_instances()` adopts any AWS-only stopped
+  instance into the standby pool before the cascade runs, so by the
+  time the Tier 4 block filters for AWS-only stopped instances the
+  filter is empty. Tier 4 only fires if adoption itself failed
   (e.g. DB error during the pre-cascade step).
 
-- **Tier 5 retry semantics.** Tier 5 never returns HTTP 200. If scaling
-  is already in progress
-  ([premium_manager.py:3356-3369](../terraform/premium_manager_package/premium_manager.py#L3356-L3369))
-  or was freshly initiated
-  ([premium_manager.py:3371-3385](../terraform/premium_manager_package/premium_manager.py#L3371-L3385)),
-  it returns HTTP 202 with `retry_after: 180`; only if scaling is
-  blocked does it return HTTP 503. A 202 retry re-enters
-  `assign_premium_user()` from the top
-  ([premium_manager.py:2849](../terraform/premium_manager_package/premium_manager.py#L2849))
-  -- the in-progress scale-up does not leave a reservation for the
-  retrying user; it just creates instances that Tier 1 or Tier 2 will
-  pick up on the next attempt. `increment_assignment_attempts()` is
-  bookkeeping only; it does not change tier selection.
+- **Tier 5 retry semantics.** Tier 5 never returns HTTP 200. If a
+  scale-up is already in progress or was freshly initiated, it returns
+  HTTP 202 with `retry_after: 180`; only if scaling is blocked does it
+  return HTTP 503. A 202 retry re-enters `assign_premium_user()` from
+  the top -- the in-progress scale-up does not leave a reservation for
+  the retrying user, it just creates instances that Tier 1 or Tier 2
+  will pick up on the next attempt. `increment_assignment_attempts()`
+  is bookkeeping only; it does not change tier selection.
 
 **Post-assignment Steps:**
 1. Create target group (or use autoscaling target group for pool)
@@ -622,8 +611,8 @@ adopts instances that have no existing row at all.
 
 | Path | Function | Caller / trigger | DB action | EC2 action |
 |---|---|---|---|---|
-| **Assigned** (Tier 3 happy path) | inline SQL inside `assign_premium_user()` Tier 3 | User `/assign` picks this standby | DELETE the `is_standby=1` row, then INSERT a new `is_standby=0` user row (see [premium_manager.py:3735](../terraform/premium_manager_package/premium_manager.py#L3735)) | `start_instances` (via `start_standby_instance()`) |
-| **Migrated** (displaces a standby for migration) | DELETE inside `try_reserve_instance_for_migration()` | `process_shared_instance_optimization()` picks this instance to relocate a shared / autoscaling-pool user | DELETE the `is_standby=1` row at [premium_manager.py:1540-1544](../terraform/premium_manager_package/premium_manager.py#L1540-L1544), reservation row is inserted separately | `start_instances` (via `start_standby_instance()` from the migration path) |
+| **Assigned** (Tier 3 happy path) | inline SQL inside `assign_premium_user()` Tier 3 | User `/assign` picks this standby | DELETE the `is_standby=1` row, then INSERT a new `is_standby=0` user row (the inline DELETE/INSERT lives in the Tier 3 block of `assign_premium_user()`) | `start_instances` (via `start_standby_instance()`) |
+| **Migrated** (displaces a standby for migration) | DELETE inside `try_reserve_instance_for_migration()` | `process_shared_instance_optimization()` picks this instance to relocate a shared / autoscaling-pool user | DELETE the `is_standby=1` row (inline DELETE inside `try_reserve_instance_for_migration()`), reservation row is inserted separately | `start_instances` (via `start_standby_instance()` from the migration path) |
 | **Aged-out** | `terminate_aged_stopped_instances()` → `terminate_standby_instance()` | Scheduled monitor, hourly-style check | DELETE the row | `terminate_instances` |
 | **Excess trim** | `cleanup_excess_standby_instances()` → `terminate_standby_instance()` | Scheduled monitor when `get_standby_count() > PREMIUM_STANDBY_POOL_SIZE`; selects **oldest `standby_created_at` first** | DELETE the row | `terminate_instances` |
 | **Failed cleanup** | `cleanup_failed_standby_instances()` | Scheduled monitor, first standby step | DELETE the row | None (EC2 already gone from AWS; this is pure DB orphan cleanup) |
@@ -765,13 +754,12 @@ WHERE instance_id = %s AND is_standby = 0
 
 **Important:** The `is_standby = 1` placeholder row is **not** deleted
 here. Row deletion happens in the caller:
-- On a Tier 3 user assignment, the inline DELETE at
-  [premium_manager.py:3735](../terraform/premium_manager_package/premium_manager.py#L3735)
-  removes the placeholder just before the new user row is inserted.
+- On a Tier 3 user assignment, the inline DELETE inside the Tier 3
+  block of `assign_premium_user()` removes the placeholder just before
+  the new user row is inserted.
 - On a migration-driven start, the DELETE inside
-  `try_reserve_instance_for_migration()` at
-  [premium_manager.py:1540-1544](../terraform/premium_manager_package/premium_manager.py#L1540-L1544)
-  removes it before the reservation is written.
+  `try_reserve_instance_for_migration()` removes it before the
+  reservation is written.
 
 In other words, `start_standby_instance()` is shared between both exit
 paths ("Assigned" and "Migrated" in the
