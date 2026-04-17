@@ -37,200 +37,6 @@
    - Auto-migration when new instances become ready
    - Workflow-safe: skips users with active workflows
 
-## Glossary / Key Concepts
-
-This section is the shared vocabulary used throughout the premium assignment
-documentation. Later sections reference these definitions rather than
-redefining them. When writing or reading test cases for the assignment
-system, each row in the tables below is a candidate test condition.
-
-### Assignment state of a premium user
-
-A premium user who has been through the `/assign` flow ends up in exactly
-one of four states. These states differ in infrastructure (real EC2 vs
-shared pool) **and** in DB representation, even though the frontend
-collapses three of them into a single "please wait" toast.
-
-| State | `instance_id` | `is_shared` | `is_standby` | Meaning |
-|---|---|---|---|---|
-| **Dedicated** | `i-xxxx` (real EC2) | `false` | `false` | The user is the sole premium assignment on that EC2 instance. Target group is per-user; the ALB rule routes only this user. |
-| **Shared** | `i-xxxx` (real EC2) | `true` | `false` | The user is co-located with one or more other premium users on a real premium EC2 instance. The Lambda picked the least-loaded running instance because no idle dedicated instance was available at assign time. Will migrate to a dedicated instance when one becomes available. |
-| **Autoscaling Pool** | `"autoscaling-pool"` (sentinel) | `true` | `false` | Fallback marker used when no running premium instance and no standby were available. Routed via the shared ASG target group (same pool as free tier), **not** a real premium EC2. Will migrate to a real premium instance once one comes up. |
-| **Unassigned** | — | — | — | No row exists (either the user is not premium, or `/assign` returned a hard error and `assignmentResult` stayed null on the frontend). |
-
-Uniqueness is enforced per-user (`idx_unique_user_assignment` conditional
-UNIQUE on `user_id WHERE user_id IS NOT NULL`), **not** per-instance.
-Multiple user rows can share the same `instance_id` (that is exactly what
-the Shared state is).
-
-The difference between Shared and Autoscaling Pool is critical when
-debugging: Shared runs on a real premium EC2 that the Manager owns, whereas
-Autoscaling Pool routes through the free-tier ASG target group. The toast
-copy collapses them, but infra-layer behaviour (scaling triggers, migration
-paths, routing) differs.
-
-### Standby pool
-
-The **standby pool** is a set of stopped EC2 instances maintained solely to
-shortcut the premium-user startup path. Starting a stopped instance is
-~5-15 seconds, whereas creating a new one from the launch template is
-4-8 minutes; keeping a small pool of pre-stopped instances therefore trades
-storage / EBS cost for startup latency on incoming premium assignments.
-
-A standby instance is represented in `premium_user_assignments` by a
-**placeholder row** with `is_standby = 1` and `user_id = NULL`. The pool is
-sized by `PREMIUM_STANDBY_POOL_SIZE`, and individual standbys are aged out
-by `PREMIUM_STOPPED_MAX_AGE_HOURS`. The full lifecycle (creation,
-replenishment, aging, excess trim, failure cleanup) is documented under
-[Standby Pool Management](#2-standby-pool-management).
-
-The standby pool is primarily owned by Premium Manager (create / start /
-stop / terminate). Premium Cleanup does not create, start, or stop
-instances, but its `ensure_standby_pool_capacity()` will **demote** excess
-standby rows by setting `is_standby = 0` so that Manager's normal
-scale-down / idle cleanup path can reclaim the instance on the next cycle.
-The full responsibility split is in the
-[Manager vs Cleanup responsibility split](#manager-vs-cleanup-responsibility-split-standby)
-subsection under Standby Pool Management.
-
-### `is_standby` column semantics
-
-`is_standby` is a `BOOLEAN NOT NULL` column (MySQL `TINYINT`) with
-`server_default = "0"`, defined in
-[e701e7250019_create_premium_management_system.py:89-93](../../studio/alembic/versions/e701e7250019_create_premium_management_system.py#L89-L93).
-It discriminates two kinds of rows:
-
-| Value | `user_id` | `target_group_arn` / `alb_rule_arn` | Meaning |
-|---|---|---|---|
-| `0` (default) | set (FK to `users.id`) | real ARN, or sentinel `"autoscaling-pool"` / `"reserving"` | Real user assignment row (Dedicated / Shared / Autoscaling Pool / in-flight reservation) |
-| `1` | `NULL` | `"standby"` / `"standby"` | Standby pool placeholder -- no owning user, the EC2 instance is stopped waiting to be assigned |
-
-`NULL` is not valid for this column; unless database corruption occurs the
-value is always 0 or 1.
-
-**Lifecycle transitions.** Importantly, there is **no in-place
-`1 → 0` UPDATE**. A standby instance being assigned to a user is
-implemented as a DELETE of the standby placeholder followed by an INSERT of
-a fresh user-owned assignment row. The `is_standby = 1` row never carries a
-real user.
-
-```mermaid
-stateDiagram-v2
-    [*] --> StandbyRow: create_and_stop_standby_instance()<br/>INSERT is_standby=1 user_id=NULL
-    StandbyRow --> Deleted: assign_premium_user Tier 3<br/>DELETE standby placeholder<br/>(premium_manager.py line 3735)
-    Deleted --> UserRow: store_user_assignment()<br/>INSERT is_standby=0 with real user_id
-    UserRow --> [*]: release or cleanup<br/>DELETE row
-    StandbyRow --> [*]: terminate_aged_stopped_instances()<br/>or cleanup_excess_standby_instances()<br/>DELETE row
-```
-
-**Tier 3 vs Tier 4 at the DB level.** These two tiers both source a stopped
-EC2 instance but their DB representations differ:
-
-- **Tier 3 (standby stopped)** -- instance is stopped AND has a placeholder
-  row with `is_standby = 1, user_id = NULL`. Visible to
-  `get_available_standby_instances()`.
-- **Tier 4 (non-standby stopped)** -- instance is stopped but has **no row
-  at all** in `premium_user_assignments`. Discovered by EC2 describe calls.
-  At the start of every `/assign` invocation,
-  `register_orphaned_stopped_instances()` normalises any untracked stopped
-  instances into standby rows, so in steady state Tier 4 is rarely reached
-  in the happy path; it remains as a true fallback for races or after
-  cleanup lag.
-
-### Idle instance
-
-An **idle instance** is a running premium EC2 instance with zero assigned
-real users.
-
-> Formally: an instance `i` is idle when no row exists in
-> `premium_user_assignments` satisfying
-> `instance_id = i AND is_standby = 0 AND status IN ('active', 'terminating')`.
-
-This matches the query used by `get_assigned_users_for_instance()`
-(in `premium_manager.py`), which backs `scale_down_if_possible()` and
-the `IdleInstances` CloudWatch metric. Note that `'terminating'` is
-the DB encoding of the `pending_release` state (see "Soft release"
-below).
-
-**What counts / does not count as occupation:**
-
-| Row shape | Counts as occupation? | Notes |
-|---|---|---|
-| `is_standby = 0`, `status = 'active'`, real `user_id` | **Yes** | Normal active user |
-| `is_standby = 0`, `status = 'terminating'` (pending_release), real `user_id` | **Yes** | Pending_release rows DO keep the instance non-idle during the 120s grace window. A comment in `get_assigned_users_for_instance()` spells this out: *"Include pending_release so instance isn't treated as idle during grace"* |
-| `is_standby = 1`, `user_id = NULL` (standby placeholder) | **No** | Standby rows never count as occupation; the instance is stopped, not running |
-| `is_standby = 0`, `user_id = <uid>`, `target_group_arn = 'reserving'` | **Yes** | The row has a real `user_id` and `status = 'active'`, so the occupation query matches. The reservation is either promoted to a full assignment within the same Lambda invocation or cleaned up by `release_instance_reservation()` on failure |
-
-**Scale-down threshold.** `scale_down_if_possible()` only stops an idle
-instance when
-`running_count > max(1, active_users + 1)` **AND** `idle_instances >= 2`.
-The `+ 1` safety margin is kept by scale-down; scale-up has no such margin.
-
-### Disambiguation: the four meanings of "idle"
-
-The documentation uses "idle" as shorthand in four distinct senses.
-When reading any section, identify the subject before interpreting the
-term.
-
-| Term | Subject | Exact condition | Where it appears |
-|---|---|---|---|
-| **Idle instance** | EC2 instance | Running with 0 qualifying assignment rows (formal definition above) | `scale_down_if_possible()`, `IdleInstances` CloudWatch metric |
-| **Idle premium user** | User account | Premium subscriber with no active assignment row -- computed as `total_premium_users − active_users` | `IdlePremiumUsers` CloudWatch metric |
-| **Idle assignment** (stale) | DB row | `last_activity < NOW() − PREMIUM_IDLE_TIMEOUT_HOURS` (Terraform: 3 hours) | `cleanup_stale_assignments()` in Premium Cleanup |
-| **Idle user (browser)** | Browser tab | No user interaction for the threshold (1h warning surfaces; 2h triggers auto-release) | `PremiumAssignmentContext.tsx` inactivity monitor |
-
-The Free tier uses "idle" with a fifth, unrelated meaning: `FreeUserAssignment.active_workflow_count = 0`
-(see [FREE_MANAGER_ARCHITECTURE.md](./FREE_MANAGER_ARCHITECTURE.md)). Premium's
-`active_workflow_count` serves the same migration-safety role but is **not**
-what "idle instance" or "idle assignment" mean on the premium side.
-
-**Causal chain (browser idle → instance idle → scale-down):**
-
-```
-user stops interacting
-  → 1h passes: InactivityWarning snackbar surfaces (60-min countdown)
-  → 2h passes: frontend DELETE /premium/assign (or sendBeacon on browser close)
-      → backend creates pending_release row (status='terminating'), 120s grace
-      → 120s later: finalize_expired_pending_releases() DELETEs the row
-           and tears down ALB resources
-  → [alternate safety-net path if frontend didn't fire] 3h passes:
-      → Premium Cleanup cleanup_stale_assignments() DELETEs the stale row
-  → Row gone: instance now has 0 qualifying assignments → instance is idle
-  → Next 15-min monitor run: scale_down_if_possible() stops the instance if
-    running_count > max(1, active_users+1) AND idle_instances >= 2
-  → OR, if the last premium user just left on this same release call,
-    convert_idle_instances_to_standby_immediate() may stop the instance
-    within the same invocation instead of waiting for the 15-min cycle.
-```
-
-The exact timing, thresholds, and the full comparison of all four
-release paths are expanded in **Inactivity & Release Paths** under
-*Implementation Details* below.
-
-### Soft release (`pending_release`)
-
-When a user releases via the **beacon path** (`navigator.sendBeacon` on
-browser close, or the frontend auto-release at 2h), the backend does **not**
-delete the row immediately. It transitions the row to the `pending_release`
-state for a grace period, so that a user who re-opens the tab within the
-window can resume on the same instance without a cold reassignment.
-
-| Property | Value |
-|---|---|
-| DB representation | `status = 'terminating'` (the `pending_release` sentinel reuses the `TERMINATING` enum value -- safe because all status checks go through the `PremiumAssignment` enum constants in `aws_constants.py`, not raw strings) |
-| Grace period duration | `PENDING_RELEASE_GRACE_SECONDS = 120` (2 minutes), defined in `aws_constants.py` |
-| Effect on idle counting during grace | Instance is **not** idle; the pending_release row counts as occupation (see the `get_assigned_users_for_instance()` query) |
-| Grace expiration handler | `finalize_expired_pending_releases()` (step 10a of the 15-min monitor) -- DELETEs the row and tears down ALB resources |
-| Resume path | `restore_pending_release()` at the start of `assign_premium_user()` -- UPDATEs `status` back to `'active'` on the same row if the EC2 instance still exists; returns with `assignment_source: "restored_from_pending_release"`. `is_shared` is **not** touched |
-
-Other release paths (hard `DELETE /assign` without beacon token, backend
-`release_premium_user()` on logout, `cleanup_stale_assignments()` at 3h)
-DELETE the row directly without going through pending_release. The full
-comparison of the four release paths is in **Inactivity & Release Paths**
-under *Implementation Details* below.
-
----
-
 ## Architecture Overview
 
 ```mermaid
@@ -444,6 +250,170 @@ graph TB
 
 ---
 
+## Glossary / Key Concepts
+
+This section is the shared vocabulary used throughout the premium assignment
+documentation. Later sections reference these definitions rather than
+redefining them. When writing or reading test cases for the assignment
+system, each row in the tables below is a candidate test condition.
+
+### Assignment state of a premium user
+
+A premium user who has been through the `/assign` flow ends up in exactly
+one of four states. These states differ in infrastructure (real EC2 vs
+shared pool) **and** in DB representation, even though the frontend
+collapses three of them into a single "please wait" toast.
+
+| State | `instance_id` | `is_shared` | `is_standby` | Meaning |
+|---|---|---|---|---|
+| **Dedicated** | `i-xxxx` (real EC2) | `false` | `false` | The user is the sole premium assignment on that EC2 instance. Target group is per-user; the ALB rule routes only this user. |
+| **Shared** | `i-xxxx` (real EC2) | `true` | `false` | The user is co-located with one or more other premium users on a real premium EC2 instance. The Lambda picked the least-loaded running instance because no idle dedicated instance was available at assign time. Will migrate to a dedicated instance when one becomes available. |
+| **Autoscaling Pool** | `"autoscaling-pool"` (sentinel) | `true` | `false` | Fallback marker used when no running premium instance and no standby were available. Routed via the shared ASG target group (same pool as free tier), **not** a real premium EC2. Will migrate to a real premium instance once one comes up. |
+| **Unassigned** | — | — | — | No row exists (either the user is not premium, or `/assign` returned a hard error and `assignmentResult` stayed null on the frontend). |
+
+Uniqueness is enforced per-user (`idx_unique_user_assignment` conditional
+UNIQUE on `user_id WHERE user_id IS NOT NULL`), **not** per-instance.
+Multiple user rows can share the same `instance_id` (that is exactly what
+the Shared state is).
+
+The difference between Shared and Autoscaling Pool is critical when
+debugging: Shared runs on a real premium EC2 that the Manager owns, whereas
+Autoscaling Pool routes through the free-tier ASG target group. The toast
+copy collapses them, but infra-layer behaviour (scaling triggers, migration
+paths, routing) differs.
+
+### Standby pool
+
+The **standby pool** is a set of stopped EC2 instances maintained solely to
+shortcut the premium-user startup path. Starting a stopped instance is
+~5-15 seconds, whereas creating a new one from the launch template is
+4-8 minutes; keeping a small pool of pre-stopped instances therefore trades
+storage / EBS cost for startup latency on incoming premium assignments.
+
+A standby instance is represented in `premium_user_assignments` by a
+**placeholder row** with `is_standby = 1` and `user_id = NULL`. The pool is
+sized by `PREMIUM_STANDBY_POOL_SIZE`, and individual standbys are aged out
+by `PREMIUM_STOPPED_MAX_AGE_HOURS`. The full lifecycle (creation,
+replenishment, aging, excess trim, failure cleanup) is documented under
+[Standby Pool Management](#2-standby-pool-management).
+
+The `is_standby` column discriminates the two row kinds that co-exist in
+the `premium_user_assignments` table:
+
+| `is_standby` | `user_id` | Meaning |
+|---|---|---|
+| `0` (default) | set (FK to `users.id`) | Real user assignment row (Dedicated / Shared / Autoscaling Pool / in-flight reservation) |
+| `1` | `NULL` | Standby pool placeholder -- the EC2 instance is stopped waiting to be assigned |
+
+There is **no in-place `1 → 0` UPDATE** on this column. A standby being
+assigned to a user is implemented as DELETE of the placeholder followed by
+INSERT of a fresh user row; the invariant is enforced by the Tier 3 block
+in `assign_premium_user()` and by `try_reserve_instance_for_migration()`.
+The `is_standby = 1` row therefore never carries a real user.
+
+The standby pool is primarily owned by Premium Manager (create / start /
+stop / terminate). Premium Cleanup does not create, start, or stop
+instances, but its `ensure_standby_pool_capacity()` will **demote** excess
+standby rows by setting `is_standby = 0` so that Manager's normal
+scale-down / idle cleanup path can reclaim the instance on the next cycle.
+The full responsibility split is in the
+[Manager vs Cleanup responsibility split](#manager-vs-cleanup-responsibility-split-standby)
+subsection under Standby Pool Management.
+
+### Idle instance
+
+An **idle instance** is a running premium EC2 instance with zero assigned
+real users.
+
+> Formally: an instance `i` is idle when no row exists in
+> `premium_user_assignments` satisfying
+> `instance_id = i AND is_standby = 0 AND status IN ('active', 'terminating')`.
+
+This matches the query used by `get_assigned_users_for_instance()`
+(in `premium_manager.py`), which backs `scale_down_if_possible()` and
+the `IdleInstances` CloudWatch metric. Note that `'terminating'` is
+the DB encoding of the `pending_release` state (see "Soft release"
+below).
+
+**What counts / does not count as occupation:**
+
+| Row shape | Counts as occupation? | Notes |
+|---|---|---|
+| `is_standby = 0`, `status = 'active'`, real `user_id` | **Yes** | Normal active user |
+| `is_standby = 0`, `status = 'terminating'` (pending_release), real `user_id` | **Yes** | Pending_release rows DO keep the instance non-idle during the 120s grace window. A comment in `get_assigned_users_for_instance()` spells this out: *"Include pending_release so instance isn't treated as idle during grace"* |
+| `is_standby = 1`, `user_id = NULL` (standby placeholder) | **No** | Standby rows never count as occupation; the instance is stopped, not running |
+| `is_standby = 0`, `user_id = <uid>`, `target_group_arn = 'reserving'` | **Yes** | The row has a real `user_id` and `status = 'active'`, so the occupation query matches. The reservation is either promoted to a full assignment within the same Lambda invocation or cleaned up by `release_instance_reservation()` on failure |
+
+**Scale-down threshold.** `scale_down_if_possible()` only stops an idle
+instance when
+`running_count > max(1, active_users + 1)` **AND** `idle_instances >= 2`.
+The `+ 1` safety margin is kept by scale-down; scale-up has no such margin.
+
+### Disambiguation: the four meanings of "idle"
+
+The documentation uses "idle" as shorthand in four distinct senses.
+When reading any section, identify the subject before interpreting the
+term.
+
+| Term | Subject | Exact condition | Where it appears |
+|---|---|---|---|
+| **Idle instance** | EC2 instance | Running with 0 qualifying assignment rows (formal definition above) | `scale_down_if_possible()`, `IdleInstances` CloudWatch metric |
+| **Idle premium user** | User account | Premium subscriber with no active assignment row -- computed as `total_premium_users − active_users` | `IdlePremiumUsers` CloudWatch metric |
+| **Idle assignment** (stale) | DB row | `last_activity < NOW() − PREMIUM_IDLE_TIMEOUT_HOURS` (Terraform: 3 hours) | `cleanup_stale_assignments()` in Premium Cleanup |
+| **Idle user (browser)** | Browser tab | No user interaction for the threshold (1h warning surfaces; 2h triggers auto-release) | `PremiumAssignmentContext.tsx` inactivity monitor |
+
+The Free tier uses "idle" with a fifth, unrelated meaning: `FreeUserAssignment.active_workflow_count = 0`
+(see [FREE_MANAGER_ARCHITECTURE.md](./FREE_MANAGER_ARCHITECTURE.md)). Premium's
+`active_workflow_count` serves the same migration-safety role but is **not**
+what "idle instance" or "idle assignment" mean on the premium side.
+
+**Causal chain (browser idle → instance idle → scale-down):**
+
+```
+user stops interacting
+  → 1h passes: InactivityWarning snackbar surfaces (60-min countdown)
+  → 2h passes: frontend DELETE /premium/assign (or sendBeacon on browser close)
+      → backend creates pending_release row (status='terminating'), 120s grace
+      → 120s later: finalize_expired_pending_releases() DELETEs the row
+           and tears down ALB resources
+  → [alternate safety-net path if frontend didn't fire] 3h passes:
+      → Premium Cleanup cleanup_stale_assignments() DELETEs the stale row
+  → Row gone: instance now has 0 qualifying assignments → instance is idle
+  → Next 15-min monitor run: scale_down_if_possible() stops the instance if
+    running_count > max(1, active_users+1) AND idle_instances >= 2
+  → OR, if the last premium user just left on this same release call,
+    convert_idle_instances_to_standby_immediate() may stop the instance
+    within the same invocation instead of waiting for the 15-min cycle.
+```
+
+The exact timing, thresholds, and the full comparison of all four
+release paths are expanded in **Inactivity & Release Paths** under
+*Implementation Details* below.
+
+### Soft release (`pending_release`)
+
+When a user releases via the **beacon path** (`navigator.sendBeacon` on
+browser close, or the frontend auto-release at 2h), the backend does **not**
+delete the row immediately. It transitions the row to the `pending_release`
+state for a grace period, so that a user who re-opens the tab within the
+window can resume on the same instance without a cold reassignment.
+
+| Property | Value |
+|---|---|
+| DB representation | `status = 'terminating'` (the `pending_release` sentinel reuses the `TERMINATING` enum value -- safe because all status checks go through the `PremiumAssignment` enum constants in `aws_constants.py`, not raw strings) |
+| Grace period duration | `PENDING_RELEASE_GRACE_SECONDS = 120` (2 minutes), defined in `aws_constants.py` |
+| Effect on idle counting during grace | Instance is **not** idle; the pending_release row counts as occupation (see the `get_assigned_users_for_instance()` query) |
+| Grace expiration handler | `finalize_expired_pending_releases()` (step 10a of the 15-min monitor) -- DELETEs the row and tears down ALB resources |
+| Resume path | `restore_pending_release()` at the start of `assign_premium_user()` -- UPDATEs `status` back to `'active'` on the same row if the EC2 instance still exists; returns with `assignment_source: "restored_from_pending_release"`. `is_shared` is **not** touched |
+
+Other release paths (hard `DELETE /assign` without beacon token, backend
+`release_premium_user()` on logout, `cleanup_stale_assignments()` at 3h)
+DELETE the row directly without going through pending_release. The full
+comparison of the four release paths is in **Inactivity & Release Paths**
+under *Implementation Details* below.
+
+---
+
 ## Implementation Details
 
 ### 1. User Assignment Handler
@@ -488,6 +458,17 @@ graph TB
   the cascade starting at Tier 1 -- there is no server-side wait-queue
   or reserved slot for the retrying user. See **Tier Cascade: Precedence
   & Reachability** below for details.
+
+**Tier 3 vs Tier 4 at the DB level.** Both tiers source a stopped EC2
+instance but differ in DB representation. Tier 3 (standby stopped) means
+the instance is stopped **and** has a placeholder row with
+`is_standby = 1, user_id = NULL`; the row is visible to
+`get_available_standby_instances()`. Tier 4 (non-standby stopped) means the
+instance is stopped but has **no row at all** in `premium_user_assignments`
+and is only discovered via EC2 describe calls. The pre-cascade
+`register_orphaned_stopped_instances()` adopts any such AWS-only stopped
+instance into Tier 3 before the cascade runs, which is the schema-level
+basis for the "Tier 4 unreachable on the happy path" property noted below.
 
 **Tier Cascade: Precedence & Reachability**
 
