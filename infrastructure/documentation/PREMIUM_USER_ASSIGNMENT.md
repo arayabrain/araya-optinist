@@ -951,6 +951,33 @@ the tab too hard for the beacon to reach the ALB.
 > truth. Path 4 therefore fires no earlier than 3 h after last
 > activity, plus up to 1 h of scheduler latency.
 
+#### Known limitation: no automatic re-assignment after auto-release
+
+When the 2-hour auto-release fires (`autoReleaseOnLogout()`), the frontend
+clears `assignmentResult`, the warning state, and the beacon token — but it
+does **not** clear the `hasAttemptedAutoAssignment` flag in `sessionStorage`.
+Because `autoAssignOnLogin()` checks this flag before calling `/assign`,
+**no automatic re-assignment occurs** even if the user resumes activity on
+the same tab.
+
+The backend's `restore_pending_release()` grace window (120 s) exists to
+cover the case where a user returns quickly, but it is unreachable in this
+scenario because the frontend never re-calls `/assign`.
+
+**User-visible effect:** after the 2-hour auto-release the user remains
+logged in but without premium compute resources, and there is no UI prompt
+to re-acquire them.
+
+**Current workarounds:**
+
+| Action | Why it works |
+|---|---|
+| Log out → log back in | Clears `hasAttemptedAutoAssignment` (flag is reset on logout) |
+| Close the tab → open a new tab | `sessionStorage` is per-tab; the new tab starts with the flag unset |
+
+A page reload (F5) within the same tab does **not** help because
+`sessionStorage` survives reloads.
+
 #### Post-release: idle-instance handling
 
 Once a release path removes the last `is_standby = 0` user row from an
