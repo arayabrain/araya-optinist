@@ -81,8 +81,13 @@ graph TB
     style C4 fill:#87CEEB
     style C5 fill:#DDA0DD
     style C6 fill:#FFB6C1
-    style J fill:#98FB98
+    style J fill:#FFFFFF
 ```
+
+> **Color key:** 🟢 Tier 1 (Dedicated) · 🟡 Tier 2 (Shared) ·
+> 🔵 Tier 3 (Standby) · 🟠 Tier 3.5 (Autoscaling) ·
+> 🟣 Tier 4 (Stopped) · 🔴 Tier 5 (New) ·
+> ⚪ Auto-Migrate
 
 ### Assignment Priority Matrix
 
