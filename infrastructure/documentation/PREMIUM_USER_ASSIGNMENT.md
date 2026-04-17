@@ -635,10 +635,6 @@ Lambda run.
   assignment row must already be gone (DELETE by release / cleanup before
   this point)
 
-This is the third entry path in the lifecycle diagram. The function name
-first appeared only in the Key Functions Reference; this subsection is the
-specification called out by Finding 4.
-
 #### Manager vs Cleanup responsibility split (standby)
 
 | Capability | Premium Manager | Premium Cleanup |
