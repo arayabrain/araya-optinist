@@ -275,14 +275,43 @@ graph TB
 
 ### Assignment Priority Matrix
 
-| Tier | Source | Wait Time | User Experience | Cost | Use Case |
-|------|--------|-----------|-----------------|------|----------|
-| 1 | Dedicated Running | 0s | Best (exclusive) | Highest | Active user pool |
-| 2 | Shared Instance | 0s | Good (shared) | Medium | Burst capacity |
-| 3 | Standby (Stopped) | 5-15s | Good (warming) | Low | Premium provisioning / re-login |
-| 3.5 | Autoscaling Pool | 0s | Temporary (migrates) | Low | Last-resort fallback (no standby) |
-| 4 | AWS Stopped | 60s-6min | Acceptable | Low | Fallback recovery |
-| 5 | New Instance | 4-8 min | Poor (scaling) | Highest | Last resort |
+| Tier | Source | Wait Time | User Experience | Cost | Use Case | Reachability |
+|------|--------|-----------|-----------------|------|----------|--------------|
+| 1 | Dedicated Running | 0s | Best (exclusive) | Highest | Active user pool | Reachable |
+| 2 | Shared Instance | 0s | Good (shared) | Medium | Burst capacity | Reachable |
+| 3 | Standby (Stopped) | 5-15s | Good (warming) | Low | Premium provisioning / re-login | Reachable |
+| 3.5 | Autoscaling Pool | 0s | Temporary (migrates) | Low | Last-resort fallback (no standby) | Reachable (always succeeds when reached -- see Precedence & Reachability Notes below) |
+| 4 | AWS Stopped | 60s-6min | Acceptable | Low | Defensive fallback | **Unreachable on the happy path** -- `register_orphaned_stopped_instances()` absorbs stopped instances into Tier 3 before the cascade runs |
+| 5 | New Instance | 4-8 min | Poor (scaling) | Highest | Last resort | Reachable only when Tier 3.5 is skipped (i.e. no stopped / pending / running capacity at all); returns HTTP 202, client retries from Tier 1 |
+
+#### Precedence & Reachability Notes
+
+The flowchart above shows the six tiers as parallel branches, but the
+code evaluates them **sequentially** as a fallthrough cascade. Three
+properties of that cascade are not obvious from the diagram alone:
+
+- **Tier 2 wins unconditionally over Tier 3** when both are viable.
+  The rationale is **immediacy over exclusivity**: a 0-second shared
+  assignment (plus a background scale-up to dedicated) is preferred to
+  a 5-15s standby start, because the user is unblocked immediately and
+  async migration will move them to a dedicated instance when capacity
+  arrives.
+
+- **Tier 4 is unreachable on the happy path.** The pre-cascade call to
+  `register_orphaned_stopped_instances()` adopts any AWS-stopped
+  instance into the standby pool (Tier 3) before the cascade runs, so
+  the Tier 4 candidate list is empty during normal operation. Tier 4
+  exists only as a defensive fallback if adoption itself failed.
+
+- **Tier 5 never returns HTTP 200.** It returns HTTP 202 (with
+  `retry_after`) when scaling is in progress or was just initiated,
+  and HTTP 503 only when scaling is blocked. A 202 directs the client
+  to retry, and the retry re-enters the cascade from Tier 1 -- there
+  is no server-side wait-queue or reserved slot for the retrying user.
+
+For the code-level walkthrough with line-level references to where each
+of these properties is enforced, see **Tier Cascade: Precedence &
+Reachability** under *Implementation Details > `assign_premium_user()`*.
 
 ### Responsibility Matrix
 
@@ -455,7 +484,62 @@ graph TB
 - **Tier 4 (AWS Stopped):** Start non-standby stopped instance,
   wait up to 6 minutes for running state (typical cold start is 60-90s)
 - **Tier 5 (Scale New):** If launching instances exist, return 202;
-  otherwise call `scale_premium_instances_if_needed()` and return 202
+  otherwise call `scale_premium_instances_if_needed()` and return 202.
+  The 202 directs the client to retry after `retry_after` seconds; the
+  retry re-enters `assign_premium_user()` from the top and re-evaluates
+  the cascade starting at Tier 1 -- there is no server-side wait-queue
+  or reserved slot for the retrying user. See **Tier Cascade: Precedence
+  & Reachability** below for the line-level references.
+
+**Tier Cascade: Precedence & Reachability**
+
+The bullets above describe each tier's happy path. The cascade as
+implemented at
+[premium_manager.py:3210-3413](../terraform/premium_manager_package/premium_manager.py#L3210-L3413)
+has three non-obvious properties worth calling out:
+
+- **Tier 2 vs Tier 3 (unconditional precedence).** If
+  `least_loaded_instance` is non-null after the Tier 1 scan, Tier 2
+  captures the user at
+  [premium_manager.py:3224-3232](../terraform/premium_manager_package/premium_manager.py#L3224-L3232),
+  and the Tier 3 block at
+  [premium_manager.py:3246](../terraform/premium_manager_package/premium_manager.py#L3246)
+  is skipped by its `if not instance_to_use` guard -- no gate allows
+  the cascade to prefer a 5-15s standby start over a 0s shared
+  assignment even when both are viable. The rationale is *immediacy
+  over exclusivity*; `invoke_migration_async()` will move the user to a
+  dedicated instance once capacity arrives.
+
+- **Tier 3.5 vs Tier 4 (Tier 4 is unreachable on the happy path).**
+  Tier 3.5's gate is
+  `no_premium_available = (len(running_instances) == 0 or not available_dedicated)`
+  ([premium_manager.py:3281-3283](../terraform/premium_manager_package/premium_manager.py#L3281-L3283)).
+  By the time the cascade reaches Tier 3.5, `available_dedicated` is
+  guaranteed to be `None` (otherwise Tier 1 would have captured the
+  user), so `not available_dedicated` is always true and Tier 3.5
+  always succeeds when reached. The pre-cascade call to
+  `register_orphaned_stopped_instances()` at
+  [premium_manager.py:3094](../terraform/premium_manager_package/premium_manager.py#L3094)
+  adopts any AWS-only stopped instance into the standby pool before the
+  cascade runs, so by the time the Tier 4 block filters for
+  `aws_only_stopped` at
+  [premium_manager.py:3305-3315](../terraform/premium_manager_package/premium_manager.py#L3305-L3315)
+  the filter is empty. Tier 4 only fires if adoption itself failed
+  (e.g. DB error during the pre-cascade step).
+
+- **Tier 5 retry semantics.** Tier 5 never returns HTTP 200. If scaling
+  is already in progress
+  ([premium_manager.py:3356-3369](../terraform/premium_manager_package/premium_manager.py#L3356-L3369))
+  or was freshly initiated
+  ([premium_manager.py:3371-3385](../terraform/premium_manager_package/premium_manager.py#L3371-L3385)),
+  it returns HTTP 202 with `retry_after: 180`; only if scaling is
+  blocked does it return HTTP 503. A 202 retry re-enters
+  `assign_premium_user()` from the top
+  ([premium_manager.py:2849](../terraform/premium_manager_package/premium_manager.py#L2849))
+  -- the in-progress scale-up does not leave a reservation for the
+  retrying user; it just creates instances that Tier 1 or Tier 2 will
+  pick up on the next attempt. `increment_assignment_attempts()` is
+  bookkeeping only; it does not change tier selection.
 
 **Post-assignment Steps:**
 1. Create target group (or use autoscaling target group for pool)
