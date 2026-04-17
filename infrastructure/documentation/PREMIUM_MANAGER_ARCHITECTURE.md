@@ -8,6 +8,13 @@
 - **Conservative scaling** keeps `max(1, active_users + 1)` instances running and requires `idle_instances >= 2` before stopping any
 - **Frontend integration** provides auto-assignment on login, inactivity monitoring (1h warning, 2h release), heartbeat-based activity tracking, and leader-tab polling while on a shared instance
 
+> **Sister document:**
+> This file focuses on the **system architecture** — Manager / Cleanup
+> Lambda split, frontend lifecycle, and operational diagnostics (log
+> playbook). For the **assignment flow** — 5-tier priority cascade,
+> standby pool, migration, and release paths — see
+> [PREMIUM_USER_ASSIGNMENT.md](./PREMIUM_USER_ASSIGNMENT.md).
+
 ---
 
 ## Key Architectural Principles
@@ -479,6 +486,9 @@ Guards:
 - Deregisters from ECS before stopping to prevent ghost
   registrations
 
+> For the scale-up / scale-down asymmetry comparison, see
+> [PREMIUM_USER_ASSIGNMENT.md → 5. Scaling System (scale-up and scale-down)](./PREMIUM_USER_ASSIGNMENT.md#5-scaling-system-scale-up-and-scale-down).
+
 #### Terraform Configuration
 
 ```hcl
@@ -776,7 +786,7 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 | `ActivePremiumUsers` | Users with active assignments | Count |
 | `IdlePremiumUsers` | Total premium users - active users | Count |
 | `RunningInstances` | EC2 instances in "running" state | Count |
-| `IdleInstances` | Running instances with 0 assignments | Count |
+| `IdleInstances` | Running instances with 0 assigned users (see [Idle instance](./PREMIUM_USER_ASSIGNMENT.md#idle-instance) in the Glossary) | Count |
 | `ScalingInProgress` | Lock to prevent concurrent operations | None (0 or 1) |
 
 **Namespace:** `OptiNiSt/PremiumManager/{env_prefix}` where `env_prefix` is the Terraform `environment` variable (e.g. `staging`, `prod`).
@@ -900,7 +910,9 @@ All resource names are prefixed with the Terraform `environment` variable (shown
 |---|---|
 | `handler()` | Main entry point, routes events by type |
 | `handle_scheduled_monitoring()` | 15-min monitoring cycle (10 operations) |
-| `scale_down_if_possible()` | Conservative scaling algorithm |
+| `scale_premium_instances_if_needed()` | Scale up by starting stopped or creating new instances when `running_count < active_users` |
+| `_create_running_instances_locked()` | Create running instances under distributed lock (called by `scale_premium_instances_if_needed()`) |
+| `scale_down_if_possible()` | Conservative scale-down: requires `running_count > max(1, active_users + 1)` AND `idle_instances >= 2` |
 | `update_premium_service_desired_count()` | Sync ECS desired count |
 | `assign_premium_user()` | Real-time user assignment (API) - 5-tier priority: dedicated > shared > standby > autoscaling pool > stopped > new |
 | `release_premium_user()` | Real-time user release (API) |
@@ -1124,6 +1136,11 @@ Displays a warning when premium users have been inactive for 1 hour.
 | `logPremiumUiEvent()` | POST /users/me/premium/ui-event | Fire-and-forget UI event log (CloudWatch timing correlation); errors swallowed |
 
 The browser-close path also calls `POST /users/me/premium/release-beacon` directly via `navigator.sendBeacon` -- it has no wrapper function since it must run without axios during `beforeunload`.
+
+> For the `X-Routing-ID` / `X-User-Tier` header protocol and the
+> backend generation/validation flow, see
+> [ALB_ROUTING_ARCHITECTURE.md](./ALB_ROUTING_ARCHITECTURE.md).
+> `getRoutingInfo()` in the table above is the frontend-side wrapper.
 
 ### Frontend Files Summary
 

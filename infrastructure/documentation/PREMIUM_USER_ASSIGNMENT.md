@@ -7,6 +7,13 @@
 - **Automatic migration** moves users from shared to dedicated instances, inline when possible and async otherwise
 - **Workflow safety** prevents migration of users with active workflows
 
+> **Sister document:**
+> This file focuses on the **assignment flow** — 5-tier priority cascade,
+> standby pool, migration, and release paths. For the **system
+> architecture** — Manager / Cleanup Lambda split, frontend lifecycle,
+> and log playbook — see
+> [PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md).
+
 ## Key Architectural Principles
 
 1. **Priority-Based Assignment**
