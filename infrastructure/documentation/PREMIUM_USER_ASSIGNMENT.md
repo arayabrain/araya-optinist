@@ -128,8 +128,8 @@ This document covers one Lambda -- the Premium Manager -- acting across several 
 | Capacity scaling (up)                | Scaling system                                | `scale_premium_instances_if_needed()`, `_create_running_instances_locked()`             |
 | Shared-to-dedicated migration        | Background migration                          | `process_shared_instance_optimization()`, `migrate_user_to_dedicated_instance()`, `invoke_migration_async()` |
 | Concurrency / race prevention        | Locking                                       | `distributed_lock()` (MySQL `GET_LOCK`), `try_reserve_instance_transaction()` (`SELECT FOR UPDATE`), `is_creation_lock_held()` |
-| Scale-down + ghost / orphan cleanup  | Scheduled monitoring (see `PREMIUM_MANAGER_ARCHITECTURE.md`) | `handle_scheduled_monitoring()`, `scale_down_if_possible()`                             |
-| Stale assignment + ALB rule hygiene  | Premium Cleanup Lambda (separate)             | See `PREMIUM_MANAGER_ARCHITECTURE.md`                                                   |
+| Scale-down + ghost / orphan cleanup  | Scheduled monitoring (see [PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md)) | `handle_scheduled_monitoring()`, [`scale_down_if_possible()`](./PREMIUM_MANAGER_ARCHITECTURE.md#scale_down_if_possible) |
+| Stale assignment + ALB rule hygiene  | Premium Cleanup Lambda (separate)             | See [PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md)               |
 
 ## Provisioning Flow Diagrams
 
@@ -266,7 +266,7 @@ collapses three of them into a single "please wait" toast.
 
 | State | `instance_id` | `is_shared` | `is_standby` | Meaning |
 |---|---|---|---|---|
-| **Dedicated** | `i-xxxx` (real EC2) | `false` | `false` | The user is the sole premium assignment on that EC2 instance. Target group is per-user; the ALB rule routes only this user. |
+| **Dedicated** | `i-xxxx` (real EC2) | `false` | `false` | The user is the sole premium assignment on that EC2 instance. Target group is per-user; the ALB rule routes only this user (see [ALB_ROUTING_ARCHITECTURE.md](./ALB_ROUTING_ARCHITECTURE.md) for the routing-ID / ALB-rule binding). |
 | **Shared** | `i-xxxx` (real EC2) | `true` | `false` | The user is co-located with one or more other premium users on a real premium EC2 instance. The Lambda picked the least-loaded running instance because no idle dedicated instance was available at assign time. Will migrate to a dedicated instance when one becomes available. |
 | **Autoscaling Pool** | `"autoscaling-pool"` (sentinel) | `true` | `false` | Fallback marker used when no running premium instance and no standby were available. Routed via the shared ASG target group (same pool as free tier), **not** a real premium EC2. Will migrate to a real premium instance once one comes up. |
 | **Unassigned** | — | — | — | No row exists (either the user is not premium, or `/assign` returned a hard error and `assignmentResult` stayed null on the frontend). |
@@ -418,7 +418,7 @@ under *Implementation Details* below.
 
 ### 1. User Assignment Handler
 
-### assign_premium_user()
+#### assign_premium_user()
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Assign a premium instance using 5-tier priority fallback
@@ -516,6 +516,11 @@ properties worth calling out.
 6. If `needs_scaling`: call `scale_premium_instances_if_needed()` + `invoke_migration_async()`
 7. Store assignment via `store_user_assignment()`
 8. Initialize activity tracking
+
+> For the end-to-end specification of Routing ID (HMAC-SHA256 of UID)
+> and ALB listener-rule matching, see
+> [ALB_ROUTING_ARCHITECTURE.md](./ALB_ROUTING_ARCHITECTURE.md).
+> This subsection covers only the Premium Manager's operations.
 
 **Error Recovery:**
 On any failure after partial resource creation, the handler cleans up:
@@ -687,11 +692,11 @@ Standby instances are tracked in the `premium_user_assignments` table with:
 - `instance_state = 'stopped'` (queried by `get_available_standby_instances()`)
 - `standby_created_at` = `NOW()` at insert time, used as an age fallback and for oldest-first excess trim
 
-See the [`is_standby` column semantics](#is_standby-column-semantics)
-subsection in the Glossary for the full column-value table and the
-non-UPDATE lifecycle.
+See the [Standby pool](#standby-pool) entry in the Glossary for the
+`is_standby` column-value table and the non-UPDATE (DELETE + INSERT)
+invariant.
 
-### create_and_stop_standby_instance()
+#### create_and_stop_standby_instance()
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Create a new EC2 instance and stop it for standby pool
@@ -707,7 +712,7 @@ non-UPDATE lifecycle.
 - Waits for running, then stops, then waits for stopped
 - Registers with `is_standby=1` in DB
 
-### start_standby_instance()
+#### start_standby_instance()
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Start a stopped standby instance and prepare for user
@@ -745,7 +750,7 @@ only the DB mutation differs between the two callers.
 
 ### 3. Orphaned Instance Registration
 
-### register_orphaned_stopped_instances()
+#### register_orphaned_stopped_instances()
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Find stopped EC2 instances not tracked in DB and register as standby
@@ -759,7 +764,7 @@ are both untracked in the standby pool and unassigned to any user.
 
 ### 4. Background Migration System
 
-### process_shared_instance_optimization()
+#### process_shared_instance_optimization()
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Find users on shared/autoscaling instances and migrate to dedicated
@@ -787,7 +792,7 @@ and via `invoke_migration_async()` after shared/autoscaling assignments.
 WHERE active_workflow_count = 0
 ```
 
-### migrate_user_to_dedicated_instance()
+#### migrate_user_to_dedicated_instance()
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Migrate one user from shared/autoscaling to a dedicated instance
@@ -805,9 +810,17 @@ WHERE active_workflow_count = 0
   target group, updates DB with `is_shared=0`
 - Triggers experiment metadata sync on new instance
 
-### 5. Scaling System
+### 5. Scaling System (scale-up and scale-down)
 
-### scale_premium_instances_if_needed()
+Premium instance capacity is adjusted by two separate functions with
+**asymmetric** thresholds. Scale-up (`scale_premium_instances_if_needed()`)
+fires when `running_count < active_users` -- no safety margin. Scale-down
+(`scale_down_if_possible()`) requires `running_count > max(1, active_users + 1)`
+**AND** `idle_instances >= 2` -- a `+ 1` margin plus a minimum-idle guard.
+The asymmetry means the system scales up eagerly but scales down
+conservatively, avoiding instance churn.
+
+#### scale_premium_instances_if_needed()
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Scale up premium instances based on active assignment demand
@@ -820,13 +833,36 @@ subscribers.
 
 **Key behaviors:**
 - Blocked if launching instances exist or `CREATE_RUNNING_LOCK` held
-- No-op if `running_count >= active_users` (sufficient capacity). Note this is distinct from `scale_down_if_possible()`, which keeps `max(1, active_users + 1)` -- scale-up has no `+ 1` safety margin, so the scale-down headroom only exists after a full monitor cycle runs
+- No-op if `running_count >= active_users` (sufficient capacity). Note this is distinct from [`scale_down_if_possible()`](#scale-down-scale_down_if_possible), which keeps `max(1, active_users + 1)` -- scale-up has no `+ 1` safety margin, so the scale-down headroom only exists after a full monitor cycle runs
 - Prefers starting stopped instances (fastest) over creating new
 - Clears ECS agent checkpoints after starting stopped instances
 - Falls back to `_create_running_instances_locked()` under
   distributed lock
 - Always calls `invoke_migration_async()` and
   `update_premium_service_desired_count()` after scaling
+
+#### Scale-down (`scale_down_if_possible`)
+
+Runs as step 5 of `handle_scheduled_monitoring()` (the 15-minute cycle).
+Stops idle running instances subject to **two** guard conditions that must
+both be true:
+
+1. `running_count > max(1, active_users + 1)` -- headroom exists beyond
+   the `+ 1` safety margin.
+2. `idle_instances >= 2` -- at least two instances have zero qualifying
+   assignment rows, so one will remain idle after stopping.
+
+For each instance selected for scale-down, the function deregisters the
+EC2 from ECS **before** issuing `stop_instances` to prevent ghost
+container-instance registrations. It may also call
+`convert_idle_instances_to_standby_immediate()` to stop-and-demote
+idle instances to standby (`is_standby = 1`) within the same invocation,
+shortening the "last user released → instance stopped" latency to
+~30-60 s instead of waiting for the next 15-minute cycle.
+
+> Full specification (File / Purpose / Input / Output / Calls and
+> detailed guard bullets) is in
+> [PREMIUM_MANAGER_ARCHITECTURE.md → scale_down_if_possible()](./PREMIUM_MANAGER_ARCHITECTURE.md#scale_down_if_possible).
 
 ---
 
@@ -949,7 +985,7 @@ both see same available instance.
 
 **Solution:** Database-level locking with `SELECT FOR UPDATE`:
 
-### try_reserve_instance_transaction()
+#### try_reserve_instance_transaction()
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Atomically reserve an instance using row-level locking
@@ -1079,10 +1115,13 @@ including standby pool entries.
 | `ActivePremiumUsers` | Users with active assignments | Count |
 | `IdlePremiumUsers` | Premium users without assignments | Count |
 | `RunningInstances` | EC2 instances in "running" state | Count |
-| `IdleInstances` | Running instances with 0 users | Count |
+| `IdleInstances` | Running instances with 0 assigned users (see [Idle instance](#idle-instance)) | Count |
 | `ScalingInProgress` | Lock to prevent concurrent operations | None (0 or 1) |
 
 **Namespace:** `OptiNiSt/PremiumManager/{env_prefix}` where `env_prefix` is the Terraform `environment` variable (e.g. `staging`, `prod`).
+
+> For the Cleanup Lambda's perspective on these metrics, see
+> [PREMIUM_MANAGER_ARCHITECTURE.md → Monitoring and Metrics](./PREMIUM_MANAGER_ARCHITECTURE.md#monitoring-and-metrics).
 
 ### Key Log Events
 
@@ -1172,6 +1211,9 @@ Shared instance optimization complete: 1 users migrated
 
 `PREMIUM_IDLE_TIMEOUT_HOURS` is set in the Manager's Terraform block but is only read by the Cleanup Lambda; it does not influence Manager behavior.
 
+> For the full Manager + Cleanup environment variable set, see
+> [PREMIUM_MANAGER_ARCHITECTURE.md → Environment Variables](./PREMIUM_MANAGER_ARCHITECTURE.md#environment-variables).
+
 ### Triggers
 
 | Lambda          | Trigger              | Frequency        | EventBridge Rule                       |
@@ -1179,6 +1221,9 @@ Shared instance optimization complete: 1 users migrated
 | Premium Manager | User assign/release  | On-demand (API)  | N/A                                    |
 | Premium Manager | Scheduled monitoring | Every 15 minutes | `{env_prefix}-premium-manager-schedule` |
 | Premium Manager | Migration check      | After assignment | N/A (async self-invocation)            |
+
+> For Premium Cleanup Lambda triggers, see
+> [PREMIUM_MANAGER_ARCHITECTURE.md → Triggers](./PREMIUM_MANAGER_ARCHITECTURE.md#triggers).
 
 ---
 
@@ -1227,25 +1272,10 @@ Shared instance optimization complete: 1 users migrated
 | `update_premium_service_desired_count()` | Sync ECS desired count |
 | `trigger_experiment_sync()` | Sync experiment metadata after migration |
 
-### Locking & Concurrency
-
-| Function | Purpose |
-|----------|---------|
-| `distributed_lock()` | MySQL GET_LOCK context manager |
-| `try_reserve_instance_transaction()` | DB transaction lock for reservation |
-| `is_creation_lock_held()` | Check if another Lambda holds a lock |
-| `is_premium_scaling_in_progress()` | Check CloudWatch metric lock |
-| `set_premium_scaling_lock()` | Set/clear CloudWatch scaling lock |
-
-### Monitoring & Cleanup
-
-| Function | Purpose |
-|----------|---------|
-| `publish_premium_metrics()` | Publish CloudWatch metrics |
-| `cleanup_failed_standby_instances()` | Remove DB entries for terminated instances |
-| `cleanup_ghost_ecs_registrations()` | Deregister orphaned ECS container instances |
-| `cleanup_orphaned_ec2_instances()` | Stop premium EC2 not in ECS cluster |
-| `handle_scheduled_monitoring()` | 15-minute monitoring loop (12 steps: scale-down, ECS sync, standby-pool hygiene, pending-release finalization, ghost/orphan cleanup, shared-instance optimization -- see `PREMIUM_MANAGER_ARCHITECTURE.md`) |
+> For locking primitives (`distributed_lock()`, `try_reserve_instance_transaction()`, etc.)
+> and monitoring / cleanup functions (`publish_premium_metrics()`,
+> `handle_scheduled_monitoring()`, etc.), see
+> [PREMIUM_MANAGER_ARCHITECTURE.md → Key Functions Reference](./PREMIUM_MANAGER_ARCHITECTURE.md#key-functions-reference).
 
 ---
 
@@ -1259,3 +1289,7 @@ All resource names are prefixed with the Terraform `environment` variable (shown
 - **CloudWatch Log Group:** `/aws/lambda/{env_prefix}-premium-manager` (30 day retention)
 - **Launch Template:** Defined by `PREMIUM_LAUNCH_TEMPLATE_ID`
 - **RDS Table:** `premium_user_assignments` (assignments + standby pool)
+
+> For Premium Cleanup Lambda, its EventBridge rules, and the full
+> resource inventory, see
+> [PREMIUM_MANAGER_ARCHITECTURE.md → AWS Resources](./PREMIUM_MANAGER_ARCHITECTURE.md#aws-resources).
