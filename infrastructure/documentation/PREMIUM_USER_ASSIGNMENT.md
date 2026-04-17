@@ -204,8 +204,8 @@ user stops interacting
 ```
 
 The exact timing, thresholds, and the full comparison of all four
-release paths are expanded in the "Inactivity & Release" section of
-[PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md).
+release paths are expanded in **Inactivity & Release Paths** under
+*Implementation Details* below.
 
 ### Soft release (`pending_release`)
 
@@ -226,9 +226,8 @@ window can resume on the same instance without a cold reassignment.
 Other release paths (hard `DELETE /assign` without beacon token, backend
 `release_premium_user()` on logout, `cleanup_stale_assignments()` at 3h)
 DELETE the row directly without going through pending_release. The full
-comparison of the four release paths is expanded in the "Inactivity &
-Release" section of
-[PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md).
+comparison of the four release paths is in **Inactivity & Release Paths**
+under *Implementation Details* below.
 
 ---
 
@@ -494,10 +493,7 @@ graph TB
 
 The bullets above describe each tier's happy path. The cascade in
 `assign_premium_user()` (in `premium_manager.py`) has three non-obvious
-properties worth calling out. Function and variable names are used
-throughout rather than line numbers, so that this section stays
-accurate as the code moves; grep or jump-to-definition on the
-identifier when investigating.
+properties worth calling out.
 
 - **Tier 2 vs Tier 3 (unconditional precedence).** If
   `least_loaded_instance` is non-null after the Tier 1 scan, Tier 2
@@ -850,6 +846,116 @@ subscribers.
   distributed lock
 - Always calls `invoke_migration_async()` and
   `update_premium_service_desired_count()` after scaling
+
+---
+
+### 6. Inactivity & Release Paths
+
+Premium assignments can be released by four distinct paths, reached
+under different conditions and with different latencies. This
+subsection is the canonical comparison referenced from the Glossary's
+*Soft release* and *Disambiguation* entries.
+
+#### Client-side inactivity timer
+
+The frontend runs an inactivity monitor in
+`PremiumAssignmentContext.tsx` (the `checkInactivity` effect) that
+observes `lastActivity` across tabs and fires on two hard-coded
+thresholds:
+
+| Threshold | Effect |
+|---|---|
+| 1 hour | Surface the `InactivityWarning` snackbar with a countdown (`INACTIVITY_WARNING_DURATION_MINUTES = 60` from `const/Subscription.ts` drives the countdown display) |
+| 2 hours | Call `autoReleaseOnLogout()`, which issues `DELETE /premium/assign` with a beacon token |
+
+The monitor polls every 30 s and listens for cross-tab activity events
+(`onActivityFromOtherTab`) so activity in another tab dismisses the
+warning on this one. On tab close / hard navigation,
+`navigator.sendBeacon` hits the same endpoint with the same beacon
+token -- the auto-release path and the beacon path converge on the
+backend.
+
+> **Threshold coupling.** The 1 h / 2 h thresholds are hard-coded in
+> `PremiumAssignmentContext.tsx`. `INACTIVITY_WARNING_DURATION_MINUTES`
+> controls only the countdown shown in the snackbar; changing it
+> without also changing the hard-coded thresholds would cause the
+> displayed countdown to disagree with the actual auto-release time.
+
+#### Server-side grace window (beacon / auto-release path)
+
+When the DELETE request carries a valid beacon token,
+`release_premium_user()` takes the soft branch: the assignment row is
+not deleted, it is transitioned to `pending_release`
+(`status = 'terminating'`). The row still counts as occupation during
+the grace window (see the *Soft release* entry in the Glossary).
+
+The grace window has duration `PENDING_RELEASE_GRACE_SECONDS = 120`
+(`aws_constants.py`). Expiration is handled by
+`finalize_expired_pending_releases()`, which runs as one of the steps
+in `handle_scheduled_monitoring()` (the 15-minute Manager loop). So
+the observed latency from grace start to row deletion is:
+
+- **Minimum:** ~2 min (grace just expired as a monitor run starts)
+- **Maximum:** ~17 min (grace expires just after a monitor run)
+
+If the user re-opens the tab within the grace window,
+`restore_pending_release()` (called at the top of
+`assign_premium_user()`) flips `status` back to `'active'` on the same
+row and returns `assignment_source: "restored_from_pending_release"`.
+No new target group, no ALB rule churn; `is_shared` is preserved.
+
+#### The four release paths
+
+| # | Path | Trigger | Backend entry | Uses pending_release? | Row deletion latency |
+|---|---|---|---|---|---|
+| 1 | Beacon on tab close | `navigator.sendBeacon` on `beforeunload` | `release_premium_user()` (beacon branch) | Yes | 120 s grace + up to ~15 min until finalize |
+| 2 | Frontend auto-release | 2 h of measured inactivity | `release_premium_user()` (beacon branch) | Yes | Same as path 1 |
+| 3 | Hard release | Manual logout, or explicit `DELETE /premium/assign` without beacon token | `release_premium_user()` (hard branch) | No | Immediate (within the same Lambda invocation) |
+| 4 | Stale-assignment safety net | `last_activity` older than `PREMIUM_IDLE_TIMEOUT_HOURS` with no release having fired | `cleanup_stale_assignments()` in the Premium Cleanup Lambda | No | Up to 1 h after the timeout (hourly Cleanup cadence) |
+
+Paths 1 and 2 share the same backend code (they differ only in what
+triggered the frontend). Path 3 is the legacy / explicit logout path.
+Path 4 is the safety net for missing beacons -- it catches clients
+that crashed before `sendBeacon` could fire, or browsers that killed
+the tab too hard for the beacon to reach the ALB.
+
+> **`PREMIUM_IDLE_TIMEOUT_HOURS` value in production.** The Terraform
+> variable is `3` for both the Manager and the Cleanup Lambda
+> (`premium_manager.tf`). The `premium_cleanup_package/README.md` still
+> documents it as `2`; treat the Terraform value as the source of
+> truth. Path 4 therefore fires no earlier than 3 h after last
+> activity, plus up to 1 h of scheduler latency.
+
+#### Post-release: idle-instance handling
+
+Once a release path removes the last `is_standby = 0` user row from an
+instance, the instance meets the Glossary's formal definition of
+idle. Two paths can then stop it:
+
+- **Fast path (same invocation).** The hard branch of
+  `release_premium_user()` can stop the just-idled instance and flip
+  its row to `is_standby = 1` within the same Lambda run via
+  `convert_idle_instances_to_standby_immediate()`. This is gated by
+  the scale-down criteria (`running_count > max(1, active_users + 1)`
+  AND `idle_instances >= 2`), so it only fires when headroom exists.
+- **Slow path (next monitor cycle).** The 15-minute
+  `handle_scheduled_monitoring()` run calls `scale_down_if_possible()`,
+  which applies the same gate on whatever instances became idle since
+  the last run.
+
+The beacon / auto-release paths do **not** trigger the fast path
+directly -- they only mark `pending_release`. The fast path only
+runs when the row is actually DELETEd (by
+`finalize_expired_pending_releases()` at grace expiration, or by the
+hard-release path on the same call).
+
+#### Subsystem ownership
+
+| Subsystem | Owns |
+|---|---|
+| Frontend (`PremiumAssignmentContext.tsx`) | Inactivity detection, warning surface, auto-release trigger, `sendBeacon` on tab close |
+| Premium Manager (real-time) | `release_premium_user()`, `restore_pending_release()`, `finalize_expired_pending_releases()`, `scale_down_if_possible()`, `convert_idle_instances_to_standby_immediate()` |
+| Premium Cleanup (hourly) | `cleanup_stale_assignments()` (path 4 only) |
 
 ---
 
