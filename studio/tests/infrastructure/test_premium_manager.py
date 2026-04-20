@@ -1709,7 +1709,22 @@ class TestDesiredCountReservesBootingStandbys:
     slot reserved instead of having its task placement cancelled."""
 
     @staticmethod
-    def _setup_boto3(mock_boto3, mock_ecs, mock_ec2):
+    def _make_mocks(
+        mock_boto3,
+        *,
+        desired,
+        running,
+        registered=(),
+        ec2_instances=(),
+    ):
+        """Configure boto3 mocks for update_premium_service_desired_count tests.
+
+        registered: iterable of (ci_arn, ec2_id) pairs for ECS container instances.
+        ec2_instances: iterable of (instance_id, minutes_since_launch) pairs.
+        """
+        mock_ecs = MagicMock()
+        mock_ec2 = MagicMock()
+
         def boto3_client_side_effect(service):
             if service == "ecs":
                 return mock_ecs
@@ -1719,44 +1734,50 @@ class TestDesiredCountReservesBootingStandbys:
 
         mock_boto3.side_effect = boto3_client_side_effect
 
+        mock_ecs.describe_services.return_value = {
+            "services": [{"desiredCount": desired, "runningCount": running}]
+        }
+        mock_ecs.list_container_instances.return_value = {
+            "containerInstanceArns": [arn for arn, _ in registered]
+        }
+        mock_ecs.describe_container_instances.return_value = {
+            "containerInstances": [
+                {"containerInstanceArn": arn, "ec2InstanceId": ec2_id}
+                for arn, ec2_id in registered
+            ]
+        }
+        now = datetime.now(timezone.utc)
+        reservations = (
+            [
+                {
+                    "Instances": [
+                        {
+                            "InstanceId": iid,
+                            "LaunchTime": now - timedelta(minutes=mins),
+                        }
+                        for iid, mins in ec2_instances
+                    ]
+                }
+            ]
+            if ec2_instances
+            else []
+        )
+        mock_ec2.describe_instances.return_value = {"Reservations": reservations}
+
+        return mock_ecs, mock_ec2
+
     def test_updates_from_registered_count_when_no_booting(self, mock_env_vars_premium):
         """One registered CI, no booting EC2 -> desiredCount = 1."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ) as mock_boto3:
-            mock_ecs = MagicMock()
-            mock_ec2 = MagicMock()
-            self._setup_boto3(mock_boto3, mock_ecs, mock_ec2)
-
-            mock_ecs.describe_services.return_value = {
-                "services": [{"desiredCount": 4, "runningCount": 1}]
-            }
-            mock_ecs.list_container_instances.return_value = {
-                "containerInstanceArns": ["arn:aws:ecs:us-east-1:123:ci/a"]
-            }
-            mock_ecs.describe_container_instances.return_value = {
-                "containerInstances": [
-                    {
-                        "containerInstanceArn": "arn:aws:ecs:us-east-1:123:ci/a",
-                        "ec2InstanceId": "i-registered1",
-                    }
-                ]
-            }
-            # Only the registered EC2 is running; no booting orphans.
-            mock_ec2.describe_instances.return_value = {
-                "Reservations": [
-                    {
-                        "Instances": [
-                            {
-                                "InstanceId": "i-registered1",
-                                "LaunchTime": (
-                                    datetime.now(timezone.utc) - timedelta(minutes=60)
-                                ),
-                            }
-                        ]
-                    }
-                ]
-            }
+            mock_ecs, _ = self._make_mocks(
+                mock_boto3,
+                desired=4,
+                running=1,
+                registered=[("arn:aws:ecs:us-east-1:123:ci/a", "i-registered1")],
+                ec2_instances=[("i-registered1", 60)],
+            )
 
             from premium_manager import update_premium_service_desired_count
 
@@ -1770,32 +1791,15 @@ class TestDesiredCountReservesBootingStandbys:
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ) as mock_boto3:
-            mock_ecs = MagicMock()
-            mock_ec2 = MagicMock()
-            self._setup_boto3(mock_boto3, mock_ecs, mock_ec2)
-
-            mock_ecs.describe_services.return_value = {
-                "services": [{"desiredCount": 2, "runningCount": 2}]
-            }
-            mock_ecs.list_container_instances.return_value = {
-                "containerInstanceArns": [
-                    "arn:aws:ecs:us-east-1:123:ci/a",
-                    "arn:aws:ecs:us-east-1:123:ci/b",
-                ]
-            }
-            mock_ecs.describe_container_instances.return_value = {
-                "containerInstances": [
-                    {
-                        "containerInstanceArn": "arn:aws:ecs:us-east-1:123:ci/a",
-                        "ec2InstanceId": "i-r1",
-                    },
-                    {
-                        "containerInstanceArn": "arn:aws:ecs:us-east-1:123:ci/b",
-                        "ec2InstanceId": "i-r2",
-                    },
-                ]
-            }
-            mock_ec2.describe_instances.return_value = {"Reservations": []}
+            mock_ecs, _ = self._make_mocks(
+                mock_boto3,
+                desired=2,
+                running=2,
+                registered=[
+                    ("arn:aws:ecs:us-east-1:123:ci/a", "i-r1"),
+                    ("arn:aws:ecs:us-east-1:123:ci/b", "i-r2"),
+                ],
+            )
 
             from premium_manager import update_premium_service_desired_count
 
@@ -1810,45 +1814,13 @@ class TestDesiredCountReservesBootingStandbys:
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ) as mock_boto3:
-            mock_ecs = MagicMock()
-            mock_ec2 = MagicMock()
-            self._setup_boto3(mock_boto3, mock_ecs, mock_ec2)
-
-            mock_ecs.describe_services.return_value = {
-                "services": [{"desiredCount": 1, "runningCount": 1}]
-            }
-            mock_ecs.list_container_instances.return_value = {
-                "containerInstanceArns": ["arn:aws:ecs:us-east-1:123:ci/a"]
-            }
-            mock_ecs.describe_container_instances.return_value = {
-                "containerInstances": [
-                    {
-                        "containerInstanceArn": "arn:aws:ecs:us-east-1:123:ci/a",
-                        "ec2InstanceId": "i-registered1",
-                    }
-                ]
-            }
-            # i-booting1 is running but NOT in ECS yet, launched 3 min ago.
-            mock_ec2.describe_instances.return_value = {
-                "Reservations": [
-                    {
-                        "Instances": [
-                            {
-                                "InstanceId": "i-registered1",
-                                "LaunchTime": (
-                                    datetime.now(timezone.utc) - timedelta(minutes=60)
-                                ),
-                            },
-                            {
-                                "InstanceId": "i-booting1",
-                                "LaunchTime": (
-                                    datetime.now(timezone.utc) - timedelta(minutes=3)
-                                ),
-                            },
-                        ]
-                    }
-                ]
-            }
+            mock_ecs, _ = self._make_mocks(
+                mock_boto3,
+                desired=1,
+                running=1,
+                registered=[("arn:aws:ecs:us-east-1:123:ci/a", "i-registered1")],
+                ec2_instances=[("i-registered1", 60), ("i-booting1", 3)],
+            )
 
             from premium_manager import update_premium_service_desired_count
 
@@ -1864,44 +1836,13 @@ class TestDesiredCountReservesBootingStandbys:
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ) as mock_boto3:
-            mock_ecs = MagicMock()
-            mock_ec2 = MagicMock()
-            self._setup_boto3(mock_boto3, mock_ecs, mock_ec2)
-
-            mock_ecs.describe_services.return_value = {
-                "services": [{"desiredCount": 2, "runningCount": 1}]
-            }
-            mock_ecs.list_container_instances.return_value = {
-                "containerInstanceArns": ["arn:aws:ecs:us-east-1:123:ci/a"]
-            }
-            mock_ecs.describe_container_instances.return_value = {
-                "containerInstances": [
-                    {
-                        "containerInstanceArn": "arn:aws:ecs:us-east-1:123:ci/a",
-                        "ec2InstanceId": "i-registered1",
-                    }
-                ]
-            }
-            mock_ec2.describe_instances.return_value = {
-                "Reservations": [
-                    {
-                        "Instances": [
-                            {
-                                "InstanceId": "i-registered1",
-                                "LaunchTime": (
-                                    datetime.now(timezone.utc) - timedelta(minutes=60)
-                                ),
-                            },
-                            {
-                                "InstanceId": "i-orphan1",
-                                "LaunchTime": (
-                                    datetime.now(timezone.utc) - timedelta(minutes=30)
-                                ),
-                            },
-                        ]
-                    }
-                ]
-            }
+            mock_ecs, _ = self._make_mocks(
+                mock_boto3,
+                desired=2,
+                running=1,
+                registered=[("arn:aws:ecs:us-east-1:123:ci/a", "i-registered1")],
+                ec2_instances=[("i-registered1", 60), ("i-orphan1", 30)],
+            )
 
             from premium_manager import update_premium_service_desired_count
 
@@ -1916,40 +1857,13 @@ class TestDesiredCountReservesBootingStandbys:
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ) as mock_boto3:
-            mock_ecs = MagicMock()
-            mock_ec2 = MagicMock()
-            self._setup_boto3(mock_boto3, mock_ecs, mock_ec2)
-
-            mock_ecs.describe_services.return_value = {
-                "services": [{"desiredCount": 0, "runningCount": 0}]
-            }
-            mock_ecs.list_container_instances.return_value = {
-                "containerInstanceArns": ["arn:aws:ecs:us-east-1:123:ci/a"]
-            }
-            mock_ecs.describe_container_instances.return_value = {
-                "containerInstances": [
-                    {
-                        "containerInstanceArn": "arn:aws:ecs:us-east-1:123:ci/a",
-                        "ec2InstanceId": "i-registered1",
-                    }
-                ]
-            }
-            # Same EC2 is returned by describe_instances; should not be
-            # counted again as "booting".
-            mock_ec2.describe_instances.return_value = {
-                "Reservations": [
-                    {
-                        "Instances": [
-                            {
-                                "InstanceId": "i-registered1",
-                                "LaunchTime": (
-                                    datetime.now(timezone.utc) - timedelta(minutes=2)
-                                ),
-                            }
-                        ]
-                    }
-                ]
-            }
+            mock_ecs, _ = self._make_mocks(
+                mock_boto3,
+                desired=0,
+                running=0,
+                registered=[("arn:aws:ecs:us-east-1:123:ci/a", "i-registered1")],
+                ec2_instances=[("i-registered1", 2)],
+            )
 
             from premium_manager import update_premium_service_desired_count
 
