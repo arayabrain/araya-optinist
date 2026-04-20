@@ -4075,26 +4075,27 @@ def check_instance_readiness_with_retry(
 
 
 def update_premium_service_desired_count():
-    """
-    Update the ECS premium service desired count to match the number of
-    running premium instances.
+    """Update the ECS premium service desired count to match the number
+    of premium instances that are either ECS-registered or still inside
+    the boot grace period.
 
-    This ensures that each premium instance has an ECS task running on it,
-    which is required for the instance to be considered "ready" for user assignments.
+    Booting standbys must keep a service slot reserved. If desiredCount
+    is dropped during the gap between EC2 `running` and ECS agent
+    registration, ECS cancels the pending task placement and never
+    re-fires it once the agent finally registers, leaving the instance
+    with no premium task and the user stuck on the waiting popup.
 
-    The function:
-    1. Counts running premium EC2 instances (by Tier=premium tag)
-    2. Updates the ECS service desired count to match
-    3. ECS will then place one task per instance (with tier=premium
-        placement constraint)
+    The grace period mirrors cleanup_orphaned_ec2_instances() so the two
+    are symmetric: instances we don't yet treat as orphans must keep
+    their service slot.
     """
     try:
         cluster_name = get_required_env_var("CLUSTER_NAME")
         service_name = get_required_env_var("PREMIUM_SERVICE_NAME")
 
         ecs: "ECSClient" = boto3.client("ecs")
+        ec2: "EC2Client" = boto3.client("ec2")
 
-        # Get current service status
         service_response = ecs.describe_services(
             cluster=cluster_name, services=[service_name]
         )
@@ -4109,24 +4110,33 @@ def update_premium_service_desired_count():
         current_desired_count = service_response["services"][0]["desiredCount"]
         current_running_count = service_response["services"][0]["runningCount"]
 
-        # Count ACTIVE ECS container instances (not EC2 instances,
-        # which may include orphans that never joined the cluster)
-        ci_response = ecs.list_container_instances(
-            cluster=cluster_name,
-            filter="attribute:tier == premium",
-            status="ACTIVE",
-        )
-        ci_arns = ci_response.get("containerInstanceArns", [])
-        running_premium_count = len(ci_arns)
+        registered_ec2_ids = _list_premium_ecs_registered_ec2_ids(ecs, cluster_name)
+        registered_count = len(registered_ec2_ids)
+
+        now = datetime.now(timezone.utc)
+        booting_count = 0
+        for instance in _list_premium_ec2_instances_running(ec2):
+            if instance["InstanceId"] in registered_ec2_ids:
+                continue
+            launch_time = instance.get("LaunchTime")
+            if not launch_time:
+                continue
+            age_minutes = (now - launch_time).total_seconds() / 60
+            if age_minutes < ORPHAN_GRACE_PERIOD_MINUTES:
+                booting_count += 1
+
+        running_premium_count = registered_count + booting_count
 
         print(
             f"ECS Service Status: "
             f"desired={current_desired_count}, "
             f"running={current_running_count}"
         )
-        print(f"Premium ECS container instances: " f"{running_premium_count} active")
+        print(
+            f"Premium instances: {registered_count} registered + "
+            f"{booting_count} booting"
+        )
 
-        # Update service desired count if different from instance count
         if running_premium_count != current_desired_count:
             print(
                 f"Updating ECS service desired count: {current_desired_count} "
@@ -5289,103 +5299,115 @@ def cleanup_ghost_ecs_registrations():
         print(f"Error cleaning up ghost ECS registrations: {str(e)}")
 
 
-ORPHAN_GRACE_PERIOD_MINUTES = 15
+# Shared by update_premium_service_desired_count and
+# cleanup_orphaned_ec2_instances. Typical boot-to-ECS-register takes
+# 1-2 minutes; 10 gives a comfortable multiple while capping how long
+# a permanently-broken boot can inflate desiredCount or delay orphan
+# cleanup to a single reconciliation cycle.
+ORPHAN_GRACE_PERIOD_MINUTES = 10
+
+
+def _list_premium_ecs_registered_ec2_ids(ecs, cluster_name) -> set:
+    """EC2 instance IDs backing ACTIVE premium ECS container instances."""
+    ci_response = ecs.list_container_instances(
+        cluster=cluster_name,
+        filter="attribute:tier == premium",
+        status="ACTIVE",
+    )
+    ci_arns = ci_response.get("containerInstanceArns", [])
+    if not ci_arns:
+        return set()
+    desc = ecs.describe_container_instances(
+        cluster=cluster_name,
+        containerInstances=ci_arns,
+    )
+    return {ci["ec2InstanceId"] for ci in desc.get("containerInstances", [])}
+
+
+def _list_premium_ec2_instances_running(ec2) -> list:
+    """Running EC2 instances tagged as premium for this environment.
+
+    Single source of truth for the premium-EC2 tag/name filter so the
+    desired-count and orphan-cleanup paths cannot drift apart — any
+    instance one path sees, the other must see.
+    """
+    resp = ec2.describe_instances(
+        Filters=[
+            {
+                "Name": "instance-state-name",
+                "Values": [InstanceState.RUNNING],
+            },
+            {
+                "Name": "tag:Tier",
+                "Values": [
+                    PremiumInstanceConfig.INSTANCE_IDENTIFIER,
+                    PremiumInstanceConfig.INSTANCE_IDENTIFIER.capitalize(),
+                ],
+            },
+            {
+                "Name": "tag:Name",
+                "Values": [PremiumInstanceConfig.get_instance_name_pattern()],
+            },
+        ]
+    )
+    return [i for r in resp["Reservations"] for i in r["Instances"]]
 
 
 def cleanup_orphaned_ec2_instances():
     """Stop EC2 instances tagged Tier=premium that are running
     but not registered as ECS container instances.
 
-    Orphaned instances inflate desiredCount and waste resources.
-    A 15-minute grace period avoids stopping instances that are
-    still booting and haven't joined ECS yet.
+    Orphaned instances inflate desiredCount and waste resources. The
+    grace period avoids stopping instances that are still booting and
+    haven't joined ECS yet; must stay symmetric with
+    update_premium_service_desired_count.
     """
     try:
         cluster_name = get_required_env_var("CLUSTER_NAME")
         ecs: "ECSClient" = boto3.client("ecs")
         ec2: "EC2Client" = boto3.client("ec2")
 
-        # Collect EC2 IDs of ACTIVE premium ECS container instances
-        ci_response = ecs.list_container_instances(
-            cluster=cluster_name,
-            status="ACTIVE",
-            filter="attribute:tier == premium",
-        )
-        ci_arns = ci_response.get("containerInstanceArns", [])
-
-        ecs_ec2_ids: set = set()
-        if ci_arns:
-            desc = ecs.describe_container_instances(
-                cluster=cluster_name,
-                containerInstances=ci_arns,
-            )
-            for ci in desc.get("containerInstances", []):
-                ecs_ec2_ids.add(ci["ec2InstanceId"])
-
-        # List all running premium-tagged EC2 instances for this environment
-        ec2_response = ec2.describe_instances(
-            Filters=[
-                {
-                    "Name": "instance-state-name",
-                    "Values": [InstanceState.RUNNING],
-                },
-                {
-                    "Name": "tag:Tier",
-                    "Values": [
-                        PremiumInstanceConfig.INSTANCE_IDENTIFIER,
-                        PremiumInstanceConfig.INSTANCE_IDENTIFIER.capitalize(),
-                    ],
-                },
-                {
-                    "Name": "tag:Name",
-                    "Values": [PremiumInstanceConfig.get_instance_name_pattern()],
-                },
-            ]
-        )
-
-        from datetime import datetime, timezone
+        ecs_ec2_ids = _list_premium_ecs_registered_ec2_ids(ecs, cluster_name)
+        instances = _list_premium_ec2_instances_running(ec2)
 
         now = datetime.now(timezone.utc)
         stopped_count = 0
 
-        for reservation in ec2_response["Reservations"]:
-            for instance in reservation["Instances"]:
-                iid = instance["InstanceId"]
-                if iid in ecs_ec2_ids:
+        for instance in instances:
+            iid = instance["InstanceId"]
+            if iid in ecs_ec2_ids:
+                continue
+
+            launch_time = instance.get("LaunchTime")
+            if launch_time:
+                age_minutes = (now - launch_time).total_seconds() / 60
+                if age_minutes < ORPHAN_GRACE_PERIOD_MINUTES:
+                    print(
+                        f"Orphan {iid} running "
+                        f"{age_minutes:.0f}m, "
+                        f"within grace period"
+                    )
                     continue
 
-                launch_time = instance.get("LaunchTime")
-                if launch_time:
-                    age_minutes = (now - launch_time).total_seconds() / 60
-                    if age_minutes < ORPHAN_GRACE_PERIOD_MINUTES:
-                        print(
-                            f"Orphan {iid} running "
-                            f"{age_minutes:.0f}m, "
-                            f"within grace period"
-                        )
-                        continue
+            print(f"Stopping orphaned EC2 instance {iid}")
+            ec2.stop_instances(InstanceIds=[iid])
+            stopped_count += 1
 
-                print(f"Stopping orphaned EC2 instance {iid}")
-                ec2.stop_instances(InstanceIds=[iid])
-                stopped_count += 1
-
-                # Register as standby so terminate_aged_stopped_instances()
-                # can find and terminate after PREMIUM_STOPPED_MAX_AGE_HOURS.
-                try:
-                    store_user_assignment(
-                        user_id=None,
-                        instance_id=iid,
-                        target_group_arn=PremiumAssignment.STANDBY,
-                        rule_arn=PremiumAssignment.STANDBY,
-                        instance_state=InstanceState.STOPPED,
-                        is_shared=False,
-                        is_standby=True,
-                    )
-                    print(
-                        f"Registered orphaned instance {iid} " f"as standby in database"
-                    )
-                except Exception as e:
-                    print(f"Failed to register standby for " f"{iid}: {str(e)}")
+            # Register as standby so terminate_aged_stopped_instances()
+            # can find and terminate after PREMIUM_STOPPED_MAX_AGE_HOURS.
+            try:
+                store_user_assignment(
+                    user_id=None,
+                    instance_id=iid,
+                    target_group_arn=PremiumAssignment.STANDBY,
+                    rule_arn=PremiumAssignment.STANDBY,
+                    instance_state=InstanceState.STOPPED,
+                    is_shared=False,
+                    is_standby=True,
+                )
+                print(f"Registered orphaned instance {iid} " f"as standby in database")
+            except Exception as e:
+                print(f"Failed to register standby for " f"{iid}: {str(e)}")
 
         print(f"Orphan cleanup: stopped {stopped_count} " f"instance(s)")
 
