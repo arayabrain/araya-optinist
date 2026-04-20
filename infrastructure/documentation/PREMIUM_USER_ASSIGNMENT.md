@@ -424,6 +424,35 @@ DELETE the row directly without going through pending_release. The full
 comparison of the four release paths is in **Inactivity & Release Paths**
 under *Implementation Details* below.
 
+### Ghost ECS container instance
+
+A **ghost ECS container instance** (or simply "ghost instance" in log
+messages) is an ECS container-instance registration whose backing EC2
+instance is no longer reachable — it has been stopped, terminated, or
+has lost its ECS agent connection. The registration remains in the ECS
+cluster's capacity pool, consuming a slot in the ECS scheduler's view
+of available capacity even though no container can actually be placed
+on it.
+
+Ghosts arise when an EC2 instance is stopped or terminated outside the
+normal `deregister_from_ecs → stop_instances` ordering — for example,
+an AWS health event, a manual console stop, or an error path that
+skipped the deregistration step. The scale-down code path deregisters
+from ECS **before** stopping to prevent ghosts, but edge cases can
+still create them.
+
+`cleanup_ghost_ecs_registrations()` runs as step 10b of the 15-minute
+`handle_scheduled_monitoring()` cycle. It lists all premium container
+instances (`attribute:tier == premium`), checks each one's EC2 state
+and agent connectivity, and force-deregisters any that qualify. For
+running EC2 instances with a disconnected agent, a 5-minute grace
+period (tagged on first sighting) prevents deregistering instances
+that are merely rebooting their agent.
+
+> For the full deregistration rules, grace-period tagging, and
+> troubleshooting log strings, see
+> [PREMIUM_MANAGER_ARCHITECTURE.md → Ghost ECS Container Instances](./PREMIUM_MANAGER_ARCHITECTURE.md#4-ghost-ecs-container-instances).
+
 ---
 
 ## Implementation Details
