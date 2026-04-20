@@ -75,13 +75,13 @@ graph TB
         D --> K[User Logged In]
     end
 
-    style C1 fill:#90EE90
-    style C2 fill:#FFD700
-    style C3 fill:#FFA500
-    style C4 fill:#87CEEB
-    style C5 fill:#DDA0DD
-    style C6 fill:#FFB6C1
-    style J fill:#FFFFFF
+    style C1 fill:#90EE90,color:#1a1a1a
+    style C2 fill:#FFD700,color:#1a1a1a
+    style C3 fill:#FFA500,color:#1a1a1a
+    style C4 fill:#87CEEB,color:#1a1a1a
+    style C5 fill:#DDA0DD,color:#1a1a1a
+    style C6 fill:#FFB6C1,color:#1a1a1a
+    style J fill:#FFFFFF,color:#1a1a1a
 ```
 
 > **Color key:** 🟢 Tier 1 (Dedicated) · 🟡 Tier 2 (Shared) ·
@@ -254,10 +254,10 @@ graph TB
         N --> P[User on Dedicated Instance]
     end
 
-    style A fill:#FFA500
-    style P fill:#90EE90
-    style G fill:#87CEEB
-    style J fill:#DDA0DD
+    style A fill:#FFA500,color:#1a1a1a
+    style P fill:#90EE90,color:#1a1a1a
+    style G fill:#87CEEB,color:#1a1a1a
+    style J fill:#DDA0DD,color:#1a1a1a
 ```
 
 ---

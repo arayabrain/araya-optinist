@@ -71,11 +71,11 @@ graph TB
     E --> H
     F --> H
 
-    style C fill:#90EE90
-    style D fill:#87CEEB
-    style J fill:#FFB6C1
-    style E fill:#DDA0DD
-    style F fill:#DDA0DD
+    style C fill:#90EE90,color:#1a1a1a
+    style D fill:#87CEEB,color:#1a1a1a
+    style J fill:#FFB6C1,color:#1a1a1a
+    style E fill:#DDA0DD,color:#1a1a1a
+    style F fill:#DDA0DD,color:#1a1a1a
 ```
 
 ### Key Constraints Satisfied
