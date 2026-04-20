@@ -790,8 +790,6 @@ class TestEarlyCheckAndCleanup:
         ) as mock_get_existing, patch(
             "premium_manager.check_instance_readiness_with_retry"
         ) as mock_readiness, patch(
-            "premium_manager.clear_ecs_agent_checkpoint"
-        ) as mock_clear_ecs, patch(
             "premium_manager._update_instance_state_to_running"
         ) as mock_update_state, patch(
             "premium_manager.pymysql.connect"
@@ -838,7 +836,6 @@ class TestEarlyCheckAndCleanup:
             mock_ec2.start_instances.assert_called_once_with(
                 InstanceIds=[TEST_INSTANCE_ID]
             )
-            mock_clear_ecs.assert_called_once_with(TEST_INSTANCE_ID)
             mock_update_state.assert_called_once_with(TEST_INSTANCE_ID)
             mock_readiness.assert_called_once_with(
                 TEST_INSTANCE_ID, max_wait_seconds=120, retry_interval=10
@@ -866,8 +863,6 @@ class TestEarlyCheckAndCleanup:
         ) as mock_get_existing, patch(
             "premium_manager.check_instance_readiness_with_retry"
         ) as mock_readiness, patch(
-            "premium_manager.clear_ecs_agent_checkpoint"
-        ) as mock_clear_ecs, patch(
             "premium_manager._update_instance_state_to_running"
         ), patch(
             "premium_manager.pymysql.connect"
@@ -924,7 +919,6 @@ class TestEarlyCheckAndCleanup:
             mock_ec2.start_instances.assert_called_once_with(
                 InstanceIds=[TEST_INSTANCE_ID]
             )
-            mock_clear_ecs.assert_called_once_with(TEST_INSTANCE_ID)
 
     def test_terminated_instance_triggers_fresh_assignment(self, mock_env_vars_premium):
         """Assign removes stale assignment for a terminated
@@ -1558,19 +1552,19 @@ class TestStartStandbyInstance:
     """start_standby_instance tests."""
 
     def test_success(self, mock_env_vars_premium):
-        """EC2 start + waiter + checkpoint clear + DB update."""
+        """EC2 start + waiter + readiness + DB update."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ) as mock_boto3, patch(
             "premium_manager.pymysql.connect"
         ) as mock_pymysql, patch(
-            "premium_manager.clear_ecs_agent_checkpoint"
-        ) as mock_clear:
+            "premium_manager.check_instance_readiness_with_retry",
+            return_value=True,
+        ) as mock_readiness:
             mock_ec2 = MagicMock()
             mock_boto3.return_value = mock_ec2
             mock_waiter = MagicMock()
             mock_ec2.get_waiter.return_value = mock_waiter
-            mock_clear.return_value = True
 
             mock_connection = setup_db_mock()
             mock_pymysql.return_value = mock_connection
@@ -1582,8 +1576,35 @@ class TestStartStandbyInstance:
             assert result is True
             mock_ec2.start_instances.assert_called_once_with(InstanceIds=["i-standby1"])
             mock_waiter.wait.assert_called_once()
-            mock_clear.assert_called_once_with("i-standby1")
+            mock_readiness.assert_called_once_with(
+                "i-standby1", max_wait_seconds=120, retry_interval=10
+            )
             mock_connection.commit.assert_called()
+
+    def test_readiness_fails(self, mock_env_vars_premium):
+        """ECS task not ready after start returns False without DB update."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql, patch(
+            "premium_manager.check_instance_readiness_with_retry",
+            return_value=False,
+        ):
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+            mock_waiter = MagicMock()
+            mock_ec2.get_waiter.return_value = mock_waiter
+
+            mock_connection = setup_db_mock()
+            mock_pymysql.return_value = mock_connection
+
+            from premium_manager import start_standby_instance
+
+            result = start_standby_instance("i-standby3")
+
+            assert result is False
+            mock_connection.commit.assert_not_called()
 
     def test_waiter_fails(self, mock_env_vars_premium):
         """EC2 waiter timeout returns False."""
@@ -1604,101 +1625,6 @@ class TestStartStandbyInstance:
             from premium_manager import start_standby_instance
 
             result = start_standby_instance("i-standby2")
-            assert result is False
-
-
-class TestClearEcsAgentCheckpoint:
-    """Tests for clear_ecs_agent_checkpoint SSM helper."""
-
-    def test_success(self, mock_env_vars_premium):
-        """SSM command succeeds on first poll."""
-        with patch.dict("os.environ", mock_env_vars_premium), patch(
-            "boto3.client"
-        ) as mock_boto3, patch("premium_manager.time.sleep"):
-            mock_ssm = MagicMock()
-            mock_boto3.return_value = mock_ssm
-            mock_ssm.describe_instance_information.return_value = {
-                "InstanceInformationList": [{"PingStatus": "Online"}]
-            }
-            mock_ssm.send_command.return_value = {"Command": {"CommandId": "cmd-123"}}
-            mock_ssm.get_command_invocation.return_value = {
-                "Status": "Success",
-            }
-
-            from premium_manager import clear_ecs_agent_checkpoint
-
-            result = clear_ecs_agent_checkpoint("i-test1")
-
-            assert result is True
-            mock_ssm.send_command.assert_called_once()
-            mock_ssm.get_command_invocation.assert_called_once_with(
-                CommandId="cmd-123", InstanceId="i-test1"
-            )
-
-    def test_command_fails(self, mock_env_vars_premium):
-        """SSM command returns Failed status."""
-        with patch.dict("os.environ", mock_env_vars_premium), patch(
-            "boto3.client"
-        ) as mock_boto3, patch("premium_manager.time.sleep"):
-            mock_ssm = MagicMock()
-            mock_boto3.return_value = mock_ssm
-            mock_ssm.describe_instance_information.return_value = {
-                "InstanceInformationList": [{"PingStatus": "Online"}]
-            }
-            mock_ssm.send_command.return_value = {"Command": {"CommandId": "cmd-456"}}
-            mock_ssm.get_command_invocation.return_value = {
-                "Status": "Failed",
-                "StandardErrorContent": "permission denied",
-            }
-
-            from premium_manager import clear_ecs_agent_checkpoint
-
-            result = clear_ecs_agent_checkpoint("i-test2")
-
-            assert result is False
-
-    def test_send_command_client_error(self, mock_env_vars_premium):
-        """SSM send_command raises ClientError."""
-        from botocore.exceptions import ClientError
-
-        with patch.dict("os.environ", mock_env_vars_premium), patch(
-            "boto3.client"
-        ) as mock_boto3, patch("premium_manager.time.sleep"):
-            mock_ssm = MagicMock()
-            mock_boto3.return_value = mock_ssm
-            mock_ssm.describe_instance_information.return_value = {
-                "InstanceInformationList": [{"PingStatus": "Online"}]
-            }
-            mock_ssm.send_command.side_effect = ClientError(
-                {"Error": {"Code": "InvalidInstanceId"}},
-                "SendCommand",
-            )
-
-            from premium_manager import clear_ecs_agent_checkpoint
-
-            result = clear_ecs_agent_checkpoint("i-test3")
-
-            assert result is False
-
-    def test_timeout(self, mock_env_vars_premium):
-        """SSM polling exhausts max wait time."""
-        with patch.dict("os.environ", mock_env_vars_premium), patch(
-            "boto3.client"
-        ) as mock_boto3, patch("premium_manager.time.sleep"):
-            mock_ssm = MagicMock()
-            mock_boto3.return_value = mock_ssm
-            mock_ssm.describe_instance_information.return_value = {
-                "InstanceInformationList": [{"PingStatus": "Online"}]
-            }
-            mock_ssm.send_command.return_value = {"Command": {"CommandId": "cmd-789"}}
-            mock_ssm.get_command_invocation.return_value = {
-                "Status": "InProgress",
-            }
-
-            from premium_manager import clear_ecs_agent_checkpoint
-
-            result = clear_ecs_agent_checkpoint("i-test4")
-
             assert result is False
 
 
