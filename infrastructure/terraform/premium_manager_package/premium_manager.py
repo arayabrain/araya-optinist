@@ -74,6 +74,7 @@ STICKY_SESSION_DURATION_SECONDS = 300  # Match ALB target group stickiness setti
 CREATE_STANDBY_LOCK = "create_standby_lock"
 CREATE_RUNNING_LOCK = "create_running_lock"
 MIGRATE_USERS_LOCK = "migrate_users_lock"
+PREMIUM_SCALING_LOCK = "premium_scaling_lock"
 LOCK_TIMEOUT_SECONDS = 60
 
 # Wait before first migration attempt to let instances boot
@@ -2023,76 +2024,6 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
         }
 
 
-def is_premium_scaling_in_progress() -> bool:
-    """
-    Check if a premium scaling operation is in progress using CloudWatch metrics.
-    Returns True if scaling operation started within last 15 minutes.
-    """
-    cloudwatch: "CloudWatchClient" = boto3.client("cloudwatch")
-
-    try:
-        response = cloudwatch.get_metric_data(
-            MetricDataQueries=[
-                {
-                    "Id": "scaling_lock",
-                    "MetricStat": {
-                        "Metric": {
-                            "Namespace": (
-                                "OptiNiSt/PremiumManager/"
-                                f"{PremiumInstanceConfig.get_env_prefix()}"
-                            ),
-                            "MetricName": "ScalingInProgress",
-                        },
-                        "Period": 900,  # 15 minutes
-                        "Stat": "Maximum",
-                    },
-                }
-            ],
-            StartTime=datetime.now(timezone.utc) - timedelta(minutes=15),
-            EndTime=datetime.now(timezone.utc),
-        )
-
-        values = response["MetricDataResults"][0]["Values"]
-        if values and max(values) > 0:
-            print("Scaling lock detected (operation in progress)")
-            return True
-
-        return False
-
-    except Exception as e:
-        print(f"Error checking scaling lock: {str(e)}")
-        return False
-
-
-def set_premium_scaling_lock(in_progress: bool) -> None:
-    """
-    Set or clear the premium scaling lock using CloudWatch metrics.
-
-    Args:
-        in_progress: True to set lock, False to clear lock
-    """
-    cloudwatch: "CloudWatchClient" = boto3.client("cloudwatch")
-
-    try:
-        cloudwatch.put_metric_data(
-            Namespace=(
-                "OptiNiSt/PremiumManager/" f"{PremiumInstanceConfig.get_env_prefix()}"
-            ),
-            MetricData=[
-                {
-                    "MetricName": "ScalingInProgress",
-                    "Value": 1 if in_progress else 0,
-                    "Unit": "None",
-                    "Timestamp": datetime.now(timezone.utc),
-                }
-            ],
-        )
-        print(f"Scaling lock {'set' if in_progress else 'cleared'}")
-
-    except Exception as e:
-        print(f"Error setting scaling lock: {str(e)}")
-
-
 def publish_premium_metrics(
     active_users: int, idle_users: int, running_instances: int, idle_instances: int
 ) -> None:
@@ -2152,8 +2083,12 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
     """
     Handle scheduled monitoring events for premium tier.
 
+    Uses distributed_lock (MySQL GET_LOCK) for mutual exclusion so a
+    crashed holder releases on connection teardown instead of blocking
+    every subsequent run for ~15 minutes.
+
     Responsibilities:
-    - Check if scaling is already in progress (prevent concurrent operations)
+    - Acquire the scaling lock (skip if another invocation holds it)
     - Call scale_down_if_possible() to stop instances with NO assigned users
     - Publish monitoring metrics to CloudWatch
     - Update ECS service desired count
@@ -2166,9 +2101,8 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
     """
     print(f"Premium monitoring triggered by event: {json.dumps(event)}")
 
-    try:
-        # 1. Check if scaling is already in progress (prevent concurrent operations)
-        if is_premium_scaling_in_progress():
+    with distributed_lock(PREMIUM_SCALING_LOCK, timeout=0) as acquired:
+        if not acquired:
             print("Scaling already in progress, skipping this run")
             return {
                 "statusCode": 200,
@@ -2179,9 +2113,6 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
                     }
                 ),
             }
-
-        # 2. Set scaling lock
-        set_premium_scaling_lock(True)
 
         try:
             # 3. Get current state
@@ -2323,29 +2254,17 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
                 ),
             }
 
-        finally:
-            # Always clear the scaling lock
-            set_premium_scaling_lock(False)
-
-    except Exception as e:
-        error_msg = f"Error in scheduled monitoring: {str(e)}"
-        print(error_msg)
-        import traceback
-
-        traceback.print_exc()
-
-        # Clear lock on error
-        try:
-            set_premium_scaling_lock(False)
         except Exception as e:
-            error_msg = f"Error in removing lock: {str(e)}"
+            error_msg = f"Error in scheduled monitoring: {str(e)}"
             print(error_msg)
-            pass
+            import traceback
 
-        return {
-            "statusCode": 500,
-            "body": json.dumps({"status": "error", "error": error_msg}),
-        }
+            traceback.print_exc()
+
+            return {
+                "statusCode": 500,
+                "body": json.dumps({"status": "error", "error": error_msg}),
+            }
 
 
 def _handle_migrate_shared_users(event):
