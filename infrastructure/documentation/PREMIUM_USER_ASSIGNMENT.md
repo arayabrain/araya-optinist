@@ -140,7 +140,7 @@ This document covers one Lambda -- the Premium Manager -- acting across several 
 | Capacity scaling (up)                | Scaling system                                | `scale_premium_instances_if_needed()`, `_create_running_instances_locked()`             |
 | Shared-to-dedicated migration        | Background migration                          | `process_shared_instance_optimization()`, `migrate_user_to_dedicated_instance()`, `invoke_migration_async()` |
 | Concurrency / race prevention        | Locking                                       | `distributed_lock()` (MySQL `GET_LOCK`), `try_reserve_instance_transaction()` (`SELECT FOR UPDATE`), `is_creation_lock_held()` |
-| Scale-down + ghost / orphan cleanup  | Scheduled monitoring (see [PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md)) | `handle_scheduled_monitoring()`, [`scale_down_if_possible()`](./PREMIUM_MANAGER_ARCHITECTURE.md#scale_down_if_possible) |
+| Scale-down + ghost / orphan cleanup  | Scheduled monitoring (see [PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md)) | `handle_scheduled_monitoring()`, [`scale_down_if_possible()`](./PREMIUM_MANAGER_ARCHITECTURE.md#scale-down-scale_down_if_possible) |
 | Stale assignment + ALB rule hygiene  | Premium Cleanup Lambda (separate)             | See [PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md)               |
 
 ## Provisioning Flow Diagrams
@@ -899,7 +899,7 @@ shortening the "last user released → instance stopped" latency to
 
 > Full specification (File / Purpose / Input / Output / Calls and
 > detailed guard bullets) is in
-> [PREMIUM_MANAGER_ARCHITECTURE.md → scale_down_if_possible()](./PREMIUM_MANAGER_ARCHITECTURE.md#scale_down_if_possible).
+> [PREMIUM_MANAGER_ARCHITECTURE.md → Scale-Down](./PREMIUM_MANAGER_ARCHITECTURE.md#scale-down-scale_down_if_possible).
 
 ---
 
@@ -1049,7 +1049,7 @@ both see same available instance.
 
 **Solution:** Database-level locking with `SELECT FOR UPDATE`:
 
-#### try_reserve_instance_transaction()
+#### Atomic Instance Reservation (`try_reserve_instance_transaction`)
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Atomically reserve an instance using row-level locking

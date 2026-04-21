@@ -438,7 +438,7 @@ The `handler()` function routes events based on type:
 | `POST action=release` | `release_premium_user()` | User release |
 | `POST action=update_activity` | `handle_activity_update()` | Heartbeat/activity update |
 
-#### Scheduled Monitoring: `handle_scheduled_monitoring()`
+#### Scheduled Monitoring
 
 Runs every 15 minutes. Step numbering matches the comments in the source. Some step numbers (8, 10) bundle related sub-operations:
 
@@ -462,7 +462,7 @@ Runs every 15 minutes. Step numbering matches the comments in the source. Some s
 
 The scaling lock is always cleared in the `finally` block, even on error.
 
-#### scale_down_if_possible()
+#### Scale-Down (`scale_down_if_possible`)
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Scale down premium instances by stopping idle ones
@@ -694,14 +694,14 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 
 **Solution:** CloudWatch metrics-based locking:
 
-#### is_premium_scaling_in_progress()
+#### Scaling Lock Check (`is_premium_scaling_in_progress`)
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Check if a scaling operation is already running
 **Input:** None (reads CloudWatch metric)
 **Output:** True if lock set within last 15 minutes
 
-#### set_premium_scaling_lock()
+#### Scaling Lock Management (`set_premium_scaling_lock`)
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Set or clear the scaling lock via CloudWatch
@@ -722,7 +722,7 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 
 **Solution:** Premium Cleanup reconciliation:
 
-#### reconcile_instance_states()
+#### Instance State Reconciliation (`reconcile_instance_states`)
 
 **File:** `infrastructure/terraform/premium_cleanup_package/premium_cleanup.py`
 **Purpose:** Sync DB instance states with actual AWS states
