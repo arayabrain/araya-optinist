@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-- **Cost Tracker Lambda** publishes hourly cost and utilization metrics to the `Optinist/CostTracking` CloudWatch namespace
+- **Cost Tracker Lambda** publishes hourly cost and utilization metrics to the `OptiNiSt/CostTracking` CloudWatch namespace
 - **Usage-based cost reporting** uses the `instance_usage_log` table to compute per-user costs from actual session hours rather than assuming 24/7 usage
 - **Actual AWS spend** queried from Cost Explorer and compared against projected budget to trigger cost alarms
 - **Session lifecycle** tracked across all user flows (login, logout, cleanup, assignment, release) to ensure accurate hour accounting
@@ -58,7 +58,7 @@ graph TB
     end
 
     subgraph "Outputs"
-        M --> N[CloudWatch: Optinist/CostTracking]
+        M --> N[CloudWatch: OptiNiSt/CostTracking]
         N --> O[CloudWatch Dashboard]
         N --> P[Cost High Alarm -> SNS]
     end
@@ -287,7 +287,7 @@ free_utilization    = (active_free_users / (running_free_instances * 5)) * 100
 
 ### CloudWatch Metrics Published
 
-**Namespace:** `Optinist/CostTracking`
+**Namespace:** `OptiNiSt/CostTracking`
 **Frequency:** Hourly (via EventBridge `rate(1 hour)`)
 
 | Metric Name | Formula / Source | Unit |
@@ -314,7 +314,7 @@ free_utilization    = (active_free_users / (running_free_instances * 5)) * 100
 | **Threshold** | `var.monthly_budget_usd` (set in `terraform.tfvars`, not in repo) |
 | **Condition** | Projected monthly spend > budget |
 | **Evaluation** | 1 × 24h period |
-| **Action (ALARM)** | SNS `subscr-optinist-critical-alerts` → email `support@araya-optinist.com` |
+| **Action (ALARM)** | SNS `subscr-optinist-critical-alerts` → email `optinist-support@araya.org` |
 | **Action (OK)** | Same SNS topic (sends recovery notification) |
 | **Defined in** | `premium_manager.tf` → `aws_cloudwatch_metric_alarm.monthly_cost_high` |
 
@@ -338,7 +338,7 @@ The report queries and includes:
 | Section | Contents |
 |---------|----------|
 | **1. AWS Cost Review** | 3-month cost trend by service (from Cost Explorer), filtered to tagged resources. Flags services with >20% month-over-month increase. |
-| **1b. Cost Tracker Metrics** | Latest value for all 11 `Optinist/CostTracking` metrics (spend, budget, per-user costs, utilization, session hours, instance/user counts). |
+| **1b. Cost Tracker Metrics** | Latest value for all 11 `OptiNiSt/CostTracking` metrics (spend, budget, per-user costs, utilization, session hours, instance/user counts). |
 | **2. RDS Health Check** | Backup status, free storage (GB), slow query count (30 days), RDS error log count. |
 | **3. Lambda Log Review** | Error counts per Lambda function over past 30 days (days with errors + total). |
 | **4. Alarm Summary** | Count of ALARM transitions in past 30 days, list of unique alarms that fired. |
@@ -408,7 +408,7 @@ The report queries and includes:
 | `query_actual_spend()` | Query Cost Explorer for month-to-date UnblendedCost |
 | `query_usage_hours()` | Aggregate session hours from `instance_usage_log` by tier |
 | `calculate_metrics()` | Derive per-user costs, utilization, and budget projections |
-| `publish_metrics()` | Publish 12 metrics to CloudWatch `Optinist/CostTracking` |
+| `publish_metrics()` | Publish 12 metrics to CloudWatch `OptiNiSt/CostTracking` |
 | `get_db_connection()` | Context manager for pymysql connection via RDS Proxy |
 
 **In Usage Log Writers (other components):**

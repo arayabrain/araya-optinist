@@ -72,20 +72,21 @@ resource "aws_lambda_function" "dev_scheduler" {
 
   environment {
     variables = {
-      RDS_INSTANCE_ID          = aws_db_instance.main.identifier
-      RDS_SNAPSHOT_ID          = "${aws_db_instance.main.identifier}-dev-scheduler"
-      RDS_INSTANCE_CLASS       = aws_db_instance.main.instance_class
-      RDS_SUBNET_GROUP_NAME    = aws_db_subnet_group.main.name
-      RDS_SECURITY_GROUP_IDS   = aws_security_group.rds.id
-      RDS_PARAMETER_GROUP_NAME = aws_db_parameter_group.main.name
-      NAT_INSTANCE_ID          = aws_instance.nat.id
-      BACKGROUND_INSTANCE_ID = aws_instance.background.id
-      PREMIUM_INSTANCE_IDS   = join(",", aws_instance.premium[*].id)
-      ASG_NAME               = aws_autoscaling_group.main.name
-      ASG_MIN_SIZE           = tostring(var.asg_min_size)
-      ASG_MAX_SIZE           = tostring(var.asg_max_size)
-      ASG_DESIRED_CAPACITY   = tostring(var.asg_desired_capacity)
-      CLUSTER_NAME           = aws_ecs_cluster.main.name
+      RDS_INSTANCE_ID               = aws_db_instance.main.identifier
+      RDS_SNAPSHOT_ID               = "${aws_db_instance.main.identifier}-dev-scheduler"
+      RDS_INSTANCE_CLASS            = aws_db_instance.main.instance_class
+      RDS_SUBNET_GROUP_NAME         = aws_db_subnet_group.main.name
+      RDS_SECURITY_GROUP_IDS        = aws_security_group.rds.id
+      RDS_PARAMETER_GROUP_NAME      = aws_db_parameter_group.main.name
+      RDS_PROXY_NAME                = aws_db_proxy.main.name
+      NAT_INSTANCE_ID               = aws_instance.nat.id
+      BACKGROUND_INSTANCE_ID        = aws_instance.background.id
+      PREMIUM_INSTANCE_IDS          = join(",", aws_instance.premium[*].id)
+      ASG_NAME                      = aws_autoscaling_group.main.name
+      ASG_MIN_SIZE                  = tostring(var.asg_min_size)
+      ASG_MAX_SIZE                  = tostring(var.asg_max_size)
+      ASG_DESIRED_CAPACITY          = tostring(var.asg_desired_capacity)
+      CLUSTER_NAME                  = aws_ecs_cluster.main.name
       OVERRIDE_PARAM_NAME           = "/${var.environment}/optinist/schedule-override"
       ALARM_PREFIX                  = "${var.environment}-"
       PREMIUM_MANAGER_FUNCTION_NAME = aws_lambda_function.premium_manager.function_name
@@ -192,8 +193,18 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
           "rds:AddTagsToResource",
           "rds:StartDBInstance",
           "rds:StopDBInstance",
+          "rds:RegisterDBProxyTargets",
+          "rds:DescribeDBProxyTargets",
         ]
-        Resource = aws_db_instance.main.arn
+        Resource = [
+          aws_db_instance.main.arn,
+          aws_db_proxy.main.arn,
+          aws_db_proxy_default_target_group.main.arn,
+          "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:pg:${aws_db_parameter_group.main.name}",
+          "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:subgrp:${aws_db_subnet_group.main.name}",
+          "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secgrp:${aws_security_group.rds.id}",
+          "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:snapshot:${aws_db_instance.main.identifier}-dev-scheduler",
+        ]
       },
       # RDS snapshot management (scoped to environment snapshots)
       {

@@ -295,7 +295,10 @@ def is_scaling_in_progress() -> bool:
                     "Id": "scaling_lock",
                     "MetricStat": {
                         "Metric": {
-                            "Namespace": "OptiNiSt/FreeManager",
+                            "Namespace": (
+                                "OptiNiSt/FreeManager/"
+                                f"{os.environ['ENV_PREFIX']}"
+                            ),
                             "MetricName": "ScalingInProgress",
                         },
                         "Period": 900,  # 15 minutes
@@ -327,7 +330,7 @@ def set_scaling_lock(in_progress: bool) -> None:
     """
     try:
         cloudwatch_client.put_metric_data(
-            Namespace="OptiNiSt/FreeManager",
+            Namespace=f"OptiNiSt/FreeManager/{os.environ['ENV_PREFIX']}",
             MetricData=[
                 {
                     "MetricName": "ScalingInProgress",
@@ -927,7 +930,9 @@ def get_available_instance_ids(cluster_name: str, service_name: str) -> List[str
         ]
         for container_status in container_statuses:
             response = ecs_client.list_container_instances(
-                cluster=cluster_name, status=container_status
+                cluster=cluster_name,
+                status=container_status,
+                filter="attribute:tier == free",
             )
             arns = response.get("containerInstanceArns", [])
             if arns:
@@ -1036,7 +1041,7 @@ def publish_active_user_metric(active_user_count: int) -> None:
     """
     try:
         cloudwatch_client.put_metric_data(
-            Namespace="OptiNiSt/FreeUsers",
+            Namespace=f"OptiNiSt/FreeUsers/{os.environ['ENV_PREFIX']}",
             MetricData=[
                 {
                     "MetricName": "ActiveLogins",

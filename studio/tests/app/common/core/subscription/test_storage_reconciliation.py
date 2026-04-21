@@ -52,9 +52,7 @@ async def test_reconciliation_job_batch_processing():
 
                 # Mock storage update query
                 mock_storage_result = Mock()
-                mock_storage_result.first.return_value = (
-                    Mock(storage_usage_bytes=1000000),
-                )
+                mock_storage_result.first.return_value = (1000000,)
 
                 def execute_side_effect(*args, **kwargs):
                     query = str(args[0]).lower() if args else ""

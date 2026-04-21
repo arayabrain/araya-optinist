@@ -4,6 +4,7 @@ import { useSelector } from "react-redux"
 import Typography from "@mui/material/Typography"
 
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
+import { getExperimentUidFromFilePath } from "components/Workspace/Visualize/experimentPathUtils"
 import { BarPlot } from "components/Workspace/Visualize/Plot/BarPlot"
 import { CsvPlot } from "components/Workspace/Visualize/Plot/CsvPlot"
 import { HeatMapPlot } from "components/Workspace/Visualize/Plot/HeatMapPlot"
@@ -63,19 +64,6 @@ export const DisplayDataItem = memo(function DisplayDataItem({
     return <div>Please select item correctly.</div>
   }
 })
-
-/**
- * Extract experiment UID from a visualize data file path.
- * Path format: "{nodeId}/{workspaceId}/{uniqueId}/{nodeId}/filename"
- * (set in FilePathSelect, which prepends nodeId to the normalized output path).
- */
-function getExperimentUidFromFilePath(
-  filePath: string | null | undefined,
-): string {
-  if (!filePath) return ""
-  const segments = filePath.split("/")
-  return segments.length >= 3 ? segments[2] : ""
-}
 
 interface DataTypeProps {
   dataType: DATA_TYPE

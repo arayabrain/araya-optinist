@@ -471,7 +471,7 @@ When an alarm fires, follow the procedure for that alarm category.
 
 ## Reference: Critical Alert Configuration
 
-Critical CloudWatch alarms send email notifications to `support@araya-optinist.com` via an SNS topic (`subscr-optinist-critical-alerts`, defined in `monitoring.tf`). Both `alarm_actions` and `ok_actions` are wired so the team is notified when an alarm fires and when it recovers.
+Critical CloudWatch alarms send email notifications to `optinist-support@araya.org` via an SNS topic (`subscr-optinist-critical-alerts`, defined in `monitoring.tf`). Both `alarm_actions` and `ok_actions` are wired so the team is notified when an alarm fires and when it recovers.
 
 **Note:** After the initial `terraform apply`, AWS sends a confirmation email to the subscription endpoint. The subscription must be confirmed before alerts are delivered.
 
@@ -664,7 +664,7 @@ curl -s -o /dev/null -w "%{http_code}" https://araya-optinist.com/health
 
 ## Reference: Support Email Monitoring
 
-**Support email:** `support@araya-optinist.com` (registered and active)
+**Support email:** `optinist-support@araya.org` (requires SNS confirmation after terraform apply)
 
 Critical CloudWatch alarms are configured to send notifications to this address via SNS (see [Critical Alert Configuration](#reference-critical-alert-configuration)).
 

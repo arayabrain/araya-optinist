@@ -98,6 +98,10 @@ These variables control environment-specific behavior:
 | `frontend_port`         | string | Listener port                   | `"443"`                | `"80"`                        |
 | `asg_max_size`          | number | Max ASG instances               | `3`                    | `2`                           |
 
+### Database Username (`mysql_user`)
+
+> **Caution:** Changing `mysql_user` requires destroying and recreating the RDS database instance. Do not rename the database user on a running environment unless you are prepared for full data loss and re-provisioning.
+
 ### How Resource Names Are Generated
 
 ```hcl

@@ -18,6 +18,7 @@ terraform.*
 # Lambda deployment packages
 **/*.py.zip
 **/*_package/*
+**/agent_recovery_lambda.zip
 
 # AWS constants layer build artifacts
 **/aws_constants_layer/

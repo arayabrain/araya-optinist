@@ -467,6 +467,7 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
           "cloudwatch:ListMetrics",
           "cloudwatch:GetMetricStatistics",
           "cloudwatch:DescribeAlarms",
+          "cloudwatch:PutMetricData",
           "autoscaling:DescribeAutoScalingGroups",
           "ecs:ListClusters",
           "ecs:ListContainerInstances"
@@ -486,7 +487,9 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
         ]
         Resource = [
           "arn:aws:s3:::${local.env_prefix}-*",
-          "arn:aws:s3:::${local.env_prefix}-*/*"
+          "arn:aws:s3:::${local.env_prefix}-*/*",
+          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*",
+          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*/*"
         ]
       },
       # S3: Explicitly deny CRUD on other environments' buckets
@@ -504,7 +507,9 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
         ]
         NotResource = [
           "arn:aws:s3:::${local.env_prefix}-*",
-          "arn:aws:s3:::${local.env_prefix}-*/*"
+          "arn:aws:s3:::${local.env_prefix}-*/*",
+          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*",
+          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*/*"
         ]
       },
       {

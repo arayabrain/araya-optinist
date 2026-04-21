@@ -96,6 +96,11 @@ async def _ensure_user_bucket_exists_impl(
     if user.attributes and isinstance(user.attributes, dict):
         bucket_name = user.attributes.get("remote_bucket_name")
 
+    # Short-circuit: if the DB already has a bucket name, trust it and skip
+    # the S3 CreateBucket call. This is the hot path on every login.
+    if bucket_name:
+        return bucket_name
+
     # Generate new bucket name if not exists
     if not bucket_name:
         prefix = os.environ.get("S3_USER_BUCKET_PREFIX", "optinist-user")

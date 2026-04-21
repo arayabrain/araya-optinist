@@ -8,6 +8,7 @@ environment           = "development"
 enable_custom_domain  = false
 vpc_cidr              = "10.2.0.0/16"
 s3_user_bucket_prefix = "development-optinist-user"
+s3_user_bucket_secret = "<PLACEHOLDER-generate-with-openssl-rand-hex-32>"
 
 # AWS configuration
 aws_region        = "ap-northeast-1"
@@ -29,6 +30,7 @@ git_branch = "test-environment"
 # Database configuration (use new credentials for dev)
 mysql_root_password = "<PLACEHOLDER-generate-new>"
 mysql_database      = "studio"
+# Note: Changing username will require destroying and recreating the database
 mysql_user          = "test_db_admin"
 mysql_password      = "<PLACEHOLDER-generate-new>"
 

@@ -23,7 +23,7 @@ resource "aws_cloudwatch_log_group" "premium_ecs" {
 # SNS Topic for Critical Alert Notifications
 # ==================================================
 resource "aws_sns_topic" "critical_alerts" {
-  count = var.environment == "subscr" ? 1 : 0
+  count = var.environment == local.production_env_prefix ? 1 : 0
   name  = "${var.environment}-optinist-critical-alerts"
 
   tags = {
@@ -32,14 +32,14 @@ resource "aws_sns_topic" "critical_alerts" {
 }
 
 resource "aws_sns_topic_subscription" "critical_alerts_email" {
-  count     = var.environment == "subscr" ? 1 : 0
+  count     = var.environment == local.production_env_prefix ? 1 : 0
   topic_arn = aws_sns_topic.critical_alerts[0].arn
   protocol  = "email"
-  endpoint  = "support@araya-optinist.com"
+  endpoint  = "optinist-support@araya.org"
 }
 
 locals {
-  critical_alerts_actions = var.environment == "subscr" ? [aws_sns_topic.critical_alerts[0].arn] : []
+  critical_alerts_actions = var.environment == local.production_env_prefix ? [aws_sns_topic.critical_alerts[0].arn] : []
 }
 
 resource "aws_cloudwatch_metric_alarm" "cpu_high" {
@@ -118,7 +118,7 @@ resource "aws_cloudwatch_log_metric_filter" "user_cpu_usage" {
 
   metric_transformation {
     name      = "UserCPUUsage"
-    namespace = "OptiNiSt/Application"
+    namespace = "OptiNiSt/Application/${var.environment}"
     value     = "$cpu_usage"
   }
 }
@@ -285,13 +285,15 @@ resource "aws_cloudwatch_metric_alarm" "alb_5xx_errors" {
 resource "aws_cloudwatch_metric_alarm" "alb_response_time_high" {
   alarm_name          = "${local.env_prefix}-alb-response-time-high"
   comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = "2"
+  # p95 over 3×5-min: Average is tripped by one slow request on sparse traffic.
+  evaluation_periods  = "3"
+  datapoints_to_alarm = "3"
   metric_name         = "TargetResponseTime"
   namespace           = "AWS/ApplicationELB"
   period              = "300"
-  statistic           = "Average"
+  extended_statistic  = "p95"
   threshold           = "5"
-  alarm_description   = "ALB response time is too high"
+  alarm_description   = "ALB p95 response time exceeded 5s across 3×5-min windows."
   alarm_actions       = local.critical_alerts_actions
   ok_actions          = local.critical_alerts_actions
 
@@ -396,12 +398,12 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["Optinist/CostTracking", "ActualMonthToDateSpend", { "label" : "Actual MTD Spend ($)", "yAxis" : "left" }],
-            ["Optinist/CostTracking", "ExpectedMonthlyBudget", { "label" : "Expected Budget ($)", "yAxis" : "left" }],
-            ["Optinist/CostTracking", "PremiumInstanceCount", { "label" : "Premium Instances", "yAxis" : "right" }],
-            ["Optinist/CostTracking", "FreeInstanceCount", { "label" : "Free Tier Instances", "yAxis" : "right" }],
-            ["Optinist/CostTracking", "ActivePremiumUsers", { "label" : "Active Premium Users", "yAxis" : "right" }],
-            ["Optinist/CostTracking", "ActiveFreeUsers", { "label" : "Active Free Users", "yAxis" : "right" }]
+            ["OptiNiSt/CostTracking/${var.environment}", "ActualMonthToDateSpend", { "label" : "Actual MTD Spend ($)", "yAxis" : "left" }],
+            ["OptiNiSt/CostTracking/${var.environment}", "ExpectedMonthlyBudget", { "label" : "Expected Budget ($)", "yAxis" : "left" }],
+            ["OptiNiSt/CostTracking/${var.environment}", "PremiumInstanceCount", { "label" : "Premium Instances", "yAxis" : "right" }],
+            ["OptiNiSt/CostTracking/${var.environment}", "FreeInstanceCount", { "label" : "Free Tier Instances", "yAxis" : "right" }],
+            ["OptiNiSt/CostTracking/${var.environment}", "ActivePremiumUsers", { "label" : "Active Premium Users", "yAxis" : "right" }],
+            ["OptiNiSt/CostTracking/${var.environment}", "ActiveFreeUsers", { "label" : "Active Free Users", "yAxis" : "right" }]
           ]
           view    = "timeSeries"
           stacked = false
@@ -451,10 +453,10 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["OptiNiSt/FreeUsers", "ActiveLogins", { "label" : "Active Free Tier Users", "yAxis" : "left" }],
-            ["OptiNiSt/Premium", "ActiveAssignments", { "label" : "Active Premium Users", "yAxis" : "left" }],
-            ["OptiNiSt/Premium", "InstanceUtilization", { "label" : "Premium Instance Utilization %", "yAxis" : "right" }],
-            ["OptiNiSt/Application", "UserCPUUsage", { "label" : "User CPU Usage", "stat" : "Average", "yAxis" : "right" }],
+            ["OptiNiSt/FreeUsers/${var.environment}", "ActiveLogins", { "label" : "Active Free Tier Users", "yAxis" : "left" }],
+            ["OptiNiSt/Premium/${var.environment}", "ActiveAssignments", { "label" : "Active Premium Users", "yAxis" : "left" }],
+            ["OptiNiSt/Premium/${var.environment}", "InstanceUtilization", { "label" : "Premium Instance Utilization %", "yAxis" : "right" }],
+            ["OptiNiSt/Application/${var.environment}", "UserCPUUsage", { "label" : "User CPU Usage", "stat" : "Average", "yAxis" : "right" }],
             ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Duration (ms)", "yAxis" : "right" }],
             ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Errors", "yAxis" : "left" }]
           ]

@@ -619,9 +619,10 @@ class PublishedExperimentSyncJob:
         try:
             import boto3
 
+            env_prefix = os.environ.get("ENV_PREFIX", "default")
             cloudwatch: "CloudWatchClient" = boto3.client("cloudwatch")
             cloudwatch.put_metric_data(
-                Namespace="OptiNiSt/BackgroundJobs",
+                Namespace=f"OptiNiSt/BackgroundJobs/{env_prefix}",
                 MetricData=[
                     {
                         "MetricName": "PersistentSyncFailure",
@@ -666,9 +667,11 @@ class PublishedExperimentSyncJob:
             total = synced_count + error_count
             error_rate = float(error_count / total * 100) if total > 0 else 0.0
             timestamp = get_current_datetime()
+            env_prefix = os.environ.get("ENV_PREFIX", "default")
+            namespace = f"OptiNiSt/BackgroundJobs/{env_prefix}"
 
             cloudwatch.put_metric_data(
-                Namespace="OptiNiSt/BackgroundJobs",
+                Namespace=namespace,
                 MetricData=[
                     {
                         "MetricName": "ExperimentsSynced",
@@ -686,7 +689,7 @@ class PublishedExperimentSyncJob:
             )
 
             cloudwatch.put_metric_data(
-                Namespace="OptiNiSt/BackgroundJobs",
+                Namespace=namespace,
                 MetricData=[
                     {
                         "MetricName": "SyncErrorRate",

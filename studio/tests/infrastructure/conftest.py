@@ -24,10 +24,14 @@ _PACKAGE_NAMES = [
     "free_manager_package",
     "free_cleanup_package",
     "common_user_manager_package",
+    "dev_scheduler_package",
 ]
 
 # Add Lambda package directories to sys.path so imports work
 _LAMBDA_PATHS = [TERRAFORM_DIR / name for name in _PACKAGE_NAMES]
+
+# Single-file Lambdas live directly in terraform/ rather than in a package dir.
+_LAMBDA_PATHS.append(TERRAFORM_DIR)
 
 # aws_constants lives at infrastructure/aws_constants.py
 _LAMBDA_PATHS.append(PROJECT_ROOT / "infrastructure")
@@ -74,6 +78,7 @@ MOCK_ENV_VARS_BASE = {
 
 MOCK_ENV_VARS_PREMIUM = {
     **MOCK_ENV_VARS_BASE,
+    "ENV_PREFIX": "test",
     "AUTOSCALING_TARGET_GROUP_ARN": (
         "arn:aws:elasticloadbalancing:region:account:" "targetgroup/asg"
     ),
@@ -88,6 +93,7 @@ MOCK_ENV_VARS_PREMIUM = {
 
 MOCK_ENV_VARS_FREE = {
     **MOCK_ENV_VARS_BASE,
+    "ENV_PREFIX": "test",
     "CLUSTER_NAME": "test-cluster",
     "FREE_SERVICE_NAME": "subscr-optinist-cloud-service",
     "ASG_NAME": "test-free-asg",

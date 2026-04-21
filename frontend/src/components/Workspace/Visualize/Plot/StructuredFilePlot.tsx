@@ -198,8 +198,10 @@ const ImageView = memo(function ImageView({
     {
       z: frame,
       type: "heatmap",
-      colorscale: "Greys",
-      reversescale: true,
+      colorscale: [
+        [0, "rgb(0,0,0)"],
+        [1, "rgb(255,255,255)"],
+      ],
     },
   ]
 
