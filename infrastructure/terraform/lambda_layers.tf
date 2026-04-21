@@ -12,29 +12,17 @@
 # Lambda functions. Using a layer avoids code duplication and ensures
 # all Lambdas use the same constant values.
 
-# Create the layer directory structure
-# Lambda layers for Python must have files under python/ directory
-resource "null_resource" "prepare_aws_constants_layer" {
-  provisioner "local-exec" {
-    command = <<-EOT
-      mkdir -p ${path.module}/aws_constants_layer/python
-      cp ${path.module}/../aws_constants.py ${path.module}/aws_constants_layer/python/aws_constants.py
-    EOT
-  }
-
-  triggers = {
-    # Rebuild layer when aws_constants.py changes
-    code_hash = filesha256("${path.module}/../aws_constants.py")
-  }
-}
-
 # Create ZIP for the layer
+# Uses inline source block so the archive is built at plan time without
+# needing a pre-existing directory (avoids null_resource chicken-and-egg).
 data "archive_file" "aws_constants_layer_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/aws_constants_layer"
   output_path = "${path.module}/aws_constants_layer.zip"
 
-  depends_on = [null_resource.prepare_aws_constants_layer]
+  source {
+    content  = file("${path.module}/../aws_constants.py")
+    filename = "python/aws_constants.py"
+  }
 }
 
 # Create the Lambda Layer

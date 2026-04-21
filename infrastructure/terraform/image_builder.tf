@@ -394,6 +394,7 @@ output "custom_ami_ssm_parameter" {
 output "effective_ami_id" {
   description = "The AMI ID currently used by launch templates"
   value       = local.effective_ami_id
+  sensitive   = true
 }
 
 output "ami_source" {
