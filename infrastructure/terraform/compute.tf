@@ -121,9 +121,12 @@ data "aws_ami" "ecs_optimized" {
 }
 
 # Custom AMI from Image Builder (when enabled)
+# depends_on ensures the SSM parameter resource is created before this
+# data source tries to read it on first apply with use_custom_ami = true.
 data "aws_ssm_parameter" "custom_ami_id" {
-  count = var.use_custom_ami ? 1 : 0
-  name  = "/${var.environment}/optinist/custom-ami-id"
+  count      = var.use_custom_ami ? 1 : 0
+  name       = "/${var.environment}/optinist/custom-ami-id"
+  depends_on = [aws_ssm_parameter.custom_ami_id]
 }
 
 locals {

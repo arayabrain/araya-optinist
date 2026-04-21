@@ -56,7 +56,10 @@ resource "aws_iam_role_policy_attachment" "image_builder_ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-# Allow build instance to write AMI ID to SSM Parameter Store
+# Allow build instance to access SSM Parameter Store.
+# Note: PutParameter is not used at build time (the build instance cannot know
+# the output AMI ID).  Retained for future EventBridge → Lambda automation that
+# will write the AMI ID after pipeline completion.
 resource "aws_iam_role_policy" "image_builder_ssm_param" {
   count = var.use_custom_ami ? 1 : 0
 
@@ -72,6 +75,24 @@ resource "aws_iam_role_policy" "image_builder_ssm_param" {
         "ssm:GetParameter"
       ]
       Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/optinist/custom-ami-id"
+    }]
+  })
+}
+
+# Allow build instance to write logs to S3
+# (EC2InstanceProfileForImageBuilder only covers ec2imagebuilder-* buckets)
+resource "aws_iam_role_policy" "image_builder_s3_logs" {
+  count = var.use_custom_ami ? 1 : 0
+
+  name = "${local.env_prefix}-image-builder-s3-logs"
+  role = aws_iam_role.image_builder[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:PutObject"]
+      Resource = "${aws_s3_bucket.app_storage.arn}/image-builder-logs/*"
     }]
   })
 }
@@ -114,7 +135,7 @@ resource "aws_iam_role_policy_attachment" "image_builder_lifecycle" {
 resource "aws_imagebuilder_component" "optinist_packages" {
   count = var.use_custom_ami ? 1 : 0
 
-  name        = "${local.env_prefix}-packages"
+  name        = "${local.env_prefix}-packages-v${replace(var.custom_ami_version, ".", "-")}"
   platform    = "Linux"
   version     = var.custom_ami_version
   description = "Install system packages and AWS CLI v2 for OptiNiSt ECS instances"
@@ -136,7 +157,7 @@ resource "aws_imagebuilder_component" "optinist_packages" {
 resource "aws_imagebuilder_component" "optinist_validate" {
   count = var.use_custom_ami ? 1 : 0
 
-  name        = "${local.env_prefix}-validate"
+  name        = "${local.env_prefix}-validate-v${replace(var.custom_ami_version, ".", "-")}"
   platform    = "Linux"
   version     = var.custom_ami_version
   description = "Validate OptiNiSt ECS AMI package installations"
@@ -161,7 +182,7 @@ resource "aws_imagebuilder_component" "optinist_validate" {
 resource "aws_imagebuilder_image_recipe" "optinist" {
   count = var.use_custom_ami ? 1 : 0
 
-  name         = "${local.env_prefix}-ecs-recipe"
+  name         = "${local.env_prefix}-ecs-recipe-v${replace(var.custom_ami_version, ".", "-")}"
   parent_image = data.aws_ami.ecs_optimized.id
   version      = var.custom_ami_version
   description  = "ECS-optimized AMI with pre-installed OptiNiSt packages"
@@ -189,8 +210,12 @@ resource "aws_imagebuilder_image_recipe" "optinist" {
     Service = "image-builder"
   }
 
+  # Recipes are immutable.  ignore parent_image to prevent forced
+  # recreation when Amazon publishes a new ECS-optimized AMI.
+  # Bump custom_ami_version to pick up a newer base AMI.
   lifecycle {
     create_before_destroy = true
+    ignore_changes        = [parent_image]
   }
 }
 
@@ -200,9 +225,10 @@ resource "aws_imagebuilder_image_recipe" "optinist" {
 resource "aws_imagebuilder_infrastructure_configuration" "optinist" {
   count = var.use_custom_ami ? 1 : 0
 
-  name                          = "${local.env_prefix}-image-builder-infra"
-  instance_profile_name         = aws_iam_instance_profile.image_builder[0].name
-  instance_types                = ["t3.medium"]
+  name                  = "${local.env_prefix}-image-builder-infra"
+  instance_profile_name = aws_iam_instance_profile.image_builder[0].name
+  instance_types        = ["t3.medium"]
+  # Public subnet for simplicity; consider private subnet + NAT for production hardening
   subnet_id                     = aws_subnet.public1.id
   security_group_ids            = [aws_security_group.ecs.id]
   terminate_instance_on_failure = true
@@ -239,6 +265,7 @@ resource "aws_imagebuilder_distribution_configuration" "optinist" {
       ami_tags = {
         Name        = "${local.env_prefix}-ecs-custom-ami"
         Service     = "image-builder"
+        Project     = "optinist-cloud"
         Environment = local.environment_label
         BaseAMI     = data.aws_ami.ecs_optimized.id
       }
@@ -288,6 +315,7 @@ resource "aws_imagebuilder_image_pipeline" "optinist" {
   depends_on = [
     aws_iam_role_policy_attachment.image_builder_ec2,
     aws_iam_role_policy_attachment.image_builder_ssm,
+    aws_iam_role_policy.image_builder_s3_logs,
   ]
 }
 
@@ -337,8 +365,8 @@ resource "aws_ssm_parameter" "custom_ami_id" {
 
   name        = "/${var.environment}/optinist/custom-ami-id"
   type        = "String"
-  value       = "pending-first-build"
-  description = "Latest custom AMI ID from EC2 Image Builder"
+  value       = data.aws_ami.ecs_optimized.id
+  description = "Latest custom AMI ID from EC2 Image Builder (initially set to stock AMI)"
 
   tags = {
     Name    = "Custom AMI ID"
