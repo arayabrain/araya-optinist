@@ -2649,6 +2649,51 @@ class TestCleanupGhostECSRegistrations:
                 force=True,
             )
 
+    def test_deregisters_shutting_down_ec2_immediately(self, mock_env_vars_premium):
+        """Instance whose EC2 is shutting-down (the typical transient state
+        during the #549 race) gets deregistered with no grace."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/shutdown1"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "i-shutdown1",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-shutdown1",
+                                "State": {"Name": "shutting-down"},
+                                "Tags": [],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_called_once_with(
+                cluster="test-cluster",
+                containerInstance=ci_arn,
+                force=True,
+            )
+
     def test_tags_running_instance_on_first_disconnect(self, mock_env_vars_premium):
         """Running EC2 with disconnected agent gets tagged but not deregistered."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
@@ -2691,6 +2736,54 @@ class TestCleanupGhostECSRegistrations:
             mock_ec2.create_tags.assert_called_once()
             tag_call = mock_ec2.create_tags.call_args
             assert tag_call.kwargs["Resources"] == ["i-running1"]
+            assert tag_call.kwargs["Tags"][0]["Key"] == "optinist:agent-disconnected-at"
+
+    def test_pending_ec2_is_not_deregistered(self, mock_env_vars_premium):
+        """EC2 still booting (state=pending) is treated as alive — not in the
+        STOPPED/TERMINATED/SHUTTING_DOWN dead set. With agent disconnected
+        (not yet registered), the grace-period tag is started; deregister is
+        not called. Pins the alive-set boundary so a future "deregister
+        anything not running" tweak can't silently kill booting CIs."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/pending1"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "i-pending1",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-pending1",
+                                "State": {"Name": "pending"},
+                                "Tags": [],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_not_called()
+            mock_ec2.create_tags.assert_called_once()
+            tag_call = mock_ec2.create_tags.call_args
+            assert tag_call.kwargs["Resources"] == ["i-pending1"]
             assert tag_call.kwargs["Tags"][0]["Key"] == "optinist:agent-disconnected-at"
 
     def test_skips_within_grace_period(self, mock_env_vars_premium):
