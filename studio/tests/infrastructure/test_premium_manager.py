@@ -2288,8 +2288,16 @@ class TestCleanupOrphanedEC2Instances:
 
 
 class TestHandleScheduledMonitoring:
-    """handle_scheduled_monitoring registers orphaned stopped
-    instances before attempting to terminate aged ones."""
+    """handle_scheduled_monitoring acquires the distributed scaling
+    lock, runs the monitor steps in order, and skips cleanly when
+    another invocation holds the lock."""
+
+    @staticmethod
+    def _lock_ctx(acquired: bool):
+        mock = MagicMock()
+        mock.return_value.__enter__.return_value = acquired
+        mock.return_value.__exit__.return_value = False
+        return mock
 
     def test_registers_orphans_before_terminating_aged(self, mock_env_vars_premium):
         """register_orphaned_stopped_instances runs before
@@ -2298,10 +2306,8 @@ class TestHandleScheduledMonitoring:
         call_order = []
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
-            "premium_manager.is_premium_scaling_in_progress", return_value=False
-        ), patch("premium_manager.set_premium_scaling_lock"), patch(
-            "premium_manager.count_active_premium_users", return_value=0
-        ), patch(
+            "premium_manager.distributed_lock", new=self._lock_ctx(True)
+        ), patch("premium_manager.count_active_premium_users", return_value=0), patch(
             "premium_manager.count_total_premium_users", return_value=0
         ), patch(
             "premium_manager.get_all_premium_instances_with_states",
@@ -2345,6 +2351,84 @@ class TestHandleScheduledMonitoring:
             assert result["statusCode"] == 200
 
             assert call_order == ["register_orphans", "terminate_aged"]
+
+    def test_skips_when_lock_not_acquired(self, mock_env_vars_premium):
+        """When another invocation holds the scaling lock, the handler
+        returns the 'skipped' response and does not call any scaling
+        step. Regression guard for the pre-fix bug where a stale
+        CloudWatch-metric lock kept the handler blackholed for ~15
+        minutes after every scaling op."""
+        mock_step = MagicMock()
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.distributed_lock", new=self._lock_ctx(False)
+        ), patch(
+            "premium_manager.count_active_premium_users", side_effect=mock_step
+        ), patch(
+            "premium_manager.scale_down_if_possible", side_effect=mock_step
+        ), patch(
+            "premium_manager.update_premium_service_desired_count",
+            side_effect=mock_step,
+        ), patch(
+            "premium_manager.cleanup_ghost_ecs_registrations", side_effect=mock_step
+        ), patch(
+            "premium_manager.cleanup_orphaned_ec2_instances", side_effect=mock_step
+        ):
+            from premium_manager import handle_scheduled_monitoring
+
+            result = handle_scheduled_monitoring({"source": "test"}, None)
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            assert body["status"] == "skipped"
+            assert "already in progress" in body["message"]
+            mock_step.assert_not_called()
+
+    def test_acquires_non_blocking_with_correct_lock_name(self, mock_env_vars_premium):
+        """The monitor must call distributed_lock with timeout=0 so
+        contention skips (not waits) and with PREMIUM_SCALING_LOCK so
+        it interlocks with other invocations of this same handler.
+        A typo or a blocking default would be a silent regression."""
+        lock_mock = self._lock_ctx(False)  # not acquired → fast skip path
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.distributed_lock", new=lock_mock
+        ):
+            from premium_manager import (
+                PREMIUM_SCALING_LOCK,
+                handle_scheduled_monitoring,
+            )
+
+            handle_scheduled_monitoring({"source": "test"}, None)
+
+            lock_mock.assert_called_once_with(PREMIUM_SCALING_LOCK, timeout=0)
+
+    def test_releases_lock_on_monitor_exception(self, mock_env_vars_premium):
+        """When a step inside the with-block raises, the handler
+        returns a structured 500 and the context manager's __exit__ is
+        still called (guaranteeing lock release). Regression guard for
+        a future refactor that moves try/except outside the with-block
+        or re-introduces a separate release call."""
+        lock_mock = self._lock_ctx(True)
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.distributed_lock", new=lock_mock
+        ), patch(
+            "premium_manager.count_active_premium_users",
+            side_effect=RuntimeError("boom"),
+        ):
+            from premium_manager import handle_scheduled_monitoring
+
+            result = handle_scheduled_monitoring({"source": "test"}, None)
+
+            assert result["statusCode"] == 500
+            body = json.loads(result["body"])
+            assert body["status"] == "error"
+            assert "boom" in body["error"]
+            # Context manager exit fires regardless of the exception →
+            # GET_LOCK is released by the helper's `finally` on the DB
+            # connection.
+            lock_mock.return_value.__exit__.assert_called_once()
 
 
 class TestGetUserUidFromId:
