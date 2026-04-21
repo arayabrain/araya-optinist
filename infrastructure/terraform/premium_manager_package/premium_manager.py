@@ -79,6 +79,9 @@ LOCK_TIMEOUT_SECONDS = 60
 # Wait before first migration attempt to let instances boot
 MIGRATION_INITIAL_DELAY_SECONDS = 60
 
+STANDBY_READINESS_TIMEOUT_SECONDS = 120
+STANDBY_READINESS_RETRY_INTERVAL_SECONDS = 10
+
 
 def generate_routing_id(uid: str, secret_key: str) -> str:
     """Generate non-reversible routing ID from UID using HMAC-SHA256
@@ -1730,95 +1733,6 @@ def create_and_stop_standby_instance():
             return None
 
 
-ECS_CHECKPOINT_PATH = "/var/lib/ecs/data/agent.db"
-SSM_POLL_INTERVAL_SECONDS = 5
-SSM_POLL_MAX_WAIT_SECONDS = 30
-SSM_AGENT_WAIT_MAX_SECONDS = 120
-SSM_AGENT_WAIT_INTERVAL_SECONDS = 5
-
-
-def wait_for_ssm_agent(instance_id: str) -> bool:
-    """Wait until SSM agent is online for the given instance.
-
-    After an EC2 instance reaches 'running' state, the SSM agent may still
-    need additional time to boot and register with Systems Manager.
-    """
-    ssm = boto3.client("ssm")
-    elapsed = 0
-    while elapsed < SSM_AGENT_WAIT_MAX_SECONDS:
-        try:
-            resp = ssm.describe_instance_information(
-                Filters=[{"Key": "InstanceIds", "Values": [instance_id]}]
-            )
-            info_list = resp.get("InstanceInformationList", [])
-            if info_list and info_list[0].get("PingStatus") == "Online":
-                print(f"SSM agent online for {instance_id}")
-                return True
-        except ClientError as e:
-            print(f"Error checking SSM agent status for {instance_id}: {e}")
-        time.sleep(SSM_AGENT_WAIT_INTERVAL_SECONDS)
-        elapsed += SSM_AGENT_WAIT_INTERVAL_SECONDS
-    print(
-        f"SSM agent not online for {instance_id}"
-        f" after {SSM_AGENT_WAIT_MAX_SECONDS}s"
-    )
-    return False
-
-
-def clear_ecs_agent_checkpoint(instance_id: str) -> bool:
-    """Clear stale ECS agent checkpoint via SSM to allow re-registration.
-
-    Non-fatal: returns False on failure so the caller can proceed
-    (the readiness check will catch unregistered instances).
-    """
-    if not wait_for_ssm_agent(instance_id):
-        return False
-
-    ssm = boto3.client("ssm")
-    command = f"rm -f {ECS_CHECKPOINT_PATH} && systemctl restart ecs"
-    try:
-        resp = ssm.send_command(
-            InstanceIds=[instance_id],
-            DocumentName="AWS-RunShellScript",
-            Parameters={"commands": [command]},
-            TimeoutSeconds=SSM_POLL_MAX_WAIT_SECONDS,
-        )
-        command_id = resp["Command"]["CommandId"]
-        print(
-            f"Sent SSM checkpoint cleanup to {instance_id}" f" (command={command_id})"
-        )
-
-        elapsed = 0
-        while elapsed < SSM_POLL_MAX_WAIT_SECONDS:
-            time.sleep(SSM_POLL_INTERVAL_SECONDS)
-            elapsed += SSM_POLL_INTERVAL_SECONDS
-            try:
-                result = ssm.get_command_invocation(
-                    CommandId=command_id,
-                    InstanceId=instance_id,
-                )
-            except ssm.exceptions.InvocationDoesNotExist:
-                continue
-
-            status = result["Status"]
-            if status == "Success":
-                print(f"ECS checkpoint cleared on {instance_id}")
-                return True
-            if status in ("Failed", "TimedOut", "Cancelled"):
-                print(
-                    f"SSM command {status} on {instance_id}: "
-                    f"{result.get('StandardErrorContent', '')}"
-                )
-                return False
-
-        print(f"SSM command timed out waiting for {instance_id}")
-        return False
-
-    except ClientError as e:
-        print(f"SSM checkpoint cleanup failed for " f"{instance_id}: {e}")
-        return False
-
-
 def start_standby_instance(instance_id: str):
     """Start a stopped standby instance and prepare for user assignment"""
     ec2: "EC2Client" = boto3.client("ec2")
@@ -1836,8 +1750,20 @@ def start_standby_instance(instance_id: str):
             WaiterConfig={"Delay": 5, "MaxAttempts": 24},
         )
 
-        # Clear stale ECS agent checkpoint so it re-registers
-        clear_ecs_agent_checkpoint(instance_id)
+        # Checkpoint clear is handled by the ecs-clear-checkpoint.service
+        # systemd unit (Before=ecs.service) on every boot; no SSM action
+        # needed here.
+
+        if not check_instance_readiness_with_retry(
+            instance_id,
+            max_wait_seconds=STANDBY_READINESS_TIMEOUT_SECONDS,
+            retry_interval=STANDBY_READINESS_RETRY_INTERVAL_SECONDS,
+        ):
+            print(
+                f"Standby instance {instance_id} started but ECS task "
+                f"not ready after 120s"
+            )
+            return False
 
         # Update state in database (only for non-standby assignments)
         with get_db_connection() as connection:
@@ -2913,14 +2839,13 @@ def assign_premium_user(
                             InstanceIds=[existing_instance_id],
                             WaiterConfig={"Delay": 5, "MaxAttempts": 24},
                         )
-                        clear_ecs_agent_checkpoint(existing_instance_id)
                         _update_instance_state_to_running(existing_instance_id)
 
                         # Wait for ECS task readiness before returning
                         if check_instance_readiness_with_retry(
                             existing_instance_id,
-                            max_wait_seconds=120,
-                            retry_interval=10,
+                            max_wait_seconds=STANDBY_READINESS_TIMEOUT_SECONDS,
+                            retry_interval=STANDBY_READINESS_RETRY_INTERVAL_SECONDS,
                         ):
                             print(
                                 f"Restarted instance {existing_instance_id} "
@@ -3860,8 +3785,8 @@ def scale_premium_instances_if_needed():
                 )
                 ec2.start_instances(InstanceIds=instance_ids_to_start)
 
-                # Wait for instances to be running, then clear
-                # stale ECS agent checkpoints so they re-register
+                # Userdata systemd unit clears the checkpoint on every
+                # boot; just wait for the instances to be running.
                 waiter = ec2.get_waiter("instance_running")
                 try:
                     waiter.wait(
@@ -3871,10 +3796,8 @@ def scale_premium_instances_if_needed():
                             "MaxAttempts": 24,
                         },
                     )
-                    for iid in instance_ids_to_start:
-                        clear_ecs_agent_checkpoint(iid)
                 except Exception as e:
-                    print(f"Waiter/checkpoint cleanup error: {e}")
+                    print(f"Waiter error: {e}")
 
                 # Invoke this Lambda asynchronously to handle migration
                 # after instances are ready (avoids blocking the user's request)
