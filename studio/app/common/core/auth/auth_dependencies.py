@@ -22,6 +22,7 @@ from studio.app.common.core.subscription.constants import (
     PlanName,
     SubscriptionPeriods,
     SubscriptionStatus,
+    SubscriptionType,
 )
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import get_db
@@ -74,27 +75,35 @@ def _enrich_user_with_basic_attributes(
 
 def _enrich_user_with_subscription_status(
     user: UserModel,
-    db: Session,
     subscription_expiration: Optional[datetime],
     subscription_plan_id: Optional[int],
     subscription_plan_name: Optional[str],
+    subscription_plan_tier: Optional[str],
 ) -> None:
     """
     Calculate and set subscription status and days remaining using tier-based logic.
 
-    This function uses data-driven approach by querying the plan's tier from
-    the database instead of hardcoded plan ID checks.
+    This function uses a data-driven approach based on the plan's tier value
+    (already fetched via JOIN in the main query) instead of hardcoded plan ID
+    checks or additional round-trip queries. Any plan with a tier other than
+    SubscriptionType.FREE is treated as a paid plan, so adding new tiers
+    (e.g. "enterprise") requires no code changes.
 
     Args:
         user: User model to enrich
-        db: Database session
         subscription_expiration: Subscription expiration datetime
         subscription_plan_id: ID of subscription plan
         subscription_plan_name: Name of subscription plan (fallback)
+        subscription_plan_tier: Tier string from subscription_plans.tier
     """
     now = get_current_datetime()
 
-    if subscription_expiration and subscription_plan_id:
+    is_paid_tier = bool(
+        subscription_plan_tier
+        and subscription_plan_tier.lower() != SubscriptionType.FREE.value
+    )
+
+    if subscription_expiration and subscription_plan_id and is_paid_tier:
         # Make sure expiration is timezone-aware
         if subscription_expiration.tzinfo is None:
             subscription_expiration = subscription_expiration.replace(
@@ -103,40 +112,21 @@ def _enrich_user_with_subscription_status(
 
         days_remaining = (subscription_expiration - now).days
 
-        # Query plan tier from database (data-driven approach)
-        from studio.app.common.models.subscription import SubscriptionPlans
-
-        plan = (
-            db.query(SubscriptionPlans)
-            .filter(SubscriptionPlans.id == subscription_plan_id)
-            .first()
-        )
-
-        if plan and not plan.is_premium:
-            user.__dict__["subscription_status"] = SubscriptionStatus.FREE.value
-            user.__dict__["subscription_days_remaining"] = None
-        elif plan and plan.is_premium:
-            if days_remaining > 0:
-                user.__dict__["subscription_status"] = SubscriptionStatus.PREMIUM.value
-                user.__dict__["subscription_days_remaining"] = days_remaining
-            elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
-                user.__dict__[
-                    "subscription_status"
-                ] = SubscriptionStatus.LIMIT_GRACE.value
-                user.__dict__["subscription_days_remaining"] = (
-                    SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
-                )  # Days left in grace period
-            else:
-                user.__dict__["subscription_status"] = SubscriptionStatus.EXPIRED.value
-                user.__dict__["subscription_days_remaining"] = None
-        else:
-            # Unknown tier or plan not found - fallback to plan name
+        if days_remaining > 0:
             user.__dict__["subscription_status"] = (
-                subscription_plan_name or PlanName.UNKNOWN.value
+                subscription_plan_name or SubscriptionStatus.PREMIUM.value
+            )
+            user.__dict__["subscription_days_remaining"] = days_remaining
+        elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
+            user.__dict__["subscription_status"] = (
+                SubscriptionStatus.LIMIT_GRACE.value
             )
             user.__dict__["subscription_days_remaining"] = (
-                days_remaining if days_remaining > 0 else None
-            )
+                SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
+            )  # Days left in grace period
+        else:
+            user.__dict__["subscription_status"] = SubscriptionStatus.EXPIRED.value
+            user.__dict__["subscription_days_remaining"] = None
     else:
         user.__dict__["subscription_status"] = SubscriptionStatus.FREE.value
         user.__dict__["subscription_days_remaining"] = None
@@ -251,6 +241,7 @@ async def get_current_user(
             storage_quota_bytes,
             subscription_expiration,
             subscription_plan_id,
+            subscription_plan_tier,
         ) = user_data
 
         # Enrich user with basic attributes
@@ -263,13 +254,14 @@ async def get_current_user(
             storage_quota_bytes,
         )
 
-        # Calculate and set subscription status
+        # Calculate and set subscription status using the tier fetched
+        # in the main JOIN query (no extra round trip).
         _enrich_user_with_subscription_status(
             authed_user,
-            db,
             subscription_expiration,
             subscription_plan_id,
             subscription_plan_name,
+            subscription_plan_tier,
         )
 
         user = User.from_orm(authed_user)
@@ -305,6 +297,7 @@ def __get_current_user_record(db: Session, uid: str) -> sqlalchemy.engine.row.Ro
             UserStorageUsage.storage_quota_bytes,
             func.max(UserSubscription.expiration).label("subscription_expiration"),
             func.max(UserSubscription.plan_id).label("subscription_plan_id"),
+            func.max(SubscriptionPlans.tier).label("subscription_plan_tier"),
         )
         .outerjoin(UserRoleModel, UserRoleModel.user_id == UserModel.id)
         .outerjoin(UserSubscription, UserSubscription.user_id == UserModel.id)

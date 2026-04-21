@@ -23,6 +23,7 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionPeriods,
     SubscriptionPlanIds,
     SubscriptionStatus,
+    SubscriptionType,
 )
 from studio.app.common.core.subscription.stripe_service import StripeService
 from studio.app.common.core.subscription.subscription_service import (
@@ -146,11 +147,12 @@ def _transform_user_row(item) -> UserModel:
     user.__dict__["subscription_expiration"] = subscription_expiration
 
     # Calculate subscription status and days remaining using tier-based logic.
-    # This is data-driven: any plan with tier != "free" is treated as a paid plan,
-    # so new tiers (e.g., "enterprise") work without code changes.
+    # This is data-driven: any plan with tier != SubscriptionType.FREE is treated
+    # as a paid plan, so new tiers (e.g., "enterprise") work without code changes.
     now = get_current_datetime()
     is_paid_tier = (
-        subscription_plan_tier and subscription_plan_tier.lower() != "free"
+        subscription_plan_tier
+        and subscription_plan_tier.lower() != SubscriptionType.FREE.value
     )
 
     if subscription_expiration and subscription_plan_id and is_paid_tier:

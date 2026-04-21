@@ -53,9 +53,9 @@ export const getPlanNameFromTier = (tier?: string): string => {
 
   const tierLower = tier.toLowerCase()
   switch (tierLower) {
-    case "free":
+    case UserTier.FREE:
       return PlanName.FREE
-    case "premium":
+    case UserTier.PREMIUM:
       return PlanName.PREMIUM
     default:
       // Capitalize first letter for unknown tiers

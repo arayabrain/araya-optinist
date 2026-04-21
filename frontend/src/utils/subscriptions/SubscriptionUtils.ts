@@ -1,3 +1,4 @@
+import { UserTier } from "const/Subscription"
 import {
   PlanFeature,
   SubscriptionPlan,
@@ -124,7 +125,7 @@ export const safeConvertPlan = (
       features: {},
       status: false,
       created_at: "",
-      tier: "free",
+      tier: UserTier.FREE,
     }
   }
 }
@@ -201,22 +202,25 @@ export const getAccurateTimeUTC = async () => {
  */
 export const isFreePlan = (plan: SubscriptionPlan): boolean => {
   if (plan.tier) {
-    return plan.tier === "free"
+    return plan.tier.toLowerCase() === UserTier.FREE
   }
   // Fallback to price-based check
   return plan.price === 0
 }
 
 /**
- * Check if a plan is premium tier or higher
- * Includes: premium, enterprise, professional, and any custom premium tiers
+ * Check if a plan is a paid (non-free) tier.
+ *
+ * Data-driven: any tier other than UserTier.FREE is treated as paid, so new
+ * tiers (e.g. "premium", "enterprise", or custom names) work without code
+ * changes. This matches the backend logic in auth_dependencies.py /
+ * crud_users.py (is_paid_tier = tier.lower() != SubscriptionType.FREE).
  */
 export const isPremiumTierPlan = (plan: SubscriptionPlan): boolean => {
   if (plan.tier) {
-    const premiumTiers = ["premium", "enterprise", "professional", "team"]
-    return premiumTiers.includes(plan.tier.toLowerCase())
+    return plan.tier.toLowerCase() !== UserTier.FREE
   }
-  // Fallback to price-based check
+  // Fallback to price-based check when tier is not provided
   return plan.price > 0
 }
 
