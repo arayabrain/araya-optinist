@@ -1,7 +1,5 @@
 name: optinist-ecs-packages
-description: >
-  Install system packages and AWS CLI v2 for OptiNiSt ECS instances.
-  Eliminates ~4-6 min of yum install from every instance boot.
+description: "Install system packages and AWS CLI v2 for OptiNiSt ECS instances. Eliminates ~4-6 min of yum install from every instance boot."
 schemaVersion: 1.0
 
 phases:
@@ -11,23 +9,23 @@ phases:
         action: ExecuteBash
         inputs:
           commands:
-            - echo "$(date): Starting system package update"
+            - 'echo "$(date): Starting system package update"'
             - yum update -y
-            - echo "$(date): System update complete"
+            - 'echo "$(date): System update complete"'
 
       - name: InstallYumPackages
         action: ExecuteBash
         inputs:
           commands:
-            - echo "$(date): Installing yum packages"
+            - 'echo "$(date): Installing yum packages"'
             - yum install -y amazon-ssm-agent mysql amazon-efs-utils nc git docker amazon-cloudwatch-agent
-            - echo "$(date): Yum packages installed"
+            - 'echo "$(date): Yum packages installed"'
 
       - name: InstallAWSCLIv2
         action: ExecuteBash
         inputs:
           commands:
-            - echo "$(date): Installing AWS CLI v2"
+            - 'echo "$(date): Installing AWS CLI v2"'
             - |
               # Remove awscli v1 if present (no longer in AL2 repos)
               yum remove -y awscli 2>/dev/null || true
@@ -38,21 +36,21 @@ phases:
               rm -rf /tmp/aws /tmp/awscliv2.zip
               # Verify
               /usr/local/bin/aws --version
-            - echo "$(date): AWS CLI v2 installed"
+            - 'echo "$(date): AWS CLI v2 installed"'
 
       - name: EnableDockerService
         action: ExecuteBash
         inputs:
           commands:
-            - echo "$(date): Enabling Docker service"
+            - 'echo "$(date): Enabling Docker service"'
             - systemctl enable docker
-            - echo "$(date): Docker service enabled"
+            - 'echo "$(date): Docker service enabled"'
 
       - name: CreateBakeMarker
         action: ExecuteBash
         inputs:
           commands:
-            - echo "$(date): Creating bake marker file"
+            - 'echo "$(date): Creating bake marker file"'
             - |
               cat > /etc/optinist-ami-baked <<MARKER
               BAKED_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -60,13 +58,13 @@ phases:
               PACKAGES=amazon-ssm-agent,mysql,amazon-efs-utils,nc,git,docker,amazon-cloudwatch-agent,awscli-v2
               MARKER
               chmod 644 /etc/optinist-ami-baked
-            - echo "$(date): Bake marker created"
+            - 'echo "$(date): Bake marker created"'
 
       - name: CleanupYumCache
         action: ExecuteBash
         inputs:
           commands:
-            - echo "$(date): Cleaning up yum cache to reduce AMI size"
+            - 'echo "$(date): Cleaning up yum cache to reduce AMI size"'
             - yum clean all
             - rm -rf /var/cache/yum
-            - echo "$(date): Cleanup complete"
+            - 'echo "$(date): Cleanup complete"'

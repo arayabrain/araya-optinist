@@ -1,7 +1,5 @@
 name: optinist-ecs-validate
-description: >
-  Validate that all required packages are correctly installed
-  in the OptiNiSt ECS AMI.
+description: "Validate that all required packages are correctly installed in the OptiNiSt ECS AMI."
 schemaVersion: 1.0
 
 phases:
@@ -108,7 +106,7 @@ phases:
               sleep 5
               if systemctl is-active docker >/dev/null 2>&1; then
                 echo "OK: Docker started successfully"
-                docker info --format '{{.ServerVersion}}'
+                docker --version
               else
                 echo "Docker failed to start"
                 exit 1
