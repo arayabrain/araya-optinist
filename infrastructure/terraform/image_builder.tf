@@ -270,9 +270,10 @@ resource "aws_imagebuilder_distribution_configuration" "optinist" {
         BaseAMI     = data.aws_ami.ecs_optimized.id
       }
 
-      launch_permission {
-        user_ids = [data.aws_caller_identity.current.account_id]
-      }
+      # No launch_permission needed — AMIs are automatically available
+      # to the account that creates them.  Explicitly setting user_ids
+      # triggers "sharing" logic, which conflicts with AWS-managed CMK
+      # encrypted snapshots.
     }
   }
 

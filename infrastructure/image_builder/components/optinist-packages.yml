@@ -9,62 +9,75 @@ phases:
         action: ExecuteBash
         inputs:
           commands:
-            - 'echo "$(date): Starting system package update"'
-            - yum update -y
-            - 'echo "$(date): System update complete"'
+            - |
+              set -e
+              echo "$(date): Starting system package update"
+              yum update -y
+              echo "$(date): System update complete"
 
       - name: InstallYumPackages
         action: ExecuteBash
         inputs:
           commands:
-            - 'echo "$(date): Installing yum packages"'
-            - yum install -y amazon-ssm-agent mysql amazon-efs-utils nc git docker amazon-cloudwatch-agent
-            - 'echo "$(date): Yum packages installed"'
+            - |
+              set -e
+              echo "$(date): Installing yum packages"
+              yum install -y amazon-ssm-agent mysql amazon-efs-utils nc git docker amazon-cloudwatch-agent
+              echo "$(date): Yum packages installed"
 
       - name: InstallAWSCLIv2
         action: ExecuteBash
         inputs:
           commands:
-            - 'echo "$(date): Installing AWS CLI v2"'
             - |
+              set -e
+              echo "$(date): Installing AWS CLI v2"
               # Remove awscli v1 if present (no longer in AL2 repos)
               yum remove -y awscli 2>/dev/null || true
+              # Ensure unzip is available (not always present on ECS-optimized AMI)
+              yum install -y unzip
               # Install AWS CLI v2 standalone
-              curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+              curl -fSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
               cd /tmp && unzip -qo awscliv2.zip
               /tmp/aws/install --update
               rm -rf /tmp/aws /tmp/awscliv2.zip
-              # Verify
+              # Verify v2 is installed
               /usr/local/bin/aws --version
-            - 'echo "$(date): AWS CLI v2 installed"'
+              /usr/local/bin/aws --version 2>&1 | grep -q "aws-cli/2"
+              echo "$(date): AWS CLI v2 installed successfully"
 
       - name: EnableDockerService
         action: ExecuteBash
         inputs:
           commands:
-            - 'echo "$(date): Enabling Docker service"'
-            - systemctl enable docker
-            - 'echo "$(date): Docker service enabled"'
+            - |
+              set -e
+              echo "$(date): Enabling Docker service"
+              systemctl enable docker
+              echo "$(date): Docker service enabled"
 
       - name: CreateBakeMarker
         action: ExecuteBash
         inputs:
           commands:
-            - 'echo "$(date): Creating bake marker file"'
             - |
+              set -e
+              echo "$(date): Creating bake marker file"
               cat > /etc/optinist-ami-baked <<MARKER
               BAKED_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
               BAKED_BY=ec2-image-builder
               PACKAGES=amazon-ssm-agent,mysql,amazon-efs-utils,nc,git,docker,amazon-cloudwatch-agent,awscli-v2
               MARKER
               chmod 644 /etc/optinist-ami-baked
-            - 'echo "$(date): Bake marker created"'
+              echo "$(date): Bake marker created"
 
       - name: CleanupYumCache
         action: ExecuteBash
         inputs:
           commands:
-            - 'echo "$(date): Cleaning up yum cache to reduce AMI size"'
-            - yum clean all
-            - rm -rf /var/cache/yum
-            - 'echo "$(date): Cleanup complete"'
+            - |
+              set -e
+              echo "$(date): Cleaning up yum cache to reduce AMI size"
+              yum clean all
+              rm -rf /var/cache/yum
+              echo "$(date): Cleanup complete"
