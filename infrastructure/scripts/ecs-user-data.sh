@@ -29,9 +29,23 @@ UNIT_EOF
 systemctl daemon-reload
 systemctl enable ecs-clear-checkpoint.service
 
-# Install packages
-yum update -y
-yum install -y amazon-ssm-agent mysql amazon-efs-utils nc mysql-client git docker amazon-cloudwatch-agent awscli
+# Install packages (skip if AMI is pre-baked by Image Builder)
+if [ -f /etc/optinist-ami-baked ]; then
+    echo "$(date): Pre-baked AMI detected, skipping package installation"
+    cat /etc/optinist-ami-baked
+    # AWS CLI v2 installed to /usr/local/bin by Image Builder
+    export PATH="/usr/local/bin:$PATH"
+else
+    echo "$(date): Stock AMI detected, installing packages"
+    yum update -y
+    yum install -y amazon-ssm-agent mysql amazon-efs-utils nc git docker amazon-cloudwatch-agent
+    # Install AWS CLI v2 (awscli v1 package no longer available in AL2 repos)
+    curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+    cd /tmp && unzip -qo awscliv2.zip
+    /tmp/aws/install --update
+    rm -rf /tmp/aws /tmp/awscliv2.zip
+    echo "$(date): Package installation complete"
+fi
 
 # Setup swap as memory safety net (defense-in-depth for OOM prevention)
 # This provides a buffer before OOM killer activates, giving workflows

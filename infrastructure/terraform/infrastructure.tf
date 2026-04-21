@@ -420,6 +420,23 @@ resource "aws_s3_bucket_lifecycle_configuration" "app_storage" {
       noncurrent_days = 7
     }
   }
+
+  rule {
+    id     = "expire-image-builder-logs"
+    status = "Enabled"
+
+    filter {
+      prefix = "image-builder-logs/"
+    }
+
+    expiration {
+      days = 30
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+  }
 }
 
 # Block all public access to S3

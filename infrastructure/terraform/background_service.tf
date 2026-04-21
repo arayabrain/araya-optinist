@@ -16,7 +16,7 @@
 # ===========================
 resource "aws_launch_template" "background" {
   name_prefix   = "${local.env_prefix}-background-"
-  image_id      = data.aws_ami.ecs_optimized.id
+  image_id      = local.effective_ami_id
   instance_type = var.background_instance_type
 
   vpc_security_group_ids = [aws_security_group.ecs.id]
