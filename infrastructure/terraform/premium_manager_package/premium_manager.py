@@ -5098,11 +5098,14 @@ def cleanup_ghost_ecs_registrations():
 
     Only targets instances with attribute:tier == premium.
 
-    Deregistration rules:
-      - EC2 stopped/terminated/gone: deregister immediately.
+    Deregistration rules (EC2 state decides first; agentConnected is consulted
+    only after the instance is alive):
+      - No ec2InstanceId mapping: deregister immediately.
+      - EC2 stopped/terminated/shutting-down/gone: deregister immediately.
+      - EC2 running + agent connected: clear any stale disconnect tag.
       - EC2 running + agent disconnected: tag with a timestamp on first
-        sighting, deregister after _AGENT_DISCONNECT_GRACE_SECONDS.
-        The tag is cleared automatically if the agent reconnects.
+        sighting, deregister after _AGENT_DISCONNECT_GRACE_SECONDS. The tag
+        is cleared automatically if the agent reconnects.
 
     Called every 15 minutes by handle_scheduled_monitoring.
     """
@@ -5139,118 +5142,143 @@ def cleanup_ghost_ecs_registrations():
         ghost_instances = []
         reconnected_ec2_ids = []
 
-        for container_instance in describe_response.get("containerInstances", []):
+        container_instances = describe_response.get("containerInstances", [])
+
+        # Batched describe_instances has no partial-result mode
+        # — any unknown ID fails the call.
+        ec2_ids = [
+            ci["ec2InstanceId"] for ci in container_instances if ci.get("ec2InstanceId")
+        ]
+        ec2_state_by_id: dict = {}
+        ec2_tags_by_id: dict = {}
+
+        def _record(reservations):
+            for reservation in reservations:
+                for instance in reservation.get("Instances", []):
+                    inst_id = instance.get("InstanceId")
+                    if not inst_id:
+                        continue
+                    ec2_state_by_id[inst_id] = instance["State"]["Name"]
+                    ec2_tags_by_id[inst_id] = {
+                        t["Key"]: t["Value"] for t in instance.get("Tags", [])
+                    }
+
+        if ec2_ids:
+            try:
+                ec2_response = ec2.describe_instances(InstanceIds=ec2_ids)
+                _record(ec2_response.get("Reservations", []))
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "InvalidInstanceID.NotFound":
+                    raise
+                for ec2_id in ec2_ids:
+                    try:
+                        per = ec2.describe_instances(InstanceIds=[ec2_id])
+                        _record(per.get("Reservations", []))
+                    except ClientError as inner:
+                        if (
+                            inner.response["Error"]["Code"]
+                            != "InvalidInstanceID.NotFound"
+                        ):
+                            raise
+
+        for container_instance in container_instances:
             container_instance_arn = container_instance.get("containerInstanceArn")
             ec2_instance_id = container_instance.get("ec2InstanceId")
             agent_connected = container_instance.get("agentConnected", False)
             status = container_instance.get("status", "UNKNOWN")
 
-            # Agent reconnected — clear any disconnect tag (best-effort)
-            if agent_connected:
-                if ec2_instance_id:
-                    reconnected_ec2_ids.append(ec2_instance_id)
-                continue
-
-            # Agent is disconnected — check EC2 state to decide what to do
+            # EC2 state decides first — a terminated EC2 is a ghost even
+            # if the ECS agent still briefly reports as connected.
             if not ec2_instance_id:
-                # No EC2 mapping at all — deregister immediately
                 ghost_instances.append(
                     {
                         "container_instance_arn": container_instance_arn,
                         "ec2_instance_id": ec2_instance_id,
-                        "reason": "Disconnected agent with no EC2 instance mapping",
+                        "reason": "Container instance has no EC2 mapping",
                         "status": status,
                     }
                 )
                 continue
 
-            if ec2_instance_id:
-                try:
-                    ec2_response = ec2.describe_instances(InstanceIds=[ec2_instance_id])
-                    if ec2_response["Reservations"]:
-                        instance = ec2_response["Reservations"][0]["Instances"][0]
-                        instance_state = instance["State"]["Name"]
+            instance_state = ec2_state_by_id.get(ec2_instance_id)
+            if instance_state is None:
+                ghost_instances.append(
+                    {
+                        "container_instance_arn": container_instance_arn,
+                        "ec2_instance_id": ec2_instance_id,
+                        "reason": "EC2 instance does not exist",
+                        "status": status,
+                    }
+                )
+                continue
 
-                        # EC2 is dead → deregister immediately
-                        if instance_state in [
-                            InstanceState.STOPPED,
-                            InstanceState.TERMINATED,
-                            InstanceState.SHUTTING_DOWN,
-                        ]:
-                            ghost_instances.append(
-                                {
-                                    "container_instance_arn": container_instance_arn,
-                                    "ec2_instance_id": ec2_instance_id,
-                                    "reason": f"EC2 instance is {instance_state}",
-                                    "status": status,
-                                }
-                            )
-                            continue
+            if instance_state in [
+                InstanceState.STOPPED,
+                InstanceState.TERMINATED,
+                InstanceState.SHUTTING_DOWN,
+            ]:
+                ghost_instances.append(
+                    {
+                        "container_instance_arn": container_instance_arn,
+                        "ec2_instance_id": ec2_instance_id,
+                        "reason": f"EC2 instance is {instance_state}",
+                        "status": status,
+                    }
+                )
+                continue
 
-                        # EC2 is running but agent disconnected — apply grace period
-                        tags = {t["Key"]: t["Value"] for t in instance.get("Tags", [])}
-                        first_seen = tags.get(_DISCONNECT_TAG_KEY)
+            # EC2 is alive. Agent connected → clear any disconnect tag.
+            if agent_connected:
+                reconnected_ec2_ids.append(ec2_instance_id)
+                continue
 
-                        if not first_seen:
-                            now_str = datetime.now(timezone.utc).isoformat()
-                            print(
-                                f"Agent disconnected on {ec2_instance_id}, "
-                                f"starting grace period"
-                            )
-                            ec2.create_tags(
-                                Resources=[ec2_instance_id],
-                                Tags=[
-                                    {
-                                        "Key": _DISCONNECT_TAG_KEY,
-                                        "Value": now_str,
-                                    }
-                                ],
-                            )
-                            continue
+            # EC2 alive + agent disconnected — apply grace period.
+            tags = ec2_tags_by_id.get(ec2_instance_id, {})
+            first_seen = tags.get(_DISCONNECT_TAG_KEY)
 
-                        # Tag exists — check if grace period has elapsed
-                        try:
-                            first_seen_dt = datetime.fromisoformat(first_seen)
-                        except (ValueError, TypeError):
-                            first_seen_dt = datetime.now(timezone.utc)
+            if not first_seen:
+                now_str = datetime.now(timezone.utc).isoformat()
+                print(
+                    f"Agent disconnected on {ec2_instance_id}, "
+                    f"starting grace period"
+                )
+                ec2.create_tags(
+                    Resources=[ec2_instance_id],
+                    Tags=[
+                        {
+                            "Key": _DISCONNECT_TAG_KEY,
+                            "Value": now_str,
+                        }
+                    ],
+                )
+                continue
 
-                        elapsed = (
-                            datetime.now(timezone.utc) - first_seen_dt
-                        ).total_seconds()
+            try:
+                first_seen_dt = datetime.fromisoformat(first_seen)
+            except (ValueError, TypeError):
+                first_seen_dt = datetime.now(timezone.utc)
 
-                        if elapsed < _AGENT_DISCONNECT_GRACE_SECONDS:
-                            print(
-                                f"Agent disconnected on {ec2_instance_id} "
-                                f"for {int(elapsed)}s, within grace period"
-                            )
-                            continue
+            elapsed = (datetime.now(timezone.utc) - first_seen_dt).total_seconds()
 
-                        ghost_instances.append(
-                            {
-                                "container_instance_arn": container_instance_arn,
-                                "ec2_instance_id": ec2_instance_id,
-                                "reason": (
-                                    f"ECS agent disconnected for "
-                                    f"{int(elapsed)}s (grace period "
-                                    f"{_AGENT_DISCONNECT_GRACE_SECONDS}s)"
-                                ),
-                                "status": status,
-                            }
-                        )
-                        continue
+            if elapsed < _AGENT_DISCONNECT_GRACE_SECONDS:
+                print(
+                    f"Agent disconnected on {ec2_instance_id} "
+                    f"for {int(elapsed)}s, within grace period"
+                )
+                continue
 
-                except Exception as e:
-                    if "InvalidInstanceID" in str(e):
-                        ghost_instances.append(
-                            {
-                                "container_instance_arn": container_instance_arn,
-                                "ec2_instance_id": ec2_instance_id,
-                                "reason": "EC2 instance does not exist",
-                                "status": status,
-                            }
-                        )
-                        continue
-                    raise
+            ghost_instances.append(
+                {
+                    "container_instance_arn": container_instance_arn,
+                    "ec2_instance_id": ec2_instance_id,
+                    "reason": (
+                        f"ECS agent disconnected for "
+                        f"{int(elapsed)}s (grace period "
+                        f"{_AGENT_DISCONNECT_GRACE_SECONDS}s)"
+                    ),
+                    "status": status,
+                }
+            )
 
         # Clear disconnect tags on instances whose agents have reconnected
         if reconnected_ec2_ids:
