@@ -79,6 +79,9 @@ LOCK_TIMEOUT_SECONDS = 60
 # Wait before first migration attempt to let instances boot
 MIGRATION_INITIAL_DELAY_SECONDS = 60
 
+STANDBY_READINESS_TIMEOUT_SECONDS = 120
+STANDBY_READINESS_RETRY_INTERVAL_SECONDS = 10
+
 
 def generate_routing_id(uid: str, secret_key: str) -> str:
     """Generate non-reversible routing ID from UID using HMAC-SHA256
@@ -1752,7 +1755,9 @@ def start_standby_instance(instance_id: str):
         # needed here.
 
         if not check_instance_readiness_with_retry(
-            instance_id, max_wait_seconds=120, retry_interval=10
+            instance_id,
+            max_wait_seconds=STANDBY_READINESS_TIMEOUT_SECONDS,
+            retry_interval=STANDBY_READINESS_RETRY_INTERVAL_SECONDS,
         ):
             print(
                 f"Standby instance {instance_id} started but ECS task "
@@ -2839,8 +2844,8 @@ def assign_premium_user(
                         # Wait for ECS task readiness before returning
                         if check_instance_readiness_with_retry(
                             existing_instance_id,
-                            max_wait_seconds=120,
-                            retry_interval=10,
+                            max_wait_seconds=STANDBY_READINESS_TIMEOUT_SECONDS,
+                            retry_interval=STANDBY_READINESS_RETRY_INTERVAL_SECONDS,
                         ):
                             print(
                                 f"Restarted instance {existing_instance_id} "
