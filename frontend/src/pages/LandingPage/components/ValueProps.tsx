@@ -46,12 +46,12 @@ const valueProps: ValueProp[] = [
     color: "GREEN",
   },
   {
-    icon: "public",
-    title: "Share & Collaborate",
+    icon: "replay",
+    title: "Reproducibility",
     description:
-      "Share workspaces, publish analysis results, and let other " +
-      "labs reproduce your exact methods. Grow a community " +
-      "around comparable science.",
+      "Publish workflows alongside results so other labs can re-run " +
+      "your exact pipeline on their own data\u2014turning reproducibility " +
+      "from an aspiration into a workflow.",
     color: "YELLOW",
   },
 ]
@@ -60,7 +60,7 @@ export const ValueProps = () => {
   return (
     <ValuePropsSection>
       <Container>
-        <SectionTitle>Why Choose OptiNiSt</SectionTitle>
+        <SectionTitle>Why Choose Araya OptiNiSt</SectionTitle>
         <SectionSubtitle>
           Everything you need to go from raw data to publishable insights,
           without writing a single line of code.
