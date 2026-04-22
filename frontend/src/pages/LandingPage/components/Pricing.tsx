@@ -58,7 +58,7 @@ export const Pricing = () => {
         </SectionHeader>
 
         <FreeCard>
-          <FreeBadge>Free Trial</FreeBadge>
+          <FreeBadge>Free Usage</FreeBadge>
           <FreeTitle>Free</FreeTitle>
           <FreePriceRow>
             <FreePrice>$0</FreePrice>
@@ -85,8 +85,7 @@ export const Pricing = () => {
         </FreeCard>
 
         <PremiumNote>
-          Need more?{" "}
-          <PremiumStrong>Premium</PremiumStrong> adds{" "}
+          Need more? <PremiumStrong>Premium</PremiumStrong> adds{" "}
           {premiumHighlights.join(", ")}.{" "}
           <PremiumLink onClick={() => navigate("/subscription")}>
             Compare plans &rarr;
