@@ -18,6 +18,9 @@ import { routingService } from "utils/routing/RoutingService"
 interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
   _retry?: boolean
   _retryWithoutPremium?: boolean
+  _hadPremiumHeaders?: boolean
+  _outgoingRoutingId?: string
+  _premiumSentAt?: number
 }
 
 const axios = axiosLibrary.create({
@@ -47,6 +50,13 @@ axios.interceptors.request.use(
     if (!(config as CustomAxiosRequestConfig)._retryWithoutPremium) {
       const routingHeaders = routingService.getRoutingHeaders()
       Object.assign(config.headers!, routingHeaders)
+      const outgoingRoutingId = routingHeaders[RoutingHeaders.ROUTING_ID]
+      if (outgoingRoutingId) {
+        ;(config as CustomAxiosRequestConfig)._hadPremiumHeaders = true
+        ;(config as CustomAxiosRequestConfig)._outgoingRoutingId =
+          outgoingRoutingId
+        ;(config as CustomAxiosRequestConfig)._premiumSentAt = Date.now()
+      }
     }
 
     // Check whether the access is to public output data (HTTP header setting)
@@ -217,11 +227,20 @@ const handlePremiumRoutingError = async (
   // Clear premiumAssigned so subsequent requests don't keep sending
   // stale routing headers that cause repeated 503s.
   routingService.setPremiumAssigned(false)
+  routingService.emitPremiumUnreachable({
+    url: originalRequest.url,
+    status: error.response?.status,
+    sentAt: originalRequest._premiumSentAt,
+  })
 
   const retryConfig = { ...originalRequest }
   delete retryConfig.headers[RoutingHeaders.USER_TIER]
   delete retryConfig.headers[RoutingHeaders.ROUTING_ID]
   retryConfig._retryWithoutPremium = true
+  // Strip premium markers — retry is shared-tier, must not emit reachable.
+  delete retryConfig._hadPremiumHeaders
+  delete retryConfig._outgoingRoutingId
+  delete retryConfig._premiumSentAt
 
   try {
     // eslint-disable-next-line no-console
@@ -242,6 +261,20 @@ axios.interceptors.response.use(
     const routingId = res.headers[routingIdHeader]
     if (routingId) {
       routingService.updateRoutingToken(routingId)
+    }
+
+    // Rotated routing_id means a different instance served us — inconclusive about the one we probed.
+    const cfg = res.config as CustomAxiosRequestConfig | undefined
+    if (cfg?._hadPremiumHeaders) {
+      const rotated =
+        typeof routingId === "string" && routingId !== cfg._outgoingRoutingId
+      if (!rotated) {
+        routingService.emitPremiumReachable({
+          url: cfg.url,
+          status: res.status,
+          sentAt: cfg._premiumSentAt,
+        })
+      }
     }
     return res
   },

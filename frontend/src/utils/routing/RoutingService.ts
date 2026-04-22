@@ -38,6 +38,25 @@ export interface PremiumAssignmentResult {
   scaling_in_progress?: boolean
 }
 
+export interface PremiumUnreachableDetail {
+  url?: string
+  status?: number
+  // Timestamp of when the request was sent — listeners use it to drop failures that predate a newer success.
+  sentAt?: number
+}
+
+export type PremiumUnreachableListener = (
+  detail: PremiumUnreachableDetail,
+) => void
+
+export interface PremiumReachableDetail {
+  url?: string
+  status?: number
+  sentAt?: number
+}
+
+export type PremiumReachableListener = (detail: PremiumReachableDetail) => void
+
 export class RoutingService {
   private routingInfo: RoutingInfo | null = null
   private routingToken: string | null = null
@@ -48,6 +67,8 @@ export class RoutingService {
   private readonly STORAGE_KEY = "routing_id"
   private readonly TIER_STORAGE_KEY = "routing_tier"
   private readonly PREMIUM_ASSIGNED_KEY = "premium_assigned"
+  private unreachableListeners: Set<PremiumUnreachableListener> = new Set()
+  private reachableListeners: Set<PremiumReachableListener> = new Set()
 
   constructor() {
     // Load token and tier from localStorage on initialization
@@ -137,6 +158,43 @@ export class RoutingService {
    */
   isPremiumAssigned(): boolean {
     return this.premiumAssigned
+  }
+
+  // Pure notifier — telemetry lives in listeners so tests can emit without side effects.
+  onPremiumUnreachable(listener: PremiumUnreachableListener): () => void {
+    this.unreachableListeners.add(listener)
+    return () => {
+      this.unreachableListeners.delete(listener)
+    }
+  }
+
+  emitPremiumUnreachable(detail: PremiumUnreachableDetail): void {
+    this.unreachableListeners.forEach((listener) => {
+      try {
+        listener(detail)
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("Premium-unreachable listener threw:", e)
+      }
+    })
+  }
+
+  onPremiumReachable(listener: PremiumReachableListener): () => void {
+    this.reachableListeners.add(listener)
+    return () => {
+      this.reachableListeners.delete(listener)
+    }
+  }
+
+  emitPremiumReachable(detail: PremiumReachableDetail): void {
+    this.reachableListeners.forEach((listener) => {
+      try {
+        listener(detail)
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("Premium-reachable listener threw:", e)
+      }
+    })
   }
 
   /**

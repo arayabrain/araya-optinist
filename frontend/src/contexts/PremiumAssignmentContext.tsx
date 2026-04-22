@@ -29,6 +29,11 @@ import {
 } from "api/premium/PremiumAssignmentApi"
 import { BASE_URL } from "const/API"
 import { PlanName, SubscriptionStatus } from "const/Subscription"
+import { shouldPoll } from "contexts/premium/unreachableMachine"
+import {
+  InstanceUnreachableHandle,
+  useInstanceUnreachableMachine,
+} from "contexts/premium/useInstanceUnreachableMachine"
 import { useSleepDetection } from "hooks/useSleepDetection"
 import { selectLogoutGeneration } from "store/slice/User/UserSelector"
 import { RootState } from "store/store"
@@ -97,6 +102,7 @@ interface PremiumAssignmentState {
   isPremiumUser: boolean
   showInactivityWarning: boolean
   lastActivityTime: number
+  // Orthogonal to instanceUnreachable — same 503 can set both; they are not redundant.
   heartbeatFailing: boolean
 }
 
@@ -108,6 +114,7 @@ interface PremiumAssignmentContextType extends PremiumAssignmentState {
   autoReleaseOnLogout: () => void
   dismissInactivityWarning: () => void
   recordActivity: () => Promise<void>
+  unreachable: InstanceUnreachableHandle
 }
 
 const PremiumAssignmentContext =
@@ -175,6 +182,11 @@ export const PremiumAssignmentProvider: React.FC<{
   const lastActivityTimeRef = useRef(state.lastActivityTime)
   const showInactivityWarningRef = useRef(state.showInactivityWarning)
 
+  const unreachable = useInstanceUnreachableMachine({
+    assignment: state.assignmentResult,
+    isTabLeader,
+  })
+
   // Calculate premium user status
   const isPremiumUser =
     currentUser?.subscription_plan_name === PlanName.PREMIUM &&
@@ -210,6 +222,7 @@ export const PremiumAssignmentProvider: React.FC<{
         lastActivityTime: Date.now(),
         heartbeatFailing: false,
       })
+      unreachable.reset()
       hasAttemptedRef.current = false
       ssRemove(SS_HAS_ATTEMPTED)
       ssRemove(SS_POLL_ATTEMPTS)
@@ -395,6 +408,8 @@ export const PremiumAssignmentProvider: React.FC<{
         assignmentResult: null,
         statusResult: null,
       }))
+      // Defensive — covers refs outside the reducer that the hook's mirror effect doesn't touch.
+      unreachable.reset()
 
       routingService.setPremiumAssigned(false)
       // Notify other tabs about premium release
@@ -407,7 +422,7 @@ export const PremiumAssignmentProvider: React.FC<{
       setState((prev) => ({ ...prev, isReleasing: false }))
       return { released: true, message: "Release completed with warnings" }
     }
-  }, [])
+  }, [unreachable])
 
   /**
    * Get current status
@@ -680,18 +695,16 @@ export const PremiumAssignmentProvider: React.FC<{
     }
   }, [state.assignmentResult?.is_shared])
 
-  // Poll for premium instance when user is on temporary shared instance
-  // Only the leader tab polls to prevent duplicate API calls
+  // Poll runs while unreachable so a backend reassignment is caught; a poll result alone never clears unreachable (only a real response does).
   useEffect(() => {
-    const hasDedicated =
-      state.assignmentResult?.assigned && !state.assignmentResult?.is_shared
-    const shouldPoll =
-      isPremiumUser &&
-      isTabLeader &&
-      state.assignmentResult != null &&
-      !hasDedicated
-
-    if (!shouldPoll) {
+    if (
+      !shouldPoll(
+        isPremiumUser,
+        isTabLeader,
+        state.assignmentResult,
+        unreachable.state.instanceUnreachable,
+      )
+    ) {
       return
     }
 
@@ -718,16 +731,17 @@ export const PremiumAssignmentProvider: React.FC<{
         if (result.assigned && !result.is_shared) {
           // eslint-disable-next-line no-console
           console.log("Premium instance now available:", result.instance_id)
+          // The hook clears unreachable on an instance_id change; same-id is a no-op — reachability must come from a real response.
           setState((prev) => ({
             ...prev,
             assignmentResult: result,
             error: null,
             isRetryableError: false,
           }))
-          // Reset polling state on success
           setPollInterval(INITIAL_POLL_INTERVAL_MS)
           setPollAttempts(0)
         } else {
+          setState((prev) => ({ ...prev, assignmentResult: result }))
           // eslint-disable-next-line no-console
           console.warn(
             "Still on temporary instance, will retry with backoff...",
@@ -754,6 +768,7 @@ export const PremiumAssignmentProvider: React.FC<{
     isPremiumUser,
     isTabLeader,
     state.assignmentResult,
+    unreachable.state.instanceUnreachable,
     pollInterval,
     pollAttempts,
   ])
@@ -787,6 +802,7 @@ export const PremiumAssignmentProvider: React.FC<{
     autoReleaseOnLogout,
     dismissInactivityWarning,
     recordActivity,
+    unreachable,
   }
 
   return (

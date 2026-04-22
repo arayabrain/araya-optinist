@@ -7,7 +7,7 @@
 - **ALB rule matching** routes premium users to dedicated instances via `X-Routing-ID` and `X-User-Tier` headers
 - **Backend validation** regenerates routing IDs from JWT and rejects mismatches with 403
 - **Immediate tier changes** via webhook-triggered cache invalidation (no TTL delay)
-- **503 fallback** automatically retries on free tier when premium instance is unavailable
+- **503 fallback** automatically retries on free tier when premium instance is unavailable, and raises a user-visible warning plus a half-open circuit that re-probes the instance for recovery
 
 ---
 
@@ -71,9 +71,11 @@ sequenceDiagram
 | Validate routing ID | Yes - Compare header vs JWT | No | No |
 | Create ALB rules | No | Yes - Exclusive | No |
 | Cache routing headers | No | No | Yes - localStorage |
-| Gate header sending | No | No | Yes - `premiumAssigned` flag |
+| Gate header sending | No | No | Yes - `premiumAssigned` flag (re-armed by circuit breaker during unreachable recovery) |
 | Invalidate tier cache | Yes - Via `invalidate_user_tier_cache()` | No | No |
-| 503 fallback to free | No | No | Yes - Strip headers and retry |
+| 503 fallback to free | No | No | Yes - Strip headers, retry, emit `premiumUnreachable` event |
+| Detect instance recovery | No | No | Yes - Half-open probe + `premiumReachable` event |
+| Surface degraded state | No | No | Yes - Warning snackbar with terminal retry action |
 
 ---
 
@@ -118,12 +120,14 @@ sequenceDiagram
 - `updateRoutingToken()` - Stores backend-issued routing ID from response headers
 - `isPremiumAssigned()` - Gate: headers only sent when backend confirms instance availability
 - `clearRoutingInfo()` - Clears all routing data on logout
+- `onPremiumUnreachable()` / `emitPremiumUnreachable()` - Listener pool notified when an outgoing premium-routed request fails
+- `onPremiumReachable()` / `emitPremiumReachable()` - Listener pool notified when an outgoing premium-routed request succeeds without routing-ID rotation
 
 **File:** `frontend/src/utils/axios.ts`
 
-- Request interceptor adds routing headers (skipped if `_retryWithoutPremium` is set)
-- Response interceptor captures `x-routing-id` from backend responses
-- `handlePremiumRoutingError()` - On 503: strips routing headers, retries on free tier
+- Request interceptor adds routing headers (skipped if `_retryWithoutPremium` is set) and tags the request with `_hadPremiumHeaders`, `_outgoingRoutingId`, `_premiumSentAt` for the response-side correlation
+- Response interceptor captures `x-routing-id` from backend responses and emits `premiumReachable` for premium-tagged successes where the routing ID did not rotate (rotation means a different instance served the retry, which is inconclusive about the probed instance)
+- `handlePremiumRoutingError()` - On 503: strips routing headers, retries on free tier, emits `premiumUnreachable` on the original (pre-retry) request
 
 ---
 
@@ -157,12 +161,20 @@ sequenceDiagram
 
 ### 4. Premium Instance Unavailable (503)
 
-**Problem:** Premium instance returns 503 or network error.
+**Problem:** Premium instance returns 503 or network error. Stripping the headers and retrying on the free tier would leave the user silently degraded with no UI signal and no recovery path -- the polling loop in `PremiumAssignmentContext` stops once the assignment is dedicated, so nothing re-checks the instance.
 
-**Solution:** Frontend fallback:
-- `handlePremiumRoutingError()` strips routing headers on 503 or network error
-- Sets `_retryWithoutPremium` flag to prevent infinite loops
-- Retries request on free tier
+**Solution:** Three-layer response -- fallback, observe, recover:
+
+- **Fallback.** `handlePremiumRoutingError()` strips routing headers, sets `_retryWithoutPremium` to prevent loops, and retries on the free tier. Markers (`_hadPremiumHeaders`, `_outgoingRoutingId`, `_premiumSentAt`) are deleted from the retry config so the free-tier retry cannot falsely emit `premiumReachable`.
+- **Observe.** Axios emits `premiumUnreachable` via `RoutingService`. `PremiumAssignmentContext` listens for it, transitions the dedicated assignment into a tracked unreachable state, logs `instance_unreachable`, broadcasts `PREMIUM_INSTANCE_UNREACHABLE` to peer tabs, and raises a warning snackbar through `PremiumNotificationManager`.
+- **Recover.** A half-open circuit arms a probe with exponential backoff (30 s -> 5 min, capped at `MAX_FAILED_PROBES = 5`). Each probe flips `premiumAssigned` back to `true` so the next real user-driven request carries premium headers. A 2xx with an unrotated routing ID emits `premiumReachable` and clears the state; a 5xx counts as a probe failure. Exhausting the probe budget marks the state terminal and swaps the snackbar to a "Retry" action that resets the budget without itself signalling recovery.
+
+**Edge behaviour pinned by the code:**
+
+- **Stale-failure watermark** -- failures whose send timestamp predates the last successful `premiumReachable` are suppressed so an in-flight 5xx cannot reopen an already-recovered state.
+- **Routing-ID rotation** -- if the response's routing ID differs from the one sent, the ALB served the retry from a different instance; reachability of the probed instance is inconclusive and no event fires.
+- **Cross-tab sync** -- state transitions broadcast via `crossTabSync` (`PREMIUM_INSTANCE_UNREACHABLE`, `PREMIUM_INSTANCE_REACHABLE`, `PREMIUM_INSTANCE_PROBE_UPDATE`). Peer handlers apply state locally and do not re-broadcast, preventing echo loops.
+- **Snapshot recovery** -- a freshly opened tab hydrates from a `localStorage` snapshot (`premium_unreachable_snapshot`, 1 h TTL) gated on `instance_id` match so a snapshot from a prior assignment cannot be adopted.
 
 ### 5. Logout Without Clearing Routing Data
 
@@ -219,4 +231,8 @@ openssl rand -hex 32
 | `getRoutingHeaders()` | `RoutingService.ts` | Return cached headers for requests |
 | `isPremiumAssigned()` | `RoutingService.ts` | Gate: only send headers when assigned |
 | `clearRoutingInfo()` | `RoutingService.ts` | Clear routing data on logout |
-| `handlePremiumRoutingError()` | `axios.ts` | 503 fallback to free tier |
+| `emitPremiumUnreachable()` | `RoutingService.ts` | Notify listeners that a premium-routed request failed |
+| `emitPremiumReachable()` | `RoutingService.ts` | Notify listeners that a premium-routed request succeeded without routing-ID rotation |
+| `onPremiumUnreachable()` / `onPremiumReachable()` | `RoutingService.ts` | Subscribe to the pools above (returns an unsubscribe function) |
+| `handlePremiumRoutingError()` | `axios.ts` | 503 fallback to free tier, emits `premiumUnreachable` |
+| `unreachableMachineReducer()` | `PremiumAssignmentContext.tsx` | State machine driving the degraded / probing / terminal lifecycle |
