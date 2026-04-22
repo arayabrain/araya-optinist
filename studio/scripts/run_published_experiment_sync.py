@@ -11,7 +11,7 @@ Usage:
 Cron example (every 5 minutes):
     */5 * * * * cd /path/to/optinist-for-cloud &&
     python studio/scripts/run_published_experiment_sync.py
-    >> /var/log/optinist/sync_job.log 2>&1
+    >> /var/log/araya-optinist/sync_job.log 2>&1
 """
 
 import asyncio

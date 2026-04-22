@@ -11,7 +11,7 @@ Usage:
 Cron example (every hour):
     0 * * * * cd /path/to/optinist-for-cloud &&
     python studio/scripts/run_storage_reconciliation.py
-    >> /var/log/optinist/reconciliation_job.log 2>&1
+    >> /var/log/araya-optinist/reconciliation_job.log 2>&1
 """
 
 import asyncio

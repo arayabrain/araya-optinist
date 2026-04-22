@@ -6,7 +6,7 @@ Add your algorithm
 :depth: 3
 ```
 
-Additional algorithms can be added to Araya-OptiNiSt Cloud on request. Delivery is greatly sped up if requests include code for new nodes. This guide explains the format for adding new nodes.
+Additional algorithms can be added to Araya OptiNiSt on request. Delivery is greatly sped up if requests include code for new nodes. This guide explains the format for adding new nodes.
 
 ## Example of Algorithm Addition Procedure
 

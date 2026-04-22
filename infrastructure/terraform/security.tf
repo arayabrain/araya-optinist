@@ -439,16 +439,16 @@ resource "aws_iam_role_policy" "ecs_instance_detailed_monitoring" {
   })
 }
 
-# IAM User for this OptiNiSt Cloud project (separate from other webapps)
-resource "aws_iam_user" "subscr_optinist_cloud_user" {
+# IAM User for this Araya OptiNiSt project (separate from other webapps)
+resource "aws_iam_user" "araya_optinist_cloud_user" {
   name = "${local.env_prefix}-cloud-user"
   path = "/"
 }
 
-# IAM Policy for this OptiNiSt Cloud User
-resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
+# IAM Policy for this Araya OptiNiSt User
+resource "aws_iam_policy" "araya_optinist_cloud_user_policy" {
   name        = "${local.env_prefix}-cloud-user-policy"
-  description = "Policy for this OptiNiSt Cloud project"
+  description = "Policy for this Araya OptiNiSt project"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -577,14 +577,14 @@ resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
 }
 
 # Attach policy to user
-resource "aws_iam_user_policy_attachment" "subscr_optinist_cloud_user_policy_attachment" {
-  user       = aws_iam_user.subscr_optinist_cloud_user.name
-  policy_arn = aws_iam_policy.subscr_optinist_cloud_user_policy.arn
+resource "aws_iam_user_policy_attachment" "araya_optinist_cloud_user_policy_attachment" {
+  user       = aws_iam_user.araya_optinist_cloud_user.name
+  policy_arn = aws_iam_policy.araya_optinist_cloud_user_policy.arn
 }
 
 # Create access key for the user
-resource "aws_iam_access_key" "subscr_optinist_cloud_user_access_key" {
-  user = aws_iam_user.subscr_optinist_cloud_user.name
+resource "aws_iam_access_key" "araya_optinist_cloud_user_access_key" {
+  user = aws_iam_user.araya_optinist_cloud_user.name
 }
 
 # S3 access for ECS tasks (scoped to app storage bucket)
@@ -963,8 +963,8 @@ resource "aws_secretsmanager_secret" "aws_credentials" {
 resource "aws_secretsmanager_secret_version" "aws_credentials" {
   secret_id = aws_secretsmanager_secret.aws_credentials.id
   secret_string = jsonencode({
-    AWS_ACCESS_KEY_ID     = aws_iam_access_key.subscr_optinist_cloud_user_access_key.id
-    AWS_SECRET_ACCESS_KEY = aws_iam_access_key.subscr_optinist_cloud_user_access_key.secret
+    AWS_ACCESS_KEY_ID     = aws_iam_access_key.araya_optinist_cloud_user_access_key.id
+    AWS_SECRET_ACCESS_KEY = aws_iam_access_key.araya_optinist_cloud_user_access_key.secret
   })
 }
 
@@ -1132,15 +1132,15 @@ locals {
 }
 
 # Generate SSH key pair
-resource "tls_private_key" "subscr_optinist_cloud_key" {
+resource "tls_private_key" "araya_optinist_cloud_key" {
   algorithm = "RSA"
   rsa_bits  = 2048
 }
 
 # Create AWS key pair
-resource "aws_key_pair" "subscr_optinist_cloud_key_pair" {
+resource "aws_key_pair" "araya_optinist_cloud_key_pair" {
   key_name   = local.key_name
-  public_key = tls_private_key.subscr_optinist_cloud_key.public_key_openssh # Fixed reference
+  public_key = tls_private_key.araya_optinist_cloud_key.public_key_openssh # Fixed reference
 
   tags = {
     Name = "${local.env_prefix}-cloud-key"
@@ -1149,7 +1149,7 @@ resource "aws_key_pair" "subscr_optinist_cloud_key_pair" {
 
 # Save private key to local file
 resource "local_file" "private_key" {
-  content         = tls_private_key.subscr_optinist_cloud_key.private_key_pem # Fixed reference
+  content         = tls_private_key.araya_optinist_cloud_key.private_key_pem # Fixed reference
   filename        = "${path.module}/${local.env_prefix}-cloud-private-key.pem"
   file_permission = "0400"
 }

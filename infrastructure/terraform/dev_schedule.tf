@@ -15,7 +15,7 @@
 #
 # Manual override (skip next scheduled stop):
 #   aws ssm put-parameter \
-#     --name /<env>/optinist/schedule-override \
+#     --name /<env>/araya-optinist/schedule-override \
 #     --value on --type String --overwrite
 #
 # Manual start (after-hours / weekends):
@@ -30,7 +30,7 @@
 resource "aws_ssm_parameter" "dev_schedule_override" {
   count = var.enable_dev_schedule ? 1 : 0
 
-  name  = "/${var.environment}/optinist/schedule-override"
+  name  = "/${var.environment}/araya-optinist/schedule-override"
   type  = "String"
   value = "off"
 
@@ -87,7 +87,7 @@ resource "aws_lambda_function" "dev_scheduler" {
       ASG_MAX_SIZE                  = tostring(var.asg_max_size)
       ASG_DESIRED_CAPACITY          = tostring(var.asg_desired_capacity)
       CLUSTER_NAME                  = aws_ecs_cluster.main.name
-      OVERRIDE_PARAM_NAME           = "/${var.environment}/optinist/schedule-override"
+      OVERRIDE_PARAM_NAME           = "/${var.environment}/araya-optinist/schedule-override"
       ALARM_PREFIX                  = "${var.environment}-"
       PREMIUM_MANAGER_FUNCTION_NAME = aws_lambda_function.premium_manager.function_name
       DEFAULT_STOP_MODE             = var.dev_schedule_stop_mode
@@ -294,7 +294,7 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
           "ssm:GetParameter",
           "ssm:PutParameter",
         ]
-        Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/optinist/schedule-override"
+        Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/araya-optinist/schedule-override"
       },
       # Invoke premium_manager to clean up dynamic instances before stop
       {
@@ -502,7 +502,7 @@ output "dev_schedule_info" {
     stop_time      = "22:00 JST (13:00 UTC) Mon-Fri"
     stop_mode      = var.dev_schedule_stop_mode
     weekends       = "Stopped (Fri 22:00 -> Mon 08:00 JST)"
-    override       = "aws ssm put-parameter --name /${var.environment}/optinist/schedule-override --value on --type String --overwrite"
+    override       = "aws ssm put-parameter --name /${var.environment}/araya-optinist/schedule-override --value on --type String --overwrite"
     manual_start   = "aws lambda invoke --function-name ${var.environment}-dev-scheduler --payload '{\"action\":\"start\"}' /dev/stdout"
     manual_stop    = "aws lambda invoke --function-name ${var.environment}-dev-scheduler --payload '{\"action\":\"stop\",\"stop_mode\":\"stop\"}' /dev/stdout"
     manual_destroy = "aws lambda invoke --function-name ${var.environment}-dev-scheduler --payload '{\"action\":\"stop\",\"stop_mode\":\"destroy\"}' /dev/stdout"

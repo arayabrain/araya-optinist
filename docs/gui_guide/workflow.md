@@ -388,7 +388,7 @@ Filtered data will be saved to the output NWB file once `RUN` has been performed
 (DirectorySettings)=
 ## Cloud Storage
 
-Araya-OptiNiSt Cloud stores your data in S3-backed cloud storage. You do not need to manage local directories.
+Araya OptiNiSt stores your data in S3-backed cloud storage. You do not need to manage local directories.
 
 To add data, upload files via the GUI by clicking the image icon on a data node. Choosing a folder makes all the TIFF files in the shown sequence an input set of continuous frames.
 

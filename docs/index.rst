@@ -1,13 +1,13 @@
 .. meta::
-   :description: Araya-OptiNiSt Cloud – a no-code cloud platform for calcium imaging data analysis. Build visual pipelines, ensure reproducibility, and collaborate with NWB-compatible workflows.
+   :description: Araya OptiNiSt – a no-code cloud platform for calcium imaging data analysis. Build visual pipelines, ensure reproducibility, and collaborate with NWB-compatible workflows.
    :keywords: OptiNiSt, Araya, calcium imaging, neuroscience, data analysis, no-code, NWB, Neurodata Without Borders, visual workflow, pipeline builder, ROI analysis, cloud computing, reproducible science, OIST, microscopy, open science
 
-Araya-OptiNiSt Cloud
+Araya OptiNiSt
 ==========================================
 
-**Araya-OptiNiSt Cloud** allows researchers to process and visualize their calcium imaging data entirely online. It was built by `Araya Inc. <https://www.araya.org/en/>`_ on top of `OptiNiSt <https://github.com/oist/optinist>`_, an open-source calcium imaging pipeline tool originally developed in collaboration with `OIST <https://www.oist.jp/>`_.
+**Araya OptiNiSt** allows researchers to process and visualize their calcium imaging data entirely online. It was built by `Araya Inc. <https://www.araya.org/en/>`_ on top of `OptiNiSt <https://github.com/oist/optinist>`_, an open-source calcium imaging pipeline tool originally developed in collaboration with `OIST <https://www.oist.jp/>`_.
 
-We believe in open, reproducible science and in making it easy to share results between labs. Araya-OptiNiSt Cloud is built around these principles:
+We believe in open, reproducible science and in making it easy to share results between labs. Araya OptiNiSt is built around these principles:
 
 - **Public Data Sharing**: Publish your experiments to the `public page <https://www.araya-optinist.com/public>`_, where anyone can view your results and reproduce your workflows without needing an account.
 - **Cloud Computing**: Run analysis pipelines on cloud infrastructure without managing local hardware.

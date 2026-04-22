@@ -134,7 +134,7 @@ All resources are tagged automatically via `default_tags`:
 | ------------- | ------------------------- | ----------------------------------------------------------- |
 | `Environment` | `subscr` or `development` | Identify which environment owns the resource                |
 | `ManagedBy`   | `terraform`               | Distinguish Terraform-managed vs manually-created resources |
-| `Project`     | `optinist-cloud`          | Filter across all OptiNiSt resources                        |
+| `Project`     | `araya-optinist`          | Filter across all Araya OptiNiSt resources                  |
 
 **Filter in AWS Console**: Use `Environment = development` to see only dev resources.
 

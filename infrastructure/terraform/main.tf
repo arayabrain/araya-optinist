@@ -6,7 +6,7 @@ provider "aws" {
     tags = {
       Environment = local.environment_label
       ManagedBy   = "terraform"
-      Project     = "optinist-cloud"
+      Project     = "araya-optinist"
     }
   }
 }
@@ -441,7 +441,7 @@ output "backend_config" {
 # Output the key information
 output "ssh_key_name" {
   description = "Name of the generated SSH key pair"
-  value       = aws_key_pair.subscr_optinist_cloud_key_pair.key_name
+  value       = aws_key_pair.araya_optinist_cloud_key_pair.key_name
 }
 
 output "ssh_private_key_path" {
@@ -455,14 +455,14 @@ output "ssh_command" {
 }
 
 # Output the access key credentials
-output "optinist_cloud_user_access_key_id" {
-  description = "Access Key ID for subscr-optinist-cloud-user"
-  value       = aws_iam_access_key.subscr_optinist_cloud_user_access_key.id
+output "araya_optinist_cloud_user_access_key_id" {
+  description = "Access Key ID for the araya-optinist IAM user"
+  value       = aws_iam_access_key.araya_optinist_cloud_user_access_key.id
 }
 
-output "optinist_cloud_user_secret_access_key" {
-  description = "Secret Access Key for subscr-optinist-cloud-user"
-  value       = aws_iam_access_key.subscr_optinist_cloud_user_access_key.secret
+output "araya_optinist_cloud_user_secret_access_key" {
+  description = "Secret Access Key for the araya-optinist IAM user"
+  value       = aws_iam_access_key.araya_optinist_cloud_user_access_key.secret
   sensitive   = true
 }
 

@@ -16,7 +16,7 @@ from datetime import datetime
 
 
 # -- Project information -----------------------------------------------------
-project = "Araya-OptiNiSt Cloud"
+project = "Araya OptiNiSt"
 copyright = f"{datetime.now().year}, Araya Inc., OIST"
 author = "Araya Inc."
 release = "1.1.4"

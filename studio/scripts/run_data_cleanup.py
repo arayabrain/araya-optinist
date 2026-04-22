@@ -10,7 +10,7 @@ Usage:
 
 Cron example (every hour):
     0 * * * * cd /path/to/optinist-for-cloud &&
-    python studio/scripts/run_data_cleanup.py >> /var/log/optinist/cleanup_job.log 2>&1
+    python studio/scripts/run_data_cleanup.py >> /var/log/araya-optinist/cleanup_job.log 2>&1
 """
 
 import asyncio

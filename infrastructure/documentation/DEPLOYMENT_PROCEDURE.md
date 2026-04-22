@@ -1,6 +1,6 @@
-# OptiNiSt Cloud Deployment Procedure
+# Araya OptiNiSt Deployment Procedure
 
-This document describes how to deploy OptiNiSt to AWS infrastructure. There are two deployment methods depending on your level of access.
+This document describes how to deploy Araya OptiNiSt to AWS infrastructure. There are two deployment methods depending on your level of access.
 
 **Production URL:** `https://araya-optinist.com`
 
