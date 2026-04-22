@@ -10,7 +10,6 @@ from studio.app.common import models as common_model
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.constants import (
     DeletionPriority,
-    SubscriptionPlanType,
     SubscriptionStatusType,
     SubscriptionUserStatus,
     SyncStatus,

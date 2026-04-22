@@ -21,10 +21,13 @@ class SubscriptionPlanResponse(BaseModel):
     status: bool = Field(..., description="True=Active, False=Inactive")
     created_at: datetime
     tier: str = Field(
-        ..., description="Plan tier (e.g., 'free', 'premium', 'enterprise')"
+        default="free",
+        description="Plan tier (e.g., 'free', 'premium', 'enterprise')",
     )
-    display_order: int = Field(..., description="Display order for UI sorting")
-    is_featured: bool = Field(..., description="Whether plan is featured in UI")
+    display_order: int = Field(default=0, description="Display order for UI sorting")
+    is_featured: bool = Field(
+        default=False, description="Whether plan is featured in UI"
+    )
     is_hidden: bool = Field(default=False, description="Whether plan is hidden from UI")
     stripe_price_id: Optional[str] = Field(
         None, description="Associated Stripe Price ID"

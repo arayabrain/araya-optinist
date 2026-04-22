@@ -26,9 +26,7 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionType,
 )
 from studio.app.common.core.subscription.stripe_service import StripeService
-from studio.app.common.core.subscription.subscription_service import (
-    SubscriptionService,
-)
+from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.core.workspace.workspace_services import WorkspaceService
 from studio.app.common.models import Role as RoleModel
@@ -85,9 +83,7 @@ def _user_context_query():
         select(
             UserModel,
             func.min(UserRoleModel.role_id),
-            func.coalesce(UserStorageUsage.storage_usage_bytes, 0).label(
-                "data_usage"
-            ),
+            func.coalesce(UserStorageUsage.storage_usage_bytes, 0).label("data_usage"),
             func.max(SubscriptionPlans.name).label("subscription_plan_name"),
             UserStorageUsage.storage_usage_bytes,
             UserStorageUsage.storage_quota_bytes,
@@ -98,9 +94,7 @@ def _user_context_query():
         .join(UserRoleModel, UserRoleModel.user_id == UserModel.id, isouter=True)
         .join(RoleModel, RoleModel.id == UserRoleModel.role_id, isouter=True)
         .outerjoin(UserSubscription, UserSubscription.user_id == UserModel.id)
-        .outerjoin(
-            SubscriptionPlans, SubscriptionPlans.id == UserSubscription.plan_id
-        )
+        .outerjoin(SubscriptionPlans, SubscriptionPlans.id == UserSubscription.plan_id)
         .outerjoin(UserStorageUsage, UserStorageUsage.user_id == UserModel.id)
     )
 
@@ -170,9 +164,7 @@ def _transform_user_row(item) -> UserModel:
             )
             user.__dict__["subscription_days_remaining"] = days_remaining
         elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
-            user.__dict__["subscription_status"] = (
-                SubscriptionStatus.LIMIT_GRACE.value
-            )
+            user.__dict__["subscription_status"] = SubscriptionStatus.LIMIT_GRACE.value
             user.__dict__["subscription_days_remaining"] = (
                 SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
             )  # Days left in grace period
@@ -265,7 +257,7 @@ async def list_user(
     options: UserSearchOptions,
     sortOptions: SortOptions,
 ):
-    """List users with pagination and full context including subscription/storage info."""
+    """List users with pagination and full context (subscription/storage info)."""
     try:
         sa_sort_list = sortOptions.get_sa_sort_list(
             sa_table=UserModel,

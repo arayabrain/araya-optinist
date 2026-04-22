@@ -85,6 +85,7 @@ def create_query_result(
     storage_quota_bytes=5_000_000_000,
     subscription_expiration=None,
     subscription_plan_id=None,
+    subscription_plan_tier=None,
 ):
     """Helper to create query result tuple"""
     return (
@@ -96,6 +97,7 @@ def create_query_result(
         storage_quota_bytes,
         subscription_expiration,
         subscription_plan_id,
+        subscription_plan_tier,
     )
 
 
