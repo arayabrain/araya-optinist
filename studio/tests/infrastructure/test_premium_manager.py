@@ -2711,7 +2711,60 @@ class TestCleanupGhostECSRegistrations:
             }
             mock_ec2.describe_instances.return_value = {
                 "Reservations": [
-                    {"Instances": [{"State": {"Name": "stopped"}, "Tags": []}]}
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-stopped1",
+                                "State": {"Name": "stopped"},
+                                "Tags": [],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_called_once_with(
+                cluster="test-cluster",
+                containerInstance=ci_arn,
+                force=True,
+            )
+
+    def test_deregisters_shutting_down_ec2_immediately(self, mock_env_vars_premium):
+        """Instance whose EC2 is shutting-down (the typical transient state
+        during the #549 race) gets deregistered with no grace."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/shutdown1"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "i-shutdown1",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-shutdown1",
+                                "State": {"Name": "shutting-down"},
+                                "Tags": [],
+                            }
+                        ]
+                    }
                 ]
             }
 
@@ -2747,7 +2800,15 @@ class TestCleanupGhostECSRegistrations:
             }
             mock_ec2.describe_instances.return_value = {
                 "Reservations": [
-                    {"Instances": [{"State": {"Name": "running"}, "Tags": []}]}
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-running1",
+                                "State": {"Name": "running"},
+                                "Tags": [],
+                            }
+                        ]
+                    }
                 ]
             }
 
@@ -2759,6 +2820,54 @@ class TestCleanupGhostECSRegistrations:
             mock_ec2.create_tags.assert_called_once()
             tag_call = mock_ec2.create_tags.call_args
             assert tag_call.kwargs["Resources"] == ["i-running1"]
+            assert tag_call.kwargs["Tags"][0]["Key"] == "optinist:agent-disconnected-at"
+
+    def test_pending_ec2_is_not_deregistered(self, mock_env_vars_premium):
+        """EC2 still booting (state=pending) is treated as alive — not in the
+        STOPPED/TERMINATED/SHUTTING_DOWN dead set. With agent disconnected
+        (not yet registered), the grace-period tag is started; deregister is
+        not called. Pins the alive-set boundary so a future "deregister
+        anything not running" tweak can't silently kill booting CIs."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/pending1"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "i-pending1",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-pending1",
+                                "State": {"Name": "pending"},
+                                "Tags": [],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_not_called()
+            mock_ec2.create_tags.assert_called_once()
+            tag_call = mock_ec2.create_tags.call_args
+            assert tag_call.kwargs["Resources"] == ["i-pending1"]
             assert tag_call.kwargs["Tags"][0]["Key"] == "optinist:agent-disconnected-at"
 
     def test_skips_within_grace_period(self, mock_env_vars_premium):
@@ -2788,6 +2897,7 @@ class TestCleanupGhostECSRegistrations:
                     {
                         "Instances": [
                             {
+                                "InstanceId": "i-grace1",
                                 "State": {"Name": "running"},
                                 "Tags": [
                                     {
@@ -2834,6 +2944,7 @@ class TestCleanupGhostECSRegistrations:
                     {
                         "Instances": [
                             {
+                                "InstanceId": "i-expired1",
                                 "State": {"Name": "running"},
                                 "Tags": [
                                     {
@@ -2874,6 +2985,19 @@ class TestCleanupGhostECSRegistrations:
                         "ec2InstanceId": "i-healthy1",
                         "agentConnected": True,
                         "status": "ACTIVE",
+                    }
+                ]
+            }
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-healthy1",
+                                "State": {"Name": "running"},
+                                "Tags": [],
+                            }
+                        ]
                     }
                 ]
             }
@@ -2918,7 +3042,20 @@ class TestCleanupGhostECSRegistrations:
             }
             mock_ec2.describe_instances.return_value = {
                 "Reservations": [
-                    {"Instances": [{"State": {"Name": "terminated"}, "Tags": []}]}
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-healthy",
+                                "State": {"Name": "running"},
+                                "Tags": [],
+                            },
+                            {
+                                "InstanceId": "i-ghost",
+                                "State": {"Name": "terminated"},
+                                "Tags": [],
+                            },
+                        ]
+                    }
                 ]
             }
 
@@ -2932,13 +3069,156 @@ class TestCleanupGhostECSRegistrations:
                 containerInstance=ghost_arn,
                 force=True,
             )
-            # EC2 describe only called for the disconnected instance
-            mock_ec2.describe_instances.assert_called_once_with(InstanceIds=["i-ghost"])
+            # describe_instances is batched across both IDs
+            mock_ec2.describe_instances.assert_called_once_with(
+                InstanceIds=["i-healthy", "i-ghost"]
+            )
             # Healthy instance's tag is cleared
             mock_ec2.delete_tags.assert_any_call(
                 Resources=["i-healthy"],
                 Tags=[{"Key": "optinist:agent-disconnected-at"}],
             )
+
+    def test_deregisters_connected_agent_when_ec2_terminated(
+        self, mock_env_vars_premium
+    ):
+        """Regression for #549: a CI reporting agentConnected=True is still
+        deregistered when its underlying EC2 has been terminated."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/term1"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "i-term1",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-term1",
+                                "State": {"Name": "terminated"},
+                                "Tags": [],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_called_once_with(
+                cluster="test-cluster",
+                containerInstance=ci_arn,
+                force=True,
+            )
+            # delete_tags fires once via the post-deregister cleanup, never as
+            # a "reconnect" tag-clear — the CI was not treated as healthy.
+            mock_ec2.delete_tags.assert_called_once_with(
+                Resources=["i-term1"],
+                Tags=[{"Key": "optinist:agent-disconnected-at"}],
+            )
+
+    def test_falls_back_to_per_id_describe_on_invalid_instance_id(
+        self, mock_env_vars_premium
+    ):
+        """When one EC2 ID is long-gone (past AWS's ~1h visibility window),
+        the batched describe_instances raises InvalidInstanceID.NotFound for
+        the whole call. The cleanup must fall back to per-ID describe so the
+        live CI is processed normally and the gone CI is deregistered via the
+        state=None branch, instead of the outer except swallowing the error
+        and skipping the entire cycle."""
+        from botocore.exceptions import ClientError
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            live_arn = "arn:aws:ecs:r:a:ci/live1"
+            gone_arn = "arn:aws:ecs:r:a:ci/gone1"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [live_arn, gone_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": live_arn,
+                        "ec2InstanceId": "i-live",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    },
+                    {
+                        "containerInstanceArn": gone_arn,
+                        "ec2InstanceId": "i-gone",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    },
+                ]
+            }
+
+            not_found = ClientError(
+                {
+                    "Error": {
+                        "Code": "InvalidInstanceID.NotFound",
+                        "Message": "The instance ID 'i-gone' does not exist",
+                    }
+                },
+                "DescribeInstances",
+            )
+
+            def describe_side_effect(**kwargs):
+                ids = kwargs["InstanceIds"]
+                if len(ids) > 1:
+                    raise not_found
+                if ids == ["i-live"]:
+                    return {
+                        "Reservations": [
+                            {
+                                "Instances": [
+                                    {
+                                        "InstanceId": "i-live",
+                                        "State": {"Name": "running"},
+                                        "Tags": [],
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                raise not_found
+
+            mock_ec2.describe_instances.side_effect = describe_side_effect
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            # Exactly the gone CI is deregistered; the live one is not.
+            mock_ecs.deregister_container_instance.assert_called_once_with(
+                cluster="test-cluster",
+                containerInstance=gone_arn,
+                force=True,
+            )
+            # One batch call + one per-ID call per original ID on fallback.
+            id_lists = [
+                c.kwargs["InstanceIds"]
+                for c in mock_ec2.describe_instances.call_args_list
+            ]
+            assert ["i-live", "i-gone"] in id_lists
+            assert ["i-live"] in id_lists
+            assert ["i-gone"] in id_lists
 
     def test_deregisters_disconnected_without_ec2_id(self, mock_env_vars_premium):
         """Container instance with disconnected agent and no ec2InstanceId
@@ -2972,4 +3252,38 @@ class TestCleanupGhostECSRegistrations:
                 force=True,
             )
             # No EC2 calls should be made
+            mock_ec2.describe_instances.assert_not_called()
+
+    def test_deregisters_connected_without_ec2_id(self, mock_env_vars_premium):
+        """CI with no ec2InstanceId is deregistered even when
+        agentConnected=True (the pre-#549 short-circuit treated any connected
+        agent as healthy regardless of EC2 mapping)."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/no-ec2-conn"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_called_once_with(
+                cluster="test-cluster",
+                containerInstance=ci_arn,
+                force=True,
+            )
             mock_ec2.describe_instances.assert_not_called()
