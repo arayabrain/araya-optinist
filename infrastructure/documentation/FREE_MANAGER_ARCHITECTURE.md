@@ -433,6 +433,14 @@ migrated regardless of last activity time.
 **Input:** `instance_id`
 **Output:** List of user IDs safe to migrate
 
+> **Terminology note.** "Idle" on the free tier means `active_workflow_count = 0`
+> -- a migration-safety check, not an activity cutoff. The premium tier uses
+> "idle" in four distinct senses (idle instance, idle premium user, idle /
+> stale assignment, idle browser tab), none of which match this definition.
+> See the "Disambiguation" section in
+> [PREMIUM_USER_ASSIGNMENT.md](./PREMIUM_USER_ASSIGNMENT.md) when reading
+> across both documents.
+
 #### get_users_per_instance()
 
 **File:** `infrastructure/terraform/free_manager_package/free_user_utils.py`
@@ -834,6 +842,12 @@ aws ecs describe-services \
 
 ## Comparison: Free Tier vs Premium Tier
 
+Detailed premium-side mechanics are in
+[PREMIUM_USER_ASSIGNMENT.md](./PREMIUM_USER_ASSIGNMENT.md)
+(5-tier assignment, standby pool, migration) and
+[PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md)
+(Manager vs Cleanup split, frontend lifecycle, log playbook).
+
 | Aspect | Free Tier | Premium Tier |
 |--------|-----------|--------------|
 | **Architecture** | Auto Scaling Group (ASG) | Individual EC2 instances |
@@ -844,6 +858,6 @@ aws ecs describe-services \
 | **Max Instances** | 10 (configurable) | Unlimited (cost-limited) |
 | **Cost Model** | Shared resources | Dedicated resources |
 | **Monitoring** | Every 5 minutes | Every 15 minutes |
-| **Migration** | Multi-instance rebalancing | Autoscaling pool -> dedicated |
+| **Migration** | Multi-instance rebalancing | 5-tier priority cascade; autoscaling pool → dedicated (see [Priority Matrix](./PREMIUM_USER_ASSIGNMENT.md#assignment-priority-matrix)) |
 | **Workflow Protection** | SQL-level (active_wf = 0) | User stays on dedicated instance |
 | **Post-Migration** | Experiment sync via internal API | N/A |

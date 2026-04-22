@@ -8,6 +8,13 @@
 - **Conservative scaling** keeps `max(1, active_users + 1)` instances running and requires `idle_instances >= 2` before stopping any
 - **Frontend integration** provides auto-assignment on login, inactivity monitoring (1h warning, 2h release), heartbeat-based activity tracking, and leader-tab polling while on a shared instance
 
+> **Sister document:**
+> This file focuses on the **system architecture** — Manager / Cleanup
+> Lambda split, frontend lifecycle, and operational diagnostics (log
+> playbook). For the **assignment flow** — 5-tier priority cascade,
+> standby pool, migration, and release paths — see
+> [PREMIUM_USER_ASSIGNMENT.md](./PREMIUM_USER_ASSIGNMENT.md).
+
 ---
 
 ## Key Architectural Principles
@@ -64,11 +71,11 @@ graph TB
     E --> H
     F --> H
 
-    style C fill:#90EE90
-    style D fill:#87CEEB
-    style J fill:#FFB6C1
-    style E fill:#DDA0DD
-    style F fill:#DDA0DD
+    style C fill:#90EE90,color:#1a1a1a
+    style D fill:#87CEEB,color:#1a1a1a
+    style J fill:#FFB6C1,color:#1a1a1a
+    style E fill:#DDA0DD,color:#1a1a1a
+    style F fill:#DDA0DD,color:#1a1a1a
 ```
 
 ### Key Constraints Satisfied
@@ -436,7 +443,7 @@ The `handler()` function routes events based on type:
 | `POST action=release` | `release_premium_user()` | User release |
 | `POST action=update_activity` | `handle_activity_update()` | Heartbeat/activity update |
 
-#### Scheduled Monitoring: `handle_scheduled_monitoring()`
+#### Scheduled Monitoring
 
 Runs every 15 minutes. Step numbering matches the comments in the source. Some step numbers (8, 10) bundle related sub-operations:
 
@@ -460,7 +467,7 @@ Runs every 15 minutes. Step numbering matches the comments in the source. Some s
 
 The scaling lock is always cleared in the `finally` block, even on error.
 
-#### scale_down_if_possible()
+#### Scale-Down (`scale_down_if_possible`)
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Scale down premium instances by stopping idle ones
@@ -483,6 +490,9 @@ Guards:
 - Only stops instances with ZERO assigned users
 - Deregisters from ECS before stopping to prevent ghost
   registrations
+
+> For the scale-up / scale-down asymmetry comparison, see
+> [PREMIUM_USER_ASSIGNMENT.md → 5. Scaling System (scale-up and scale-down)](./PREMIUM_USER_ASSIGNMENT.md#5-scaling-system-scale-up-and-scale-down).
 
 #### Terraform Configuration
 
@@ -689,14 +699,14 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 
 **Solution:** CloudWatch metrics-based locking:
 
-#### is_premium_scaling_in_progress()
+#### Scaling Lock Check (`is_premium_scaling_in_progress`)
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Check if a scaling operation is already running
 **Input:** None (reads CloudWatch metric)
 **Output:** True if lock set within last 15 minutes
 
-#### set_premium_scaling_lock()
+#### Scaling Lock Management (`set_premium_scaling_lock`)
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Set or clear the scaling lock via CloudWatch
@@ -717,7 +727,7 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 
 **Solution:** Premium Cleanup reconciliation:
 
-#### reconcile_instance_states()
+#### Instance State Reconciliation (`reconcile_instance_states`)
 
 **File:** `infrastructure/terraform/premium_cleanup_package/premium_cleanup.py`
 **Purpose:** Sync DB instance states with actual AWS states
@@ -781,7 +791,7 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 | `ActivePremiumUsers` | Users with active assignments | Count |
 | `IdlePremiumUsers` | Total premium users - active users | Count |
 | `RunningInstances` | EC2 instances in "running" state | Count |
-| `IdleInstances` | Running instances with 0 assignments | Count |
+| `IdleInstances` | Running instances with 0 assigned users (see [Idle instance](./PREMIUM_USER_ASSIGNMENT.md#idle-instance) in the Glossary) | Count |
 | `ScalingInProgress` | Lock to prevent concurrent operations | None (0 or 1) |
 
 **Namespace:** `OptiNiSt/PremiumManager/{env_prefix}` where `env_prefix` is the Terraform `environment` variable (e.g. `staging`, `prod`).
@@ -905,7 +915,9 @@ All resource names are prefixed with the Terraform `environment` variable (shown
 |---|---|
 | `handler()` | Main entry point, routes events by type |
 | `handle_scheduled_monitoring()` | 15-min monitoring cycle (10 operations) |
-| `scale_down_if_possible()` | Conservative scaling algorithm |
+| `scale_premium_instances_if_needed()` | Scale up by starting stopped or creating new instances when `running_count < active_users` |
+| `_create_running_instances_locked()` | Create running instances under distributed lock (called by `scale_premium_instances_if_needed()`) |
+| `scale_down_if_possible()` | Conservative scale-down: requires `running_count > max(1, active_users + 1)` AND `idle_instances >= 2` |
 | `update_premium_service_desired_count()` | Sync ECS desired count |
 | `assign_premium_user()` | Real-time user assignment (API) - 5-tier priority: dedicated > shared > standby > autoscaling pool > stopped > new |
 | `release_premium_user()` | Real-time user release (API) |
@@ -1145,6 +1157,11 @@ Displays a warning when premium users have been inactive for 1 hour.
 | `logPremiumUiEvent()` | POST /users/me/premium/ui-event | Fire-and-forget UI event log (CloudWatch timing correlation); errors swallowed |
 
 The browser-close path also calls `POST /users/me/premium/release-beacon` directly via `navigator.sendBeacon` -- it has no wrapper function since it must run without axios during `beforeunload`.
+
+> For the `X-Routing-ID` / `X-User-Tier` header protocol and the
+> backend generation/validation flow, see
+> [ALB_ROUTING_ARCHITECTURE.md](./ALB_ROUTING_ARCHITECTURE.md).
+> `getRoutingInfo()` in the table above is the frontend-side wrapper.
 
 ### Frontend Files Summary
 
