@@ -120,9 +120,26 @@ data "aws_ami" "ecs_optimized" {
   }
 }
 
+# Custom AMI from Image Builder (when enabled)
+# depends_on ensures the SSM parameter resource is created before this
+# data source tries to read it on first apply with use_custom_ami = true.
+data "aws_ssm_parameter" "custom_ami_id" {
+  count      = var.use_custom_ami ? 1 : 0
+  name       = "/${var.environment}/optinist/custom-ami-id"
+  depends_on = [aws_ssm_parameter.custom_ami_id]
+}
+
+locals {
+  effective_ami_id = (
+    var.use_custom_ami
+    ? data.aws_ssm_parameter.custom_ami_id[0].value
+    : data.aws_ami.ecs_optimized.id
+  )
+}
+
 resource "aws_launch_template" "ecs" {
   name_prefix   = "${local.env_prefix}-ecs-"
-  image_id      = data.aws_ami.ecs_optimized.id
+  image_id      = local.effective_ami_id
   instance_type = var.free_instance_type
   key_name      = aws_key_pair.subscr_optinist_cloud_key_pair.key_name
 
@@ -342,7 +359,7 @@ resource "aws_ecs_service" "premium" {
 # Premium Launch Template - Optimized for dedicated premium users
 resource "aws_launch_template" "premium" {
   name_prefix   = "${local.env_prefix}-premium-"
-  image_id      = data.aws_ami.ecs_optimized.id
+  image_id      = local.effective_ami_id
   instance_type = var.premium_instance_type
   key_name      = aws_key_pair.subscr_optinist_cloud_key_pair.key_name
 

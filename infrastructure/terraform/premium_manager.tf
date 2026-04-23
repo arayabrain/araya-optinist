@@ -397,11 +397,14 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
           }
         }
       },
-      # EC2 CreateTags (unrestricted — needed by RunInstances TagSpecifications)
+      # EC2 CreateTags (needed by RunInstances TagSpecifications for instances and volumes)
       {
-        Effect   = "Allow"
-        Action   = "ec2:CreateTags"
-        Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
+        Effect = "Allow"
+        Action = "ec2:CreateTags"
+        Resource = [
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:volume/*"
+        ]
       },
       # EC2 DeleteTags (scoped to ghost cleanup grace period tag only)
       {
