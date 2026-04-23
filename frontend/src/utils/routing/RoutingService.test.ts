@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from "@jest/globals"
+import { describe, test, expect, beforeEach, jest } from "@jest/globals"
 
 import { UserDTO } from "api/users/UsersApiDTO"
 import {
@@ -320,6 +320,108 @@ describe("RoutingService", () => {
       routingService.updateRoutingInfo(premiumUser)
 
       expect(routingService.isRoutingInfoStale()).toBe(false)
+    })
+  })
+
+  describe("premium-unreachable listeners", () => {
+    test("emit invokes every registered listener with the detail", () => {
+      const a = jest.fn()
+      const b = jest.fn()
+      routingService.onPremiumUnreachable(a)
+      routingService.onPremiumUnreachable(b)
+
+      routingService.emitPremiumUnreachable({ url: "/foo", status: 503 })
+
+      expect(a).toHaveBeenCalledWith({ url: "/foo", status: 503 })
+      expect(b).toHaveBeenCalledWith({ url: "/foo", status: 503 })
+    })
+
+    test("unsubscribe stops further invocations", () => {
+      const listener = jest.fn()
+      const unsubscribe = routingService.onPremiumUnreachable(listener)
+
+      routingService.emitPremiumUnreachable({ status: 502 })
+      unsubscribe()
+      routingService.emitPremiumUnreachable({ status: 503 })
+
+      expect(listener).toHaveBeenCalledTimes(1)
+    })
+
+    test("a throwing listener does not block the others", () => {
+      const good = jest.fn()
+      routingService.onPremiumUnreachable(() => {
+        throw new Error("boom")
+      })
+      routingService.onPremiumUnreachable(good)
+
+      routingService.emitPremiumUnreachable({ status: 503 })
+
+      expect(good).toHaveBeenCalled()
+    })
+  })
+
+  describe("premium-reachable listeners", () => {
+    test("emit invokes every registered listener with the detail", () => {
+      const a = jest.fn()
+      const b = jest.fn()
+      routingService.onPremiumReachable(a)
+      routingService.onPremiumReachable(b)
+
+      routingService.emitPremiumReachable({ url: "/foo", status: 200 })
+
+      expect(a).toHaveBeenCalledWith({ url: "/foo", status: 200 })
+      expect(b).toHaveBeenCalledWith({ url: "/foo", status: 200 })
+    })
+
+    test("unsubscribe stops further invocations", () => {
+      const listener = jest.fn()
+      const unsubscribe = routingService.onPremiumReachable(listener)
+
+      routingService.emitPremiumReachable({ status: 200 })
+      unsubscribe()
+      routingService.emitPremiumReachable({ status: 200 })
+
+      expect(listener).toHaveBeenCalledTimes(1)
+    })
+
+    test("a throwing listener does not block the others", () => {
+      const good = jest.fn()
+      routingService.onPremiumReachable(() => {
+        throw new Error("boom")
+      })
+      routingService.onPremiumReachable(good)
+
+      routingService.emitPremiumReachable({ status: 200 })
+
+      expect(good).toHaveBeenCalled()
+    })
+
+    test("reachable and unreachable listener pools are independent", () => {
+      const unreachable = jest.fn()
+      const reachable = jest.fn()
+      routingService.onPremiumUnreachable(unreachable)
+      routingService.onPremiumReachable(reachable)
+
+      routingService.emitPremiumUnreachable({ status: 503 })
+      expect(unreachable).toHaveBeenCalledTimes(1)
+      expect(reachable).not.toHaveBeenCalled()
+
+      routingService.emitPremiumReachable({ status: 200 })
+      expect(reachable).toHaveBeenCalledTimes(1)
+      expect(unreachable).toHaveBeenCalledTimes(1)
+    })
+
+    test("forwards sentAt on both event types", () => {
+      const reachable = jest.fn()
+      const unreachable = jest.fn()
+      routingService.onPremiumReachable(reachable)
+      routingService.onPremiumUnreachable(unreachable)
+
+      routingService.emitPremiumReachable({ status: 200, sentAt: 1111 })
+      routingService.emitPremiumUnreachable({ status: 503, sentAt: 2222 })
+
+      expect(reachable).toHaveBeenCalledWith({ status: 200, sentAt: 1111 })
+      expect(unreachable).toHaveBeenCalledWith({ status: 503, sentAt: 2222 })
     })
   })
 })

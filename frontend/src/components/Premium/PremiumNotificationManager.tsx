@@ -8,6 +8,8 @@ import { FC, useEffect, useRef, useState } from "react"
 
 import { useSnackbar } from "notistack"
 
+import { Button } from "@mui/material"
+
 import { logPremiumUiEvent } from "api/premium/PremiumAssignmentApi"
 import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 
@@ -19,7 +21,10 @@ const PremiumNotificationManager: FC = () => {
     error,
     isAssigning,
     isRetryableError,
+    unreachable,
   } = usePremiumAssignment()
+  const { instanceUnreachable, isUnreachableTerminal } = unreachable.state
+  const retryProbe = unreachable.retryProbe
 
   const [hasShownAssignmentSuccess, setHasShownAssignmentSuccess] =
     useState(false)
@@ -28,6 +33,9 @@ const PremiumNotificationManager: FC = () => {
 
   // Store keys for dismissible notifications
   const waitingKeyRef = useRef<string | number | null>(null)
+  const unreachableKeyRef = useRef<string | number | null>(null)
+  // Lets us detect a non-terminal → terminal transition to upgrade the message.
+  const unreachableTerminalShownRef = useRef(false)
 
   const hasDedicatedInstance =
     assignmentResult?.assigned && !assignmentResult?.is_shared
@@ -77,8 +85,7 @@ const PremiumNotificationManager: FC = () => {
     if (isPremiumUser && needsWaiting) {
       if (!waitingKeyRef.current) {
         const key = enqueueSnackbar(
-          "Please wait while your dedicated premium " +
-            "resource is being prepared.",
+          "Please wait while your dedicated premium resource is being prepared.",
           {
             variant: "info",
             persist: true,
@@ -130,8 +137,7 @@ const PremiumNotificationManager: FC = () => {
         }
 
         enqueueSnackbar(
-          "Premium assignment issue: " +
-            `${error}. Falling back to shared resources.`,
+          `Premium assignment issue: ${error}. Falling back to shared resources.`,
           {
             variant: "warning",
             autoHideDuration: 10000,
@@ -164,11 +170,85 @@ const PremiumNotificationManager: FC = () => {
     }
   }, [assignmentResult])
 
+  useEffect(() => {
+    const shouldShow =
+      isPremiumUser && hasDedicatedInstance && instanceUnreachable
+
+    const messageFor = (terminal: boolean): string =>
+      terminal
+        ? "Your dedicated premium instance is unresponsive after multiple attempts. Please reload the page or contact support."
+        : "Your dedicated premium instance is temporarily unreachable. Retrying…"
+
+    if (shouldShow) {
+      const variantChanged =
+        unreachableKeyRef.current != null &&
+        unreachableTerminalShownRef.current !== isUnreachableTerminal
+      if (variantChanged) {
+        closeSnackbar(unreachableKeyRef.current!)
+        unreachableKeyRef.current = null
+      }
+      if (!unreachableKeyRef.current) {
+        const terminal = isUnreachableTerminal
+        const key = enqueueSnackbar(messageFor(terminal), {
+          variant: "warning",
+          persist: true,
+          action: terminal
+            ? (snackbarKey) => (
+                <Button
+                  size="small"
+                  color="inherit"
+                  onClick={() => {
+                    closeSnackbar(snackbarKey)
+                    retryProbe()
+                  }}
+                >
+                  Retry
+                </Button>
+              )
+            : undefined,
+        })
+        unreachableKeyRef.current = key
+        unreachableTerminalShownRef.current = terminal
+        logPremiumUiEvent("instance_unreachable_popup_shown", {
+          instance_id: assignmentResult?.instance_id ?? null,
+          terminal,
+        })
+      }
+    }
+
+    // Dismiss whenever shouldShow goes false (recovered / non-dedicated / non-premium).
+    if (unreachableKeyRef.current && !shouldShow) {
+      logPremiumUiEvent("instance_unreachable_popup_dismissed", {
+        instance_id: assignmentResult?.instance_id ?? null,
+        reason: !isPremiumUser
+          ? "not_premium"
+          : !hasDedicatedInstance
+            ? "not_dedicated"
+            : "reachable",
+      })
+      closeSnackbar(unreachableKeyRef.current)
+      unreachableKeyRef.current = null
+      unreachableTerminalShownRef.current = false
+    }
+  }, [
+    isPremiumUser,
+    hasDedicatedInstance,
+    instanceUnreachable,
+    isUnreachableTerminal,
+    assignmentResult,
+    enqueueSnackbar,
+    closeSnackbar,
+    retryProbe,
+  ])
+
   // Cleanup waiting notification on unmount
   useEffect(() => {
     return () => {
       if (waitingKeyRef.current) {
         closeSnackbar(waitingKeyRef.current)
+      }
+      if (unreachableKeyRef.current) {
+        closeSnackbar(unreachableKeyRef.current)
       }
     }
   }, [closeSnackbar])

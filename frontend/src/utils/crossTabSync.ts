@@ -196,6 +196,9 @@ export type TabSyncMessageType =
   | "STORAGE_UPDATED"
   | "ALERT_DISMISSED"
   | "PREMIUM_RELEASED"
+  | "PREMIUM_INSTANCE_UNREACHABLE"
+  | "PREMIUM_INSTANCE_REACHABLE"
+  | "PREMIUM_INSTANCE_PROBE_UPDATE"
   | "LOGOUT"
 
 export interface TabSyncMessage {
