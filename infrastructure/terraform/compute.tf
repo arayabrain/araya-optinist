@@ -158,6 +158,18 @@ resource "aws_launch_template" "ecs" {
     }
   }
 
+  # Dedicated swap volume — mkswap on a block device takes <1 second
+  # vs ~4.5 minutes for dd-based swap file creation on root volume
+  block_device_mappings {
+    device_name = "/dev/xvds"
+    ebs {
+      volume_size           = 32
+      volume_type           = "gp3"
+      encrypted             = true
+      delete_on_termination = true
+    }
+  }
+
   monitoring {
     enabled = true
   }
@@ -174,6 +186,7 @@ resource "aws_launch_template" "ecs" {
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
     swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
+    swap_device_name      = "/dev/xvds"
   }))
   tag_specifications {
     resource_type = "instance"
@@ -378,6 +391,18 @@ resource "aws_launch_template" "premium" {
     }
   }
 
+  # Dedicated swap volume — mkswap on a block device takes <1 second
+  # vs ~4.5 minutes for dd-based swap file creation on root volume
+  block_device_mappings {
+    device_name = "/dev/xvds"
+    ebs {
+      volume_size           = 32
+      volume_type           = "gp3"
+      encrypted             = true
+      delete_on_termination = true
+    }
+  }
+
   monitoring {
     enabled = true
   }
@@ -394,6 +419,7 @@ resource "aws_launch_template" "premium" {
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
     swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
+    swap_device_name      = "/dev/xvds"
   }))
 
   tag_specifications {

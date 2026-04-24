@@ -51,22 +51,61 @@ fi
 # This provides a buffer before OOM killer activates, giving workflows
 # a chance to complete during temporary memory spikes
 SWAP_SIZE_MB=${swap_size_mb}  # Configurable per instance type (0 to skip)
+SWAP_DEVICE_NAME="${swap_device_name}"  # Dedicated swap EBS volume device (empty = use file-based swap)
 SWAP_FILE=/swapfile
+
 if [ "$SWAP_SIZE_MB" -gt 0 ]; then
     echo "$(date): Setting up swap space ($${SWAP_SIZE_MB}MB)"
-    if [ ! -f "$SWAP_FILE" ]; then
+
+    SWAP_TARGET=""
+
+    # Strategy 1: Dedicated EBS swap volume (instant, preferred)
+    if [ -n "$SWAP_DEVICE_NAME" ]; then
+        # On Nitro instances (t3, m5, etc.), /dev/xvds may appear as /dev/nvme*n1.
+        # Amazon Linux 2 ECS AMI creates symlinks via udev rules (ec2-utils).
+        if [ -b "$SWAP_DEVICE_NAME" ]; then
+            SWAP_TARGET="$SWAP_DEVICE_NAME"
+            echo "$(date): Found swap device at $SWAP_DEVICE_NAME"
+        else
+            echo "$(date): $SWAP_DEVICE_NAME not found, scanning NVMe devices..."
+            for nvme_dev in /dev/nvme*n1; do
+                [ -b "$nvme_dev" ] || continue
+                mapped_name=$(/sbin/ebsnvme-id -b "$nvme_dev" 2>/dev/null || true)
+                if [ "$mapped_name" = "$SWAP_DEVICE_NAME" ]; then
+                    SWAP_TARGET="$nvme_dev"
+                    echo "$(date): Found swap device at $nvme_dev (mapped from $SWAP_DEVICE_NAME)"
+                    break
+                fi
+            done
+        fi
+    fi
+
+    if [ -n "$SWAP_TARGET" ]; then
+        # Block device swap (instant setup - mkswap writes only a header)
+        mkswap "$SWAP_TARGET"
+        swapon "$SWAP_TARGET"
+        echo "$SWAP_TARGET swap swap defaults,nofail 0 0" >> /etc/fstab
+        echo "$(date): Block device swap setup complete ($SWAP_TARGET)"
+    elif [ ! -f "$SWAP_FILE" ]; then
+        # Fallback: file-based swap (slow, for tiers without dedicated swap volume)
+        echo "$(date): Using file-based swap fallback"
         dd if=/dev/zero of=$SWAP_FILE bs=1M count=$SWAP_SIZE_MB status=progress
         chmod 600 $SWAP_FILE
         mkswap $SWAP_FILE
         swapon $SWAP_FILE
         echo "$SWAP_FILE swap swap defaults 0 0" >> /etc/fstab
-        # Set low swappiness - only use swap under real memory pressure
-        echo "vm.swappiness=20" >> /etc/sysctl.conf
-        sysctl vm.swappiness=20
-        echo "$(date): Swap setup complete ($${SWAP_SIZE_MB}MB, swappiness=20)"
+        echo "$(date): File-based swap setup complete ($${SWAP_SIZE_MB}MB)"
     else
         echo "$(date): Swap file already exists"
+        swapon $SWAP_FILE 2>/dev/null || true
     fi
+
+    # Set low swappiness - only use swap under real memory pressure
+    if ! grep -q 'vm.swappiness' /etc/sysctl.conf; then
+        echo "vm.swappiness=20" >> /etc/sysctl.conf
+    fi
+    sysctl vm.swappiness=20
+    echo "$(date): Swap setup complete ($${SWAP_SIZE_MB}MB, swappiness=20)"
 else
     echo "$(date): Skipping swap setup (swap_size_mb=0)"
 fi
