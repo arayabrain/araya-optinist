@@ -152,7 +152,7 @@ resource "aws_launch_template" "ecs" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = 120
+      volume_size = 88 # Reduced from 120: 32 GB swap moved to dedicated volume
       volume_type = "gp3"
       encrypted   = true
     }
@@ -385,7 +385,7 @@ resource "aws_launch_template" "premium" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = 80
+      volume_size = 48 # Reduced from 80: 32 GB swap moved to dedicated volume
       volume_type = "gp3"
       encrypted   = true
     }
