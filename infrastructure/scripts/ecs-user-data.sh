@@ -88,13 +88,22 @@ if [ "$SWAP_SIZE_MB" -gt 0 ]; then
         echo "$(date): Block device swap setup complete ($SWAP_TARGET)"
     elif [ ! -f "$SWAP_FILE" ]; then
         # Fallback: file-based swap (slow, for tiers without dedicated swap volume)
-        echo "$(date): Using file-based swap fallback"
-        dd if=/dev/zero of=$SWAP_FILE bs=1M count=$SWAP_SIZE_MB status=progress
+        # If a dedicated swap device was expected but not found, use 1/4 size
+        # to avoid filling the reduced root volume.
+        FALLBACK_SIZE_MB=$SWAP_SIZE_MB
+        if [ -n "$SWAP_DEVICE_NAME" ]; then
+            FALLBACK_SIZE_MB=$((SWAP_SIZE_MB / 4))
+            echo "$(date): [CRITICAL] Swap device $SWAP_DEVICE_NAME not found — expected dedicated EBS volume is missing"
+            echo "$(date): [CRITICAL] Falling back to $${FALLBACK_SIZE_MB}MB file swap (1/4 of $${SWAP_SIZE_MB}MB) on root volume"
+        else
+            echo "$(date): Using file-based swap ($${FALLBACK_SIZE_MB}MB)"
+        fi
+        dd if=/dev/zero of=$SWAP_FILE bs=1M count=$FALLBACK_SIZE_MB status=progress
         chmod 600 $SWAP_FILE
         mkswap $SWAP_FILE
         swapon $SWAP_FILE
         echo "$SWAP_FILE swap swap defaults 0 0" >> /etc/fstab
-        echo "$(date): File-based swap setup complete ($${SWAP_SIZE_MB}MB)"
+        echo "$(date): File-based swap setup complete ($${FALLBACK_SIZE_MB}MB)"
     else
         echo "$(date): Swap file already exists"
         swapon $SWAP_FILE 2>/dev/null || true
