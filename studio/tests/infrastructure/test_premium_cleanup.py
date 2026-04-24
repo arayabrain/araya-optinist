@@ -1060,7 +1060,7 @@ class TestGetAllPremiumInstancesEnvFilter:
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": "production-premium-running",
+                                        "Value": "production-premium-dedicated",
                                     },
                                     {
                                         "Key": "Tier",

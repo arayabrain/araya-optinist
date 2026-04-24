@@ -908,8 +908,8 @@ def get_all_premium_instances_with_states():
 
             # Filter by environment prefix to prevent cross-environment
             # contamination. Instance Name tags follow the pattern:
-            # "{env_prefix}-premium-running" (e.g., "development-premium-running"
-            # vs "subscr-premium-running"). Reject instances whose Name tag
+            # "{env_prefix}-premium-dedicated" (e.g., "development-premium-dedicated"
+            # vs "subscr-premium-dedicated"). Reject instances whose Name tag
             # doesn't start with this Lambda's ENV_PREFIX, or that have no
             # Name tag at all (tagless instances cannot be verified as belonging
             # to this environment).

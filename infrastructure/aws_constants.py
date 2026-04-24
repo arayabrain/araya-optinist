@@ -142,8 +142,8 @@ class PremiumInstanceConfig:
     INSTANCE_TYPE_TAG = "Premium-Instance"
     # EC2 Service tag value for premium instances
     SERVICE_TAG = "premium-tier"
-    # Instance Name tag suffix (combined with env prefix: "{prefix}-premium-running")
-    INSTANCE_NAME_SUFFIX = "premium-running"
+    # Instance Name tag suffix (combined with env prefix: "{prefix}-premium-dedicated")
+    INSTANCE_NAME_SUFFIX = "premium-dedicated"
 
     @classmethod
     def get_env_prefix(cls) -> str:
@@ -163,7 +163,7 @@ class PremiumInstanceConfig:
     def get_instance_name(cls) -> str:
         """Get the EC2 Name tag value for new instances.
 
-        Returns e.g. 'development-premium-running' or 'subscr-premium-running'.
+        Returns e.g. 'development-premium-dedicated' or 'subscr-premium-dedicated'.
         """
         return f"{EnvironmentConfig.get_env_prefix()}-{cls.INSTANCE_NAME_SUFFIX}"
 

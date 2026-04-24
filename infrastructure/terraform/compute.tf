@@ -521,7 +521,7 @@ resource "aws_instance" "premium" {
   disable_api_termination = false
 
   tags = {
-    Name          = "${var.environment}-premium-${count.index + 1}"
+    Name          = "${var.environment}-premium-initial"
     Type          = "Premium-Instance"
     Service       = "premium-tier"
     Tier          = "premium"
