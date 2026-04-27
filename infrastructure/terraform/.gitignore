@@ -15,9 +15,17 @@ terraform.*
 # SSH private keys
 *.pem
 
-# Lambda deployment packages
+# Lambda deployment packages — _package/ dirs are pip-vendored artifact
+# zones; declared source files are re-included below.
 **/*.py.zip
 **/*_package/*
+!**/*_package/*.py
+!**/*_package/requirements.txt
+!**/*_package/README.md
+# Single-file artifacts the *.py allowlist would otherwise catch.
+**/*_package/aws_constants.py
+**/*_package/six.py
+**/*_package/typing_extensions.py
 **/agent_recovery_lambda.zip
 
 # AWS constants layer build artifacts

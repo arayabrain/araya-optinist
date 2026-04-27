@@ -208,7 +208,7 @@ resource "null_resource" "install_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
       mkdir -p ${path.module}/premium_manager_package
-      /usr/bin/python3 -m pip install pymysql -t ${path.module}/premium_manager_package/ --no-cache-dir
+      /usr/bin/python3 -m pip install -r ${path.module}/premium_manager_package/requirements.txt -t ${path.module}/premium_manager_package/ --no-cache-dir
       cp ${path.module}/../aws_constants.py ${path.module}/premium_manager_package/aws_constants.py
     EOT
   }
@@ -219,6 +219,7 @@ resource "null_resource" "install_dependencies" {
       filesha256("${path.module}/../../studio/app/common/core/premium/premium_assignment_service.py"),
       filesha256("${path.module}/../aws_constants.py")
     ]))
+    requirements_changes = filesha256("${path.module}/premium_manager_package/requirements.txt")
   }
 }
 
@@ -297,7 +298,7 @@ resource "aws_lambda_function" "premium_cleanup" {
 resource "null_resource" "install_cleanup_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
-      /usr/bin/python3 -m pip install pymysql -t ${path.module}/premium_cleanup_package/ --no-cache-dir
+      /usr/bin/python3 -m pip install -r ${path.module}/premium_cleanup_package/requirements.txt -t ${path.module}/premium_cleanup_package/ --no-cache-dir
       cp ${path.module}/../aws_constants.py ${path.module}/premium_cleanup_package/aws_constants.py
     EOT
   }
@@ -307,6 +308,7 @@ resource "null_resource" "install_cleanup_dependencies" {
       filesha256("${path.module}/premium_cleanup_package/premium_cleanup.py"),
       filesha256("${path.module}/../aws_constants.py")
     ]))
+    requirements_changes = filesha256("${path.module}/premium_cleanup_package/requirements.txt")
   }
 }
 
@@ -615,7 +617,7 @@ resource "null_resource" "install_cost_tracker_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
       mkdir -p ${path.module}/cost_tracker_package
-      /usr/bin/python3 -m pip install pymysql -t ${path.module}/cost_tracker_package/ --no-cache-dir
+      /usr/bin/python3 -m pip install -r ${path.module}/cost_tracker_package/requirements.txt -t ${path.module}/cost_tracker_package/ --no-cache-dir
       cp ${path.module}/../aws_constants.py ${path.module}/cost_tracker_package/aws_constants.py
     EOT
   }
@@ -625,6 +627,7 @@ resource "null_resource" "install_cost_tracker_dependencies" {
       filesha256("${path.module}/cost_tracker_package/cost_tracker.py"),
       filesha256("${path.module}/../aws_constants.py")
     ]))
+    requirements_changes = filesha256("${path.module}/cost_tracker_package/requirements.txt")
   }
 }
 
