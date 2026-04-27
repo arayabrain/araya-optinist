@@ -94,7 +94,7 @@ graph TB
 | Tier | Source | Wait Time | User Experience | Cost | Use Case | Reachability |
 |------|--------|-----------|-----------------|------|----------|--------------|
 | 1 | Dedicated Running | 0s | Best (exclusive) | Highest | Active user pool | Reachable |
-| 2 | Shared Instance | 0s | Good (shared) | Medium | Burst capacity | Reachable |
+| 2 | Shared Instance | 0s | Good (shared, migrates) | Medium | Burst capacity | Reachable |
 | 3 | Standby (Stopped) | 5-15s | Good (warming) | Low | Premium provisioning / re-login | Reachable |
 | 3.5 | Autoscaling Pool | 0s | Temporary (migrates) | Low | Last-resort fallback (no standby) | Reachable (always succeeds when reached -- see Precedence & Reachability Notes below) |
 | 4 | AWS Stopped | 60s-6min | Acceptable | Low | Defensive fallback | **Unreachable on the happy path** -- `register_orphaned_stopped_instances()` absorbs stopped instances into Tier 3 before the cascade runs |
@@ -830,8 +830,9 @@ are both untracked in the standby pool and unassigned to any user.
 ### 4. Shared-to-Dedicated Migration
 
 Migration moves users from shared assignments (`is_shared = true`) to
-dedicated instances (`is_shared = false`). It is triggered by three
-paths:
+dedicated instances (`is_shared = false`). Both Tier 2 (shared EC2) and
+Tier 3.5 (autoscaling pool) produce `is_shared = true` rows and are
+targets of this migration. It is triggered by three paths:
 
 | # | Path | Trigger | Timing |
 |---|---|---|---|
