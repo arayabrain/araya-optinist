@@ -294,6 +294,29 @@ Autoscaling Pool routes through the free-tier ASG target group. The toast
 copy collapses them, but infra-layer behaviour (scaling triggers, migration
 paths, routing) differs.
 
+### Shared assignment (`is_shared`)
+
+A **shared assignment** is a premium user assignment where the user is
+co-located on a real premium EC2 instance with one or more other premium
+users, or routed through the free-tier autoscaling pool. The state is
+recorded by `is_shared = true` in `premium_user_assignments` and is
+always **temporary** — the Background Migration System
+(`process_shared_instance_optimization()`) moves the user to a dedicated
+instance as soon as one becomes available.
+
+The `is_shared` column records the sharing state at assignment time
+(default: `false`). Its transitions are:
+
+| Transition | Function | Caller / trigger | Timing |
+|---|---|---|---|
+| Set to `false` (initial) | `store_user_assignment()` | Tier 1, 3, 4, 5 assignment (dedicated) | On-demand (user `/assign`) |
+| Set to `true` | `store_user_assignment()` | Tier 2 (shared) or Tier 3.5 (autoscaling pool) assignment | On-demand (user `/assign`) |
+| Set to `false` | `migrate_user_to_dedicated_instance()` | Migration to dedicated instance completes | Immediately after assign + every 15 min (monitor) |
+| Preserved | `restore_pending_release()` | Pending-release row resumed | On-demand (user `/assign`) |
+
+Unlike `is_standby` (which uses DELETE + INSERT and never updates
+in-place), `is_shared` transitions via ordinary UPDATE on the same row.
+
 ### Standby pool
 
 The **standby pool** is a set of stopped EC2 instances maintained solely to
@@ -620,11 +643,11 @@ There are **three** ways a standby placeholder row ever gets into
 `premium_user_assignments`. All three funnel through `store_user_assignment()`
 with `is_standby=True, user_id=NULL`.
 
-| # | Function | Caller / trigger | EC2 action | DB action |
-|---|---|---|---|---|
-| 1 | `create_and_stop_standby_instance()` | `handle_scheduled_monitoring()` replenish, and Tier 3 backfill immediately after a standby is consumed | `run_instances` → `stop_instances` (waits for stopped) | INSERT `is_standby=1, user_id=NULL, instance_state='stopped', target_group_arn='standby', alb_rule_arn='standby', standby_created_at=NOW()` |
-| 2 | `register_orphaned_stopped_instances()` | `handle_scheduled_monitoring()` step that runs after `scale_down_if_possible()` | None (only adopts an existing stopped EC2) | INSERT `is_standby=1, user_id=NULL, instance_state='stopped'` for every AWS-stopped premium instance with zero rows in `premium_user_assignments` |
-| 3 | `convert_idle_instances_to_standby_immediate()` | Called from inside `scale_down_if_possible()` -- the scheduled monitor path, and also runs when the last user releases on an instance | `deregister_from_ecs` → `stop_instances` (waits for stopped) | INSERT `is_standby=1, user_id=NULL, instance_state='stopped'` on the just-idled instance |
+| # | Function | Caller / trigger | Timing | EC2 action | DB action |
+|---|---|---|---|---|---|
+| 1 | `create_and_stop_standby_instance()` | `handle_scheduled_monitoring()` replenish, and Tier 3 backfill immediately after a standby is consumed | Every 15 min (replenish) + immediately (Tier 3 backfill) | `run_instances` → `stop_instances` (waits for stopped) | INSERT `is_standby=1, user_id=NULL, instance_state='stopped', target_group_arn='standby', alb_rule_arn='standby', standby_created_at=NOW()` |
+| 2 | `register_orphaned_stopped_instances()` | `handle_scheduled_monitoring()` step that runs after `scale_down_if_possible()` | Every `/assign` call + every 15 min | None (only adopts an existing stopped EC2) | INSERT `is_standby=1, user_id=NULL, instance_state='stopped'` for every AWS-stopped premium instance with zero rows in `premium_user_assignments` |
+| 3 | `convert_idle_instances_to_standby_immediate()` | Called from inside `scale_down_if_possible()` -- the scheduled monitor path, and also runs when the last user releases on an instance | Every 15 min (monitor) + immediately (on last-user release) | `deregister_from_ecs` → `stop_instances` (waits for stopped) | INSERT `is_standby=1, user_id=NULL, instance_state='stopped'` on the just-idled instance |
 
 The invariant is that the table never holds more than one `is_standby=1`
 row per `instance_id`: (1) and (3) create fresh rows, while (2) only
@@ -632,14 +655,14 @@ adopts instances that have no existing row at all.
 
 #### Exit paths: how an `is_standby = 1` row is consumed or removed
 
-| Path | Function | Caller / trigger | DB action | EC2 action |
-|---|---|---|---|---|
-| **Assigned** (Tier 3 happy path) | inline SQL inside `assign_premium_user()` Tier 3 | User `/assign` picks this standby | DELETE the `is_standby=1` row, then INSERT a new `is_standby=0` user row (the inline DELETE/INSERT lives in the Tier 3 block of `assign_premium_user()`) | `start_instances` (via `start_standby_instance()`) |
-| **Migrated** (displaces a standby for migration) | DELETE inside `try_reserve_instance_for_migration()` | `process_shared_instance_optimization()` picks this instance to relocate a shared / autoscaling-pool user | DELETE the `is_standby=1` row (inline DELETE inside `try_reserve_instance_for_migration()`), reservation row is inserted separately | `start_instances` (via `start_standby_instance()` from the migration path) |
-| **Terminated (aged)** | `terminate_aged_stopped_instances()` → `terminate_standby_instance()` | Scheduled monitor, hourly-style check | DELETE the row | `terminate_instances` |
-| **Terminated (excess)** | `cleanup_excess_standby_instances()` → `terminate_standby_instance()` | Scheduled monitor when `get_standby_count() > PREMIUM_STANDBY_POOL_SIZE`; selects **oldest `standby_created_at` first** | DELETE the row | `terminate_instances` |
-| **Cleaned up** | `cleanup_failed_standby_instances()` | Scheduled monitor, first standby step | DELETE the row | None (EC2 already gone from AWS; this is pure DB orphan cleanup) |
-| **Cleared** | `ensure_standby_pool_capacity()` [**Cleanup Lambda**] | Hourly cleanup schedule, when `standby_stopped > target_stopped` | UPDATE `is_standby = 0` on the oldest excess rows (ordered by `last_activity DESC` keep-the-newest) | None (row becomes a normal stopped-instance row; Manager will reclaim via scale-down) |
+| Path | Function | Caller / trigger | Timing | DB action | EC2 action |
+|---|---|---|---|---|---|
+| **Assigned** (Tier 3 happy path) | inline SQL inside `assign_premium_user()` Tier 3 | User `/assign` picks this standby | On-demand (user `/assign`) | DELETE the `is_standby=1` row, then INSERT a new `is_standby=0` user row (the inline DELETE/INSERT lives in the Tier 3 block of `assign_premium_user()`) | `start_instances` (via `start_standby_instance()`) |
+| **Migrated** (displaces a standby for migration) | DELETE inside `try_reserve_instance_for_migration()` | `process_shared_instance_optimization()` picks this instance to relocate a shared / autoscaling-pool user | On-demand (migration) | DELETE the `is_standby=1` row (inline DELETE inside `try_reserve_instance_for_migration()`), reservation row is inserted separately | `start_instances` (via `start_standby_instance()` from the migration path) |
+| **Terminated (aged)** | `terminate_aged_stopped_instances()` → `terminate_standby_instance()` | Scheduled monitor, hourly-style check | Every 15 min (monitor); age > `PREMIUM_STOPPED_MAX_AGE_HOURS` | DELETE the row | `terminate_instances` |
+| **Terminated (excess)** | `cleanup_excess_standby_instances()` → `terminate_standby_instance()` | Scheduled monitor when `get_standby_count() > PREMIUM_STANDBY_POOL_SIZE`; selects **oldest `standby_created_at` first** | Every 15 min (monitor) | DELETE the row | `terminate_instances` |
+| **Cleaned up** | `cleanup_failed_standby_instances()` | Scheduled monitor, first standby step | Every 15 min (monitor) | DELETE the row | None (EC2 already gone from AWS; this is pure DB orphan cleanup) |
+| **Cleared** | `ensure_standby_pool_capacity()` [**Cleanup Lambda**] | Hourly cleanup schedule, when `standby_stopped > target_stopped` | Hourly (Cleanup Lambda) | UPDATE `is_standby = 0` on the oldest excess rows (ordered by `last_activity DESC` keep-the-newest) | None (row becomes a normal stopped-instance row; Manager will reclaim via scale-down) |
 
 #### `convert_idle_instances_to_standby_immediate()`
 
@@ -800,6 +823,21 @@ ensure maximum standby availability. Only registers instances that
 are both untracked in the standby pool and unassigned to any user.
 
 ### 4. Background Migration System
+
+Migration moves users from shared assignments (`is_shared = true`) to
+dedicated instances (`is_shared = false`). It is triggered by three
+paths:
+
+| # | Path | Trigger | Timing |
+|---|---|---|---|
+| 1 | Async Lambda | `invoke_migration_async()` fired immediately after a Tier 2 or Tier 3.5 assignment | Immediately after `/assign` |
+| 2 | Scheduled monitor | `handle_scheduled_monitoring()` calls `process_shared_instance_optimization()` | Every 15 min |
+| 3 | Inline migration | `assign_premium_user()` Pre-assignment Step 2 — when a shared/autoscaling user re-calls `/assign`, an inline migration is attempted before falling back to path 1 | On-demand (user re-login) |
+
+All three paths converge on the same function:
+`process_shared_instance_optimization()` (paths 1 and 2) or its inline
+equivalent in `assign_premium_user()` (path 3). If no dedicated instance
+is ready, migration is deferred to the next trigger.
 
 #### process_shared_instance_optimization()
 
