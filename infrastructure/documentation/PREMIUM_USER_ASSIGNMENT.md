@@ -27,7 +27,7 @@
 2. **User Experience First**
    - Users get dedicated instance from standby pool when available (5-15s)
    - Falls back to autoscaling pool only when no standby instances exist
-   - Background migration to dedicated premium instance from shared/pool
+   - Async migration to dedicated premium instance from shared/pool
    - No user-visible delays or retry loops
 
 3. **Standby Pool Management**
@@ -60,7 +60,7 @@ graph TB
 
         C1 --> D[Create Target Group + ALB Rule]
         C2 --> E[Background Scaling Triggered]
-        C3 --> F[Background Scaling + Migration Queued]
+        C3 --> F[Scaling + Shared-to-Dedicated Migration Queued]
         C4 --> G[Replenish Standby Pool]
         C5 --> D
         C6 --> H[Wait for Instance Ready]
@@ -138,7 +138,7 @@ This document covers one Lambda -- the Premium Manager -- acting across several 
 | Real-time user assignment            | Assignment handler                            | `assign_premium_user()`, `try_reserve_instance()`, `store_user_assignment()`            |
 | Standby pool lifecycle               | Standby pool management                       | `create_and_stop_standby_instance()`, `start_standby_instance()`, `register_orphaned_stopped_instances()` |
 | Capacity scaling (up)                | Scaling system                                | `scale_premium_instances_if_needed()`, `_create_running_instances_locked()`             |
-| Shared-to-dedicated migration        | Background migration                          | `process_shared_instance_optimization()`, `migrate_user_to_dedicated_instance()`, `invoke_migration_async()` |
+| Shared-to-dedicated migration        | Shared-to-dedicated migration                 | `process_shared_instance_optimization()`, `migrate_user_to_dedicated_instance()`, `invoke_migration_async()` |
 | Concurrency / race prevention        | Locking                                       | `distributed_lock()` (MySQL `GET_LOCK`), `try_reserve_instance_transaction()` (`SELECT FOR UPDATE`), `is_creation_lock_held()` |
 | Scale-down + ghost / orphan cleanup  | Scheduled monitoring (see [PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md)) | `handle_scheduled_monitoring()`, [`scale_down_if_possible()`](./PREMIUM_MANAGER_ARCHITECTURE.md#scale-down-scale_down_if_possible) |
 | Stale assignment + ALB rule hygiene  | Premium Cleanup Lambda (separate)             | See [PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md)               |
@@ -221,11 +221,11 @@ sequenceDiagram
     end
 ```
 
-### Background Migration Flow
+### Shared-to-Dedicated Migration Flow
 
 ```mermaid
 graph TB
-    subgraph "Background Migration (invoke_migration_async)"
+    subgraph "Shared-to-Dedicated Migration (invoke_migration_async)"
         A[User on autoscaling-pool or shared] --> AA{Migration lock held?}
         AA -->|Yes| AB[Skip - another Lambda migrating]
         AA -->|No| B{Available dedicated instance?}
@@ -300,19 +300,24 @@ A **shared assignment** is a premium user assignment where the user is
 co-located on a real premium EC2 instance with one or more other premium
 users, or routed through the free-tier autoscaling pool. The state is
 recorded by `is_shared = true` in `premium_user_assignments` and is
-always **temporary** — the Background Migration System
+always **temporary** — the Shared-to-Dedicated Migration
 (`process_shared_instance_optimization()`) moves the user to a dedicated
 instance as soon as one becomes available.
 
 The `is_shared` column records the sharing state at assignment time
 (default: `false`). Its transitions are:
 
-| Transition | Function | Caller / trigger | Timing |
-|---|---|---|---|
-| Set to `false` (initial) | `store_user_assignment()` | Tier 1, 3, 4, 5 assignment (dedicated) | On-demand (user `/assign`) |
-| Set to `true` | `store_user_assignment()` | Tier 2 (shared) or Tier 3.5 (autoscaling pool) assignment | On-demand (user `/assign`) |
-| Set to `false` | `migrate_user_to_dedicated_instance()` | Migration to dedicated instance completes | Immediately after assign + every 15 min (monitor) |
-| Preserved | `restore_pending_release()` | Pending-release row resumed | On-demand (user `/assign`) |
+| Path | Value | Function | Caller / trigger | Timing |
+|---|---|---|---|---|
+| Creation (dedicated) | `→ false` | `store_user_assignment()` | Tier 1, 3, 4, 5 assignment | On-demand (user `/assign`) |
+| Creation (shared) | `→ true` | `store_user_assignment()` | Tier 2 or Tier 3.5 assignment | On-demand (user `/assign`) |
+| Migration | `true → false` | `migrate_user_to_dedicated_instance()` | Migration to dedicated instance completes | Immediately after assign + every 15 min (monitor) |
+| Pending-release resume | Preserved | `restore_pending_release()` | Pending-release row resumed | On-demand (user `/assign`) |
+
+> \* For Tier 1, `try_reserve_instance_transaction()` INSERTs a temporary
+> reservation row (`is_shared = 0`) before `store_user_assignment()`. This
+> row is DELETEd within the same Lambda invocation (see § Atomic Instance
+> Reservation).
 
 Unlike `is_standby` (which uses DELETE + INSERT and never updates
 in-place), `is_shared` transitions via ordinary UPDATE on the same row.
@@ -822,7 +827,7 @@ Called at the start of every `assign_premium_user()` invocation to
 ensure maximum standby availability. Only registers instances that
 are both untracked in the standby pool and unassigned to any user.
 
-### 4. Background Migration System
+### 4. Shared-to-Dedicated Migration
 
 Migration moves users from shared assignments (`is_shared = true`) to
 dedicated instances (`is_shared = false`). It is triggered by three
