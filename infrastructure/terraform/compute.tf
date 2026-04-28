@@ -152,9 +152,21 @@ resource "aws_launch_template" "ecs" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = 120
+      volume_size = 88 # Reduced from 120: 32 GB swap moved to dedicated volume
       volume_type = "gp3"
       encrypted   = true
+    }
+  }
+
+  # Dedicated swap volume — mkswap on a block device takes <1 second
+  # vs ~4.5 minutes for dd-based swap file creation on root volume
+  block_device_mappings {
+    device_name = "/dev/xvds"
+    ebs {
+      volume_size           = 32
+      volume_type           = "gp3"
+      encrypted             = true
+      delete_on_termination = true
     }
   }
 
@@ -174,6 +186,7 @@ resource "aws_launch_template" "ecs" {
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
     swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
+    swap_device_name      = "/dev/xvds"
   }))
   tag_specifications {
     resource_type = "instance"
@@ -372,9 +385,21 @@ resource "aws_launch_template" "premium" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = 80
+      volume_size = 48 # Reduced from 80: 32 GB swap moved to dedicated volume
       volume_type = "gp3"
       encrypted   = true
+    }
+  }
+
+  # Dedicated swap volume — mkswap on a block device takes <1 second
+  # vs ~4.5 minutes for dd-based swap file creation on root volume
+  block_device_mappings {
+    device_name = "/dev/xvds"
+    ebs {
+      volume_size           = 32
+      volume_type           = "gp3"
+      encrypted             = true
+      delete_on_termination = true
     }
   }
 
@@ -394,6 +419,7 @@ resource "aws_launch_template" "premium" {
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
     swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
+    swap_device_name      = "/dev/xvds"
   }))
 
   tag_specifications {

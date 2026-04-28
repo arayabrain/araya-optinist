@@ -2,7 +2,9 @@
 
 ## Executive Summary
 
-- **Custom AMI** eliminates ~5 minutes of package installation from every EC2 instance boot, reducing startup from ~8 minutes to ~2 minutes
+- **Custom AMI** eliminates ~5 minutes of package installation from every EC2 instance boot
+- **Dedicated swap EBS volume** eliminates ~4.5 minutes of swap file creation — `mkswap` on a block device takes <1 second vs `dd if=/dev/zero` writing 32GB at gp3 baseline throughput (125 MiB/s)
+- Combined effect: startup reduced from **~10 minutes to ~1 minute** (custom AMI + swap volume)
 - **Pre-baked packages** (yum packages, AWS CLI v2, Docker, CloudWatch agent) are installed once at AMI build time instead of on every first boot
 - **EC2 Image Builder** is used as the build pipeline — automated monthly rebuilds keep the AMI patched with security updates
 - **Bake marker** (`/etc/optinist-ami-baked`) lets the user-data script detect a pre-baked AMI and skip package installation at boot
@@ -63,8 +65,8 @@ graph TB
     subgraph "Instance Boot (Performance Impact)"
         M --> N[EC2 Instance Starts]
         N --> O{/etc/optinist-ami-baked?}
-        O -->|Exists| P[Skip Package Install<br/>~2 min total boot]
-        O -->|Not Found| Q[Full Package Install<br/>~8 min total boot]
+        O -->|Exists| P[Skip Package Install<br/>~1 min total boot]
+        O -->|Not Found| Q[Full Package Install<br/>~6 min total boot]
     end
 
     H -.->|Manual: update SSM| I
@@ -81,6 +83,7 @@ graph TB
 |---------|-------|---------------------|
 | Custom AMI selection at deploy time | Terraform local | `local.effective_ami_id` in `compute.tf` |
 | Bake-aware boot logic (skip packages) | User-data script | `ecs-user-data.sh` |
+| Swap volume (instant swap setup) | Launch template EBS | `block_device_mappings` `/dev/xvds` in `compute.tf` |
 | AMI ID storage | SSM Parameter Store | `/${environment}/optinist/custom-ami-id` |
 | AMI build orchestration | EC2 Image Builder pipeline | `image_builder.tf` |
 | Package installation (bake time) | Build component YAML | `optinist-packages.yml` |
@@ -147,6 +150,26 @@ fi
 - `mysql-client` removed — does not exist in Amazon Linux 2; `mysql` package provides the client binary
 - `awscli` v1 replaced — yum package no longer available in AL2 repos; standalone AWS CLI v2 installer used instead
 - `export PATH="/usr/local/bin:$PATH"` — required for pre-baked AMI because AWS CLI v2 installs to `/usr/local/bin`, which is not in the default PATH at user-data execution time
+
+**Swap setup optimization (dedicated EBS volume):**
+
+The original `dd if=/dev/zero of=/swapfile bs=1M count=32768` approach writes 32 GB of zeros to the root EBS volume. At gp3 baseline throughput (125 MiB/s), this takes ~4.5 minutes — the single largest boot-time bottleneck after package installation was eliminated by the custom AMI.
+
+`fallocate` was considered as a faster alternative (`fallocate -l 32G /swapfile` completes in <1 second) but is **not usable for swap on XFS**. The ECS-optimized AMI uses XFS for the root filesystem, and `fallocate` creates "unwritten extents" on XFS. The Linux kernel rejects swap files containing unwritten extents (`swapon` fails with `Invalid argument`). This is a kernel-level restriction, not a workaround-able limitation.
+
+The solution is a **dedicated EBS block device** for swap. `mkswap` on a raw block device writes only a swap header (a few KB), not the full 32 GB. The kernel treats the entire block device as swap space on demand. Since there is no filesystem involved, the unwritten-extents restriction does not apply.
+
+The swap section of `ecs-user-data.sh` uses a two-strategy approach:
+
+1. **Dedicated swap volume** (free and premium tiers): A 32GB gp3 EBS volume is attached at `/dev/xvds` via the launch template. The script runs `mkswap` + `swapon` on the block device, which takes <1 second (writes only a header). On Nitro instances (t3, m5, etc.), the device may appear as an NVMe path; the script falls back to `ebsnvme-id` scanning to locate the correct device.
+
+2. **File-based swap fallback** (background tier or instances without dedicated volume): Creates a swap file via `dd if=/dev/zero` on the root volume. Used for the background tier where 1.5GB swap takes only ~1 second to create.
+
+| Tier | Swap Method | Volume | Setup Time |
+|------|-------------|--------|------------|
+| Free | Block device | 32GB gp3 at `/dev/xvds` | <1 second |
+| Premium | Block device | 32GB gp3 at `/dev/xvds` | <1 second |
+| Background | File-based (dd) | 1.5GB on root volume | ~1 second |
 
 ### 3. Build Component (`optinist-packages.yml`)
 
@@ -401,30 +424,45 @@ If the custom AMI causes issues, revert to the stock ECS-optimized AMI:
 
 ### Verification Procedure
 
-After switching to a new custom AMI, verify on a newly launched instance:
+After switching to a new custom AMI, verify on a newly launched instance.
+
+**Log location note:** The user-data script (`ecs-user-data.sh`) redirects all output via `exec > /var/log/ecs-setup.log 2>&1`. Therefore, user-data output (package installation messages, bake marker detection, etc.) is found in `/var/log/ecs-setup.log`, **not** in `/var/log/cloud-init-output.log`.
 
 ```bash
 # 1. Confirm bake marker exists
 cat /etc/optinist-ami-baked
-# Expected: BAKED_DATE=..., BAKED_BY=ec2-image-builder, PACKAGES=...
+# Expected:
+#   BAKED_DATE=2026-04-21T11:16:57Z
+#   BAKED_BY=ec2-image-builder
+#   PACKAGES=amazon-ssm-agent,mysql,...
 
 # 2. Confirm user-data skipped package installation
 grep "Pre-baked AMI detected" /var/log/ecs-setup.log
 # Expected: "<timestamp>: Pre-baked AMI detected, skipping package installation"
 
-# 3. Verify AWS CLI v2
+# 3. Measure boot time (user-data execution time)
+systemd-analyze blame | head -5
+# cloud-final.service runs the user-data script.
+# Custom AMI + swap volume: ~1 min (packages skipped, block device swap)
+# Custom AMI + file swap:   ~5 min (packages skipped, dd-based swap)
+# Stock AMI + swap volume:  ~2 min (full yum install, block device swap)
+# Stock AMI + file swap:    ~6 min (full yum install, dd-based swap)
+
+# 4. Verify AWS CLI v2
 aws --version
 # Expected: aws-cli/2.x.x ...
 
-# 4. Verify packages
+# 5. Verify packages
 rpm -q amazon-ssm-agent amazon-efs-utils amazon-cloudwatch-agent git docker
 which mysql nc
 
-# 5. Check boot time improvement
-systemd-analyze blame | head -5
-# Expected: cloud-final.service < 2 min (vs ~8 min on stock AMI)
+# 6. Confirm swap is on dedicated block device (free/premium tiers)
+swapon --show
+# Expected: /dev/xvds (or /dev/nvmeXn1 on Nitro) as TYPE=partition
+grep "swap" /var/log/ecs-setup.log
+# Expected: "Block device swap setup complete"
 
-# 6. Confirm ECS agent registered
+# 7. Confirm ECS agent registered
 curl -s http://localhost:51678/v1/metadata | python -m json.tool
 # Expected: valid JSON with Cluster name matching expected cluster
 ```
@@ -506,6 +544,26 @@ PACKAGES=amazon-ssm-agent,mysql,...
 ```
 <timestamp>: Stock AMI detected, installing packages
 <timestamp>: Package installation complete
+```
+
+**Block device swap (dedicated EBS volume):**
+```
+<timestamp>: Found swap device at /dev/xvds
+<timestamp>: Block device swap setup complete (/dev/xvds)
+<timestamp>: Swap setup complete (32768MB, swappiness=20)
+```
+
+**Block device swap (NVMe fallback on Nitro instances):**
+```
+<timestamp>: /dev/xvds not found, scanning NVMe devices...
+<timestamp>: Found swap device at /dev/nvme1n1 (mapped from /dev/xvds)
+<timestamp>: Block device swap setup complete (/dev/nvme1n1)
+```
+
+**File-based swap fallback (background tier):**
+```
+<timestamp>: Using file-based swap fallback
+<timestamp>: File-based swap setup complete (1536MB)
 ```
 
 ---

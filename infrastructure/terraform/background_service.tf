@@ -50,6 +50,7 @@ resource "aws_launch_template" "background" {
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
     swap_size_mb          = 1536 # 2x task memory (768MB) for stable background job operation
+    swap_device_name      = ""   # File-based swap (1.5GB dd is fast, no dedicated volume needed)
   }))
 
   tag_specifications {
