@@ -1109,6 +1109,14 @@ from the backend cleanup timeout (3 hours). The frontend
 acts as the primary mechanism; the backend cleanup is a
 safety net.
 
+The `last_activity` column in `premium_user_assignments` is updated by:
+
+| # | Path | Function | Timing |
+|---|---|---|---|
+| 1 | Heartbeat API | `handle_activity_update()` → `update_user_activity_timestamp()` | On each `recordActivity()` call from frontend (user interaction / "Stay Active" click) |
+| 2 | API middleware | `_update_premium_user_activity_sync()` | On each authenticated API request from a premium user |
+| 3 | Schema default | `ON UPDATE CURRENT_TIMESTAMP` | Implicit; any row modification auto-updates the column |
+
 ### PremiumNotificationManager
 
 **File:** `frontend/src/components/Premium/PremiumNotificationManager.tsx`
