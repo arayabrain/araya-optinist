@@ -1492,6 +1492,8 @@ class TestGetAllPremiumInstances:
                                 "Tags": [
                                     {
                                         "Key": "Name",
+                                        # <env_prefix>-<INSTANCE_NAME_SUFFIX>
+                                        # see PremiumInstanceConfig
                                         "Value": "production-premium-dedicated",
                                     },
                                     {

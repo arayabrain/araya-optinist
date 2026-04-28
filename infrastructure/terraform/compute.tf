@@ -521,6 +521,9 @@ resource "aws_instance" "premium" {
   disable_api_termination = false
 
   tags = {
+    # Pre-provisioned at deploy time. Distinct from "premium-dedicated"
+    # instances which are dynamically created per user sign-in.
+    # See PremiumInstanceConfig.INSTANCE_NAME_SUFFIX in aws_constants.py.
     Name          = "${var.environment}-premium-initial"
     Type          = "Premium-Instance"
     Service       = "premium-tier"
