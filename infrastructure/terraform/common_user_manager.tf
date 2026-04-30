@@ -17,14 +17,16 @@
 resource "null_resource" "install_common_user_manager_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
-      mkdir -p ${path.module}/common_user_manager_package
-      /usr/bin/python3 -m pip install -r ${path.module}/common_user_manager_package/requirements.txt -t ${path.module}/common_user_manager_package/ --no-cache-dir
+      mkdir -p ${path.module}/common_user_manager_package && \
+      /usr/bin/python3 -m pip install -r ${path.module}/common_user_manager_package/requirements.txt -t ${path.module}/common_user_manager_package/ --no-cache-dir && \
+      touch ${path.module}/common_user_manager_package/.installed
     EOT
   }
 
   triggers = {
     code_changes         = filesha256("${path.module}/common_user_manager_package/common_user_manager.py")
     requirements_changes = filesha256("${path.module}/common_user_manager_package/requirements.txt")
+    installed_marker     = fileexists("${path.module}/common_user_manager_package/.installed") ? "present" : "missing"
   }
 }
 

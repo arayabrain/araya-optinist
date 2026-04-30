@@ -16,8 +16,9 @@
 resource "null_resource" "install_free_manager_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
-      mkdir -p ${path.module}/free_manager_package
-      /usr/bin/python3 -m pip install -r ${path.module}/free_manager_package/requirements.txt -t ${path.module}/free_manager_package/ --no-cache-dir
+      mkdir -p ${path.module}/free_manager_package && \
+      /usr/bin/python3 -m pip install -r ${path.module}/free_manager_package/requirements.txt -t ${path.module}/free_manager_package/ --no-cache-dir && \
+      touch ${path.module}/free_manager_package/.installed
     EOT
   }
 
@@ -27,6 +28,7 @@ resource "null_resource" "install_free_manager_dependencies" {
       filesha256("${path.module}/free_manager_package/free_user_utils.py")
     ]))
     requirements_changes = filesha256("${path.module}/free_manager_package/requirements.txt")
+    installed_marker     = fileexists("${path.module}/free_manager_package/.installed") ? "present" : "missing"
   }
 }
 
@@ -319,13 +321,15 @@ resource "aws_lambda_permission" "allow_asg_events_free_manager" {
 resource "null_resource" "install_free_cleanup_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
-      /usr/bin/python3 -m pip install -r ${path.module}/free_cleanup_package/requirements.txt -t ${path.module}/free_cleanup_package/ --no-cache-dir
+      /usr/bin/python3 -m pip install -r ${path.module}/free_cleanup_package/requirements.txt -t ${path.module}/free_cleanup_package/ --no-cache-dir && \
+      touch ${path.module}/free_cleanup_package/.installed
     EOT
   }
 
   triggers = {
     code_changes         = filesha256("${path.module}/free_cleanup_package/free_cleanup.py")
     requirements_changes = filesha256("${path.module}/free_cleanup_package/requirements.txt")
+    installed_marker     = fileexists("${path.module}/free_cleanup_package/.installed") ? "present" : "missing"
   }
 }
 

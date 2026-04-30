@@ -207,9 +207,10 @@ resource "aws_lambda_permission" "allow_eventbridge_ec2_state_change" {
 resource "null_resource" "install_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
-      mkdir -p ${path.module}/premium_manager_package
-      /usr/bin/python3 -m pip install -r ${path.module}/premium_manager_package/requirements.txt -t ${path.module}/premium_manager_package/ --no-cache-dir
-      cp ${path.module}/../aws_constants.py ${path.module}/premium_manager_package/aws_constants.py
+      mkdir -p ${path.module}/premium_manager_package && \
+      /usr/bin/python3 -m pip install -r ${path.module}/premium_manager_package/requirements.txt -t ${path.module}/premium_manager_package/ --no-cache-dir && \
+      cp ${path.module}/../aws_constants.py ${path.module}/premium_manager_package/aws_constants.py && \
+      touch ${path.module}/premium_manager_package/.installed
     EOT
   }
 
@@ -220,6 +221,7 @@ resource "null_resource" "install_dependencies" {
       filesha256("${path.module}/../aws_constants.py")
     ]))
     requirements_changes = filesha256("${path.module}/premium_manager_package/requirements.txt")
+    installed_marker     = fileexists("${path.module}/premium_manager_package/.installed") ? "present" : "missing"
   }
 }
 
@@ -298,8 +300,9 @@ resource "aws_lambda_function" "premium_cleanup" {
 resource "null_resource" "install_cleanup_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
-      /usr/bin/python3 -m pip install -r ${path.module}/premium_cleanup_package/requirements.txt -t ${path.module}/premium_cleanup_package/ --no-cache-dir
-      cp ${path.module}/../aws_constants.py ${path.module}/premium_cleanup_package/aws_constants.py
+      /usr/bin/python3 -m pip install -r ${path.module}/premium_cleanup_package/requirements.txt -t ${path.module}/premium_cleanup_package/ --no-cache-dir && \
+      cp ${path.module}/../aws_constants.py ${path.module}/premium_cleanup_package/aws_constants.py && \
+      touch ${path.module}/premium_cleanup_package/.installed
     EOT
   }
 
@@ -309,6 +312,7 @@ resource "null_resource" "install_cleanup_dependencies" {
       filesha256("${path.module}/../aws_constants.py")
     ]))
     requirements_changes = filesha256("${path.module}/premium_cleanup_package/requirements.txt")
+    installed_marker     = fileexists("${path.module}/premium_cleanup_package/.installed") ? "present" : "missing"
   }
 }
 
@@ -616,9 +620,10 @@ resource "aws_cloudwatch_log_metric_filter" "premium_assignments" {
 resource "null_resource" "install_cost_tracker_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
-      mkdir -p ${path.module}/cost_tracker_package
-      /usr/bin/python3 -m pip install -r ${path.module}/cost_tracker_package/requirements.txt -t ${path.module}/cost_tracker_package/ --no-cache-dir
-      cp ${path.module}/../aws_constants.py ${path.module}/cost_tracker_package/aws_constants.py
+      mkdir -p ${path.module}/cost_tracker_package && \
+      /usr/bin/python3 -m pip install -r ${path.module}/cost_tracker_package/requirements.txt -t ${path.module}/cost_tracker_package/ --no-cache-dir && \
+      cp ${path.module}/../aws_constants.py ${path.module}/cost_tracker_package/aws_constants.py && \
+      touch ${path.module}/cost_tracker_package/.installed
     EOT
   }
 
@@ -628,6 +633,7 @@ resource "null_resource" "install_cost_tracker_dependencies" {
       filesha256("${path.module}/../aws_constants.py")
     ]))
     requirements_changes = filesha256("${path.module}/cost_tracker_package/requirements.txt")
+    installed_marker     = fileexists("${path.module}/cost_tracker_package/.installed") ? "present" : "missing"
   }
 }
 
