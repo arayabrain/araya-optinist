@@ -907,12 +907,12 @@ def get_all_premium_instances_with_states():
             is_premium = name_match or tier_match or type_match
 
             # Filter by environment prefix to prevent cross-environment
-            # contamination. Instance Name tags follow the pattern:
-            # "{env_prefix}-premium-running" (e.g., "development-premium-running"
-            # vs "subscr-premium-running"). Reject instances whose Name tag
-            # doesn't start with this Lambda's ENV_PREFIX, or that have no
-            # Name tag at all (tagless instances cannot be verified as belonging
-            # to this environment).
+            # contamination. Instance Name tags follow the pattern
+            # "<env_prefix>-premium-*" (see PremiumInstanceConfig in
+            # aws_constants.py). Reject instances whose Name tag doesn't
+            # start with this Lambda's ENV_PREFIX, or that have no Name tag
+            # at all (tagless instances cannot be verified as belonging to
+            # this environment).
             if is_premium:
                 if not name_tag or not name_tag.lower().startswith(env_prefix.lower()):
                     print(

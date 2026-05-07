@@ -217,7 +217,8 @@ def _start_premium_instance(ec2_client, instance_id: str) -> bool:
 PREMIUM_LAUNCH_TEMPLATE_PREFIX = "subscr-optinist-premium-"
 PREMIUM_INSTANCE_TYPE = "t3.large"
 PREMIUM_INSTANCE_TAGS = [
-    {"Key": "Name", "Value": "subscr-premium-running"},
+    # Value: <env_prefix>-<INSTANCE_NAME_SUFFIX> (see PremiumInstanceConfig)
+    {"Key": "Name", "Value": "subscr-premium-dedicated"},
     {"Key": "Type", "Value": "Premium-Instance"},
     {"Key": "Tier", "Value": "premium"},
     {"Key": "Service", "Value": "premium-tier"},

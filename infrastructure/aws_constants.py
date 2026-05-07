@@ -142,8 +142,11 @@ class PremiumInstanceConfig:
     INSTANCE_TYPE_TAG = "Premium-Instance"
     # EC2 Service tag value for premium instances
     SERVICE_TAG = "premium-tier"
-    # Instance Name tag suffix (combined with env prefix: "{prefix}-premium-running")
-    INSTANCE_NAME_SUFFIX = "premium-running"
+    # Instance Name tag suffix for dynamically provisioned premium instances.
+    # Combined with env prefix: "<env_prefix>-<INSTANCE_NAME_SUFFIX>".
+    # Note: Terraform pre-provisions a separate "premium-initial" instance
+    # at deploy time — see compute.tf.
+    INSTANCE_NAME_SUFFIX = "premium-dedicated"
 
     @classmethod
     def get_env_prefix(cls) -> str:
@@ -154,7 +157,7 @@ class PremiumInstanceConfig:
     def get_instance_name_pattern(cls) -> str:
         """Get the EC2 Name tag wildcard pattern for this environment.
 
-        Returns e.g. 'development-premium-*' or 'subscr-premium-*'.
+        Returns '<env_prefix>-premium-*'.
         Used in AWS API tag:Name filters.
         """
         return f"{EnvironmentConfig.get_env_prefix()}-{cls.INSTANCE_IDENTIFIER}-*"
@@ -163,7 +166,7 @@ class PremiumInstanceConfig:
     def get_instance_name(cls) -> str:
         """Get the EC2 Name tag value for new instances.
 
-        Returns e.g. 'development-premium-running' or 'subscr-premium-running'.
+        Returns '<env_prefix>-<INSTANCE_NAME_SUFFIX>'.
         """
         return f"{EnvironmentConfig.get_env_prefix()}-{cls.INSTANCE_NAME_SUFFIX}"
 
