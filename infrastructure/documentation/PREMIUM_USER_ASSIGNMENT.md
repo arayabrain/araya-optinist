@@ -922,6 +922,11 @@ subscribers.
 - Always calls `invoke_migration_async()` and
   `update_premium_service_desired_count()` after scaling
 
+> For the full specification of `update_premium_service_desired_count()` —
+> desired count formula, boot grace period, call sites, and the rationale
+> for manual ECS control instead of Auto Scaling — see
+> [PREMIUM_MANAGER_ARCHITECTURE.md → ECS Service Desired Count Sync](./PREMIUM_MANAGER_ARCHITECTURE.md#ecs-service-desired-count-sync-update_premium_service_desired_count).
+
 #### Scale-down (`scale_down_if_possible`)
 
 Runs as step 5 of `handle_scheduled_monitoring()` (the 15-minute cycle).
@@ -1377,7 +1382,7 @@ Shared instance optimization complete: 1 users migrated
 | `scale_premium_instances_if_needed()` | Start stopped or create new instances |
 | `_create_running_instances_locked()` | Create running instances under lock |
 | `create_running_instance()` | Create and leave running for assignment |
-| `update_premium_service_desired_count()` | Sync ECS desired count |
+| `update_premium_service_desired_count()` | Sync ECS `desiredCount` (see [PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md#ecs-service-desired-count-sync-update_premium_service_desired_count)) |
 | `trigger_experiment_sync()` | Sync experiment metadata after migration |
 
 > For locking primitives (`distributed_lock()`, `try_reserve_instance_transaction()`, etc.)
