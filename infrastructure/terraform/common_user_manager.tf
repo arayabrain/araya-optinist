@@ -13,27 +13,31 @@
 # Common User Manager Lambda Package
 # ===========================
 
-# Install dependencies
 resource "null_resource" "install_common_user_manager_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
-      mkdir -p ${path.module}/common_user_manager_package && \
-      /usr/bin/python3 -m pip install -r ${path.module}/common_user_manager_package/requirements.txt -t ${path.module}/common_user_manager_package/ --no-cache-dir && \
-      touch ${path.module}/common_user_manager_package/.installed
+      rm -rf ${path.module}/.build/common_user_manager && \
+      mkdir -p ${path.module}/.build/common_user_manager && \
+      cp -p ${path.module}/common_user_manager_package/*.py ${path.module}/.build/common_user_manager/ && \
+      /usr/bin/python3 -m pip install -r ${path.module}/common_user_manager_package/requirements.txt -t ${path.module}/.build/common_user_manager --no-cache-dir && \
+      touch ${path.module}/.build/common_user_manager/.installed
     EOT
   }
 
   triggers = {
-    code_changes         = filesha256("${path.module}/common_user_manager_package/common_user_manager.py")
+    code_changes = sha256(join("", [
+      for f in fileset("${path.module}/common_user_manager_package", "*.py") :
+      filesha256("${path.module}/common_user_manager_package/${f}")
+    ]))
     requirements_changes = filesha256("${path.module}/common_user_manager_package/requirements.txt")
-    installed_marker     = fileexists("${path.module}/common_user_manager_package/.installed") ? "present" : "missing"
+    installed_marker     = fileexists("${path.module}/.build/common_user_manager/.installed") ? "present" : "missing"
   }
 }
 
 # Create ZIP using archive_file
 data "archive_file" "common_user_manager_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/common_user_manager_package"
+  source_dir  = "${path.module}/.build/common_user_manager"
   output_path = "${path.module}/common_user_manager.py.zip"
 
   depends_on = [null_resource.install_common_user_manager_dependencies]

@@ -15,22 +15,11 @@ terraform.*
 # SSH private keys
 *.pem
 
-# Lambda deployment packages — _package/ dirs are pip-vendored artifact
-# zones; tracked source files are re-included by explicit per-file rules.
+# Lambda deployment build artifacts. Source for each Lambda lives in
+# <lambda>_package/ alongside requirements.txt and README; pip-vendored
+# deps and the assembled ZIP staging area live under .build/<lambda>/.
+**/.build/
 **/*.py.zip
-**/*_package/*
-!**/*_package/requirements.txt
-!**/*_package/README.md
-!**/common_user_manager_package/common_user_manager.py
-!**/common_user_manager_package/test_common_user_manager.py
-!**/cost_tracker_package/cost_tracker.py
-!**/dev_scheduler_package/dev_scheduler.py
-!**/free_cleanup_package/free_cleanup.py
-!**/free_manager_package/free_manager.py
-!**/free_manager_package/free_user_utils.py
-!**/premium_cleanup_package/premium_cleanup.py
-!**/premium_manager_package/premium_manager.py
-!**/premium_manager_package/premium_user_utils.py
 **/agent_recovery_lambda.zip
 
 # AWS constants layer build artifacts
