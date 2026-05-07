@@ -494,6 +494,60 @@ Guards:
 > For the scale-up / scale-down asymmetry comparison, see
 > [PREMIUM_USER_ASSIGNMENT.md → 5. Scaling System (scale-up and scale-down)](./PREMIUM_USER_ASSIGNMENT.md#5-scaling-system-scale-up-and-scale-down).
 
+#### ECS Service Desired Count Sync (`update_premium_service_desired_count`)
+
+**File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
+**Purpose:** Keep the ECS service's `desiredCount` in sync with the actual
+number of premium EC2 instances that should be running ECS tasks.
+**Input:** None (reads state from ECS and EC2 APIs)
+**Output:** Calls `ecs.update_service()` when `desiredCount` diverges from the
+computed target; no-op when already in sync.
+**Calls:** `ecs.describe_services()` → `_list_premium_ecs_registered_ec2_ids()`
+→ `_list_premium_ec2_instances_running()` → `ecs.update_service()`
+
+**Why manual control instead of ECS Auto Scaling:**
+The premium tier uses Lambda-driven scaling (`scale_premium_instances_if_needed`,
+`scale_down_if_possible`) rather than ECS Application Auto Scaling. The ECS
+Auto Scaling target is commented out in `compute.tf`. Because EC2 instance
+start/stop decisions are made by the Lambda based on user assignment demand
+(not task-level metrics), the ECS service's `desiredCount` must be
+explicitly synchronized after every scaling action to match reality.
+
+**Desired count formula:**
+
+```
+desiredCount = registered_count + booting_count
+```
+
+| Component | Definition |
+|---|---|
+| `registered_count` | Number of EC2 instances currently registered as ECS container instances in the premium cluster (via `_list_premium_ecs_registered_ec2_ids()`) |
+| `booting_count` | Number of running premium EC2 instances that are **not yet** registered in ECS but were launched less than `ORPHAN_GRACE_PERIOD_MINUTES` (10 min) ago |
+
+The boot grace period prevents a race condition: when a stopped standby
+instance is started (Tier 3) or a new instance is created (Tier 5), there
+is a gap between the EC2 reaching `running` state and the ECS agent
+registering with the cluster. If `desiredCount` were dropped during this
+gap, ECS would cancel the pending task placement and never re-fire it once
+the agent registers — leaving the instance with no premium task and the
+user stuck on the waiting popup. The 10-minute grace is symmetric with
+`cleanup_orphaned_ec2_instances()`, which uses the same threshold before
+treating an unregistered instance as orphaned.
+
+**Call sites (5 locations):**
+
+| # | Caller | Context |
+|---|---|---|
+| 1 | `handle_scheduled_monitoring()` step 6 | After `scale_down_if_possible()` in the 15-min cycle |
+| 2 | `scale_down_if_possible()` | After stopping idle instances and converting to standby |
+| 3 | `scale_premium_instances_if_needed()` (success path) | After starting stopped instances or creating new ones |
+| 4 | `scale_premium_instances_if_needed()` (lock-held path) | When scaling was blocked by an existing lock |
+| 5 | `_handle_migrate_shared_users()` | Before each migration attempt in the retry loop, to ensure ECS has the correct task count for readiness checks |
+
+**Idempotency:** The function compares `running_premium_count` to the
+current `desiredCount` and only issues `update_service` when they differ,
+so repeated calls within the same cycle are safe.
+
 #### Terraform Configuration
 
 ```hcl
@@ -918,7 +972,7 @@ All resource names are prefixed with the Terraform `environment` variable (shown
 | `scale_premium_instances_if_needed()` | Scale up by starting stopped or creating new instances when `running_count < active_users` |
 | `_create_running_instances_locked()` | Create running instances under distributed lock (called by `scale_premium_instances_if_needed()`) |
 | `scale_down_if_possible()` | Conservative scale-down: requires `running_count > max(1, active_users + 1)` AND `idle_instances >= 2` |
-| `update_premium_service_desired_count()` | Sync ECS desired count |
+| `update_premium_service_desired_count()` | Sync ECS `desiredCount` to `registered + booting` instance count ([details](#ecs-service-desired-count-sync-update_premium_service_desired_count)) |
 | `assign_premium_user()` | Real-time user assignment (API) - 5-tier priority: dedicated > shared > standby > autoscaling pool > stopped > new |
 | `release_premium_user()` | Real-time user release (API) |
 | `handle_activity_update()` | Heartbeat/activity timestamp update (API) |
