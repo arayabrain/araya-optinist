@@ -47,12 +47,37 @@ resource "aws_ssm_parameter" "dev_schedule_override" {
 # ===========================
 # Lambda Package
 # ===========================
+resource "null_resource" "install_dev_scheduler_dependencies" {
+  count = var.enable_dev_schedule ? 1 : 0
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      rm -rf ${path.module}/.build/dev_scheduler && \
+      mkdir -p ${path.module}/.build/dev_scheduler && \
+      cp -p ${path.module}/dev_scheduler_package/*.py ${path.module}/.build/dev_scheduler/ && \
+      /usr/bin/python3 -m pip install -r ${path.module}/dev_scheduler_package/requirements.txt -t ${path.module}/.build/dev_scheduler --no-cache-dir && \
+      touch ${path.module}/.build/dev_scheduler/.installed
+    EOT
+  }
+
+  triggers = {
+    code_changes = sha256(join("", [
+      for f in fileset("${path.module}/dev_scheduler_package", "*.py") :
+      filesha256("${path.module}/dev_scheduler_package/${f}")
+    ]))
+    requirements_changes = filesha256("${path.module}/dev_scheduler_package/requirements.txt")
+    installed_marker     = fileexists("${path.module}/.build/dev_scheduler/.installed") ? "present" : "missing"
+  }
+}
+
 data "archive_file" "dev_scheduler_zip" {
   count = var.enable_dev_schedule ? 1 : 0
 
   type        = "zip"
-  source_dir  = "${path.module}/dev_scheduler_package"
+  source_dir  = "${path.module}/.build/dev_scheduler"
   output_path = "${path.module}/dev_scheduler.py.zip"
+
+  depends_on = [null_resource.install_dev_scheduler_dependencies]
 }
 
 # ===========================

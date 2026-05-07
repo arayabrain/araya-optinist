@@ -296,8 +296,7 @@ def is_scaling_in_progress() -> bool:
                     "MetricStat": {
                         "Metric": {
                             "Namespace": (
-                                "OptiNiSt/FreeManager/"
-                                f"{os.environ['ENV_PREFIX']}"
+                                "OptiNiSt/FreeManager/" f"{os.environ['ENV_PREFIX']}"
                             ),
                             "MetricName": "ScalingInProgress",
                         },

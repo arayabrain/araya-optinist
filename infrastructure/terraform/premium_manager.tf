@@ -202,30 +202,37 @@ resource "aws_lambda_permission" "allow_eventbridge_ec2_state_change" {
   source_arn    = aws_cloudwatch_event_rule.premium_ec2_state_change.arn
 }
 
-# Create ZIP file for premium manager Lambda with dependencies
-# Install dependencies first
 resource "null_resource" "install_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
-      mkdir -p ${path.module}/premium_manager_package
-      /usr/bin/python3 -m pip install pymysql -t ${path.module}/premium_manager_package/ --no-cache-dir
-      cp ${path.module}/../aws_constants.py ${path.module}/premium_manager_package/aws_constants.py
+      rm -rf ${path.module}/.build/premium_manager && \
+      mkdir -p ${path.module}/.build/premium_manager && \
+      cp -p ${path.module}/premium_manager_package/*.py ${path.module}/.build/premium_manager/ && \
+      /usr/bin/python3 -m pip install -r ${path.module}/premium_manager_package/requirements.txt -t ${path.module}/.build/premium_manager --no-cache-dir && \
+      cp -p ${path.module}/../aws_constants.py ${path.module}/.build/premium_manager/aws_constants.py && \
+      touch ${path.module}/.build/premium_manager/.installed
     EOT
   }
 
   triggers = {
-    code_changes = md5(join("", [
-      filesha256("${path.module}/premium_manager_package/premium_manager.py"),
-      filesha256("${path.module}/../../studio/app/common/core/premium/premium_assignment_service.py"),
-      filesha256("${path.module}/../aws_constants.py")
-    ]))
+    code_changes = sha256(join("", concat(
+      [for f in fileset("${path.module}/premium_manager_package", "*.py") :
+        filesha256("${path.module}/premium_manager_package/${f}")
+      ],
+      [
+        filesha256("${path.module}/../../studio/app/common/core/premium/premium_assignment_service.py"),
+        filesha256("${path.module}/../aws_constants.py"),
+      ]
+    )))
+    requirements_changes = filesha256("${path.module}/premium_manager_package/requirements.txt")
+    installed_marker     = fileexists("${path.module}/.build/premium_manager/.installed") ? "present" : "missing"
   }
 }
 
 # Create ZIP using archive_file
 data "archive_file" "premium_manager_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/premium_manager_package"
+  source_dir  = "${path.module}/.build/premium_manager"
   output_path = "${path.module}/premium_manager.py.zip"
 
   depends_on = [null_resource.install_dependencies]
@@ -293,27 +300,34 @@ resource "aws_lambda_function" "premium_cleanup" {
   ]
 }
 
-# Install dependencies for premium cleanup Lambda
 resource "null_resource" "install_cleanup_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
-      /usr/bin/python3 -m pip install pymysql -t ${path.module}/premium_cleanup_package/ --no-cache-dir
-      cp ${path.module}/../aws_constants.py ${path.module}/premium_cleanup_package/aws_constants.py
+      rm -rf ${path.module}/.build/premium_cleanup && \
+      mkdir -p ${path.module}/.build/premium_cleanup && \
+      cp -p ${path.module}/premium_cleanup_package/*.py ${path.module}/.build/premium_cleanup/ && \
+      /usr/bin/python3 -m pip install -r ${path.module}/premium_cleanup_package/requirements.txt -t ${path.module}/.build/premium_cleanup --no-cache-dir && \
+      cp -p ${path.module}/../aws_constants.py ${path.module}/.build/premium_cleanup/aws_constants.py && \
+      touch ${path.module}/.build/premium_cleanup/.installed
     EOT
   }
 
   triggers = {
-    code_changes = md5(join("", [
-      filesha256("${path.module}/premium_cleanup_package/premium_cleanup.py"),
-      filesha256("${path.module}/../aws_constants.py")
-    ]))
+    code_changes = sha256(join("", concat(
+      [for f in fileset("${path.module}/premium_cleanup_package", "*.py") :
+        filesha256("${path.module}/premium_cleanup_package/${f}")
+      ],
+      [filesha256("${path.module}/../aws_constants.py")]
+    )))
+    requirements_changes = filesha256("${path.module}/premium_cleanup_package/requirements.txt")
+    installed_marker     = fileexists("${path.module}/.build/premium_cleanup/.installed") ? "present" : "missing"
   }
 }
 
 # Create ZIP file for premium cleanup Lambda
 data "archive_file" "premium_cleanup_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/premium_cleanup_package"
+  source_dir  = "${path.module}/.build/premium_cleanup"
   output_path = "${path.module}/premium_cleanup.py.zip"
 
   depends_on = [null_resource.install_cleanup_dependencies]
@@ -610,28 +624,34 @@ resource "aws_cloudwatch_log_metric_filter" "premium_assignments" {
 # Cost tracker
 # ======================
 
-# Install dependencies for cost tracker Lambda
 resource "null_resource" "install_cost_tracker_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
-      mkdir -p ${path.module}/cost_tracker_package
-      /usr/bin/python3 -m pip install pymysql -t ${path.module}/cost_tracker_package/ --no-cache-dir
-      cp ${path.module}/../aws_constants.py ${path.module}/cost_tracker_package/aws_constants.py
+      rm -rf ${path.module}/.build/cost_tracker && \
+      mkdir -p ${path.module}/.build/cost_tracker && \
+      cp -p ${path.module}/cost_tracker_package/*.py ${path.module}/.build/cost_tracker/ && \
+      /usr/bin/python3 -m pip install -r ${path.module}/cost_tracker_package/requirements.txt -t ${path.module}/.build/cost_tracker --no-cache-dir && \
+      cp -p ${path.module}/../aws_constants.py ${path.module}/.build/cost_tracker/aws_constants.py && \
+      touch ${path.module}/.build/cost_tracker/.installed
     EOT
   }
 
   triggers = {
-    code_changes = md5(join("", [
-      filesha256("${path.module}/cost_tracker_package/cost_tracker.py"),
-      filesha256("${path.module}/../aws_constants.py")
-    ]))
+    code_changes = sha256(join("", concat(
+      [for f in fileset("${path.module}/cost_tracker_package", "*.py") :
+        filesha256("${path.module}/cost_tracker_package/${f}")
+      ],
+      [filesha256("${path.module}/../aws_constants.py")]
+    )))
+    requirements_changes = filesha256("${path.module}/cost_tracker_package/requirements.txt")
+    installed_marker     = fileexists("${path.module}/.build/cost_tracker/.installed") ? "present" : "missing"
   }
 }
 
 # Create ZIP using archive_file for cost tracker Lambda
 data "archive_file" "cost_tracker_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/cost_tracker_package"
+  source_dir  = "${path.module}/.build/cost_tracker"
   output_path = "${path.module}/cost_tracker.py.zip"
 
   depends_on = [null_resource.install_cost_tracker_dependencies]

@@ -12,27 +12,31 @@
 # Free Manager Lambda Package
 # ===========================
 
-# Install dependencies
 resource "null_resource" "install_free_manager_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
-      mkdir -p ${path.module}/free_manager_package
-      /usr/bin/python3 -m pip install pymysql boto3 -t ${path.module}/free_manager_package/ --no-cache-dir
+      rm -rf ${path.module}/.build/free_manager && \
+      mkdir -p ${path.module}/.build/free_manager && \
+      cp -p ${path.module}/free_manager_package/*.py ${path.module}/.build/free_manager/ && \
+      /usr/bin/python3 -m pip install -r ${path.module}/free_manager_package/requirements.txt -t ${path.module}/.build/free_manager --no-cache-dir && \
+      touch ${path.module}/.build/free_manager/.installed
     EOT
   }
 
   triggers = {
-    code_changes = md5(join("", [
-      filesha256("${path.module}/free_manager_package/free_manager.py"),
-      filesha256("${path.module}/free_manager_package/free_user_utils.py")
+    code_changes = sha256(join("", [
+      for f in fileset("${path.module}/free_manager_package", "*.py") :
+      filesha256("${path.module}/free_manager_package/${f}")
     ]))
+    requirements_changes = filesha256("${path.module}/free_manager_package/requirements.txt")
+    installed_marker     = fileexists("${path.module}/.build/free_manager/.installed") ? "present" : "missing"
   }
 }
 
 # Create ZIP using archive_file
 data "archive_file" "free_manager_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/free_manager_package"
+  source_dir  = "${path.module}/.build/free_manager"
   output_path = "${path.module}/free_manager.py.zip"
 
   depends_on = [null_resource.install_free_manager_dependencies]
@@ -314,23 +318,31 @@ resource "aws_lambda_permission" "allow_asg_events_free_manager" {
 # This Lambda is used by test scripts to manage test data
 # without requiring direct database access from outside VPC.
 
-# Install dependencies for free cleanup Lambda
 resource "null_resource" "install_free_cleanup_dependencies" {
   provisioner "local-exec" {
     command = <<-EOT
-      /usr/bin/python3 -m pip install pymysql -t ${path.module}/free_cleanup_package/ --no-cache-dir
+      rm -rf ${path.module}/.build/free_cleanup && \
+      mkdir -p ${path.module}/.build/free_cleanup && \
+      cp -p ${path.module}/free_cleanup_package/*.py ${path.module}/.build/free_cleanup/ && \
+      /usr/bin/python3 -m pip install -r ${path.module}/free_cleanup_package/requirements.txt -t ${path.module}/.build/free_cleanup --no-cache-dir && \
+      touch ${path.module}/.build/free_cleanup/.installed
     EOT
   }
 
   triggers = {
-    code_changes = filesha256("${path.module}/free_cleanup_package/free_cleanup.py")
+    code_changes = sha256(join("", [
+      for f in fileset("${path.module}/free_cleanup_package", "*.py") :
+      filesha256("${path.module}/free_cleanup_package/${f}")
+    ]))
+    requirements_changes = filesha256("${path.module}/free_cleanup_package/requirements.txt")
+    installed_marker     = fileexists("${path.module}/.build/free_cleanup/.installed") ? "present" : "missing"
   }
 }
 
 # Create ZIP file for free cleanup Lambda
 data "archive_file" "free_cleanup_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/free_cleanup_package"
+  source_dir  = "${path.module}/.build/free_cleanup"
   output_path = "${path.module}/free_cleanup.py.zip"
 
   depends_on = [null_resource.install_free_cleanup_dependencies]

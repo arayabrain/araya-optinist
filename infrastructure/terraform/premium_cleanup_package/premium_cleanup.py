@@ -666,9 +666,7 @@ def get_all_premium_instances_with_states():
             # Name tag at all (tagless instances cannot be verified as belonging
             # to this environment).
             if is_premium:
-                if not name_tag or not name_tag.lower().startswith(
-                    env_prefix.lower()
-                ):
+                if not name_tag or not name_tag.lower().startswith(env_prefix.lower()):
                     print(
                         f"Skipping instance {instance_id}: "
                         f"Name '{name_tag}' does not match "

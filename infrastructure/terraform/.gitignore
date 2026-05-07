@@ -15,9 +15,11 @@ terraform.*
 # SSH private keys
 *.pem
 
-# Lambda deployment packages
+# Lambda deployment build artifacts. Source for each Lambda lives in
+# <lambda>_package/ alongside requirements.txt and README; pip-vendored
+# deps and the assembled ZIP staging area live under .build/<lambda>/.
+**/.build/
 **/*.py.zip
-**/*_package/*
 **/agent_recovery_lambda.zip
 
 # AWS constants layer build artifacts
