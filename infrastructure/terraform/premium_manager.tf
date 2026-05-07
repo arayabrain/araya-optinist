@@ -215,7 +215,7 @@ resource "null_resource" "install_dependencies" {
   }
 
   triggers = {
-    code_changes = md5(join("", concat(
+    code_changes = sha256(join("", concat(
       [for f in fileset("${path.module}/premium_manager_package", "*.py") :
         filesha256("${path.module}/premium_manager_package/${f}")
       ],
@@ -313,7 +313,7 @@ resource "null_resource" "install_cleanup_dependencies" {
   }
 
   triggers = {
-    code_changes = md5(join("", concat(
+    code_changes = sha256(join("", concat(
       [for f in fileset("${path.module}/premium_cleanup_package", "*.py") :
         filesha256("${path.module}/premium_cleanup_package/${f}")
       ],
@@ -637,7 +637,7 @@ resource "null_resource" "install_cost_tracker_dependencies" {
   }
 
   triggers = {
-    code_changes = md5(join("", concat(
+    code_changes = sha256(join("", concat(
       [for f in fileset("${path.module}/cost_tracker_package", "*.py") :
         filesha256("${path.module}/cost_tracker_package/${f}")
       ],
