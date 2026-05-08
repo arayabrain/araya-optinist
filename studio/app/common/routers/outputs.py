@@ -117,24 +117,34 @@ async def get_or_generate_thumbnail(
 
     # Generate thumbnail. Goal: always produce a PNG at thumb_path.
     # - INPUT with source: TIFF/HDF5/MAT render or placeholder by extension.
-    # - INPUT without source: generic placeholder.
+    # - INPUT without source: labeled "INPUT" placeholder.
     # - ROI with source: render from cell_roi.json.
-    # - ROI without source: generic "ROI" placeholder.
+    # - ROI without source: labeled "ROI" placeholder.
     create_directory(os.path.dirname(thumb_path))
+    wrote_placeholder = False
     try:
         if thumb_type == ThumbnailType.INPUT:
-            # generate_input_thumbnail handles missing files itself
-            ThumbnailGenerator.generate_input_thumbnail(
-                source_path=original_path or "input",
-                output_path=thumb_path,
-                abs_source_path=abs_original_path,
-                dataset_paths=dataset_paths,
-            )
+            if original_path:
+                # generate_input_thumbnail returns False when it falls back to a
+                # placeholder (missing source, unsupported format, render error).
+                wrote_real = ThumbnailGenerator.generate_input_thumbnail(
+                    source_path=original_path,
+                    output_path=thumb_path,
+                    abs_source_path=abs_original_path,
+                    dataset_paths=dataset_paths,
+                )
+                wrote_placeholder = not wrote_real
+            else:
+                ThumbnailGenerator.generate_placeholder_thumbnail(
+                    thumb_path, label="INPUT"
+                )
+                wrote_placeholder = True
         elif abs_original_path is not None:
             ThumbnailGenerator.generate_roi_thumbnail(abs_original_path, thumb_path)
         else:
             # No ROI source available — fall back to a labeled placeholder
             ThumbnailGenerator.generate_placeholder_thumbnail(thumb_path, label="ROI")
+            wrote_placeholder = True
 
         logger.info(f"Lazy-generated thumbnail: {thumb_path}")
 
@@ -149,12 +159,16 @@ async def get_or_generate_thumbnail(
         try:
             label = "INPUT" if thumb_type == ThumbnailType.INPUT else "ROI"
             ThumbnailGenerator.generate_placeholder_thumbnail(thumb_path, label=label)
+            wrote_placeholder = True
         except Exception as e2:
             logger.error(f"Even placeholder thumbnail generation failed: {e2}")
             return normalize_output_path(original_path or thumb_path)
 
-    # Upload to remote storage for future use (fire and forget)
-    if RemoteStorageController.is_available():
+    # Upload to remote storage for future use (fire and forget).
+    # Skip placeholder uploads: caching a placeholder in S3 would prevent the
+    # retry button from ever recovering if the source later becomes available
+    # (e.g. after a transient download failure).
+    if RemoteStorageController.is_available() and not wrote_placeholder:
         try:
             async with RemoteStorageSimpleWriter(
                 remote_bucket_name

@@ -473,7 +473,7 @@ class ThumbnailGenerator:
         output_path: str,
         abs_source_path: str = None,
         dataset_paths: DatasetPaths = None,
-    ) -> None:
+    ) -> bool:
         """
         Generate an input thumbnail, choosing the right strategy automatically.
 
@@ -488,6 +488,10 @@ class ThumbnailGenerator:
             abs_source_path: Absolute path to the source file for reading.
                 If None, uses source_path directly.
             dataset_paths: Internal dataset paths for structured data formats
+
+        Returns:
+            True if a real thumbnail was rendered from source data,
+            False if a placeholder PNG was written instead.
         """
         resolved = abs_source_path or source_path
         hdf5_path = dataset_paths.hdf5_path if dataset_paths else None
@@ -496,22 +500,27 @@ class ThumbnailGenerator:
         if cls.can_generate_tiff_thumbnail(source_path):
             if resolved and os.path.exists(resolved):
                 cls.generate_tiff_thumbnail(resolved, output_path)
-            else:
-                cls.generate_placeholder_thumbnail(output_path, file_path=source_path)
-        elif hdf5_path and resolved and os.path.exists(resolved):
+                return True
+            cls.generate_placeholder_thumbnail(output_path, file_path=source_path)
+            return False
+        if hdf5_path and resolved and os.path.exists(resolved):
             try:
                 cls.generate_hdf5_thumbnail(resolved, output_path, hdf5_path)
+                return True
             except Exception as e:
                 logger.warning(f"HDF5 thumbnail failed, using placeholder: {e}")
                 cls.generate_placeholder_thumbnail(output_path, file_path=source_path)
-        elif mat_path and resolved and os.path.exists(resolved):
+                return False
+        if mat_path and resolved and os.path.exists(resolved):
             try:
                 cls.generate_mat_thumbnail(resolved, output_path, mat_path)
+                return True
             except Exception as e:
                 logger.warning(f"MAT thumbnail failed, using placeholder: {e}")
                 cls.generate_placeholder_thumbnail(output_path, file_path=source_path)
-        else:
-            cls.generate_placeholder_thumbnail(output_path, file_path=source_path)
+                return False
+        cls.generate_placeholder_thumbnail(output_path, file_path=source_path)
+        return False
 
     @classmethod
     def can_generate_tiff_thumbnail(cls, file_path: str) -> bool:
