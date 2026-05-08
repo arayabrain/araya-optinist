@@ -133,6 +133,13 @@ describe("PremiumNotificationManager — unreachable snackbar", () => {
     snackbarLog = []
     snackbarKeyCounter = 0
     mockCtxValue = baseCtx()
+    // Clear sessionStorage so the success-snackbar's per-session
+    // `premium_notified_instance_id` gate doesn't bleed across tests.
+    try {
+      sessionStorage.clear()
+    } catch {
+      // sessionStorage unavailable in this environment
+    }
 
     mockEnqueueSnackbar.mockImplementation(
       (message: string, options?: Record<string, unknown>) => {
@@ -303,6 +310,13 @@ describe("PremiumNotificationManager — assignment success snackbar", () => {
     snackbarLog = []
     snackbarKeyCounter = 0
     mockCtxValue = baseCtx()
+    // Clear sessionStorage so the success-snackbar's per-session
+    // `premium_notified_instance_id` gate doesn't bleed across tests.
+    try {
+      sessionStorage.clear()
+    } catch {
+      // sessionStorage unavailable in this environment
+    }
 
     mockEnqueueSnackbar.mockImplementation(
       (message: string, options?: Record<string, unknown>) => {
@@ -318,8 +332,10 @@ describe("PremiumNotificationManager — assignment success snackbar", () => {
     )
   })
 
-  // The success branch needs (a) the waiting popup to have been shown first
-  // (wasWaiting = true) and (b) a transition to a dedicated assignment.
+  // Renders the component, then transitions to a dedicated assignment.
+  // The success branch fires when (a) hasDedicatedInstance becomes true,
+  // (b) instance_id differs from `lastAssignmentId` (initial null), and
+  // (c) the per-session sessionStorage flag is not yet set for this id.
   const renderAndMigrate = () => {
     // Start on shared so the waiting snackbar is enqueued.
     mockCtxValue = {
