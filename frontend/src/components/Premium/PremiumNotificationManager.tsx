@@ -13,6 +13,29 @@ import { Button } from "@mui/material"
 import { logPremiumUiEvent } from "api/premium/PremiumAssignmentApi"
 import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 
+// sessionStorage key — tracks the instance_id we've already notified about
+// for this browser session. Cleared automatically when the tab closes,
+// so a fresh login always shows one confirmation. Replaces the old
+// `wasWaiting` gate, which incorrectly suppressed the snackbar when the
+// user was already-assigned at login (no waiting popup ever shown).
+const SS_NOTIFIED_INSTANCE_KEY = "premium_notified_instance_id"
+
+function ssGetNotifiedInstance(): string | null {
+  try {
+    return sessionStorage.getItem(SS_NOTIFIED_INSTANCE_KEY)
+  } catch {
+    return null
+  }
+}
+
+function ssSetNotifiedInstance(instanceId: string): void {
+  try {
+    sessionStorage.setItem(SS_NOTIFIED_INSTANCE_KEY, instanceId)
+  } catch {
+    // sessionStorage unavailable (e.g., some private browsing modes)
+  }
+}
+
 const PremiumNotificationManager: FC = () => {
   const { enqueueSnackbar, closeSnackbar } = useSnackbar()
   const {
@@ -40,17 +63,30 @@ const PremiumNotificationManager: FC = () => {
   const hasDedicatedInstance =
     assignmentResult?.assigned && !assignmentResult?.is_shared
 
-  // Show success notification when premium instance is assigned
+  // Show success notification when premium instance is assigned.
+  //
+  // Gating: fire once per browser session per instance_id. We use
+  // sessionStorage instead of relying on the in-component `lastAssignmentId`
+  // state because that state resets on every page refresh, which would
+  // re-fire the snackbar. sessionStorage clears when the tab closes,
+  // so the next session sees a fresh confirmation.
+  //
+  // We do NOT require the waiting popup to have been shown first — that
+  // gate (`wasWaiting`) used to suppress the snackbar on refresh, but it
+  // also incorrectly suppressed it when the user was already-assigned at
+  // login (the autoAssignOnLogin "already assigned" path skips isAssigning).
   useEffect(() => {
-    const hasNewInstance = assignmentResult?.instance_id !== lastAssignmentId
-    const wasWaiting = waitingKeyRef.current !== null
+    const instanceId = assignmentResult?.instance_id
+    const alreadyNotifiedThisSession =
+      instanceId != null && ssGetNotifiedInstance() === instanceId
+    const hasNewInstance = instanceId !== lastAssignmentId
 
     if (
       isPremiumUser &&
       hasDedicatedInstance &&
-      assignmentResult.instance_id &&
+      instanceId &&
       hasNewInstance &&
-      wasWaiting
+      !alreadyNotifiedThisSession
     ) {
       enqueueSnackbar(
         "Premium instance assigned successfully! " +
@@ -73,11 +109,12 @@ const PremiumNotificationManager: FC = () => {
         },
       )
       logPremiumUiEvent("dedicated_instance_ready", {
-        instance_id: assignmentResult.instance_id,
+        instance_id: instanceId,
       })
 
+      ssSetNotifiedInstance(instanceId)
       setHasShownAssignmentSuccess(true)
-      setLastAssignmentId(assignmentResult.instance_id)
+      setLastAssignmentId(instanceId)
     }
   }, [
     isPremiumUser,
