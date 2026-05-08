@@ -57,7 +57,19 @@ const PremiumNotificationManager: FC = () => {
           "You now have dedicated compute resources.",
         {
           variant: "success",
-          autoHideDuration: 5000,
+          // Longer than the default toast lifetime so a transient warning
+          // popup during the dedicated ALB warm-up (issue #575) cannot
+          // overwrite the confirmation before the user reads it.
+          autoHideDuration: 10000,
+          action: (snackbarKey) => (
+            <Button
+              size="small"
+              color="inherit"
+              onClick={() => closeSnackbar(snackbarKey)}
+            >
+              Dismiss
+            </Button>
+          ),
         },
       )
       logPremiumUiEvent("dedicated_instance_ready", {
@@ -74,6 +86,7 @@ const PremiumNotificationManager: FC = () => {
     hasShownAssignmentSuccess,
     lastAssignmentId,
     enqueueSnackbar,
+    closeSnackbar,
   ])
 
   // Show waiting snackbar when premium user does not have a dedicated instance.

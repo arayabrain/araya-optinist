@@ -21,6 +21,8 @@ type SnackbarCall = {
   message: string
   options?: {
     variant?: string
+    autoHideDuration?: number
+    persist?: boolean
     action?: (key: string | number) => React.ReactNode
   }
 }
@@ -292,5 +294,82 @@ describe("PremiumNotificationManager — unreachable snackbar", () => {
       "instance_unreachable_popup_dismissed",
       expect.objectContaining({ reason: "not_premium" }),
     )
+  })
+})
+
+describe("PremiumNotificationManager — assignment success snackbar", () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    snackbarLog = []
+    snackbarKeyCounter = 0
+    mockCtxValue = baseCtx()
+
+    mockEnqueueSnackbar.mockImplementation(
+      (message: string, options?: Record<string, unknown>) => {
+        snackbarKeyCounter += 1
+        const key = snackbarKeyCounter
+        snackbarLog.push({
+          key,
+          message,
+          options: options as SnackbarCall["options"],
+        })
+        return key
+      },
+    )
+  })
+
+  // The success branch needs (a) the waiting popup to have been shown first
+  // (wasWaiting = true) and (b) a transition to a dedicated assignment.
+  const renderAndMigrate = () => {
+    // Start on shared so the waiting snackbar is enqueued.
+    mockCtxValue = {
+      ...baseCtx(),
+      assignmentResult: {
+        instance_id: "shared-pool",
+        assigned: true,
+        is_shared: true,
+      },
+    }
+    const { rerender } = render(<PremiumNotificationManager />)
+
+    // Now flip to a dedicated assignment — fires success branch.
+    mockCtxValue = {
+      ...mockCtxValue,
+      assignmentResult: {
+        instance_id: "inst-A",
+        assigned: true,
+        is_shared: false,
+      },
+    }
+    act(() => {
+      rerender(<PremiumNotificationManager />)
+    })
+  }
+
+  test("success snackbar uses 10s autoHideDuration and exposes a Dismiss action", () => {
+    renderAndMigrate()
+
+    const successCall = snackbarLog.find((c) =>
+      c.message.includes("Premium instance assigned successfully"),
+    )
+    expect(successCall).toBeDefined()
+    expect(successCall?.options?.variant).toBe("success")
+    expect(successCall?.options?.autoHideDuration).toBe(10000)
+    expect(typeof successCall?.options?.action).toBe("function")
+  })
+
+  test("clicking Dismiss on the success snackbar closes it", () => {
+    renderAndMigrate()
+
+    const successCall = snackbarLog.find((c) =>
+      c.message.includes("Premium instance assigned successfully"),
+    )!
+    expect(typeof successCall.options?.action).toBe("function")
+
+    const actionEl = successCall.options!.action!(successCall.key)
+    const { getByRole } = render(<>{actionEl}</>)
+    fireEvent.click(getByRole("button", { name: /dismiss/i }))
+
+    expect(mockCloseSnackbar).toHaveBeenCalledWith(successCall.key)
   })
 })
