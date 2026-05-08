@@ -133,10 +133,18 @@ describe("PremiumNotificationManager — unreachable snackbar", () => {
     snackbarLog = []
     snackbarKeyCounter = 0
     mockCtxValue = baseCtx()
-    // Clear sessionStorage so the success-snackbar's per-session
-    // `premium_notified_instance_id` gate doesn't bleed across tests.
+    // These tests focus on the unreachable snackbar. baseCtx has a
+    // fully-assigned dedicated instance, which would also trigger the
+    // success snackbar on first render. Pre-mark the session as already
+    // notified for this instance_id so only the unreachable snackbar
+    // appears — mirroring the realistic state where unreachable events
+    // arrive after the user has already seen the assignment confirmation.
     try {
       sessionStorage.clear()
+      sessionStorage.setItem(
+        "premium_notified_instance_id",
+        baseCtx().assignmentResult!.instance_id!,
+      )
     } catch {
       // sessionStorage unavailable in this environment
     }
