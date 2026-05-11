@@ -81,3 +81,22 @@ phases:
               yum clean all
               rm -rf /var/cache/yum
               echo "$(date): Cleanup complete"
+
+      - name: SanitizeCredentials
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -e
+              echo "$(date): Sanitizing credentials and sensitive data from AMI"
+              # Remove AWS credentials/config for all users
+              # -rf / -f: no error if files/dirs do not exist (exit code 0)
+              rm -rf /root/.aws /home/*/.aws
+              # Remove AWS credential env vars from persistent files
+              sed -i '/^AWS_ACCESS_KEY_ID/d;/^AWS_SECRET_ACCESS_KEY/d;/^AWS_SESSION_TOKEN/d;/^AWS_DEFAULT_REGION/d;/^AWS_PROFILE/d' /etc/environment 2>/dev/null || true
+              rm -f /etc/profile.d/aws-*.sh
+              # Remove shell histories (may contain secrets typed interactively)
+              rm -f /root/.bash_history /home/*/.bash_history
+              # Remove non-default SSH authorized keys
+              rm -f /root/.ssh/authorized_keys
+              echo "$(date): Credential sanitization complete"
