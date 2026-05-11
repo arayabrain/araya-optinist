@@ -801,8 +801,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
         logDriver = "awslogs"
         options = {
           "awslogs-group"             = "/ecs/${local.env_prefix}-cloud-taskdef"
-          "mode"                      = "non-blocking"
-          "awslogs-multiline-pattern" = "^\\[\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
+          "awslogs-multiline-pattern" = "^\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
           "max-buffer-size"           = "25m"
           "awslogs-region"            = var.aws_region
           "awslogs-create-group"      = "true"
@@ -1045,7 +1044,7 @@ resource "aws_ecs_task_definition" "premium" {
         logDriver = "awslogs"
         options = {
           "awslogs-group"             = "/ecs/${var.environment}-premium-optinist-cloud-taskdef"
-          "awslogs-multiline-pattern" = "^\\[\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
+          "awslogs-multiline-pattern" = "^\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
           "max-buffer-size"           = "25m"
           "awslogs-region"            = var.aws_region
           "awslogs-create-group"      = "true"
