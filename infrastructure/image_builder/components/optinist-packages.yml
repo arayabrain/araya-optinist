@@ -82,6 +82,38 @@ phases:
               rm -rf /var/cache/yum
               echo "$(date): Cleanup complete"
 
+      # ---------------------------------------------------------------
+      # PlantTestCredentials + SanitizeCredentials form a paired test:
+      #   PlantTestCredentials creates dummy credential files, then
+      #   SanitizeCredentials removes them.  The subsequent
+      #   ValidateNoCredentialLeak step (in optinist-validate.yml)
+      #   confirms the removal succeeded.
+      #
+      # Without this synthetic canary, the validation step would only
+      # confirm "nothing is there when nothing was put there" — a
+      # vacuously true check that does not actually exercise the
+      # sanitization logic.
+      #
+      # The dummy values (AKIAIOSFODNN7EXAMPLE, etc.) are the
+      # well-known example keys from the AWS documentation and have
+      # no access to any real AWS resources.
+      # ---------------------------------------------------------------
+      - name: PlantTestCredentials
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -e
+              echo "$(date): Planting dummy credentials to verify SanitizeCredentials step"
+              mkdir -p /root/.aws
+              cat > /root/.aws/credentials <<'CRED'
+              [default]
+              aws_access_key_id = AKIAIOSFODNN7EXAMPLE
+              aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+              CRED
+              echo "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE" >> /etc/environment
+              echo "$(date): Dummy credentials planted"
+
       - name: SanitizeCredentials
         action: ExecuteBash
         inputs:
