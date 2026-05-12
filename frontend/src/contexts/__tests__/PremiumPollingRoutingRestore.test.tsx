@@ -171,6 +171,18 @@ const sharedStatus: PremiumStatusResult = {
   },
 }
 
+const dedicatedStatus: PremiumStatusResult = {
+  user_id: 1,
+  subscription_type: UserTier.PREMIUM,
+  is_premium: true,
+  assignment: {
+    instance_id: "inst-A",
+    is_shared: false,
+    assigned_at: "2026-05-12T00:00:00Z",
+    status: "active",
+  },
+}
+
 // --- Tests ---
 
 describe("PremiumAssignmentProvider — polling routing restore", () => {
@@ -192,9 +204,10 @@ describe("PremiumAssignmentProvider — polling routing restore", () => {
   test("polling success on dedicated restores premiumAssigned=true after a prior 502/503 stripped it", async () => {
     // Stage 1: autoAssignOnLogin sees an existing SHARED assignment via
     // GET /status — provider adopts it and polling begins.
-    mockGetPremiumStatus.mockResolvedValue(sharedStatus)
-    // Stage 2: the first poll's /assign returns DEDICATED.
-    mockAssignPremiumInstance.mockResolvedValue(dedicatedAssignment)
+    // Stage 2: the next /status poll returns DEDICATED.
+    mockGetPremiumStatus
+      .mockResolvedValueOnce(sharedStatus)
+      .mockResolvedValue(dedicatedStatus)
 
     const ctxRef = renderProvider()
 
@@ -222,5 +235,63 @@ describe("PremiumAssignmentProvider — polling routing restore", () => {
 
     // The regression: without the fix, premiumAssigned stays false here.
     expect(routingService.isPremiumAssigned()).toBe(true)
+  })
+
+  test("polling uses /status — converges to dedicated even if /assign would still return shared", async () => {
+    // Models ISSUE_2 candidate (3): the canonical row is dedicated, but a hypothetical
+    // /assign call would still return shared. /status reads the canonical row, so
+    // polling must converge to dedicated within one cycle without a reload.
+    mockGetPremiumStatus
+      .mockResolvedValueOnce(sharedStatus)
+      .mockResolvedValue(dedicatedStatus)
+    mockAssignPremiumInstance.mockResolvedValue(sharedAssignment)
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.is_shared).toBe(true)
+    })
+
+    await act(async () => {
+      jest.advanceTimersByTime(60_000)
+      await Promise.resolve()
+    })
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.is_shared).toBe(false)
+    })
+    expect(ctxRef.current?.assignmentResult?.instance_id).toBe(
+      dedicatedAssignment.instance_id,
+    )
+    // /assign must NOT have been called by the polling effect.
+    expect(mockAssignPremiumInstance).not.toHaveBeenCalled()
+  })
+
+  test("polling does not terminate at MAX_POLL_ATTEMPTS while on shared — converges to dedicated post-cap", async () => {
+    // Models ISSUE_2 candidate (1): migration completes after the 40-attempt cap.
+    // pollAttempts is restored from sessionStorage on mount, so a long-running tab
+    // can come up already past the cap.
+    sessionStorage.setItem("premium_pollAttempts", "41")
+
+    mockGetPremiumStatus
+      .mockResolvedValueOnce(sharedStatus)
+      .mockResolvedValue(dedicatedStatus)
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.is_shared).toBe(true)
+    })
+
+    await act(async () => {
+      jest.advanceTimersByTime(60_000)
+      await Promise.resolve()
+    })
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.is_shared).toBe(false)
+    })
+    // Regression: without fix (B), the terminal "No premium instance available" error fires here.
+    expect(ctxRef.current?.error).toBeNull()
   })
 })

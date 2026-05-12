@@ -708,8 +708,9 @@ export const PremiumAssignmentProvider: React.FC<{
       return
     }
 
-    // Check if we've exceeded max attempts
-    if (pollAttempts >= MAX_POLL_ATTEMPTS) {
+    // While the user holds a shared assignment, keep polling — they're already consuming premium budget, so a long migration stall is better than a stuck UI only a reload can fix.
+    const isOnShared = state.assignmentResult?.is_shared === true
+    if (pollAttempts >= MAX_POLL_ATTEMPTS && !isOnShared) {
       // eslint-disable-next-line no-console
       console.warn(
         `Max poll attempts (${MAX_POLL_ATTEMPTS}) reached. Stopping polling.`,
@@ -726,15 +727,33 @@ export const PremiumAssignmentProvider: React.FC<{
 
     const timeoutId = setTimeout(async () => {
       try {
-        const result = await assignPremiumInstance()
+        // /status reads the canonical assignment row; /assign could return shared even after migration completed.
+        const status = await getPremiumStatus()
 
-        if (result.assigned && !result.is_shared) {
+        if (status?.error) {
+          setPollAttempts((prev) => prev + 1)
+          setPollInterval((prev) =>
+            Math.min(prev * ERROR_BACKOFF_MULTIPLIER, MAX_POLL_INTERVAL_MS),
+          )
+          return
+        }
+
+        const assignment = status?.assignment ?? null
+
+        if (assignment && !assignment.is_shared) {
           // eslint-disable-next-line no-console
-          console.log("Premium instance now available:", result.instance_id)
+          console.log("Premium instance now available:", assignment.instance_id)
+          const result: PremiumAssignmentResult = {
+            message: "Premium instance now available",
+            instance_id: assignment.instance_id,
+            assigned: true,
+            is_shared: false,
+          }
           // The hook clears unreachable on an instance_id change; same-id is a no-op — reachability must come from a real response.
           setState((prev) => ({
             ...prev,
             assignmentResult: result,
+            statusResult: status,
             error: null,
             isRetryableError: false,
           }))
@@ -743,7 +762,21 @@ export const PremiumAssignmentProvider: React.FC<{
           setPollInterval(INITIAL_POLL_INTERVAL_MS)
           setPollAttempts(0)
         } else {
-          setState((prev) => ({ ...prev, assignmentResult: result }))
+          if (assignment) {
+            const result: PremiumAssignmentResult = {
+              message: "Premium instance assignment (shared)",
+              instance_id: assignment.instance_id,
+              assigned: true,
+              is_shared: assignment.is_shared,
+            }
+            setState((prev) => ({
+              ...prev,
+              assignmentResult: result,
+              statusResult: status,
+            }))
+          } else {
+            setState((prev) => ({ ...prev, statusResult: status }))
+          }
           // eslint-disable-next-line no-console
           console.warn(
             "Still on temporary instance, will retry with backoff...",
