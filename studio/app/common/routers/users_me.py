@@ -94,10 +94,13 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
             current_user.id, current_user.uid
         )
 
-        logger.debug(f"Assignment service result: {result}")
-        logger.debug(f"is_shared from service: {result.get('is_shared')}")
-        logger.debug(
-            f"assignment_source from service: {result.get('assignment_source')}"
+        logger.info(
+            "[premium-assign] user=%s assigned=%s is_shared=%s instance=%s source=%s",
+            current_user.id,
+            result.get("success"),
+            result.get("is_shared"),
+            result.get("instance_id"),
+            result.get("assignment_source"),
         )
 
         if result["success"]:
@@ -222,7 +225,11 @@ async def release_premium_beacon(request: Request, db: Session = Depends(get_db)
             user_id=user.id, user_uid=user_uid
         )
 
-        logger.info(f"Beacon release for user {user.id}: " f"{result.get('message')}")
+        logger.info(
+            f"[premium-trace] beacon-released user={user.id} "
+            f"instance={result.get('released_instance')} "
+            f"message={result.get('message')}"
+        )
         return {
             "success": True,
             "message": result.get("message", "Release processed"),
@@ -319,8 +326,8 @@ async def get_premium_assignment_status(current_user: User = Depends(get_current
             current_user.id, current_user.uid
         )
 
-        logger.debug(
-            "Premium status for user %s: " "assigned=%s, is_shared=%s, instance=%s",
+        logger.info(
+            "[premium-status] user=%s assigned=%s is_shared=%s instance=%s",
             current_user.id,
             status_info is not None,
             status_info.get("is_shared") if status_info else None,

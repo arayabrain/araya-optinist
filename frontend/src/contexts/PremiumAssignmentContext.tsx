@@ -738,6 +738,8 @@ export const PremiumAssignmentProvider: React.FC<{
             error: null,
             isRetryableError: false,
           }))
+          // Restore routing: an earlier 502/503 may have flipped premiumAssigned off.
+          routingService.setPremiumAssigned(true)
           setPollInterval(INITIAL_POLL_INTERVAL_MS)
           setPollAttempts(0)
         } else {

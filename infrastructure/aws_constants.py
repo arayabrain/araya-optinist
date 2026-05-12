@@ -5,6 +5,8 @@ This module defines constants for AWS service statuses to ensure consistency
 across the codebase and prevent typos.
 """
 
+import os
+
 
 class ECSTaskStatus:
     """
@@ -152,6 +154,11 @@ class PremiumInstanceConfig:
     def get_env_prefix(cls) -> str:
         """Delegate to EnvironmentConfig.get_env_prefix for convenience."""
         return EnvironmentConfig.get_env_prefix()
+
+    @classmethod
+    def get_backend_port(cls) -> int:
+        """TCP port the FastAPI service listens on inside premium instances."""
+        return int(os.environ.get("BACKEND_PORT", "8000"))
 
     @classmethod
     def get_instance_name_pattern(cls) -> str:

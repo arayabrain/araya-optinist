@@ -1362,10 +1362,11 @@ def migrate_user(
                 }
 
             # Swap instance in target group
+            backend_port = PremiumInstanceConfig.get_backend_port()
             try:
                 elbv2.deregister_targets(
                     TargetGroupArn=tg_arn,
-                    Targets=[{"Id": source, "Port": 8000}],
+                    Targets=[{"Id": source, "Port": backend_port}],
                 )
                 print(f"Deregistered {source} from {tg_arn}")
             except Exception as e:
@@ -1373,7 +1374,7 @@ def migrate_user(
 
             elbv2.register_targets(
                 TargetGroupArn=tg_arn,
-                Targets=[{"Id": target_instance_id, "Port": 8000}],
+                Targets=[{"Id": target_instance_id, "Port": backend_port}],
             )
             print(f"Registered {target_instance_id} in {tg_arn}")
 
