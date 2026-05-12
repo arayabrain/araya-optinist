@@ -61,7 +61,7 @@ const ERROR_BACKOFF_MULTIPLIER = 2
 // sessionStorage keys — per-tab persistence across page refreshes.
 // Clears automatically when the tab closes.
 const SS_HAS_ATTEMPTED = "premium_hasAttempted"
-const SS_POLL_ATTEMPTS = "premium_pollAttempts"
+export const SS_POLL_ATTEMPTS = "premium_pollAttempts"
 
 function ssRead(key: string): string | null {
   try {
@@ -708,7 +708,8 @@ export const PremiumAssignmentProvider: React.FC<{
       return
     }
 
-    // While the user holds a shared assignment, keep polling — they're already consuming premium budget, so a long migration stall is better than a stuck UI only a reload can fix.
+    // Shared assignments still burn premium budget — keep polling past the cap
+    // so a long migration doesn't strand the UI on a state only a reload can fix.
     const isOnShared = state.assignmentResult?.is_shared === true
     if (pollAttempts >= MAX_POLL_ATTEMPTS && !isOnShared) {
       // eslint-disable-next-line no-console
@@ -763,17 +764,26 @@ export const PremiumAssignmentProvider: React.FC<{
           setPollAttempts(0)
         } else {
           if (assignment) {
-            const result: PremiumAssignmentResult = {
-              message: "Premium instance assignment (shared)",
-              instance_id: assignment.instance_id,
-              assigned: true,
-              is_shared: assignment.is_shared,
-            }
-            setState((prev) => ({
-              ...prev,
-              assignmentResult: result,
-              statusResult: status,
-            }))
+            setState((prev) => {
+              const cur = prev.assignmentResult
+              if (
+                cur &&
+                cur.instance_id === assignment.instance_id &&
+                cur.is_shared === assignment.is_shared
+              ) {
+                return { ...prev, statusResult: status }
+              }
+              return {
+                ...prev,
+                assignmentResult: {
+                  message: "Premium instance assignment (shared)",
+                  instance_id: assignment.instance_id,
+                  assigned: true,
+                  is_shared: assignment.is_shared,
+                },
+                statusResult: status,
+              }
+            })
           } else {
             setState((prev) => ({ ...prev, statusResult: status }))
           }
@@ -781,7 +791,10 @@ export const PremiumAssignmentProvider: React.FC<{
           console.warn(
             "Still on temporary instance, will retry with backoff...",
           )
-          setPollAttempts((prev) => prev + 1)
+          const isOnShared = assignment?.is_shared === true
+          if (!isOnShared) {
+            setPollAttempts((prev) => prev + 1)
+          }
           // Exponential backoff capped at MAX_POLL_INTERVAL_MS
           setPollInterval((prev) =>
             Math.min(prev * BACKOFF_MULTIPLIER, MAX_POLL_INTERVAL_MS),

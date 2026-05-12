@@ -129,21 +129,15 @@ export const useLogs = (
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onNextSearchApi])
 
-  // Reset on premium routing change: pagination offsets are per-instance, so
-  // when the user is migrated (shared→dedicated or back) the old offsets address
-  // a log stream the next request won't reach.
+  // Reset on premium routing change: pagination offsets are per-instance.
   const { assignmentResult } = usePremiumAssignment()
-  const prevAssignedInstanceRef = useRef<string | null | undefined>(undefined)
+  const lastKnownInstanceRef = useRef<string | null>(null)
   useEffect(() => {
     const next = assignmentResult?.instance_id ?? null
-    if (prevAssignedInstanceRef.current === undefined) {
-      prevAssignedInstanceRef.current = next
-      return
-    }
-    if (prevAssignedInstanceRef.current !== next) {
-      prevAssignedInstanceRef.current = next
-      reset()
-    }
+    if (next == null) return
+    const prev = lastKnownInstanceRef.current
+    lastKnownInstanceRef.current = next
+    if (prev != null && prev !== next) reset()
   }, [assignmentResult?.instance_id, reset])
 
   return { onPrevSearchApi, onNextSearchApi, logs, isError, reset, platform }

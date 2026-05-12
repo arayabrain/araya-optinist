@@ -1,12 +1,3 @@
-/**
- * Regression test: polling success must re-enable premium routing.
- *
- * When the polling effect catches a shared → dedicated promotion, it must
- * call routingService.setPremiumAssigned(true). Otherwise a prior 502/503
- * in this tab (which strips routing via handlePremiumRoutingError) leaves
- * the tab silently demoted to free-tier even though the UI shows dedicated.
- */
-
 import React from "react"
 
 import { SnackbarProvider } from "notistack"
@@ -115,7 +106,7 @@ jest.mock("utils/crossTabSync", () => ({
 }))
 
 // require() not import — static imports hoist above the mock vars.
-const { PremiumAssignmentProvider, usePremiumAssignment } =
+const { PremiumAssignmentProvider, usePremiumAssignment, SS_POLL_ATTEMPTS } =
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   require("contexts/PremiumAssignmentContext")
 const { routingService } =
@@ -268,10 +259,9 @@ describe("PremiumAssignmentProvider — polling routing restore", () => {
   })
 
   test("polling does not terminate at MAX_POLL_ATTEMPTS while on shared — converges to dedicated post-cap", async () => {
-    // Models ISSUE_2 candidate (1): migration completes after the 40-attempt cap.
     // pollAttempts is restored from sessionStorage on mount, so a long-running tab
     // can come up already past the cap.
-    sessionStorage.setItem("premium_pollAttempts", "41")
+    sessionStorage.setItem(SS_POLL_ATTEMPTS, "41")
 
     mockGetPremiumStatus
       .mockResolvedValueOnce(sharedStatus)
@@ -291,8 +281,56 @@ describe("PremiumAssignmentProvider — polling routing restore", () => {
     await waitFor(() => {
       expect(ctxRef.current?.assignmentResult?.is_shared).toBe(false)
     })
-    // Regression: without fix (B), the terminal "No premium instance available" error fires here.
     expect(ctxRef.current?.error).toBeNull()
+  })
+
+  test("polling on shared neither terminates nor increments pollAttempts", async () => {
+    // Isolates the cap-bypass + counter-freeze: across multiple shared polls,
+    // error must stay null and pollAttempts must not be persisted (the provider
+    // only writes the SS key when the counter is >0, so a null read proves no
+    // increment occurred).
+    mockGetPremiumStatus.mockResolvedValue(sharedStatus)
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.is_shared).toBe(true)
+    })
+
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        jest.advanceTimersByTime(120_000)
+        await Promise.resolve()
+      })
+    }
+
+    expect(ctxRef.current?.assignmentResult?.is_shared).toBe(true)
+    expect(ctxRef.current?.error).toBeNull()
+    expect(sessionStorage.getItem(SS_POLL_ATTEMPTS)).toBeNull()
+  })
+
+  test("repeated shared-status polls do not churn assignmentResult identity", async () => {
+    // Guards the value-equality short-circuit: when /status returns the same
+    // shared row, the provider must keep assignmentResult reference-stable so
+    // downstream consumers (useLogs, etc.) don't re-render or reset.
+    mockGetPremiumStatus.mockResolvedValue(sharedStatus)
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.is_shared).toBe(true)
+    })
+
+    const firstRef = ctxRef.current?.assignmentResult
+
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        jest.advanceTimersByTime(120_000)
+        await Promise.resolve()
+      })
+    }
+
+    expect(ctxRef.current?.assignmentResult).toBe(firstRef)
   })
 
   test("polling fires via unreachable path on dedicated assignment, uses /status not /assign", async () => {

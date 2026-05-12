@@ -1,13 +1,3 @@
-/**
- * Regression test: useLogs must reset its log buffer and pagination offsets
- * when the premium assignment's instance_id changes.
- *
- * Without this, after a shared→dedicated migration the polling loop continues
- * to use offsets that meant something on the old instance — the new instance's
- * log file has a different offset space, so the user sees empty / garbled
- * content until they refresh.
- */
-
 import React from "react"
 
 import {
@@ -161,5 +151,57 @@ describe("useLogs — premium-assignment-driven reset", () => {
     // Without a real-timer advance, the 2 s tick won't fire on its own, so
     // any serviceLogs call here would only come from a spurious reset.
     expect(mockServiceLogs).not.toHaveBeenCalled()
+  })
+
+  test("does NOT call reset on first non-null assignment after a null start", async () => {
+    mockAssignment = null
+    const captureRef: { current: Handle | null } = { current: null }
+    const { rerender } = render(<Harness captureRef={captureRef} />)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    mockServiceLogs.mockClear()
+
+    // First real assignment lands — this is not a migration.
+    mockAssignment = sharedAssignment
+    await act(async () => {
+      rerender(<Harness captureRef={captureRef} />)
+      await Promise.resolve()
+    })
+
+    expect(mockServiceLogs).not.toHaveBeenCalled()
+  })
+
+  test("calls reset exactly once across 'X' → null → 'Y'", async () => {
+    mockAssignment = sharedAssignment
+    const captureRef: { current: Handle | null } = { current: null }
+    const { rerender } = render(<Harness captureRef={captureRef} />)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    mockServiceLogs.mockClear()
+
+    // Transient null — must not trigger reset.
+    mockAssignment = null
+    await act(async () => {
+      rerender(<Harness captureRef={captureRef} />)
+      await Promise.resolve()
+    })
+    expect(mockServiceLogs).not.toHaveBeenCalled()
+
+    // New instance arrives — reset fires exactly once.
+    mockServiceLogs.mockResolvedValue(mkResponse("i-dedicated-A"))
+    mockAssignment = dedicatedAssignment
+    await act(async () => {
+      rerender(<Harness captureRef={captureRef} />)
+      await Promise.resolve()
+    })
+
+    expect(mockServiceLogs).toHaveBeenCalled()
+    expect(captureRef.current?.logs).toEqual([])
   })
 })

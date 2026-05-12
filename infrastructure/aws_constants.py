@@ -157,8 +157,11 @@ class PremiumInstanceConfig:
 
     @classmethod
     def get_backend_port(cls) -> int:
-        """TCP port the FastAPI service listens on inside premium instances."""
-        return int(os.environ.get("BACKEND_PORT", "8000"))
+        raw = os.environ.get("BACKEND_PORT", "8000")
+        port = int(raw)
+        if not 1 <= port <= 65535:
+            raise ValueError(f"BACKEND_PORT out of range: {raw}")
+        return port
 
     @classmethod
     def get_instance_name_pattern(cls) -> str:
