@@ -294,4 +294,40 @@ describe("PremiumAssignmentProvider — polling routing restore", () => {
     // Regression: without fix (B), the terminal "No premium instance available" error fires here.
     expect(ctxRef.current?.error).toBeNull()
   })
+
+  test("polling fires via unreachable path on dedicated assignment, uses /status not /assign", async () => {
+    // Models the live scenario the bundle-inspection check substituted for: dedicated EC2
+    // dies, axios.handlePremiumRoutingError emits emitPremiumUnreachable, the unreachable
+    // machine flips, shouldPoll returns true via the unreachable path (not the shared
+    // path), and the polling tick must call /status — not /assign.
+    mockGetPremiumStatus.mockResolvedValue(dedicatedStatus)
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.is_shared).toBe(false)
+    })
+
+    act(() => {
+      routingService.emitPremiumUnreachable({
+        url: "/some/premium-routed/endpoint",
+        status: 503,
+        sentAt: 1000,
+      })
+    })
+    await waitFor(() => {
+      expect(ctxRef.current?.unreachable.state.instanceUnreachable).toBe(true)
+    })
+
+    mockGetPremiumStatus.mockClear()
+    mockAssignPremiumInstance.mockClear()
+
+    await act(async () => {
+      jest.advanceTimersByTime(60_000)
+      await Promise.resolve()
+    })
+
+    expect(mockGetPremiumStatus).toHaveBeenCalled()
+    expect(mockAssignPremiumInstance).not.toHaveBeenCalled()
+  })
 })
