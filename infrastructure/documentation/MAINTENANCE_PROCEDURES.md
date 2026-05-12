@@ -1,6 +1,6 @@
-# OptiNiSt Cloud Maintenance Procedures
+# Araya OptiNiSt Maintenance Procedures
 
-This document defines the roles, responsibilities, and periodic maintenance tasks required to keep the OptiNiSt Cloud production environment healthy and reliable.
+This document defines the roles, responsibilities, and periodic maintenance tasks required to keep the Araya OptiNiSt production environment healthy and reliable.
 
 Weekly and monthly checks are automated by maintenance scripts that collect data from AWS and produce a markdown report. **Always use the scripts** — do not run the underlying CLI commands manually unless you are debugging a specific issue.
 

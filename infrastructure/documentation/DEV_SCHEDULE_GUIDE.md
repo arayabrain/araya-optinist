@@ -103,7 +103,7 @@ stop will be skipped. Clear it first if you want to force a stop:
 
 ```bash
 aws ssm put-parameter \
-  --name /development/optinist/schedule-override \
+  --name /development/araya-optinist/schedule-override \
   --value off \
   --type String \
   --overwrite \
@@ -130,7 +130,7 @@ The value is a UTC expiry timestamp (e.g., `2026-03-18T16:00:00Z`) or `off`:
 
 ```bash
 aws ssm get-parameter \
-  --name /development/optinist/schedule-override \
+  --name /development/araya-optinist/schedule-override \
   --query 'Parameter.Value' \
   --region ap-northeast-1 \
   --output text

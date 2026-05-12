@@ -1,4 +1,4 @@
-# Araya-OptiNiSt Cloud <img src="docs/_static/optinist.png" width="77" title="optinist" alt="optinist" align="right" vspace = "50"><img src="docs/_static/araya_logo.png" width="200" title="araya" alt="araya" align="right" vspace = "50">
+# Araya OptiNiSt <img src="docs/_static/optinist.png" width="77" title="optinist" alt="optinist" align="right" vspace = "50"><img src="docs/_static/araya_logo.png" width="200" title="araya" alt="araya" align="right" vspace = "50">
 
 <p align="center">
     <a>
@@ -27,9 +27,9 @@
     </a>
 </p>
 
-**Araya-OptiNiSt Cloud** allows researchers to process and visualize their calcium imaging data entirely online. It was built by [Araya Inc.](https://www.araya.org/en/) on top of [OptiNiSt](https://github.com/oist/optinist), an open-source calcium imaging pipeline tool originally developed in collaboration with [OIST](https://www.oist.jp/).
+**Araya OptiNiSt** allows researchers to process and visualize their calcium imaging data entirely online. It was built by [Araya Inc.](https://www.araya.org/en/) on top of [OptiNiSt](https://github.com/oist/optinist), an open-source calcium imaging pipeline tool originally developed in collaboration with [OIST](https://www.oist.jp/).
 
-We believe in open, reproducible science and in making it easy to share results between labs. Araya-OptiNiSt Cloud is built around these principles:
+We believe in open, reproducible science and in making it easy to share results between labs. Araya OptiNiSt is built around these principles:
 
 - **Public Data Sharing**: Publish your experiments to the [public page](https://www.araya-optinist.com/public), where anyone can view your results and reproduce your workflows without needing an account.
 - **Cloud Computing**: Run analysis pipelines on cloud infrastructure without managing local hardware.

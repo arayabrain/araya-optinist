@@ -321,7 +321,7 @@ terraform output alb_dns_name
 terraform output rds_endpoint
 
 # Sensitive output
-terraform output -raw optinist_cloud_user_secret_access_key
+terraform output -raw araya_optinist_cloud_user_secret_access_key
 ```
 
 ### Update a Single Resource
