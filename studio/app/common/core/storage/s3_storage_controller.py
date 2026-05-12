@@ -65,10 +65,12 @@ class S3StorageController(BaseRemoteStorageController):
         logger.debug(f"Init S3StorageController: {bucket_name=}")
 
     def __get_s3_client(self):
-        return aioboto3.Session().client("s3")
+        region = os.environ.get("AWS_DEFAULT_REGION")
+        return aioboto3.Session().client("s3", region_name=region)
 
     def __get_s3_resource(self):
-        return aioboto3.Session().resource("s3")
+        region = os.environ.get("AWS_DEFAULT_REGION")
+        return aioboto3.Session().resource("s3", region_name=region)
 
     def _make_input_data_local_path(self, workspace_id: str, filename: str) -> str:
         input_data_local_path = join_filepath(
@@ -497,6 +499,14 @@ class S3StorageController(BaseRemoteStorageController):
             if is_no_such_bucket_error(e):
                 logger.warning(f"Bucket does not exist: {self.bucket_name}")
                 raise RemoteStorageBucketNotFoundError(self.bucket_name) from e
+            logger.error(
+                "S3 list_objects_v2 failed: bucket=%s, prefix=%s, "
+                "region=%s, error=%s",
+                self.bucket_name,
+                __class__.make_s3_output_prefix(),
+                os.environ.get("AWS_DEFAULT_REGION", "(not set)"),
+                e,
+            )
             raise
 
         if "CommonPrefixes" not in workspaces_response:
