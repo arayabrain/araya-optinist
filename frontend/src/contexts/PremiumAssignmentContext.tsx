@@ -804,7 +804,7 @@ export const PremiumAssignmentProvider: React.FC<{
     // synchronously-computed value derived from currentUser. Closes the
     // logout race where the mirror effect hasn't propagated yet on a
     // same-tab sign-out → sign-in flow, causing useLogout's gate to bail
-    // with stale state.isPremiumUser=false (ISSUE_5).
+    // with stale state.isPremiumUser=false
     isPremiumUser,
     assign,
     release,

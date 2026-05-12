@@ -1407,7 +1407,7 @@ class TestHeartbeatRestoresPendingRelease:
 
     Mirrors the user_activity_middleware behaviour so explicit /heartbeat
     calls heal a soft-release triggered by another tab's close. Guards
-    PLAN_5-1's multi-tab fix on the lambda side.
+    the multi-tab fix on the lambda side.
 
     The unit harness mocks `pymysql.connect`, so semantic row-matching is
     not exercised — that's covered by integration tests. Here we assert the

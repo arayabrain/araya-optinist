@@ -813,7 +813,7 @@ class TestHeartbeatFailureTracking:
 class TestPremiumActivityRestoresPendingRelease:
     """SQL widening — heartbeat restores `terminating` rows back to `active`.
 
-    These assertions guard PLAN_5-1's multi-tab close fix. The unit harness
+    These assertions guard the multi-tab close fix. The unit harness
     mocks `session_scope`, so semantic SQL behaviour (which rows actually
     match) is not exercised — that's covered by integration tests. Here we
     assert the SQL shape itself, since the shape encodes the behaviour.
