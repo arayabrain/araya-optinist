@@ -613,6 +613,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
           value = var.environment
         },
         {
+          name  = "AWS_DEFAULT_REGION"
+          value = var.aws_region
+        },
+        {
           name  = "CLOUDWATCH_LOG_GROUP"
           value = "/ecs/${local.env_prefix}-cloud-taskdef"
         },
@@ -872,6 +876,10 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "ENV_PREFIX"
           value = var.environment
+        },
+        {
+          name  = "AWS_DEFAULT_REGION"
+          value = var.aws_region
         },
         {
           name  = "CLOUDWATCH_LOG_GROUP"
