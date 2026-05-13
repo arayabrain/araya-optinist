@@ -171,6 +171,9 @@ export const PremiumAssignmentProvider: React.FC<{
   // StrictMode double-invocations without triggering extra renders.
   const hasAttemptedRef = useRef(ssRead(SS_HAS_ATTEMPTED) === "true")
 
+  // Bumped to re-fire the auto-assign effect when its deps wouldn't change.
+  const [autoAssignGeneration, setAutoAssignGeneration] = useState(0)
+
   // Polling state with backoff
   const [pollInterval, setPollInterval] = useState(INITIAL_POLL_INTERVAL_MS)
   const [pollAttempts, setPollAttempts] = useState(() => {
@@ -304,6 +307,12 @@ export const PremiumAssignmentProvider: React.FC<{
    */
   const recordActivity = useCallback(async (): Promise<void> => {
     if (!isPremiumUser) return
+
+    // No assignment — trigger re-assign; a heartbeat without an instance fails.
+    if (!hasAttemptedRef.current) {
+      setAutoAssignGeneration((g) => g + 1)
+      return
+    }
 
     for (let attempt = 0; attempt < HEARTBEAT_MAX_RETRIES; attempt++) {
       try {
@@ -560,9 +569,9 @@ export const PremiumAssignmentProvider: React.FC<{
       // On network error (catch below), leave unpersisted so refresh retries.
       ssWrite(SS_HAS_ATTEMPTED, "true") // duplicated in already-assigned path above — both exits must persist
     } catch (error) {
-      // hasAttemptedRef stays true to prevent rapid-fire retries on this mount.
-      // sessionStorage is NOT written, so a page refresh will retry.
-      // Set error state so the error notification fires
+      // Reset so a subsequent user gesture (or page refresh) can retry.
+      // sessionStorage is NOT written on failure, so refresh-triggered retries also work.
+      hasAttemptedRef.current = false
       const errorMessage =
         error instanceof Error ? error.message : "Assignment failed"
       // eslint-disable-next-line no-console
@@ -634,6 +643,9 @@ export const PremiumAssignmentProvider: React.FC<{
         )
         setState((prev) => ({ ...prev, showInactivityWarning: false }))
         autoReleaseOnLogout()
+        tabSync.broadcastPremiumReleased()
+        hasAttemptedRef.current = false
+        ssRemove(SS_HAS_ATTEMPTED)
       } else if (
         timeSinceLastActivity >= oneHourMs &&
         !showInactivityWarningRef.current
@@ -689,9 +701,27 @@ export const PremiumAssignmentProvider: React.FC<{
         assignmentResult: null,
         statusResult: null,
       }))
+      hasAttemptedRef.current = false
+      ssRemove(SS_HAS_ATTEMPTED)
     })
     return unsubscribe
   }, [])
+
+  // Re-fire auto-assign after inactivity auto-release when user resumes activity.
+  useEffect(() => {
+    if (!isPremiumUser) return
+    const onActivity = () => {
+      if (!hasAttemptedRef.current) {
+        setAutoAssignGeneration((g) => g + 1)
+      }
+    }
+    window.addEventListener("pointerdown", onActivity)
+    window.addEventListener("keydown", onActivity)
+    return () => {
+      window.removeEventListener("pointerdown", onActivity)
+      window.removeEventListener("keydown", onActivity)
+    }
+  }, [isPremiumUser])
 
   // Auto-assign when premium user is detected
   useEffect(() => {
@@ -704,7 +734,7 @@ export const PremiumAssignmentProvider: React.FC<{
         hasCurrentUser: !!currentUser,
       })
     }
-  }, [isPremiumUser, currentUser, autoAssignOnLogin])
+  }, [isPremiumUser, currentUser, autoAssignOnLogin, autoAssignGeneration])
 
   // Reset polling state when user changes or gets a dedicated instance
   useEffect(() => {
