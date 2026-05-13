@@ -100,7 +100,7 @@ export function useInstanceUnreachableMachine({
   const hasSeenNonDedicatedRef = useRef(false)
   // Timestamp of the most recent shared → dedicated transition (or a dedicated
   // reassignment onto a different instance_id). Used to suppress a transient
-  // first 5xx during the new dedicated ALB's warm-up — see issue #575.
+  // first 5xx during the new dedicated ALB's warm-up.
   const dedicatedSinceRef = useRef<number | null>(null)
 
   // Consolidated state → refs mirror (one effect for three refs).

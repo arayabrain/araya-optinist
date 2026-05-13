@@ -370,7 +370,7 @@ describe("PremiumNotificationManager — assignment success snackbar", () => {
     })
   }
 
-  test("success snackbar uses 10s autoHideDuration and exposes a Dismiss action", () => {
+  test("success snackbar persists and inherits the default close action", () => {
     renderAndMigrate()
 
     const successCall = snackbarLog.find((c) =>
@@ -378,22 +378,8 @@ describe("PremiumNotificationManager — assignment success snackbar", () => {
     )
     expect(successCall).toBeDefined()
     expect(successCall?.options?.variant).toBe("success")
-    expect(successCall?.options?.autoHideDuration).toBe(10000)
-    expect(typeof successCall?.options?.action).toBe("function")
-  })
-
-  test("clicking Dismiss on the success snackbar closes it", () => {
-    renderAndMigrate()
-
-    const successCall = snackbarLog.find((c) =>
-      c.message.includes("Premium instance assigned successfully"),
-    )!
-    expect(typeof successCall.options?.action).toBe("function")
-
-    const actionEl = successCall.options!.action!(successCall.key)
-    const { getByRole } = render(<>{actionEl}</>)
-    fireEvent.click(getByRole("button", { name: /dismiss/i }))
-
-    expect(mockCloseSnackbar).toHaveBeenCalledWith(successCall.key)
+    expect(successCall?.options?.persist).toBe(true)
+    expect(successCall?.options?.autoHideDuration).toBeUndefined()
+    expect(successCall?.options?.action).toBeUndefined()
   })
 })

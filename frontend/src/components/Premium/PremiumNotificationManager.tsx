@@ -93,19 +93,7 @@ const PremiumNotificationManager: FC = () => {
           "You now have dedicated compute resources.",
         {
           variant: "success",
-          // Longer than the default toast lifetime so a transient warning
-          // popup during the dedicated ALB warm-up (issue #575) cannot
-          // overwrite the confirmation before the user reads it.
-          autoHideDuration: 10000,
-          action: (snackbarKey) => (
-            <Button
-              size="small"
-              color="inherit"
-              onClick={() => closeSnackbar(snackbarKey)}
-            >
-              Dismiss
-            </Button>
-          ),
+          persist: true,
         },
       )
       logPremiumUiEvent("dedicated_instance_ready", {

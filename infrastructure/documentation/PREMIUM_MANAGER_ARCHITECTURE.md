@@ -369,7 +369,7 @@ The authoritative reference. Branches are explicit; toast text matches the strin
 | Leader-tab election | `frontend/src/utils/crossTabSync.ts` -- localStorage key `"premium_poll_leader"`, 2s heartbeat, 5s timeout |
 | Poll config | constants in `PremiumAssignmentContext.tsx`: `INITIAL_POLL_INTERVAL_MS=30000`, `MAX_POLL_INTERVAL_MS=60000`, `MAX_POLL_ATTEMPTS=40`, `BACKOFF_MULTIPLIER=1.5`, `ERROR_BACKOFF_MULTIPLIER=2` |
 | Polling gate | `shouldPoll()` in `PremiumAssignmentContext.tsx`: polls while premium+leader+assignment exists and the assignment is not dedicated-and-healthy. Re-enables polling while `instanceUnreachable` is true so a backend reassignment to shared or to a new instance is still caught |
-| Unreachable detection + probe config | `unreachableMachineReducer` and constants in `frontend/src/contexts/premium/unreachableConstants.ts`: `INITIAL_PROBE_DELAY_MS=30000`, `MAX_PROBE_DELAY_MS=300000`, `PROBE_BACKOFF_MULTIPLIER=2`, `MAX_FAILED_PROBES=5`, `DEDICATED_HANDOFF_GRACE_MS=15000` (single-shot suppression of the first 5xx after a shared → dedicated transition or dedicated reassignment, to avoid false-positive unreachable popups during ALB target-group warm-up — issue #575) |
+| Unreachable detection + probe config | `unreachableMachineReducer` and constants in `frontend/src/contexts/premium/unreachableConstants.ts`: `INITIAL_PROBE_DELAY_MS=30000`, `MAX_PROBE_DELAY_MS=300000`, `PROBE_BACKOFF_MULTIPLIER=2`, `MAX_FAILED_PROBES=5`, `DEDICATED_HANDOFF_GRACE_MS=15000` (single-shot suppression of the first 5xx after a shared → dedicated transition or dedicated reassignment, to avoid false-positive unreachable popups during ALB target-group warm-up) |
 | Inactivity thresholds | 1h/2h hardcoded in context; countdown length `INACTIVITY_WARNING_DURATION_MINUTES=60` and `WARNING_UPDATE_INTERVAL_MS=60000` from `frontend/src/const/Subscription.ts` |
 | Heartbeat retry | `HEARTBEAT_MAX_RETRIES=3`, `HEARTBEAT_RETRY_DELAY_MS=1000`; delay between attempts is `DELAY * (attempt + 1)` |
 | 401 session-expired UI | `InactivityWarning.tsx` -- AxiosError + status 401 path, 2 s setTimeout then `performLogout()` |
@@ -1181,7 +1181,7 @@ Handles user notifications for premium assignment events using notistack.
 
 | Event | Variant | Message | Behavior |
 |-------|---------|---------|----------|
-| Dedicated instance assigned | `success` | "Premium instance assigned successfully!" | Auto-dismiss after 10s, plus a `Dismiss` action — duration was bumped from 5s and the action added so the toast cannot be visually overwritten by a transient warning popup during the dedicated ALB warm-up (issue #575) |
+| Dedicated instance assigned | `success` | "Premium instance assigned successfully!" | Persistent so a transient warning popup during the dedicated ALB warm-up cannot visually overwrite the toast; user must click the default close "X" inherited from `SnackbarProvider` |
 | No dedicated instance yet | `info` | "Please wait while your dedicated premium resource is being prepared." | Persistent |
 | Assignment error (non-scaling) | `warning` | "Premium assignment issue: {error}" | Auto-dismiss |
 | Scaling/retry errors | (suppressed) | N/A | Silently ignored |
