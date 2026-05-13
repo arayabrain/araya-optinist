@@ -1,4 +1,4 @@
-# OptiNiSt Cloud — Application Deployment & Release Guide
+# Araya OptiNiSt — Application Deployment & Release Guide
 
 This document covers **application code deployment, release procedures, and Git workflow**. Use this guide when deploying code changes (frontend, studio, Lambda) to the AWS environment.
 
@@ -359,30 +359,30 @@ Update version numbers in the following files before building:
 
 ```bash
 # Run the test suite
-cd /path/to/optinist-for-cloud
-pytest studio/tests/
+cd /path/to/araya-optinist
+make test_run_all
 ```
 
-### 3. Staging Environment Testing (test-optinist-for-cloud) TODO
+### 3. Staging Environment Testing (staging-araya-optinist) [TODO]
 
 **Status:** Not yet set up
 
-A parallel test infrastructure (`test-optinist-for-cloud`) will be available for pre-release testing. This is an exact copy of the production infrastructure with `test-` prefix on all resources.
+A parallel staging infrastructure (`staging-araya-optinist`) will be available for pre-release testing. This is an exact copy of the production infrastructure with `staging-` prefix on all resources.
 
 **Workflow:**
 
-1. **Create test environment:**
+1. **Create staging environment:**
 
    ```bash
    cd infrastructure/terraform
-   # Use test workspace/configuration
-   terraform workspace select test
+   # Use staging workspace/configuration
+   terraform workspace select staging
    terraform apply
    ```
 
-2. **Deploy and test:**
-   - Build and push Docker image to test ECR
-   - Run manual test cases against test environment
+2. **Deploy and staging:**
+   - Build and push Docker image to staging ECR
+   - Run manual staging cases against staging environment
    - Verify all functionality works as expected
 
 3. **Destroy after testing:**
@@ -390,10 +390,10 @@ A parallel test infrastructure (`test-optinist-for-cloud`) will be available for
    terraform destroy
    ```
 
-**Test Environment Resources:**
+**Staging Environment Resources:**
 
-- `test-subscr-optinist-cluster` (ECS)
-- `test-subscr-optinist-*` (ALB, RDS, S3, etc.)
+- `staging-subscr-optinist-cluster` (ECS)
+- `staging-subscr-optinist-*` (ALB, RDS, S3, etc.)
 - Separate Secrets Manager secrets
 - Isolated from production data
 
@@ -420,7 +420,7 @@ aws cloudwatch get-metric-statistics \
   --region ap-northeast-1
 ```
 
-**TODO:** Register an Araya team email address to receive CloudWatch Alarm notifications for crash reports and errors.
+**TODO:** Register an Support team email address to receive CloudWatch Alarm notifications for crash reports and errors.
 
 ---
 
@@ -465,31 +465,15 @@ feature-branch → develop-main → main → release tag (vX.Y.Z)
 
 ### Release Notes Template
 
-```markdown
-## What's Changed
-
-### New Features
-
-- Feature description (#PR_NUMBER)
-
-### Bug Fixes
-
-- Fix description (#PR_NUMBER)
-
-### Improvements
-
-- Improvement description (#PR_NUMBER)
-
-**Full Changelog:** https://github.com/arayabrain/araya-optinist/compare/vX.Y.Z-1...vX.Y.Z
-```
+See: [RELEASE_STYLE_GUIDE.md](https://github.com/arayabrain/araya-optinist/blob/develop-subscription/.github/RELEASE_STYLE_GUIDE.md)
 
 ---
 
 ## Documentation Updates
 
-### Readthedocs TODO
+### Readthedocs
 
-**Documentation URL:** https://optinist-for-cloud.readthedocs.io
+**Documentation URL:** https://araya-optinist.readthedocs.io
 
 1. Documentation source files are located in the `docs/` directory
 
@@ -503,15 +487,15 @@ feature-branch → develop-main → main → release tag (vX.Y.Z)
 
 3. **Trigger Readthedocs build:**
    - Login to [Readthedocs Dashboard](https://readthedocs.org/dashboard/)
-   - Navigate to the optinist-for-cloud project
+   - Navigate to the araya-optinist
    - Click "Build Version"
    - Wait for build to complete
 
 4. **Verify the update:**
-   - Visit https://optinist-for-cloud.readthedocs.io
+   - Visit https://araya-optinist.readthedocs.io
    - Confirm changes are reflected
 
-### Wiki TODO
+### Wiki [TODO]
 
 **Wiki URL:** https://github.com/oist/optinist/wiki
 
@@ -574,7 +558,11 @@ For hotfixes, perform focused testing:
    - Basic workflow execution works
 3. **Run automated tests:**
    ```bash
-   pytest studio/tests/ -x  # Stop on first failure for faster feedback
+    # test for backend only
+    pytest studio/tests/ -x# Stop on first failure for faster feedback
+
+    # full test
+    make test_run_all
    ```
 
 #### 4. Deploy Hotfix
