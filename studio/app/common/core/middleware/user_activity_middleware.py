@@ -568,16 +568,26 @@ def _update_premium_user_activity_sync(user_id: int) -> bool:
         with session_scope() as session:
             now = datetime.now(timezone.utc)
 
-            # Update last_activity and reset heartbeat_failures
-            # Uses raw SQL for efficiency (no need to load full ORM object)
+            # Update last_activity and reset heartbeat_failures.
+            # Also restores a row from `terminating` (= PENDING_RELEASE) back to
+            # `active` so multi-tab close on Tab A doesn't silently finalize
+            # Tab B's still-active session during the 120s grace window.
             result = session.execute(
                 text(
                     """
                 UPDATE premium_user_assignments
-                SET last_activity = :now, heartbeat_failures = 0
+                SET last_activity = :now,
+                    status = 'active',
+                    heartbeat_failures = 0
                 WHERE user_id = :user_id
-                AND status = 'active'
+                AND status IN ('active', 'terminating')
                 AND is_standby = 0
+                AND (
+                    status = 'active'
+                    OR instance_state IS NULL
+                    OR instance_state NOT IN
+                        ('terminated','shutting-down','stopped','stopping')
+                )
                 """
                 ),
                 {"now": now, "user_id": user_id},

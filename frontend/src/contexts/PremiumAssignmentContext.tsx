@@ -66,7 +66,7 @@ export const SS_POLL_ATTEMPTS = "premium_pollAttempts"
 
 // Canonical PremiumAssignment (from /status) → PremiumAssignmentResult shape
 // consumed by the rest of the provider. Fields absent from /status
-// (retry_after, scaling_in_progress, assignment_source) stay undefined.
+// (retry_after, scaling_in_progress) stay undefined.
 const statusToAssignmentResult = (
   assignment: PremiumAssignment,
   message: string,
@@ -75,6 +75,7 @@ const statusToAssignmentResult = (
   instance_id: assignment.instance_id,
   assigned: true,
   is_shared: assignment.is_shared,
+  assignment_source: assignment.assignment_source,
 })
 
 function ssRead(key: string): string | null {
@@ -493,10 +494,14 @@ export const PremiumAssignmentProvider: React.FC<{
       }
       if (statusResponse?.assignment) {
         // User already has an assignment - update state immediately so notifications trigger
-        const assignmentResult = statusToAssignmentResult(
-          statusResponse.assignment,
-          "Premium instance already assigned",
-        )
+        const assignmentResult: PremiumAssignmentResult = {
+          ...statusToAssignmentResult(
+            statusResponse.assignment,
+            "Premium instance already assigned",
+          ),
+          assignment_source:
+            statusResponse.assignment.assignment_source ?? "existing",
+        }
         setState((prev) => ({
           ...prev,
           assignmentResult,
@@ -676,6 +681,9 @@ export const PremiumAssignmentProvider: React.FC<{
   // Listen for premium release events from other tabs (Cases 54-56)
   useEffect(() => {
     const unsubscribe = tabSync.on("PREMIUM_RELEASED", () => {
+      // Backend has already released this assignment; drop the local token
+      // so a later logout/beforeunload doesn't beacon a now-invalid token.
+      beaconTokenRef.current = null
       setState((prev) => ({
         ...prev,
         assignmentResult: null,
@@ -852,6 +860,12 @@ export const PremiumAssignmentProvider: React.FC<{
 
   const contextValue: PremiumAssignmentContextType = {
     ...state,
+    // Override state.isPremiumUser (mirror-effect-driven) with the
+    // synchronously-computed value derived from currentUser. Closes the
+    // logout race where the mirror effect hasn't propagated yet on a
+    // same-tab sign-out → sign-in flow, causing useLogout's gate to bail
+    // with stale state.isPremiumUser=false
+    isPremiumUser,
     assign,
     release,
     getStatus,

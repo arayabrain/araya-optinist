@@ -95,7 +95,8 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
         )
 
         logger.info(
-            "[premium-assign] user=%s assigned=%s is_shared=%s instance=%s source=%s",
+            "[premium-assign] user=%s assigned=%s is_shared=%s "
+            "instance=%s source=%s",
             current_user.id,
             result.get("success"),
             result.get("is_shared"),
@@ -111,7 +112,6 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
                 "is_shared": result.get("is_shared", False),
                 "assignment_source": result.get("assignment_source"),
             }
-            logger.debug(f"API response: {response}")
             return response
         elif result.get("requires_retry"):
             # Return 202 for scaling in progress
@@ -226,9 +226,10 @@ async def release_premium_beacon(request: Request, db: Session = Depends(get_db)
         )
 
         logger.info(
-            f"[premium-trace] beacon-released user={user.id} "
-            f"instance={result.get('released_instance')} "
-            f"message={result.get('message')}"
+            "[premium-trace] beacon-released user=%s instance=%s message=%s",
+            user.id,
+            result.get("released_instance"),
+            result.get("message"),
         )
         return {
             "success": True,

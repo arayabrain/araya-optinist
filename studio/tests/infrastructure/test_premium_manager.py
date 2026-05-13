@@ -1402,6 +1402,97 @@ class TestDatabaseCommits:
             mock_connection.commit.assert_called()
 
 
+class TestHeartbeatRestoresPendingRelease:
+    """SQL widening — heartbeat restores `pending_release` rows back to `active`.
+
+    Mirrors the user_activity_middleware behaviour so explicit /heartbeat
+    calls heal a soft-release triggered by another tab's close. Guards
+    the multi-tab fix on the lambda side.
+
+    The unit harness mocks `pymysql.connect`, so semantic row-matching is
+    not exercised — that's covered by integration tests. Here we assert the
+    SQL shape and parameter binding, since they encode the behaviour.
+    """
+
+    def _execute_timestamp_update(self, mock_env_vars_premium, rowcount=1):
+        """Run update_user_activity_timestamp under a mocked DB connection.
+
+        Returns (result, mock_cursor, sql_text, sql_params). The cursor is
+        returned so caller can inspect both the SQL text and the parameter
+        tuple passed to execute().
+        """
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql:
+            mock_connection = setup_db_mock()
+            mock_pymysql.return_value = mock_connection
+
+            mock_cursor = mock_connection.cursor.return_value.__enter__.return_value
+            mock_cursor.rowcount = rowcount
+
+            from premium_manager import update_user_activity_timestamp
+
+            result = update_user_activity_timestamp(42)
+
+            execute_call = mock_cursor.execute.call_args
+            sql_text = execute_call[0][0]
+            sql_params = execute_call[0][1] if len(execute_call[0]) > 1 else ()
+            return result, mock_connection, sql_text, sql_params
+
+    def test_sql_matches_active_and_pending_release(self, mock_env_vars_premium):
+        """Filter widened from is_standby=0 only to IN (active, pending_release)."""
+        _, _, sql_text, _ = self._execute_timestamp_update(mock_env_vars_premium)
+        assert "status IN" in sql_text
+
+    def test_sql_uses_premium_assignment_status_constants(self, mock_env_vars_premium):
+        """Parameter binding uses PremiumAssignment.ACTIVE / PENDING_RELEASE
+        constants, not raw strings — protects against the
+        'terminating' / 'pending_release' aliasing footgun in aws_constants."""
+        from aws_constants import PremiumAssignment
+
+        _, _, _, sql_params = self._execute_timestamp_update(mock_env_vars_premium)
+        # CASE WHEN status = PENDING_RELEASE THEN ACTIVE, then user_id,
+        # then IN(ACTIVE, PENDING_RELEASE), then OR-branch status = ACTIVE.
+        assert PremiumAssignment.PENDING_RELEASE in sql_params
+        assert PremiumAssignment.ACTIVE in sql_params
+        # Active appears in three places (THEN clause, IN list, OR branch).
+        assert sql_params.count(PremiumAssignment.ACTIVE) == 3
+        # Pending_release appears in two places (CASE WHEN, IN list).
+        assert sql_params.count(PremiumAssignment.PENDING_RELEASE) == 2
+
+    def test_sql_flips_pending_release_to_active_via_case(self, mock_env_vars_premium):
+        """CASE expression restores pending_release rows to active."""
+        _, _, sql_text, _ = self._execute_timestamp_update(mock_env_vars_premium)
+        assert "CASE" in sql_text
+        assert "WHEN status = %s THEN %s" in sql_text
+
+    def test_sql_guards_against_known_dead_instance_states(self, mock_env_vars_premium):
+        """instance_state guard prevents restoring known-dead rows."""
+        _, _, sql_text, _ = self._execute_timestamp_update(mock_env_vars_premium)
+        assert "instance_state NOT IN" in sql_text
+        for dead_state in ("terminated", "shutting-down", "stopped", "stopping"):
+            assert dead_state in sql_text
+
+    def test_returns_true_when_row_matched(self, mock_env_vars_premium):
+        """rowcount > 0 → returns True (row was updated or restored)."""
+        result, _, _, _ = self._execute_timestamp_update(
+            mock_env_vars_premium, rowcount=1
+        )
+        assert result is True
+
+    def test_returns_false_when_no_row_matched(self, mock_env_vars_premium):
+        """rowcount == 0 → returns False (no row, or escape valve blocked)."""
+        result, _, _, _ = self._execute_timestamp_update(
+            mock_env_vars_premium, rowcount=0
+        )
+        assert result is False
+
+    def test_commits_after_update(self, mock_env_vars_premium):
+        """@with_transaction decorator commits on success."""
+        _, mock_connection, _, _ = self._execute_timestamp_update(mock_env_vars_premium)
+        mock_connection.commit.assert_called()
+
+
 class TestGetAllPremiumInstances:
     """get_all_premium_instances tests."""
 
