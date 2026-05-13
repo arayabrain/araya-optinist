@@ -133,12 +133,8 @@ describe("PremiumNotificationManager — unreachable snackbar", () => {
     snackbarLog = []
     snackbarKeyCounter = 0
     mockCtxValue = baseCtx()
-    // These tests focus on the unreachable snackbar. baseCtx has a
-    // fully-assigned dedicated instance, which would also trigger the
-    // success snackbar on first render. Pre-mark the session as already
-    // notified for this instance_id so only the unreachable snackbar
-    // appears — mirroring the realistic state where unreachable events
-    // arrive after the user has already seen the assignment confirmation.
+    // Pre-mark this instance_id as already notified so the success snackbar
+    // doesn't fire — focus of this suite is the unreachable snackbar.
     try {
       sessionStorage.clear()
       sessionStorage.setItem(
@@ -146,7 +142,7 @@ describe("PremiumNotificationManager — unreachable snackbar", () => {
         baseCtx().assignmentResult!.instance_id!,
       )
     } catch {
-      // sessionStorage unavailable in this environment
+      /* sessionStorage unavailable */
     }
 
     mockEnqueueSnackbar.mockImplementation(
@@ -318,12 +314,11 @@ describe("PremiumNotificationManager — assignment success snackbar", () => {
     snackbarLog = []
     snackbarKeyCounter = 0
     mockCtxValue = baseCtx()
-    // Clear sessionStorage so the success-snackbar's per-session
-    // `premium_notified_instance_id` gate doesn't bleed across tests.
+    // Clear the per-session notification flag between tests.
     try {
       sessionStorage.clear()
     } catch {
-      // sessionStorage unavailable in this environment
+      /* sessionStorage unavailable */
     }
 
     mockEnqueueSnackbar.mockImplementation(
@@ -340,12 +335,8 @@ describe("PremiumNotificationManager — assignment success snackbar", () => {
     )
   })
 
-  // Renders the component, then transitions to a dedicated assignment.
-  // The success branch fires when (a) hasDedicatedInstance becomes true,
-  // (b) instance_id differs from `lastAssignmentId` (initial null), and
-  // (c) the per-session sessionStorage flag is not yet set for this id.
+  // Renders on shared, then transitions to dedicated — fires the success branch.
   const renderAndMigrate = () => {
-    // Start on shared so the waiting snackbar is enqueued.
     mockCtxValue = {
       ...baseCtx(),
       assignmentResult: {
@@ -356,7 +347,6 @@ describe("PremiumNotificationManager — assignment success snackbar", () => {
     }
     const { rerender } = render(<PremiumNotificationManager />)
 
-    // Now flip to a dedicated assignment — fires success branch.
     mockCtxValue = {
       ...mockCtxValue,
       assignmentResult: {

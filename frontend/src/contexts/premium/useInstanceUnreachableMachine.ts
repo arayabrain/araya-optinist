@@ -92,15 +92,10 @@ export function useInstanceUnreachableMachine({
   const lastReachableSentAtRef = useRef(0)
   // Last dedicated instance_id — lets the effect below detect a reassignment to a different instance.
   const prevDedicatedInstanceIdRef = useRef<string | undefined>(undefined)
-  // True once we have observed any non-dedicated assignment during this hook
-  // lifetime. Distinguishes "user just migrated from shared → dedicated"
-  // (grace needed) from "page mounted with the user already on dedicated"
-  // (no migration, no grace) — without this flag the first dedicated
-  // assignment seen on mount would falsely arm the grace.
+  // Distinguishes a true shared → dedicated migration from an initial mount
+  // already on dedicated (no warm-up to absorb in the latter).
   const hasSeenNonDedicatedRef = useRef(false)
-  // Timestamp of the most recent shared → dedicated transition (or a dedicated
-  // reassignment onto a different instance_id). Used to suppress a transient
-  // first 5xx during the new dedicated ALB's warm-up.
+  // Timestamp of the most recent shared → dedicated transition.
   const dedicatedSinceRef = useRef<number | null>(null)
 
   // Consolidated state → refs mirror (one effect for three refs).
@@ -118,10 +113,7 @@ export function useInstanceUnreachableMachine({
     if (shouldClearUnreachableForAssignment(assignment)) {
       prevDedicatedInstanceIdRef.current = undefined
       dedicatedSinceRef.current = null
-      // Track that this lifetime has seen a non-dedicated state — needed to
-      // distinguish a shared → dedicated migration from an initial mount.
-      // Only counts when there is actually an assignment object; a null
-      // assignment is "we don't know yet", not "user is on shared".
+      // Only a concrete assignment counts — null is "unknown", not shared.
       if (assignment != null) {
         hasSeenNonDedicatedRef.current = true
       }
@@ -151,9 +143,7 @@ export function useInstanceUnreachableMachine({
       prevDedicatedInstanceIdRef.current === undefined &&
       hasSeenNonDedicatedRef.current
     ) {
-      // True shared → dedicated migration during this hook lifetime: arm the
-      // grace. NOT armed when the page just mounted with the user already on
-      // a dedicated instance, since there is no ALB warm-up to absorb.
+      // Shared → dedicated migration: arm the warm-up grace.
       dedicatedSinceRef.current = Date.now()
     }
     prevDedicatedInstanceIdRef.current = assignment?.instance_id
@@ -178,20 +168,13 @@ export function useInstanceUnreachableMachine({
         return
       }
 
-      // Warm-up grace: suppress the first 5xx that hits within
-      // DEDICATED_HANDOFF_GRACE_MS of a shared → dedicated transition (or
-      // dedicated reassignment). The dedicated ALB target group can return a
-      // single transient 5xx during warm-up that is not a true outage and
-      // would otherwise overwrite the success toast with a warning popup.
-      // Only applies before the machine has flipped to unreachable; once
-      // unreachable, normal probe semantics take over.
+      // Single-shot warm-up grace — absorbs one transient 5xx within
+      // DEDICATED_HANDOFF_GRACE_MS of a handoff before flipping unreachable.
       if (
         !unreachableRef.current &&
         dedicatedSinceRef.current !== null &&
         Date.now() - dedicatedSinceRef.current < DEDICATED_HANDOFF_GRACE_MS
       ) {
-        // Consume the grace once so subsequent failures during this transition
-        // window are treated normally.
         dedicatedSinceRef.current = null
         logPremiumUiEvent("instance_unreachable_warmup_suppressed", {
           instance_id: a.instance_id ?? null,

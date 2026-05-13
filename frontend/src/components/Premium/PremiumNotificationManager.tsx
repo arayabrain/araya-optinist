@@ -13,11 +13,6 @@ import { Button } from "@mui/material"
 import { logPremiumUiEvent } from "api/premium/PremiumAssignmentApi"
 import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 
-// sessionStorage key — tracks the instance_id we've already notified about
-// for this browser session. Cleared automatically when the tab closes,
-// so a fresh login always shows one confirmation. Replaces the old
-// `wasWaiting` gate, which incorrectly suppressed the snackbar when the
-// user was already-assigned at login (no waiting popup ever shown).
 const SS_NOTIFIED_INSTANCE_KEY = "premium_notified_instance_id"
 
 function ssGetNotifiedInstance(): string | null {
@@ -63,18 +58,8 @@ const PremiumNotificationManager: FC = () => {
   const hasDedicatedInstance =
     assignmentResult?.assigned && !assignmentResult?.is_shared
 
-  // Show success notification when premium instance is assigned.
-  //
-  // Gating: fire once per browser session per instance_id. We use
-  // sessionStorage instead of relying on the in-component `lastAssignmentId`
-  // state because that state resets on every page refresh, which would
-  // re-fire the snackbar. sessionStorage clears when the tab closes,
-  // so the next session sees a fresh confirmation.
-  //
-  // We do NOT require the waiting popup to have been shown first — that
-  // gate (`wasWaiting`) used to suppress the snackbar on refresh, but it
-  // also incorrectly suppressed it when the user was already-assigned at
-  // login (the autoAssignOnLogin "already assigned" path skips isAssigning).
+  // Fire once per session per instance_id. sessionStorage survives refresh;
+  // component state doesn't.
   useEffect(() => {
     const instanceId = assignmentResult?.instance_id
     const alreadyNotifiedThisSession =
@@ -114,9 +99,7 @@ const PremiumNotificationManager: FC = () => {
     closeSnackbar,
   ])
 
-  // Show waiting snackbar when premium user does not have a dedicated instance.
-  // Two triggers: isAssigning (assignment API in flight) or assignmentResult
-  // shows a shared instance. Gate prevents flash on refresh before status check.
+  // `assignmentResult &&` gates on having fetched status — avoids a flash on refresh.
   useEffect(() => {
     const needsWaiting =
       isAssigning || (assignmentResult && !hasDedicatedInstance)
