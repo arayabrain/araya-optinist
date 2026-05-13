@@ -23,6 +23,7 @@ import {
   getRoutingInfo,
   releasePremiumInstance,
   sendPremiumHeartbeat,
+  PremiumAssignment,
   PremiumAssignmentResult,
   PremiumStatusResult,
   RoutingInfo,
@@ -62,6 +63,19 @@ const ERROR_BACKOFF_MULTIPLIER = 2
 // Clears automatically when the tab closes.
 const SS_HAS_ATTEMPTED = "premium_hasAttempted"
 export const SS_POLL_ATTEMPTS = "premium_pollAttempts"
+
+// Canonical PremiumAssignment (from /status) → PremiumAssignmentResult shape
+// consumed by the rest of the provider. Fields absent from /status
+// (retry_after, scaling_in_progress, assignment_source) stay undefined.
+const statusToAssignmentResult = (
+  assignment: PremiumAssignment,
+  message: string,
+): PremiumAssignmentResult => ({
+  message,
+  instance_id: assignment.instance_id,
+  assigned: true,
+  is_shared: assignment.is_shared,
+})
 
 function ssRead(key: string): string | null {
   try {
@@ -479,13 +493,10 @@ export const PremiumAssignmentProvider: React.FC<{
       }
       if (statusResponse?.assignment) {
         // User already has an assignment - update state immediately so notifications trigger
-        // Convert PremiumAssignment to PremiumAssignmentResult format
-        const assignmentResult: PremiumAssignmentResult = {
-          message: "Premium instance already assigned",
-          instance_id: statusResponse.assignment.instance_id,
-          assigned: true,
-          is_shared: statusResponse.assignment.is_shared,
-        }
+        const assignmentResult = statusToAssignmentResult(
+          statusResponse.assignment,
+          "Premium instance already assigned",
+        )
         setState((prev) => ({
           ...prev,
           assignmentResult,
@@ -732,6 +743,8 @@ export const PremiumAssignmentProvider: React.FC<{
         const status = await getPremiumStatus()
 
         if (status?.error) {
+          // eslint-disable-next-line no-console
+          console.warn("Premium status poll returned error:", status.error)
           setPollAttempts((prev) => prev + 1)
           setPollInterval((prev) =>
             Math.min(prev * ERROR_BACKOFF_MULTIPLIER, MAX_POLL_INTERVAL_MS),
@@ -744,12 +757,10 @@ export const PremiumAssignmentProvider: React.FC<{
         if (assignment && !assignment.is_shared) {
           // eslint-disable-next-line no-console
           console.log("Premium instance now available:", assignment.instance_id)
-          const result: PremiumAssignmentResult = {
-            message: "Premium instance now available",
-            instance_id: assignment.instance_id,
-            assigned: true,
-            is_shared: false,
-          }
+          const result = statusToAssignmentResult(
+            assignment,
+            "Premium instance now available",
+          )
           // The hook clears unreachable on an instance_id change; same-id is a no-op — reachability must come from a real response.
           setState((prev) => ({
             ...prev,
@@ -775,12 +786,10 @@ export const PremiumAssignmentProvider: React.FC<{
               }
               return {
                 ...prev,
-                assignmentResult: {
-                  message: "Premium instance assignment (shared)",
-                  instance_id: assignment.instance_id,
-                  assigned: true,
-                  is_shared: assignment.is_shared,
-                },
+                assignmentResult: statusToAssignmentResult(
+                  assignment,
+                  "Premium instance assignment (shared)",
+                ),
                 statusResult: status,
               }
             })

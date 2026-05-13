@@ -2678,6 +2678,7 @@ def assign_premium_user(
 
     ec2: "EC2Client" = boto3.client("ec2")
     elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+    backend_port = PremiumInstanceConfig.get_backend_port()
 
     try:
         vpc_id = get_required_env_var("VPC_ID")
@@ -3388,7 +3389,7 @@ def assign_premium_user(
             target_group_response = elbv2.create_target_group(
                 Name=tg_name,
                 Protocol="HTTP",
-                Port=PremiumInstanceConfig.get_backend_port(),
+                Port=backend_port,
                 VpcId=vpc_id,
                 HealthCheckPath="/health",
                 HealthCheckProtocol="HTTP",
@@ -3414,16 +3415,11 @@ def assign_premium_user(
                 f"[premium-tg-mutate] site=assign action=register "
                 f"user={user_id} instance={instance_id} "
                 f"tg={target_group_arn} "
-                f"port={PremiumInstanceConfig.get_backend_port()}"
+                f"port={backend_port}"
             )
             elbv2.register_targets(
                 TargetGroupArn=target_group_arn,
-                Targets=[
-                    {
-                        "Id": instance_id,
-                        "Port": PremiumInstanceConfig.get_backend_port(),
-                    }
-                ],
+                Targets=[{"Id": instance_id, "Port": backend_port}],
             )
 
         # Create ALB listener rule for user routing
@@ -4187,6 +4183,8 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
     # Import the utility function
     from premium_user_utils import can_migrate_user
 
+    backend_port = PremiumInstanceConfig.get_backend_port()
+
     # Check if user can be safely migrated (no active workflows)
     if not can_migrate_user(user_id):
         print(
@@ -4250,16 +4248,11 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                         f"action=register user={user_id} "
                         f"instance={new_instance_id} "
                         f"tg={new_target_group_arn} "
-                        f"port={PremiumInstanceConfig.get_backend_port()}"
+                        f"port={backend_port}"
                     )
                     elbv2.register_targets(
                         TargetGroupArn=new_target_group_arn,
-                        Targets=[
-                            {
-                                "Id": new_instance_id,
-                                "Port": PremiumInstanceConfig.get_backend_port(),
-                            }
-                        ],
+                        Targets=[{"Id": new_instance_id, "Port": backend_port}],
                     )
 
                     # Check if old ALB rule exists, create new one if not
@@ -4365,16 +4358,11 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                         f"action=deregister user={user_id} "
                         f"instance={old_instance_id} "
                         f"tg={old_target_group_arn} "
-                        f"port={PremiumInstanceConfig.get_backend_port()}"
+                        f"port={backend_port}"
                     )
                     elbv2.deregister_targets(
                         TargetGroupArn=old_target_group_arn,
-                        Targets=[
-                            {
-                                "Id": old_instance_id,
-                                "Port": PremiumInstanceConfig.get_backend_port(),
-                            }
-                        ],
+                        Targets=[{"Id": old_instance_id, "Port": backend_port}],
                     )
 
                     # Register to new instance (same target group)
@@ -4383,16 +4371,11 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                         f"action=register user={user_id} "
                         f"instance={new_instance_id} "
                         f"tg={old_target_group_arn} "
-                        f"port={PremiumInstanceConfig.get_backend_port()}"
+                        f"port={backend_port}"
                     )
                     elbv2.register_targets(
                         TargetGroupArn=old_target_group_arn,
-                        Targets=[
-                            {
-                                "Id": new_instance_id,
-                                "Port": PremiumInstanceConfig.get_backend_port(),
-                            }
-                        ],
+                        Targets=[{"Id": new_instance_id, "Port": backend_port}],
                     )
 
                     # Update RDS assignment
